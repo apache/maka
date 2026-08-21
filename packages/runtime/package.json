@@ -41,7 +41,6 @@
     "./agent-graph-supervisor-wake": "./dist/agent-graph-supervisor-wake.js",
     "./agent-swarm-status-tool": "./dist/agent-swarm-status-tool.js",
     "./ai-sdk-compaction-contract": "./dist/ai-sdk-compaction-contract.js",
-    "./claude-subscription-usage": "./dist/claude-subscription-usage.js",
     "./codex-oauth-enrollment": "./dist/codex-oauth-enrollment.js",
     "./computer-use-tools": "./dist/computer-use-tools.js",
     "./computer-use-types": "./dist/computer-use-types.js",

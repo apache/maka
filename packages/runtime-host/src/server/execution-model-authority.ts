@@ -50,7 +50,6 @@ import { resolveAdmittedConnectionModel } from './connection-model-admission.js'
 export interface HostGoalEvaluatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
-  readonly claudeDeviceId: string;
   readonly usage: InteractiveUsageStoresWriter;
   readonly requestDrain: () => void;
   readonly readSessionHeader: (sessionId: string) => Promise<SessionHeader>;
@@ -338,7 +337,6 @@ type AuxiliaryModelCallAuthorityInput = Pick<
   HostGoalEvaluatorInput,
   | 'runtimePolicy'
   | 'oauthCredentials'
-  | 'claudeDeviceId'
   | 'usage'
   | 'requestDrain'
   | 'createFetchTransport'
@@ -349,7 +347,6 @@ type AuxiliaryModelCallAuthorityInput = Pick<
 interface AuxiliaryModelCallAuthority {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
-  readonly claudeDeviceId: string;
   readonly usage: InteractiveUsageStoresWriter;
   readonly createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
   readonly telemetry: {
@@ -401,7 +398,6 @@ function createAuxiliaryModelCallAuthority(
   return {
     runtimePolicy: input.runtimePolicy,
     oauthCredentials: input.oauthCredentials,
-    claudeDeviceId: input.claudeDeviceId,
     usage: input.usage,
     createFetchTransport: input.createFetchTransport ?? createProxiedFetchTransport,
     telemetry: {
@@ -466,7 +462,6 @@ async function runHostAuxiliaryModelCall(
         connection: target.connection,
         sessionId: input.transportContextId,
         modelId: target.model,
-        claudeDeviceId: authority.claudeDeviceId,
         fetchFn: transport.fetch,
       });
     }

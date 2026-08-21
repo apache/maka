@@ -404,12 +404,6 @@ export class DesktopRuntimeHostClient {
     return this.request("oauth.login.cancel", { attemptId });
   }
 
-  fetchOAuthAccountUsage(
-    connectionId: string,
-  ): Promise<OperationOutput<"oauth.account.usage.fetch">> {
-    return this.request("oauth.account.usage.fetch", { connectionId });
-  }
-
   async loadSkillCatalog(
     context: SkillCatalogWorkspaceContext,
     view: SkillCatalogView,

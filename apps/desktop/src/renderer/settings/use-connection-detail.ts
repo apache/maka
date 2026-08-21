@@ -7,6 +7,7 @@ import {
 } from '@maka/core/llm-connections';
 import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
   normalizeRelayModelProfiles,
   pruneRelayModelProfiles,
@@ -37,8 +38,8 @@ import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 // Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
 // the browser-assisted services (Codex and xAI) are one-button-drivable
-// here; Claude's paste-code flow and plain API-key providers return null so the
-// notice falls back to prose instead of rendering a dead button.
+// here; plain API-key providers return null so the notice falls back to
+// prose instead of rendering a dead button.
 export interface OAuthLoginService {
   bridge: OAuthLoginFlowBridge;
   display: { name: string; shortName: string };
@@ -114,7 +115,12 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const toast = useToast();
   const supportsApiKey = providerAuthSupportsApiKey(connection.providerType);
   const needsOAuth = defaults.authKind === 'oauth_token';
-  const oauthLoginService = needsOAuth
+  // A retired provider still has its credential on disk, so `hasSecret` is true
+  // and the generic notice told these users to "reauthorize under account
+  // connections" — an instruction whose only destination is the retirement
+  // notice itself.
+  const retired = isRetiredProvider(connection.providerType);
+  const oauthLoginService = needsOAuth && !retired
     ? oauthLoginServiceFor(connection.providerType, host)
     : null;
   const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
@@ -632,6 +638,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     detailActionBusy,
     supportsApiKey,
     needsOAuth,
+    retired,
     usesGitHubCopilotLogin,
     oauthLoginService,
     supportsRemoteDiscovery,

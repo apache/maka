@@ -18,12 +18,12 @@ function catalogWithoutDefault(): ConnectionCatalogSnapshot {
       {
         connectionId: CONNECTION_ID,
         revision: 2,
-        slug: 'claude-subscription',
-        name: 'Claude OAuth',
-        providerType: 'claude-subscription',
+        slug: 'codex-subscription',
+        name: 'Codex OAuth',
+        providerType: 'openai-codex',
         enabled: true,
-        enabledModelIds: ['claude-opus-5', 'claude-haiku-4-5'],
-        models: [{ id: 'claude-opus-5' }, { id: 'claude-haiku-4-5' }],
+        enabledModelIds: ['gpt-5-codex', 'gpt-5-codex-mini'],
+        models: [{ id: 'gpt-5-codex' }, { id: 'gpt-5-codex-mini' }],
         modelSource: 'fallback',
         modelsFetchedAt: 0,
       },
@@ -70,9 +70,9 @@ describe('synchronizeRuntimeHostAccountConnection', () => {
     });
     const { client, selected } = accountClient(rejected);
 
-    await synchronizeRuntimeHostAccountConnection(client, 'claude-subscription');
+    await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
 
-    assert.deepEqual(selected(), { connectionId: CONNECTION_ID, modelId: 'claude-opus-5' });
+    assert.deepEqual(selected(), { connectionId: CONNECTION_ID, modelId: 'gpt-5-codex' });
   });
 
   it('selects a default model when model discovery throws', async () => {
@@ -81,9 +81,9 @@ describe('synchronizeRuntimeHostAccountConnection', () => {
     };
     const { client, selected } = accountClient(throwing);
 
-    await synchronizeRuntimeHostAccountConnection(client, 'claude-subscription');
+    await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
 
-    assert.deepEqual(selected(), { connectionId: CONNECTION_ID, modelId: 'claude-opus-5' });
+    assert.deepEqual(selected(), { connectionId: CONNECTION_ID, modelId: 'gpt-5-codex' });
   });
 
   it('leaves an existing default alone', async () => {
@@ -93,10 +93,10 @@ describe('synchronizeRuntimeHostAccountConnection', () => {
     });
     const { client, selectCalls } = accountClient(rejected, {
       ...catalogWithoutDefault(),
-      defaultTarget: { connectionId: CONNECTION_ID, modelId: 'claude-haiku-4-5' },
+      defaultTarget: { connectionId: CONNECTION_ID, modelId: 'gpt-5-codex-mini' },
     });
 
-    await synchronizeRuntimeHostAccountConnection(client, 'claude-subscription');
+    await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
 
     assert.equal(selectCalls(), 0);
   });

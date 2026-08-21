@@ -631,13 +631,6 @@ const makaBridge = {
   // mount, the Claude card never appears, and every other card stays at its
   // static 可用 label. Each card's login modal has its own fixture in
   // Product/Settings/Providers.
-  claudeSubscription: {
-    isExperimentalEnabled: async () => true,
-    getAccountState: async () => ({
-      runtimeState: 'authenticated',
-      profile: { email: 'claude@example.com' },
-    }),
-  },
   openAiCodex: {
     getAccountState: async () => ({
       runtimeState: 'authenticated',

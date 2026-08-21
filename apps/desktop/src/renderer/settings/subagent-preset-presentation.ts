@@ -1,4 +1,5 @@
 import { type LlmConnection } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import { type SubagentPreset } from '@maka/core/subagent-settings';
 import { connectionEnabledModelIds } from '@maka/core/llm-connections';
 import type { StatusTone } from './settings-status-badge.js';
@@ -33,6 +34,7 @@ export type SubagentPresetAvailabilityKind =
   | 'available'
   | 'disabled'
   | 'missing_connection'
+  | 'provider_retired'
   | 'connection_disabled'
   | 'model_disabled';
 
@@ -41,6 +43,16 @@ export type SubagentPresetAvailability = {
   tone: StatusTone;
 };
 
+/**
+ * Whether the editor may route a preset through this connection. One predicate
+ * for `usableConnections`, validation, and the option list, so the editor
+ * cannot save what the runtime admission (`provider_retired`,
+ * `connection_disabled`) is guaranteed to refuse.
+ */
+export function isSelectableSubagentConnection(connection: LlmConnection): boolean {
+  return connection.enabled && !isRetiredProvider(connection.providerType);
+}
+
 export function subagentPresetAvailability(
   preset: SubagentPreset,
   connections: readonly LlmConnection[],
@@ -48,6 +60,11 @@ export function subagentPresetAvailability(
   if (!preset.enabled) return { kind: 'disabled', tone: 'neutral' };
   const connection = connections.find((candidate) => candidate.slug === preset.connectionSlug);
   if (!connection) return { kind: 'missing_connection', tone: 'destructive' };
+  // Before `enabled`: a retained retired connection stays enabled, and unlike
+  // a disabled one there is no switch that brings it back.
+  if (isRetiredProvider(connection.providerType)) {
+    return { kind: 'provider_retired', tone: 'destructive' };
+  }
   if (!connection.enabled) return { kind: 'connection_disabled', tone: 'warning' };
   if (!connectionEnabledModelIds(connection).includes(preset.model)) {
     return { kind: 'model_disabled', tone: 'warning' };

@@ -59,7 +59,6 @@ import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/cor
 import type { LocalMemoryState } from '@maka/core/local-memory';
 import type {
   AuthorizationUrlPayload,
-  SubscriptionAccountState,
   SubscriptionActionResult,
 } from '@maka/core/oauth-subscription';
 import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
@@ -917,21 +916,6 @@ export interface MakaBridge {
       | SearchResult[]
       | { ok: false; reason: SearchErrorReason; message: string }
     >;
-  };
-  claudeSubscription: {
-    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
-    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
-    openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    completeAuthorization(
-      authRequestId: string,
-      pasted: string,
-      host?: DesktopRuntimeHostRef,
-    ): Promise<SubscriptionActionResult>;
-    cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<SubscriptionAccountState>;
-    refreshQuota(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
   };
   openAiCodex: {
     isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;

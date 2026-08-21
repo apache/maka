@@ -31,6 +31,7 @@ import {
   type LlmConnection,
 } from './llm-connections.js';
 import { isModelExplicitlyUnsupportedForChat } from './model-catalog.js';
+import { isRetiredProvider } from './provider-registry.js';
 
 /**
  * Canonical reasons why an LlmConnection is not ready to send.
@@ -49,7 +50,8 @@ export type ChatConfigurationReason =
   | 'empty_model_list'
   | 'model_not_enabled'
   | 'model_not_chat_capable'
-  | 'fake_backend';
+  | 'fake_backend'
+  | 'provider_retired';
 
 export type IsConnectionReadyResult =
   | { ready: true; model: string }
@@ -86,14 +88,15 @@ export interface IsConnectionReadyInput {
  *
  * Order:
  *   1. `providerType` is not in the registry → `fake_backend`
- *   2. `enabled === false` → `connection_disabled`
- *   3. `authKind !== 'none' && !hasSecret` → `missing_api_key`
- *   4. effective model is empty/missing → `missing_model`
- *   5. no models are enabled → `empty_model_list`
- *   6. effective model is not enabled → `model_not_enabled`
- *   7. `connection.models` is enumerated but empty → `empty_model_list`
- *   8. effective model is not in `connection.models` → `model_not_enabled`
- *   9. effective model is explicitly not chat-capable → `model_not_chat_capable`
+ *   2. the provider is retired → `provider_retired`
+ *   3. `enabled === false` → `connection_disabled`
+ *   4. `authKind !== 'none' && !hasSecret` → `missing_api_key`
+ *   5. effective model is empty/missing → `missing_model`
+ *   6. no models are enabled → `empty_model_list`
+ *   7. effective model is not enabled → `model_not_enabled`
+ *   8. `connection.models` is enumerated but empty → `empty_model_list`
+ *   9. effective model is not in `connection.models` → `model_not_enabled`
+ *  10. effective model is explicitly not chat-capable → `model_not_chat_capable`
  *
  * "Effective model" = `requestedModel ?? connection.defaultModel`.
  */
@@ -102,6 +105,12 @@ export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionRe
 
   if (!isKnownProvider(connection)) {
     return { ready: false, reason: 'fake_backend' };
+  }
+  // Ahead of every other check: a retired provider has no Runtime adapter, so
+  // the send would be admitted here and only fail deep in model construction.
+  // Nothing about the connection can make it sendable again.
+  if (isRetiredProvider(connection.providerType)) {
+    return { ready: false, reason: 'provider_retired' };
   }
   if (!connection.enabled) {
     return { ready: false, reason: 'connection_disabled' };

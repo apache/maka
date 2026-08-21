@@ -13,6 +13,7 @@ import {
   headerToSummary,
 } from '@maka/runtime/session-manager';
 import { type ProjectCatalog, ProjectUnavailableError } from '@maka/storage';
+import type { ResolveExecutionConnectionResult } from '@maka/storage/runtime-policy-stores';
 import {
   SessionMetadataVersionConflictError,
   type SessionCatalogRecord,
@@ -476,6 +477,78 @@ test('creation admits the enabled bootstrap DeepSeek model before discovery', as
 
   assert.equal(outcome.ok, true);
   assert.equal(createAttempts, 1);
+});
+
+test('creation refuses a retired provider on the default target', async () => {
+  // An upgraded installation keeps the credential, so every readiness signal
+  // short of retirement is satisfied. Refusing here is what stops a Session
+  // that could only fail once a backend was built for it — and the default
+  // target is the path Bot, CLI and scheduled runs take.
+  let createAttempts = 0;
+  const fixture = createFixture({
+    connection: {
+      providerType: 'claude-subscription',
+      executionResolution: { kind: 'provider_retired' },
+    },
+    stores: {
+      createStableSession: async () => {
+        createAttempts += 1;
+        assert.fail('A retired provider must not reach Session persistence');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'default' },
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'invalid_request',
+      message: 'Session model connection uses a sign-in that was removed from Maka',
+    },
+  });
+  assert.equal(createAttempts, 0);
+});
+
+test('creation refuses a retired provider named explicitly', async () => {
+  let createAttempts = 0;
+  const fixture = createFixture({
+    connection: {
+      providerType: 'claude-subscription',
+      executionResolution: { kind: 'provider_retired' },
+    },
+    stores: {
+      createStableSession: async () => {
+        createAttempts += 1;
+        assert.fail('A retired provider must not reach Session persistence');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'model-1' },
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'invalid_request',
+      message: 'Session model connection uses a sign-in that was removed from Maka',
+    },
+  });
+  assert.equal(createAttempts, 0);
 });
 
 test('creation does not bypass a non-empty DeepSeek inventory', async () => {
@@ -1088,7 +1161,9 @@ function createFixture(
 }
 
 type FixtureConnection = {
-  readonly providerType?: 'deepseek' | 'openai' | 'openai-compatible';
+  readonly providerType?: 'claude-subscription' | 'deepseek' | 'openai' | 'openai-compatible';
+  /** Lets a case exercise a resolver verdict other than `ready`. */
+  readonly executionResolution?: ResolveExecutionConnectionResult;
   readonly enabledModelIds?: readonly string[];
   readonly models?: readonly { id: string }[];
   readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
@@ -1124,12 +1199,13 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
       getSnapshot: async () => ({ revision: 1, policy }),
     },
     operations: {
-      resolveExecutionConnection: async () => ({
-        kind: 'ready',
-        connection,
-        secretMaterial: {},
-        networkProxy: policy.networkProxy,
-      }),
+      resolveExecutionConnection: async () =>
+        overrides.executionResolution ?? {
+          kind: 'ready',
+          connection,
+          secretMaterial: {},
+          networkProxy: policy.networkProxy,
+        },
     },
   };
 }

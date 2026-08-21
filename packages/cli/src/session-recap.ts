@@ -1,8 +1,3 @@
-import { cleanSessionRecapText, SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
-
-export const RECAP_INSTRUCTION = SESSION_RECAP_INSTRUCTION;
-export const cleanRecapText = cleanSessionRecapText;
-
 /** Idle gap (ms) after which the first normal prompt on return triggers an automatic recap. */
 export const AUTO_RECAP_IDLE_MS = 180_000;
 /** Minimum main-turn count (user-prompted turns) before an automatic recap may fire. */
@@ -10,11 +5,6 @@ export const AUTO_RECAP_MIN_TURNS = 3;
 /** Raw-output size (bytes) above which an automatic recap is not surfaced in the transcript (still persisted). */
 export const AUTO_RECAP_DISPLAY_LIMIT_BYTES = 500;
 
-/**
- * Cleans a raw model recap response: collapses whitespace, strips a leading
- * `Recap:` / `Summary:` / `回顾：`-style label, strips one layer of wrapping
- * quotes, and truncates to 1200 characters (with an ellipsis) if needed.
- */
 export interface ShouldAutoRecapInput {
   /** Milliseconds since the last recorded user activity. */
   idleMs: number;

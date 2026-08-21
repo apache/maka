@@ -11,7 +11,6 @@ export { OAUTH_PRESENTATION_SERVICE_ID, OAUTH_PRESENTATION_SERVICE_VERSION };
 
 export interface OAuthPresentationBackend {
   openExternal(url: string, stateHint: string | undefined, signal: AbortSignal): Promise<void>;
-  requestAuthorizationCode(url: string, stateHint: string, signal: AbortSignal): Promise<string>;
 }
 
 /** A presentation-only provider. OAuth token exchange and storage stay in the Host. */
@@ -30,24 +29,9 @@ export function createOAuthPresentationClientProvider(
       assertOAuthPresentationContract(frame);
       const request = decodeOAuthPresentationRequest(frame.method, frame.input);
       const url = trustedPresentationUrl(request.url);
-      switch (request.method) {
-        case 'open_external':
-          await options.accept();
-          await backend.openExternal(url, request.stateHint, options.signal);
-          return decodeOAuthPresentationResult(request.method, { kind: 'presented' });
-        case 'request_authorization_code': {
-          await options.accept();
-          const authorizationCode = await backend.requestAuthorizationCode(
-            url,
-            request.stateHint,
-            options.signal,
-          );
-          return decodeOAuthPresentationResult(request.method, {
-            kind: 'authorization_code',
-            authorizationCode,
-          });
-        }
-      }
+      await options.accept();
+      await backend.openExternal(url, request.stateHint, options.signal);
+      return decodeOAuthPresentationResult(request.method, { kind: 'presented' });
     },
   };
 }

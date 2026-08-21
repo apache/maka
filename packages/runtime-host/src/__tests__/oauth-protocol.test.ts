@@ -4,9 +4,10 @@ import { test } from 'node:test';
 import {
   decodeClientFrame,
   decodeHostFrame,
+  decodeOAuthLoginProjection,
   decodeOAuthPresentationRequest,
   decodeOAuthPresentationResult,
-  OAUTH_PRESENTATION_AUTHORIZATION_CODE_MAX_LENGTH,
+  type OAuthPresentationMethod,
 } from '../protocol/index.js';
 
 test('OAuth login protocol binds attempt identity and closes terminal projections', () => {
@@ -66,55 +67,23 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
   );
 });
 
-test('OAuth account usage exposes only a bounded safe quota projection', () => {
-  assert.deepEqual(
-    decodeHostFrame({
-      requestId: 'request',
-      operation: 'oauth.account.usage.fetch',
-      ok: true,
-      result: {
-        kind: 'available',
-        provider: 'claude-subscription',
-        quota: {
-          fiveHour: { utilization: 25, resetsAt: '2026-08-05T12:00:00.000Z' },
-          fetchedAt: 1,
-        },
-      },
-    }),
-    {
-      requestId: 'request',
-      operation: 'oauth.account.usage.fetch',
-      ok: true,
-      result: {
-        kind: 'available',
-        provider: 'claude-subscription',
-        quota: {
-          fiveHour: { utilization: 25, resetsAt: '2026-08-05T12:00:00.000Z' },
-          fetchedAt: 1,
-        },
-      },
-    },
-  );
+test('OAuth account usage is no longer an operation on the wire', () => {
+  // Reporting subscription usage required the retired provider's own client
+  // identity, so the operation went with it rather than staying as a call that
+  // always answers "unavailable".
   assert.throws(
     () =>
       decodeHostFrame({
         requestId: 'request',
         operation: 'oauth.account.usage.fetch',
         ok: true,
-        result: {
-          kind: 'available',
-          provider: 'claude-subscription',
-          quota: {
-            fiveHour: { utilization: 101, resetsAt: '' },
-            fetchedAt: 1,
-          },
-        },
+        result: { kind: 'unavailable', reason: 'unsupported_provider' },
       }),
-    (error: unknown) => error instanceof RuntimeHostProtocolError,
+    RuntimeHostProtocolError,
   );
 });
 
-test('OAuth presentation methods share one closed request and result contract', () => {
+test('OAuth presentation keeps one closed request and result contract', () => {
   assert.deepEqual(
     decodeOAuthPresentationRequest('open_external', {
       url: 'https://auth.example/authorize',
@@ -126,26 +95,56 @@ test('OAuth presentation methods share one closed request and result contract', 
       stateHint: 'ABCD-1234',
     },
   );
-  assert.deepEqual(
-    decodeOAuthPresentationResult('request_authorization_code', {
-      kind: 'authorization_code',
-      authorizationCode: 'code#state',
-    }),
-    { kind: 'authorization_code', authorizationCode: 'code#state' },
-  );
+  assert.deepEqual(decodeOAuthPresentationResult('open_external', { kind: 'presented' }), {
+    kind: 'presented',
+  });
+  // A peer on an older epoch still offers the removed method. The cast models
+  // that value arriving off the wire; the type no longer admits it, and the
+  // decoder must refuse it rather than serve a method nothing implements.
+  const retiredMethod = 'request_authorization_code' as unknown as OAuthPresentationMethod;
   assert.throws(
     () =>
-      decodeOAuthPresentationRequest('request_authorization_code', {
+      decodeOAuthPresentationRequest(retiredMethod, {
         url: 'https://auth.example/authorize',
+        stateHint: 'ABCD-1234',
       }),
     (error: unknown) => error instanceof RuntimeHostProtocolError,
   );
   assert.throws(
     () =>
-      decodeOAuthPresentationResult('request_authorization_code', {
+      decodeOAuthPresentationResult(retiredMethod, {
         kind: 'authorization_code',
-        authorizationCode: 'x'.repeat(OAUTH_PRESENTATION_AUTHORIZATION_CODE_MAX_LENGTH + 1),
+        authorizationCode: 'code#state',
       }),
     (error: unknown) => error instanceof RuntimeHostProtocolError,
+  );
+});
+
+test('OAuth login projections refuse a retired provider on the wire', () => {
+  // A Host on an older build can still emit this provider. Accepting it would
+  // let a login the Client can no longer drive reach the projection.
+  assert.throws(
+    () =>
+      decodeOAuthLoginProjection({
+        attemptId: 'attempt',
+        connectionId: 'connection',
+        provider: 'claude-subscription',
+        phase: 'awaiting_authorization',
+      }),
+    RuntimeHostProtocolError,
+  );
+  assert.deepEqual(
+    decodeOAuthLoginProjection({
+      attemptId: 'attempt',
+      connectionId: 'connection',
+      provider: 'openai-codex',
+      phase: 'awaiting_authorization',
+    }),
+    {
+      attemptId: 'attempt',
+      connectionId: 'connection',
+      provider: 'openai-codex',
+      phase: 'awaiting_authorization',
+    },
   );
 });

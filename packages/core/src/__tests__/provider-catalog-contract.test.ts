@@ -6,7 +6,14 @@ import {
   validateSlug,
 } from '../llm-connections.js';
 import { GENERATED_MODELS_DEV_METADATA } from '../model-metadata.generated.js';
-import { CATALOG_PROVIDER_TYPES, PROVIDER_REGISTRY } from '../provider-registry.js';
+import {
+  CATALOG_PROVIDER_TYPES,
+  PROVIDER_REGISTRY,
+  isRetiredProvider,
+} from '../provider-registry.js';
+import { buildConnectionModelCatalogEntries } from '../model-catalog.js';
+import { PROVIDER_AUTH_ACTIONS, deriveProviderAuthContract } from '../provider-auth.js';
+import type { ProviderType } from '../llm-connections.js';
 
 describe('provider connection slug derivation contract', () => {
   it('continues through dense collisions until it finds an unused slug', () => {
@@ -50,6 +57,89 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
         isCustomConnection,
         `${type} has no baseUrl, no baseUrlTemplate, and is not a custom connection — it cannot source an endpoint`,
       );
+    }
+  });
+});
+
+describe('retired provider contract', () => {
+  // Retirement rests on a few lines nothing else reads. Each was separately
+  // revertible with the whole suite green, which would let a retired provider
+  // become sendable again by accident.
+  const retired = (Object.keys(PROVIDER_REGISTRY) as ProviderType[]).filter((type) =>
+    isRetiredProvider(type),
+  );
+
+  it('pins the entries this catalog retires', () => {
+    assert.deepEqual(retired, ['claude-subscription']);
+  });
+
+  it('keeps a retired provider registered but unwired', () => {
+    for (const type of retired) {
+      assert.ok(
+        PROVIDER_REGISTRY[type] !== undefined,
+        `${type} must stay registered so a stored connection still decodes`,
+      );
+      assert.equal(
+        PROVIDER_REGISTRY[type].runtimeAdapter.kind,
+        'unavailable',
+        `${type} is retired, so no Runtime adapter may claim it`,
+      );
+    }
+  });
+
+  it('keeps a retired provider out of the add-connection catalog', () => {
+    for (const type of retired) {
+      assert.equal(
+        CATALOG_PROVIDER_TYPES.includes(type),
+        false,
+        `${type} must not be offerable as a new connection`,
+      );
+    }
+  });
+
+  it('offers no action on a retired connection', () => {
+    // The storage layer admits model fetches and connection tests by reading
+    // this contract, so every action being hidden is what refuses them there —
+    // not a check each call site has to remember.
+    for (const type of retired) {
+      const contract = deriveProviderAuthContract({
+        providerType: type,
+        enabled: true,
+        hasSecret: true,
+      });
+      for (const action of PROVIDER_AUTH_ACTIONS) {
+        assert.equal(
+          contract.actionAvailability[action],
+          'hidden',
+          `${type} must not offer ${action}`,
+        );
+      }
+    }
+  });
+
+  it('reports every model of a retired connection as removed and unselectable', () => {
+    // The adapter blocks the send; without this the pickers would keep offering
+    // models that can no longer answer.
+    for (const type of retired) {
+      const entries = buildConnectionModelCatalogEntries({
+        connection: {
+          slug: `${type}-stored`,
+          providerType: type,
+          defaultModel: PROVIDER_REGISTRY[type].fallbackModels[0] ?? '',
+          models: undefined,
+          modelSource: 'fallback',
+          modelsFetchedAt: undefined,
+        },
+        // The caller would pass `true` for a live connection; retirement must
+        // win over it rather than depend on the caller getting it right.
+        providerAvailable: true,
+        authOk: true,
+      });
+      assert.ok(entries.length > 0, `${type} should still list its stored models`);
+      for (const entry of entries) {
+        assert.equal(entry.unavailableReason, 'provider_removed');
+        assert.equal(entry.canUseAsChatDefault, false);
+      }
     }
   });
 });

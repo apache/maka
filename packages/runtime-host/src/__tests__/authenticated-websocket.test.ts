@@ -777,6 +777,42 @@ test('keeps a formerly accepted local-only grant inert when opening an existing 
   }
 });
 
+test('releases a retired operation grant when opening an existing access file', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-retired-grant-'));
+  const credential = 'maka_rh_existing_usage_client';
+  try {
+    await writeFile(
+      join(directory, 'runtime-host-access.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        credentials: [
+          {
+            credentialId: 'existing-usage-client',
+            credentialHash: createHash('sha256').update(credential).digest('hex'),
+            principalId: 'existing-usage-client',
+            principalKind: 'remote_owner',
+            status: 'active',
+            // `oauth.account.usage.fetch` left the protocol with the retired
+            // Claude subscription provider. A file issued before that must
+            // still open — failing decode here kept the Host from starting —
+            // with the unservable grant released rather than migrated.
+            operationGrants: ['host.status', 'oauth.account.usage.fetch'],
+            canPublishClientCapabilities: false,
+            canUseHostPaths: false,
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const authority = await openRuntimeHostAccessAuthority(directory);
+    assert.deepEqual(authority.authenticate(credential)?.operationGrants, ['host.status']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('migrates the released transcript query grant when opening an existing access file', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-transcript-legacy-'));
   const credential = 'maka_rh_existing_transcript_client';

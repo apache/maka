@@ -28,6 +28,7 @@ import {
   type CatalogFilter,
   type SetupTarget,
 } from './provider-catalog-page';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import { ConnectionDetail } from './provider-connection-detail';
 import { useSettingsRouteFocus } from './settings-route-focus';
 import { SettingsRouteHeader } from './settings-route-header';
@@ -262,7 +263,17 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                `clickAction` rather than onClick: it opens no confirm, so there
                is no state-driven UI to await inside the transition, and the
                button gets its own pending affordance for free. */
-            badge={selected.slug === defaultSlug
+            /* Retired is checked before either state: the connection cannot
+               send, so it can neither become the default nor honestly wear the
+               默认 Badge. Loading the catalog releases a default target that
+               points at one (connection-catalog-document.ts), so this is the
+               in-memory half of that — and it keeps the slot's invariant, since
+               a Badge with no way to move the default off it would be exactly
+               the read-only label the comment above describes. The row's own
+               已停用 status and the detail banner carry the explanation. */
+            badge={isRetiredProvider(selected.providerType)
+              ? null
+              : selected.slug === defaultSlug
               ? <Badge variant="neutral" label={copy.default} />
               : (
                 <Button

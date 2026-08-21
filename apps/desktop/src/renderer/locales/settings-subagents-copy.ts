@@ -24,6 +24,7 @@ export type SubagentSettingsCopy = {
   };
   status: {
     missingConnection: string;
+    providerRetired: string;
     connectionDisabled: string;
     modelDisabled: string;
   };
@@ -95,6 +96,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
     },
     status: {
       missingConnection: '连接不存在',
+      providerRetired: '登录方式已移除 · 请改用其他连接',
       connectionDisabled: '连接已停用',
       modelDisabled: '模型未启用',
     },
@@ -176,6 +178,7 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
     },
     status: {
       missingConnection: 'Connection missing',
+      providerRetired: 'Sign-in retired · route to another connection',
       connectionDisabled: 'Connection disabled',
       modelDisabled: 'Model not enabled',
     },

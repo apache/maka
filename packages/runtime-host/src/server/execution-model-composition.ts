@@ -46,7 +46,6 @@ export interface HostAiSdkBackendInput {
   readonly context: BackendFactoryContext;
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
-  readonly claudeDeviceId: string;
   readonly createRunComposer: HostRunComposerFactory;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
@@ -118,7 +117,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         connection: target.connection,
         sessionId: input.context.sessionId,
         modelId: target.model,
-        claudeDeviceId: input.claudeDeviceId,
         fetchFn: transport.fetch,
       });
     } catch (error) {

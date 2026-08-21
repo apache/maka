@@ -244,6 +244,9 @@ function modelRepairTarget(
     case 'missing_default_connection':
     case 'connection_missing':
     case 'fake_backend':
+    // A retired connection cannot be repaired in its own detail page — the fix
+    // is a different connection, so send the user to the catalog.
+    case 'provider_retired':
       return { kind: 'provider_catalog' };
     case 'missing_model':
     case 'empty_model_list':

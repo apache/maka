@@ -120,16 +120,108 @@ test('quiesces reconnect and waits for the Host process before update install', 
   await owner.close();
 });
 
-test('keeps the current Host when update preparation reports active tasks', async () => {
+test('retires unadopted candidates before draining the tracked Host', async () => {
+  const events: string[] = [];
+  const current = candidateHarness({
+    disconnectOnPrepare: true,
+    onPrepare: () => events.push('prepare-host'),
+  });
+  const owner = await startRuntimeHostDesktopManager({
+    candidateLaunchBarrier: {
+      connect: async () => assert.fail('mocked candidate startup bypasses the barrier'),
+      pause: () => events.push('pause-launches'),
+      retireExcept: async (pid: number) => {
+        events.push(`retire-except:${pid}`);
+      },
+      resume: () => events.push('resume-launches'),
+      release: () => events.push('release-launches'),
+    },
+  } as unknown as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async (pid) => {
+      events.push(`wait:${pid}`);
+    },
+  });
+
+  const preparation = await owner.prepareForUpdate(false);
+  assert.equal(preparation.kind, 'prepared');
+  assert.deepEqual(events, [
+    'pause-launches',
+    'retire-except:42',
+    'prepare-host',
+    'wait:42',
+  ]);
+  if (preparation.kind === 'prepared') preparation.rollback();
+  assert.equal(events.at(-1), 'resume-launches');
+  await owner.close();
+  assert.equal(events.at(-1), 'release-launches');
+});
+
+test('resumes candidate launches when active tasks block the update', async () => {
+  const events: string[] = [];
   const current = candidateHarness({ activeTasks: true });
+  const owner = await startRuntimeHostDesktopManager({
+    candidateLaunchBarrier: {
+      connect: async () => assert.fail('mocked candidate startup bypasses the barrier'),
+      pause: () => events.push('pause'),
+      retireExcept: async () => {
+        events.push('retire');
+      },
+      resume: () => events.push('resume'),
+      release: () => events.push('release'),
+    },
+  } as unknown as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+  });
+
+  assert.deepEqual(await owner.prepareForUpdate(false), { kind: 'active_tasks' });
+  assert.deepEqual(events, ['pause', 'retire', 'resume']);
+  await owner.close();
+  assert.equal(events.at(-1), 'release');
+});
+
+test('resumes candidate launches when candidate retirement fails', async () => {
+  const events: string[] = [];
+  const current = candidateHarness();
+  const owner = await startRuntimeHostDesktopManager({
+    candidateLaunchBarrier: {
+      connect: async () => assert.fail('mocked candidate startup bypasses the barrier'),
+      pause: () => events.push('pause'),
+      retireExcept: async () => {
+        events.push('retire');
+        throw new Error('retirement failed');
+      },
+      resume: () => events.push('resume'),
+      release: () => events.push('release'),
+    },
+  } as unknown as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+  });
+
+  await assert.rejects(owner.prepareForUpdate(false), /retirement failed/);
+  assert.deepEqual(events, ['pause', 'retire', 'resume']);
+  await owner.handleBotIncomingMessage({ text: 'still connected' } as BotIncomingMessage);
+  assert.equal(current.botMessages, 1);
+  await owner.close();
+});
+
+test('keeps active-task confirmation bound to the current Host', async () => {
+  const current = candidateHarness({ activeTasks: true, disconnectOnPrepare: true });
+  const waitedFor: number[] = [];
   const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async (pid) => {
+      waitedFor.push(pid);
+    },
   });
 
   assert.deepEqual(await owner.prepareForUpdate(false), { kind: 'active_tasks' });
   await owner.handleBotIncomingMessage({ text: 'still connected' } as BotIncomingMessage);
   assert.equal(current.botMessages, 1);
-  assert.deepEqual(current.prepareUpgradeAuthorities, [false]);
+  const authorized = await owner.prepareForUpdate(true);
+  assert.equal(authorized.kind, 'prepared');
+  assert.deepEqual(current.prepareUpgradeAuthorities, [false, true]);
+  assert.deepEqual(waitedFor, [42]);
   await owner.close();
 });
 
@@ -672,6 +764,7 @@ function candidateHarness(
     hostId?: string;
     finalizeFailures?: Error[];
     disconnectOnFinalizeFailure?: boolean;
+    onPrepare?: () => void;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -693,7 +786,11 @@ function candidateHarness(
       get lifecycleState() {
         return lifecycleState;
       },
+      async queryHostDiagnostics() {
+        return { pid: 42 };
+      },
       async prepareHostUpgrade(allowInterruptActiveTasks: boolean) {
+        options.onPrepare?.();
         prepareUpgradeCalls += 1;
         prepareUpgradeAuthorities.push(allowInterruptActiveTasks);
         if (options.activeTasks && !allowInterruptActiveTasks) {

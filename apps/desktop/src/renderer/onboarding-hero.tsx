@@ -333,6 +333,11 @@ function assertNever(value: never): never {
   throw new Error('OnboardingHero: unexhausted state');
 }
 
-function acknowledgeBlockedReason(reason: 'all_connections_unhealthy') {
+// Listed as literals rather than the reason type: a future reason still has to
+// be added here, which is the point — it forces a look at whether this card
+// needs to react to it.
+function acknowledgeBlockedReason(
+  reason: 'all_connections_unhealthy' | 'all_connections_retired',
+) {
   void reason;
 }

@@ -1,4 +1,5 @@
 import { deriveConnectionSlug } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
   readRuntimeHostConnectionCatalog,
@@ -56,7 +57,11 @@ export function createRuntimeHostOnboardingSurface(
 export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapshot): ModelChoice[] {
   const choices: ModelChoice[] = [];
   for (const connection of catalog.connections) {
-    if (!connection.enabled) continue;
+    // A retained retired connection stays enabled so its credential remains
+    // visible and deletable, but every send through it is refused — offering
+    // its models here would only let the user pick something that fails on
+    // selection.
+    if (!connection.enabled || isRetiredProvider(connection.providerType)) continue;
     const modelsById = new Map(connection.models.map((model) => [model.id, model]));
     const ids = new Set(connection.enabledModelIds);
     if (catalog.defaultTarget?.connectionId === connection.connectionId) {

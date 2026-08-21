@@ -59,7 +59,7 @@ describe('ProviderAuth contract', () => {
 
   test('OAuth subscription providers expose validation actions after login', () => {
     const contract = deriveProviderAuthContract({
-      providerType: 'claude-subscription',
+      providerType: 'xai-oauth',
       hasSecret: true,
       lastTestStatus: 'verified',
     });
@@ -71,7 +71,6 @@ describe('ProviderAuth contract', () => {
     expect(contract.sendMayUseWithoutSecret).toBe(false);
     expect(contract.actionAvailability.save_secret).toBe('hidden');
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
     expect(contract.actionAvailability.start_oauth).toBe('hidden');
     expect(contract.actionAvailability.refresh_oauth).toBe('available');
     expect(contract.actionAvailability.revoke_auth).toBe('available');
@@ -149,7 +148,7 @@ describe('ProviderAuth contract', () => {
 
   test('disabled providers hide actions regardless of stored credential state', () => {
     const contract = deriveProviderAuthContract({
-      providerType: 'claude-subscription',
+      providerType: 'openai-codex',
       enabled: false,
       hasSecret: true,
       lastTestStatus: 'verified',
