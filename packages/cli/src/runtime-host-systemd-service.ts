@@ -530,7 +530,7 @@ function quoteSystemdArgument(value: string): string {
     .replaceAll('\\', '\\\\')
     .replaceAll('"', '\\"')
     .replaceAll('%', '%%')
-    .replaceAll('$', '$$$$')}"`;
+    .replaceAll('$', () => '$$')}"`;
 }
 
 function actionPresentParticiple(action: 'start' | 'stop' | 'restart'): string {

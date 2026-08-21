@@ -14,7 +14,6 @@ import { settingsActionErrorMessage } from './settings-error-copy.js';
 export function RuntimeHostManagementDialog(props: {
   readonly profile: RemoteRuntimeHostProfile | undefined;
   readonly onClose: () => void;
-  readonly onRepair: (profile: RemoteRuntimeHostProfile) => void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
@@ -22,6 +21,7 @@ export function RuntimeHostManagementDialog(props: {
   const [result, setResult] = useState<DesktopRuntimeHostManagementResult>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
+  const [uninstalledRoot, setUninstalledRoot] = useState<string>();
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
 
   const profile = props.profile;
@@ -30,13 +30,15 @@ export function RuntimeHostManagementDialog(props: {
     let disposed = false;
     setResult(undefined);
     setError(undefined);
+    setUninstalledRoot(undefined);
     setConfirmingUninstall(false);
     setLoading(true);
     void window.maka.runtimeHostManagement.run(profile.id, 'status').then(
       (response) => {
         if (disposed) return;
         if (response.kind === 'result') setResult(response);
-        else setError(response.error.message);
+        else if (response.kind === 'error') setError(response.error.message);
+        else setUninstalledRoot(response.retainedStateRoot);
       },
       (failure) => {
         if (!disposed) setError(settingsActionErrorMessage(failure, locale));
@@ -60,6 +62,11 @@ export function RuntimeHostManagementDialog(props: {
         toast.error(copy.managementActionFailed, response.error.message);
         return;
       }
+      if (response.kind === 'uninstalled') {
+        setResult(undefined);
+        setUninstalledRoot(response.retainedStateRoot);
+        return;
+      }
       setResult(response);
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
@@ -71,6 +78,9 @@ export function RuntimeHostManagementDialog(props: {
   }
 
   const service = result?.service;
+  const uninstalled = uninstalledRoot !== undefined;
+  const serviceInstalled = service !== undefined && service.state !== 'not_installed';
+  const serviceActive = service?.state === 'running';
   return (
     <Dialog
       isOpen={profile !== undefined}
@@ -107,14 +117,14 @@ export function RuntimeHostManagementDialog(props: {
                   description={copy.uninstallConfirmBody}
                 />
               ) : null}
+              {uninstalledRoot ? (
+                <Banner
+                  status="success"
+                  title={copy.uninstallRetained(uninstalledRoot)}
+                />
+              ) : null}
               {service ? (
                 <>
-                  {result?.action === 'uninstall' && result.retainedStateRoot ? (
-                    <Banner
-                      status="success"
-                      title={copy.uninstallRetained(result.retainedStateRoot)}
-                    />
-                  ) : null}
                   <dl className="settingsRuntimeHostManagementFacts">
                     <Fact label={copy.serviceStatus} value={copy.serviceState[service.state]} />
                     <Fact label={copy.installedVersion} value={service.installedVersion ?? '—'} />
@@ -185,15 +195,15 @@ export function RuntimeHostManagementDialog(props: {
                     isDisabled={loading}
                     onClick={props.onClose}
                   />
-                  {profile?.transport.kind === 'ssh' ? (
+                  {profile?.transport.kind === 'ssh' && !uninstalled ? (
                     <Button
                       variant="secondary"
                       label={copy.repairService}
                       isDisabled={loading}
-                      onClick={() => props.onRepair(profile)}
+                      clickAction={() => run('repair')}
                     />
                   ) : null}
-                  {result && profile ? (
+                  {result && profile && !uninstalled ? (
                     <>
                       <Button
                         variant="secondary"
@@ -201,7 +211,7 @@ export function RuntimeHostManagementDialog(props: {
                         isDisabled={loading}
                         clickAction={() => run('status')}
                       />
-                      {service?.installed ? (
+                      {serviceInstalled ? (
                         <Button
                           variant="secondary"
                           label={copy.showLogs}
@@ -209,14 +219,14 @@ export function RuntimeHostManagementDialog(props: {
                           clickAction={() => run('logs')}
                         />
                       ) : null}
-                      {service?.installed && service.active ? (
+                      {serviceInstalled && serviceActive ? (
                         <Button
                           variant="primary"
                           label={copy.restartService}
                           isDisabled={loading}
                           clickAction={() => run('restart')}
                         />
-                      ) : service?.installed ? (
+                      ) : serviceInstalled ? (
                         <Button
                           variant="primary"
                           label={copy.startService}
@@ -224,15 +234,15 @@ export function RuntimeHostManagementDialog(props: {
                           clickAction={() => run('start')}
                         />
                       ) : null}
-                      {service?.installed ? (
-                        <Button
-                          variant="secondary"
-                          label={copy.uninstallService}
-                          isDisabled={loading}
-                          onClick={() => setConfirmingUninstall(true)}
-                        />
-                      ) : null}
                     </>
+                  ) : null}
+                  {profile && !uninstalled ? (
+                    <Button
+                      variant="secondary"
+                      label={copy.uninstallService}
+                      isDisabled={loading}
+                      onClick={() => setConfirmingUninstall(true)}
+                    />
                   ) : null}
                 </>
               )}

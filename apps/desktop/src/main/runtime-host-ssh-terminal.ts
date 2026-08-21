@@ -5,20 +5,23 @@ import type { IpcMain } from 'electron';
 import type { IPty } from 'node-pty';
 import { spawn as spawnPty } from 'node-pty';
 import {
-  decodeRuntimeHostServiceManagementFrame,
-  decodeRuntimeHostSetupFrame,
   normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,
-  RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
-  RUNTIME_HOST_SETUP_FRAME_PREFIX,
-  type RuntimeHostServiceManagementAction,
-  type RuntimeHostServiceManagementFrame,
-  type RuntimeHostSetupFrame,
   type RuntimeHostSshProcess,
   type RuntimeHostSshProcessFactory,
   type RuntimeHostSshTunnel,
   type RuntimeHostSshTunnelInput,
 } from '@maka/runtime-host/client';
+import {
+  decodeRuntimeHostServiceManagementFrame,
+  decodeRuntimeHostSetupFrame,
+  encodeRuntimeHostServiceManagementFrame,
+  RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
+  RUNTIME_HOST_SETUP_FRAME_PREFIX,
+  type RuntimeHostServiceManagementAction,
+  type RuntimeHostServiceManagementFrame,
+  type RuntimeHostSetupFrame,
+} from '@maka/runtime-host/operator';
 import type {
   DesktopRuntimeHostSshTerminalEvent,
   DesktopRuntimeHostSshTerminalSnapshot,
@@ -37,7 +40,8 @@ interface ActiveTerminal {
 
 const TERMINAL_REVEAL_DELAY_MS = 500;
 const TERMINAL_OUTPUT_MAX = 64 * 1024;
-const FRAME_PENDING_MAX = 128 * 1024;
+const SETUP_FRAME_PENDING_MAX = 20 * 1024;
+const MANAGEMENT_FRAME_PENDING_MAX = 128 * 1024;
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 const MANAGEMENT_TIMEOUT_MS = 2 * 60_000;
 const PROCESS_STOP_GRACE_MS = 2_000;
@@ -47,21 +51,25 @@ export interface DesktopRuntimeHostSshSetupInput {
   readonly sshPort?: number;
   readonly setupPackage: DesktopRuntimeHostSetupPackage;
   readonly principalId: string;
-  readonly expectedServiceId?: string;
-  readonly expectedRootPath?: string;
-  readonly expectedRootId?: string;
   readonly signal?: AbortSignal;
 }
 
 export interface DesktopRuntimeHostSshManagementInput {
   readonly destination: string;
   readonly sshPort?: number;
-  readonly setupPackage: DesktopRuntimeHostSetupPackage;
-  readonly principalId: string;
+  readonly operatorPath: string;
   readonly action: RuntimeHostServiceManagementAction;
-  readonly expectedServiceId: string;
-  readonly expectedRootPath: string;
-  readonly expectedRootId: string;
+  readonly expectedTarget: {
+    readonly serviceId: string;
+    readonly rootPath: string;
+    readonly rootId: string;
+  };
+  readonly rootPath?: string;
+  readonly websocketPort?: number;
+  readonly websocketPath?: string;
+  readonly retainManagedDeployment?: boolean;
+  readonly resumeManagedDeploymentCleanup?: boolean;
+  readonly allowMissingOperator?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -328,6 +336,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         let setupTerminal: ActiveTerminal | undefined;
         const filter = createFramedOutputFilter({
           prefix: RUNTIME_HOST_SETUP_FRAME_PREFIX,
+          pendingMaxBytes: SETUP_FRAME_PENDING_MAX,
           decode: decodeRuntimeHostSetupFrame,
           label: 'Remote Maka setup',
           onFrame: (frame) => {
@@ -377,25 +386,16 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     runServiceManagement: async (managementInput) => {
       if (closed) throw new Error('Runtime Host SSH terminal is closed');
       managementInput.signal?.throwIfAborted();
-      const destination = requireSetupDestination(managementInput.destination);
+      const destination = normalizeRuntimeHostSshDestination(managementInput.destination);
       const sshPort = managementInput.sshPort === undefined
         ? undefined
         : requireSetupPort(managementInput.sshPort);
-      const setupPackage = await prepareSetupPackage(
-        managementInput.setupPackage,
-        destination,
-        sshPort,
-        managementInput.principalId,
-        startTerminalProcess,
-        managementInput.signal,
-        input.processStopGraceMs,
-        dismissPresentation,
-      );
       let frame: RuntimeHostServiceManagementFrame | undefined;
       let frameFailure: Error | undefined;
       let managementTerminal: ActiveTerminal | undefined;
       const filter = createFramedOutputFilter({
         prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
+        pendingMaxBytes: MANAGEMENT_FRAME_PENDING_MAX,
         decode: decodeRuntimeHostServiceManagementFrame,
         label: 'Remote Runtime Host service management',
         onFrame: (next) => {
@@ -417,7 +417,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         sshRemoteCommandArgs(
           destination,
           sshPort,
-          runtimeHostServiceManagementRemoteCommand(setupPackage, managementInput),
+          runtimeHostServiceManagementRemoteCommand(managementInput),
         ),
         filter.push,
         true,
@@ -484,6 +484,7 @@ function cancellableUntilComplete(signal: AbortSignal | undefined): {
 
 function createFramedOutputFilter<Frame>(input: {
   readonly prefix: string;
+  readonly pendingMaxBytes: number;
   readonly decode: (line: string) => Frame | undefined;
   readonly label: string;
   readonly onFrame: (frame: Frame) => void;
@@ -513,7 +514,7 @@ function createFramedOutputFilter<Frame>(input: {
           if (finished) {
             input.onError(new Error(`${input.label} returned an incomplete result`));
             pending = '';
-          } else if (pending.length > FRAME_PENDING_MAX) {
+          } else if (pending.length > input.pendingMaxBytes) {
             input.onError(new Error(`${input.label} returned an oversized result`));
             pending = '';
             discardReservedLine = true;
@@ -697,10 +698,7 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
 
 function runtimeHostSetupRemoteCommand(
   setupPackage: PreparedSetupPackage,
-  input: Pick<
-    DesktopRuntimeHostSshSetupInput,
-    'principalId' | 'expectedServiceId' | 'expectedRootPath' | 'expectedRootId'
-  >,
+  input: Pick<DesktopRuntimeHostSshSetupInput, 'principalId'>,
 ): string {
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.principalId)) {
     throw new Error('Runtime Host setup principal is invalid');
@@ -714,36 +712,57 @@ function runtimeHostSetupRemoteCommand(
     'desktop-client',
     '--defer-pairing-commit',
     '--json',
-    ...managedServiceTargetArgs(input),
   ]);
 }
 
 function runtimeHostServiceManagementRemoteCommand(
-  setupPackage: PreparedSetupPackage,
   input: DesktopRuntimeHostSshManagementInput,
 ): string {
-  return runtimeHostPackageRemoteCommand(setupPackage, [
+  if (input.allowMissingOperator && input.action !== 'uninstall') {
+    throw new Error('A missing Runtime Host operator is only valid during uninstall recovery');
+  }
+  const command = [
+    input.operatorPath,
     'runtime-host',
     'service',
     input.action,
     '--framed',
-    ...managedServiceTargetArgs(input),
-  ]);
+    ...(input.rootPath ? ['--root', input.rootPath] : []),
+    ...(input.websocketPort === undefined
+      ? []
+      : ['--websocket-port', String(input.websocketPort)]),
+    ...(input.websocketPath ? ['--websocket-path', input.websocketPath] : []),
+    ...(input.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
+    ...(input.resumeManagedDeploymentCleanup
+      ? ['--resume-managed-deployment-cleanup']
+      : []),
+    ...managedServiceTargetArgs(input.expectedTarget),
+  ].map(quotePosix).join(' ');
+  const invocation = input.allowMissingOperator
+    ? `if [ ! -e ${quotePosix(input.operatorPath)} ]; then printf %s ${quotePosix(
+        encodeRuntimeHostServiceManagementFrame({
+          schemaVersion: 1,
+          kind: 'error',
+          action: 'uninstall',
+          error: {
+            code: 'operator_missing',
+            message: 'The managed Runtime Host operator is no longer installed',
+          },
+        }),
+      )}; else exec ${command}; fi`
+    : `exec ${command}`;
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
 }
 
 function managedServiceTargetArgs(input: {
-  readonly expectedServiceId?: string;
-  readonly expectedRootPath?: string;
-  readonly expectedRootId?: string;
+  readonly serviceId: string;
+  readonly rootPath: string;
+  readonly rootId: string;
 }): string[] {
-  if (!input.expectedServiceId && !input.expectedRootPath && !input.expectedRootId) return [];
-  if (!input.expectedServiceId || !input.expectedRootPath || !input.expectedRootId) {
-    throw new Error('Managed Runtime Host service identity is incomplete');
-  }
   return [
-    '--expected-service-id', input.expectedServiceId,
-    '--expected-root-path', input.expectedRootPath,
-    '--expected-root-id', input.expectedRootId,
+    '--expected-service-id', input.serviceId,
+    '--expected-root-path', input.rootPath,
+    '--expected-root-id', input.rootId,
   ];
 }
 

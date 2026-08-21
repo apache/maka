@@ -6,7 +6,7 @@ import {
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceSummary,
-} from '@maka/runtime-host/client';
+} from '@maka/runtime-host/operator';
 import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
@@ -106,13 +106,9 @@ function formatHumanResult(result: RuntimeHostManagedServiceResult): string {
 function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServiceManagementFrame {
   const config = result.service.config;
   const service: RuntimeHostServiceSummary = {
-    manager: result.service.manager,
     platform: process.platform,
     arch: process.arch,
     osRelease: release(),
-    installed: result.service.installed,
-    enabled: result.service.enabled,
-    active: result.service.active,
     state: result.service.state,
     pid: result.service.pid,
     lastExitCode: result.service.lastExitCode,

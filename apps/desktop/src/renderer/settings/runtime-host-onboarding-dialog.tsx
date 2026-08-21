@@ -3,22 +3,17 @@ import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Text } from '@astryxdesign/core/Text';
 import { Banner, Button, FormLayout, Spinner, TextInput, useUiLocale } from '@maka/ui';
-import type {
-  DesktopRuntimeHostOnboardingInput,
-  DesktopRuntimeHostOnboardingSnapshot,
-} from '../../preload/bridge-contract.js';
+import type { DesktopRuntimeHostOnboardingSnapshot } from '../../preload/bridge-contract.js';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 
 export function RuntimeHostOnboardingDialog(props: {
   readonly isOpen: boolean;
-  readonly initialInput?: DesktopRuntimeHostOnboardingInput;
   readonly onClose: () => void;
   readonly onRemoteHostAdded: (profileId: string) => void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
   const revision = useRef(-1);
-  const wasOpen = useRef(false);
   const [snapshot, setSnapshot] = useState<DesktopRuntimeHostOnboardingSnapshot>({
     kind: 'idle',
     revision: 0,
@@ -26,16 +21,6 @@ export function RuntimeHostOnboardingDialog(props: {
   const [name, setName] = useState('');
   const [destination, setDestination] = useState('');
   const [sshPort, setSshPort] = useState('');
-  const isRepair = props.initialInput?.repairProfileId !== undefined;
-
-  useEffect(() => {
-    if (props.isOpen && !wasOpen.current) {
-      setName(props.initialInput?.name ?? '');
-      setDestination(props.initialInput?.destination ?? '');
-      setSshPort(props.initialInput?.sshPort?.toString() ?? '');
-    }
-    wasOpen.current = props.isOpen;
-  }, [props.initialInput, props.isOpen]);
 
   useEffect(() => {
     if (!props.isOpen) return;
@@ -61,9 +46,6 @@ export function RuntimeHostOnboardingDialog(props: {
       destination: destination.trim(),
       ...(name.trim() ? { name: name.trim() } : {}),
       ...(sshPort.trim() ? { sshPort: Number(sshPort) } : {}),
-      ...(props.initialInput?.repairProfileId
-        ? { repairProfileId: props.initialInput.repairProfileId }
-        : {}),
     });
     if (next.revision > revision.current) {
       revision.current = next.revision;
@@ -125,21 +107,21 @@ export function RuntimeHostOnboardingDialog(props: {
                   <TextInput
                     label={copy.setupName}
                     value={name}
-                    isDisabled={running || isRepair}
+                    isDisabled={running}
                     onChange={setName}
                   />
                   <TextInput
                     label={copy.sshDestination}
                     value={destination}
                     placeholder="user@host.example"
-                    isDisabled={running || isRepair}
+                    isDisabled={running}
                     onChange={setDestination}
                   />
                   <TextInput
                     label={copy.setupSshPort}
                     value={sshPort}
                     placeholder="22"
-                    isDisabled={running || isRepair}
+                    isDisabled={running}
                     onChange={setSshPort}
                   />
                 </>
@@ -190,7 +172,7 @@ export function RuntimeHostOnboardingDialog(props: {
                   <Button variant="secondary" label={copy.setupCancel} onClick={close} />
                   <Button
                     variant="primary"
-                    label={isRepair ? copy.repairService : copy.setupConnect}
+                    label={copy.setupConnect}
                     isDisabled={!canStart}
                     clickAction={start}
                   />

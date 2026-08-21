@@ -30,7 +30,6 @@ import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.js";
 import { RuntimeHostOnboardingDialog } from './runtime-host-onboarding-dialog.js';
 import { RuntimeHostManagementDialog } from './runtime-host-management-dialog.js';
-import type { DesktopRuntimeHostOnboardingInput } from '../../preload/bridge-contract.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
 
@@ -62,7 +61,6 @@ export function RuntimeHostProfilesSection(props: {
   >();
   const [showAdd, setShowAdd] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [onboardingInput, setOnboardingInput] = useState<DesktopRuntimeHostOnboardingInput>();
   const [managedProfile, setManagedProfile] = useState<RemoteRuntimeHostProfile>();
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
@@ -249,7 +247,6 @@ export function RuntimeHostProfilesSection(props: {
               label={copy.addComputer}
               isDisabled={switching}
               onClick={() => {
-                setOnboardingInput(undefined);
                 setShowOnboarding(true);
               }}
             />
@@ -396,7 +393,7 @@ export function RuntimeHostProfilesSection(props: {
                       label={copy.moreActions(profile.name)}
                       size="sm"
                       items={[
-                        ...(profile.transport.kind === "ssh" && profile.managedService
+                        ...(profile.transport.kind === "ssh" && entry.managedService
                           ? [{
                               label: copy.manage,
                               isDisabled: switching,
@@ -423,29 +420,17 @@ export function RuntimeHostProfilesSection(props: {
       </SettingsSection>
       <RuntimeHostOnboardingDialog
         isOpen={showOnboarding}
-        initialInput={onboardingInput}
         onClose={() => {
           setShowOnboarding(false);
-          setOnboardingInput(undefined);
           void reload();
         }}
         onRemoteHostAdded={props.onRemoteHostAdded}
       />
       <RuntimeHostManagementDialog
         profile={managedProfile}
-        onClose={() => setManagedProfile(undefined)}
-        onRepair={(profile) => {
-          if (profile.transport.kind !== 'ssh') return;
+        onClose={() => {
           setManagedProfile(undefined);
-          setOnboardingInput({
-            name: profile.name,
-            destination: profile.transport.destination,
-            ...(profile.transport.sshPort === undefined
-              ? {}
-              : { sshPort: profile.transport.sshPort }),
-            repairProfileId: profile.id,
-          });
-          setShowOnboarding(true);
+          void reload();
         }}
       />
     </>

@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -7,7 +16,7 @@ import {
   decodeRuntimeHostSetupFrame,
   encodeRuntimeHostSetupFrame,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
-} from '@maka/runtime-host/client';
+} from '@maka/runtime-host/operator';
 import {
   prepareRuntimeHostManagedPackageDeployment,
   resolveRuntimeHostManagedDeploymentRoot,
@@ -123,7 +132,8 @@ test('managed setup converges on one exact package and verified Client pairing',
   assert.equal(installCount, 3);
   assert.equal(pairCount, 3);
   assert.deepEqual(revokedCredentialIds, ['credential-3']);
-  assert.ok(installedCliPath.startsWith(deploymentRoot));
+  const canonicalDeploymentRoot = await realpath(deploymentRoot);
+  assert.ok(installedCliPath.startsWith(canonicalDeploymentRoot));
   assert.equal(
     outputs.some((output) => output.includes('secret-')),
     false,
@@ -132,11 +142,15 @@ test('managed setup converges on one exact package and verified Client pairing',
   assert.equal(frames.filter((frame) => frame?.kind === 'complete').length, 2);
   const complete = frames.find((frame) => frame?.kind === 'complete');
   assert.equal(complete?.kind === 'complete' ? complete.credential : undefined, 'secret-1');
+  const operatorPath = complete?.kind === 'complete' ? complete.operatorPath : undefined;
+  assert.equal(operatorPath, join(canonicalDeploymentRoot, 'operator'));
+  assert.match(await readFile(operatorPath!, 'utf8'), /versions\/0\.2\.0\/dist\/cli\.js/u);
 
-  assert.deepEqual(await readdir(join(deploymentRoot, 'versions')), ['0.2.0']);
+  assert.deepEqual(await readdir(join(canonicalDeploymentRoot, 'versions')), ['0.2.0']);
   assert.equal(
-    JSON.parse(await readFile(join(deploymentRoot, 'versions', '0.2.0', 'package.json'), 'utf8'))
-      .version,
+    JSON.parse(
+      await readFile(join(canonicalDeploymentRoot, 'versions', '0.2.0', 'package.json'), 'utf8'),
+    ).version,
     '0.2.0',
   );
 });

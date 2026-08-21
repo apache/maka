@@ -1,14 +1,14 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { connectRemoteRuntimeHost } from '@maka/runtime-host/client';
 import {
-  connectRemoteRuntimeHost,
   encodeRuntimeHostSetupFrame,
   RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
-} from '@maka/runtime-host/client';
+} from '@maka/runtime-host/operator';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -31,6 +31,7 @@ import {
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceResult,
+  type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
 
@@ -49,9 +50,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
-  readonly expectedServiceId?: string;
-  readonly expectedRootPath?: string;
-  readonly expectedRootId?: string;
+  readonly expectedTarget?: RuntimeHostManagedServiceTarget;
 }
 
 interface RuntimeHostSetupDeps {
@@ -122,9 +121,7 @@ async function runRuntimeHostSetupLocked(
     defaultRootPath: options.defaultRootPath,
     nodePath: process.execPath,
     cliPath: join(options.sourcePackageRoot, 'dist', 'cli.js'),
-    ...(options.expectedServiceId ? { expectedServiceId: options.expectedServiceId } : {}),
-    ...(options.expectedRootPath ? { expectedRootPath: options.expectedRootPath } : {}),
-    ...(options.expectedRootId ? { expectedRootId: options.expectedRootId } : {}),
+    ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
   } as const;
   const status = await deps.manageService({ ...common, action: 'status' }, backend);
   await assertCompatibleExistingVersion(status, options.version);
@@ -165,6 +162,7 @@ async function runRuntimeHostSetupLocked(
       'Managed Runtime Host service did not become ready',
     );
   }
+  await deployment.commit();
 
   emit({ kind: 'progress', phase: 'pairing_client' });
   let paired: Awaited<ReturnType<typeof prepareRuntimeHostAccessCredential>>;
@@ -197,11 +195,11 @@ async function runRuntimeHostSetupLocked(
       rootId: paired.rootId,
       credential: paired.credential,
     });
-    await deployment.commit().catch(() => undefined);
     emit({
       kind: 'complete',
       version: deployment.version,
       serviceId,
+      operatorPath: deployment.operatorPath,
       rootPath: config.rootPath,
       rootId: paired.rootId,
       endpoint,
@@ -230,7 +228,13 @@ async function assertCompatibleExistingVersion(
   status: RuntimeHostManagedServiceResult,
   version: string,
 ): Promise<void> {
-  if (!status.service.config) return;
+  if (!status.service.config) {
+    if (!status.service.installed) return;
+    throw new RuntimeHostSetupError(
+      'existing_installation_unknown',
+      'The installed Runtime Host configuration is unavailable; repair it before setup',
+    );
+  }
   const existingVersion = status.service.installedVersion;
   if (!existingVersion) {
     throw new RuntimeHostSetupError(

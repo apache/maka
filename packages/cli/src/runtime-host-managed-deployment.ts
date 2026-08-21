@@ -1,5 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
+import {
+  cp,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+} from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -20,6 +31,7 @@ export interface RuntimeHostManagedPackageDeployment {
   readonly version: string;
   readonly root: string;
   readonly cliPath: string;
+  readonly operatorPath: string;
   commit(): Promise<void>;
   rollback(): Promise<void>;
 }
@@ -38,7 +50,9 @@ export async function prepareRuntimeHostManagedPackageDeployment(
 ): Promise<RuntimeHostManagedPackageDeployment> {
   assertVersion(input.version);
   const sourcePackageRoot = await validatePackage(input.sourcePackageRoot, input.version);
-  const deploymentRoot = resolveRuntimeHostManagedDeploymentRoot(input.serviceId, options);
+  const requestedDeploymentRoot = resolveRuntimeHostManagedDeploymentRoot(input.serviceId, options);
+  await mkdir(join(requestedDeploymentRoot, 'versions'), { recursive: true, mode: 0o700 });
+  const deploymentRoot = await realpath(requestedDeploymentRoot);
   const versionsRoot = join(deploymentRoot, 'versions');
   const packageRoot = join(versionsRoot, input.version);
   const cliPath = join(packageRoot, 'dist', 'cli.js');
@@ -47,7 +61,6 @@ export async function prepareRuntimeHostManagedPackageDeployment(
     return deployment(input.version, deploymentRoot, packageRoot, cliPath, false);
   }
 
-  await mkdir(versionsRoot, { recursive: true, mode: 0o700 });
   await removeAbandonedStagingPackages(versionsRoot, input.version);
   const stagingRoot = join(versionsRoot, `.${input.version}.${randomUUID()}.tmp`);
   try {
@@ -136,6 +149,14 @@ export function isRuntimeHostManagedDeploymentCli(
   );
 }
 
+export function resolveRuntimeHostManagedDeploymentForCli(
+  serviceId: string,
+  cliPath: string,
+): string | undefined {
+  const root = dirname(dirname(dirname(dirname(resolve(cliPath)))));
+  return isRuntimeHostManagedDeploymentCli(root, serviceId, cliPath) ? root : undefined;
+}
+
 export async function removeRuntimeHostManagedDeployment(
   root: string,
   serviceId: string,
@@ -165,6 +186,12 @@ export async function removeRuntimeHostManagedDeployment(
       'Refusing to remove a redirected managed Runtime Host deployment path',
     );
   }
+  const operatorPath = join(requestedRoot, 'operator');
+  for (const entry of await readdir(requestedRoot)) {
+    if (entry === 'operator') continue;
+    await rm(join(requestedRoot, entry), { recursive: true, force: true });
+  }
+  await rm(operatorPath, { force: true });
   await rm(requestedRoot, { recursive: true, force: true });
 }
 
@@ -212,14 +239,50 @@ function deployment(
   cliPath: string,
   created: boolean,
 ): RuntimeHostManagedPackageDeployment {
+  const operatorPath = join(root, 'operator');
   return {
     version,
     root,
     cliPath,
-    commit: () => pruneInactiveDevelopmentPackages(dirname(packageRoot), version),
+    operatorPath,
+    commit: async () => {
+      await writeOperatorLauncher(operatorPath, process.execPath, cliPath);
+      await pruneInactiveDevelopmentPackages(dirname(packageRoot), version);
+    },
     rollback: () =>
       created ? rm(packageRoot, { recursive: true, force: true }) : Promise.resolve(),
   };
+}
+
+async function writeOperatorLauncher(
+  path: string,
+  nodePath: string,
+  cliPath: string,
+): Promise<void> {
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  const contents = `#!/bin/sh\nexec ${quotePosix(nodePath)} ${quotePosix(cliPath)} "$@"\n`;
+  try {
+    const file = await open(temporaryPath, 'wx', 0o700);
+    try {
+      await file.writeFile(contents, 'utf8');
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(temporaryPath, path);
+    const parent = await open(dirname(path), 'r');
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+
+function quotePosix(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 async function pruneInactiveDevelopmentPackages(

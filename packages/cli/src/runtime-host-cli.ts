@@ -4,6 +4,7 @@ import {
   PROJECT_DIRECTORY_MAX_ROOTS,
   PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
 } from '@maka/runtime-host/protocol';
+import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
 
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };
 
@@ -33,9 +34,7 @@ export type RuntimeHostCliCommand =
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
       websocketPath?: string;
-      expectedServiceId?: string;
-      expectedRootPath?: string;
-      expectedRootId?: string;
+      expectedTarget?: RuntimeHostManagedServiceTarget;
     }
   | {
       kind: 'runtime-host-service-manage';
@@ -46,9 +45,9 @@ export type RuntimeHostCliCommand =
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
       websocketPath?: string;
-      expectedServiceId?: string;
-      expectedRootPath?: string;
-      expectedRootId?: string;
+      expectedTarget?: RuntimeHostManagedServiceTarget;
+      retainManagedDeployment?: true;
+      resumeManagedDeploymentCleanup?: true;
     }
   | {
       kind: 'runtime-host-access-issue';
@@ -168,15 +167,43 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     );
   }
 
+  let retainManagedDeployment = false;
+  let resumeManagedDeploymentCleanup = false;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: action === 'install',
     allowFramed: true,
+    ...(action === 'uninstall'
+      ? {
+          flagOptions: {
+            '--retain-managed-deployment': () => {
+              if (retainManagedDeployment) return error('Duplicate --retain-managed-deployment');
+              retainManagedDeployment = true;
+            },
+            '--resume-managed-deployment-cleanup': () => {
+              if (resumeManagedDeploymentCleanup) {
+                return error('Duplicate --resume-managed-deployment-cleanup');
+              }
+              resumeManagedDeploymentCleanup = true;
+            },
+          },
+        }
+      : {}),
   });
   if ('kind' in options) return options;
+  if (retainManagedDeployment && resumeManagedDeploymentCleanup) {
+    return error(
+      '--retain-managed-deployment cannot be combined with --resume-managed-deployment-cleanup',
+    );
+  }
+  if (resumeManagedDeploymentCleanup && !options.expectedTarget) {
+    return error('--resume-managed-deployment-cleanup requires the complete expected target');
+  }
   return {
     kind: 'runtime-host-service-manage',
     action,
     ...options,
+    ...(retainManagedDeployment ? { retainManagedDeployment: true } : {}),
+    ...(resumeManagedDeploymentCleanup ? { resumeManagedDeploymentCleanup: true } : {}),
   };
 }
 
@@ -187,9 +214,7 @@ interface ManagedServiceOptions {
   readonly projectDirectoryRoots?: { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
-  readonly expectedServiceId?: string;
-  readonly expectedRootPath?: string;
-  readonly expectedRootId?: string;
+  readonly expectedTarget?: RuntimeHostManagedServiceTarget;
 }
 
 function parseManagedServiceOptions(
@@ -315,9 +340,15 @@ function parseManagedServiceOptions(
     ...(projectDirectoryRoots.length > 0 ? { projectDirectoryRoots } : {}),
     ...(websocketPort === undefined ? {} : { websocketPort }),
     ...(websocketPath === undefined ? {} : { websocketPath }),
-    ...(expectedServiceId === undefined ? {} : { expectedServiceId }),
-    ...(expectedRootPath === undefined ? {} : { expectedRootPath }),
-    ...(expectedRootId === undefined ? {} : { expectedRootId }),
+    ...(expectedServiceId === undefined
+      ? {}
+      : {
+          expectedTarget: {
+            serviceId: expectedServiceId,
+            rootPath: expectedRootPath!,
+            rootId: expectedRootId!,
+          },
+        }),
   };
 }
 

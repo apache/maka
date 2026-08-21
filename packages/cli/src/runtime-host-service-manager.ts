@@ -10,15 +10,14 @@ import {
   PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
-import {
-  connectExistingRuntimeHost,
-  RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,
-} from '@maka/runtime-host/client';
+import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
+import { RUNTIME_HOST_SERVICE_LOG_MAX_BYTES } from '@maka/runtime-host/operator';
 import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import { resolveExistingStorageRoot } from '@maka/storage/root-authority';
 import {
   isRuntimeHostManagedDeploymentCli,
   removeRuntimeHostManagedDeployment,
+  resolveRuntimeHostManagedDeploymentForCli,
 } from './runtime-host-managed-deployment.js';
 
 const SERVICE_CONFIG_FILE = 'runtime-host-service.json';
@@ -109,11 +108,17 @@ export interface RuntimeHostManagedServiceInput {
   readonly websocketPort?: number;
   readonly websocketPath?: string;
   readonly managedDeploymentRoot?: string;
+  readonly retainManagedDeployment?: boolean;
+  readonly resumeManagedDeploymentCleanup?: boolean;
   readonly nodePath: string;
   readonly cliPath: string;
-  readonly expectedServiceId?: string;
-  readonly expectedRootPath?: string;
-  readonly expectedRootId?: string;
+  readonly expectedTarget?: RuntimeHostManagedServiceTarget;
+}
+
+export interface RuntimeHostManagedServiceTarget {
+  readonly serviceId: string;
+  readonly rootPath: string;
+  readonly rootId: string;
 }
 
 interface RuntimeHostServiceManagerDeps {
@@ -179,22 +184,16 @@ async function manageRuntimeHostServiceLocked(
   configPath: string,
 ): Promise<RuntimeHostManagedServiceResult> {
   const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
-  const hasExpectedTarget =
-    input.expectedServiceId !== undefined ||
-    input.expectedRootPath !== undefined ||
-    input.expectedRootId !== undefined;
-  if (
-    hasExpectedTarget &&
-    (!input.expectedServiceId || !input.expectedRootPath || !input.expectedRootId)
-  ) {
+  if (input.resumeManagedDeploymentCleanup && !input.expectedTarget) {
     throw new RuntimeHostServiceManagerError(
       'target_mismatch',
-      'The managed Runtime Host service requires a complete expected target identity',
+      'Managed Runtime Host deployment cleanup requires the expected service identity',
     );
   }
   if (
-    input.expectedServiceId !== undefined &&
-    (!/^[a-f0-9]{64}$/u.test(input.expectedServiceId) || input.expectedServiceId !== serviceId)
+    input.expectedTarget &&
+    (!/^[a-f0-9]{64}$/u.test(input.expectedTarget.serviceId) ||
+      input.expectedTarget.serviceId !== serviceId)
   ) {
     throw new RuntimeHostServiceManagerError(
       'target_mismatch',
@@ -202,12 +201,9 @@ async function manageRuntimeHostServiceLocked(
     );
   }
   if (input.action === 'install') {
-    const expectedRootPath = await resolveExpectedServiceRoot(
-      await readServiceConfig(configPath),
-      input,
-    );
-    await backend.preflightInstall();
     const previous = await readServiceConfigForRepair(configPath);
+    const expectedRootPath = await resolveExpectedServiceRoot(previous, input);
+    await backend.preflightInstall();
     const config = await prepareServiceConfig(
       expectedRootPath ? { ...input, rootPath: expectedRootPath } : input,
       previous,
@@ -236,21 +232,30 @@ async function manageRuntimeHostServiceLocked(
   }
 
   if (input.action === 'uninstall') {
-    const before = await readServiceConfigForRepair(configPath);
-    await resolveExpectedServiceRoot(before, input);
+    const { config: before, invalid: invalidConfig } =
+      await readServiceConfigForUninstall(configPath);
+    const serviceStateAlreadyRemoved = before === null && !invalidConfig;
+    const expectedRootPath =
+      serviceStateAlreadyRemoved &&
+      (input.retainManagedDeployment || input.resumeManagedDeploymentCleanup)
+        ? input.expectedTarget?.rootPath
+        : await resolveExpectedServiceRoot(before, input);
+    const managedDeploymentRoot =
+      before?.managedDeploymentRoot ??
+      resolveRuntimeHostManagedDeploymentForCli(serviceId, input.cliPath);
     await backend.uninstall();
-    if (before?.managedDeploymentRoot) {
+    await removeRuntimeHostServiceFile(configPath, 'service config');
+    if (managedDeploymentRoot && !input.retainManagedDeployment) {
       try {
-        await removeRuntimeHostManagedDeployment(before.managedDeploymentRoot, serviceId);
+        await removeRuntimeHostManagedDeployment(managedDeploymentRoot, serviceId);
       } catch (error) {
         throw new RuntimeHostServiceManagerError(
           'uninstall_incomplete',
-          `Unable to remove the managed Runtime Host deployment at ${before.managedDeploymentRoot}`,
+          `Unable to remove the managed Runtime Host deployment at ${managedDeploymentRoot}`,
           { cause: error },
         );
       }
     }
-    await removeRuntimeHostServiceFile(configPath, 'service config');
     const service = await readServiceStatus(configPath, backend);
     if (service.installed || service.active || service.enabled || service.config !== null) {
       throw new RuntimeHostServiceManagerError(
@@ -258,7 +263,7 @@ async function manageRuntimeHostServiceLocked(
         `Runtime Host service still has managed state: ${service.state}`,
       );
     }
-    return result(input.action, service, before?.rootPath);
+    return result(input.action, service, before?.rootPath ?? expectedRootPath);
   }
 
   if (input.action === 'logs') {
@@ -289,14 +294,14 @@ async function manageRuntimeHostServiceLocked(
 
 async function resolveExpectedServiceRoot(
   config: RuntimeHostManagedServiceConfig | null,
-  input: Pick<RuntimeHostManagedServiceInput, 'expectedRootId' | 'expectedRootPath'>,
+  input: Pick<RuntimeHostManagedServiceInput, 'expectedTarget'>,
 ): Promise<string | undefined> {
-  if (!input.expectedRootId || !input.expectedRootPath) return undefined;
+  if (!input.expectedTarget) return undefined;
   try {
     const root = await resolveExistingStorageRoot({
-      path: input.expectedRootPath,
+      path: input.expectedTarget.rootPath,
       kind: 'interactive',
-      expectedRootId: input.expectedRootId,
+      expectedRootId: input.expectedTarget.rootId,
     });
     if (config && resolve(config.rootPath) !== root.canonicalPath) {
       throw new Error('The service config points to a different State Root path');
@@ -391,7 +396,9 @@ async function prepareServiceConfig(
     input.websocketPort ?? previous?.websocket.port ?? (await deps.allocateLoopbackPort());
   const websocketPath = input.websocketPath ?? previous?.websocket.path ?? DEFAULT_WEBSOCKET_PATH;
   const requestedManagedDeploymentRoot =
-    input.managedDeploymentRoot ?? previous?.managedDeploymentRoot;
+    input.managedDeploymentRoot ??
+    previous?.managedDeploymentRoot ??
+    resolveRuntimeHostManagedDeploymentForCli(serviceId, cliPath);
   const managedDeploymentRoot = requestedManagedDeploymentRoot
     ? await realpath(requestedManagedDeploymentRoot).catch((error) => {
         throw new RuntimeHostServiceManagerError(
@@ -495,6 +502,20 @@ async function readServiceConfigForRepair(
   } catch (error) {
     if (error instanceof RuntimeHostServiceManagerError && error.code === 'invalid_config') {
       return null;
+    }
+    throw error;
+  }
+}
+
+async function readServiceConfigForUninstall(path: string): Promise<{
+  readonly config: RuntimeHostManagedServiceConfig | null;
+  readonly invalid: boolean;
+}> {
+  try {
+    return { config: await readServiceConfig(path), invalid: false };
+  } catch (error) {
+    if (error instanceof RuntimeHostServiceManagerError && error.code === 'invalid_config') {
+      return { config: null, invalid: true };
     }
     throw error;
   }

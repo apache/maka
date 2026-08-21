@@ -5,11 +5,13 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { IPty } from 'node-pty';
 import {
+  type RuntimeHostSshProcessFactory,
+} from '@maka/runtime-host/client';
+import {
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
-  type RuntimeHostSshProcessFactory,
-} from '@maka/runtime-host/client';
+} from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
 
 test('keeps a connecting SSH prompt observable across renderer presentation changes', async () => {
@@ -95,6 +97,7 @@ test('keeps setup credentials out of the interactive terminal projection', async
     kind: 'complete',
     version: '0.1.0-beta.1',
     serviceId: 'b'.repeat(64),
+    operatorPath: '/home/operator/.local/share/maka/operator',
     rootPath: '/home/operator/.config/Maka/workspaces/default',
     rootId: 'a'.repeat(64),
     endpoint: 'ws://127.0.0.1:7443/runtime-host',
@@ -158,6 +161,9 @@ test('keeps a completed setup process owned until it exits', async () => {
     sequence: 0,
     kind: 'complete',
     version: '1.2.3',
+    serviceId: 'b'.repeat(64),
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    rootPath: '/home/operator/.config/Maka/workspaces/default',
     rootId: 'a'.repeat(64),
     endpoint: 'ws://127.0.0.1:7443/runtime-host',
     credentialId: 'credential-1',
@@ -200,14 +206,18 @@ test('reads a framed service result without projecting it into the SSH terminal'
   const harness = createHarness('pending');
   const management = harness.terminal.runServiceManagement({
     destination: 'operator@example.com',
-    setupPackage: { kind: 'npm', specifier: 'maka-agent@1.2.3' },
-    principalId: 'desktop:stable-client',
+    operatorPath: '/home/operator/.local/share/maka/operator',
     action: 'status',
-    expectedServiceId: 'b'.repeat(64),
-    expectedRootPath: '/home/operator/.config/Maka/workspaces/default',
-    expectedRootId: 'a'.repeat(64),
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/home/operator/.config/Maka/workspaces/default',
+      rootId: 'a'.repeat(64),
+    },
   });
   await waitFor(() => harness.pty.hasDataListener());
+  const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(remoteCommand, /\.local\/share\/maka\/operator/u);
+  assert.doesNotMatch(remoteCommand, /npx|maka-agent@/u);
   harness.pty.emitData('Password: ');
   harness.pty.emitData(
     encodeRuntimeHostServiceManagementFrame({
@@ -215,13 +225,9 @@ test('reads a framed service result without projecting it into the SSH terminal'
       kind: 'result',
       action: 'status',
       service: {
-        manager: 'systemd_user',
         platform: 'linux',
         arch: 'x64',
         osRelease: '6.8.0',
-        installed: true,
-        enabled: true,
-        active: true,
         state: 'running',
         pid: 42,
         lastExitCode: 0,
@@ -242,11 +248,47 @@ test('reads a framed service result without projecting it into the SSH terminal'
   await harness.terminal.close();
 });
 
-test('does not launch a management process after the terminal owner closes', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-closed-management-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const archive = join(directory, 'maka-agent-development.tgz');
-  await writeFile(archive, 'development package');
+test('recognizes an already removed operator while resuming uninstall', async () => {
+  const harness = createHarness('pending');
+  const management = harness.terminal.runServiceManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'uninstall',
+    allowMissingOperator: true,
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+    },
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /if \[ ! -e/u);
+  harness.pty.emitData(
+    encodeRuntimeHostServiceManagementFrame({
+      schemaVersion: 1,
+      kind: 'error',
+      action: 'uninstall',
+      error: {
+        code: 'operator_missing',
+        message: 'operator is absent',
+      },
+    }),
+  );
+  harness.pty.exit(0);
+
+  assert.deepEqual(await management, {
+    schemaVersion: 1,
+    kind: 'error',
+    action: 'uninstall',
+    error: {
+      code: 'operator_missing',
+      message: 'operator is absent',
+    },
+  });
+  await harness.terminal.close();
+});
+
+test('does not launch a management process after the terminal owner closes', async () => {
   const launches: unknown[] = [];
   const terminal = createDesktopRuntimeHostSshTerminal({
     ipcMain: { handle: () => undefined, removeHandler: () => undefined },
@@ -256,18 +298,20 @@ test('does not launch a management process after the terminal owner closes', asy
       return new FakePty() as unknown as IPty;
     }) as typeof import('node-pty').spawn,
   });
-  const management = terminal.runServiceManagement({
-    destination: 'operator@example.com',
-    setupPackage: { kind: 'development_archive', path: archive },
-    principalId: 'desktop:stable-client',
-    action: 'status',
-    expectedServiceId: 'b'.repeat(64),
-    expectedRootPath: '/srv/maka',
-    expectedRootId: 'a'.repeat(64),
-  });
-
   await terminal.close();
-  await assert.rejects(management, /terminal is closed/u);
+  await assert.rejects(
+    terminal.runServiceManagement({
+      destination: 'operator@example.com',
+      operatorPath: '/home/operator/.local/share/maka/operator',
+      action: 'status',
+      expectedTarget: {
+        serviceId: 'b'.repeat(64),
+        rootPath: '/srv/maka',
+        rootId: 'a'.repeat(64),
+      },
+    }),
+    /terminal is closed/u,
+  );
   assert.equal(launches.length, 0);
 });
 

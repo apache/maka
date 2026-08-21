@@ -40,6 +40,9 @@ const SETUP_FRAME_SCHEMA = z.discriminatedUnion('kind', [
       kind: z.literal('complete'),
       version: boundedString(128),
       serviceId: z.string().regex(/^[a-f0-9]{64}$/u),
+      operatorPath: boundedString(4 * 1024).refine(
+        (value) => value.startsWith('/') && !/[\u0000-\u001f\u007f]/u.test(value),
+      ),
       rootPath: boundedString(4 * 1024).refine((value) => !/[\u0000-\u001f\u007f]/u.test(value)),
       rootId: z.string().regex(/^[a-f0-9]{64}$/u),
       endpoint: boundedString(SETUP_FIELD_MAX_BYTES).refine(

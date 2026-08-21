@@ -30,13 +30,9 @@ const boundedNonEmptyString = (maxBytes: number) =>
 
 const SERVICE_SUMMARY_SCHEMA = z
   .object({
-    manager: z.enum(['systemd_user', 'launch_agent']),
     platform: boundedNonEmptyString(FIELD_MAX_BYTES),
     arch: boundedNonEmptyString(FIELD_MAX_BYTES),
     osRelease: boundedNonEmptyString(FIELD_MAX_BYTES),
-    installed: z.boolean(),
-    enabled: z.boolean(),
-    active: z.boolean(),
     state: z.enum(SERVICE_STATES),
     pid: z.number().int().positive().nullable(),
     lastExitCode: z.number().int().nonnegative().nullable(),
