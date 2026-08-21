@@ -109,7 +109,7 @@ function createActionsDeps() {
     upsertSessionSummary: () => undefined,
     newChatModel: null,
     pendingNewChatThinkingLevel: null,
-    newChatPermissionMode: 'ask' as const,
+    newChatPermissionChoice: undefined,
     newChatCollaborationMode: 'agent' as const,
     newChatOrchestrationMode: 'default' as const,
     newTaskTarget: { profileId: 'local', hostId: 'host-local', projectId: null },

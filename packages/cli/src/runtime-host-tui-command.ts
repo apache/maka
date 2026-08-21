@@ -88,7 +88,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       connectionSlug: context.connectionSlug,
       providerType: context.providerType,
       modelContextWindow: context.modelContextWindow,
-      permissionMode: 'ask',
+      permissionMode: context.prospectivePermissionMode,
       turnActivity: context.turnActivity,
       listSkills: context.listSkills,
       agentGraphHistory: context.agentGraphHistory,

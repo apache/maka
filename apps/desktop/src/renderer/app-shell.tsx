@@ -107,6 +107,7 @@ import {
   stageCompanionQuote,
 } from './quote-companion-panel-state';
 import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from './new-task-reload-intent';
+import { useNewTaskChoice } from './use-new-task-choice';
 import { NEW_TASK_PENDING_KEY } from './app-shell-pending-attachments';
 import { sideChatTitleFromPrompt } from './side-chat-command';
 import { parseDesktopSlashCommand } from './desktop-slash-command';
@@ -461,6 +462,8 @@ function AppShellContent({
   // removed — so there is no pending state here, only the registry refs.
   const queuedCollaborationModeBySession = useRef(new Map<string, boolean>());
   const queuedOrchestrationModeBySession = useRef(new Map<string, OrchestrationMode>());
+  const [newTaskPermissionChoice, setNewTaskPermissionChoice] =
+    useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
     sessionId: string;
@@ -600,30 +603,16 @@ function AppShellContent({
   const terminalPanelCopy = desktopConversationCopy.terminalPanel;
   const workbarCopy = desktopConversationCopy.workbar;
   /**
-   * What a new task starts in, read straight from the Host that would run it.
+   * What this draft would start in: the user's choice for it if they made one,
+   * otherwise the Host default it will inherit by omission.
    *
-   * There is no draft-local copy: before a Session exists, "the mode this
-   * task will start in" and "the configured default" are the same fact, and
-   * a second copy of it could only be the stale one. Picking a mode here
-   * therefore writes the setting — which is also why the choice survives to
-   * the next new task instead of lasting one draft.
+   * The choice stays local to the draft. Picking Full access for one task is
+   * not a statement about every later task, so it is sent once on create and
+   * never written back to `chatDefaults` — the Settings surface owns that.
    */
   const newTaskPermissionMode =
-    newTask.selectedHost?.chatDefaults.permissionMode ?? 'ask';
-  const setNewTaskPermissionMode = useCallback(
-    async (mode: ChatDefaultPermissionMode) => {
-      const host = newTask.selectedHost;
-      // Write to the Host that would run the task, not to whichever Host is
-      // otherwise selected: with several connected they are not the same, and
-      // the mode shown here belongs to this one.
-      await window.maka.settings.update(
-        { chatDefaults: { permissionMode: mode } },
-        host ? { profileId: host.profile.id, hostId: host.hostId } : undefined,
-      );
-      await newTask.refresh();
-    },
-    [newTask],
-  );
+    newTaskPermissionChoice ?? newTask.selectedHost?.chatDefaults.permissionMode ?? 'ask';
+  const setNewTaskPermissionMode = setNewTaskPermissionChoice;
   useEffect(() => {
     if (!isAppUpdateInstallFailure(appUpdateStatus)) {
       notifiedInstallErrorRef.current = null;
@@ -2222,7 +2211,7 @@ function AppShellContent({
     upsertSessionSummary,
     newChatModel: newChatModel ?? null,
     pendingNewChatThinkingLevel: newChatThinkingLevel ?? null,
-    newChatPermissionMode: newTaskPermissionMode,
+    newChatPermissionChoice: newTaskPermissionChoice,
     newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
     newChatOrchestrationMode: newChatOrchestrationMode,
     newTaskTarget: newTask.target,

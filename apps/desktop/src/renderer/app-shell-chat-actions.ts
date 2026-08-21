@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
 import type { InlineReference, QuoteRef } from '@maka/core/events';
@@ -24,7 +25,6 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
@@ -197,7 +197,12 @@ export function createAppShellChatActions(deps: {
   upsertSessionSummary: (session: DesktopSessionSummary) => void;
   newChatModel: PendingNewChatModel;
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
-  newChatPermissionMode: ChatDefaultPermissionMode;
+  /**
+   * The user's explicit choice for this draft, or undefined when they made
+   * none. Undefined omits the field on create so the Host applies its own
+   * `chatDefaults`; a value is a real per-Session override and is sent once.
+   */
+  newChatPermissionChoice: ChatDefaultPermissionMode | undefined;
   newChatCollaborationMode: CollaborationMode;
   newChatOrchestrationMode: OrchestrationMode;
   newTaskTarget: DesktopNewTaskTarget | undefined;
@@ -229,7 +234,7 @@ export function createAppShellChatActions(deps: {
     upsertSessionSummary,
     newChatModel,
     pendingNewChatThinkingLevel,
-    newChatPermissionMode,
+    newChatPermissionChoice,
     newChatCollaborationMode,
     newChatOrchestrationMode,
     newTaskTarget,
@@ -416,7 +421,7 @@ export function createAppShellChatActions(deps: {
               }
             : {}),
           ...(pendingNewChatThinkingLevel ? { thinkingLevel: pendingNewChatThinkingLevel } : {}),
-          permissionMode: newChatPermissionMode,
+          ...(newChatPermissionChoice ? { permissionMode: newChatPermissionChoice } : {}),
           collaborationMode: newChatCollaborationMode,
           orchestrationMode: newChatOrchestrationMode,
         });

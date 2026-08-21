@@ -109,8 +109,8 @@ function createActionsDeps() {
     toastApi: { error: () => undefined, info: () => undefined },
     upsertSessionSummary: () => undefined,
     newChatModel: null,
-    newChatPermissionMode: 'ask' as const,
     pendingNewChatThinkingLevel: null,
+    newChatPermissionChoice: undefined,
     newChatCollaborationMode: 'agent' as const,
     newChatOrchestrationMode: 'default' as const,
     newTaskTarget: { profileId: 'local', hostId: 'host-local', projectId: null },
@@ -174,7 +174,6 @@ describe('composer first-send cleanup', () => {
     try {
       const deps = {
         ...createActionsDeps(),
-        newChatPermissionMode: 'bypass' as const,
         newChatModel: {
           llmConnectionSlug: 'opencode-free',
           model: 'mimo-v2.5-free',
@@ -190,7 +189,53 @@ describe('composer first-send cleanup', () => {
       'opencode-free',
     );
     assert.equal((createInput as { model?: unknown }).model, 'mimo-v2.5-free');
+    // Ordinary creation carries no permission mode: the Host applies its own
+    // `chatDefaults`. Sending the offered default back as an explicit override
+    // would make a cached snapshot the authority and could create a full-access
+    // Session from a value another client already lowered.
+    assert.ok(!('permissionMode' in (createInput as Record<string, unknown>)));
+  });
+
+  it('sends a composer permission choice once without writing it to the Host default', async () => {
+    let createInput: unknown;
+    let settingsUpdates = 0;
+    const restoreWindow = installWindow({
+      newTasks: {
+        create: async (_target: unknown, input: unknown) => {
+          createInput = input;
+          return { id: 'session-1' };
+        },
+      },
+      settings: {
+        update: async () => {
+          settingsUpdates += 1;
+          return {};
+        },
+      },
+      sessions: {
+        send: async () => ({
+          ok: true,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
+      },
+    });
+
+    try {
+      const deps = {
+        ...createActionsDeps(),
+        newChatPermissionChoice: 'bypass' as const,
+      };
+      assert.equal(await createAppShellChatActions(deps).send('hello'), true);
+    } finally {
+      restoreWindow();
+    }
+
+    // An explicit choice for this draft is a per-Session override: it reaches
+    // the created Session, and it does not become the Host's default for every
+    // later task. Only the Settings surface writes `chatDefaults`.
     assert.equal((createInput as { permissionMode?: unknown }).permissionMode, 'bypass');
+    assert.equal(settingsUpdates, 0);
   });
 
   it('creates the first session on the selected Runtime Host and project', async () => {
