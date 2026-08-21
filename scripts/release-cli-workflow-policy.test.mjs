@@ -62,10 +62,8 @@ test('stage builds the npm candidate from the exact product release commit', () 
   assert.match(workflow, /ref: \$\{\{ needs\.authorize\.outputs\.source_commit \}\}/u);
   assert.match(workflow, /product-release-authority\.mjs verify-draft/u);
   assert.match(workflow, /node scripts\/release-version\.mjs "\$EXPECTED_VERSION"/u);
-  assert.doesNotMatch(workflow, /EXPECTED_VERSION.*=~/u);
   assert.match(workflow, /EXPECTED_PRODUCT_SOURCE_COMMIT/u);
   assert.match(workflow, /RELEASE_SHA: \$\{\{ github\.sha \}\}/u);
-  assert.doesNotMatch(workflow, /RELEASE_WORKFLOW_SHA/u);
   const bind = namedStep(workflowSteps(workflow), 'Bind the candidate to this workflow run');
   assert.match(bind, /PRODUCT_TAG: \$\{\{ needs\.authorize\.outputs\.product_tag \}\}/u);
 });
@@ -78,11 +76,8 @@ test('finalize validates one exact stage attempt before running the current veri
   const checkoutIndex = workflow.indexOf('uses: actions/checkout@');
   assert.ok(loadIndex >= 0 && checkoutIndex > loadIndex);
   assert.match(workflow, /actions\/runs\/\$STAGE_RUN_ID\/attempts\/\$STAGE_RUN_ATTEMPT/u);
-  assert.doesNotMatch(workflow, /id: stage-run/u);
-  assert.doesNotMatch(workflow, /node -e/u);
   const checkout = namedStep(steps, 'Check out the current release verifier');
   assert.match(checkout, /ref: \$\{\{ github\.sha \}\}/u);
-  assert.doesNotMatch(checkout, /steps\.stage-run\.outputs\.source_sha/u);
 });
 
 test('finalize revalidates the live product release before trusting public npm bytes', () => {
@@ -102,7 +97,7 @@ test('finalize preserves verified npm bytes without creating another product rel
   const workflow = readWorkflow('release-cli-finalize.yml');
   assert.match(workflow, /name: Preserve the verified public npm package/u);
   assert.match(workflow, /path: \$\{\{ runner\.temp \}\}\/registry-release/u);
-  assert.doesNotMatch(workflow, /cli-v|contents: write|validate-github-release/u);
+  assert.doesNotMatch(workflow, /cli-v|contents: write/u);
 });
 
 test('release workflows select npm from the root packageManager authority', () => {

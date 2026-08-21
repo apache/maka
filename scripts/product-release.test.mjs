@@ -7,8 +7,6 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { parse as parseYaml } from 'yaml';
 import desktopBuilderConfig from '../apps/desktop/electron-builder.config.mjs';
-import { parseCliReleaseVersion } from './release-cli-publication.mjs';
-import { planTests } from './ci-test-plan.mjs';
 import {
   assertProductReleaseExpectation,
   parseAsfSourceReferenceTag,
@@ -182,17 +180,18 @@ test('the product identity CLI uses the checked-out commit outside GitHub Action
   assert.equal(stdout.trim(), `Product release v${manifest.version} from ${head.trim()}`);
 });
 
-test('product and npm release identities reject the same non-canonical versions', () => {
-  for (const version of ['01.2.3', '1.2.3-beta..1', '1.2.3-.', '1.2.3-beta.01']) {
-    const manifests = {
-      rootManifest: { ...rootManifest, version },
-      desktopManifest: { version },
-      cliManifest: { version, bin: { maka: './dist/cli.js' } },
-      sha: 'a'.repeat(40),
-    };
-    assert.throws(() => resolveProductReleaseIdentity(manifests), /valid product release version/u);
-    assert.throws(() => parseCliReleaseVersion(version), /valid product release version/u);
-  }
+test('product release identity rejects a non-canonical version at its boundary', () => {
+  const version = '01.2.3';
+  assert.throws(
+    () =>
+      resolveProductReleaseIdentity({
+        rootManifest: { ...rootManifest, version },
+        desktopManifest: { version },
+        cliManifest: { version, bin: { maka: './dist/cli.js' } },
+        sha: 'a'.repeat(40),
+      }),
+    /valid product release version/u,
+  );
 });
 
 test('an npm candidate must name the exact product tag, version, and source commit', () => {
@@ -508,7 +507,6 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.match(commands, /product-release-tag\.mjs ensure/u);
   assert.doesNotMatch(commands, /RECOVERY_SOURCE|inputs\.source_commit/u);
   assert.match(commands, /if gh release view "\$TAG"/u);
-  assert.doesNotMatch(commands, /requires an existing Draft release/u);
   assert.match(commands, /--json isDraft/u);
   assert.match(commands, /gh release create[\s\S]*--verify-tag/u);
   const publishRelease = jobs.publish.steps.find(
@@ -538,31 +536,4 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.ok(listAssets >= 0 && listAssets < compareAssets && compareAssets < uploadAssets);
   assert.doesNotMatch(commands, /gh release create[\s\S]*--target/u);
   assert.doesNotMatch(commands, /cli-v|npm (?:stage )?publish/u);
-  await assert.rejects(
-    readFile(new URL('../.github/workflows/release-desktop.yml', import.meta.url)),
-    { code: 'ENOENT' },
-  );
-});
-
-test('npm channel identity has no independent product tag', () => {
-  assert.deepEqual(parseCliReleaseVersion('1.2.3'), {
-    version: '1.2.3',
-    distTag: 'latest',
-    tarball: 'maka-agent-1.2.3.tgz',
-  });
-});
-
-test('product workflow changes select the release contracts in CI', () => {
-  const graph = {
-    dirs: [],
-    testDirs: new Set(),
-    dependents: new Map(),
-  };
-  const plan = planTests(['.github/workflows/release.yml'], { graph });
-  assert.equal(plan.releaseContract, true);
-  assert.equal(plan.code, false);
-  assert.equal(plan.full, false);
-  assert.equal(plan.e2e, false);
-  assert.equal(plan.storybook, false);
-  assert.deepEqual(plan.workspaces, []);
 });

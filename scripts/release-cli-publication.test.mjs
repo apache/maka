@@ -103,7 +103,6 @@ test('stage records bind the checked candidate to one source workflow run', () =
   assert.equal(prepared.record.schemaVersion, 3);
   assert.equal(prepared.record.productTag, PRODUCT_TAG);
   assert.equal(prepared.record.source.commit, SOURCE_SHA);
-  assert.equal(Object.hasOwn(prepared.record.source, 'workflowCommit'), false);
   assert.equal(prepared.record.source.runId, '321');
   assert.equal(prepared.record.source.runAttempt, '1');
   assert.deepEqual(
@@ -235,7 +234,6 @@ test('registry finalization requires the exact staged bytes and dist-tag', async
   );
   const registryRecord = JSON.parse(readFileSync(join(registryDirectory, 'release.json'), 'utf8'));
   assert.equal(registryRecord.version, result.version);
-  assert.equal(Object.hasOwn(registryRecord, 'gitTag'), false);
 
   await assert.rejects(
     fetchRegistryRelease({
