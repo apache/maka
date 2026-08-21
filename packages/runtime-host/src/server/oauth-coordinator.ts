@@ -7,8 +7,10 @@ import {
 } from '@maka/runtime/codex-oauth-enrollment';
 import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
 import {
+  GitHubCopilotEntitlementError,
   pollGitHubCopilotDeviceAuthorization,
   startGitHubCopilotDeviceAuthorization,
+  verifyGitHubCopilotModelEntitlement,
 } from '@maka/runtime/github-copilot-oauth-enrollment';
 import {
   pollXaiDeviceAuthorization,
@@ -69,6 +71,7 @@ export interface HostOAuthCoordinatorInput {
   readonly pollXaiAuthorization?: typeof pollXaiDeviceAuthorization;
   readonly startGitHubCopilotAuthorization?: typeof startGitHubCopilotDeviceAuthorization;
   readonly pollGitHubCopilotAuthorization?: typeof pollGitHubCopilotDeviceAuthorization;
+  readonly verifyGitHubCopilotEntitlement?: typeof verifyGitHubCopilotModelEntitlement;
   readonly startCodexAuthorization?: typeof startCodexDeviceAuthorization;
   readonly pollCodexAuthorization?: typeof pollCodexDeviceAuthorization;
   readonly exchangeCodexCode?: typeof exchangeCodexDeviceAuthorizationCode;
@@ -124,6 +127,7 @@ export class HostOAuthCoordinator {
   readonly #pollXaiAuthorization: typeof pollXaiDeviceAuthorization;
   readonly #startGitHubCopilotAuthorization: typeof startGitHubCopilotDeviceAuthorization;
   readonly #pollGitHubCopilotAuthorization: typeof pollGitHubCopilotDeviceAuthorization;
+  readonly #verifyGitHubCopilotEntitlement: typeof verifyGitHubCopilotModelEntitlement;
   readonly #startCodexAuthorization: typeof startCodexDeviceAuthorization;
   readonly #pollCodexAuthorization: typeof pollCodexDeviceAuthorization;
   readonly #exchangeCodexCode: typeof exchangeCodexDeviceAuthorizationCode;
@@ -155,6 +159,8 @@ export class HostOAuthCoordinator {
       input.startGitHubCopilotAuthorization ?? startGitHubCopilotDeviceAuthorization;
     this.#pollGitHubCopilotAuthorization =
       input.pollGitHubCopilotAuthorization ?? pollGitHubCopilotDeviceAuthorization;
+    this.#verifyGitHubCopilotEntitlement =
+      input.verifyGitHubCopilotEntitlement ?? verifyGitHubCopilotModelEntitlement;
     this.#startCodexAuthorization = input.startCodexAuthorization ?? startCodexDeviceAuthorization;
     this.#pollCodexAuthorization = input.pollCodexAuthorization ?? pollCodexDeviceAuthorization;
     this.#exchangeCodexCode = input.exchangeCodexCode ?? exchangeCodexDeviceAuthorizationCode;
@@ -431,7 +437,7 @@ export class HostOAuthCoordinator {
       stateHint: authorization.userCode,
     });
     attempt.phase = 'exchanging';
-    return this.#pollGitHubCopilotAuthorization({
+    const tokens = await this.#pollGitHubCopilotAuthorization({
       authorization,
       fetchFn,
       signal: attempt.abort.signal,
@@ -449,6 +455,11 @@ export class HostOAuthCoordinator {
         }
       },
     });
+    // A GitHub account is not a Copilot subscription. Adopt the account only
+    // once the provider says it can reach a model, so the commit below never
+    // stores a credential the connection cannot use.
+    await this.#verifyGitHubCopilotEntitlement({ tokens, fetchFn });
+    return tokens;
   }
 
   async #runXaiLogin(attempt: ActiveLoginAttempt, fetchFn: typeof fetch) {
@@ -564,6 +575,9 @@ function terminalAttempt(attempt: ActiveLoginAttempt): TerminalLoginAttempt {
 function loginFailureCode(error: unknown): OAuthLoginFailureCode {
   if (error instanceof LoginFailure) return error.code;
   if (error instanceof RuntimePolicyStoreError) return 'persistence_failed';
+  // The account authorized the grant and the provider then refused it: the
+  // login worked, the subscription behind it did not.
+  if (error instanceof GitHubCopilotEntitlementError) return 'provider_rejected';
   // A local device window that elapsed without approval is a timeout, not
   // a provider rejection of the account.
   if (error instanceof OAuthDeviceAuthorizationExpiredError) return 'authorization_failed';

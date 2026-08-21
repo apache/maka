@@ -26,7 +26,12 @@ export function buildSubscriptionModelFetch(
     );
   }
   if (input.connection.providerType === 'github-copilot') {
-    return buildGitHubCopilotFetch(input.fetchFn ?? fetch);
+    const copilotFetch = buildGitHubCopilotFetch(input.fetchFn ?? fetch);
+    // The editor headers stay innermost so a replayed request carries them
+    // exactly as the first attempt did.
+    return input.refreshOAuthAccessToken
+      ? buildOAuth401ReplayFetch(copilotFetch, input.refreshOAuthAccessToken)
+      : copilotFetch;
   }
   if (input.connection.providerType === 'xai-oauth' && input.refreshOAuthAccessToken) {
     return buildOAuth401ReplayFetch(input.fetchFn ?? fetch, input.refreshOAuthAccessToken);

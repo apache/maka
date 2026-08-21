@@ -1,6 +1,7 @@
-import type { ModelInfo } from '@maka/core/llm-connections';
-import type { SubscriptionActionResult } from '@maka/core/oauth-subscription';
-import { GitHubCopilotSubscriptionService } from './oauth/github-copilot-subscription-service.js';
+import {
+  importGitHubCopilotLocalCredential,
+  type ImportedGitHubCopilotCredential,
+} from './oauth/github-copilot-local-credential.js';
 import type { ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 import { INTERACTIVE_OAUTH_CONNECTION_SLUGS } from './oauth-connection-identities.js';
 import {
@@ -17,13 +18,6 @@ const CONNECTION_SLUG = INTERACTIVE_OAUTH_CONNECTION_SLUGS[PROVIDER];
 type GitHubCopilotClient = RuntimeHostAccountConnectionClient &
   Pick<DesktopRuntimeHostClient, 'setCredential'>;
 
-interface ImportedGitHubCopilotCredential {
-  readonly result:
-    | { readonly ok: true; readonly models: ModelInfo[] }
-    | Exclude<SubscriptionActionResult, { ok: true }>;
-  readonly secret?: string;
-}
-
 export interface RuntimeHostGitHubCopilotIpcDeps {
   readonly ipcMain: ReconnectableReadIpcMain;
   readonly client: GitHubCopilotClient;
@@ -37,12 +31,13 @@ export interface RuntimeHostGitHubCopilotIpcDeps {
  * enrollment is not here — the device grant runs through the Host's OAuth
  * coordinator like every other account login, so there is one authority that
  * serializes starts, owns supersede and cancellation, keeps the Host resident
- * while polling, uses the configured network transport, and commits the
- * credential atomically. Account state, refresh, and sign-out ride the same
- * shared `github-copilot:*` channels the coordinator's IPC adapter registers.
+ * while polling, uses the configured network transport, verifies the account
+ * reaches a Copilot model, and commits the credential atomically. Account
+ * state, refresh, and sign-out ride the same shared `github-copilot:*` channels
+ * the coordinator's IPC adapter registers.
  */
 export function registerRuntimeHostGitHubCopilotIpc(deps: RuntimeHostGitHubCopilotIpcDeps): void {
-  const importExistingLogin = deps.importExistingLogin ?? importGitHubCopilotCredential;
+  const importExistingLogin = deps.importExistingLogin ?? importGitHubCopilotLocalCredential;
 
   deps.ipcMain.handle('github-copilot:connect-existing-login', async () => {
     const imported = await importExistingLogin();
@@ -62,25 +57,6 @@ export function registerRuntimeHostGitHubCopilotIpc(deps: RuntimeHostGitHubCopil
       return storageFailure('GitHub Copilot login could not be committed to Runtime Host');
     }
   });
-}
-
-async function importGitHubCopilotCredential(): Promise<ImportedGitHubCopilotCredential> {
-  // The credential never reaches disk in Desktop: the secret is held in memory
-  // only long enough to be committed to the Host vault.
-  let secret: string | undefined;
-  const service = new GitHubCopilotSubscriptionService({
-    credentialStore: {
-      getSecret: async () => secret ?? null,
-      setSecret: async (_slug, _kind, value) => {
-        secret = value;
-      },
-      deleteSecret: async () => {
-        secret = undefined;
-      },
-    },
-  });
-  const result = await service.connectExistingLogin();
-  return { result, ...(result.ok && secret ? { secret } : {}) };
 }
 
 function storageFailure(message: string) {

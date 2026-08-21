@@ -34,8 +34,6 @@ import { SettingsExpandableRow } from './settings-expandable-row';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { providerDisplay } from './provider-display';
 import { EnabledModelManager } from './provider-enabled-model-manager';
-import { useActionGuard } from './use-action-guard';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
   providerPanelActionErrorMessage,
@@ -135,7 +133,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     supportsApiKey,
     needsOAuth,
     retired,
-    usesGitHubCopilotLogin,
     oauthLoginService,
     supportsRemoteDiscovery,
     credentialProbePending,
@@ -317,8 +314,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         {needsOAuth && (
           retired ? (
             <Banner status="error" role="alert" title={copy.oauthRetired} description={copy.oauthRetiredDetail} />
-          ) : usesGitHubCopilotLogin ? (
-            <GitHubCopilotReloginNotice hasSecret={hasSecret} onRelogin={refreshAfterRelogin} />
           ) : oauthLoginService ? (
             <OAuthReloginNotice
               service={oauthLoginService}
@@ -785,52 +780,6 @@ function connectionIssueStatus(tone: StatusSemantic): 'error' | 'success' | 'inf
   // component's own quiet status, not the missing-rung workaround the dots
   // had to fake with accent. Left as-is on that basis.
   return 'info';
-}
-
-function GitHubCopilotReloginNotice(props: {
-  hasSecret: CredentialPresenceStatus;
-  onRelogin(): Promise<void>;
-}) {
-  const host = useRuntimeHostSettingsTarget();
-  const locale = useUiLocale();
-  const copy = getProviderSettingsCopy(locale).detail;
-  // connectGuard stays: it survives this component's renders and is the
-  // cross-render "one connect at a time" record. The `busy` state it used to
-  // mirror is gone — one button, so clickAction's own disable and spinner are
-  // the whole visible story.
-  const connectGuard = useActionGuard<'connect'>();
-  const mountedRef = useMountedRef();
-  const toast = useToast();
-  const loggedIn = props.hasSecret === true;
-  const loading = props.hasSecret === 'loading';
-
-  async function connect() {
-    if (!connectGuard.begin('connect')) return;
-    try {
-      const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
-      if (!result.ok) {
-        toast.error(copy.copilotImportFailed, result.message);
-        return;
-      }
-      await props.onRelogin();
-    } catch (error) {
-      if (mountedRef.current) {
-        toast.error(copy.copilotImportFailed, providerPanelActionErrorMessage(error, locale));
-      }
-    } finally {
-      connectGuard.finish();
-    }
-  }
-
-  return (
-    <Banner
-      status="info"
-      title={loggedIn ? copy.copilotLoggedIn : loading ? copy.oauthLoading : copy.copilotWaiting}
-      description={loggedIn ? copy.copilotLoggedInDetail : copy.copilotWaitingDetail}
-      endContent={!loading ? (
-          <Button variant="primary" size="sm" clickAction={() => connect()} label={loggedIn ? copy.reimport : copy.importCredential} />
-      ) : undefined} />
-  );
 }
 
 // The OAuth notice for a re-loginable connection. The 重新登录 button drives

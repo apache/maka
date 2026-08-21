@@ -60,6 +60,14 @@ export function oauthLoginServiceFor(
         bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host),
         display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
       };
+    // Copilot re-login is the same Host-owned device grant the catalog drives;
+    // importing a local `gh` credential stays a catalog action, so an expired
+    // connection is re-authorized here exactly like every other OAuth account.
+    case 'github-copilot':
+      return {
+        bridge: runtimeHostOAuthLoginBridge(window.maka.githubCopilotSubscription, host),
+        display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
+      };
     default:
       return null;
   }
@@ -123,7 +131,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const oauthLoginService = needsOAuth && !retired
     ? oauthLoginServiceFor(connection.providerType, host)
     : null;
-  const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);
   const probesCredential = supportsApiKey || needsOAuth;
@@ -639,7 +646,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     supportsApiKey,
     needsOAuth,
     retired,
-    usesGitHubCopilotLogin,
     oauthLoginService,
     supportsRemoteDiscovery,
     credentialProbePending,

@@ -27,6 +27,7 @@ import {
 const CONNECTION_SLUG = 'host-oauth-execution';
 const MODEL_ID = 'gpt-5';
 const CODEX_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
+const COPILOT_TOKEN_ENDPOINT = 'https://github.com/login/oauth/access_token';
 const FIXED_NOW = 1_785_600_000_000;
 
 test('one OAuth generation singleflights refresh and persists its lease with canonical CAS', async () => {
@@ -406,6 +407,112 @@ test('concurrent forced refreshes join one Host credential refresh', async () =>
   });
 });
 
+test('a GitHub Copilot 401 force-refreshes canonical credentials and replays once', async () => {
+  const staleAccess = 'gho_account_v1';
+  const refreshedAccess = 'gho_account_v2';
+  await withSeededOAuthCredential(
+    'github-copilot',
+    expiringCopilotTokens(staleAccess),
+    async (fixture) => {
+      let refreshCalls = 0;
+      const modelHeaders: Headers[] = [];
+      const providerFetch: typeof fetch = async (url, init) => {
+        if (String(url) === COPILOT_TOKEN_ENDPOINT) {
+          refreshCalls += 1;
+          return Response.json({
+            access_token: refreshedAccess,
+            refresh_token: 'ghr_rotated',
+            expires_in: 28_800,
+          });
+        }
+        modelHeaders.push(new Headers(init?.headers));
+        return modelHeaders.length === 1
+          ? Response.json({ message: 'Bad credentials' }, { status: 401 })
+          : Response.json({ ok: true });
+      };
+      const binding = fixture.authority.bind({
+        providerType: 'github-copilot',
+        connectionSlug: CONNECTION_SLUG,
+        material: fixture.material,
+        createRefreshTransport: () => testRefreshTransport(providerFetch),
+      });
+      const initialTokens = await binding.resolve();
+      const modelFetch = createHostOAuthModelFetch({
+        binding,
+        initialTokens,
+        connection: {
+          slug: CONNECTION_SLUG,
+          providerType: 'github-copilot',
+          defaultModel: MODEL_ID,
+        },
+        sessionId: 'copilot-401-session',
+        modelId: MODEL_ID,
+        fetchFn: providerFetch,
+      });
+
+      const response = await modelFetch('https://api.githubcopilot.com/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify({ messages: [] }),
+      });
+
+      assert.equal(response.ok, true);
+      assert.equal(refreshCalls, 1);
+      assert.equal(modelHeaders.length, 2);
+      assert.equal(modelHeaders[1]?.get('authorization'), `Bearer ${refreshedAccess}`);
+      // The replay is the same Copilot request, editor headers included.
+      assert.equal(modelHeaders[1]?.get('copilot-integration-id'), 'vscode-chat');
+      const canonical = JSON.parse(
+        (await readMaterial(fixture.stores)).secret,
+      ) as OAuthSubscriptionTokens;
+      assert.equal(canonical.access_token, refreshedAccess);
+      assert.equal(canonical.refresh_token, 'ghr_rotated');
+    },
+  );
+});
+
+test('a GitHub 401 on a non-expiring account token is not replayed with the same token', async () => {
+  await withSeededOAuthCredential(
+    'github-copilot',
+    nonExpiringCopilotTokens('gho_durable'),
+    async (fixture) => {
+      const modelHeaders: Headers[] = [];
+      const providerFetch: typeof fetch = async (url, init) => {
+        // GitHub issues no refresh grant for this record, so any call to the
+        // token endpoint here would be a request that cannot help.
+        assert.notEqual(String(url), COPILOT_TOKEN_ENDPOINT);
+        modelHeaders.push(new Headers(init?.headers));
+        return Response.json({ message: 'Bad credentials' }, { status: 401 });
+      };
+      const binding = fixture.authority.bind({
+        providerType: 'github-copilot',
+        connectionSlug: CONNECTION_SLUG,
+        material: fixture.material,
+        createRefreshTransport: () => testRefreshTransport(providerFetch),
+      });
+      const modelFetch = createHostOAuthModelFetch({
+        binding,
+        initialTokens: await binding.resolve(),
+        connection: {
+          slug: CONNECTION_SLUG,
+          providerType: 'github-copilot',
+          defaultModel: MODEL_ID,
+        },
+        sessionId: 'copilot-401-durable-session',
+        modelId: MODEL_ID,
+        fetchFn: providerFetch,
+      });
+
+      const response = await modelFetch('https://api.githubcopilot.com/chat/completions', {
+        method: 'POST',
+        body: JSON.stringify({ messages: [] }),
+      });
+
+      assert.equal(response.status, 401);
+      assert.equal(modelHeaders.length, 1);
+    },
+  );
+});
+
 interface CopilotCredentialFixture {
   readonly root: string;
   readonly stores: RuntimePolicyStoresWriter;
@@ -465,7 +572,7 @@ async function withCopilotCredential(
 }
 
 async function withSeededOAuthCredential(
-  providerType: 'openai-codex' | 'openai-codex',
+  providerType: 'openai-codex' | 'github-copilot',
   tokens: OAuthSubscriptionTokens,
   run: (fixture: CopilotCredentialFixture) => Promise<void>,
 ): Promise<void> {
@@ -557,6 +664,16 @@ function currentTokens(accessToken: string, accountUuid?: string): OAuthSubscrip
     refresh_token: `${accessToken}-refresh`,
     expires_at: Number.MAX_SAFE_INTEGER,
     ...(accountUuid ? { account_uuid: accountUuid } : {}),
+  };
+}
+
+/** What GitHub returns when its OAuth app issues expiring user tokens. */
+function expiringCopilotTokens(accessToken: string): OAuthSubscriptionTokens {
+  return {
+    access_token: accessToken,
+    refresh_token: `ghr_${accessToken}`,
+    expires_at: FIXED_NOW + 8 * 60 * 60 * 1_000,
+    base_url: 'https://api.githubcopilot.com',
   };
 }
 

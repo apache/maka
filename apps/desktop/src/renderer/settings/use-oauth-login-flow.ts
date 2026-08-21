@@ -9,19 +9,14 @@ import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 // Shared browser-assisted OAuth login-flow controller (device-code polling).
 //
 // Extracted from the SubscriptionLoginModal `startLogin` flow so BOTH the
-// OAuth catalog login modals (Codex / xAI) AND the model
+// OAuth catalog login panels (Codex / GitHub Copilot / xAI) AND the model
 // connection detail sheet's 重新登录 affordance drive the same
 // getAuthUrl -> openAuthUrl -> refresh -> completeAuthorization sequence with
 // one authRequestId lifecycle, one synchronous pending-action guard, and
 // cancellation-on-unmount. Every OAuth provider hands authorization to the
 // browser, so this is the only login shape the renderer drives.
-//
-// GitHub Copilot rides the same controller through the `direct` account
-// flow (#1042): importing an existing GitHub login is one bridge call, so
-// there is no browser handoff -- but the snapshot refresh, the one-shot
-// pending-action guard, and the unmount safety are identical.
 
-export type OAuthLoginPendingAction = 'login' | 'logout' | 'refresh';
+export type OAuthLoginPendingAction = 'login' | 'logout';
 
 export interface SubscriptionSnapshot {
   runtimeState:
@@ -54,22 +49,6 @@ export interface OAuthLoginFlowDisplay {
   shortName: string;
 }
 
-export type OAuthDirectActionResult =
-  | { ok: true }
-  | { ok: false; reason?: string; message: string };
-
-/**
- * Direct-import account flow (GitHub Copilot): no browser handoff, so
- * "login" is a single bridge call. Direct mode keeps the service's original
- * UX instead of the browser-assisted copy: no logout confirm, no success toasts
- * (the refreshed snapshot IS the feedback), and every account-action
- * failure surfaces under one `<display.name> 账号操作失败` title.
- */
-export interface OAuthDirectAccountFlow {
-  login(): Promise<OAuthDirectActionResult>;
-  refreshTokens(): Promise<OAuthDirectActionResult>;
-}
-
 export interface OAuthLoginFlowController {
   state: SubscriptionSnapshot | null;
   runtimeState: SubscriptionSnapshot['runtimeState'] | 'loading';
@@ -82,9 +61,6 @@ export interface OAuthLoginFlowController {
   startLogin(): Promise<void>;
   logout(): Promise<void>;
   refresh(): Promise<boolean>;
-  // Direct account flows only (GitHub Copilot 重新验证); undefined for the
-  // browser-assisted services so they cannot render a dead action.
-  refreshTokens: (() => Promise<void>) | undefined;
 }
 
 export function useOAuthLoginFlow(params: {
@@ -92,18 +68,13 @@ export function useOAuthLoginFlow(params: {
   display: OAuthLoginFlowDisplay;
   // Fired after a successful completeAuthorization (browser handoff done).
   // The detail sheet uses it to re-probe hasSecret + reload connection status;
-  // catalog modals use it to refresh both their account card and the shared
-  // model connection list without waiting for the modal to close.
+  // catalog panels use it to refresh both their account card and the shared
+  // model connection list without waiting for the panel to close.
   onLoginSuccess?: () => void | Promise<void>;
-  // When present, startLogin runs this one-shot import instead of the
-  // getAuthUrl -> openAuthUrl -> completeAuthorization handoff, and the
-  // controller exposes the extra `refreshTokens` action.
-  direct?: OAuthDirectAccountFlow;
 }): OAuthLoginFlowController {
   const { bridge, display } = params;
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthFlow;
-  const direct = params.direct;
   const toast = useToast();
   const [state, setState] = useState<SubscriptionSnapshot | null>(null);
   const [authRequestId, setAuthRequestId] = useState<string | null>(null);
@@ -153,26 +124,6 @@ export function useOAuthLoginFlow(params: {
   async function startLogin() {
     if (!beginPendingAction('login')) return;
     setErrorMessage(null);
-    // Direct-import flow (GitHub Copilot): one bridge call, no authRequestId
-    // lifecycle, no success toast — the refreshed snapshot IS the feedback.
-    if (direct) {
-      try {
-        const result = await direct.login();
-        if (!oauthLoginFlowMountedRef.current) return;
-        if (!result.ok) {
-          toast.error(copy.accountActionFailed(display.name), subscriptionResultMessage(result.message, copy.loginFailedRetry, locale));
-        }
-        await refresh();
-        if (!oauthLoginFlowMountedRef.current) return;
-        if (result.ok && params.onLoginSuccess) await params.onLoginSuccess();
-      } catch (error) {
-        if (!oauthLoginFlowMountedRef.current) return;
-        toast.error(copy.accountActionFailed(display.name), subscriptionActionErrorMessage(error, locale));
-      } finally {
-        finishPendingAction();
-      }
-      return;
-    }
     try {
       const payload = await bridge.getAuthUrl();
       if ('ok' in payload) {
@@ -238,56 +189,25 @@ export function useOAuthLoginFlow(params: {
   async function logout() {
     if (!beginPendingAction('logout')) return;
     try {
-      // Direct-import flows keep their original no-confirm, silent-success
-      // logout; only the browser-assisted services confirm the destructive
-      // action and toast on success.
-      if (!direct) {
-        const ok = await toast.confirm({
-          title: copy.logoutTitle(display.name),
-          description: copy.logoutDescription,
-          confirmLabel: copy.logout,
-          cancelLabel: copy.cancel,
-          destructive: true,
-        });
-        if (!ok) return;
-      }
+      const ok = await toast.confirm({
+        title: copy.logoutTitle(display.name),
+        description: copy.logoutDescription,
+        confirmLabel: copy.logout,
+        cancelLabel: copy.cancel,
+        destructive: true,
+      });
+      if (!ok) return;
       const result = await bridge.logout();
       if (!oauthLoginFlowMountedRef.current) return;
       if (result.ok) {
-        if (!direct) {
-          toast.success(copy.loggedOut, copy.credentialsCleared);
-        }
+        toast.success(copy.loggedOut, copy.credentialsCleared);
         await refresh();
-      } else if (direct) {
-        toast.error(copy.accountActionFailed(display.name), subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale));
       } else {
         toast.error(copy.logoutFailed, subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale));
       }
     } catch (error) {
       if (!oauthLoginFlowMountedRef.current) return;
-      if (direct) {
-        toast.error(copy.accountActionFailed(display.name), subscriptionActionErrorMessage(error, locale));
-      } else {
-        toast.error(copy.logoutFailed, subscriptionActionErrorMessage(error, locale));
-      }
-    } finally {
-      finishPendingAction();
-    }
-  }
-
-  async function refreshTokens() {
-    if (!direct) return;
-    if (!beginPendingAction('refresh')) return;
-    try {
-      const result = await direct.refreshTokens();
-      if (!oauthLoginFlowMountedRef.current) return;
-      if (!result.ok) {
-        toast.error(copy.accountActionFailed(display.name), subscriptionResultMessage(result.message, copy.reverifyFailedRetry, locale));
-      }
-      await refresh();
-    } catch (error) {
-      if (!oauthLoginFlowMountedRef.current) return;
-      toast.error(copy.accountActionFailed(display.name), subscriptionActionErrorMessage(error, locale));
+      toast.error(copy.logoutFailed, subscriptionActionErrorMessage(error, locale));
     } finally {
       finishPendingAction();
     }
@@ -309,7 +229,6 @@ export function useOAuthLoginFlow(params: {
     startLogin,
     logout,
     refresh,
-    refreshTokens: direct ? refreshTokens : undefined,
   };
 }
 
@@ -337,6 +256,13 @@ export function subscriptionResultMessage(message: string | undefined, fallback:
     return locale === 'zh'
       ? '无法打开系统浏览器完成登录，请检查是否拦截了弹窗后重试。'
       : 'Could not open the system browser for login. Check popup blockers and try again.';
+  }
+  // The Host refuses enrollment this install has not opted into. Say so plainly:
+  // the generic classifier would turn it into a 鉴权失败 the user cannot act on.
+  if (/enrollment is disabled for this provider/i.test(raw)) {
+    return locale === 'zh'
+      ? '本机未启用该账号登录方式；可改用导入兼容凭据，或由管理员启用后重试。'
+      : 'This sign-in is not enabled on this install. Import a compatible credential instead, or ask an operator to enable it.';
   }
   const classified = locale === 'zh'
     ? generalizedErrorMessageChinese(new Error(raw), '')

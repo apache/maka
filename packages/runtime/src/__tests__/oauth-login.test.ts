@@ -61,13 +61,27 @@ describe('OAuth enrollment policy', () => {
     assert.equal(isOAuthEnrollmentProviderEnabled('openai-codex', {}), true);
   });
 
-  it('keeps a GitHub Copilot kill switch without hiding the sign-in by default', () => {
-    assert.equal(isOAuthEnrollmentProviderEnabled('github-copilot', {}), true);
+  it('keeps the GitHub Copilot device sign-in off until an install opts in', () => {
+    // Maka has no published authorization for the editor OAuth identity this
+    // grant presents, so absence of a decision must read as "off".
+    assert.equal(isOAuthEnrollmentProviderEnabled('github-copilot', {}), false);
     assert.equal(
       isOAuthEnrollmentProviderEnabled('github-copilot', {
         MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL: '0',
       }),
       false,
+    );
+    assert.equal(
+      isOAuthEnrollmentProviderEnabled('github-copilot', {
+        MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL: 'true',
+      }),
+      false,
+    );
+    assert.equal(
+      isOAuthEnrollmentProviderEnabled('github-copilot', {
+        MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL: '1',
+      }),
+      true,
     );
   });
 });

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
+import { GitHubCopilotEntitlementError } from '@maka/runtime/github-copilot-oauth-enrollment';
 import {
   parseOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
@@ -86,6 +87,7 @@ test('GitHub Copilot enrollment runs its device grant on the Host, not in a Clie
       base_url: 'https://api.githubcopilot.com',
     });
     let polls = 0;
+    const entitlementChecks: string[] = [];
     const coordinator = new HostOAuthCoordinator({
       runtimePolicy: fixture.stores,
       activation: fixture.activation,
@@ -110,6 +112,9 @@ test('GitHub Copilot enrollment runs its device grant on the Host, not in a Clie
         polls += 1;
         return tokens;
       },
+      verifyGitHubCopilotEntitlement: async (input) => {
+        entitlementChecks.push(input.tokens.access_token);
+      },
     });
 
     const started = await coordinator.handlers['oauth.login.start'](
@@ -124,7 +129,65 @@ test('GitHub Copilot enrollment runs its device grant on the Host, not in a Clie
     // so no Client ever holds the grant or the credential it produces.
     assert.deepEqual(presentationCalls, ['client-copilot']);
     assert.equal(polls, 1);
+    // The account was adopted only after the provider confirmed it reaches a model.
+    assert.deepEqual(entitlementChecks, ['gho_account_token']);
     assert.equal(fixture.invalidations, 1);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('GitHub Copilot enrollment refuses an account that reaches no Copilot model', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-copilot-entitlement', []);
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startGitHubCopilotAuthorization: async () => ({
+        deviceCode: 'host-only-device-code',
+        userCode: 'ABCD-1234',
+        verificationUrl: 'https://github.com/login/device',
+        expiresAt: NOW + 900_000,
+        intervalMs: 5_000,
+      }),
+      pollGitHubCopilotAuthorization: async () =>
+        tokenFixture('gho_account_token', { base_url: 'https://api.githubcopilot.com' }),
+      // A GitHub account without a live Copilot subscription authorizes the
+      // grant and then reaches nothing.
+      verifyGitHubCopilotEntitlement: async () => {
+        throw new GitHubCopilotEntitlementError();
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      { attemptId: 'attempt-copilot-entitlement', connectionId: fixture.connection.connectionId },
+      operationContext('client-copilot-entitlement', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-copilot-entitlement');
+    assert.equal(terminal.phase, 'failed');
+    // The account is what was refused, not the authorization the user completed.
+    assert.equal(terminal.failure, 'provider_rejected');
+    // Nothing was adopted: no credential, no backend invalidation, no residency.
+    const resolved = await fixture.stores.operations.resolveExecutionConnection(
+      fixture.connection.slug,
+    );
+    assert.equal(
+      resolved.kind === 'ready' ? resolved.secretMaterial.connection : undefined,
+      undefined,
+    );
+    assert.equal(fixture.invalidations, 0);
+    assert.equal(fixture.activeResidencies, 0);
     await coordinator.close();
     client.close();
   });

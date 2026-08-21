@@ -918,7 +918,6 @@ export interface MakaBridge {
     >;
   };
   openAiCodex: {
-    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
     getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
@@ -961,7 +960,6 @@ export interface MakaBridge {
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
     getAuthUrl(
       host?: DesktopRuntimeHostRef,
     ): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;

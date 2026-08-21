@@ -35,10 +35,9 @@ const SHARED_OAUTH_IPC_OPERATIONS = [
   'logout',
 ] as const;
 export const RUNTIME_HOST_OAUTH_IPC_CHANNELS = Object.freeze([
-  ...OAUTH_LOGIN_PROVIDERS.flatMap((provider) => [
-    ...(provider === 'xai-oauth' ? [] : [`${provider}:is-experimental-enabled`]),
-    ...SHARED_OAUTH_IPC_OPERATIONS.map((operation) => `${provider}:${operation}`),
-  ]),
+  ...OAUTH_LOGIN_PROVIDERS.flatMap((provider) =>
+    SHARED_OAUTH_IPC_OPERATIONS.map((operation) => `${provider}:${operation}`),
+  ),
 ]);
 
 type OAuthClient = RuntimeHostAccountConnectionClient & Pick<
@@ -67,10 +66,10 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
 
   for (const provider of OAUTH_LOGIN_PROVIDERS) {
     const channel = (operation: string) => `${provider}:${operation}`;
-    if (provider !== 'xai-oauth') {
-      deps.ipcMain.handle(channel('is-experimental-enabled'), () => providerEnabled(provider));
-    }
     deps.ipcMain.handle(channel('get-auth-url'), async () => {
+      // The enrollment gate is the Host's, and this is the only place a renderer
+      // can meet it: a disabled provider refuses the start rather than answering
+      // a separate "is it enabled" question the UI would have to duplicate.
       if (!providerEnabled(provider)) return providerDisabled();
       // Drop any Desktop-tracked attempt for this provider so a re-click does
       // not race a stale completeAuthorization waiter against a new start.

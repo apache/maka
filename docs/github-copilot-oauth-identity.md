@@ -40,19 +40,21 @@ statement, or exemption permitting third-party reuse of this identity, and none
 has been requested. Reuse rests only on the observation that other clients do
 the same.
 
-Consequences, and what is required before this changes:
+Because that basis is missing, the interactive device flow does not ship on:
 
-- The interactive device flow ships **on**, so the sign-in is present in
-  Settings, but it carries a kill switch:
-  `MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL=0` refuses the login at the
-  Host (`isOAuthEnrollmentProviderEnabled` in
-  `packages/runtime/src/oauth-provider-contracts.ts`) without a release. This
-  matches how Codex enrollment is gated.
+- The sign-in is **off by default**, per install. An operator opts in by setting
+  `MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL=1`; anything else leaves the
+  Host refusing `oauth.login.start` for this provider
+  (`isOAuthEnrollmentProviderEnabled` in
+  `packages/runtime/src/oauth-provider-contracts.ts`). The flag records an
+  operator's decision to accept the consent mismatch above for their own
+  install. It is not the authorization basis, and turning it on does not create
+  one.
 - Importing a credential the user already holds locally (`gh auth token` or a
-  fine-grained PAT with Copilot Requests permission) stays available beside it.
-  That credential is issued to an identity the user chose, so it raises none of
-  the questions above and remains the fallback if the device flow is turned off.
+  fine-grained PAT with Copilot Requests permission) needs no opt-in and stays
+  available beside it. That credential is issued to an identity the user chose,
+  so it raises none of the questions above and is the supported default route.
 - Resolving this entry requires either a public GitHub authorization or
   compatibility basis for reusing this identity — linked from this file — or an
   OAuth app identity registered to and authorized for Maka, replacing the client
-  ID above. Until then the consent identity mismatch described above stands.
+  ID above. Only then should the sign-in default to on.

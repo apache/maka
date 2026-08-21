@@ -1,8 +1,10 @@
 import {
   createGitHubCopilotAccountTokens,
+  GITHUB_COPILOT_DEFAULT_API_ENDPOINT,
   isSupportedGitHubCopilotAccountToken,
   type OAuthSubscriptionTokens,
 } from './subscription-credentials.js';
+import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
   OAUTH_LOGIN_MAX_TOKEN_CHARS,
   OAuthTokenEndpointError,
@@ -19,6 +21,19 @@ import {
 
 const COPILOT = OAUTH_PROVIDER_CONTRACTS['github-copilot'];
 const MAX_TOKEN_LIFETIME_SECONDS = 366 * 24 * 60 * 60;
+
+/**
+ * A GitHub account authorized the grant, but the Copilot API exposes no model
+ * to it — an account without a live subscription, or one whose organization
+ * withholds Copilot. The credential is real and the authorization succeeded,
+ * so this is the provider refusing the account rather than a failed login.
+ */
+export class GitHubCopilotEntitlementError extends Error {
+  constructor(options?: ErrorOptions) {
+    super('GitHub account exposes no usable Copilot model', options);
+    this.name = 'GitHubCopilotEntitlementError';
+  }
+}
 
 /**
  * RFC 8628 device authorization for a GitHub account that carries a Copilot
@@ -160,6 +175,32 @@ export async function pollGitHubCopilotDeviceAuthorization(
     if (code) throw new OAuthTokenEndpointError('provider_rejected', response.status);
     return decodeGitHubCopilotAccountToken(payload, now);
   }
+}
+
+/**
+ * The device grant proves a GitHub account, not a Copilot subscription: the
+ * token endpoint issues the same account token whether or not Copilot is
+ * entitled. Ask the Copilot API what that account can actually reach, so an
+ * unusable credential is refused while the login is still in flight instead of
+ * being committed and failing later on the first request.
+ *
+ * Runs on the caller's transport — the same one the grant was obtained over.
+ */
+export async function verifyGitHubCopilotModelEntitlement(input: {
+  readonly tokens: OAuthSubscriptionTokens;
+  readonly fetchFn: typeof fetch;
+}): Promise<void> {
+  let models: Awaited<ReturnType<typeof fetchGitHubCopilotModels>>;
+  try {
+    models = await fetchGitHubCopilotModels(
+      input.tokens.base_url ?? GITHUB_COPILOT_DEFAULT_API_ENDPOINT,
+      input.tokens.access_token,
+      input.fetchFn,
+    );
+  } catch (error) {
+    throw new GitHubCopilotEntitlementError({ cause: error });
+  }
+  if (models.length === 0) throw new GitHubCopilotEntitlementError();
 }
 
 /**

@@ -333,11 +333,17 @@ export function createHostOAuthModelFetch(input: {
       sessionId: input.sessionId,
       modelId: input.modelId,
       fetchFn: authenticatedFetch,
-      ...(input.binding.forceRefresh &&
-      (input.binding.providerType === 'openai-codex' || input.binding.providerType === 'xai-oauth')
+      ...(input.binding.forceRefresh
         ? {
-            refreshOAuthAccessToken: async () =>
-              (tokens = await input.binding.forceRefresh!()).access_token,
+            refreshOAuthAccessToken: async () => {
+              const rejected = tokens.access_token;
+              tokens = await input.binding.forceRefresh!();
+              // A record with no refresh grant behind it (a GitHub account
+              // token GitHub declared no lifetime for) resolves to the token
+              // the provider just rejected. Replaying it would spend a second
+              // request to be told the same thing.
+              return tokens.access_token === rejected ? null : tokens.access_token;
+            },
           }
         : {}),
     });

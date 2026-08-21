@@ -238,28 +238,27 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
   // The Host owns the device grant, so the panel drives the same browser-
   // assisted controller as Codex and xAI: one attempt at a time, superseded
   // and cancelled by the Host, with the user code arriving as the state hint.
+  // Sign-in is always offered, exactly as Codex and xAI are: the Host owns the
+  // enrollment gate and refuses the start with `experimental_disabled`, so the
+  // renderer must not carry a second copy of that decision.
   const flow = useOAuthLoginFlow({
     bridge: runtimeHostOAuthLoginBridge(window.maka.githubCopilotSubscription, host),
     display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
     onLoginSuccess: props.onLoginSuccess,
   });
-  // Sign-in is always offered, exactly as Codex and xAI are: the Host owns the
-  // enrollment gate and refuses the start with `experimental_disabled`, so the
-  // renderer must not carry a second copy of that decision.
-  const [directAction, setDirectAction] = useState<'import' | 'refresh' | null>(null);
+  // Importing a credential this machine already holds is one main-process call
+  // with no browser handoff, so it runs beside the controller rather than
+  // through its authRequestId lifecycle. It is the secondary route to the same
+  // Connection: the device grant is the primary one.
+  const [importing, setImporting] = useState(false);
   const loggedIn = flow.isLoggedIn;
-  const actionBusy = flow.actionBusy || directAction !== null;
-  // Importing an existing `gh` credential and re-verifying it are single main
-  // process calls with no browser handoff, so they run beside the controller
-  // rather than through its authRequestId lifecycle.
-  const runDirectAction = async (
-    action: 'import' | 'refresh',
-    call: () => Promise<{ ok: boolean; message?: string }>,
-  ) => {
+  const actionBusy = flow.actionBusy || importing;
+
+  const importLocalCredential = async () => {
     if (actionBusy) return;
-    setDirectAction(action);
+    setImporting(true);
     try {
-      const result = await call();
+      const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
       if (!mountedRef.current) return;
       if (!result.ok) {
         toast.error(
@@ -268,15 +267,16 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
         );
       }
       await flow.refresh();
-      if (result.ok && action === 'import' && mountedRef.current) await props.onLoginSuccess();
+      if (result.ok && mountedRef.current) await props.onLoginSuccess();
     } catch (error) {
       if (mountedRef.current) {
         toast.error(copy.copilotActionFailed, subscriptionActionErrorMessage(error, locale));
       }
     } finally {
-      if (mountedRef.current) setDirectAction(null);
+      if (mountedRef.current) setImporting(false);
     }
   };
+
   return (
     <VStack gap={3} data-status={flow.runtimeState}>
       <Text type="body">
@@ -288,20 +288,28 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
         </Text>
       )}
       <HStack gap={2} hAlign="end">
-        {!loggedIn && (
-          <Button variant="primary" onClick={() => void flow.startLogin()} isDisabled={actionBusy} label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.copilotSignIn} />
-        )}
-        <Button
-          variant="secondary"
-          onClick={() => void runDirectAction('import', () => window.maka.githubCopilotSubscription.connectExistingLogin(host))}
-          isDisabled={actionBusy}
-          label={directAction === 'import' ? copy.importing : loggedIn ? copy.reimport : copy.importCredential}
-        />
-        {loggedIn && (
+        {!loggedIn ? (
           <>
-            <Button variant="secondary" onClick={() => void runDirectAction('refresh', () => window.maka.githubCopilotSubscription.refreshTokens(host))} isDisabled={actionBusy} label={directAction === 'refresh' ? copy.verifying : copy.reverify} />
-            <Button variant="ghost" onClick={() => void flow.logout()} isDisabled={actionBusy} label={flow.pendingAction === 'logout' ? copy.removing : copy.removeLocal} />
+            <Button
+              variant="primary"
+              onClick={() => void flow.startLogin()}
+              isDisabled={actionBusy}
+              label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.copilotSignIn}
+            />
+            <Button
+              variant="secondary"
+              onClick={() => void importLocalCredential()}
+              isDisabled={actionBusy}
+              label={importing ? copy.importing : copy.importCredential}
+            />
           </>
+        ) : (
+          <Button
+            variant="ghost"
+            onClick={() => void flow.logout()}
+            isDisabled={actionBusy}
+            label={flow.pendingAction === 'logout' ? copy.loggingOut : copy.logout}
+          />
         )}
       </HStack>
     </VStack>
