@@ -43,7 +43,8 @@ export type ModelRuntimeWire =
   | 'openai-chat'
   | 'openai-responses'
   | 'google-generate'
-  | 'cohere-v2';
+  | 'cohere-v2'
+  | 'bedrock-converse';
 
 export type ReasoningReplayContract =
   | { kind: 'none' }
@@ -201,6 +202,8 @@ function resolveModelRuntimeWire(
   apiProtocol: ModelInfo['apiProtocol'] | undefined,
 ): ModelRuntimeWire {
   switch (adapter.kind) {
+    case 'amazon-bedrock':
+      return 'bedrock-converse';
     case 'anthropic':
       return 'anthropic-messages';
     case 'unavailable':
@@ -253,6 +256,7 @@ function reasoningReplayContract(
         : { kind: 'none' };
     case 'google-generate':
     case 'cohere-v2':
+    case 'bedrock-converse':
       return { kind: 'none' };
   }
 }
@@ -270,6 +274,8 @@ function runtimeAdapterOverride(packageName: string): ProviderRuntimeAdapter {
   switch (packageName) {
     case '@ai-sdk/anthropic':
       return { kind: 'anthropic', auth: 'api-key', normalizeBaseUrl: true };
+    case '@ai-sdk/amazon-bedrock':
+      return { kind: 'amazon-bedrock' };
     case '@ai-sdk/google':
       return { kind: 'google', normalizeBaseUrl: false };
     case '@ai-sdk/openai':

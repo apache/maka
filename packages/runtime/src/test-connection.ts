@@ -215,6 +215,8 @@ async function testConnectionModel(
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);
 
   switch (adapter.kind) {
+    case 'amazon-bedrock':
+      throw new Error('Amazon Bedrock testing requires the Runtime Host AWS credential authority');
     case 'anthropic':
       return await probeAnthropic(connection, baseUrl, secret, testModel, t0, fetchFn);
     case 'unavailable':
@@ -538,6 +540,8 @@ function connectionTestErrorKind(
 ): ConnectionEffectError['kind'] {
   switch (errorClass) {
     case 'auth':
+    case 'permission':
+    case 'configuration':
     case 'timeout':
     case 'provider_unavailable':
     case 'network':

@@ -193,6 +193,12 @@ export class ConnectionCatalogDocumentOwner {
     if (current.connections.some((item) => item.slug === input.connection.slug)) {
       return deepFreeze({ kind: 'connection_exists', slug: input.connection.slug });
     }
+    if (
+      input.connection.providerType === 'amazon-bedrock' &&
+      current.connections.some((item) => item.providerType === 'amazon-bedrock')
+    ) {
+      return deepFreeze({ kind: 'connection_exists', slug: 'amazon-bedrock' });
+    }
     if (current.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
       throw codecError(
         'invalid_connection_input',
@@ -243,12 +249,17 @@ export class ConnectionCatalogDocumentOwner {
       );
     }
     const endpointChanged = previous.baseUrl !== changes.baseUrl;
+    const providerConfigChanged =
+      changes.bedrock !== undefined && !isDeepStrictEqual(previous.bedrock, changes.bedrock);
+    const inventoryChanged = endpointChanged || providerConfigChanged;
     const testBasisChanged =
-      endpointChanged ||
+      inventoryChanged ||
       previous.enabled !== changes.enabled ||
       !sameStringArray(previous.enabledModelIds, changes.enabledModelIds) ||
       (changes.requestBodyOverlay !== undefined &&
-        !isDeepStrictEqual(previous.requestBodyOverlay, changes.requestBodyOverlay ?? undefined));
+        !isDeepStrictEqual(previous.requestBodyOverlay, changes.requestBodyOverlay ?? undefined)) ||
+      (changes.bedrock !== undefined &&
+        !isDeepStrictEqual(previous.bedrock, changes.bedrock ?? undefined));
     const connections = [...current.connections];
     connections[index] = {
       connectionId: previous.connectionId,
@@ -291,11 +302,16 @@ export class ConnectionCatalogDocumentOwner {
         : changes.requestBodyOverlay === null
           ? {}
           : { requestBodyOverlay: changes.requestBodyOverlay }),
-      models: endpointChanged ? [] : previous.models,
-      ...(endpointChanged || previous.modelSource === undefined
+      ...(changes.bedrock === undefined
+        ? previous.bedrock === undefined
+          ? {}
+          : { bedrock: previous.bedrock }
+        : { bedrock: changes.bedrock }),
+      models: inventoryChanged ? [] : previous.models,
+      ...(inventoryChanged || previous.modelSource === undefined
         ? {}
         : { modelSource: previous.modelSource }),
-      ...(endpointChanged || previous.modelsFetchedAt === undefined
+      ...(inventoryChanged || previous.modelsFetchedAt === undefined
         ? {}
         : { modelsFetchedAt: previous.modelsFetchedAt }),
       ...(testBasisChanged || previous.lastTest === undefined
@@ -522,6 +538,8 @@ export class ConnectionCatalogDocumentOwner {
     | PreparedOnboardingResult
     | { readonly kind: 'slug_conflict' }
     | { readonly kind: 'catalog_full' } {
+    rawBedrock?: unknown,
+  ): PreparedOnboardingResult | { readonly kind: 'slug_conflict' } {
     const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
     const slug = decodeConnectionInput(() => decodeConnectionSlug(rawSlug));
     const providerType = decodeConnectionInput(() => decodeProviderType(rawProviderType));
@@ -567,6 +585,7 @@ export class ConnectionCatalogDocumentOwner {
           ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
           enabled: true,
           enabledModelIds: rawEnabledModelIds,
+          ...(rawBedrock === undefined ? {} : { bedrock: rawBedrock }),
         },
         providerType,
       ),
@@ -612,6 +631,8 @@ export class ConnectionCatalogDocumentOwner {
       revision: previous ? nextRevision(previous.revision) : 1,
       enabled: true,
       enabledModelIds,
+      enabledModelIds: changes.enabledModelIds,
+      ...(changes.bedrock === undefined ? {} : { bedrock: changes.bedrock }),
       models: result.models,
       modelSource: result.source,
       modelsFetchedAt: result.fetchedAt,
@@ -628,6 +649,7 @@ export class ConnectionCatalogDocumentOwner {
       isDeepStrictEqual(previous.models, result.models) &&
       previous.modelSource === result.source &&
       previous.modelsFetchedAt === result.fetchedAt &&
+      isDeepStrictEqual(previous.bedrock, changes.bedrock) &&
       isDeepStrictEqual(current.defaultTarget, defaultTarget) &&
       (!invalidateLastTest || previous.lastTest === undefined)
     ) {

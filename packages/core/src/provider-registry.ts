@@ -78,6 +78,8 @@ type ProviderRuntimeAdapterDefinition =
    * Distinct from a provider that was never wired: see `retired`.
    */
   | { kind: 'unavailable' }
+  | { kind: 'amazon-bedrock' }
+  | { kind: 'claude-subscription' }
   | { kind: 'openai'; apiProtocol?: 'openai-chat' | 'openai-responses' }
   | { kind: 'openai-codex' }
   | { kind: 'google'; normalizeBaseUrl?: boolean }
@@ -108,19 +110,20 @@ export type ProviderModelDiscovery =
   | { kind: 'cloudflare' }
   | { kind: 'fallback'; reason: string }
   | { kind: 'ollama' }
-  | { kind: 'cohere' };
+  | { kind: 'cohere' }
+  | { kind: 'amazon-bedrock' };
 
 export interface ProviderDefaults {
   label: string;
   description: string;
   baseUrl: string;
   baseUrlTemplate?: string;
-  authKind: 'api_key' | 'optional_api_key' | 'oauth_token' | 'none';
+  authKind: 'api_key' | 'optional_api_key' | 'oauth_token' | 'aws_sso' | 'none';
   backendKind: BackendKind;
   fallbackModels: string[];
   defaultEnabledModelIds?: readonly string[];
   status: 'ready' | 'phase3-experimental';
-  protocol: 'anthropic' | 'openai' | 'google' | 'cohere';
+  protocol: 'anthropic' | 'openai' | 'google' | 'cohere' | 'bedrock';
   runtimeAdapter: ProviderRuntimeAdapter;
   /**
    * Maka used to offer this provider and no longer does. The entry stays
@@ -706,6 +709,15 @@ const githubCopilotModelIds = toolCallingModelIds(
   GENERATED_MODELS_DEV_METADATA['github-copilot'],
   ['gpt-5.4'],
 );
+// Bedrock's account/region control plane is the availability authority. These
+// ids only seed metadata and offline copy; onboarding never enables one until
+// AWS discovery (or the explicit manual-model probe) confirms it.
+const amazonBedrockModelIds = [
+  'amazon.nova-pro-v1:0',
+  'amazon.nova-lite-v1:0',
+  'amazon.nova-micro-v1:0',
+  'anthropic.claude-sonnet-4-5-20250929-v1:0',
+];
 
 function toolCallingModelIds(
   providerLabel: string,
@@ -1879,6 +1891,25 @@ const providerRegistry = {
     readyOrder: 16.2,
     catalogOrder: 18.2,
     recommendedOrder: 7.7,
+  },
+  'amazon-bedrock': {
+    label: 'Amazon Bedrock',
+    description: 'Use Bedrock Converse models with AWS IAM Identity Center SSO.',
+    baseUrl: '',
+    baseUrlTemplate: 'https://bedrock-runtime.${AWS_REGION}.amazonaws.com',
+    authKind: 'aws_sso',
+    backendKind: 'ai-sdk',
+    fallbackModels: amazonBedrockModelIds,
+    status: 'ready',
+    protocol: 'bedrock',
+    runtimeAdapter: { kind: 'amazon-bedrock' },
+    modelDiscovery: { kind: 'amazon-bedrock' },
+    category: 'oauth',
+    catalogGroup: 'api',
+    catalogBadge: 'Account',
+    signupUrl: 'https://aws.amazon.com/bedrock/',
+    modelsDevId: 'amazon-bedrock',
+    catalogOrder: 19,
   },
   'github-copilot': {
     label: githubCopilot.name,

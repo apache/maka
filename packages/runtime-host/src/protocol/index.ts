@@ -195,6 +195,8 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 72 as const;
 // needed its client identity. An older peer still offers both.
 // 30: Access credential pairing adds prepare/finalize operations. Older Hosts
 // cannot complete the staged credential handoff used by managed onboarding.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 30 as const;
+// 30: Amazon Bedrock IAM Identity Center enrollment and canonical connection fields.
 // 29: `goal.arm` is a new wire operation. An older Host decodes it as unknown
 // and tears the connection down, so the pair must be refused up front.
 // 28: Relay model profiles carry the Fast service-tier declaration. Older

@@ -99,6 +99,7 @@ import {
   type BeginConnectionTestResult,
   type BeginModelFetchResult,
   type BeginInteractiveOAuthLoginResult,
+  type CompareAndSetAwsSsoCredentialInput,
   type CompareAndSetOAuthCredentialInput,
   type ConnectionEffectChangedDomain,
   type ConnectionEffectCompletionResult,
@@ -408,12 +409,12 @@ export class RuntimePolicyCoordinator {
         }
         if (
           authority === 'client' &&
-          locator.kind === 'oauth_token' &&
-          connection.providerType !== 'github-copilot'
+          ((locator.kind === 'oauth_token' && connection.providerType !== 'github-copilot') ||
+            locator.kind === 'aws_sso')
         ) {
           throw codecError(
             'invalid_credential_input',
-            'Client-supplied OAuth credentials are only accepted for GitHub Copilot',
+            'Client-supplied account credentials are not accepted for this provider',
           );
         }
       }
@@ -464,6 +465,39 @@ export class RuntimePolicyCoordinator {
         throw codecError(
           'invalid_credential_input',
           'OAuth refresh credential does not match the provider auth contract',
+        );
+      }
+      const prepared = this.vault.prepareSet(await this.vault.read(root), input);
+      if (prepared.kind !== 'ready') return deepFreeze({ kind: 'superseded' as const });
+      await this.vault.commitSet(root, prepared);
+      return deepFreeze({
+        kind: 'committed' as const,
+        credentialId: prepared.entry.credentialId,
+        revision: prepared.entry.revision,
+      });
+    });
+  }
+
+  compareAndSetAwsSsoCredential(rawInput: CompareAndSetAwsSsoCredentialInput) {
+    return this.inLane(async (root) => {
+      const input = decodeCredentialInput(() => normalizeSetCredentialInput(rawInput));
+      if (
+        input.locator.scope !== 'connection' ||
+        input.locator.kind !== 'aws_sso' ||
+        input.expected === null
+      ) {
+        throw codecError(
+          'invalid_credential_input',
+          'AWS SSO refresh requires an existing connection credential generation',
+        );
+      }
+      const catalog = await this.catalog.read(root);
+      const connection = findConnection(catalog, input.locator);
+      if (!connection) return deepFreeze({ kind: 'superseded' as const });
+      if (PROVIDER_DEFAULTS[connection.providerType].authKind !== 'aws_sso') {
+        throw codecError(
+          'invalid_credential_input',
+          'AWS SSO credential does not match the provider auth contract',
         );
       }
       const prepared = this.vault.prepareSet(await this.vault.read(root), input);
@@ -741,6 +775,12 @@ export class RuntimePolicyCoordinator {
         return deepFreeze({ kind: 'connection_not_found' as const });
       }
       assertConnectionIsWritable(connection);
+      if (connection.providerType === 'amazon-bedrock' && updates.length > 0) {
+        throw codecError(
+          'invalid_credential_input',
+          'Amazon Bedrock does not support custom request headers',
+        );
+      }
 
       const locator = connectionRequestHeadersLocator(connectionId);
       const vault = await this.vault.read(root);
@@ -1071,6 +1111,31 @@ export class RuntimePolicyCoordinator {
         credential = credentialStatus(vault, locator);
         if (existing) {
           storedSecret = findCredential(vault, locator)?.secret ?? null;
+      const connectionId = existing?.connectionId ?? randomUUID();
+      let invalidateLastTest = false;
+      if (input.suppliedSecret !== null) {
+        const locator = {
+          scope: 'connection',
+          connectionId,
+          kind: input.providerType === 'amazon-bedrock' ? 'aws_sso' : 'api_key',
+        } as const;
+        const vault = await this.vault.read(root);
+        const credential = findCredential(vault, locator);
+        if (credential?.secret !== input.suppliedSecret) {
+          invalidateLastTest = true;
+          const prepared = this.vault.prepareSet(vault, {
+            locator,
+            expected: credential
+              ? { credentialId: credential.credentialId, revision: credential.revision }
+              : null,
+            secret: input.suppliedSecret,
+          });
+          if (prepared.kind !== 'ready') {
+            throw codecError(
+              'invalid_document',
+              `Onboarding credential preflight returned ${prepared.kind}`,
+            );
+          }
         }
       }
       // Discovery must probe with the same header customization the models
@@ -1128,6 +1193,14 @@ export class RuntimePolicyCoordinator {
       throw codecError(
         'invalid_connection_input',
         'Expected an authentic available connection onboarding ticket',
+      const catalogPreflight = this.catalog.prepareOnboardingUpsert(
+        catalog,
+        intent.connectionId,
+        intent.providerType,
+        intent.enabledModelIds,
+        intent.discovery,
+        intent.invalidateLastTest,
+        intent.bedrock,
       );
     }
     record.state = 'in_flight';
@@ -1694,7 +1767,7 @@ export class RuntimePolicyCoordinator {
       const locator = {
         scope: 'connection',
         connectionId: intent.connectionId,
-        kind: 'api_key',
+        kind: intent.providerType === 'amazon-bedrock' ? 'aws_sso' : 'api_key',
       } as const;
       const vault = await this.vault.read(root);
       const existing = findCredential(vault, locator);
@@ -1717,6 +1790,20 @@ export class RuntimePolicyCoordinator {
       }
     }
 
+    const catalog = await this.catalog.read(root);
+    const prepared = this.catalog.prepareOnboardingUpsert(
+      catalog,
+      intent.connectionId,
+      intent.providerType,
+      intent.baseUrl,
+      intent.enabledModelIds,
+      intent.discovery,
+      intent.invalidateLastTest,
+      intent.bedrock,
+    );
+    if (prepared.kind === 'slug_conflict') {
+      throw codecError('invalid_document', 'Onboarding intent conflicts with the connection slug');
+    }
     const snapshot = await this.catalog.commitPreparedOnboarding(root, prepared);
     const connection = snapshot.connections.find(
       (candidate) => candidate.connectionId === intent.connectionId,

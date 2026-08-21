@@ -150,6 +150,8 @@ import { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
 import { HostNetworkProxyCoordinator } from './network-proxy-coordinator.js';
 import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
+import { BedrockSsoExecutionAuthority } from './bedrock-sso-execution-authority.js';
+import { HostBedrockSsoCoordinator } from './bedrock-sso-coordinator.js';
 import { HostOAuthCoordinator, type HostOAuthCoordinatorInput } from './oauth-coordinator.js';
 import { HostPlanCoordinator } from './plan-coordinator.js';
 import {
@@ -273,6 +275,7 @@ export async function createExecutionRuntimeHostComposition(
     const openedProjectCatalog = storage.projectCatalog;
     const runtimePolicyStores = storage.runtimePolicy;
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
+    const bedrockCredentials = new BedrockSsoExecutionAuthority(runtimePolicyStores);
     const openedScheduledTaskStore = storage.scheduledTasks;
     const openedPlanStore = storage.plan;
     const openedDeepResearchStore = storage.deepResearch;
@@ -506,6 +509,7 @@ export async function createExecutionRuntimeHostComposition(
     let memory: HostMemoryCoordinator | undefined;
     let clientCapabilities: HostClientCapabilityCoordinator | undefined;
     let oauth: HostOAuthCoordinator | undefined;
+    let bedrockSso: HostBedrockSsoCoordinator | undefined;
     let scheduledTasks: HostScheduledTaskCoordinator | undefined;
     let scheduledTaskTool: MakaTool | undefined;
     let goal: HostGoalCoordinator | undefined;
@@ -589,6 +593,8 @@ export async function createExecutionRuntimeHostComposition(
       model: createHostDailyReviewModel({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
+        bedrockCredentials,
+        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
@@ -665,6 +671,8 @@ export async function createExecutionRuntimeHostComposition(
       model: createHostMemoryExtractionModel({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
+        bedrockCredentials,
+        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
@@ -680,6 +688,8 @@ export async function createExecutionRuntimeHostComposition(
             runtimePolicy: runtimePolicyStores,
             oauthCredentials,
             sandboxDiagnostics,
+            bedrockCredentials,
+            claudeDeviceId: context.owner.capability.rootId,
             createRunComposer: createInteractiveRunComposerFactory({
               skills,
               memory: requireMemory(memory),
@@ -905,6 +915,8 @@ export async function createExecutionRuntimeHostComposition(
       model: createHostSessionEffectModel({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
+        bedrockCredentials,
+        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
@@ -1080,6 +1092,16 @@ export async function createExecutionRuntimeHostComposition(
       activation: runtimePolicyActivation,
       onModelToolsChanged: registerBackendInvalidation,
     });
+    bedrockSso = new HostBedrockSsoCoordinator(
+      runtimePolicyStores,
+      runtimePolicyActivation,
+      clientCapabilities,
+      () => context.acquireResidency('bedrock-sso'),
+      () => {
+        hostChanges.publishConfiguration();
+        return manager.refreshIdleBackends();
+      },
+    );
     oauth = new HostOAuthCoordinator({
       runtimePolicy: runtimePolicyStores,
       oauthCredentials,
@@ -1246,6 +1268,8 @@ export async function createExecutionRuntimeHostComposition(
       evaluator: createHostGoalEvaluator({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
+        bedrockCredentials,
+        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
         readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
@@ -1279,6 +1303,7 @@ export async function createExecutionRuntimeHostComposition(
       stores: runtimePolicyStores,
       activation: runtimePolicyActivation,
       oauthCredentials,
+      bedrockCredentials,
       onCommittedMutation: registerConfigurationMutation,
     });
     const sessionCatalog = new HostSessionCatalogCoordinator({
@@ -1604,6 +1629,7 @@ export async function createExecutionRuntimeHostComposition(
           skills.handlers,
           usagePricing.handlers,
           oauth.handlers,
+          bedrockSso.handlers,
           webSearch.handlers,
           networkProxy.handlers,
           configuration.handlers,
@@ -1618,12 +1644,14 @@ export async function createExecutionRuntimeHostComposition(
           () => connectionEffects.beginDrain(),
           () => skills.beginDrain(),
           () => oauth?.beginDrain(),
+          () => bedrockSso?.beginDrain(),
         ],
         close: [
           () => connectionEffects.close(),
           () => (backendInvalidationPoisoned ? undefined : manager.refreshIdleBackends()),
           () => skills.close(),
           () => oauth?.close(),
+          () => bedrockSso?.close(),
           () => {
             unsubscribeTranscriptChanges?.();
             unsubscribeUsageChanges?.();

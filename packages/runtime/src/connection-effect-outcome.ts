@@ -30,6 +30,8 @@ export interface ConnectionEffectConnection {
 
 export type ConnectionEffectErrorKind =
   | 'auth'
+  | 'permission'
+  | 'configuration'
   | 'timeout'
   | 'provider_unavailable'
   | 'network'

@@ -154,7 +154,14 @@
     "undici": "^8.7.0",
     "ws": "^8.21.3",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@ai-sdk/amazon-bedrock": "5.0.58",
+    "@aws-sdk/client-bedrock": "3.1019.0",
+    "@aws-sdk/client-bedrock-runtime": "3.1019.0",
+    "@aws-sdk/client-sso": "3.1019.0",
+    "@aws-sdk/client-sso-oidc": "3.1019.0",
+    "@smithy/protocol-http": "5.3.12",
+    "@smithy/types": "4.13.1"
   },
   "devDependencies": {
     "@maka/storage": "0.1.0",

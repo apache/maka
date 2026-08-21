@@ -144,6 +144,17 @@ selection rules are documented in
    or token files are not imported; users with only those copies must
    re-authenticate.
 4. **Renderer process sandbox + preload IPC bridge.** The
+2. **Credential-at-rest boundaries.** Runtime Policy writes
+   `credential-vault.json` as versioned plaintext JSON under the Runtime Host
+   State Root. Its load-bearing boundary is the OS user account plus filesystem
+   controls: directory mode 0o700, file mode 0o600, atomic writes, and no
+   symlink/traversal escape. Subscription OAuth tokens (Claude, Codex, GitHub
+   Copilot, and xAI) and Amazon Bedrock IAM Identity Center sessions live in
+   that same vault, which is the single authority every Runtime Host surface —
+   Desktop, TUI, CLI — uses. Electron safeStorage is not part of this boundary
+   anymore. Pre-existing safeStorage-encrypted credential or token files are
+   not imported; users with only those copies must re-authenticate.
+3. **Renderer process sandbox + preload IPC bridge.** The
    renderer cannot reach files, network, or shell directly. Every
    IPC handler in `apps/desktop/src/main/main.ts` is the trust
    boundary between renderer-controlled input and main-process
@@ -206,8 +217,9 @@ privacy commitments:
   reports `incognitoActive: true`, the WebSearch tool fails
   closed before any network call. Main composition and focused
   consumer tests own the full enforcement inventory.
-- **Token boundary.** Cleartext API keys / OAuth tokens / bot
-  tokens NEVER cross the main→renderer IPC boundary.
+- **Token boundary.** Cleartext API keys / OAuth tokens / AWS SSO sessions /
+  bot tokens NEVER cross the main→renderer IPC boundary. Temporary Bedrock
+  role credentials are memory-only inside Runtime Host.
   `apps/desktop/src/main/__tests__/web-search-boundary.test.ts` and
   `claude-subscription-ipc-boundary.test.ts` enforce this for Tavily
   and Claude subscription credentials.
