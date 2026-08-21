@@ -31,20 +31,17 @@ export interface SessionStatusPresentation {
  *
  * `undefined` means no dot: `active` is the resting state and the rail does not
  * mark a task for being ordinary. Everything else gets one, including
- * `archived` and `aborted` — they were `muted` before this change and `muted`
- * resolved to a real `neutral` dot, so dropping them to `undefined` was a
- * behaviour change, not a consequence of collapsing the layer. Without a dot
- * they fell through to the unread branch and an aborted task with unread text
- * drew the same accent dot as one that is running.
+ * `aborted` — it was `muted` before this change and `muted` resolved to a real
+ * `neutral` dot, so dropping it to `undefined` was a behaviour change, not a
+ * consequence of collapsing the layer. Without a dot it fell through to the
+ * unread branch and an aborted task with unread text drew the same accent dot
+ * as one that is running.
  */
 const STATUS_SEMANTIC: Record<SessionStatus, StatusSemantic | undefined> = {
   active: undefined,
   running: 'active',
   waiting_for_user: 'attention',
   blocked: 'attention',
-  review: 'attention',
-  done: 'success',
-  archived: 'neutral',
   aborted: 'neutral',
 };
 

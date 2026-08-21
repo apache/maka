@@ -67,6 +67,11 @@ interface AppUpdateServiceDeps {
   currentVersion: string;
   isPackaged: boolean;
   updater?: AppUpdater;
+  /**
+   * Harness-only feed override (`MAKA_UPDATE_TEST_FEED`); see
+   * {@link resolveUpdateFeedOverride} for the exact accepted shape.
+   */
+  testFeedUrl?: string;
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
   onStatusChange?: (status: AppUpdateStatus) => void;
@@ -92,6 +97,58 @@ const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
  * four-hour timer stays as the floor for a window that is never refocused.
  */
 const UPDATE_CHECK_ON_FOCUS_MIN_INTERVAL_MS = 15 * 60 * 1000;
+
+/**
+ * Harness-only override for the update feed (`MAKA_UPDATE_TEST_FEED`).
+ *
+ * Accepts exactly `http://127.0.0.1:<port>[/path]` and maps it to a generic
+ * provider so the end-to-end Windows auto-update verification can serve a
+ * candidate installer plus `latest.yml` from a loopback HTTP server. Anything
+ * else set — a remote host, `localhost`, another loopback alias, HTTPS,
+ * userinfo, a query string, or a malformed URL — throws: a mistyped override
+ * must never silently fall back to the production GitHub feed, because a test
+ * run quietly installing a real release is exactly the failure this shape
+ * exists to prevent.
+ *
+ * Security posture (this is not an update-hijack vector): setting an
+ * environment variable on the app's process already requires code execution
+ * as the same user, and the per-user NSIS install model means that user can
+ * rewrite the installation directory directly — the override grants no
+ * capability across any privilege boundary. Loopback-only keeps even that
+ * same-user surface minimal: the feed must be a process listening on this
+ * machine. With the variable unset the feed configuration is byte-identical
+ * to production, and update signature verification (once a certificate
+ * exists) applies to overridden feeds exactly as it does to the GitHub feed —
+ * nothing here relaxes it.
+ */
+export function resolveUpdateFeedOverride(
+  raw: string | undefined,
+): { provider: 'generic'; url: string } | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new TypeError(
+      `MAKA_UPDATE_TEST_FEED is not a URL: ${JSON.stringify(raw)}`,
+    );
+  }
+  if (
+    url.protocol !== 'http:' ||
+    url.hostname !== '127.0.0.1' ||
+    url.port === '' ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.search !== '' ||
+    url.hash !== ''
+  ) {
+    throw new TypeError(
+      'MAKA_UPDATE_TEST_FEED must be http://127.0.0.1:<port>[/path] ' +
+        `(got ${JSON.stringify(raw)})`,
+    );
+  }
+  return { provider: 'generic', url: url.toString() };
+}
 
 function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/i, '');
@@ -241,11 +298,16 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
   updater.autoInstallOnAppQuit = false;
   updater.allowPrerelease = false;
   updater.logger = null;
-  updater.setFeedURL({
-    provider: 'github',
-    owner: 'Maka-Agent',
-    repo: 'maka-agent',
-  });
+  // The override changes the feed URL and nothing else: every other updater
+  // setting and the whole status machine behave identically under it, so what
+  // the loopback harness verifies is what production runs.
+  updater.setFeedURL(
+    resolveUpdateFeedOverride(deps.testFeedUrl) ?? {
+      provider: 'github',
+      owner: 'Maka-Agent',
+      repo: 'maka-agent',
+    },
+  );
 
   updater.on('checking-for-update', () => {
     publish({ state: 'checking', currentVersion: deps.currentVersion });

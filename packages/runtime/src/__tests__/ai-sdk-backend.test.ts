@@ -116,7 +116,7 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     }
   });
 
-  test('replaces Write and Edit with freeform apply_patch for declared DeepSeek V4 Flash', async () => {
+  test('keeps Write and Edit when DeepSeek cannot carry custom apply_patch', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -143,9 +143,9 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     await drain(backend.send({ turnId: 'turn-1', text: 'edit', context: [] }));
 
     const names = modelToolNames(model);
-    assert.equal(names.includes('apply_patch'), true);
-    assert.equal(names.includes('Write'), false);
-    assert.equal(names.includes('Edit'), false);
+    assert.equal(names.includes('apply_patch'), false);
+    assert.equal(names.includes('Write'), true);
+    assert.equal(names.includes('Edit'), true);
   });
 
   test('replays a durable apply_patch failure as native provider JSON', async () => {
@@ -217,20 +217,18 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     });
   });
 
-  test('replays a durable DeepSeek freeform apply_patch result as plain text', async () => {
+  const assertApplyPatchHistoryDowngraded = async (
+    targetConnection: LlmConnection,
+    modelId: string,
+  ) => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
-      connection: {
-        ...connection(),
-        slug: 'deepseek',
-        providerType: 'deepseek',
-        defaultModel: 'deepseek-v4-flash',
-      },
+      connection: targetConnection,
       apiKey: 'sk-test',
-      modelId: 'deepseek-v4-flash',
+      modelId,
       modelFactory: () => model,
       tools: [nativeApplyPatchTool()],
       newId: idGenerator(),
@@ -259,14 +257,14 @@ describe('AiSdkBackend ApplyPatch routing', () => {
               kind: 'function_call',
               id: 'call-1',
               name: 'apply_patch',
-              args: {
-                callId: 'call-1',
-                operation: {
-                  type: 'update_file',
-                  path: 'file.txt',
-                  diff: '@@\n-before\n+after',
-                },
-              },
+              args: [
+                '*** Begin Patch',
+                '*** Update File: file.txt',
+                '@@',
+                '-before',
+                '+after',
+                '*** End Patch',
+              ].join('\n'),
             },
           }),
           runtimeEvent({
@@ -285,20 +283,42 @@ describe('AiSdkBackend ApplyPatch routing', () => {
       }),
     );
 
-    const toolResult = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
-      .find((message) => message.role === 'tool')
-      ?.content.find((part) => part.type === 'tool-result');
-    const toolCall = (compactPrompt(model) as Array<{ role: string; content: any[] }>)
-      .find((message) => message.role === 'assistant')
-      ?.content.find((part) => part.type === 'tool-call');
+    const replay = compactPrompt(model) as Array<{ role: string; content: any[] }>;
     assert.equal(
-      toolCall?.input,
-      '*** Begin Patch\n*** Update File: file.txt\n@@\n-before\n+after\n*** End Patch',
+      replay.some((message) =>
+        message.content.some(
+          (part) => part.type === 'tool-call' && part.toolName === 'apply_patch',
+        ),
+      ),
+      false,
     );
-    assert.deepEqual(toolResult?.output, {
-      type: 'text',
-      value: 'Applied 1 file operation.',
-    });
+    assert.equal(
+      replay.some((message) => message.role === 'tool'),
+      false,
+    );
+    assert.match(
+      replay
+        .flatMap((message) => message.content)
+        .find((part) => part.type === 'text' && /ApplyPatch completed/.test(part.text))?.text ?? '',
+      /ApplyPatch completed 1 file operation: update_file file\.txt/,
+    );
+  };
+
+  test('downgrades durable DeepSeek freeform apply_patch history to a fact', async () => {
+    await assertApplyPatchHistoryDowngraded(
+      {
+        ...connection(),
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      'deepseek-v4-flash',
+    );
+  });
+
+  test('downgrades apply_patch history when a non-Responses target does not advertise it', async () => {
+    const targetConnection = connection();
+    await assertApplyPatchHistoryDowngraded(targetConnection, targetConnection.defaultModel!);
   });
 
   test('preserves a multi-file ApplyPatch fact when structured replay cannot represent it', async () => {
@@ -513,7 +533,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
           maxSummaryEstimatedTokens: 500,
         },
       },
-      summarizeHistoryCompact: async () => 'AUTOMATIC_MEMORY_SUMMARY',
+      summarizeHistoryCompact: async () => structuredSummary('AUTOMATIC_MEMORY_SUMMARY'),
       recordHistoryCompactCheckpoint: (checkpoint) => {
         recorded.push(checkpoint);
       },
@@ -600,7 +620,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
         charsPerToken: 1,
         historyCompact: { enabled: true, mode: 'read_write' },
       },
-      summarizeHistoryCompact: async () => 'must not summarize',
+      summarizeHistoryCompact: async () => structuredSummary('must not summarize'),
       recordHistoryCompactCheckpoint: (checkpoint) => {
         recorded.push(checkpoint);
       },
@@ -667,7 +687,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
             maxSummaryEstimatedTokens: 500,
           },
         },
-        summarizeHistoryCompact: async () => 'DENIED_MEMORY_SUMMARY',
+        summarizeHistoryCompact: async () => structuredSummary('DENIED_MEMORY_SUMMARY'),
         recordHistoryCompactCheckpoint: (checkpoint) => {
           recorded.push(checkpoint);
         },
@@ -744,7 +764,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
           maxSummaryEstimatedTokens: 500,
         },
       },
-      summarizeHistoryCompact: async () => 'UNAVAILABLE_MEMORY_SUMMARY',
+      summarizeHistoryCompact: async () => structuredSummary('UNAVAILABLE_MEMORY_SUMMARY'),
       recordHistoryCompactCheckpoint: (checkpoint) => {
         recorded.push(checkpoint);
       },
@@ -3006,6 +3026,203 @@ describe('AiSdkBackend model history', () => {
     assert.match(JSON.stringify(assistant), /Maka shipped the feature/);
   });
 
+  test('falls back to grounded text when Open Responses cannot replay a hosted tool pair', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: '',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-u-search',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'search',
+          }),
+          runtimeEvent({
+            id: 'rt-search-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { stepId: 'provider-step' },
+            content: {
+              kind: 'function_call',
+              id: 'search-1',
+              name: 'WebSearch',
+              args: { query: 'latest Maka' },
+              providerExecuted: true,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-search-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'search-1',
+              name: 'WebSearch',
+              result: { type: 'web_search_result', query: 'latest Maka' },
+              providerExecuted: true,
+              isError: false,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-search-text',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { providerEventId: 'provider-step' },
+            content: { kind: 'text', text: 'Maka shipped the feature.' },
+          }),
+        ],
+        continuation: {
+          sourceInvocationId: 'invocation-source',
+          sourceRunId: 'run-source',
+          sourceTurnId: 'turn-prev',
+          sourceRuntimeEventHighWater: 4,
+        },
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    assert.match(JSON.stringify(prompt), /Maka shipped the feature/);
+    assert.equal(JSON.stringify(prompt).includes('tool-call'), false);
+    assert.equal(JSON.stringify(prompt).includes('tool-result'), false);
+  });
+
+  test('keeps unrelated client tool history when degrading a hosted tool pair', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: '[redacted]',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: '',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-u-mixed',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'read then search',
+          }),
+          runtimeEvent({
+            id: 'rt-read-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { stepId: 'client-step' },
+            content: {
+              kind: 'function_call',
+              id: 'read-1',
+              name: 'Read',
+              args: { path: '/tmp/sentinel.ts' },
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-read-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'read-1',
+              name: 'Read',
+              result: [{ type: 'text', text: 'CLIENT_READ_SENTINEL_CONTENT' }],
+              isError: false,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-search-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { stepId: 'provider-step' },
+            content: {
+              kind: 'function_call',
+              id: 'search-1',
+              name: 'WebSearch',
+              args: { query: 'latest Maka' },
+              providerExecuted: true,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-search-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'search-1',
+              name: 'WebSearch',
+              result: { type: 'web_search_result', query: 'latest Maka' },
+              providerExecuted: true,
+              isError: false,
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-mixed-text',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            refs: { providerEventId: 'provider-step' },
+            content: { kind: 'text', text: 'Maka shipped the feature.' },
+          }),
+        ],
+        continuation: {
+          sourceInvocationId: 'invocation-source',
+          sourceRunId: 'run-source',
+          sourceTurnId: 'turn-prev',
+          sourceRuntimeEventHighWater: 6,
+        },
+      }),
+    );
+
+    const wire = JSON.stringify(compactPrompt(model));
+    // The unsupported provider-executed pair degrades away…
+    assert.equal(wire.includes('latest Maka'), false, wire);
+    // …but the unrelated client Read call and its result survive (#2972).
+    assert.match(wire, /CLIENT_READ_SENTINEL_CONTENT/);
+    assert.match(wire, /"toolName":"Read"|\\"toolName\\":\\"Read\\"/);
+    assert.match(wire, /Maka shipped the feature/);
+  });
+
   test('replays an image tool result as provider image data', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     const model = completionModel();
@@ -5038,7 +5255,7 @@ describe('AiSdkBackend model history', () => {
         minRecentTurns: 1,
         charsPerToken: 1,
       },
-      summarizeHistoryCompact: async () => 'MANUAL_V2_HISTORY_COMPACT_SENTINEL',
+      summarizeHistoryCompact: async () => structuredSummary('MANUAL_V2_HISTORY_COMPACT_SENTINEL'),
       recordHistoryCompactCheckpoint: (checkpoint) => {
         recorded.push(checkpoint);
       },
@@ -5082,7 +5299,7 @@ describe('AiSdkBackend model history', () => {
     assert.equal(recorded.length, 1);
     assert.equal(
       recorded[0]?.version === 2 ? recorded[0].summary : undefined,
-      'MANUAL_V2_HISTORY_COMPACT_SENTINEL',
+      structuredSummary('MANUAL_V2_HISTORY_COMPACT_SENTINEL'),
     );
     assert.deepEqual(recorded[0]?.coverage.eventCount, 2);
     assert.equal(recorded[0]?.memoryExtractionBoundary, undefined);
@@ -5112,6 +5329,7 @@ describe('AiSdkBackend model history', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: oldEvents.slice(0, 1),
       summary: 'MANUAL_V2_PREVIOUS_SUMMARY',
+      summaryFormat: 'legacy_freeform',
       charsPerToken: 1,
     });
     const summaryInputs: Array<{ previous?: string; newlyFoldedIds: string[] }> = [];
@@ -5140,7 +5358,7 @@ describe('AiSdkBackend model history', () => {
             input.previousCheckpoint?.version === 2 ? input.previousCheckpoint.summary : undefined,
           newlyFoldedIds: (input.newlyFoldedRuntimeEvents ?? []).map((event) => event.id),
         });
-        return 'MANUAL_V2_ROLLED_SUMMARY';
+        return structuredSummary('MANUAL_V2_ROLLED_SUMMARY');
       },
       recordHistoryCompactCheckpoint: (checkpoint) => {
         recorded.push(checkpoint);
@@ -5193,6 +5411,7 @@ describe('AiSdkBackend model history', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: oldEvents,
       summary: 'MANUAL_V2_REUSED_SUMMARY',
+      summaryFormat: 'legacy_freeform',
       charsPerToken: 1,
     });
     let summarizeCalls = 0;
@@ -5217,7 +5436,7 @@ describe('AiSdkBackend model history', () => {
       loadHistoryCompactCheckpoint: () => previous,
       summarizeHistoryCompact: async () => {
         summarizeCalls += 1;
-        return 'must not resummarize an already covered fold';
+        return structuredSummary('must not resummarize an already covered fold');
       },
       recordHistoryCompactCheckpoint: () => {
         recordCalls += 1;
@@ -5268,6 +5487,7 @@ describe('AiSdkBackend model history', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: oldEvents,
       summary: 'OVERSIZED_PREVIOUS_SUMMARY '.repeat(100),
+      summaryFormat: 'legacy_freeform',
       charsPerToken: 1,
     });
 
@@ -5301,7 +5521,7 @@ describe('AiSdkBackend model history', () => {
         loadHistoryCompactCheckpoint: () => previous,
         summarizeHistoryCompact: async () => {
           summarizeCalls += 1;
-          return 'REFITTED_SUMMARY';
+          return structuredSummary('REFITTED_SUMMARY');
         },
         recordHistoryCompactCheckpoint: (checkpoint) => {
           recorded.push(checkpoint);
@@ -5349,7 +5569,7 @@ describe('AiSdkBackend model history', () => {
         charsPerToken: 1,
         historyCompact: { enabled: true, maxBlockEstimatedTokens: 100, maxEstimatedTokens: 10_000 },
       },
-      summarizeHistoryCompact: async () => 'TINY_SUMMARY',
+      summarizeHistoryCompact: async () => structuredSummary('TINY_SUMMARY'),
       recordHistoryCompactCheckpoint: () => {
         recordCalls += 1;
       },
@@ -5407,7 +5627,7 @@ describe('AiSdkBackend model history', () => {
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
-      summarizeHistoryCompact: async () => 'LARGER_SUMMARY '.repeat(100),
+      summarizeHistoryCompact: async () => structuredSummary('LARGER_SUMMARY '.repeat(100)),
       recordHistoryCompactCheckpoint: () => {
         recordCalls += 1;
       },
@@ -5499,6 +5719,65 @@ describe('AiSdkBackend model history', () => {
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.failOpenReason, 'output_length');
     assert.deepEqual(result.contextBudget?.historyCompactWriteSkippedReasonCounts, {
       output_length: 1,
+    });
+  });
+
+  test('the checkpoint write gate rejects a malformed summary from any producer', async () => {
+    // #3029: the summarizer validates its own completions, but the WRITE gate
+    // must enforce the invariant even for a producer that skipped that path —
+    // a malformed summary never replaces folded history.
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'manual-v2-write-gate-test',
+        maxHistoryEstimatedTokens: 10_000,
+        charsPerToken: 1,
+        historyCompact: { enabled: true },
+      },
+      // Returns (not throws) a section-less fragment, bypassing the
+      // summarizer's own generate-time validation.
+      summarizeHistoryCompact: async () => '这次会话主要讨论了以下内容，然后：',
+      recordHistoryCompactCheckpoint: () => {
+        throw new Error('must not persist');
+      },
+    });
+
+    const result = await backend.compactHistory({
+      turnId: 'turn-compact',
+      runId: 'run-1',
+      runtimeContext: [
+        runtimeTextEvent({
+          id: 'write-gate-old',
+          turnId: 'old',
+          role: 'user',
+          author: 'user',
+          text: 'old '.repeat(100),
+        }),
+        runtimeTextEvent({
+          id: 'write-gate-recent',
+          turnId: 'recent',
+          role: 'user',
+          author: 'user',
+          text: 'recent',
+        }),
+      ],
+    });
+
+    assert.equal(
+      result.contextBudget?.compactionDecisions?.[0]?.failOpenReason,
+      'malformed_summary_missing_section',
+    );
+    assert.deepEqual(result.contextBudget?.historyCompactWriteSkippedReasonCounts, {
+      malformed_summary_missing_section: 1,
     });
   });
 
@@ -12233,14 +12512,14 @@ describe('AiSdkBackend thinking persistence', () => {
 
   test('omits Responses reasoning without encrypted content from the wire request', async (t) => {
     for (const replayCase of [
-      { name: 'missing', openai: { itemId: 'rs_deepseek' } },
+      { name: 'missing', openai: { itemId: 'rs_openai' } },
       {
         name: 'null',
-        openai: { itemId: 'rs_deepseek', reasoningEncryptedContent: null },
+        openai: { itemId: 'rs_openai', reasoningEncryptedContent: null },
       },
       {
         name: 'empty string',
-        openai: { itemId: 'rs_deepseek', reasoningEncryptedContent: '' },
+        openai: { itemId: 'rs_openai', reasoningEncryptedContent: '' },
       },
     ] as const) {
       await t.test(replayCase.name, async () => {
@@ -12252,7 +12531,7 @@ describe('AiSdkBackend thinking persistence', () => {
             author: 'agent',
             content: {
               kind: 'thinking',
-              text: 'plaintext reasoning from DeepSeek',
+              text: 'display-only reasoning without an encrypted replay payload',
               providerOptions: { openai: replayCase.openai },
             },
             refs: { providerEventId: 'm1' },
@@ -12303,7 +12582,7 @@ describe('AiSdkBackend thinking persistence', () => {
                 id: 'response-current',
                 object: 'response',
                 created_at: 8,
-                model: 'deepseek-v4-flash',
+                model: 'gpt-5.5',
                 status: 'completed',
                 output: [],
                 usage: { input_tokens: 1, output_tokens: 1 },
@@ -12323,12 +12602,12 @@ describe('AiSdkBackend thinking persistence', () => {
           header: header(),
           appendMessage: async () => {},
           connection: {
-            slug: 'deepseek',
-            providerType: 'deepseek',
-            defaultModel: 'deepseek-v4-flash',
+            slug: 'openai',
+            providerType: 'openai',
+            defaultModel: 'gpt-5.5',
           },
-          apiKey: 'deepseek-test-token',
-          modelId: 'deepseek-v4-flash',
+          apiKey: 'openai-test-token',
+          modelId: 'gpt-5.5',
           modelFactory: (input) => getAIModel({ ...input, fetch }),
           tools: [],
           newId: idGenerator(),
@@ -12448,10 +12727,19 @@ describe('AiSdkBackend thinking persistence', () => {
         },
       },
       {
-        type: 'text_complete',
+        type: 'thinking_complete',
         id: 'e4',
         turnId: 'turn-prev',
         ts: 4,
+        messageId: 'm1',
+        text: 'unreplayable OpenAI reasoning',
+        providerOptions: { openai: { itemId: 'rs_without_encrypted_content' } },
+      },
+      {
+        type: 'text_complete',
+        id: 'e5',
+        turnId: 'turn-prev',
+        ts: 5,
         messageId: 'm1',
         text: '',
       },
@@ -12491,20 +12779,171 @@ describe('AiSdkBackend thinking persistence', () => {
       (message) => message.role === 'assistant' && Array.isArray(message.content),
     );
     assert.ok(assistant && Array.isArray(assistant.content));
-    const reasoning = assistant.content.find((part) => part.type === 'reasoning');
-    assert.deepEqual(reasoning, {
-      type: 'reasoning',
-      text: 'reasoning about the tool',
-      providerOptions: {
-        openai: {
-          itemId: 'rs_ark',
-          reasoningEncryptedContent: 'encrypted-ark-reasoning',
+    assert.deepEqual(
+      assistant.content.filter((part) => part.type === 'reasoning'),
+      [
+        {
+          type: 'reasoning',
+          text: 'reasoning about the tool',
+          providerOptions: {
+            openai: {
+              itemId: 'rs_ark',
+              reasoningEncryptedContent: 'encrypted-ark-reasoning',
+            },
+          },
         },
-      },
-    });
+      ],
+    );
     assert.ok(
       assistant.content.some((part) => part.type === 'tool-call' && part.toolCallId === 'tool-1'),
     );
+  });
+
+  test('DeepSeek Responses replays plaintext reasoning without an OpenAI item id', async () => {
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-prev',
+      turnId: 'turn-prev',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as InvocationContext;
+    const memory = createSessionEventMapMemory();
+    const priorEvents: SessionEvent[] = [
+      {
+        type: 'tool_start',
+        id: 'e1',
+        turnId: 'turn-prev',
+        ts: 1,
+        toolUseId: 'tool-1',
+        toolName: 'Read',
+        args: { path: 'package.json' },
+        stepId: 'm1',
+      },
+      {
+        type: 'tool_result',
+        id: 'e2',
+        turnId: 'turn-prev',
+        ts: 2,
+        toolUseId: 'tool-1',
+        isError: false,
+        content: { kind: 'text', text: 'file contents' },
+      },
+      {
+        type: 'thinking_complete',
+        id: 'e3',
+        turnId: 'turn-prev',
+        ts: 3,
+        messageId: 'm1',
+        text: 'reasoning about the tool',
+      },
+      {
+        type: 'thinking_complete',
+        id: 'e3-empty',
+        turnId: 'turn-prev',
+        ts: 3,
+        messageId: 'm1',
+        text: '',
+      },
+      {
+        type: 'text_complete',
+        id: 'e4',
+        turnId: 'turn-prev',
+        ts: 4,
+        messageId: 'm1',
+        text: '',
+      },
+    ];
+    const runtimeContext = priorEvents.map((event) =>
+      mapSessionEventToRuntimeEvent(event, ctx, memory),
+    );
+    const secondModel = completionModel();
+    const secondBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => secondModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      secondBackend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(secondModel) as ModelMessage[];
+    const assistant = prompt.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.content),
+    );
+    assert.ok(assistant && Array.isArray(assistant.content));
+    const reasoningParts = assistant.content.filter((part) => part.type === 'reasoning');
+    assert.equal(reasoningParts.length, 1);
+    const reasoning = reasoningParts[0];
+    assert.ok(reasoning && reasoning.type === 'reasoning');
+    assert.equal(reasoning.text, 'reasoning about the tool');
+    assert.ok(
+      assistant.content.some((part) => part.type === 'tool-call' && part.toolCallId === 'tool-1'),
+    );
+  });
+
+  test('passes DeepSeek max reasoning through as the provider-native effort', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const events = [
+        { type: 'response.created', response: { id: 'response-current' } },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'response-current',
+            object: 'response',
+            created_at: 8,
+            model: 'deepseek-v4-flash',
+            status: 'completed',
+            output: [],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        },
+      ];
+      return new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: { ...header(), thinkingLevel: 'max' },
+      appendMessage: async () => {},
+      connection: {
+        slug: 'deepseek',
+        providerType: 'deepseek',
+        defaultModel: 'deepseek-v4-flash',
+      },
+      apiKey: 'deepseek-test-token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(backend.send({ turnId: 'turn-current', text: 'think', context: [] }));
+
+    assert.deepEqual(requestBody?.reasoning, { effort: 'max' });
+    assert.equal(requestBody?.include, undefined);
   });
 
   test('preserves every OpenAI Responses reasoning item through stream persistence and replay', async () => {
@@ -13451,6 +13890,13 @@ async function runArchiveGatedReplay(input: {
       event.type === 'token_usage',
   );
   return { prompt, readRuntimeEventIds, usage };
+}
+
+// The checkpoint write gate validates summary structure (#3029), so stub
+// summaries must be shaped like real checkpoints while keeping their
+// sentinel text greppable.
+function structuredSummary(body: string): string {
+  return `## Goal\n${body}\n\n## Progress\n- done\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`;
 }
 
 function archiveGatedTurnEvents(suffix: 'a' | 'b', path: string, result: unknown): RuntimeEvent[] {

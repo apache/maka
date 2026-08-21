@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { after, describe, it } from 'node:test';
-import { mutateGitReview, readGitReview } from '../git-review-main.js';
+import { readGitReview } from '../git-review-main.js';
 
 const execFileAsync = promisify(execFile);
 const roots = new Set<string>();
@@ -126,94 +126,6 @@ describe('Git Review snapshot authority', () => {
     );
   });
 
-  it('stages and unstages only paths admitted by the current snapshot', async () => {
-    const root = await repository();
-    await writeFile(join(root, 'base.txt'), 'base\nchanged\n', 'utf8');
-    await writeFile(join(root, 'staged.txt'), 'staged\n', 'utf8');
-    await git(root, 'add', 'staged.txt');
-
-    const unstaged = await readGitReview(root, 'unstaged');
-    assert.equal(unstaged.ok, true);
-    if (!unstaged.ok) return;
-    const stagedBase = await mutateGitReview({
-      cwd: root,
-      source: 'unstaged',
-      revision: unstaged.snapshot.revision,
-      path: 'base.txt',
-      action: 'stage',
-    });
-    assert.equal(stagedBase.ok, true);
-    if (!stagedBase.ok) return;
-    assert.equal(stagedBase.review.ok, true);
-    if (stagedBase.review.ok) {
-      assert.deepEqual(stagedBase.review.snapshot.files, []);
-    }
-
-    const staged = await readGitReview(root, 'staged');
-    assert.equal(staged.ok, true);
-    if (!staged.ok) return;
-    assert.deepEqual(
-      staged.snapshot.files.map((file) => file.path).sort(),
-      ['base.txt', 'staged.txt'],
-    );
-    const unstagedFile = await mutateGitReview({
-      cwd: root,
-      source: 'staged',
-      revision: staged.snapshot.revision,
-      path: 'staged.txt',
-      action: 'unstage',
-    });
-    assert.equal(unstagedFile.ok, true);
-    if (unstagedFile.ok && unstagedFile.review.ok) {
-      assert.deepEqual(
-        unstagedFile.review.snapshot.files.map((file) => file.path),
-        ['base.txt'],
-      );
-    }
-
-    assert.deepEqual(
-      await mutateGitReview({
-        cwd: root,
-        source: 'staged',
-        revision: '0'.repeat(64),
-        path: 'base.txt',
-        action: 'unstage',
-      }),
-      { ok: false, reason: 'stale_snapshot' },
-    );
-  });
-
-  it('reverts tracked changes and deletes an admitted untracked file', async () => {
-    const root = await repository();
-    await writeFile(join(root, 'base.txt'), 'base\nchanged\n', 'utf8');
-    await writeFile(join(root, 'untracked.txt'), 'temporary\n', 'utf8');
-
-    const snapshot = await readGitReview(root, 'unstaged');
-    assert.equal(snapshot.ok, true);
-    if (!snapshot.ok) return;
-    const reverted = await mutateGitReview({
-      cwd: root,
-      source: 'unstaged',
-      revision: snapshot.snapshot.revision,
-      path: 'base.txt',
-      action: 'revert',
-    });
-    assert.equal(reverted.ok, true);
-    assert.equal(await readFile(join(root, 'base.txt'), 'utf8'), 'base\n');
-
-    const afterTracked = await readGitReview(root, 'unstaged');
-    assert.equal(afterTracked.ok, true);
-    if (!afterTracked.ok) return;
-    const removed = await mutateGitReview({
-      cwd: root,
-      source: 'unstaged',
-      revision: afterTracked.snapshot.revision,
-      path: 'untracked.txt',
-      action: 'revert',
-    });
-    assert.equal(removed.ok, true);
-    assert.equal(await stat(join(root, 'untracked.txt')).catch(() => null), null);
-  });
 });
 
 async function repository(): Promise<string> {

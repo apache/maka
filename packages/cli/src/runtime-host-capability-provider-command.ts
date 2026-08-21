@@ -148,7 +148,6 @@ async function connectRemoteCapabilityProvider(input: {
   const connected = await connectRemoteRuntimeHost({
     url: input.url,
     credential: input.credential,
-    surface: 'capability-provider',
     protocol: { min: RUNTIME_HOST_PROTOCOL_VERSION, max: RUNTIME_HOST_PROTOCOL_VERSION },
     compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
     clientInstanceId: input.clientInstanceId,

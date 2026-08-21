@@ -256,7 +256,7 @@ export class HostSessionRevisionCoordinator {
     if (sourceHeader.conversationCopy?.state === 'preparing') {
       return copyFailure('not_found', 'Source Session does not exist');
     }
-    if (kind === 'revision' && (sourceHeader.isArchived || sourceHeader.status === 'archived')) {
+    if (kind === 'revision' && sourceHeader.isArchived) {
       return copyFailure(
         'operation_conflict',
         'Archived Session revision families cannot create active revisions',
@@ -319,7 +319,7 @@ export class HostSessionRevisionCoordinator {
       sessionHeaders.some(
         (candidate) =>
           sessionRevisionFamilyId(candidate) === sessionRevisionFamilyId(sourceHeader) &&
-          (candidate.isArchived || candidate.status === 'archived'),
+          candidate.isArchived,
       )
     ) {
       return copyFailure(
@@ -552,7 +552,6 @@ export class HostSessionRevisionCoordinator {
     const common: ConversationCopyCreateInput = {
       cwd: source.cwd,
       ...(source.projectId !== undefined ? { projectId: source.projectId } : {}),
-      backend: source.backend,
       llmConnectionSlug: source.llmConnectionSlug,
       model: source.model,
       ...(source.thinkingLevel !== undefined ? { thinkingLevel: source.thinkingLevel } : {}),

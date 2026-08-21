@@ -32,6 +32,7 @@ import { usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
 const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-models',
   'turn-narrative',
+  'turn-narrative-browser',
   'chat-prompt-rail',
   'settings-data',
   'settings-bots-onboarding',
@@ -140,6 +141,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'models' };
     case 'turn-narrative':
       return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'tasks' };
+    case 'turn-narrative-browser':
+      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: false, workbarTab: 'browser' };
     case 'chat-prompt-rail':
       // Workbar collapsed: the rail lives on the chat scrollport's right edge,
       // and the panel would take the width the measurements are about. Whether

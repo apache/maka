@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { buildPtyShellSpawnPlan, buildShellSpawnPlan, detectShell } from '../shell-detect.js';
+import {
+  bashToolTurnShellGuidance,
+  buildPtyShellSpawnPlan,
+  buildShellSpawnPlan,
+  detectShell,
+  resolveShellPlan,
+  resolveTurnShellPlan,
+  ShellPreferenceError,
+  throwIfShellSetupFailed,
+  turnShellDisplayName,
+  validateShellPreference,
+} from '../shell-detect.js';
 
 const winEnv = (over: Record<string, string> = {}) => ({
   Path: 'C:\\Windows\\System32;C:\\Users\\u\\bin',
@@ -59,7 +70,204 @@ describe('detectShell', () => {
   });
 });
 
+describe('resolveShellPlan', () => {
+  const executable = 'C:\\Program Files\\Git\\bin\\bash.exe';
+
+  test('keeps automatic detection unchanged when no override is selected', () => {
+    const plan = resolveShellPlan(
+      { preference: 'auto', executable },
+      {
+        platform: 'win32',
+        env: winEnv(),
+        fileExists: existsIn('C:\\Program Files\\PowerShell\\7\\pwsh.exe'),
+      },
+    );
+    assert.equal(plan.kind, 'pwsh');
+  });
+
+  test('resolves an existing absolute bash.exe on the Windows Host', () => {
+    assert.deepEqual(
+      resolveShellPlan(
+        { preference: 'git_bash', executable },
+        { platform: 'win32', fileExists: existsIn(executable) },
+      ),
+      { kind: 'git-bash', displayName: 'Git Bash', exe: executable },
+    );
+  });
+
+  test('recognizes the legacy System32 WSL shim as a distinct Bash plan', () => {
+    const executable = 'C:\\Windows\\System32\\bash.exe';
+    assert.deepEqual(
+      resolveShellPlan(
+        { preference: 'git_bash', executable },
+        { platform: 'win32', env: winEnv(), fileExists: existsIn(executable) },
+      ),
+      { kind: 'legacy-wsl-bash', displayName: 'Legacy WSL Bash', exe: executable },
+    );
+  });
+
+  test('fails closed for another platform, a relative path, or a missing executable', () => {
+    for (const run of [
+      () =>
+        resolveShellPlan(
+          { preference: 'git_bash', executable },
+          { platform: 'linux', fileExists: existsIn(executable) },
+        ),
+      () =>
+        resolveShellPlan(
+          { preference: 'git_bash', executable: '.\\bash.exe' },
+          { platform: 'win32', fileExists: () => true },
+        ),
+      () =>
+        resolveShellPlan(
+          { preference: 'git_bash', executable },
+          { platform: 'win32', fileExists: () => false },
+        ),
+    ]) {
+      assert.throws(run, ShellPreferenceError);
+    }
+  });
+
+  test('probes GNU Bash identity before accepting the preference', async () => {
+    const settings = { preference: 'git_bash' as const, executable };
+    const plan = await validateShellPreference(settings, {
+      platform: 'win32',
+      fileExists: existsIn(executable),
+      probeVersion: async () => 'GNU bash, version 5.2.37(1)-release',
+    });
+    assert.equal(plan.kind, 'git-bash');
+    await assert.rejects(
+      validateShellPreference(settings, {
+        platform: 'win32',
+        fileExists: existsIn(executable),
+        probeVersion: async () => 'not a shell',
+      }),
+      (error: unknown) => error instanceof ShellPreferenceError && error.code === 'not_bash',
+    );
+  });
+});
+
+describe('resolveTurnShellPlan', () => {
+  const executable = 'C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe';
+
+  test('resolves a healthy explicit preference into a ready plan', () => {
+    const shell = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: existsIn(executable) },
+    );
+    assert.deepEqual(shell, {
+      plan: { kind: 'git-bash', displayName: 'Git Bash', exe: executable },
+    });
+    assert.equal(shell.setupError, undefined);
+  });
+
+  test('captures a moved or uninstalled executable instead of throwing at turn admission', () => {
+    const shell = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: () => false },
+    );
+    assert.ok(shell.setupError instanceof ShellPreferenceError);
+    assert.equal(shell.setupError.code, 'executable_missing');
+    // The fallback plan exists only so guidance surfaces still have a shape;
+    // execution never reaches it (throwIfShellSetupFailed gates the boundary).
+    assert.equal(shell.plan, resolveTurnShellPlan({ preference: 'auto', executable }).plan);
+  });
+
+  test('keeps automatic detection error-free', () => {
+    const shell = resolveTurnShellPlan(
+      { preference: 'auto', executable: '' },
+      { platform: 'darwin', env: {}, fileExists: () => false },
+    );
+    assert.equal(shell.plan.kind, 'posix');
+    assert.equal(shell.setupError, undefined);
+  });
+
+  test('fails closed at the Bash boundary without falling back to another shell', () => {
+    const broken = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: () => false },
+    );
+    assert.throws(() => throwIfShellSetupFailed(broken), ShellPreferenceError);
+    const healthy = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: existsIn(executable) },
+    );
+    throwIfShellSetupFailed(healthy);
+  });
+
+  test('declares the outage to the model instead of naming a shell that cannot run', () => {
+    const broken = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: () => false },
+    );
+    const guidance = bashToolTurnShellGuidance(broken);
+    assert.match(guidance, /unavailable this turn/);
+    assert.match(guidance, /not found/i);
+    assert.doesNotMatch(guidance, /write POSIX shell syntax/);
+    assert.match(turnShellDisplayName(broken), /Unavailable/);
+
+    const healthy = resolveTurnShellPlan(
+      { preference: 'git_bash', executable },
+      { platform: 'win32', fileExists: existsIn(executable) },
+    );
+    assert.match(bashToolTurnShellGuidance(healthy), /write POSIX shell syntax/);
+    assert.equal(turnShellDisplayName(healthy), 'Git Bash');
+  });
+});
+
 describe('buildShellSpawnPlan', () => {
+  test('spawns an explicit Git Bash executable with POSIX command syntax', () => {
+    assert.deepEqual(
+      buildShellSpawnPlan(
+        {
+          kind: 'git-bash',
+          displayName: 'Git Bash',
+          exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+        },
+        'printf "%s\\n" ready',
+      ),
+      {
+        file: 'C:\\Program Files\\Git\\bin\\bash.exe',
+        args: ['-c', 'printf "%s\\n" ready'],
+        useShellOption: false,
+      },
+    );
+  });
+
+  test('feeds the legacy WSL shim through stdin instead of quoting a command argument', () => {
+    assert.deepEqual(
+      buildShellSpawnPlan(
+        {
+          kind: 'legacy-wsl-bash',
+          displayName: 'Legacy WSL Bash',
+          exe: 'C:\\Windows\\System32\\bash.exe',
+        },
+        'printf "%s\\n" ready',
+      ),
+      {
+        file: 'C:\\Windows\\System32\\bash.exe',
+        args: ['-s'],
+        useShellOption: false,
+        stdin: 'printf "%s\\n" ready\n',
+      },
+    );
+  });
+
+  test('never falls back to the platform shell for a malformed explicit Bash plan', () => {
+    assert.throws(
+      () => buildShellSpawnPlan({ kind: 'git-bash', displayName: 'Git Bash' }, 'echo unsafe'),
+      /missing its executable/,
+    );
+    assert.throws(
+      () =>
+        buildPtyShellSpawnPlan(
+          { kind: 'legacy-wsl-bash', displayName: 'Legacy WSL Bash' },
+          'echo unsafe',
+        ),
+      /missing its executable/,
+    );
+  });
+
   test('spawns PowerShell explicitly and preserves the command in an isolated script block', () => {
     const command = "using namespace System.Text\nWrite-Output '$HOME'";
     const spawnPlan = buildShellSpawnPlan(
@@ -160,6 +368,35 @@ describe('buildPtyShellSpawnPlan', () => {
     assert.equal(powershell.env?.INHERITED, 'kept');
     assert.ok(
       powershell.env?.__MAKA_RUNTIME_POWERSHELL_COMMAND?.startsWith('Write-Output ready\n'),
+    );
+
+    assert.deepEqual(
+      buildPtyShellSpawnPlan(
+        {
+          kind: 'git-bash',
+          displayName: 'Git Bash',
+          exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+        },
+        'exec bash -l',
+      ),
+      {
+        file: 'C:\\Program Files\\Git\\bin\\bash.exe',
+        args: ['-c', 'exec bash -l'],
+      },
+    );
+    assert.deepEqual(
+      buildPtyShellSpawnPlan(
+        {
+          kind: 'legacy-wsl-bash',
+          displayName: 'Legacy WSL Bash',
+          exe: 'C:\\Windows\\System32\\bash.exe',
+        },
+        'exec bash -l',
+      ),
+      {
+        file: 'C:\\Windows\\System32\\bash.exe',
+        args: ['-c', 'exec bash -l'],
+      },
     );
   });
 });

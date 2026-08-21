@@ -94,7 +94,7 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     mark: 'N',
     setupRequired: true,
     setupLabel: '需要登录授权',
-    config: { enabled: false, url: 'https://mcp.notion.com/mcp', transport: 'streamable-http' },
+    config: { enabled: false, url: 'https://mcp.notion.com/mcp', transport: 'streamable-http', protocol: 'auto' },
   },
   {
     id: 'macos-apps',
@@ -144,7 +144,7 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     mark: '▲',
     setupRequired: true,
     setupLabel: '需要登录授权',
-    config: { enabled: false, url: 'https://mcp.vercel.com', transport: 'streamable-http' },
+    config: { enabled: false, url: 'https://mcp.vercel.com', transport: 'streamable-http', protocol: 'auto' },
   },
   {
     id: 'supabase',
@@ -154,7 +154,7 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     mark: 'S',
     setupRequired: true,
     setupLabel: '需要登录授权',
-    config: { enabled: false, url: 'https://mcp.supabase.com/mcp', transport: 'streamable-http' },
+    config: { enabled: false, url: 'https://mcp.supabase.com/mcp', transport: 'streamable-http', protocol: 'auto' },
   },
   {
     id: 'filesystem',

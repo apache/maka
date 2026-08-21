@@ -4,7 +4,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader } from '@maka/core/session';
 import type { HistoryCompactCheckpoint } from '@maka/runtime/history-compact-checkpoint';
 import type { BackendFactoryContext } from '@maka/runtime/session-manager';
-import { DesktopE2eBackend } from '../desktop-e2e-execution.js';
+import { DesktopE2eBackend } from '../test-only/desktop-e2e-execution.js';
 
 function backendContext(overrides: Partial<BackendFactoryContext> = {}): BackendFactoryContext {
   return {
@@ -50,7 +50,10 @@ test('Desktop E2E compaction records a deterministic checkpoint', async () => {
   const checkpoint = recorded[0]!.checkpoint;
   assert.equal(checkpoint.version, 2);
   if (checkpoint.version !== 2) return;
-  assert.equal(checkpoint.summary, 'Deterministic Desktop E2E context checkpoint.');
+  // The fixture is shaped like a real sectioned checkpoint so the builder's
+  // summary validation admits it and stamps the contract marker.
+  assert.match(checkpoint.summary, /^## Goal\nDeterministic Desktop E2E context checkpoint\./);
+  assert.equal(checkpoint.summaryFormat, 'sections_v1');
 });
 
 function userEvent(): RuntimeEvent {

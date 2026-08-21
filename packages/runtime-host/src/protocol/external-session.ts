@@ -17,6 +17,7 @@ export const EXTERNAL_SESSION_CWD_MAX_BYTES = 4 * 1024;
 export const EXTERNAL_SESSION_NAME_MAX_BYTES = 320;
 export const EXTERNAL_SESSION_SOURCE_SESSION_ID_MAX_BYTES = 512;
 export const EXTERNAL_SESSION_SOURCE_MAX_ITEMS = 16;
+export const EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS = 8;
 const EXTERNAL_SESSION_CURSOR_MAX_BYTES = 32;
 
 const QUERY_ERRORS = [
@@ -56,6 +57,11 @@ export interface ExternalSessionCatalogItem {
   readonly id: string;
   readonly name: string;
   readonly hostCwd: string;
+  readonly importState: {
+    readonly importedCount: number;
+    readonly importedSessionIds: readonly string[];
+    readonly isImporting: boolean;
+  };
   readonly createdAt?: number;
   readonly updatedAt?: number;
   readonly archived?: boolean;
@@ -209,7 +215,7 @@ function decodeExternalSessionSummary(value: unknown): ExternalSessionCatalogIte
   const summary = requireShapedRecord(
     value,
     'external Session summary',
-    ['id', 'name', 'hostCwd'],
+    ['id', 'name', 'hostCwd', 'importState'],
     ['createdAt', 'updatedAt', 'archived'],
   );
   const id = requireUtf8String(
@@ -227,6 +233,7 @@ function decodeExternalSessionSummary(value: unknown): ExternalSessionCatalogIte
       'external Session Host cwd',
       EXTERNAL_SESSION_CWD_MAX_BYTES,
     ),
+    importState: decodeExternalSessionImportState(summary.importState),
     ...(Object.hasOwn(summary, 'createdAt')
       ? { createdAt: requireCount(summary.createdAt, 'external Session createdAt') }
       : {}),
@@ -236,6 +243,34 @@ function decodeExternalSessionSummary(value: unknown): ExternalSessionCatalogIte
     ...(Object.hasOwn(summary, 'archived')
       ? { archived: boolean(summary.archived, 'archived') }
       : {}),
+  };
+}
+
+function decodeExternalSessionImportState(
+  value: unknown,
+): ExternalSessionCatalogItem['importState'] {
+  const state = requireExactRecord(value, 'external Session import state', [
+    'importedCount',
+    'importedSessionIds',
+    'isImporting',
+  ]);
+  if (
+    !Array.isArray(state.importedSessionIds) ||
+    state.importedSessionIds.length > EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS
+  ) {
+    throw invalidProtocolFrame('Invalid external Session imported Session ids');
+  }
+  const importedSessionIds = Array.from(state.importedSessionIds, (id) =>
+    requireEntityId(id, 'imported Session id'),
+  );
+  const importedCount = requireCount(state.importedCount, 'external Session imported count');
+  if (importedCount < importedSessionIds.length) {
+    throw invalidProtocolFrame('Invalid external Session imported count');
+  }
+  return {
+    importedCount,
+    importedSessionIds,
+    isImporting: boolean(state.isImporting, 'external Session import state'),
   };
 }
 

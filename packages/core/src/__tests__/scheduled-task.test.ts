@@ -147,6 +147,36 @@ describe('scheduled-task catalog', () => {
     assert.deepEqual(result, { ok: false, message: 'Schedule must fire before expiresAt' });
   });
 
+  it('refuses to create an Automation on the retired backend', () => {
+    // #3211: this is create/update input, not a decoder — stored Automations
+    // are read back with JSON.parse and never reach here. Accepting `'fake'`
+    // would let a brand new Automation be written that can only fail later at
+    // activation.
+    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
+    const execution = {
+      cwd: '/tmp/project',
+      llmConnectionSlug: 'anthropic',
+      model: 'claude-sonnet-4-5-20250929',
+      permissionMode: 'ask',
+      collaborationMode: 'agent',
+      orchestrationMode: 'default',
+    };
+    const create = (backend: string) =>
+      normalizeCreateScheduledTaskInput(
+        {
+          title: 'Nightly run',
+          intentBody: 'do the thing',
+          schedule: { kind: 'once', runAt: now + 60_000 },
+          effect: { kind: 'agent_run', execution: { ...execution, backend } },
+          createdBy: { kind: 'user' },
+        },
+        now,
+      );
+
+    assert.deepEqual(create('fake'), { ok: false, message: 'execution.backend is invalid' });
+    assert.equal(create('ai-sdk').ok, true);
+  });
+
   it('rejects future recurrence anchors outside the scheduling horizon', () => {
     const now = Date.UTC(2026, 0, 5, 8, 0, 0);
     for (const schedule of [

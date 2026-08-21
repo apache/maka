@@ -35,7 +35,6 @@ for (const settlement of ['resolve', 'reject'] as const) {
         credential: 'test-credential',
         expectedRootId: ROOT_ID,
         compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-        surface: 'tui',
         protocol: PROTOCOL,
         connectionResource: resource,
       });

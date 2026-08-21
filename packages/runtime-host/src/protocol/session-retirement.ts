@@ -52,7 +52,7 @@ export const SESSION_RETIREMENT_OPERATION_SPECS = {
       }
       if ('kind' in output) return;
       const archived = input.state === 'archived';
-      if (output.isArchived !== archived || (output.status === 'archived') !== archived) {
+      if (output.isArchived !== archived) {
         throw invalidProtocolFrame('Session lifecycle result does not match the requested state');
       }
     },

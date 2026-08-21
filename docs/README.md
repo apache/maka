@@ -51,6 +51,10 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Frontend CSS governance](./frontend-css-governance.md) ([中文](./frontend-css-governance.zh-CN.md))
 - [Windows support baseline](./windows-support.md)
 
+### Release operations
+
+- [CLI npm release](./cli-npm-release.md) ([中文](./cli-npm-release.zh-CN.md))
+
 ### Security and privacy
 
 - [Workspace privacy context](./workspace-privacy-context.md)

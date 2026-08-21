@@ -29,7 +29,7 @@ function findTool(tools: MakaTool[], name: string): MakaTool {
   return t!;
 }
 
-function makeTools(getTokenCount?: (s: string) => number) {
+function makeTools() {
   const mgr = new GoalManager({ generateId: () => 'g-1', now: () => 5000 });
   const goalContinuation = new GoalContinuationCoordinator({
     goalManager: mgr,
@@ -42,18 +42,21 @@ function makeTools(getTokenCount?: (s: string) => number) {
   const tools = buildGoalTools({
     goalManager: mgr,
     goalContinuation,
-    getTokenCount,
     now: () => 5000,
   });
   return { mgr, tools, goalContinuation };
 }
 
 describe('goal tools', () => {
-  test('GoalSet captures the token baseline', async () => {
-    const { mgr, tools } = makeTools(() => 1234);
+  test('GoalSet leaves the token baseline for the first carried Turn to settle', async () => {
+    const { mgr, tools } = makeTools();
     const set = findTool(tools, GOAL_SET_TOOL_NAME);
     await set.impl({ condition: 'x' }, ctx());
-    assert.equal(mgr.get(SESSION)?.tokensAtStart, 1234);
+    const goal = mgr.get(SESSION);
+    // The Turn holding this tool call has already spent tokens the Goal did
+    // not cause, so there is no honest baseline to record yet.
+    assert.equal(goal?.tokensBaselinePending, true);
+    assert.equal(goal?.tokensAtStart, 0);
   });
 
   test('GoalSet reports an unfinished Goal instead of replacing it', async () => {

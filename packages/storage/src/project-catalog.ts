@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
-import { basename, dirname, join, normalize, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProjectLocation, ProjectRecord } from '@maka/core/project';
 import type { SessionHeader } from '@maka/core/session';
@@ -64,13 +64,22 @@ export class ProjectPathConflictError extends Error {
   }
 }
 
+export class ProjectPathBoundaryError extends TypeError {
+  readonly name = 'ProjectPathBoundaryError';
+  readonly code = 'project_path_outside_boundary';
+
+  constructor(readonly path: string) {
+    super(`Project path is outside its registration boundary: ${path}`);
+  }
+}
+
 export function isProjectPathMismatchError(error: unknown): error is ProjectPathMismatchError {
   return error instanceof ProjectPathMismatchError;
 }
 
 export interface ProjectCatalog {
   list(): Promise<ProjectRecord[]>;
-  register(path: string): Promise<ProjectRecord>;
+  register(path: string, options?: ProjectRegistrationOptions): Promise<ProjectRecord>;
   /**
    * Resolve a path recorded by an existing session rather than chosen by the
    * user. Unlike `register`, the directory may already be gone — a session
@@ -90,6 +99,16 @@ export interface ProjectCatalog {
   restore(projectId: string): Promise<ProjectRecord>;
   /** Release this catalog's share of the operational database. */
   close(): void;
+}
+
+export interface ProjectRegistrationOptions {
+  /**
+   * Require the final canonical location persisted by the catalog to remain
+   * inside this directory. The check happens after path resolution so a
+   * pathname replaced between authorization and registration cannot escape
+   * its published boundary.
+   */
+  readonly withinRoot?: string;
 }
 
 interface PersistedProject {
@@ -163,8 +182,11 @@ class SqliteProjectCatalog implements ProjectCatalog {
     return Promise.all(projects.map((project) => this.present(project)));
   }
 
-  async register(path: string): Promise<ProjectRecord> {
+  async register(path: string, options?: ProjectRegistrationOptions): Promise<ProjectRecord> {
     const resolved = await resolveUserSelectedProjectLocation(path);
+    if (options?.withinRoot && !isPathWithin(options.withinRoot, resolved.canonicalPath)) {
+      throw new ProjectPathBoundaryError(resolved.canonicalPath);
+    }
     return this.upsertResolvedProject(resolved, this.now());
   }
 
@@ -854,6 +876,11 @@ async function resolveUserSelectedProjectLocation(path: string): Promise<Resolve
     identity: `folder:${resolved.canonicalPath}`,
     kind: 'folder',
   };
+}
+
+function isPathWithin(root: string, candidate: string): boolean {
+  const path = relative(normalize(root), normalize(candidate));
+  return path === '' || (!isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`));
 }
 
 async function resolveGitLocation(

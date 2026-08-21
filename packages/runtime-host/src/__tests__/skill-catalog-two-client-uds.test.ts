@@ -11,11 +11,7 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
-import {
-  RUNTIME_HOST_PROTOCOL_VERSION,
-  type ClientSurface,
-  type SkillCatalogQueryResult,
-} from '../protocol/index.js';
+import { RUNTIME_HOST_PROTOCOL_VERSION, type SkillCatalogQueryResult } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import { RuntimeHostKernel } from '../server/index.js';
 
@@ -74,10 +70,7 @@ Keep ${privateMarker} inside the lazy-loaded body.
     });
     endpoint = host.endpoint;
 
-    const [desktop, tui] = await Promise.all([
-      connectClient(dataRoot, 'desktop'),
-      connectClient(dataRoot, 'tui'),
-    ]);
+    const [desktop, tui] = await Promise.all([connectClient(dataRoot), connectClient(dataRoot)]);
     connections.push(desktop, tui);
 
     const query = {
@@ -205,13 +198,9 @@ Keep ${privateMarker} inside the lazy-loaded body.
   }
 });
 
-async function connectClient(
-  rootPath: string,
-  surface: ClientSurface,
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: PROTOCOL,
     connectTimeoutMs: REQUEST_TIMEOUT_MS,
     handshakeTimeoutMs: REQUEST_TIMEOUT_MS,

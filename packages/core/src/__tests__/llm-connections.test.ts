@@ -12,11 +12,14 @@ import {
   normalizeConnectionBaseUrl,
   persistedBaseUrl,
   providerAuthRequiresSecret,
+  providerDefaultsOf,
   providerAuthSupportsApiKey,
   reconcileConnectionAfterModelFetch,
   validateConnectionBaseUrl,
   type ProviderType,
 } from '../llm-connections.js';
+import { isRealConnection } from '../connection-readiness.js';
+import { buildChatModelChoices } from '../chat-model-choice.js';
 
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
   assert.equal(validateConnectionBaseUrl(undefined), null);
@@ -58,7 +61,12 @@ test('base URL normalization preserves clear intent and rejects untrusted runtim
 
 test('unknown provider ids fail closed without breaking persisted connections', () => {
   const unknown = 'branch-only-provider' as ProviderType;
-  assert.equal(backendKindOf({ providerType: unknown }), 'fake');
+  // `backendKindOf` no longer invents a backend for a provider this build
+  // cannot describe (#3211); the readiness projection is the non-throwing
+  // answer to "can this connection be used?".
+  assert.throws(() => backendKindOf({ providerType: unknown }), /Unknown providerType/);
+  assert.equal(isRealConnection({ providerType: unknown }), false);
+  assert.equal(providerDefaultsOf(unknown), undefined);
   assert.equal(
     effectiveBaseUrl({ providerType: unknown, baseUrl: 'https://example.test/v1' }),
     'https://example.test/v1',
@@ -172,10 +180,53 @@ test('the alias table is selected by provider and names only renames', () => {
     CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES,
   );
   assert.equal(modelIdAliasesForProvider('anthropic'), undefined);
+  for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
+    assert.deepEqual(
+      reconcileConnectionAfterModelFetch(
+        {
+          defaultModel: 'qwen3.8-max-preview',
+          enabledModelIds: ['qwen3.8-max-preview'],
+          hasModelInventory: true,
+        },
+        [{ id: 'qwen3.8-max' }, { id: 'qwen3.7-max' }],
+        { aliases: modelIdAliasesForProvider(providerType) },
+      ),
+      { defaultModel: 'qwen3.8-max', enabledModelIds: ['qwen3.8-max'] },
+      providerType,
+    );
+  }
   const offered = curatedCatalogFallbackModelsForProvider('claude-subscription') ?? [];
   for (const [renamed, target] of Object.entries(CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES)) {
     assert.ok(offered.includes(target), `${target} is not offered by the curated inventory`);
     // A withdrawn model must be repaired against the live list, never rewritten.
     assert.notEqual(lookupModelMetadata('anthropic', renamed).lifecycle, 'deprecated');
+  }
+});
+
+test('provider recognition does not resolve inherited object members', () => {
+  // `PROVIDER_DEFAULTS` is an object literal, so plain indexing answers truthy
+  // for `__proto__` / `toString` / `constructor` and they would read as
+  // registered providers. #3211 made `backendKindOf` throw for unknown types,
+  // which turns that leak from a wrong-but-closed `'fake'` into an `undefined`
+  // masquerading as a BackendKind — so recognition owns the own-property check.
+  for (const inherited of ['__proto__', 'toString', 'constructor', 'valueOf']) {
+    const providerType = inherited as ProviderType;
+    assert.equal(providerDefaultsOf(inherited), undefined, inherited);
+    assert.equal(isRealConnection({ providerType }), false, inherited);
+    assert.throws(() => backendKindOf({ providerType }), /Unknown providerType/, inherited);
+    assert.deepEqual(
+      buildChatModelChoices([
+        {
+          slug: 'inherited',
+          name: 'inherited',
+          providerType,
+          enabled: true,
+          defaultModel: 'm',
+          models: [{ id: 'm' }],
+        } as unknown as Parameters<typeof buildChatModelChoices>[0][number],
+      ]),
+      [],
+      inherited,
+    );
   }
 });

@@ -31,7 +31,7 @@ import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js'
  * `useOAuthLoginFlow` — Claude deliberately keeps its own card because it
  * needs the manual authorization-code step and the experimental gate.
  */
-export function ClaudeSubscriptionCard() {
+export function ClaudeSubscriptionCard(props: { onLoginSuccess(): void | Promise<void> }) {
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).claude;
@@ -229,6 +229,7 @@ export function ClaudeSubscriptionCard() {
         setStateHint(null);
         setPasteValue('');
         await refresh();
+        await props.onLoginSuccess();
       } else {
         setPasteError(subscriptionResultMessage(result.message, copy.submitFailedRetry, locale));
       }

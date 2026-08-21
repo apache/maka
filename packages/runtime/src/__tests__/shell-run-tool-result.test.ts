@@ -116,7 +116,6 @@ describe('shell run sandbox denial projection', () => {
       const store = createSessionStore(root);
       const session = await store.create({
         cwd: '/workspace',
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',

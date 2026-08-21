@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
-  prepareStorageRootControlDirectory,
-  resolveStorageRoot,
+  discoverMarkedStorageRoot,
+  STORAGE_ROOT_MARKER_FILE,
+  STORAGE_ROOT_MARKER_SCHEMA_VERSION,
 } from '@maka/storage/root-authority';
-import { connectRuntimeHost } from '../client/index.js';
+import { connectResolvedRuntimeHost, type ConnectRuntimeHostResult } from '../client/connection.js';
 import { prepareRuntimeHostEndpoint } from '../control/endpoint.js';
 import { removeHostRegistration, writeHostRegistration } from '../control/registration.js';
 import {
@@ -28,7 +29,34 @@ const PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 
-test('rejects a Host that accepts with a different compatibility epoch before any domain command', async () => {
+test('emits the legacy desktop surface shim in the raw Client hello', async () => {
+  await withForgedHandshakePeer(
+    async (transport, hostEpoch, rootId) => {
+      const rawHello = await transport.read(2_000);
+      assert.ok(rawHello && typeof rawHello === 'object');
+      assert.equal((rawHello as Record<string, unknown>).surface, 'desktop');
+      const hello = decodeClientFrame(rawHello);
+      assert.ok('kind' in hello && hello.kind === 'hello');
+      await writeProtocolFrame(transport, {
+        kind: 'accepted',
+        rootId,
+        hostEpoch,
+        connectionId: 'forged-current-connection',
+        selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+      });
+      await transport.closed;
+    },
+    async (result) => {
+      assert.equal(result.kind, 'connected');
+    },
+  );
+});
+
+test('rejects an epoch-23 Host before any domain command', async () => {
   let admittedRequest: RequestFrame | undefined;
   await withForgedHandshakePeer(
     async (transport, hostEpoch, rootId) => {
@@ -40,7 +68,7 @@ test('rejects a Host that accepts with a different compatibility epoch before an
         hostEpoch,
         connectionId: 'forged-epoch-connection',
         selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
-        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH + 1,
+        compatibilityEpoch: 23,
         compositionId: 'maka.interactive',
         compositionRevision: '1',
         state: 'ready',
@@ -67,14 +95,30 @@ test('rejects a Host that accepts with a different compatibility epoch before an
 
 async function withForgedHandshakePeer(
   serve: (transport: FramedTransport, hostEpoch: string, rootId: string) => Promise<void>,
-  run: (result: Awaited<ReturnType<typeof connectRuntimeHost>>) => Promise<void>,
+  run: (result: ConnectRuntimeHostResult) => Promise<void>,
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-handshake-'));
-  const capability = await resolveStorageRoot({
-    path: join(base, 'root'),
-    kind: 'interactive',
+  const rootPath = join(base, 'root');
+  const controlDirectory = join(base, 'control');
+  await mkdir(rootPath, { mode: 0o700 });
+  await mkdir(controlDirectory, { mode: 0o700 });
+  const rootStat = await stat(rootPath, { bigint: true });
+  await writeFile(
+    join(rootPath, STORAGE_ROOT_MARKER_FILE),
+    `${JSON.stringify({
+      schemaVersion: STORAGE_ROOT_MARKER_SCHEMA_VERSION,
+      kind: 'interactive',
+      rootId: randomBytes(32).toString('hex'),
+      rootIdentity: {
+        dev: rootStat.dev.toString(),
+        ino: rootStat.ino.toString(),
+      },
+    })}\n`,
+    { mode: 0o600 },
+  );
+  const capability = await discoverMarkedStorageRoot({
+    path: rootPath,
   });
-  const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
   const hostEpoch = randomUUID();
   const endpoint = await prepareRuntimeHostEndpoint({
     rootId: capability.rootId,
@@ -105,11 +149,16 @@ async function withForgedHandshakePeer(
       pid: process.pid,
       createdAt: new Date().toISOString(),
     });
-    const result = await connectRuntimeHost({
-      rootPath: join(base, 'root'),
-      surface: 'tui',
+    const resolved = await connectResolvedRuntimeHost({
+      capability,
+      controlDirectory,
+      clientInstanceId: randomUUID(),
       protocol: PROTOCOL,
     });
+    if (resolved.kind === 'election_deadline_elapsed') {
+      throw new Error('Unexpected Runtime Host election deadline');
+    }
+    const result = resolved;
     try {
       await run(result);
     } finally {

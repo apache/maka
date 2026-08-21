@@ -6,7 +6,6 @@ import { isThinkingLevel } from '@maka/core/model-thinking';
 import { type CreateSessionRequestInput, type SessionListFilter } from '@maka/core/runtime-inputs';
 import { type SessionChangedEvent, type SessionChangedReason, type SessionSummary } from '@maka/core/session';
 import type {
-  SessionCatalogFilter,
   SessionCatalogProjection,
   SessionCreateInput,
   WorkspaceTarget,
@@ -44,6 +43,8 @@ export interface DesktopHostSessionSummary extends SessionSummary {
 
 export interface RuntimeHostSessionCatalogIpcDeps {
   client: RuntimeHostSessionCatalogClient;
+  /** Observer state supplements the Host catalog without falling back to the durable header. */
+  runningTurnIds: (sessionId: string) => readonly string[];
   resolveCreateProject: (
     input: Pick<CreateSessionRequestInput, 'cwd' | 'projectId'>,
   ) => Promise<WorkspaceTarget>;
@@ -70,19 +71,21 @@ export function registerRuntimeHostSessionCatalogIpc(
   const listSessions = async (filter?: SessionListFilter): Promise<DesktopHostSessionSummary[]> => {
     await recoveryTask;
     const parentSessionId = normalizeParentSessionFilter(filter?.subagentParentSessionId);
-    const sessions = await deps.client.listSessions(toHostCatalogFilter(filter));
+    const sessions = await deps.client.listSessions();
     return sessions
       .filter((session) => !pendingCleanup.has(session.id))
       .filter((session) =>
         parentSessionId === undefined ? true : session.subagent?.parentSessionId === parentSessionId,
       )
-      .map(toDesktopHostSessionSummary);
+      .map((session) =>
+        toDesktopHostSessionListSummary(session, deps.runningTurnIds(session.id)),
+      );
   };
   const actionIds = (sessionId: string, options: unknown) =>
     resolveSessionActionIds(() => listSessions(), sessionId, options);
 
-  handleReconnectableRead(ipcMain, 'sessions:list', (_event, filter?: SessionListFilter) =>
-    listSessions(filter),
+  handleReconnectableRead(ipcMain, 'sessions:list', (_event, filter?: unknown) =>
+    listSessions(normalizeSessionListFilter(filter)),
   );
   ipcMain.handle('sessions:cleanupSessionCopy', async (_event, sessionId: string) => {
     await deps.sessionCopyCleanup.cleanup(sessionId);
@@ -93,9 +96,6 @@ export function registerRuntimeHostSessionCatalogIpc(
     pendingCleanup.add(sessionId);
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
-    if (input?.backend !== undefined && input.backend !== 'ai-sdk') {
-      throw new Error('Unsupported Runtime Host Session backend');
-    }
     const request = resolveCreateSessionRequest(input);
     const workspace = await deps.resolveCreateProject({
       ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
@@ -154,6 +154,12 @@ export function registerRuntimeHostSessionCatalogIpc(
     if (!isPermissionMode(mode)) throw new Error(`Invalid permission mode: ${String(mode)}`);
     return updateConfiguration(deps, sessionId, { permissionMode: mode }, 'mode-change');
   });
+  // Two fields, two channels, one field each. Plan is a temporary
+  // collaboration excursion that Runtime ends by itself on approval or
+  // abandonment; orchestration is the Session's standing default for how a
+  // turn fans out. Runtime resolves the overlap by stripping the subagent and
+  // agent-graph tools while planning, and validates the two independently, so
+  // neither channel has any business writing the other's field.
   ipcMain.handle(
     'sessions:setCollaborationMode',
     async (_event, sessionId: string, mode: unknown) => {
@@ -245,22 +251,32 @@ async function updateConfiguration(
   return toDesktopHostSessionSummary(session);
 }
 
-function toHostCatalogFilter(filter: SessionListFilter | undefined): SessionCatalogFilter | undefined {
-  if (!filter) return undefined;
-  const result: SessionCatalogFilter = {
-    ...(filter.isArchived === undefined ? {} : { isArchived: filter.isArchived }),
-    ...(filter.isFlagged === undefined ? {} : { isFlagged: filter.isFlagged }),
-    ...(filter.labelSlug === undefined ? {} : { labelSlug: filter.labelSlug }),
-  };
-  return Object.keys(result).length === 0 ? undefined : result;
-}
-
 function normalizeParentSessionFilter(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error('Invalid subagent parent Session filter');
   }
   return value;
+}
+
+function normalizeSessionListFilter(value: unknown): SessionListFilter | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Invalid Session list filter');
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== 'subagentParentSessionId')) {
+    throw new Error('Invalid Session list filter keys');
+  }
+  return {
+    ...(record.subagentParentSessionId === undefined
+      ? {}
+      : {
+          subagentParentSessionId: normalizeParentSessionFilter(
+            record.subagentParentSessionId,
+          ),
+        }),
+  };
 }
 
 function normalizeModelTarget(input: CreateSessionRequestInput | undefined): SessionModelTarget {
@@ -318,6 +334,9 @@ export function toDesktopHostSessionSummary(
       ? {}
       : { lastMessagePreview: session.lastMessagePreview }),
     status: session.status,
+    ...(session.liveRunState === undefined
+      ? {}
+      : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),
     ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
     ...(session.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: session.statusUpdatedAt }),
     ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
@@ -343,4 +362,17 @@ export function toDesktopHostSessionSummary(
     collaborationMode: session.collaborationMode,
     orchestrationMode: session.orchestrationMode,
   };
+}
+
+function toDesktopHostSessionListSummary(
+  session: SessionCatalogProjection,
+  runningTurnIds: readonly string[],
+): DesktopHostSessionSummary {
+  const summary = toDesktopHostSessionSummary(session);
+  return runningTurnIds.length === 0
+    ? summary
+    : {
+        ...summary,
+        runningTurnIds: [...new Set([...(summary.runningTurnIds ?? []), ...runningTurnIds])],
+      };
 }

@@ -76,6 +76,7 @@ describe('renderer session read state', () => {
     let listCalls = 0;
     let currentSessions: SessionSummary[] = [];
     const refresher = createSessionListRefresher({
+      captureRequestContext: () => undefined,
       listSessions: async () => {
         const result = listResults[listCalls];
         listCalls += 1;
@@ -113,6 +114,7 @@ describe('renderer session read state', () => {
     const errors: unknown[] = [];
     let currentSessions = original;
     const refresher = createSessionListRefresher({
+      captureRequestContext: () => undefined,
       listSessions: async () => {
         throw new Error('list failed');
       },
@@ -131,6 +133,29 @@ describe('renderer session read state', () => {
     assert.equal(result, original);
     assert.equal(currentSessions, original);
     assert.equal(errors.length, 1);
+  });
+
+  it('commits the renderer context captured before the accepted authority read', async () => {
+    const listed = deferred<SessionSummary[]>();
+    let requestContext = 'before';
+    let committedContext: string | undefined;
+    const refresher = createSessionListRefresher({
+      captureRequestContext: () => requestContext,
+      listSessions: () => listed.promise,
+      readBoundaries: () => ({}),
+      currentSessions: () => [],
+      commitSessions: (_sessions, context) => {
+        committedContext = context;
+      },
+      onError: () => {},
+    });
+
+    const refresh = refresher.refresh();
+    requestContext = 'after';
+    listed.resolve([]);
+    await refresh;
+
+    assert.equal(committedContext, 'before');
   });
 });
 

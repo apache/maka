@@ -48,6 +48,8 @@ export function routeWebSearchTools(input: {
   readonly settings: Pick<WebSearchSettings, 'enabled' | 'defaultProvider'>;
   readonly connection: RuntimeExecutionConnection;
   readonly model: string;
+  /** Canonical call-time readiness for the client-executed Tavily path. */
+  readonly tavilyReady: boolean;
   readonly privacy?: { readonly incognitoActive: boolean };
   /** Root surfaces may add native search even when no client WebSearch exists. */
   readonly allowAddNative?: boolean;
@@ -59,7 +61,9 @@ export function routeWebSearchTools(input: {
   if (!input.settings.enabled || input.privacy?.incognitoActive === true) return withoutWebSearch;
   let selected: MakaTool | undefined;
   if (input.settings.defaultProvider === 'tavily') {
-    selected = input.tools.find((tool) => tool.name === NATIVE_WEB_SEARCH_TOOL_NAME);
+    selected = input.tavilyReady
+      ? input.tools.find((tool) => tool.name === NATIVE_WEB_SEARCH_TOOL_NAME)
+      : undefined;
   } else {
     const capability = resolveHostedWebSearchCapability(
       input.connection.providerType,

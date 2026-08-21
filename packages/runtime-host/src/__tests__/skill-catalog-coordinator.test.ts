@@ -238,7 +238,6 @@ test('invocable pages use the authoritative Host tool surface and invalidate on 
   const context: ConnectionContext = {
     hostEpoch: 'epoch-1',
     connectionId: 'desktop-1',
-    surface: 'desktop',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };

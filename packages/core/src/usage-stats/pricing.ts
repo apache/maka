@@ -63,6 +63,15 @@ const CANONICAL_PRICING_CONFIG_KEY_SET = new Set<string>(CANONICAL_PRICING_CONFI
 export const PRICING_MODEL_KEY_MAX_CHARS = 128;
 
 /**
+ * Build the exact key shared by Runtime pricing lookup and user-facing call facts.
+ * Provider and model ids are already canonical facts at this seam, so do not
+ * trim, lowercase, or otherwise normalize either half here.
+ */
+export function pricingModelKey(providerId: string, modelId: string): string {
+  return `${providerId}:${modelId}`;
+}
+
+/**
  * Locale-independent strict total order for exact JavaScript strings.
  * Canonically equivalent Unicode spellings remain distinct keys.
  */

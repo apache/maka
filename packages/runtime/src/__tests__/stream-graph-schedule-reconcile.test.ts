@@ -26,6 +26,292 @@ import {
 import type { AgentGraphTraceTopology } from '../stream-graph-trace.js';
 
 describe('stream graph schedule reconciliation', () => {
+  test('hydrates selected results without leaking them into another work item', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(90) });
+    const provisions: AgentGraphOperatorProvision[] = [];
+    const controlStore = controlStoreWithProvisions(store, provisions);
+    const observation = new MemoryGraphObservation();
+    const executor = new MemoryScheduleExecutor(controlStore, observation);
+    const historical = historicalRecord();
+    try {
+      await commitSchedule(controlStore, 'tool-historical', {
+        add_work: [
+          {
+            agent_id: 'local-read',
+            instruction: 'Continue from the selected earlier result.',
+            input_ids: [],
+            selected_result_inputs: [
+              { source_graph_id: historical.graphId, result_id: historical.recordId },
+            ],
+          },
+          {
+            agent_id: 'local-read',
+            instruction: 'This work only requested a current-graph input.',
+            input_ids: [historical.recordId],
+          },
+        ],
+      });
+      let renderedRecord: AgentGraphRecord | undefined;
+      const result = await reconcileAgentGraphSchedule({
+        topology: topology(),
+        controlStore,
+        executor,
+        stopController: new MemoryStopController(observation),
+        newId: nextId(),
+        maxNewActivations: 1,
+        observeGraph: (currentTopology) => observation.read(currentTopology),
+        resolveSelectedResultInputs: async () => [historical],
+        async provisionOperator(input) {
+          assert.deepEqual(input.edges, []);
+          const provision: AgentGraphOperatorProvision = {
+            schemaVersion: 1,
+            provisionId: `graph_provision_${'4'.repeat(32)}`,
+            provisionFingerprint: `sha256:${'5'.repeat(64)}`,
+            graphId: input.graphId,
+            workId: input.workId,
+            agentId: input.agentId!,
+            operatorId: input.operatorId,
+            initialTurnId: 'reserved-turn',
+            initialRunId: 'reserved-run',
+            edges: input.edges,
+            targetSessionId: 'session-historical-reader',
+            provisionedAt: 91,
+          };
+          provisions.push(provision);
+          return {
+            provision,
+            created: true,
+            header: { id: provision.targetSessionId } as SessionHeader,
+          };
+        },
+        renderPrompt: ({ inputRecords, work }) => {
+          renderedRecord = inputRecords[0];
+          return work.instruction;
+        },
+      });
+
+      assert.equal(result.status, 'waiting');
+      assert.equal(renderedRecord?.graphId, historical.graphId);
+      assert.deepEqual(result.dispatches[0]?.intent.triggerRecordIds, [historical.recordId]);
+      assert.deepEqual(
+        result.deferredWork.map((item) => ({
+          instruction: item.work.instruction,
+          reason: item.reason,
+          missingInputIds: item.missingInputIds,
+        })),
+        [
+          {
+            instruction: 'This work only requested a current-graph input.',
+            reason: 'input_not_committed',
+            missingInputIds: [historical.recordId],
+          },
+        ],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('defers work whose historical result source becomes unresolvable', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(90) });
+    const provisions: AgentGraphOperatorProvision[] = [];
+    const controlStore = controlStoreWithProvisions(store, provisions);
+    const observation = new MemoryGraphObservation();
+    const executor = new MemoryScheduleExecutor(controlStore, observation);
+    const historical = historicalRecord();
+    try {
+      await commitSchedule(controlStore, 'tool-unresolvable', {
+        add_work: [
+          {
+            agent_id: 'local-read',
+            instruction: 'Continue from the selected earlier result.',
+            input_ids: [],
+            selected_result_inputs: [
+              { source_graph_id: historical.graphId, result_id: historical.recordId },
+            ],
+          },
+        ],
+      });
+      let resolveCalls = 0;
+      const result = await reconcileAgentGraphSchedule({
+        topology: topology(),
+        controlStore,
+        executor,
+        stopController: new MemoryStopController(observation),
+        newId: nextId(),
+        maxNewActivations: 1,
+        observeGraph: (currentTopology) => observation.read(currentTopology),
+        resolveSelectedResultInputs: async () => {
+          resolveCalls += 1;
+          throw new Error('source epoch runtime events are unreadable');
+        },
+        renderPrompt: ({ work }) => work.instruction,
+      });
+
+      assert.equal(result.status, 'waiting');
+      assert.equal(result.failures.length, 0);
+      assert.equal(result.dispatches.length, 0);
+      assert.equal(resolveCalls, 1);
+      assert.deepEqual(
+        result.deferredWork.map((item) => ({
+          reason: item.reason,
+          missingInputIds: item.missingInputIds,
+        })),
+        [{ reason: 'input_not_committed', missingInputIds: [historical.recordId] }],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('resolves each historical result source once per reconciliation', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(90) });
+    const provisions: AgentGraphOperatorProvision[] = [];
+    const controlStore = controlStoreWithProvisions(store, provisions);
+    const observation = new MemoryGraphObservation();
+    const executor = new MemoryScheduleExecutor(controlStore, observation);
+    const historical = historicalRecord();
+    try {
+      await commitSchedule(controlStore, 'tool-cached-resolution', {
+        add_work: [
+          {
+            agent_id: 'local-read',
+            instruction: 'Continue from the selected earlier result.',
+            input_ids: [],
+            selected_result_inputs: [
+              { source_graph_id: historical.graphId, result_id: historical.recordId },
+            ],
+          },
+        ],
+      });
+      let resolveCalls = 0;
+      const result = await reconcileAgentGraphSchedule({
+        topology: topology(),
+        controlStore,
+        executor,
+        stopController: new MemoryStopController(observation),
+        newId: nextId(),
+        maxNewActivations: 1,
+        observeGraph: (currentTopology) => observation.read(currentTopology),
+        resolveSelectedResultInputs: async (selected) => {
+          resolveCalls += 1;
+          return selected.map(() => structuredClone(historical));
+        },
+        async provisionOperator(input) {
+          const provision: AgentGraphOperatorProvision = {
+            schemaVersion: 1,
+            provisionId: `graph_provision_${'4'.repeat(32)}`,
+            provisionFingerprint: `sha256:${'5'.repeat(64)}`,
+            graphId: input.graphId,
+            workId: input.workId,
+            agentId: input.agentId!,
+            operatorId: input.operatorId,
+            initialTurnId: 'reserved-turn',
+            initialRunId: 'reserved-run',
+            edges: input.edges,
+            targetSessionId: 'session-historical-reader',
+            provisionedAt: 91,
+          };
+          provisions.push(provision);
+          return {
+            provision,
+            created: true,
+            header: { id: provision.targetSessionId } as SessionHeader,
+          };
+        },
+        renderPrompt: ({ work }) => work.instruction,
+      });
+
+      assert.equal(result.status, 'reconciled');
+      assert.equal(result.dispatches.length, 1);
+      assert.equal(resolveCalls, 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('defers only the work items whose historical source failed', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(90) });
+    const provisions: AgentGraphOperatorProvision[] = [];
+    const controlStore = controlStoreWithProvisions(store, provisions);
+    const observation = new MemoryGraphObservation();
+    const executor = new MemoryScheduleExecutor(controlStore, observation);
+    const historical = historicalRecord();
+    try {
+      await commitSchedule(controlStore, 'tool-partial-resolution', {
+        add_work: [
+          {
+            agent_id: 'local-read',
+            instruction: 'Continue from the readable earlier result.',
+            input_ids: [],
+            selected_result_inputs: [
+              { source_graph_id: historical.graphId, result_id: historical.recordId },
+            ],
+          },
+          {
+            agent_id: 'local-read',
+            instruction: 'Continue from the unreadable earlier result.',
+            input_ids: [],
+            selected_result_inputs: [
+              { source_graph_id: 'graph-broken', result_id: 'record-broken' },
+            ],
+          },
+        ],
+      });
+      const result = await reconcileAgentGraphSchedule({
+        topology: topology(),
+        controlStore,
+        executor,
+        stopController: new MemoryStopController(observation),
+        newId: nextId(),
+        maxNewActivations: 2,
+        observeGraph: (currentTopology) => observation.read(currentTopology),
+        resolveSelectedResultInputs: async (selected) => {
+          if (selected.some((item) => item.sourceGraphId === 'graph-broken')) {
+            throw new Error('source epoch runtime events are unreadable');
+          }
+          return selected.map(() => structuredClone(historical));
+        },
+        async provisionOperator(input) {
+          const provision: AgentGraphOperatorProvision = {
+            schemaVersion: 1,
+            provisionId: `graph_provision_${'4'.repeat(32)}`,
+            provisionFingerprint: `sha256:${'5'.repeat(64)}`,
+            graphId: input.graphId,
+            workId: input.workId,
+            agentId: input.agentId!,
+            operatorId: input.operatorId,
+            initialTurnId: 'reserved-turn',
+            initialRunId: 'reserved-run',
+            edges: input.edges,
+            targetSessionId: `session-${input.workId}`,
+            provisionedAt: 91,
+          };
+          provisions.push(provision);
+          return {
+            provision,
+            created: true,
+            header: { id: provision.targetSessionId } as SessionHeader,
+          };
+        },
+        renderPrompt: ({ work }) => work.instruction,
+      });
+
+      assert.equal(result.status, 'waiting');
+      assert.equal(result.failures.length, 0);
+      assert.equal(result.dispatches.length, 1);
+      assert.deepEqual(
+        result.deferredWork.map((item) => ({
+          reason: item.reason,
+          missingInputIds: item.missingInputIds,
+        })),
+        [{ reason: 'input_not_committed', missingInputIds: ['record-broken'] }],
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   test('executes existing operators durably and leaves new agents waiting for topology', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(100) });
     const observation = new MemoryGraphObservation();
@@ -40,6 +326,7 @@ describe('stream graph schedule reconciliation', () => {
         schemaVersion: 1,
         record: {
           recordId: record.recordId,
+          graphId: record.graphId,
           operatorId: record.operatorId,
           activationId: record.activationId,
           facets: record.facets,
@@ -539,6 +826,37 @@ describe('stream graph schedule reconciliation', () => {
 });
 
 const GRAPH_ID = 'graph-schedule';
+
+function historicalRecord(): AgentGraphRecord {
+  return {
+    schemaVersion: 1,
+    recordId: 'record-historical-result',
+    graphId: 'graph-previous',
+    operatorId: 'historical-writer',
+    activationId: 'historical-run',
+    sessionId: 'session-historical-writer',
+    agentRunId: 'historical-run',
+    eventTime: 1,
+    orderKey: {
+      runCreatedAt: 1,
+      operatorId: 'historical-writer',
+      runId: 'historical-run',
+      committedEventOrdinal: 0,
+      runtimeEventId: 'historical-event',
+    },
+    type: 'agent_runtime_event',
+    facets: ['message'],
+    supervisorSignals: [],
+    source: {
+      kind: 'runtime_event',
+      runtimeEventId: 'historical-event',
+      sessionId: 'session-historical-writer',
+      runId: 'historical-run',
+      turnId: 'historical-turn',
+      ts: 1,
+    },
+  };
+}
 
 function topology(): AgentGraphTraceTopology {
   return {

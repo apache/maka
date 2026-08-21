@@ -27,3 +27,9 @@ test('keeps internal startup failures retryable', () => {
   const error = runtimeHostStartupError('internal_startup_failure');
   assert.equal(error instanceof RuntimeHostPermanentReconnectError, false);
 });
+
+test('presents Local IPC security failures distinctly without making them permanent', () => {
+  const error = runtimeHostStartupError('local_ipc_security_failed');
+  assert.equal(error instanceof RuntimeHostPermanentReconnectError, false);
+  assert.match(error.message, /LOCAL_IPC_SECURITY_FAILED/u);
+});

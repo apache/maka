@@ -82,7 +82,6 @@ export interface BrowserStateSnapshot {
   canGoBack: boolean;
   canGoForward: boolean;
   loading: boolean;
-  favicon: string | null;
 }
 
 /**
@@ -97,7 +96,6 @@ export function deriveBrowserState(snapshot: BrowserStateSnapshot): BrowserState
     canGoBack: snapshot.canGoBack,
     canGoForward: snapshot.canGoForward,
     loading: snapshot.loading,
-    favicon: snapshot.favicon,
     secure: /^https:\/\//i.test(snapshot.url),
     hasPage: snapshot.url !== '' && !snapshot.url.startsWith('about:'),
   };

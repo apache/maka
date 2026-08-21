@@ -122,7 +122,6 @@ function defaultRuntimeHostRunCommandDeps(): RuntimeHostRunCommandDeps {
     connect: (rootPath, hostProfileId, clientDataRoot) =>
       connectRuntimeHostCli({
         rootPath,
-        surface: 'run',
         ...(hostProfileId ? { profileId: hostProfileId } : {}),
         clientDataRoot,
       }),

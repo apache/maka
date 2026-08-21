@@ -200,6 +200,8 @@ export type OperationKey = keyof OperationSpecMap;
 // Remote credentials are fail-closed: adding a protocol operation does not
 // grant it to remote owners until this policy is deliberately updated.
 export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
+  'access.credential.finalize',
+  'agent.graph.epochs.query',
   'agent.graph.operator.query',
   'agent.graph.query',
   'agent.graph.stop',
@@ -233,6 +235,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'external-session.catalog.query',
   'external-session.import',
   'external-session.source.query',
+  'goal.arm',
   'goal.control',
   'goal.query',
   'host.diagnostics.query',

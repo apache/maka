@@ -149,7 +149,7 @@ export async function prepareHostedExecutionRecovery(
     if (replayAdmissions.length > 1) {
       throw new Error(`Session ${session.id} has multiple admitted Turns without Runs`);
     }
-    if (replayAdmissions[0] && (session.status === 'archived' || session.isArchived)) {
+    if (replayAdmissions[0] && session.isArchived) {
       throw new Error(`Archived Session ${session.id} has an admitted Turn without a Run`);
     }
     prepared.push({

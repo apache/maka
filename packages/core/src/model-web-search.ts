@@ -58,6 +58,10 @@ function providerHostedWebSearchAdapter(
 ): HostedWebSearchCapability | null {
   switch (providerType) {
     case 'deepseek':
+      // @ai-sdk/open-responses currently serializes function tools only.
+      // Mark native search unavailable so routing never hands it a provider
+      // tool that would be silently filtered from the request.
+      return { adapter: 'openai-responses', implemented: false };
     case 'openai':
     case 'openai-responses-compatible':
     case 'xai':

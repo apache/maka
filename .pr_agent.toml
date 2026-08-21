@@ -1,0 +1,10 @@
+[review_agent]
+comments_location_policy = "both"
+inline_comments_severity_threshold = 3
+issues_user_guidelines = """
+Review all changed code and report concrete, reproducible correctness, security, contract, or maintenance risks. Separate the issue from its remedy. Give each finding one disposition: fix-now when this PR violates stated behavior or an existing invariant; follow-up when the risk is real but pre-existing or outside the PR goal; optional when it is an improvement rather than a correctness or coherence requirement.
+
+Choose remedies in this order: delete an unnecessary path; consolidate duplicated authority; reuse the closest existing seam; make the smallest local correction; add new behavior only when the earlier options cannot satisfy the invariant. For any additive recommendation, explain why deletion, consolidation, or reuse is insufficient and identify the new state, branch, configuration, public surface, authority, or test-maintenance burden introduced.
+
+Carry resolved and dismissed decisions into later review runs. Reopen them only when new code or concrete evidence changes the risk. Present follow-up and optional findings as non-blocking, not as implementation requests for the current PR.
+"""

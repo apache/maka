@@ -1000,6 +1000,10 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   assert.match(subjectService, /cap_drop:\s*\n\s+- NET_RAW/u);
   assert.match(egressCompose, /networks:\s*\n\s+- default/u);
   assert.match(egressCompose, /target: \/usr\/local\/bin\/network-policy/u);
+  const sidecarService = egressCompose
+    .split(/\n(?= {2}\S)/u)
+    .find((block) => block.trimStart().startsWith('harbor-docker-egress-control-sidecar:'))!;
+  assert.match(sidecarService, /maka-eval-egress-ca:\/opt\/maka-egress:ro/u);
   // The subject shares the sidecar's network namespace, so any packet mark it
   // could set is one the subject can set too. No live probe can show this any
   // more — without NET_RAW the subject cannot set a mark at all — so the rule's
@@ -1009,6 +1013,14 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
     'utf8',
   );
   assert.doesNotMatch(networkPolicy, /meta mark \S+ (?:accept|return)/u);
+  assert.match(networkPolicy, /ip daddr 127\.0\.0\.11 reject/u);
+  assert.doesNotMatch(networkPolicy, /127\.0\.0\.11 (?:udp|tcp) dport 53 reject/u);
+  const dockerDnsReject = networkPolicy.indexOf('ip daddr 127.0.0.11 reject');
+  const localAccept = networkPolicy.indexOf('fib daddr type local accept');
+  assert.ok(dockerDnsReject >= 0 && localAccept > dockerDnsReject);
+  assert.match(networkPolicy, /\/opt\/maka-egress\/proxy-ipv4/u);
+  assert.doesNotMatch(networkPolicy, /\bgetent\b/u);
+  assert.match(egressCompose, /proxy-ipv4/u);
   const entrypoint = await readFile(
     new URL('../../harbor/egress-proxy/entrypoint.sh', import.meta.url),
     'utf8',
@@ -1295,7 +1307,37 @@ test('pier cannot declare an egress proxy it never enforces', () => {
   );
 });
 
-test('launched trial environment does not inherit MAKA_EVAL_FRAMEWORK', {
+test('Pier rejects configured mounts that collide with framework log ownership', () => {
+  const root = join(tmpdir(), 'maka-test-pier-reserved-mount');
+  const restoreEnvironment = setEnvironment({
+    MAKA_TEST_MOUNT: join(root, 'mount'),
+    MAKA_TEST_PYTHON: join(root, 'python'),
+    MAKA_TEST_TASKS: join(root, 'tasks'),
+    MAKA_TEST_TRIALS: join(root, 'trials'),
+  });
+  try {
+    for (const target of ['/logs/agent/../agent', '/logs/verifier/reward.txt']) {
+      assert.throws(
+        () =>
+          createPierExecutor(
+            {
+              ...executorConfig(),
+              tasksRootEnv: 'MAKA_TEST_TASKS',
+              mounts: [{ sourceEnv: 'MAKA_TEST_MOUNT', target, readOnly: true }],
+            },
+            'experiment.json',
+          ),
+        (error) =>
+          error instanceof Error &&
+          error.message === `Pier mount target ${target} is reserved for framework logs`,
+      );
+    }
+  } finally {
+    restoreEnvironment();
+  }
+});
+
+test('Pier preserves its log mounts without inheriting MAKA_EVAL_FRAMEWORK', {
   timeout: 10_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-eval-framework-env-'));
@@ -1309,6 +1351,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 const config = JSON.parse(await readFile(process.argv.at(-1), 'utf8'));
 await writeFile(process.env.MAKA_TEST_ENV, JSON.stringify({
   framework: process.env.MAKA_EVAL_FRAMEWORK ?? null,
+  mounts: config.environment.mounts,
+  trialName: config.trial_name,
 }));
 const socket = connect(config.agent.kwargs.relay_port, config.agent.kwargs.relay_host);
 socket.setEncoding('utf8');
@@ -1344,14 +1388,33 @@ socket.end();
     MAKA_TEST_PYTHON: executable,
     MAKA_TEST_TRIALS: root,
     MAKA_TEST_ENV: envDump,
+    MAKA_TEST_MOUNT: root,
+    MAKA_TEST_TASKS: root,
     MAKA_EVAL_FRAMEWORK: 'pier',
   });
   try {
+    const spec: ExperimentSpec = {
+      ...experiment(),
+      executor: {
+        kind: 'pier',
+        config: {
+          ...executorConfig(),
+          tasksRootEnv: 'MAKA_TEST_TASKS',
+          mounts: [{ sourceEnv: 'MAKA_TEST_MOUNT', target: '/input', readOnly: true }],
+        },
+      },
+      tasks: [{ id: 'task', input: 'solve', config: { pier: { path: 'task' } } }],
+    };
     const results = await runExperiment({
-      spec: experiment(),
+      spec,
       store: new FileAttemptStore(join(root, 'attempts')),
-      executor: createHarborExecutor(
-        { ...executorConfig(), preparationEnvironment: ['MAKA_TEST_ENV'] },
+      executor: createPierExecutor(
+        {
+          ...executorConfig(),
+          tasksRootEnv: 'MAKA_TEST_TASKS',
+          preparationEnvironment: ['MAKA_TEST_ENV'],
+          mounts: [{ sourceEnv: 'MAKA_TEST_MOUNT', target: '/input', readOnly: true }],
+        },
         join(root, 'experiment.json'),
       ),
       subjects: [
@@ -1372,7 +1435,26 @@ socket.end();
       ],
     });
     assert.equal(results.get('task::1::external')?.result.status, 'completed');
-    assert.deepEqual(JSON.parse(await readFile(envDump, 'utf8')), { framework: null });
+    const launched = JSON.parse(await readFile(envDump, 'utf8')) as {
+      framework: string | null;
+      mounts: Array<{ source: string; target: string }>;
+      trialName: string;
+    };
+    assert.equal(launched.framework, null);
+    assert.deepEqual(launched.mounts, [
+      { type: 'bind', source: root, target: '/input', read_only: true },
+      { type: 'bind', source: join(root, launched.trialName, 'agent'), target: '/logs/agent' },
+      {
+        type: 'bind',
+        source: join(root, launched.trialName, 'verifier'),
+        target: '/logs/verifier',
+      },
+      {
+        type: 'bind',
+        source: join(root, launched.trialName, 'artifacts'),
+        target: '/logs/artifacts',
+      },
+    ]);
   } finally {
     restoreEnvironment();
     await rm(root, { recursive: true, force: true });

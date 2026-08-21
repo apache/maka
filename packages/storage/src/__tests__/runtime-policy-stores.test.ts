@@ -35,6 +35,29 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe('runtime policy stores', () => {
+  test('upgrades schema v2 with the automatic Host shell default', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const { shell: _shell, ...policyV2 } = createDefaultRuntimePolicy();
+      await writeFile(
+        join(root, 'runtime-policy.json'),
+        `${JSON.stringify({ schemaVersion: 2, revision: 4, policy: policyV2 })}\n`,
+      );
+
+      const snapshot = await stores.runtimePolicy.getSnapshot();
+      assert.equal(snapshot.revision, 4);
+      assert.deepEqual(snapshot.policy.shell, { preference: 'auto', executable: '' });
+      const committed = await stores.runtimePolicy.mutate({
+        expectedRevision: 4,
+        operation: { kind: 'set_shell', value: snapshot.policy.shell },
+      });
+      assert.equal(committed.kind, 'committed');
+      const persisted = JSON.parse(await readFile(join(root, 'runtime-policy.json'), 'utf8')) as {
+        schemaVersion: number;
+      };
+      assert.equal(persisted.schemaVersion, 3);
+    });
+  });
+
   test('persists extra request bodies and resolves custom headers as secret execution material', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(stores, 0, {

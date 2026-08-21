@@ -223,6 +223,24 @@ class EgressFilterTest(unittest.TestCase):
         MODULE.next_layer(tls)
         self.assertIsNone(tls.layer)
 
+        for first, remainder in (
+            (b"\x16", b"\x03\x01\x00\x00"),
+            (b"\x16\x03", b"\x01\x00\x00"),
+        ):
+            with self.subTest(tls_prefix=first):
+                buffered = bytearray(first)
+                fragmented = SimpleNamespace(
+                    layer=None,
+                    context=context,
+                    data_client=lambda: bytes(buffered),
+                    data_server=lambda: b"",
+                )
+                MODULE.next_layer(fragmented)
+                self.assertIsNone(fragmented.layer)
+                buffered.extend(remainder)
+                MODULE.next_layer(fragmented)
+                self.assertIsNone(fragmented.layer)
+
         http = SimpleNamespace(
             layer=None,
             context=context,
@@ -314,44 +332,6 @@ class EgressFilterTest(unittest.TestCase):
                 json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[1])["ruleId"],
                 "raw_tunnel",
             )
-
-    def test_next_layer_replaces_raw_tcp_with_a_closer(self) -> None:
-        class FakeTCPLayer:
-            def __init__(self, context: object) -> None:
-                self.context = context
-                context.layers.append(self)
-
-        class CloseConnection:
-            def __init__(self, connection: object) -> None:
-                self.connection = connection
-
-        with tempfile.TemporaryDirectory() as directory:
-            MODULE.AUDIT_PATH = Path(directory) / "hits.jsonl"
-            previous_tcp = MODULE.TCPLayer
-            previous_commands = MODULE.proxy_commands
-            self.addCleanup(setattr, MODULE, "TCPLayer", previous_tcp)
-            self.addCleanup(setattr, MODULE, "proxy_commands", previous_commands)
-            MODULE.TCPLayer = FakeTCPLayer
-            MODULE.proxy_commands = SimpleNamespace(CloseConnection=CloseConnection)
-            client = object()
-            server = SimpleNamespace(address=("ssh.github.com", 443))
-            sibling = object()
-            context = SimpleNamespace(
-                client=client, server=server, layers=[sibling], options=None
-            )
-            current = FakeTCPLayer(context)
-            nextlayer = SimpleNamespace(layer=current, context=context)
-            MODULE.next_layer(nextlayer)
-            self.assertIsInstance(nextlayer.layer, MODULE.CloseRawLayer)
-            self.assertIsInstance(nextlayer.layer, MODULE.Layer)
-            self.assertEqual(context.layers, [sibling, nextlayer.layer])
-            self.assertNotIn(current, context.layers)
-            commands = list(nextlayer.layer.handle_event(object()))
-            self.assertEqual([command.connection for command in commands], [client, server])
-            self.assertTrue(all(isinstance(command, CloseConnection) for command in commands))
-            record = json.loads(MODULE.AUDIT_PATH.read_text().splitlines()[0])
-            self.assertEqual(record["ruleId"], "raw_tunnel")
-            self.assertEqual(record["host"], "ssh.github.com")
 
     def test_next_layer_leaves_an_unclassified_layer_alone(self) -> None:
         context = SimpleNamespace(layers=[])

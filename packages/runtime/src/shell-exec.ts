@@ -117,10 +117,16 @@ export function runShellWithBoundedTail(
     command,
     options.env ?? process.env,
   );
-  return runSpawnedProcessWithBoundedTail(plan.file, plan.args, plan.useShellOption, {
-    ...options,
-    ...(plan.env ? { env: plan.env } : {}),
-  });
+  return runSpawnedProcessWithBoundedTail(
+    plan.file,
+    plan.args,
+    plan.useShellOption,
+    {
+      ...options,
+      ...(plan.env ? { env: plan.env } : {}),
+    },
+    plan.stdin,
+  );
 }
 
 /** Run an argv command directly, without a second shell parsing pass. */
@@ -137,6 +143,7 @@ function runSpawnedProcessWithBoundedTail(
   args: readonly string[],
   useShellOption: boolean,
   options: BoundedShellOptions,
+  stdin?: string,
 ): Promise<BoundedShellResult> {
   const cap = options.maxRetainedChars ?? BASH_MAX_RETAINED_CHARS;
   const liveCap = options.maxLiveEmitChars ?? BASH_MAX_LIVE_EMIT_CHARS;
@@ -161,7 +168,7 @@ function runSpawnedProcessWithBoundedTail(
         cwd: options.cwd,
         env: options.env,
         shell: useShellOption,
-        stdio: buildSpawnStdio(options.fdInputs),
+        stdio: buildSpawnStdio(options.fdInputs, stdin === undefined ? 'ignore' : 'pipe'),
         // POSIX: make the shell its own process-group leader (setsid). Termination
         // signals the group and removes descendants visible outside it at each
         // process-table snapshot.
@@ -208,6 +215,11 @@ function runSpawnedProcessWithBoundedTail(
     }
     try {
       writeChildFdInputs(child, options.fdInputs);
+      if (stdin !== undefined) {
+        if (!child.stdin) throw new Error('Shell process did not expose stdin');
+        child.stdin.on('error', () => {});
+        child.stdin.end(stdin);
+      }
     } catch (error) {
       settled = true;
       cleanup();

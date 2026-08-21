@@ -5,10 +5,9 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { createProjectCatalog, createSessionStore } from '@maka/storage';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
-import { HostProjectCatalogChangeService } from '../server/project-catalog-change-service.js';
+import { HostChangeFeed } from '../server/host-change-feed.js';
 import { HostProjectCatalogCoordinator } from '../server/project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from '../server/project-membership-gate.js';
-import { HostSessionCatalogChangeService } from '../server/session-catalog-change-service.js';
 
 test('Host Project Catalog relink merges identities and reassigns every affected Session', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-project-catalog-'));
@@ -24,30 +23,36 @@ test('Host Project Catalog relink merges identities and reassigns every affected
     })(),
   });
   const sessions = createSessionStore(storageRoot);
-  const projectChanges = new HostProjectCatalogChangeService();
-  const sessionChanges = new HostSessionCatalogChangeService();
+  const hostChanges = new HostChangeFeed();
   const projectFrames: unknown[] = [];
   const sessionFrames: unknown[] = [];
-  projectChanges.attachConnection('desktop', {
-    send: async (frame) => {
-      projectFrames.push(frame);
+  hostChanges.attachConnection(
+    'desktop',
+    {
+      projectCatalog: true,
+      sessionCatalog: true,
     },
-  });
-  projectChanges.attachConnection('tui', {
-    send: async (frame) => {
-      projectFrames.push(frame);
+    {
+      send: async (frame) => {
+        if (frame.kind === 'project.catalog.changed') projectFrames.push(frame);
+        else sessionFrames.push(frame);
+      },
     },
-  });
-  sessionChanges.attachConnection('desktop', {
-    send: async (frame) => {
-      sessionFrames.push(frame);
+  );
+  hostChanges.attachConnection(
+    'tui',
+    { projectCatalog: true },
+    {
+      send: async (frame) => {
+        projectFrames.push(frame);
+      },
     },
-  });
+  );
   const membership = new HostProjectMembershipGate();
   const coordinator = new HostProjectCatalogCoordinator(
     catalog,
-    projectChanges,
-    sessionChanges,
+    { publish: () => hostChanges.publishProjectCatalog() },
+    { publish: (sessionId: string) => hostChanges.publishSessionCatalog(sessionId) },
     membership,
     () => assert.fail('ordinary project mutations must not drain the Host'),
   );
@@ -125,6 +130,44 @@ test('Host Project Catalog relink merges identities and reassigns every affected
   }
 });
 
+test('directory resolution failures cannot enter the unknown-commit drain path', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-project-directory-failure-'));
+  const catalog = createProjectCatalog(join(base, 'storage'));
+  let drains = 0;
+  const hostChanges = new HostChangeFeed();
+  const coordinator = new HostProjectCatalogCoordinator(
+    catalog,
+    { publish: () => hostChanges.publishProjectCatalog() },
+    { publish: (sessionId: string) => hostChanges.publishSessionCatalog(sessionId) },
+    new HostProjectMembershipGate(),
+    () => {
+      drains += 1;
+    },
+    {
+      resolveRegistration: async () => {
+        throw Object.assign(new Error('Path is too long'), { code: 'ENAMETOOLONG' });
+      },
+    } as never,
+  );
+
+  try {
+    assert.deepEqual(
+      await coordinator.handlers['project.catalog.mutate'](
+        { kind: 'register_directory', rootId: 'home', segments: ['project'] },
+        connection(),
+      ),
+      {
+        ok: false,
+        error: { code: 'invalid_request', message: 'Project directory is unavailable' },
+      },
+    );
+    assert.equal(drains, 0);
+  } finally {
+    catalog.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 function sessionInput(cwd: string, projectId: string) {
   return {
     cwd,
@@ -140,7 +183,6 @@ function connection(): ConnectionContext {
   return {
     hostEpoch: 'host-1',
     connectionId: 'desktop',
-    surface: 'desktop',
     principal: 'local_os_user',
     acquireResidency: () => ({ release: () => {} }),
   };

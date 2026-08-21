@@ -17,6 +17,65 @@ import {
 
 type DomainClient = RuntimeHostSessionDomainsIpcDeps['client'];
 
+test('goal:arm takes the Session from the scoped channel and refuses any other key', async () => {
+  const armed: unknown[] = [];
+  const client = domainClient({
+    armGoal: async (input) => {
+      armed.push(input);
+      return { sessionId: input.sessionId, goal: goalProjection() };
+    },
+  });
+  const ipc = ipcHarness();
+  registerDomainsIpc({ client, emitModeChanged() {} }, ipc);
+
+  const goal = await ipc.invoke('goal:arm', 'session-1', {
+    condition: 'Finish the adapter',
+    maxIterations: 20,
+    tokenBudget: 1_000,
+  });
+  assert.deepEqual(armed, [
+    {
+      sessionId: 'session-1',
+      condition: 'Finish the adapter',
+      maxIterations: 20,
+      tokenBudget: 1_000,
+    },
+  ]);
+  assert.equal((goal as { id: string }).id, 'goal-1');
+
+  // Omitted budgets are "not chosen", which the Host reads as its defaults.
+  await ipc.invoke('goal:arm', 'session-1', { condition: 'Finish the adapter' });
+  assert.deepEqual(armed[1], {
+    sessionId: 'session-1',
+    condition: 'Finish the adapter',
+    maxIterations: null,
+    tokenBudget: null,
+  });
+
+  await assert.rejects(ipc.invoke('goal:arm', 'session-1', { condition: '   ' }));
+  await assert.rejects(
+    ipc.invoke('goal:arm', 'session-1', { condition: 'Finish', maxIterations: 0 }),
+  );
+  await assert.rejects(ipc.invoke('goal:arm', 'session-1', 'not-an-object'));
+
+  // Any key this frame does not carry is a caller mistake. Dropping it would
+  // send the Host a frame the caller did not write, so it is refused instead.
+  await assert.rejects(
+    ipc.invoke('goal:arm', 'session-1', { condition: 'Finish', blockCap: 5 }),
+    /Invalid Goal arm input/,
+  );
+  // The Session is one of those keys: it comes from the scoped channel, so a
+  // renderer-side Session id cannot redirect the operation even by matching.
+  await assert.rejects(
+    ipc.invoke('goal:arm', 'session-1', {
+      sessionId: 'session-somewhere-else',
+      condition: 'Finish',
+    }),
+    /Invalid Goal arm input/,
+  );
+  assert.equal(armed.length, 2);
+});
+
 test('adapts Host Goal, Task, Deep Research, and Resource projections', async () => {
   const controls: unknown[] = [];
   const client = domainClient({
@@ -81,6 +140,53 @@ test('adapts Host Goal, Task, Deep Research, and Resource projections', async ()
     reportArtifactId: 'artifact-1',
     implementationPrompt: 'Implement the result.',
   });
+});
+
+test('adapts bounded Agent Graph epoch reads without changing graph identity', async () => {
+  const calls: unknown[] = [];
+  const client = domainClient({
+    listAgentGraphEpochs: async (rootSessionId) => {
+      calls.push(rootSessionId);
+      return {
+        epochs: [{ epoch: 2, graphId: 'graph-2', createdAt: 2, current: true }],
+        truncated: false,
+      };
+    },
+    listCurrentAgentGraphEpochs: async (rootSessionId) => {
+      calls.push({ current: rootSessionId });
+      return {
+        rootSessionId,
+        epochs: [{ epoch: 2, graphId: 'graph-2', createdAt: 2, current: true }],
+        nextBeforeEpoch: 2,
+      };
+    },
+    queryAgentGraph: async (input) => {
+      calls.push(input);
+      return graphSnapshot(input.rootSessionId, input.graphId ?? 'graph-current');
+    },
+  });
+  const ipc = ipcHarness();
+  registerDomainsIpc({ client, emitModeChanged() {} }, ipc);
+
+  assert.deepEqual(await ipc.invoke('graphs:listEpochs', 'session-1'), {
+    epochs: [{ epoch: 2, graphId: 'graph-2', createdAt: 2, current: true }],
+    truncated: false,
+  });
+  assert.deepEqual(await ipc.invoke('graphs:listCurrentEpochs', 'session-1'), {
+    epochs: [{ epoch: 2, graphId: 'graph-2', createdAt: 2, current: true }],
+    truncated: true,
+  });
+  assert.equal(
+    (await ipc.invoke('graphs:getSnapshot', 'session-1', { graphId: 'graph-2' }) as {
+      graphId: string;
+    }).graphId,
+    'graph-2',
+  );
+  assert.deepEqual(calls, [
+    'session-1',
+    { current: 'session-1' },
+    { rootSessionId: 'session-1', graphId: 'graph-2' },
+  ]);
 });
 
 test('adapts interactive terminal ownership to one Host controller lease', async () => {
@@ -673,6 +779,7 @@ function domainClient(overrides: Partial<DomainClient>): DomainClient {
     throw new Error('Unexpected domain operation');
   };
   return {
+    armGoal: unavailable,
     clearGoal: unavailable,
     acquireRuntimeResourceController: unavailable,
     controlPlan: unavailable,
@@ -680,6 +787,8 @@ function domainClient(overrides: Partial<DomainClient>): DomainClient {
     getRuntimeResource: unavailable,
     getPlanState: unavailable,
     listRuntimeResources: unavailable,
+    listAgentGraphEpochs: unavailable,
+    listCurrentAgentGraphEpochs: unavailable,
     listTasks: unavailable,
     queryAgentGraph: unavailable,
     queryAgentGraphOperator: unavailable,
@@ -710,6 +819,39 @@ function goalProjection() {
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+  };
+}
+
+function graphSnapshot(rootSessionId: string, graphId: string) {
+  return {
+    schemaVersion: 1 as const,
+    rootSessionId,
+    graphId,
+    orchestrationMode: 'graph' as const,
+    snapshotVersion: `sha256:${'1'.repeat(64)}` as const,
+    status: 'completed' as const,
+    scheduleRevision: 1,
+    topologyFingerprint: `sha256:${'2'.repeat(64)}` as const,
+    closed: true,
+    operators: [],
+    edges: [],
+    work: [],
+    reconciliationFailures: [],
+    stoppedTargets: [],
+    claims: [],
+    recentControlDecisions: [],
+    recentActivity: [],
+    terminalHistory: { records: [] },
+    omitted: {
+      operators: 0,
+      edges: 0,
+      work: 0,
+      reconciliationFailures: 0,
+      stoppedTargets: 0,
+      claims: 0,
+      controlDecisions: 0,
+      recentActivity: 0,
+    },
   };
 }
 

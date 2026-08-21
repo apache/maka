@@ -1,6 +1,5 @@
 import {
   HOST_OPERATION_SPECS,
-  type ClientSurface,
   decodeOperationOutcome,
   type HostOperationErrorCode,
   type OperationInput,
@@ -17,8 +16,8 @@ import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.j
 export interface ConnectionContext {
   hostEpoch: string;
   connectionId: string;
-  surface: ClientSurface;
   principal: string;
+  credentialId?: string;
   acquireResidency(): OperationResidency;
 }
 
@@ -244,7 +243,28 @@ export function createUnavailableAccessAuthorityOperationHandlers(): AccessAutho
         message: 'Runtime Host access credentials are unavailable',
       },
     }),
+    'access.credential.replace': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
+    'access.credential.prepare': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
     'access.credential.revoke': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
+    'access.credential.finalize': async () => ({
       ok: false,
       error: {
         code: 'operation_unavailable',

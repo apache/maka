@@ -19,22 +19,29 @@ export async function startLocalIpcRuntimeHostListener(
   });
   const startupTransports = new Set<FramedTransport>();
   let starting = true;
-  const server = createServer({ allowHalfOpen: true }, (socket) => {
-    const transport = new FramedTransport(socket);
-    if (starting) {
-      startupTransports.add(transport);
-      void transport.closed.then(() => startupTransports.delete(transport));
-    }
+  const acceptTransport = (transport: FramedTransport) => {
     try {
       options.accept({ transport, authority: LOCAL_OWNER_CONNECTION_AUTHORITY });
     } catch (error) {
       transport.abort(asError(error));
     }
+  };
+  const server = createServer({ allowHalfOpen: true }, (socket) => {
+    const transport = new FramedTransport(socket);
+    if (starting) {
+      startupTransports.add(transport);
+      void transport.closed.then(() => startupTransports.delete(transport));
+      return;
+    }
+    acceptTransport(transport);
   });
   try {
     await listen(server, endpoint.path);
     await endpoint.prepareAfterListen();
     starting = false;
+    // A connection opened before the endpoint trust boundary was verified
+    // must not inherit Local Owner authority after verification completes.
+    for (const transport of startupTransports) transport.abort();
     startupTransports.clear();
     return new LocalIpcRuntimeHostListener(server, endpoint);
   } catch (error) {

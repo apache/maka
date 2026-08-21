@@ -1,0 +1,127 @@
+name: Stage CLI npm release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact maka-agent version from packages/cli/package.json
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-npm-stage
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Require main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Reject non-main dispatches
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          if [[ "$RELEASE_REF" != "refs/heads/main" ]]; then
+            echo "CLI releases must be dispatched from main; found $RELEASE_REF" >&2
+            exit 1
+          fi
+
+  validate:
+    name: Validate immutable candidate
+    needs: authorize
+    uses: ./.github/workflows/cli-package-validation.yml
+
+  stage:
+    name: Stage maka-agent on npm
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: npm-release
+      url: https://www.npmjs.com/package/maka-agent
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.19.0'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Select the staged-publishing npm toolchain
+        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+      - name: Download the validated release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.validate.outputs.release_candidate_artifact_id }}
+          path: packages/cli/release
+      - name: Bind the candidate to this workflow run
+        id: release
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_WORKFLOW: .github/workflows/release-cli-stage.yml
+        run: |
+          node scripts/release-cli-publication.mjs prepare-stage \
+            packages/cli/release \
+            "$EXPECTED_VERSION" \
+            "$RELEASE_SHA" \
+            "$RELEASE_RUN_ID" \
+            "$RELEASE_RUN_ATTEMPT" \
+            "$RELEASE_REPOSITORY" \
+            "$RELEASE_WORKFLOW" \
+            "$GITHUB_OUTPUT"
+      - name: Preserve the exact staged candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-staged-release-${{ github.run_attempt }}
+          path: |
+            packages/cli/release/*.tgz
+            packages/cli/release/*.tgz.sha256
+            packages/cli/release/*.tgz.files.json
+            packages/cli/release/release.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - name: Record the post-staging approval step
+        env:
+          RELEASE_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          {
+            echo "## maka-agent@$RELEASE_VERSION staging"
+            echo
+            echo "After this workflow succeeds, review and approve the staged package with 2FA on npmjs.com."
+            echo "After the package becomes public, run **Finalize CLI npm release** with:"
+            echo
+            echo "- stage run ID: \`$RELEASE_RUN_ID\`"
+            echo "- stage run attempt: \`$RELEASE_RUN_ATTEMPT\`"
+            echo "- version: \`$RELEASE_VERSION\`"
+            if [[ "$RELEASE_DIST_TAG" == "latest" ]]; then
+              echo
+              echo "Before finalizing this stable release, inspect npm dist-tags. If \`next\` is older than \`latest\`, authenticate interactively with npm and run:"
+              echo
+              echo "\`npm dist-tag add \"maka-agent@$RELEASE_VERSION\" next --registry https://registry.npmjs.org/\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Submit the candidate to npm staging
+        env:
+          RELEASE_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
+          RELEASE_TARBALL: ${{ steps.release.outputs.tarball }}
+        run: >-
+          npm stage publish "$RELEASE_TARBALL"
+          --tag "$RELEASE_DIST_TAG"
+          --registry https://registry.npmjs.org/
+          --provenance

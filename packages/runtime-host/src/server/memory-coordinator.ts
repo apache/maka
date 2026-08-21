@@ -11,6 +11,7 @@ import {
   setLocalMemoryEntryStatusDraft,
   stableLocalMemoryEntryId,
   stableLocalMemoryProposalId,
+  type Sha256Digest,
 } from '@maka/core/local-memory';
 import { redactSecrets } from '@maka/core/redaction';
 import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
@@ -45,6 +46,11 @@ import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js
 import { ConnectionBoundChunkUploads } from './connection-bound-chunk-uploads.js';
 
 const PENDING_DOCUMENT_DEFAULT = '# Maka Pending Memory\n';
+const nodeSha256: Sha256Digest = {
+  digest(input: string): Uint8Array {
+    return new Uint8Array(createHash('sha256').update(input, 'utf8').digest());
+  },
+};
 const MAX_ACTIVE_UPLOADS = 8;
 const MAX_STAGED_UPLOAD_BYTES = 1024 * 1024;
 const UPLOAD_TTL_MS = 5 * 60 * 1000;
@@ -345,13 +351,15 @@ export class HostMemoryCoordinator {
 
     const now = this.#now();
     const memory =
-      snapshot.memory.kind === 'missing' ? defaultLocalMemoryMarkdown(now) : memoryText(snapshot);
+      snapshot.memory.kind === 'missing'
+        ? defaultLocalMemoryMarkdown(nodeSha256, now)
+        : memoryText(snapshot);
     const pending = pendingText(snapshot);
     switch (input.kind) {
       case 'propose': {
         const content = redactSecrets(input.content);
         const result = appendLocalMemoryProposalDraft(pending, {
-          proposalId: stableLocalMemoryProposalId(content, now),
+          proposalId: stableLocalMemoryProposalId(content, now, nodeSha256),
           title: input.title,
           content,
           ...projectScope(input.scope),
@@ -368,7 +376,7 @@ export class HostMemoryCoordinator {
       case 'remember': {
         const content = redactSecrets(input.content);
         const result = appendApprovedLocalMemoryEntryDraft(memory, {
-          id: stableLocalMemoryEntryId(content, now),
+          id: stableLocalMemoryEntryId(content, now, nodeSha256),
           title: input.title,
           content,
           source: 'user_authored',
@@ -390,7 +398,7 @@ export class HostMemoryCoordinator {
         const content = redactSecrets(proposal.content);
         const result = approveLocalMemoryProposalDraft(memory, pending, {
           proposalId: input.proposalId,
-          entryId: stableLocalMemoryEntryId(content, now),
+          entryId: stableLocalMemoryEntryId(content, now, nodeSha256),
           confirmedAt: now,
           approvalSurface: 'settings_review_queue',
         });
@@ -433,7 +441,7 @@ export class HostMemoryCoordinator {
       case 'reset':
         return this.#commitBundle({
           expectedRevision: input.expectedRevision,
-          memory: encodeText(defaultLocalMemoryMarkdown(now)),
+          memory: encodeText(defaultLocalMemoryMarkdown(nodeSha256, now)),
           pending: documentBytesOrNull(snapshot.pending),
           backup: 'reset',
         });
@@ -514,7 +522,7 @@ export class HostMemoryCoordinator {
       if (snapshot.memory.kind === 'missing' && snapshot.pending.kind !== 'safe_mode') {
         await this.#store.commit({
           expectedRevision: snapshot.revision,
-          memory: encodeText(defaultLocalMemoryMarkdown(this.#now())),
+          memory: encodeText(defaultLocalMemoryMarkdown(nodeSha256, this.#now())),
           pending: documentBytesOrNull(snapshot.pending),
         });
       }

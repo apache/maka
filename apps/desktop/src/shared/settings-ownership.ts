@@ -34,7 +34,8 @@ export function hasRuntimeHostSettingsPatch(
   patch: UpdateAppSettingsInput,
 ): boolean {
   return Boolean(
-    patch.network ||
+    patch.shell ||
+      patch.network ||
       patch.localMemory ||
       patch.workspaceInstructions ||
       patch.privacy ||

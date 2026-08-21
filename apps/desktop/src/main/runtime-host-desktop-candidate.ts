@@ -135,7 +135,6 @@ export interface DesktopRuntimeHostCandidateStartInput
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
   readonly candidateEntrypoint: string | URL;
-  readonly desktopE2e?: boolean;
   readonly generation?: string;
   readonly takeoverHostEpoch?: string;
   readonly signal?: AbortSignal;
@@ -288,7 +287,6 @@ async function startRemoteDesktopRuntimeHostCandidate(
   const connection = await connectRemoteRuntimeHostProfile({
     profile: remote.profile,
     credential: remote.credential,
-    surface: "desktop",
     clientInstanceId: input.clientInstanceId ?? randomUUID(),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     ...(input.connectTimeoutMs === undefined
@@ -586,6 +584,7 @@ export async function createDesktopRuntimeHostCandidate(
     registerRuntimeHostSessionCatalogIpc(
       {
         client,
+        runningTurnIds: (sessionId) => sessionObserver.observedRunningTurnIds(sessionId),
         resolveCreateProject: (input) => deps.resolveSessionCreateProject(input, target),
         emitSessionsChanged,
         releaseSessionResources: releaseNativeSession,
@@ -671,7 +670,6 @@ function connectInput(
 ): ConnectOrSpawnRuntimeHostInput {
   return {
     rootPath: input.rootPath,
-    surface: "desktop",
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -694,7 +692,6 @@ function connectInput(
     ...(input.handshakeTimeoutMs === undefined
       ? {}
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
-    ...(input.desktopE2e ? { desktopE2e: true } : {}),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   };
 }

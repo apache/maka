@@ -96,7 +96,6 @@ test('drives the Desktop Pricing adapter through a real Runtime Host connection'
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
-      surface: 'desktop',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -114,7 +113,6 @@ test('drives the Desktop Pricing adapter through a real Runtime Host connection'
     await client.close();
     const reconnected = await connectRuntimeHost({
       rootPath: base,
-      surface: 'desktop',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,

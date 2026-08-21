@@ -20,6 +20,21 @@ import {
 import { estimateRuntimeEventsTokens } from '../context-budget.js';
 import { applyRuntimeEventHistoryCompact } from '../history-compact.js';
 
+// Satisfies the sectioned summary contract for marked-checkpoint fixtures.
+const STRUCTURED_SUMMARY = [
+  '## Goal',
+  'X',
+  '',
+  '## Progress',
+  '- done',
+  '',
+  '## Next Steps',
+  '1. continue',
+  '',
+  '## Critical Context',
+  '- (none)',
+].join('\n');
+
 describe('history compact checkpoint', () => {
   test('persists provider-native state as a V3 checkpoint bound to one Codex model', () => {
     const checkpoint = buildHistoryCompactCheckpoint({
@@ -121,6 +136,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(0)],
       summary: 'text summary',
+      summaryFormat: 'legacy_freeform',
     });
     assert.equal(validateHistoryCompactCheckpointShape({ ...v2, providerState: {} }), false);
     assert.equal(
@@ -147,6 +163,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: events,
       summary: 'Continuation summary.',
+      summaryFormat: 'legacy_freeform',
       now: 1_800_000_010_000,
     });
 
@@ -181,6 +198,7 @@ describe('history compact checkpoint', () => {
           sessionId: 'session-1',
           coveredRuntimeEvents: [textEvent(0)],
           summary: '   ',
+          summaryFormat: 'legacy_freeform',
         }),
       /non-empty summary/,
     );
@@ -200,6 +218,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(0)],
       summary,
+      summaryFormat: 'legacy_freeform',
     });
 
     assert.equal(checkpoint.summary, summary);
@@ -213,6 +232,7 @@ describe('history compact checkpoint', () => {
           sessionId: 'session-1',
           coveredRuntimeEvents: [textEvent(0), { ...textEvent(1), sessionId: 'session-2' }],
           summary: 'mixed source',
+          summaryFormat: 'legacy_freeform',
         }),
       /one session/,
     );
@@ -224,6 +244,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: events,
       summary: 'source-bound',
+      summaryFormat: 'legacy_freeform',
     });
     const invalid = {
       ...checkpoint,
@@ -245,23 +266,27 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: source,
       summary: 'current',
+      summaryFormat: 'legacy_freeform',
     });
     const successor = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: source,
       summary: 'smaller replacement',
+      summaryFormat: 'legacy_freeform',
       previousCheckpointId: current.checkpointId,
     });
     const stale = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: source,
       summary: 'stale replacement',
+      summaryFormat: 'legacy_freeform',
       previousCheckpointId: 'another-checkpoint',
     });
     const differentSource = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(2), textEvent(3)],
       summary: 'different source',
+      summaryFormat: 'legacy_freeform',
       previousCheckpointId: current.checkpointId,
     });
 
@@ -280,12 +305,14 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(0)],
       summary: 'first',
+      summaryFormat: 'legacy_freeform',
       now: 10,
     });
     const latest = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(0), textEvent(1)],
       summary: 'latest',
+      summaryFormat: 'legacy_freeform',
       previousCheckpointId: first.checkpointId,
       now: 20,
     });
@@ -323,11 +350,13 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: source,
       summary: 'same summary',
+      summaryFormat: 'legacy_freeform',
     });
     const automatic = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: source,
       summary: 'same summary',
+      summaryFormat: 'legacy_freeform',
       memoryExtractionBoundary: {
         runId: 'run-1',
         turnId: 'turn-1',
@@ -338,6 +367,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: source,
       summary: 'same summary',
+      summaryFormat: 'legacy_freeform',
       memoryExtractionBoundary: {
         runId: 'run-1',
         turnId: 'turn-1',
@@ -406,16 +436,218 @@ describe('history compact checkpoint', () => {
     );
   });
 
+  test('rejects a truncated checkpoint at load and recovers the prior valid one', async () => {
+    const valid = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1)],
+      summary: 'legacy summary without sections but complete.',
+      summaryFormat: 'legacy_freeform',
+      now: 10,
+    });
+    // A truncated fragment that would otherwise win by coverage: the load gate
+    // must drop it and fall back to the previous complete checkpoint (#3041).
+    const poisoned = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1), textEvent(2)],
+      summary: 'stops mid-thought...',
+      summaryFormat: 'legacy_freeform',
+      previousCheckpointId: valid.checkpointId,
+      now: 20,
+    });
+    const store = new StubAgentRunStore(
+      [run('run-valid', 10), run('run-poisoned', 20)],
+      new Map([
+        ['run-valid', [checkpointEvent('ledger-valid', 'run-valid', valid, 10)]],
+        ['run-poisoned', [checkpointEvent('ledger-poisoned', 'run-poisoned', poisoned, 20)]],
+      ]),
+    );
+
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+
+    assert.equal(loaded?.checkpointId, valid.checkpointId);
+  });
+
+  test('uses the shared fence scan to quarantine only an unclosed legacy summary', async () => {
+    const valid = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1)],
+      summary: 'Legacy context:\n\n```ts\nconst ready = true;\n```',
+      summaryFormat: 'legacy_freeform',
+      now: 10,
+    });
+    const poisoned = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1), textEvent(2)],
+      summary: 'Legacy context:\n\n```ts\nconst ready =',
+      summaryFormat: 'legacy_freeform',
+      previousCheckpointId: valid.checkpointId,
+      now: 20,
+    });
+    const store = new StubAgentRunStore(
+      [run('run-valid', 10), run('run-poisoned', 20)],
+      new Map([
+        ['run-valid', [checkpointEvent('ledger-valid', 'run-valid', valid, 10)]],
+        ['run-poisoned', [checkpointEvent('ledger-poisoned', 'run-poisoned', poisoned, 20)]],
+      ]),
+    );
+
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+
+    assert.equal(loaded?.checkpointId, valid.checkpointId);
+  });
+
+  test('stamps new text checkpoints with the sectioned format; legacy_freeform stays unmarked', () => {
+    const stamped = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      summary: STRUCTURED_SUMMARY,
+    });
+    assert.equal(stamped.version === 2 ? stamped.summaryFormat : undefined, 'sections_v1');
+    const legacy = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      summary: 'legacy free-form summary',
+      summaryFormat: 'legacy_freeform',
+    });
+    assert.equal(legacy.version === 2 ? legacy.summaryFormat : undefined, undefined);
+  });
+
+  test('the builder refuses to mint the sectioned marker for unvalidated text', () => {
+    // sections_v1 is proof the complete predicate held; a direct caller with
+    // free-form text cannot receive it.
+    assert.throws(
+      () =>
+        buildHistoryCompactCheckpoint({
+          sessionId: 'session-1',
+          coveredRuntimeEvents: [textEvent(0)],
+          summary: 'free-form prose without the mandated sections.',
+        }),
+      /summary failed validation: malformed_summary_missing_section/,
+    );
+  });
+
+  test('the builder re-runs the size floor over the covered span it is handed', () => {
+    // Every construction seam has the covered events in hand — including
+    // copy — so a structurally valid but undersized summary cannot be
+    // rebuilt over a large span and keep the marker.
+    const bigEvent: RuntimeEvent = {
+      ...textEvent(0),
+      content: { kind: 'text', text: `big ${'x'.repeat(60_000)}` },
+    };
+    assert.throws(
+      () =>
+        buildHistoryCompactCheckpoint({
+          sessionId: 'session-1',
+          coveredRuntimeEvents: [bigEvent],
+          summary: STRUCTURED_SUMMARY,
+        }),
+      /summary failed validation: malformed_summary_too_small_for_fold/,
+    );
+  });
+
+  test('shape validation fails closed on an unknown summary format marker', () => {
+    const stamped = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      summary: STRUCTURED_SUMMARY,
+    });
+    assert.equal(validateHistoryCompactCheckpointShape(stamped, 'session-1'), true);
+    assert.equal(
+      validateHistoryCompactCheckpointShape(
+        { ...stamped, summaryFormat: 'sections_v99' },
+        'session-1',
+      ),
+      false,
+    );
+  });
+
+  test('a marked checkpoint is held to the complete predicate at load', async () => {
+    // A section-less summary written through a seam that bypassed the write
+    // gates (direct recorder, older copy) but carrying the sectioned marker
+    // must never become authoritative again after restart; the unmarked
+    // legacy policy stays truncation-only.
+    const valid = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1)],
+      summary: STRUCTURED_SUMMARY,
+      now: 10,
+    });
+    // The builder refuses to mint the marker for unvalidated text, so a
+    // malformed marked checkpoint can only exist as pre-existing durable data
+    // (or via a hand-rolled object) — modeled here by restamping a legacy
+    // build.
+    const markedMalformed = {
+      ...buildHistoryCompactCheckpoint({
+        sessionId: 'session-1',
+        coveredRuntimeEvents: [textEvent(0), textEvent(1), textEvent(2)],
+        summary: 'complete-sounding free-form prose without the mandated sections.',
+        summaryFormat: 'legacy_freeform',
+        previousCheckpointId: valid.checkpointId,
+        now: 20,
+      }),
+      summaryFormat: 'sections_v1' as const,
+    };
+    const store = new StubAgentRunStore(
+      [run('run-valid', 10), run('run-marked', 20)],
+      new Map([
+        ['run-valid', [checkpointEvent('ledger-valid', 'run-valid', valid, 10)]],
+        ['run-marked', [checkpointEvent('ledger-marked', 'run-marked', markedMalformed, 20)]],
+      ]),
+    );
+
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+
+    assert.equal(loaded?.checkpointId, valid.checkpointId);
+  });
+
+  test('treats a truncated projection as invalid and repairs from the canonical ledger', async () => {
+    const valid = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      summary: 'canonical complete summary',
+      summaryFormat: 'legacy_freeform',
+    });
+    const canonicalEvent = checkpointEvent('canonical-event', 'run-canonical', valid, 20);
+    const poisoned = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1)],
+      summary: 'projection fragment cut off：',
+      summaryFormat: 'legacy_freeform',
+    });
+    const poisonedProjection = checkpointEvent('projection-event', 'run-projection', poisoned, 30);
+    const replacedEventIds: Array<string | undefined> = [];
+    const store = {
+      readEventProjection: async () => poisonedProjection,
+      repairEventProjection: async (
+        _sessionId: string,
+        _type: AgentRunEvent['type'],
+        _event: AgentRunEvent | null,
+        options?: { replaceEventId?: string },
+      ) => {
+        replacedEventIds.push(options?.replaceEventId);
+      },
+      listSessionRuns: async () => [run('run-canonical', 10)],
+      readEvents: async () => [canonicalEvent],
+    };
+
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+
+    assert.equal(loaded?.checkpointId, valid.checkpointId);
+    assert.deepEqual(replacedEventIds, [poisonedProjection.id]);
+  });
+
   test('loads the furthest checkpoint when a later run records stale coverage', async () => {
     const furthest = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(0), textEvent(1), textEvent(2)],
       summary: 'furthest coverage',
+      summaryFormat: 'legacy_freeform',
     });
     const stale = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(0), textEvent(1)],
       summary: 'stale coverage',
+      summaryFormat: 'legacy_freeform',
     });
     const store = new StubAgentRunStore(
       [run('run-furthest', 10), run('run-stale', 20)],
@@ -436,12 +668,14 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: source,
       summary: 'first',
+      summaryFormat: 'legacy_freeform',
       now: 10,
     });
     const second = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: source,
       summary: 'second',
+      summaryFormat: 'legacy_freeform',
       previousCheckpointId: first.checkpointId,
       now: 20,
     });
@@ -449,6 +683,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: source,
       summary: 'tip',
+      summaryFormat: 'legacy_freeform',
       previousCheckpointId: second.checkpointId,
       now: 30,
     });
@@ -478,6 +713,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(0), textEvent(1)],
       summary: 'bounded projection',
+      summaryFormat: 'legacy_freeform',
     });
     const projectedEvent = checkpointEvent('projection-event', 'run-projection', checkpoint, 20);
     const store = {
@@ -516,6 +752,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(0), textEvent(1)],
       summary: 'recovered checkpoint',
+      summaryFormat: 'legacy_freeform',
     });
     const event = checkpointEvent('recovered-event', 'run-recovered', checkpoint, 20);
     const repaired: Array<AgentRunEvent | null> = [];
@@ -543,6 +780,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(0)],
       summary: 'canonical checkpoint',
+      summaryFormat: 'legacy_freeform',
     });
     const canonicalEvent = checkpointEvent('canonical-event', 'run-canonical', checkpoint, 20);
     const invalidProjection = {
@@ -600,6 +838,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: events.slice(0, 4),
       summary: 'checkpoint summary',
+      summaryFormat: 'legacy_freeform',
     });
 
     const replay = applyRuntimeEventHistoryCompact(
@@ -639,6 +878,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: events.slice(0, 4),
       summary: 'recovery checkpoint summary',
+      summaryFormat: 'legacy_freeform',
     });
 
     // The raw history is deliberately far below high water. Once a durable
@@ -673,6 +913,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: events.slice(0, 4),
       summary: 'checkpoint summary '.repeat(20),
+      summaryFormat: 'legacy_freeform',
       charsPerToken: 1,
     });
     assert.ok(checkpoint.estimatedTokens > 100);
@@ -708,6 +949,7 @@ describe('history compact checkpoint', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: events.slice(0, 6),
       summary: 'short checkpoint',
+      summaryFormat: 'legacy_freeform',
       charsPerToken: 1,
     });
     const checkpointTokens = estimateRuntimeEventsTokens(

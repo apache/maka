@@ -73,6 +73,47 @@ describe('SQLite Agent Graph epochs', () => {
         { epoch: 2, graphId: 'agent_graph_2' },
       ],
     );
+    assert.equal((await store.readAgentGraphEpochByGraphId('agent_graph_1'))?.epoch, 1);
+    assert.deepEqual(await store.listAgentGraphEpochPage({ rootSessionId: 'root-1', limit: 1 }), {
+      epochs: [
+        {
+          schemaVersion: 1,
+          rootSessionId: 'root-1',
+          epoch: 2,
+          graphId: 'agent_graph_2',
+          createdAt: 100,
+        },
+      ],
+      nextBeforeEpoch: 2,
+      currentEpoch: 2,
+    });
+    assert.deepEqual(
+      await store.listAgentGraphEpochPage({
+        rootSessionId: 'root-1',
+        beforeEpoch: 2,
+        limit: 1,
+      }),
+      {
+        epochs: [
+          {
+            schemaVersion: 1,
+            rootSessionId: 'root-1',
+            epoch: 1,
+            graphId: 'agent_graph_1',
+            createdAt: 0,
+          },
+        ],
+        nextBeforeEpoch: null,
+        currentEpoch: 2,
+      },
+    );
+    // A root Session without durable rows reports no current epoch, letting the
+    // caller fall back to the legacy virtual identity.
+    assert.deepEqual(await store.listAgentGraphEpochPage({ rootSessionId: 'root-2', limit: 1 }), {
+      epochs: [],
+      nextBeforeEpoch: null,
+      currentEpoch: null,
+    });
     store.close();
   });
 

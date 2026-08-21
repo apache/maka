@@ -12,7 +12,11 @@ import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsSection } from './settings-section';
-import { archivedTaskRows, matchesArchivedTaskQuery } from './task-catalog-rows';
+import {
+  archivedTaskRows,
+  isOrphanedSubagentTask,
+  matchesArchivedTaskQuery,
+} from './task-catalog-rows';
 
 /**
  * Everything this page needs from the shell's session catalog, as one prop so
@@ -79,6 +83,10 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
   // Store order is already recency-first with a stable id tie-break, and the
   // projection preserves it, so there is nothing left to sort here.
   const archived = useMemo(() => archivedTaskRows(props.sessions), [props.sessions]);
+  const knownSessionIds = useMemo(
+    () => new Set(props.sessions.map((session) => session.id)),
+    [props.sessions],
+  );
   const isSearching = query.trim().length > 0;
   const visible = useMemo(
     () => archived.filter((session) => matchesArchivedTaskQuery(session, query, projectLabelOf)),
@@ -176,7 +184,15 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
               const updated = session.lastMessageAt
                 ? formatCompactTimestamp(session.lastMessageAt, Date.now(), locale)
                 : undefined;
-              const description = [projectLabelOf(session), updated].filter(Boolean).join(' · ');
+              const description = [
+                isOrphanedSubagentTask(session, knownSessionIds)
+                  ? copy.deletedParent
+                  : undefined,
+                projectLabelOf(session),
+                updated,
+              ]
+                .filter(Boolean)
+                .join(' · ');
               return (
                 <ListItem
                   key={session.id}

@@ -7,6 +7,7 @@ import type {
 import { PROVIDER_DEFAULTS, providerSupportsModelDiscovery } from './llm-connections.js';
 import type { PricingConfig } from './usage-stats/types.js';
 import { curatedCatalogFallbackModelsForProvider, lookupModelMetadata } from './model-metadata.js';
+import { pricingModelKey } from './usage-stats/pricing.js';
 
 export type ModelCapabilitySource = 'provider_api' | 'static_catalog' | 'user_override' | 'unknown';
 
@@ -205,7 +206,7 @@ export function buildConnectionModelCatalogEntries(
   const defaults = PROVIDER_DEFAULTS[connection.providerType];
   // Unknown providerType (legacy seed, or a connection persisted on a branch
   // that registers a provider this build doesn't know) → no catalog entries.
-  // Mirrors `isFakeBackend` in connection-readiness.ts.
+  // Mirrors `isRealConnection` in connection-readiness.ts.
   if (!defaults) return [];
   const supportsModelDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const catalogFallbackModels = curatedCatalogFallbackModelsForProvider(connection.providerType);
@@ -313,7 +314,9 @@ function makeEntry(
     provenance: {
       modelSource,
       ...(input.modelsFetchedAt ? { modelsFetchedAt: input.modelsFetchedAt } : {}),
-      ...(pricing ? { pricingModelKey: `${input.providerType}:${normalizedModel.id}` } : {}),
+      ...(pricing
+        ? { pricingModelKey: pricingModelKey(input.providerType, normalizedModel.id) }
+        : {}),
       sources: provenanceSources(
         input,
         normalizedModel.id,
@@ -594,7 +597,7 @@ function savedChoiceSourcesById(
 
 function findPricing(input: BuildModelCatalogInput, id: string): ModelCatalogPricing | null {
   if (!input.pricing) return null;
-  const modelKey = `${input.providerType}:${id}`;
+  const modelKey = pricingModelKey(input.providerType, id);
   for (const item of input.pricing) {
     if (item.modelKey !== modelKey) continue;
     return {

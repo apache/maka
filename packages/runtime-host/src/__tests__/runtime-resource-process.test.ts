@@ -285,7 +285,6 @@ function connection(connectionId: string): ConnectionContext {
   return {
     hostEpoch: 'host-1',
     connectionId,
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release: () => {} }),
   };

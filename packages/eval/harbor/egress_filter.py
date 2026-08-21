@@ -104,11 +104,9 @@ except ImportError:
 try:
     from mitmproxy.proxy import commands as proxy_commands
     from mitmproxy.proxy.layer import Layer
-    from mitmproxy.proxy.layers.tcp import TCPLayer
 except ImportError:
     proxy_commands = None
     Layer = object
-    TCPLayer = None
 
 try:
     from mitmproxy.net.tls import starts_like_tls_record
@@ -174,19 +172,13 @@ def next_layer(nextlayer: object) -> None:
     # set CloseRawLayer here, NextLayer leaves it in place. Waiting for
     # isinstance(..., TCPLayer) never fires on the production CONNECT path.
     current = getattr(nextlayer, "layer", None)
-    context = getattr(nextlayer, "context", None)
-    if current is None:
-        if not looks_like_raw_tcp(nextlayer):
-            return
-        record_raw_tunnel(context)
-        nextlayer.layer = CloseRawLayer(context)
+    if current is not None:
         return
-    if TCPLayer is None or not isinstance(current, TCPLayer):
+    context = getattr(nextlayer, "context", None)
+    if not looks_like_raw_tcp(nextlayer):
         return
     record_raw_tunnel(context)
-    closer = CloseRawLayer(context)
-    replace_layer(context, current, closer)
-    nextlayer.layer = closer
+    nextlayer.layer = CloseRawLayer(context)
 
 
 def apply_http_policy(flow: object, raw_url: str) -> None:
@@ -239,13 +231,20 @@ def looks_like_raw_tcp(nextlayer: object) -> bool:
     """
     data_client = _next_layer_bytes(nextlayer, "data_client")
     data_server = _next_layer_bytes(nextlayer, "data_server")
-    if starts_like_tls_record(data_client):
+    if _could_start_tls_record(data_client):
         return False
     if not data_client and not data_server:
         return False
     if data_server or data_client.startswith(b"SSH"):
         return True
     return not _still_could_be_http(data_client)
+
+
+def _could_start_tls_record(data: bytes) -> bool:
+    """Keep a fragmented ClientHello undecided until its 3-byte prefix exists."""
+    if starts_like_tls_record(data):
+        return True
+    return 0 < len(data) < 3 and b"\x16\x03".startswith(data)
 
 
 def _still_could_be_http(data: bytes) -> bool:
@@ -295,21 +294,6 @@ def kill_flow(flow: object) -> None:
             kill()
         except Exception:
             pass
-
-
-def replace_layer(context: object, current: object, closer: object) -> None:
-    layers = getattr(context, "layers", None)
-    if not isinstance(layers, list):
-        return
-    try:
-        index = layers.index(current)
-    except ValueError:
-        index = len(layers)
-    if closer in layers:
-        layers.remove(closer)
-    if current in layers:
-        layers.remove(current)
-    layers.insert(min(index, len(layers)), closer)
 
 
 class CloseRawLayer(Layer):

@@ -33,7 +33,7 @@ type MissingSessionUiMapKey = Exclude<AppShellSessionUiStateMapKey, typeof SESSI
 const allSessionUiMapsAreListed: Record<MissingSessionUiMapKey, never> = {};
 void allSessionUiMapsAreListed;
 
-// `useSettledSessionTransientReconcile` heals a session whose turn ended while
+// An authoritative session-list refresh heals a session whose turn ended while
 // its SessionEvent stream wasn't being followed, and must drop only the live
 // projection. The independently-scoped maps (message load error / retry, pending
 // permission-mode / model toggles, the permission queue, stop-pending) each have
@@ -177,7 +177,11 @@ export function createAppShellSessionUiStateController(
       );
       replaceState(clearAppShellSessionUiStateForSession(currentState, sessionId));
     },
-    clearTurnTransientState: (sessionId: string) => {
+    clearTurnTransientStateIfCurrent: (
+      sessionId: string,
+      expected: LiveTurnProjection | undefined,
+    ) => {
+      if (currentState.liveTurnBySession[sessionId] !== expected) return;
       replaceState(clearAppShellTurnTransientForSession(currentState, sessionId));
     },
   };
@@ -215,6 +219,6 @@ export function useAppShellSessionUiState() {
     setPendingSessionModelBySession: controller.setPendingSessionModelBySession,
     confirmLiveTurn: controller.confirmLiveTurn,
     clearSessionUiState: controller.clearSessionUiState,
-    clearTurnTransientState: controller.clearTurnTransientState,
+    clearTurnTransientStateIfCurrent: controller.clearTurnTransientStateIfCurrent,
   };
 }

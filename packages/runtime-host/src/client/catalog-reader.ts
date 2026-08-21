@@ -6,7 +6,6 @@ import {
   type ConnectionCatalogQueryResult,
   type RelayModelProfile,
   type RelayModelProfiles,
-  type SessionCatalogFilter,
   type SessionCatalogItem,
   type SkillCatalogWorkspaceContext,
   type SkillCatalogInvocableItem,
@@ -165,14 +164,12 @@ export async function readRuntimeHostInvocableSkills(
 
 export async function readRuntimeHostSessions(
   connection: RuntimeHostCatalogConnection,
-  filter?: SessionCatalogFilter,
 ): Promise<SessionCatalogItem[]> {
   const { pages } = await collectStablePages(
     'session',
     async () => {
       const result = await connection.request('session.catalog.query', {
         kind: 'list_start',
-        ...(filter ? { filter } : {}),
       });
       return result.kind === 'page' ? result : null;
     },
@@ -181,7 +178,6 @@ export async function readRuntimeHostSessions(
         kind: 'list_continue',
         revision,
         cursor,
-        ...(filter ? { filter } : {}),
       });
       return result.kind === 'page' ? result : null;
     },

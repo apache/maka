@@ -23,6 +23,18 @@ CertStore.from_store(sys.argv[1], "mitmproxy", 2048)' "$STATE_DIR"
 cp "$STATE_DIR/mitmproxy-ca-cert.pem" "$CERT_DIR/.mitmproxy-ca-cert.pem"
 mv "$CERT_DIR/.mitmproxy-ca-cert.pem" "$CERT_DIR/mitmproxy-ca-cert.pem"
 
+# The subject only needs this address so HTTPS_PROXY can keep using the
+# service hostname after the namespace policy refuses Docker DNS.
+ip="$(getent ahostsv4 "$(hostname)" | awk 'NR == 1 { print $1 }')"
+case "$ip" in
+  "" | 127.*)
+    echo "could not publish Eval egress proxy IPv4" >&2
+    exit 1
+    ;;
+esac
+printf '%s\n' "$ip" > "$CERT_DIR/.proxy-ipv4"
+mv "$CERT_DIR/.proxy-ipv4" "$CERT_DIR/proxy-ipv4"
+
 exec mitmdump \
   --quiet \
   --listen-host 0.0.0.0 \

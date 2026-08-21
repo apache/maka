@@ -16,6 +16,9 @@ import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
 import { runRuntimeHostProjectCli } from '../runtime-host-project-command.js';
 import { createRuntimeHostServiceReadyEvent } from '../runtime-host-service-command.js';
 
+const projectRootA = process.platform === 'win32' ? 'C:\\srv\\projects' : '/srv/projects';
+const projectRootB = process.platform === 'win32' ? 'D:\\data' : '/mnt/data';
+
 describe('Runtime Host operator commands', () => {
   test('parses project management and machine-readable service readiness', () => {
     assert.deepEqual(parseRuntimeHostCommand(['project', 'list', '--root', '/srv/maka']), {
@@ -30,10 +33,24 @@ describe('Runtime Host operator commands', () => {
         path: '/work/project',
       },
     );
-    assert.deepEqual(parseRuntimeHostCommand(['serve', '--json']), {
-      kind: 'runtime-host-serve',
-      json: true,
-    });
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'serve',
+        '--json',
+        '--project-root',
+        `Projects=${projectRootA}`,
+        '--project-root',
+        `Data=${projectRootB}`,
+      ]),
+      {
+        kind: 'runtime-host-serve',
+        json: true,
+        projectDirectoryRoots: [
+          { label: 'Projects', path: projectRootA },
+          { label: 'Data', path: projectRootB },
+        ],
+      },
+    );
     assert.deepEqual(
       parseRuntimeHostCommand([
         'serve',
@@ -62,6 +79,20 @@ describe('Runtime Host operator commands', () => {
       ]).kind,
       'error',
     );
+    assert.equal(
+      parseRuntimeHostCommand(['serve', '--project-root', 'Projects=relative/path']).kind,
+      'error',
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'serve',
+        '--project-root',
+        `Projects=${projectRootA}`,
+        '--project-root',
+        `Projects=${projectRootB}`,
+      ]).kind,
+      'error',
+    );
   });
 
   test('expands access presets without access administration or Host paths', () => {
@@ -72,6 +103,8 @@ describe('Runtime Host operator commands', () => {
       assert.equal(resolved.principalKind, 'remote_owner');
       assert.equal(resolved.canUseHostPaths, false);
       assert.equal(resolved.operationGrants.includes('access.credential.issue'), false);
+      assert.equal(resolved.operationGrants.includes('access.credential.prepare'), false);
+      assert.equal(resolved.operationGrants.includes('access.credential.replace'), false);
       assert.equal(resolved.operationGrants.includes('access.credential.revoke'), false);
       assert.equal(resolved.operationGrants.includes('host.upgrade.prepare'), false);
       assert.equal(resolved.operationGrants.includes('turn.start'), true);
@@ -105,6 +138,8 @@ describe('Runtime Host operator commands', () => {
         .sort(),
       [
         'access.credential.issue',
+        'access.credential.prepare',
+        'access.credential.replace',
         'access.credential.revoke',
         'host.upgrade.prepare',
         'hosted.execution.cancel',

@@ -31,7 +31,6 @@ test('a live Host serves Interactive inspection over its real endpoint while ret
   const session = await stores.sessionStore.create({
     cwd: root,
     name: 'Live inspection',
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
@@ -46,7 +45,6 @@ test('a live Host serves Interactive inspection over its real endpoint while ret
 
     const connected = await connectExistingRuntimeHost({
       rootPath: root,
-      surface: 'inspect',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,

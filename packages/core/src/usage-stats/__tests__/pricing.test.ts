@@ -6,8 +6,13 @@ import {
   comparePricingModelKeys,
   normalizePricingConfig,
   normalizePricingModelKey,
+  pricingModelKey,
   validateCanonicalPricingConfig,
 } from '../pricing.js';
+
+test('pricing model key preserves the exact provider and model identifiers', () => {
+  assert.equal(pricingModelKey('DeepInfra', 'org/Model:Preview'), 'DeepInfra:org/Model:Preview');
+});
 
 test('pricing model keys use strict exact ordering', () => {
   const composed = '\u00e9';

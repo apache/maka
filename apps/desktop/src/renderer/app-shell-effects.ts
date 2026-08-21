@@ -24,7 +24,6 @@ import {
   recordSessionEventStreamChange,
   recordSessionEventStreamEvent,
 } from './session-event-health';
-import { settledSessionTransientIds } from './settled-session-transients.js';
 import {
   persistableSessionWorkbarPanels,
   type SessionWorkbarPanelsState,
@@ -726,51 +725,4 @@ export function useSessionEventHealthPolling(options: {
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [activeId, activeSession?.status, activeStreamingLive, hasInFlightLiveTools, activeInteraction?.requestId]);
-}
-
-// #646: transient live state is only
-// advanced and cleared by the ACTIVE session's SessionEvent stream (subscribeEvents
-// follows activeId only, with no replay of missed events). So any session that
-// reaches a terminal status while backgrounded — or whose terminal status only
-// lands after the user has switched back — leaves that transient frozen mid-turn,
-// surfacing a stuck Stop (via the ungated `activeStreamingLive`) and a half-streamed
-// bubble. Heal it against the authoritative status, not against an event or a switch
-// (both fire before the terminal status is known): whenever the sessions list
-// settles, drop the turn transient of every session that is no longer running /
-// waiting_for_user. Because it keys off the status landing in `sessions`, it closes
-// the hole regardless of which path or timing delivers that status.
-//
-// Except while a send is still awaiting its answer: an arm carries `unconfirmed`
-// until a `sessions:changed` names its turn back, and the pre-send status is
-// indistinguishable from the post-turn one. Reading a list refreshed in that
-// window as a settle would drop the arm the send just created
-// (settled-session-transients.ts).
-//
-// An active terminal projection is left to its text handoff callback, so this
-// reconcile cannot cut in front of the committed message landing. Background
-// terminal projections have no mounted streaming renderer and are safe to clear.
-// It drops ONLY the turn transient (`clearTurnTransientState`), never the
-// independently-scoped message-load-error / retry / pending-toggle / permission /
-// health state — those survive a mere settle. The clear is idempotent (referentially
-// stable when there's nothing to drop), so the common "terminal session with no
-// transient" case triggers no re-render.
-export function useSettledSessionTransientReconcile(options: {
-  activeId?: string;
-  sessions: readonly SessionSummary[];
-  liveTurnBySessionRef: RefBox<Record<string, LiveTurnProjection>>;
-  clearTurnTransientState: (sessionId: string) => void;
-}) {
-  const reconcile = useEffectEvent(() => {
-    const sessionIds = settledSessionTransientIds({
-      activeId: options.activeId,
-      sessions: options.sessions,
-      liveTurnBySession: options.liveTurnBySessionRef.current,
-    });
-    for (const sessionId of sessionIds) {
-      options.clearTurnTransientState(sessionId);
-    }
-  });
-  useEffect(() => {
-    reconcile();
-  }, [options.activeId, options.sessions]);
 }

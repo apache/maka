@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import socket
+import ssl
 import subprocess
 import tempfile
 import time
@@ -321,6 +322,54 @@ class LiveEgressFilterTest(unittest.TestCase):
             return header, leftover + cls._recv_until_close(sock)
 
     @classmethod
+    def fragmented_tls_via_proxy(cls, first_fragment_size: int) -> str:
+        incoming = ssl.MemoryBIO()
+        outgoing = ssl.MemoryBIO()
+        tls = ssl.create_default_context().wrap_bio(
+            incoming,
+            outgoing,
+            server_side=False,
+            server_hostname="example.com",
+        )
+        try:
+            tls.do_handshake()
+        except ssl.SSLWantReadError:
+            pass
+        client_hello = outgoing.read()
+        if len(client_hello) <= first_fragment_size:
+            raise AssertionError("TLS ClientHello was unexpectedly short")
+
+        with socket.create_connection(("127.0.0.1", cls.proxy_port), 5) as sock:
+            sock.sendall(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+            header = b""
+            while b"\r\n\r\n" not in header:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    raise AssertionError("proxy closed before the CONNECT response")
+                header += chunk
+            if b" 200 " not in header.split(b"\r\n", 1)[0]:
+                raise AssertionError(header.decode("latin1", errors="replace"))
+
+            sock.sendall(client_hello[:first_fragment_size])
+            time.sleep(0.05)
+            sock.sendall(client_hello[first_fragment_size:])
+            sock.settimeout(10)
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                pending = outgoing.read()
+                if pending:
+                    sock.sendall(pending)
+                try:
+                    tls.do_handshake()
+                    return tls.version() or ""
+                except ssl.SSLWantReadError:
+                    response = sock.recv(16 * 1024)
+                    if not response:
+                        raise AssertionError("proxy closed during the fragmented TLS handshake")
+                    incoming.write(response)
+        raise AssertionError("fragmented TLS handshake did not complete")
+
+    @classmethod
     def audit_records(cls) -> list[dict[str, object]]:
         listed = subprocess.run(
             [
@@ -385,6 +434,13 @@ class LiveEgressFilterTest(unittest.TestCase):
             timeout=COMMAND_TIMEOUT_S,
         )
         self.assertEqual(curl.stdout, "200", curl.stderr)
+
+    def test_fragmented_tls_record_prefix_still_handshakes(self) -> None:
+        for first_fragment_size in (1, 2):
+            with self.subTest(first_fragment_size=first_fragment_size):
+                self.assertTrue(
+                    self.fragmented_tls_via_proxy(first_fragment_size).startswith("TLS")
+                )
 
     def test_connect_to_a_blocklisted_host_is_451(self) -> None:
         header, _ = self.connect_via_proxy("tbench.ai", 443, b"")

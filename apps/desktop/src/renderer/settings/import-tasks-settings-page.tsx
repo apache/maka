@@ -7,21 +7,70 @@ import { List, ListItem } from '@astryxdesign/core/List';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
-import type { ExternalSessionSummary } from '@maka/core/external-session';
-import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
+import type {
+  DesktopRuntimeHostRef,
+  DesktopSessionSummary,
+} from '../../preload/bridge-contract.js';
 import { Spinner, useMountedRef, useUiLocale } from '@maka/ui';
 import { ICON_SIZE, MessageSquare } from '@maka/ui/icons';
 import { getExternalSessionImportCopy } from '../locales/external-session-import-copy.js';
 import { localizedShellErrorMessage } from '../locales/shell-copy.js';
-import { SettingsPage, SettingsSection } from './settings-section';
+import type { DesktopExternalSessionCatalogItem } from '../../preload/external-session-catalog.js';
+import { SettingsPage, SettingsSection } from './settings-section.js';
 import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 type CatalogState = {
-  sessions: ExternalSessionSummary[];
+  sessions: DesktopExternalSessionCatalogItem[];
   nextCursor: string | null;
 };
 
 const EMPTY_CATALOG: CatalogState = { sessions: [], nextCursor: null };
+const EXTERNAL_SESSION_IMPORT_POLL_MS = 1_000;
+
+type CatalogWindow = CatalogState & {
+  targetSource: DesktopExternalSessionCatalogItem | undefined;
+};
+
+async function readCatalogWindow(input: {
+  adapterId: string;
+  includeArchived: boolean;
+  minimumItemCount: number;
+  targetSourceSessionId?: string;
+  host?: DesktopRuntimeHostRef;
+  isCurrent(): boolean;
+}): Promise<CatalogWindow | undefined> {
+  const sessions: DesktopExternalSessionCatalogItem[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  let targetSource: DesktopExternalSessionCatalogItem | undefined;
+
+  do {
+    const result = await window.maka.externalSessions.list(
+      {
+        adapterId: input.adapterId,
+        includeArchived: input.includeArchived,
+        ...(cursor === undefined ? {} : { cursor }),
+      },
+      input.host,
+    );
+    if (!input.isCurrent()) return undefined;
+    sessions.push(...result.sessions);
+    targetSource ??= result.sessions.find(
+      (session) => session.id === input.targetSourceSessionId,
+    );
+    const loadedWindowComplete = sessions.length >= input.minimumItemCount;
+    const targetSearchComplete =
+      input.targetSourceSessionId === undefined || targetSource !== undefined;
+    if (result.nextCursor === null || (loadedWindowComplete && targetSearchComplete)) {
+      return { sessions, nextCursor: result.nextCursor, targetSource };
+    }
+    if (seenCursors.has(result.nextCursor)) {
+      throw new Error('External Session catalog repeated a cursor');
+    }
+    seenCursors.add(result.nextCursor);
+    cursor = result.nextCursor;
+  } while (true);
+}
 
 /**
  * One conversation this page has handed to Desktop Main.
@@ -37,12 +86,21 @@ type ImportAttempt = {
   adapterId: string;
   sourceSessionId: string;
   name: string;
+  includeArchived: boolean;
+  importedCountBefore: number;
+  latestImportedSessionIdBefore: string | undefined;
+  loadedCatalogItemCountBefore: number;
+  catalogSelectionGeneration: number;
 };
+
+type ImportRecovery =
+  | { kind: 'landed'; attempt: ImportAttempt; importedSessionId: string }
+  | { kind: 'not_recorded'; attempt: ImportAttempt };
 
 function isSameAttempt(
   attempt: ImportAttempt,
   adapterId: string | null,
-  session: ExternalSessionSummary,
+  session: DesktopExternalSessionCatalogItem,
 ): boolean {
   return attempt.adapterId === adapterId && attempt.sourceSessionId === session.id;
 }
@@ -61,7 +119,7 @@ function isSameAttempt(
  *
  * Reading the source directory is Desktop Main's job, so this page holds no
  * session state of its own: it lists through `window.maka.externalSessions` and
- * hands the imported `SessionSummary` back to the shell, which is what owns
+ * hands the imported `DesktopSessionSummary` back to the shell, which is what owns
  * navigating to it.
  *
  * Deliberately NOT here: keeping an imported task in sync with its source.
@@ -72,6 +130,8 @@ function isSameAttempt(
 export function ImportTasksSettingsPage(props: {
   /** Hands the freshly imported task to the shell, which opens it. */
   onImported(session: DesktopSessionSummary): void;
+  /** Opens the newest still-existing task previously imported from a row. */
+  onOpenImported?(sessionId: string): void;
 }) {
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
@@ -95,16 +155,32 @@ export function ImportTasksSettingsPage(props: {
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [importRecovery, setImportRecovery] = useState<ImportRecovery | null>(null);
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [catalogPollTick, setCatalogPollTick] = useState(0);
   /**
    * Re-importing a conversation whose outcome is unknown is how you end up with
-   * two copies of it, so its row stays disabled for the rest of this page's
-   * lifetime and the banner names it as the one to go look for.
+   * two copies of it, so its row stays disabled only while the authoritative
+   * catalog recovery itself is unavailable. A successful recovery removes the
+   * local lock and either exposes the landed task or allows a safe retry.
    */
   const [uncertainImports, setUncertainImports] = useState<readonly ImportAttempt[]>([]);
   // Only the newest list request may write. Switching source or toggling the
   // archived filter while a page is in flight would otherwise land the old
   // source's rows under the new source's label.
   const requestGeneration = useRef(0);
+  const recoveryGeneration = useRef(0);
+  const catalogSelectionRef = useRef({ adapterId, includeArchived, generation: 0 });
+  if (
+    catalogSelectionRef.current.adapterId !== adapterId ||
+    catalogSelectionRef.current.includeArchived !== includeArchived
+  ) {
+    catalogSelectionRef.current = {
+      adapterId,
+      includeArchived,
+      generation: catalogSelectionRef.current.generation + 1,
+    };
+  }
 
   const loadSources = useCallback(async () => {
     const generation = ++requestGeneration.current;
@@ -140,6 +216,7 @@ export function ImportTasksSettingsPage(props: {
       else {
         setCatalogLoading(true);
         setCatalog(EMPTY_CATALOG);
+        setImportRecovery(null);
       }
       setCatalogError(null);
       setImportError(null);
@@ -167,6 +244,26 @@ export function ImportTasksSettingsPage(props: {
     [copy.loadFailedFallback, host, includeArchived, locale],
   );
 
+  const refreshLoadedCatalog = useCallback(
+    async (sourceId: string, loadedItemCount: number) => {
+      const generation = ++requestGeneration.current;
+      try {
+        const result = await readCatalogWindow({
+          adapterId: sourceId,
+          includeArchived,
+          minimumItemCount: loadedItemCount,
+          host,
+          isCurrent: () => mountedRef.current && generation === requestGeneration.current,
+        });
+        if (result !== undefined) setCatalog(result);
+      } catch {
+        // Catalog polling is best-effort. Keep the last authoritative page
+        // visible and retry rather than replacing it with a transient error.
+      }
+    },
+    [host, includeArchived, mountedRef],
+  );
+
   useEffect(() => {
     void loadSources();
   }, [loadSources]);
@@ -175,6 +272,37 @@ export function ImportTasksSettingsPage(props: {
     if (adapterId === null) return;
     void loadCatalog(adapterId);
   }, [adapterId, includeArchived, loadCatalog]);
+
+  const hasCatalogImportInFlight = catalog.sessions.some(
+    (session) => session.importState.isImporting,
+  );
+  useEffect(() => {
+    if (
+      adapterId === null ||
+      activeImport !== null ||
+      catalogLoading ||
+      loadingMore ||
+      !hasCatalogImportInFlight
+    ) {
+      return;
+    }
+    const timeout = setTimeout(() => {
+      void refreshLoadedCatalog(adapterId, catalog.sessions.length).finally(() => {
+        if (mountedRef.current) setCatalogPollTick((tick) => tick + 1);
+      });
+    }, EXTERNAL_SESSION_IMPORT_POLL_MS);
+    return () => clearTimeout(timeout);
+  }, [
+    activeImport,
+    adapterId,
+    catalog.sessions.length,
+    catalogPollTick,
+    catalogLoading,
+    hasCatalogImportInFlight,
+    loadingMore,
+    mountedRef,
+    refreshLoadedCatalog,
+  ]);
 
   const dateFormatter = useMemo(
     () =>
@@ -185,16 +313,92 @@ export function ImportTasksSettingsPage(props: {
     [locale],
   );
 
+  const recoverUnknownImport = useCallback(
+    async (attempt: ImportAttempt) => {
+      const generation = ++recoveryGeneration.current;
+      setRecoveryLoading(true);
+      try {
+        const result = await readCatalogWindow({
+          adapterId: attempt.adapterId,
+          includeArchived: attempt.includeArchived,
+          minimumItemCount: attempt.loadedCatalogItemCountBefore,
+          targetSourceSessionId: attempt.sourceSessionId,
+          host,
+          isCurrent: () => mountedRef.current && generation === recoveryGeneration.current,
+        });
+        if (result === undefined) return;
+        const recoveredSource = result.targetSource;
+        if (recoveredSource === undefined) {
+          throw new Error('External Session source disappeared during import recovery');
+        }
+
+        const currentSelection = catalogSelectionRef.current;
+        if (
+          currentSelection.adapterId === attempt.adapterId &&
+          currentSelection.includeArchived === attempt.includeArchived &&
+          currentSelection.generation === attempt.catalogSelectionGeneration
+        ) {
+          // Recovery is the newest authoritative read for this exact catalog
+          // selection. Retire an older poll/load-more response before publishing
+          // it so that response cannot put pre-import state back on screen.
+          requestGeneration.current += 1;
+          setCatalogLoading(false);
+          setLoadingMore(false);
+          setCatalog(result);
+        }
+        setUncertainImports((current) =>
+          current.filter(
+            (entry) =>
+              entry.adapterId !== attempt.adapterId ||
+              entry.sourceSessionId !== attempt.sourceSessionId,
+          ),
+        );
+        const recoveredSessionId = recoveredSource.importState.importedSessionIds[0];
+        const landed =
+          recoveredSessionId !== undefined &&
+          (recoveredSource.importState.importedCount > attempt.importedCountBefore ||
+            recoveredSessionId !== attempt.latestImportedSessionIdBefore);
+        setImportRecovery(
+          landed
+            ? { kind: 'landed', attempt, importedSessionId: recoveredSessionId }
+            : { kind: 'not_recorded', attempt },
+        );
+      } catch (error) {
+        if (!mountedRef.current || generation !== recoveryGeneration.current) return;
+        setUncertainImports((current) =>
+          current.some(
+            (entry) =>
+              entry.adapterId === attempt.adapterId &&
+              entry.sourceSessionId === attempt.sourceSessionId,
+          )
+            ? current
+            : [...current, attempt],
+        );
+      } finally {
+        if (mountedRef.current && generation === recoveryGeneration.current) {
+          setRecoveryLoading(false);
+        }
+      }
+    },
+    [host, mountedRef],
+  );
+
   const importConversation = useCallback(
-    async (session: ExternalSessionSummary) => {
+    async (session: DesktopExternalSessionCatalogItem) => {
       if (adapterId === null || activeImport !== null) return;
       const attempt: ImportAttempt = {
         adapterId,
         sourceSessionId: session.id,
         name: session.name,
+        includeArchived,
+        importedCountBefore: session.importState.importedCount,
+        latestImportedSessionIdBefore: session.importState.importedSessionIds[0],
+        loadedCatalogItemCountBefore: catalog.sessions.length,
+        catalogSelectionGeneration: catalogSelectionRef.current.generation,
       };
       setActiveImport(attempt);
       setImportError(null);
+      setImportRecovery(null);
       try {
         const outcome = await window.maka.externalSessions.import({
           adapterId: attempt.adapterId,
@@ -206,7 +410,7 @@ export function ImportTasksSettingsPage(props: {
         // the user has left steering the shell somewhere they did not ask for.
         if (!mountedRef.current) return;
         if (!outcome.ok) {
-          setUncertainImports((current) => [...current, attempt]);
+          await recoverUnknownImport(attempt);
           return;
         }
         props.onImported(outcome.session);
@@ -217,7 +421,18 @@ export function ImportTasksSettingsPage(props: {
         if (mountedRef.current) setActiveImport(null);
       }
     },
-    [activeImport, adapterId, copy.importFailedFallback, host, locale, mountedRef, props],
+    [
+      activeImport,
+      adapterId,
+      catalog.sessions.length,
+      copy.importFailedFallback,
+      host,
+      locale,
+      mountedRef,
+      props,
+      recoverUnknownImport,
+      includeArchived,
+    ],
   );
 
   const noSource = sourceResolved && !sourceLoading && !sourceError && adapterIds.length === 0;
@@ -346,6 +561,42 @@ export function ImportTasksSettingsPage(props: {
               description={copy.importOutcomeUnknownDescription(
                 uncertainImports.map((entry) => entry.name),
               )}
+              endContent={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  label={copy.retry}
+                  isLoading={recoveryLoading}
+                  isDisabled={recoveryLoading}
+                  onClick={() => void recoverUnknownImport(uncertainImports[0]!)}
+                />
+              }
+            />
+          )}
+
+          {importRecovery?.kind === 'landed' && (
+            <Banner
+              status="success"
+              title={copy.importRecoveredTitle}
+              description={copy.importRecoveredDescription(importRecovery.attempt.name)}
+              endContent={
+                props.onOpenImported ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    label={copy.openLatestImportedTask}
+                    onClick={() => props.onOpenImported?.(importRecovery.importedSessionId)}
+                  />
+                ) : undefined
+              }
+            />
+          )}
+
+          {importRecovery?.kind === 'not_recorded' && (
+            <Banner
+              status="info"
+              title={copy.importNotRecordedTitle}
+              description={copy.importNotRecordedDescription}
             />
           )}
 
@@ -375,11 +626,17 @@ export function ImportTasksSettingsPage(props: {
                   session.cwd,
                   timestamp !== undefined ? dateFormatter.format(timestamp) : null,
                   session.archived ? copy.archived : null,
+                  session.importState.importedCount > 0
+                    ? copy.importedCount(session.importState.importedCount)
+                    : null,
                 ]
                   .filter(Boolean)
                   .join(' · ');
                 const isImporting =
-                  activeImport !== null && isSameAttempt(activeImport, adapterId, session);
+                  session.importState.isImporting ||
+                  (activeImport !== null && isSameAttempt(activeImport, adapterId, session));
+                const latestImportedSessionId = session.importState.importedSessionIds[0];
+                const hasImported = session.importState.importedCount > 0;
                 return (
                   <ListItem
                     key={session.id}
@@ -387,30 +644,48 @@ export function ImportTasksSettingsPage(props: {
                     description={description.length > 0 ? description : undefined}
                     startContent={<MessageSquare size={ICON_SIZE.control} aria-hidden="true" />}
                     endContent={
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        isLoading={isImporting}
-                        isDisabled={
-                          activeImport !== null ||
-                          uncertainImports.some((entry) =>
-                            isSameAttempt(entry, adapterId, session),
-                          )
-                        }
-                        // `onClick`, not `clickAction`. Astryx runs
-                        // `clickAction` inside a React 19 async transition, and
-                        // React holds a transition's state updates until the
-                        // action settles, so `setActiveImport` landed only once
-                        // the import was already over and nothing on the page
-                        // could tell that one was running. `clickAction` buys
-                        // the clicked button its own pending state, and that is
-                        // all it buys; this is a page fact, so the page owns it.
-                        onClick={() => void importConversation(session)}
-                        label={isImporting ? copy.importing : copy.import}
-                        // Every row's button reads 导入; only the accessible
-                        // name can say which conversation it imports.
-                        aria-label={copy.importTask(session.name)}
-                      />
+                      <HStack gap={2} vAlign="center">
+                        {latestImportedSessionId !== undefined && props.onOpenImported && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            label={copy.openLatestImportedTask}
+                            aria-label={copy.openLatestImportedTaskFor(session.name)}
+                            onClick={() => props.onOpenImported?.(latestImportedSessionId)}
+                          />
+                        )}
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          isLoading={isImporting}
+                          isDisabled={
+                            isImporting ||
+                            activeImport !== null ||
+                            uncertainImports.length > 0
+                          }
+                          // `onClick`, not `clickAction`. Astryx runs
+                          // `clickAction` inside a React 19 async transition, and
+                          // React holds a transition's state updates until the
+                          // action settles, so `setActiveImport` landed only once
+                          // the import was already over and nothing on the page
+                          // could tell that one was running. `clickAction` buys
+                          // the clicked button its own pending state, and that is
+                          // all it buys; this is a page fact, so the page owns it.
+                          onClick={() => void importConversation(session)}
+                          // Every row's button reads 导入; its purpose-specific
+                          // label supplies the accessible name while `children`
+                          // keeps the compact visible copy.
+                          label={
+                            isImporting
+                              ? copy.importingTask(session.name)
+                              : hasImported
+                              ? copy.importTaskAgain(session.name)
+                              : copy.importTask(session.name)
+                          }
+                        >
+                          {isImporting ? copy.importing : hasImported ? copy.importAgain : copy.import}
+                        </Button>
+                      </HStack>
                     }
                   />
                 );

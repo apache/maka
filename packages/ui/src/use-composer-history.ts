@@ -18,7 +18,7 @@
  * and keeps this.
  */
 
-import { useRef, type KeyboardEvent } from 'react';
+import { useEffect, useRef, type KeyboardEvent } from 'react';
 import type { ComposerTextPort } from './chat-input-behavior.js';
 import {
   type ComposerHistoryState,
@@ -26,7 +26,11 @@ import {
   reconcileHistorySync,
   rememberComposerHistoryEntry,
 } from './composer-helpers.js';
-import { readGlobalInputHistory, saveGlobalInputHistoryEntry } from './input-history.js';
+import {
+  readGlobalInputHistory,
+  saveGlobalInputHistoryEntry,
+  subscribeGlobalInputHistory,
+} from './input-history.js';
 
 export interface ComposerHistoryApi {
   /**
@@ -61,6 +65,35 @@ export function useComposerHistory(input: {
   saveCurrentDraft(value?: string): void;
 }): ComposerHistoryApi {
   const promptHistoryRef = useRef<ComposerHistoryState>({ entries: readGlobalInputHistory() ?? [], index: -1, savedDraft: '' });
+  // The subscription is registered once, so anything it calls must be reached
+  // through the latest render rather than captured from the first. Today the
+  // pieces that matter happen to be ref-backed — the text port is created once
+  // and the draft key is read from a ref at call time — but that is a property
+  // of the current draft hook, not of this subscription, and it is not a
+  // property this file can see changing.
+  const applyValueRef = useRef((value: string) => {
+    input.text.setValue(value);
+    input.saveCurrentDraft(value);
+  });
+  useEffect(() => {
+    applyValueRef.current = applyValue;
+  });
+
+  useEffect(() => subscribeGlobalInputHistory(() => {
+    // Through `reconcileHistorySync`, not a bare `entries` swap: the whole
+    // state has to agree with storage, and a clear is exactly when it would
+    // not. Mid-navigation the index still pointed into a list that no longer
+    // has those entries, so the composer went on showing a prompt the user had
+    // just deleted, with their own draft stranded in `savedDraft` until an
+    // arrow key happened to reconcile it. The pure state machine already knows
+    // all of this — including when the draft is owed back.
+    const { state, restoreDraft } = reconcileHistorySync(
+      promptHistoryRef.current,
+      readGlobalInputHistory(),
+    );
+    promptHistoryRef.current = state;
+    if (restoreDraft) applyValueRef.current(state.savedDraft);
+  }), []);
 
   function resetNavigation() {
     promptHistoryRef.current = {

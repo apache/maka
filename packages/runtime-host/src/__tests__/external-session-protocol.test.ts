@@ -5,6 +5,7 @@ import {
   decodeClientFrame,
   decodeExternalSessionCatalogQueryResult,
   decodeExternalSessionSourceQueryResult,
+  EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
   EXTERNAL_SESSION_PAGE_MAX_ITEMS,
   HOST_OPERATION_SPECS,
 } from '../protocol/index.js';
@@ -76,6 +77,126 @@ describe('external Session protocol', () => {
     );
   });
 
+  test('round-trips required external Session import state', () => {
+    const result = {
+      sessions: [
+        {
+          id: 'source-1',
+          name: 'Imported source',
+          hostCwd: '/workspace',
+          importState: {
+            importedCount: 10,
+            importedSessionIds: Array.from(
+              { length: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS },
+              (_, index) => `imported-${EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS - index}`,
+            ),
+            isImporting: true,
+          },
+        },
+      ],
+      nextCursor: null,
+    };
+
+    assert.deepEqual(decodeExternalSessionCatalogQueryResult(result), result);
+  });
+
+  test('rejects missing, open, malformed, and inconsistent external Session import state', () => {
+    const summary = {
+      id: 'source-1',
+      name: 'Imported source',
+      hostCwd: '/workspace',
+    };
+    const decodeState = (importState?: unknown) =>
+      decodeExternalSessionCatalogQueryResult({
+        sessions: [{ ...summary, ...(importState === undefined ? {} : { importState }) }],
+        nextCursor: null,
+      });
+
+    assert.throws(() => decodeState(), isProtocolError);
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: 1,
+          importedSessionIds: ['imported-1'],
+          isImporting: false,
+          extra: true,
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: -1,
+          importedSessionIds: [],
+          isImporting: false,
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS + 1,
+          importedSessionIds: Array.from(
+            { length: EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS + 1 },
+            (_, index) => `imported-${index}`,
+          ),
+          isImporting: false,
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: 1,
+          importedSessionIds: ['invalid id'],
+          isImporting: false,
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: 0,
+          importedSessionIds: [],
+          isImporting: 'yes',
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeState({
+          importedCount: 1,
+          importedSessionIds: ['imported-2', 'imported-1'],
+          isImporting: false,
+        }),
+      isProtocolError,
+    );
+  });
+
+  test('rejects sparse imported Session id arrays', () => {
+    const importedSessionIds = Array<string>(1);
+
+    assert.throws(
+      () =>
+        decodeExternalSessionCatalogQueryResult({
+          sessions: [
+            {
+              id: 'source-1',
+              name: 'Imported source',
+              hostCwd: '/workspace',
+              importState: {
+                importedCount: 1,
+                importedSessionIds,
+                isImporting: false,
+              },
+            },
+          ],
+          nextCursor: null,
+        }),
+      isProtocolError,
+    );
+  });
+
   test('rejects open-ended, malformed, and oversized frames', () => {
     assert.throws(
       () =>
@@ -111,6 +232,11 @@ describe('external Session protocol', () => {
             id: `source-${index}`,
             name: `Session ${index}`,
             hostCwd: '/workspace',
+            importState: {
+              importedCount: 0,
+              importedSessionIds: [],
+              isImporting: false,
+            },
           })),
           nextCursor: null,
         }),

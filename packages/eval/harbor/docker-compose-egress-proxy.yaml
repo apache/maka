@@ -5,6 +5,7 @@ services:
         source: ${MAKA_EVAL_NETWORK_POLICY_PATH}
         target: /usr/local/bin/network-policy
         read_only: true
+      - maka-eval-egress-ca:/opt/maka-egress:ro
 
   main:
     depends_on:
@@ -30,7 +31,7 @@ services:
         - CMD
         - python
         - -c
-        - "import pathlib,socket; assert pathlib.Path('/opt/maka-egress/mitmproxy-ca-cert.pem').is_file(); socket.create_connection(('127.0.0.1',8080),2).close()"
+        - "import pathlib,socket; assert pathlib.Path('/opt/maka-egress/mitmproxy-ca-cert.pem').is_file(); assert pathlib.Path('/opt/maka-egress/proxy-ipv4').is_file(); socket.create_connection(('127.0.0.1',8080),2).close()"
       interval: 1s
       timeout: 3s
       retries: 30

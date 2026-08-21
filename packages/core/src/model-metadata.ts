@@ -254,6 +254,9 @@ const VOLCENGINE_CODING_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
 };
 const VOLCENGINE_AGENT_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'ark-code-latest': agentPlanModel('Ark Code Latest', 256_000, 32_000, { vision: true }),
+  // Agent Plan currently exposes GLM-5.3 in its ark-code-latest routing catalog.
+  // The underlying model's published limits are 1M context and 128K output.
+  'glm-5.3': agentPlanModel('GLM-5.3', 1_000_000, 131_072),
   'doubao-seed-2.0-mini': agentPlanModel('Doubao Seed 2.0 Mini', 256_000, 128_000, {
     vision: true,
   }),
@@ -314,6 +317,16 @@ const ollamaCloudThinkingModels: Record<string, ModelMetadata> = Object.fromEntr
 const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMetadata>>> = {
   anthropic: ANTHROPIC_MODEL_OVERRIDES,
   'claude-subscription': CLAUDE_SUBSCRIPTION_MODEL_METADATA,
+  'alibaba-token-plan-cn': {
+    'qwen3.8-max': {
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'xhigh'], toggle: true },
+    },
+  },
+  'alibaba-token-plan': {
+    'qwen3.8-max': {
+      thinkingOptions: { efforts: ['none', 'low', 'medium', 'xhigh'], toggle: true },
+    },
+  },
   google: GOOGLE_MODEL_OVERRIDES,
   cohere: {
     'command-a-plus-05-2026': {
@@ -488,6 +501,11 @@ export const CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES: Readonly<Record<string, strin
   'claude-haiku-4-5-20251001': 'claude-haiku-4-5',
 };
 
+/** Token Plan's retired preview id remains a server-side alias of the formal model. */
+export const ALIBABA_TOKEN_PLAN_MODEL_ID_ALIASES: Readonly<Record<string, string>> = {
+  'qwen3.8-max-preview': 'qwen3.8-max',
+};
+
 /**
  * The rename table that applies to one provider's inventory, or undefined when
  * its ids carry no such guarantee.
@@ -501,7 +519,11 @@ export const CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES: Readonly<Record<string, strin
 export function modelIdAliasesForProvider(
   providerType: ProviderType,
 ): Readonly<Record<string, string>> | undefined {
-  return providerType === 'claude-subscription' ? CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES : undefined;
+  if (providerType === 'claude-subscription') return CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES;
+  if (providerType === 'alibaba-token-plan-cn' || providerType === 'alibaba-token-plan') {
+    return ALIBABA_TOKEN_PLAN_MODEL_ID_ALIASES;
+  }
+  return undefined;
 }
 
 const CURATED_CATALOG_FALLBACK_MODELS: Partial<Record<ProviderType, readonly string[]>> = {

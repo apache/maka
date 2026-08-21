@@ -28,6 +28,7 @@ import {
   type RuntimeHostSessionSubscription,
   RuntimeHostCatalogReadError,
   RuntimeHostOperationError,
+  readRuntimeHostAgentGraphEpochs,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
@@ -66,9 +67,11 @@ import {
   type ProjectCatalogMutateResult,
   type ProjectCatalogProject,
   type ProjectCatalogProjectDetails,
+  PROJECT_DIRECTORY_MAX_ENTRIES,
+  type ProjectDirectoryEntry,
+  type ProjectDirectoryRoot,
   type QueueRetractInput,
   type QueueRetractResult,
-  type SessionCatalogFilter,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
@@ -231,6 +234,10 @@ export class DesktopRuntimeHostClient {
 
   get lifecycleState(): 'ready' | 'unavailable' {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
+  }
+
+  finalizeAccessCredential(): Promise<OperationOutput<'access.credential.finalize'>> {
+    return this.request('access.credential.finalize', {});
   }
 
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
@@ -526,12 +533,10 @@ export class DesktopRuntimeHostClient {
     }
   }
 
-  async listSessions(
-    filter?: SessionCatalogFilter,
-  ): Promise<SessionCatalogProjection[]> {
+  async listSessions(): Promise<SessionCatalogProjection[]> {
     this.#assertOpen();
     try {
-      return (await readRuntimeHostSessions(this.connection, filter)).map(requireSessionProjection);
+      return (await readRuntimeHostSessions(this.connection)).map(requireSessionProjection);
     } catch (error) {
       if (error instanceof DesktopRuntimeHostClientError) throw error;
       if (!(error instanceof RuntimeHostCatalogReadError)) throw error;
@@ -562,6 +567,52 @@ export class DesktopRuntimeHostClient {
   async registerProject(path: string): Promise<ProjectCatalogProject> {
     const result = await this.#mutateProject({ kind: "register", path });
     return this.#projectForMutation(result);
+  }
+
+  async listProjectDirectoryRoots(): Promise<readonly ProjectDirectoryRoot[]> {
+    const result = await this.request("project.catalog.query", { kind: "directory_roots" });
+    if (result.kind !== "directory_roots") throw invalidProjection("Project directory roots");
+    return result.roots;
+  }
+
+  async listProjectDirectories(
+    rootId: string,
+    segments: readonly string[],
+  ): Promise<readonly ProjectDirectoryEntry[]> {
+    const entries: ProjectDirectoryEntry[] = [];
+    let result = await this.request(
+      "project.catalog.query",
+      { kind: "directory_list_start", rootId, segments },
+    );
+    const cursors = new Set<string>();
+    while (true) {
+      if (result.kind !== "directory_page") throw invalidProjection("Project directory");
+      if (result.rootId !== rootId || !sameSegments(result.segments, segments)) {
+        throw invalidProjection("Project directory identity");
+      }
+      if (entries.length + result.entries.length > PROJECT_DIRECTORY_MAX_ENTRIES) {
+        throw invalidProjection("Project directory has too many entries");
+      }
+      entries.push(...result.entries);
+      if (result.nextCursor === null) return entries;
+      if (cursors.has(result.nextCursor)) throw repeatedCursor("Project directory");
+      cursors.add(result.nextCursor);
+      result = await this.request("project.catalog.query", {
+        kind: "directory_list_continue",
+        rootId,
+        segments,
+        cursor: result.nextCursor,
+      });
+    }
+  }
+
+  async registerProjectDirectory(
+    rootId: string,
+    segments: readonly string[],
+  ): Promise<ProjectCatalogProject> {
+    return this.#projectForMutation(
+      await this.#mutateProject({ kind: "register_directory", rootId, segments }),
+    );
   }
 
   async relinkProject(projectId: string, path: string): Promise<ProjectCatalogProject> {
@@ -1136,6 +1187,16 @@ export class DesktopRuntimeHostClient {
     return this.request("goal.query", { sessionId });
   }
 
+  /**
+   * Arm a Goal the user asked for. No optimistic retry loop like `clearGoal`:
+   * arming names no revision, so there is no stale one to refresh — a Session
+   * that already has an unfinished Goal fails with `operation_conflict`, and
+   * that is an answer for the user, not a race to re-run.
+   */
+  armGoal(input: OperationInput<"goal.arm">): Promise<OperationOutput<"goal.arm">> {
+    return this.request("goal.arm", input);
+  }
+
   controlGoal(
     goal: Pick<GoalProjection, "sessionId" | "goalId" | "revision">,
     action: GoalControlAction,
@@ -1148,14 +1209,15 @@ export class DesktopRuntimeHostClient {
     });
   }
 
-  async clearGoal(sessionId: string): Promise<void> {
+  async controlGoalWithRetry(sessionId: string, action: GoalControlAction): Promise<void> {
     const initial = await this.queryGoal(sessionId);
     if (initial.goal === null) return;
     const goalId = initial.goal.goalId;
     let goal = initial.goal;
+    let conflict: RuntimeHostOperationError | null = null;
     for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
       try {
-        await this.controlGoal(goal, "clear");
+        await this.controlGoal(goal, action);
         return;
       } catch (error) {
         if (
@@ -1164,12 +1226,25 @@ export class DesktopRuntimeHostClient {
         ) {
           throw error;
         }
+        conflict = error;
+        if (attempt === MAX_OPTIMISTIC_ATTEMPTS - 1) break; // a re-query would have no retry to serve
       }
       const current = await this.queryGoal(sessionId);
       if (current.goal === null || current.goal.goalId !== goalId) return;
+      if (current.goal.revision === goal.revision) {
+        // The host folds invalid transitions into operation_conflict too
+        // ("Goal cannot pause from status paused"). Every accepted transition
+        // bumps the revision, so a conflict at an unchanged revision is a
+        // status refusal, not a race — retrying is futile; surface the reason.
+        throw conflict;
+      }
       goal = current.goal;
     }
-    throw revisionConflict("Goal clear", sessionId);
+    throw revisionConflict(`Goal ${action}`, sessionId);
+  }
+
+  async clearGoal(sessionId: string): Promise<void> {
+    await this.controlGoalWithRetry(sessionId, "clear");
   }
 
   async getPlanState(sessionId: string): Promise<PlanSessionState> {
@@ -1219,6 +1294,15 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"agent.graph.query">,
   ): Promise<OperationOutput<"agent.graph.query">> {
     return this.request("agent.graph.query", input);
+  }
+
+  listAgentGraphEpochs(rootSessionId: string) {
+    this.#assertOpen();
+    return readRuntimeHostAgentGraphEpochs(this.connection, rootSessionId);
+  }
+
+  listCurrentAgentGraphEpochs(rootSessionId: string) {
+    return this.request("agent.graph.epochs.query", { rootSessionId });
   }
 
   queryAgentGraphOperator(
@@ -1679,6 +1763,10 @@ function repeatedCursor(name: string): DesktopRuntimeHostClientError {
     "projection_unstable",
     `Runtime Host repeated a ${name} cursor`,
   );
+}
+
+function sameSegments(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((segment, index) => segment === right[index]);
 }
 
 function unstableProjection(

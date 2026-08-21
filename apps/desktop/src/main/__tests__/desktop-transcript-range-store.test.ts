@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
+import { SESSION_CONTINUITY_SCHEMA_VERSION } from '@maka/runtime-host/protocol';
 import {
   encodeDesktopTranscriptChange,
   encodeDesktopTranscriptSnapshot,
@@ -546,7 +547,7 @@ function transcriptPage(
 
 function continuitySnapshot() {
   return {
-    schemaVersion: 3 as const,
+    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session: {
       sessionId: 'session-1',
       metadataRevision: 1,

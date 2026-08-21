@@ -18,6 +18,8 @@ maka eval run experiment.json --out .maka-eval/run-001
 
 Use `--cell <cell-id>` to replace one failed or indeterminate cell. The attempt log is append-only and result selection always uses the earliest valid attempt.
 
+Before starting a trial, the public CLI validates the selected executor's machine paths, bundled relay files, pinned Harbor or Pier Python distribution, and Docker daemon availability for Docker environments. A missing or mismatched prerequisite is reported with the configured environment-variable name and expected framework version; the CLI does not start a trial or install external software. Subject-specific toolchain verification remains part of subject preparation and also completes before any trial starts.
+
 The built-in Harbor and Pier executors use one relay Agent. The framework prepares the task environment, the relay invokes exactly one Eval subject from `Agent.run()`, and the framework runs its native verifier and finalizer. Harbor and Pier use separate, explicitly versioned Python environments because their Agent and task contracts differ.
 
 Maka subjects ask the Runtime Host client to run one owned execution in a dedicated Host root. Session, Turn, Goal and continuation semantics remain inside Runtime Host. External subjects declare a command and arguments, and may add non-secret environment values, target-to-source bindings for declared credentials, and an explicit result contract. Omitted credential bindings use declared names unchanged. The generic `exit-code` contract discards unstructured stdout and records null usage and cost. The structured `protocol-v1` contract is restricted to the bundled external wrapper so the shared relay can separate a bounded result frame from Harbor/Pier's merged process output; cohort-specific wrappers do not gain Runtime authority.
@@ -40,8 +42,11 @@ Single-arm results are not drawn from the same run as the multi-arm cohort. Task
 
 External provider metering does not depend on the subject exiting cleanly. The wrapper's proxy writes
 `agent/<profile>.provider-usage.json` at the start of every request, at its settlement, and at the
-moment the provider states admission, renaming it into place so a reader sees one whole snapshot or
-the previous one. Admission is recorded when it is observed rather than when the request finishes,
+moment the provider states admission, chmodding the temporary file to `0644` and then renaming it
+into place so a reader sees one whole snapshot or the previous one, already readable. Recovery
+reads at most 64 KiB and only from a regular file, and accepts the snapshot only when its HMAC
+matches the host-issued relay result token. A subject that replaces the path with a symlink, a
+large write, or schema-valid forged JSON cannot feed the host. Admission is recorded when it is observed rather than when the request finishes,
 because the model work has been done and billed whether or not this process survives to see the
 stream end. When the result frame is missing — the wrapper was killed rather than asked to stop —
 the executor recovers usage from that file. A run that was cut off after admitted model work is
@@ -94,7 +99,7 @@ no rule can match across the boundary between the two fields. Only Harbor applie
 the namespace policy, so a pier executor spec that declares `egressProxy` is rejected when it is
 decoded rather than running with the proxy set up and enforcement absent. The checked-in Compose
 overlay gives every cell its own MITM proxy, CA, bounded audit log, and health gate. The proxy keeps its confdir and audit log
-private and publishes only `mitmproxy-ca-cert.pem` into the certificate-only volume the subject
+private and publishes only `mitmproxy-ca-cert.pem` and `proxy-ipv4` into the certificate-only volume the subject
 mounts read-only, so the CA private key and the audit log never enter the subject namespace. During
 `Agent.run()`, Harbor's Docker egress sidecar applies an nftables allowlist containing only that
 proxy service; direct subject egress is therefore rejected even when a command unsets proxy
@@ -102,10 +107,13 @@ variables or requests `--noproxy`. The namespace policy accepts TCP to that prox
 namespace-local addresses, and rejects everything else, ICMP included. Rejecting rather than
 redirecting the remainder also closes a connection the subject inherits from an earlier phase: the
 redirect is a NAT rule, and NAT is evaluated only on a connection's first packet. The
-namespace-local exemption keeps the loopback provider proxies reachable and, with them, Docker's
-embedded resolver at `127.0.0.11`, which forwards names it does not own to the host's upstream
-resolvers. That is an unaudited channel out of the cell and back, tracked in issue #2976; until it is
-closed the audited proxy is the only path for everything except DNS. The policy exempts no
+namespace-local exemption keeps the loopback provider proxies reachable. Docker's
+embedded resolver at `127.0.0.11` is refused, because it forwards names it does
+not own to the host's upstream resolvers. The engine DNATs `:53` onto another
+local port before the filter hook, so the rule matches the address rather than
+only that port. The proxy publishes its IPv4 into the
+certificate volume; the relay pins `maka-eval-mitmproxy` in `/etc/hosts` before the
+subject starts, so `HTTPS_PROXY` still resolves after DNS is closed. The policy exempts no
 packet mark: the
 sidecar shares the subject's network namespace, so a mark the sidecar can set is one the subject can
 set too, and gost forwards nothing in this mode anyway. Because that shared namespace also means the
@@ -130,11 +138,11 @@ download and verifier phases retain their native network policy. Build the pinne
 `maka-eval-egress-proxy:12.2.3` image from `harbor/egress-proxy/Dockerfile` before running the
 cohort. `MAKA_EVAL_EGRESS_NAMESPACE_TEST=1 python3 harbor/test_cell_egress_namespace.py` brings up
 the overlay and the checked-in policy and asserts that contract in a real cell namespace; it needs
-a Docker daemon and outbound network, and skips otherwise.
-`MAKA_EVAL_EGRESS_PROXY_TEST=1 python3 harbor/test_egress_filter_live.py` starts the
-pinned mitmproxy image and asserts raw CONNECT and HTTP 101 upgrades relay no
-bytes, write `raw_tunnel`, and leave HTTPS and WebSocket working; it needs a Docker
-daemon, the pinned image, `python:3.12-slim`, and outbound network, and skips otherwise. This URL policy is a blocklist for known
+a Docker daemon and outbound network, and skips otherwise. Official CI does not set that
+variable: the live cell needs a kernel that can load the checked-in `table inet` ruleset
+(`NFT_FIB_INET`), which Docker Desktop and the default runners do not provide. The rule
+text — including that `127.0.0.11` is rejected before `fib daddr type local accept` — is
+locked by `lifecycle-boundaries.test.ts` and the Harbor contract tests. This URL policy is a blocklist for known
 benchmark and public-solution contamination surfaces, not a complete defense against a deliberately
 invented lookup channel. It classifies HTTP(S) requests and `CONNECT` hosts against the blocklist, and
 kills tunnels that fall back to raw TCP. Collected Maka runtime files

@@ -46,8 +46,8 @@ test('two UDS clients share one recoverable Memory authority across Host death',
     await assert.rejects(() => stat(residue.transactionPath), { code: 'ENOENT' });
     assert.deepEqual(await readFile(residue.pendingPath), residue.targetPending);
 
-    const desktop = await connectClient(root, 'desktop');
-    const tui = await connectClient(root, 'tui');
+    const desktop = await connectClient(root);
+    const tui = await connectClient(root);
     let incompleteUploadId: string;
     try {
       const initial = await memoryState(desktop);
@@ -148,7 +148,7 @@ test('two UDS clients share one recoverable Memory authority across Host death',
       assert.doesNotMatch(paged.content, /sk-live-secret-token-value/);
       assert.ok((await memoryState(tui)).backups.some((backup) => backup.kind === 'save'));
 
-      const abandoned = await connectClient(root, 'run');
+      const abandoned = await connectClient(root);
       const capacityBasis = await memoryState(abandoned);
       for (let index = 0; index < 8; index += 1) {
         const staged = await abandoned.request('memory.mutate', {
@@ -195,7 +195,7 @@ test('two UDS clients share one recoverable Memory authority across Host death',
     }
 
     successor = await startHost(root, capability.rootId);
-    const observer = await connectClient(root, 'run');
+    const observer = await connectClient(root);
     try {
       const recovered = await readDocument(observer, 'memory');
       assert.ok(recovered.pageCount > 1);
@@ -291,13 +291,9 @@ function documentDecision(snapshot: MemoryDocumentSnapshot) {
   };
 }
 
-async function connectClient(
-  rootPath: string,
-  surface: 'desktop' | 'tui' | 'run',
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: CURRENT_PROTOCOL,
   });
   assert.equal(result.kind, 'connected');

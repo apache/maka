@@ -8,6 +8,7 @@ export const DEFAULT_AGENT_GRAPH_HANDOFF_MAX_TOTAL_CONCLUSION_BYTES = 48 * 1024;
 
 export interface AgentGraphHandoffRecordReference {
   recordId: string;
+  graphId: string;
   operatorId: string;
   activationId: string;
   facets: AgentGraphRecord['facets'];
@@ -147,6 +148,7 @@ export function renderAgentGraphScheduledWorkPrompt(input: {
 function graphRecordReference(record: AgentGraphRecord): AgentGraphHandoffRecordReference {
   return {
     recordId: record.recordId,
+    graphId: record.graphId,
     operatorId: record.operatorId,
     activationId: record.activationId,
     facets: [...record.facets],

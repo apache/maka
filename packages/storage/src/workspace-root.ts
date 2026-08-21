@@ -66,7 +66,15 @@ function resolveElectronUserDataRoot(
   if (platform === 'win32') {
     return win32.join(env.APPDATA || win32.join(home, 'AppData', 'Roaming'), profileName);
   }
-  return posix.join(env.XDG_CONFIG_HOME || posix.join(home, '.config'), profileName);
+  return posix.join(resolveXdgConfigHome(env, home), profileName);
+}
+
+export function resolveXdgConfigHome(
+  env: NodeJS.ProcessEnv = process.env,
+  homeDir: string = homedir(),
+): string {
+  const configured = env.XDG_CONFIG_HOME;
+  return configured && posix.isAbsolute(configured) ? configured : posix.join(homeDir, '.config');
 }
 
 function assertMakaProfileName(profileName: string): void {

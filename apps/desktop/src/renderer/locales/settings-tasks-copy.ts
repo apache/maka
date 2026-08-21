@@ -8,6 +8,7 @@ import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 export type SettingsTasksCopy = {
   listAria: string;
   noProject: string;
+  deletedParent: string;
   searchLabel: string;
   purgeAll: string;
   purgeMatches(count: number): string;
@@ -39,6 +40,7 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
   zh: {
     listAria: '已归档任务',
     noProject: '无项目',
+    deletedParent: '原父任务已删除',
     searchLabel: '搜索已归档任务',
     purgeAll: '清空全部',
     purgeMatches: (count: number) => `删除这 ${count} 条`,
@@ -63,6 +65,7 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
   en: {
     listAria: 'Archived tasks',
     noProject: 'No project',
+    deletedParent: 'Parent task deleted',
     searchLabel: 'Search archived tasks',
     purgeAll: 'Clear all',
     purgeMatches: (count: number) => (count === 1 ? 'Delete this 1' : `Delete these ${count}`),

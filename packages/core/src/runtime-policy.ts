@@ -7,7 +7,7 @@ import type {
 import type { ThinkingLevel } from './model-thinking.js';
 import type { ProviderType } from './provider-registry.js';
 import type { RelayModelProfile } from './model-thinking.js';
-import type { ChatDefaultPermissionMode, ProxyProtocol } from './settings.js';
+import type { ChatDefaultPermissionMode, ProxyProtocol, ShellSettings } from './settings.js';
 import type { SubagentSettings } from './subagent-settings.js';
 import type { JsonObject } from './request-customization.js';
 import {
@@ -24,6 +24,7 @@ export {
 } from './runtime-policy/domain-codec.js';
 export {
   decodeCanonicalRuntimePolicy,
+  decodeRuntimePolicyV2,
   normalizeRuntimePolicyMutation,
 } from './runtime-policy/policy-codec.js';
 export {
@@ -124,6 +125,7 @@ export interface RuntimePolicy {
     readonly defaultProvider: WebSearchProvider;
   };
   readonly subagents: SubagentSettings;
+  readonly shell: ShellSettings;
 }
 
 export interface RuntimePolicySnapshot {
@@ -151,6 +153,7 @@ export type RuntimePolicyMutation =
   | { readonly kind: 'set_chat_defaults'; readonly value: RuntimePolicy['chatDefaults'] }
   | { readonly kind: 'set_web_search'; readonly value: RuntimePolicy['webSearch'] }
   | { readonly kind: 'set_subagents'; readonly value: RuntimePolicy['subagents'] }
+  | { readonly kind: 'set_shell'; readonly value: RuntimePolicy['shell'] }
   | { readonly kind: 'patch_agent_settings'; readonly value: AgentRuntimeSettingsPatch };
 
 export interface MutateRuntimePolicyInput {
@@ -181,6 +184,7 @@ export function createDefaultRuntimePolicy(): RuntimePolicy {
     chatDefaults: { permissionMode: 'ask' },
     webSearch: { enabled: false, defaultProvider: 'model' },
     subagents: { presets: [] },
+    shell: { preference: 'auto', executable: '' },
   };
 }
 

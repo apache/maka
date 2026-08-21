@@ -3,12 +3,11 @@ import { launchDetachedRuntimeHostCandidate } from '../../client/launcher.js';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  type ClientSurface,
 } from '../../protocol/index.js';
 
-const [rootPath, surface] = process.argv.slice(2);
-if (!rootPath || !isClientSurface(surface)) {
-  throw new Error('usage: connect-client <root> <desktop|tui>');
+const [rootPath] = process.argv.slice(2);
+if (!rootPath) {
+  throw new Error('usage: connect-client <root>');
 }
 
 const candidatePids: number[] = [];
@@ -16,7 +15,6 @@ const candidateEntrypoint = new URL('./kernel-candidate.js', import.meta.url);
 const result = await connectOrSpawnRuntimeHostWithDependencies(
   {
     rootPath,
-    surface,
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -64,7 +62,3 @@ process.on('message', (message) => {
   if (message === 'close') close();
 });
 process.once('disconnect', close);
-
-function isClientSurface(value: string | undefined): value is ClientSurface {
-  return value === 'desktop' || value === 'tui' || value === 'capability-provider';
-}

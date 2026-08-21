@@ -10,7 +10,8 @@
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",
     "./execution-candidate-main": "./dist/execution-candidate-main.js",
-    "./server": "./dist/server/index.js"
+    "./server": "./dist/server/index.js",
+    "./test-only/execution-candidate-e2e-main": "./dist/test-only/execution-candidate-e2e-main.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",

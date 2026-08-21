@@ -5,6 +5,10 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 import { createFileCredentialStore } from '@maka/storage';
 import {
+  RUNTIME_HOST_REMOTE_INCOMPATIBLE_CODE,
+  RuntimeHostRemoteCompatibilityError,
+} from '../client/index.js';
+import {
   connectRemoteRuntimeHostProfile,
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostProfileCredentialStore,
@@ -14,6 +18,12 @@ import {
   type RuntimeHostProfileCredentialStore,
 } from '../client/host-profile.js';
 import { RuntimeHostPermanentReconnectError } from '../client/reconnect-lifecycle.js';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type HostIncompatible,
+} from '../protocol/index.js';
 
 const ROOT_A = 'a'.repeat(64);
 const ROOT_B = 'b'.repeat(64);
@@ -165,6 +175,30 @@ describe('Runtime Host profiles', () => {
     assert.equal(rotated.credential, 'rotated-token');
     assert.equal((await desktop.removeIfCurrent(rotated)).removed, true);
     assert.deepEqual(await desktop.read(), { schemaVersion: 1, profiles: [] });
+  });
+
+  test('conditionally updates one Host connection and credential', async () => {
+    const path = await profilePath();
+    const credentials = memoryCredentials();
+    const desktop = createFileRuntimeHostProfileCatalog(path, credentials);
+    const external = createFileRuntimeHostProfileCatalog(path, credentials);
+    const original = remoteProfile('office', 'wss://runtime.example.com', ROOT_A);
+    const replacement = { ...original, name: 'Renamed office' };
+
+    await desktop.create(original, 'old-token');
+    const expected = await desktop.resolve(original.id);
+    assert.equal((await desktop.rebindIfCurrent(expected, replacement, 'new-token')).rebound, true);
+    assert.deepEqual(await desktop.resolve(original.id), {
+      profile: {
+        ...replacement,
+        transport: { kind: 'tls', url: 'wss://runtime.example.com/' },
+      },
+      credential: 'new-token',
+    });
+
+    await external.save({ ...replacement, name: 'Externally updated' }, 'external-token');
+    assert.equal((await desktop.rebindIfCurrent(expected, original, 'stale-token')).rebound, false);
+    assert.equal((await desktop.resolve(original.id)).credential, 'external-token');
   });
 
   test('resolves an atomic profile snapshot without waiting for the writer lock', async () => {
@@ -356,7 +390,6 @@ describe('Runtime Host profiles', () => {
             rootId: ROOT_A,
           },
           credential: 'opaque-token',
-          surface: 'tui',
           clientInstanceId: 'client-1',
         },
         {
@@ -392,7 +425,6 @@ describe('Runtime Host profiles', () => {
           rootId: ROOT_A,
         },
         credential: 'opaque-token',
-        surface: 'run',
         clientInstanceId: 'client-1',
       },
       {
@@ -431,7 +463,6 @@ describe('Runtime Host profiles', () => {
           rootId: ROOT_A,
         },
         credential: 'opaque-token',
-        surface: 'tui',
         clientInstanceId: 'client-1',
         sshInteraction: 'inherit',
       },
@@ -465,7 +496,6 @@ describe('Runtime Host profiles', () => {
               rootId: ROOT_A,
             },
             credential: 'opaque-token',
-            surface: 'run',
             clientInstanceId: 'client-1',
           },
           {
@@ -476,6 +506,173 @@ describe('Runtime Host profiles', () => {
     );
   });
 
+  test('reports an incompatible remote Host with redacted compatibility details before readiness', async () => {
+    const credential = 'credential-secret';
+    const endpoint = 'wss://endpoint-secret.example.com/runtime-host';
+    const rootId = 'state-root-secret';
+    const handshake = incompatibleHandshake({
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION + 2,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION + 3,
+      compositionId: 'maka.different-composition',
+      compositionRevision: 'composition-revision-secret',
+    });
+    let attempts = 0;
+    let enteredReadiness = false;
+
+    await assert.rejects(
+      () =>
+        connectRemoteRuntimeHostProfile(
+          {
+            profile: remoteProfile('office', endpoint, rootId),
+            credential,
+            clientInstanceId: 'client-1',
+          },
+          {
+            connect: async () => {
+              attempts += 1;
+              return { kind: 'incompatible', handshake };
+            },
+            waitForReady: async () => {
+              enteredReadiness = true;
+            },
+          },
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof RuntimeHostRemoteCompatibilityError);
+        assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+        assert.equal(error.code, RUNTIME_HOST_REMOTE_INCOMPATIBLE_CODE);
+        assert.deepEqual(error.details, {
+          profileId: 'office',
+          client: {
+            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+            protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+            protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+            compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+          },
+          host: {
+            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+            protocolMin: RUNTIME_HOST_PROTOCOL_VERSION + 2,
+            protocolMax: RUNTIME_HOST_PROTOCOL_VERSION + 3,
+            compositionId: 'maka.different-composition',
+            compositionRevision: 'composition-revision-secret',
+          },
+        });
+        assert.deepEqual(Object.keys(error.details), ['profileId', 'client', 'host']);
+        assert.match(error.message, /RUNTIME_HOST_REMOTE_INCOMPATIBLE/u);
+        assert.match(error.message, /office/u);
+        assert.match(
+          error.message,
+          new RegExp(`Client compatibility epoch ${RUNTIME_HOST_COMPATIBILITY_EPOCH}`, 'u'),
+        );
+        assert.match(
+          error.message,
+          new RegExp(`Host compatibility epoch ${RUNTIME_HOST_COMPATIBILITY_EPOCH - 1}`, 'u'),
+        );
+        assert.match(
+          error.message,
+          new RegExp(
+            `Client protocol range ${RUNTIME_HOST_PROTOCOL_VERSION}-${RUNTIME_HOST_PROTOCOL_VERSION}`,
+            'u',
+          ),
+        );
+        assert.match(
+          error.message,
+          new RegExp(
+            `Host protocol range ${RUNTIME_HOST_PROTOCOL_VERSION + 2}-${RUNTIME_HOST_PROTOCOL_VERSION + 3}`,
+            'u',
+          ),
+        );
+        assert.match(error.message, /maka\.interactive/u);
+        assert.match(error.message, /maka\.different-composition/u);
+        assert.match(error.message, /composition-revision-secret/u);
+        assert.match(error.message, /compatible Client and Host builds/u);
+        assert.match(
+          error.message,
+          /restart the remote Runtime Host service after updating the Host/u,
+        );
+        assert.match(error.message, /retry/u);
+        for (const secret of [
+          credential,
+          endpoint,
+          rootId,
+          handshake.hostEpoch,
+          handshake.generation!,
+          handshake.state,
+          handshake.replacement,
+          'activity-secret',
+        ]) {
+          assert.doesNotMatch(error.message, new RegExp(secret, 'u'));
+          assert.equal(JSON.stringify(error.details).includes(secret), false);
+        }
+        return true;
+      },
+    );
+
+    assert.equal(attempts, 1);
+    assert.equal(enteredReadiness, false);
+  });
+
+  test('includes protocol ranges only when Client and Host ranges do not overlap', async () => {
+    const overlapping = new RuntimeHostRemoteCompatibilityError(
+      'office',
+      incompatibleHandshake({ protocolMin: RUNTIME_HOST_PROTOCOL_VERSION }),
+    );
+    const disjoint = new RuntimeHostRemoteCompatibilityError(
+      'office',
+      incompatibleHandshake({
+        protocolMin: RUNTIME_HOST_PROTOCOL_VERSION + 1,
+        protocolMax: RUNTIME_HOST_PROTOCOL_VERSION + 2,
+      }),
+    );
+
+    assert.doesNotMatch(overlapping.message, /protocol range/u);
+    assert.match(disjoint.message, /Client protocol range 0-0/u);
+    assert.match(disjoint.message, /Host protocol range 1-2/u);
+  });
+
+  test('includes composition fields only when the Client and Host composition ids differ', async () => {
+    const matching = new RuntimeHostRemoteCompatibilityError(
+      'office',
+      incompatibleHandshake({ compositionRevision: 'other-revision' }),
+    );
+    const different = new RuntimeHostRemoteCompatibilityError(
+      'office',
+      incompatibleHandshake({
+        compositionId: 'maka.different-composition',
+        compositionRevision: 'other-revision',
+      }),
+    );
+
+    assert.doesNotMatch(matching.message, /composition id/u);
+    assert.doesNotMatch(matching.message, /other-revision/u);
+    assert.match(different.message, /Client composition id maka\.interactive/u);
+    assert.match(different.message, /Host composition id maka\.different-composition/u);
+    assert.match(different.message, /Host composition revision other-revision/u);
+  });
+
+  test('sanitizes Host composition identity only in the human-readable message', () => {
+    const compositionId = 'maka.different\u001b[31m\u202eline\u2066isolate';
+    const compositionRevision =
+      'stable\u0085forged\u2028line\u2029paragraph\u202eoverride\u2066isolate\u00adsoft';
+    const error = new RuntimeHostRemoteCompatibilityError(
+      'office',
+      incompatibleHandshake({
+        compositionId,
+        compositionRevision,
+      }),
+    );
+
+    assert.equal(error.details.host.compositionId, compositionId);
+    assert.equal(error.details.host.compositionRevision, compositionRevision);
+    assert.doesNotMatch(error.message, /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu);
+    assert.match(error.message, /Host composition id maka\.different�\[31m�line�isolate/u);
+    assert.match(
+      error.message,
+      /Host composition revision stable�forged�line�paragraph�override�isolate�soft/u,
+    );
+  });
+
   test('treats rejected remote credentials as a terminal profile failure', async () => {
     await assert.rejects(
       () =>
@@ -483,7 +680,6 @@ describe('Runtime Host profiles', () => {
           {
             profile: remoteProfile('office', 'wss://runtime.example.com/', ROOT_A),
             credential: 'revoked-token',
-            surface: 'run',
             clientInstanceId: 'client-1',
           },
           { connect: async () => ({ kind: 'unavailable', reason: 'authentication_failed' }) },
@@ -508,7 +704,6 @@ describe('Runtime Host profiles', () => {
             {
               profile: remoteProfile('office', 'wss://runtime.example.com/', ROOT_A),
               credential: 'opaque-token',
-              surface: 'run',
               clientInstanceId: 'client-1',
             },
             { connect: async () => ({ kind: 'unavailable', reason }) },
@@ -546,5 +741,27 @@ function memoryCredentials(): RuntimeHostProfileCredentialStore {
     delete: async (profile) => {
       values.delete(key(profile));
     },
+  };
+}
+
+function incompatibleHandshake(overrides: Partial<HostIncompatible> = {}): HostIncompatible {
+  return {
+    kind: 'incompatible',
+    hostEpoch: 'host-epoch-secret',
+    protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+    protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    compositionRevision: 'host-composition-revision',
+    generation: 'generation-secret',
+    state: 'ready',
+    replacement: 'blocked_by_residency',
+    activity: {
+      connections: 1,
+      activeOperations: 1,
+      processUptimeSeconds: 1,
+      residencies: [{ label: 'activity-secret', count: 1 }],
+    },
+    ...overrides,
   };
 }

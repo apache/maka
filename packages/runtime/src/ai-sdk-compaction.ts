@@ -41,6 +41,7 @@ import {
   isHistoryCompactContentEvent,
 } from './history-compact.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
+import { findCheckpointSummaryDefect } from './history-compact-summary-validation.js';
 import {
   buildHistoryCompactCheckpoint,
   canContinueHistoryCompactCheckpointForModel,
@@ -582,6 +583,20 @@ export class AiSdkCompaction {
             }),
           },
         };
+      }
+      // The write gate enforces the invariant regardless of which summarizer
+      // produced the text (#3029): a malformed summary must not replace
+      // folded history. The default summarizer already threw with the same
+      // reasons; any other producer is validated here, and the enclosing
+      // catch maps the reason into the fail-open diagnostics.
+      if (typeof compacted === 'string') {
+        const defect = findCheckpointSummaryDefect(compacted, {
+          coveredRuntimeEvents: foldedRuntimeEvents,
+          ...(input.contextBudget.charsPerToken !== undefined
+            ? { charsPerToken: input.contextBudget.charsPerToken }
+            : {}),
+        });
+        if (defect) throw new HistoryCompactSummarizerError(defect);
       }
       const checkpoint = buildHistoryCompactCheckpoint({
         sessionId: this.sessionId,

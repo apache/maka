@@ -4,6 +4,7 @@ import { describe, test } from 'node:test';
 import type { AppUpdater } from 'electron-updater';
 import {
   createAppUpdateService,
+  resolveUpdateFeedOverride,
   type AppUpdateInstallRequest,
   type AppUpdateStatus,
 } from '../app-update-service.js';
@@ -106,6 +107,7 @@ function createHarness(input: {
   >;
   mockLatestVersion?: string;
   mockState?: 'available' | 'downloading' | 'downloaded';
+  testFeedUrl?: string;
 } = {}) {
   const updater = input.updater ?? new FakeUpdater();
   const clock = input.clock ?? new FakeClock();
@@ -121,6 +123,7 @@ function createHarness(input: {
         : { kind: 'prepared', rollback() {} }),
     mockLatestVersion: input.mockLatestVersion,
     mockState: input.mockState,
+    testFeedUrl: input.testFeedUrl,
   });
   return { clock, service, updater };
 }
@@ -148,6 +151,56 @@ describe('AppUpdateService', () => {
 
     service.dispose();
     assert.equal(clock.pending().length, 0);
+  });
+
+  test('routes the feed to a loopback generic provider when the test override is set', () => {
+    const { updater } = createHarness({ testFeedUrl: 'http://127.0.0.1:8443/feed' });
+    assert.deepEqual(updater.feed, {
+      provider: 'generic',
+      url: 'http://127.0.0.1:8443/feed',
+    });
+  });
+
+  test('rejects a non-loopback test feed instead of falling back to production', () => {
+    // A mistyped override must never silently install from the real GitHub
+    // feed: construction fails closed.
+    assert.throws(
+      () => createHarness({ testFeedUrl: 'https://evil.example/feed' }),
+      TypeError,
+    );
+  });
+
+  test('resolveUpdateFeedOverride accepts exactly loopback http URLs', () => {
+    assert.equal(resolveUpdateFeedOverride(undefined), undefined);
+    assert.equal(resolveUpdateFeedOverride(''), undefined);
+    assert.deepEqual(resolveUpdateFeedOverride('http://127.0.0.1:1'), {
+      provider: 'generic',
+      url: 'http://127.0.0.1:1/',
+    });
+    assert.deepEqual(resolveUpdateFeedOverride('http://127.0.0.1:65535/updates'), {
+      provider: 'generic',
+      url: 'http://127.0.0.1:65535/updates',
+    });
+    const rejected = [
+      'not-a-url',
+      'file:///C:/feed',
+      'https://127.0.0.1:1', // https is not loopback-harness shaped
+      'http://localhost:1', // alias resolution is not identity
+      'http://127.0.0.2:1', // other loopback addresses stay rejected
+      'http://[::1]:1', // IPv6 loopback stays rejected: one accepted shape only
+      'http://127.0.0.1', // no port: cannot be an ephemeral harness server
+      'http://u:p@127.0.0.1:1', // userinfo confusion
+      'http://127.0.0.1.evil.example:1', // hostname prefix confusion
+      'http://127.0.0.1:1/x?y=1', // query smuggling
+      'http://127.0.0.1:1/x#frag',
+    ];
+    for (const raw of rejected) {
+      assert.throws(
+        () => resolveUpdateFeedOverride(raw),
+        TypeError,
+        `expected rejection: ${raw}`,
+      );
+    }
   });
 
   test('does not overlap checks and cannot re-arm after disposal', async () => {

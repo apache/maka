@@ -29,8 +29,11 @@ import {
 } from '@maka/core/goal';
 
 export {
+  GOAL_BLOCK_CAP_LIMIT,
   GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_MAX_ITERATIONS_LIMIT,
   GOAL_REASON_TEXT_LIMIT,
+  GOAL_TOKEN_BUDGET_MINIMUM,
   type GoalCheckpoint,
   type GoalControlLease,
   type GoalState,
@@ -141,6 +144,7 @@ type GoalStatePatch = Partial<
 
 export class GoalManager {
   private goals = new Map<string, GoalRecord>();
+  private disposed = false;
 
   constructor(private readonly deps: GoalManagerDeps) {}
 
@@ -183,10 +187,24 @@ export class GoalManager {
       maxIterations?: number;
       blockCap?: number;
       tokenBudget?: number;
-      tokensAtStart?: number;
+      /**
+       * Whether this Goal is being armed from outside a Turn rather than set
+       * by the model inside one. Recorded on the Goal because nothing else
+       * survives a restart to say which of the two it was.
+       */
+      armed?: boolean;
     },
   ): GoalCreateResult {
-    if (!condition.trim() || !isGoalTextWithinLimit(condition, GOAL_CONDITION_TEXT_LIMIT)) {
+    // A disposed manager has no Goals, which is not the same as being able to
+    // start one. Reads after disposal answer honestly by finding nothing;
+    // this is the only entry that would answer by conjuring a Goal into a
+    // composition that is already shutting down, so it refuses instead of
+    // repopulating the map its owner just emptied.
+    if (this.disposed) throw new Error('Goal manager is disposed');
+    // Every caller reaches the Goal through here, so the stored condition is
+    // trimmed once here rather than by each caller in its own way.
+    const trimmed = condition.trim();
+    if (!trimmed || !isGoalTextWithinLimit(trimmed, GOAL_CONDITION_TEXT_LIMIT)) {
       throw new RangeError('Goal condition exceeds its shared text limit');
     }
     const existing = this.goals.get(sessionId)?.state;
@@ -194,21 +212,28 @@ export class GoalManager {
       return { kind: 'unfinished', goal: existing };
     }
 
-    const start = opts?.tokensAtStart ?? 0;
+    // The token baseline is not knowable here. `GoalSet` runs inside a Turn
+    // whose own spend predates the Goal, and `goal.arm` runs outside every
+    // Turn, so neither caller can name the count the budget should measure
+    // from. Both start at zero and `settleTurn` writes the real baseline when
+    // the first Turn carrying the Goal settles: the budget bounds what the
+    // Goal goes on to drive, not the Turn it was born beside.
+    const setAt = this.deps.now();
     const goal: GoalState = Object.freeze({
       id: this.deps.generateId(),
       revision: 0,
       sessionId,
-      condition,
+      condition: trimmed,
       status: 'active',
-      setAt: this.deps.now(),
+      setAt,
+      ...(opts?.armed ? { armedAt: setAt } : {}),
       iterations: 0,
       maxIterations: opts?.maxIterations ?? DEFAULT_MAX_ITERATIONS,
       consecutiveNoProgress: 0,
       blockCap: opts?.blockCap ?? DEFAULT_BLOCK_CAP,
       tokenBudget: opts?.tokenBudget,
-      tokensAtStart: start,
-      tokensNow: start,
+      tokensAtStart: 0,
+      tokensNow: 0,
       tokensBaselinePending: true,
     });
     const goalRecord: GoalRecord = {
@@ -345,6 +370,9 @@ export class GoalManager {
         tokensNow,
         tokensBaselinePending,
         lastReason,
+        // A Turn carried this Goal all the way into a continuation, so
+        // whatever it was armed to wait for has happened.
+        armedAt: undefined,
       };
     }
 
@@ -374,7 +402,10 @@ export class GoalManager {
     if (checkpoint && !this.matches(sessionId, checkpoint)) return undefined;
     return this.commit(
       record,
-      { status: 'active', pausedAt: undefined },
+      // Resume is a request for continuation, not a return to whatever the
+      // Goal was doing before. A Goal armed and never carried has been waiting
+      // for a Turn to take hold of it; this is one.
+      { status: 'active', pausedAt: undefined, armedAt: undefined },
       { renewControlLease: true },
     );
   }
@@ -398,6 +429,7 @@ export class GoalManager {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.goals.clear();
   }
 }
