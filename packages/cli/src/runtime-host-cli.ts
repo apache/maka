@@ -23,10 +23,6 @@ import {
   PROJECT_DIRECTORY_MAX_ROOTS,
   PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
 } from '@maka/runtime-host/protocol';
-import {
-  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
-  type RuntimeHostOperatorCapability,
-} from '@maka/runtime-host/operator';
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
 
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };
@@ -64,7 +60,6 @@ export type RuntimeHostCliCommand =
       action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'logs' | 'uninstall';
       json: boolean;
       framed?: true;
-      operatorCapabilities?: RuntimeHostOperatorCapability[];
       clientDataRoot?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
@@ -75,16 +70,20 @@ export type RuntimeHostCliCommand =
     }
   | {
       kind: 'runtime-host-access-issue';
-      mode: 'issue' | 'prepare';
       rootPath?: string;
       expectedRootId?: string;
-      framed: boolean;
       principalKind: 'remote_owner' | 'capability_provider';
       principalId: string;
       operationGrants: string[];
       canPublishClientCapabilities: boolean;
       canUseHostPaths: boolean;
       preset?: 'desktop-client' | 'terminal-client';
+    }
+  | {
+      kind: 'runtime-host-access-prepare';
+      rootPath?: string;
+      expectedRootId?: string;
+      currentCredentialFingerprint: string;
     }
   | {
       kind: 'runtime-host-access-list';
@@ -97,7 +96,7 @@ export type RuntimeHostCliCommand =
       rootPath?: string;
       expectedRootId?: string;
       credentialId: string;
-      protectedCredentialFingerprint?: string;
+      currentCredentialFingerprint?: string;
       framed: boolean;
     }
   | { kind: 'runtime-host-project-list'; rootPath?: string }
@@ -209,7 +208,6 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
 
   let retainManagedDeployment = false;
   let clientDataRoot: string | undefined;
-  const operatorCapabilities: RuntimeHostOperatorCapability[] = [];
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: action === 'install',
     allowFramed: true,
@@ -218,15 +216,6 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
         if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
         if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
         clientDataRoot = value;
-      },
-      '--operator-capability': (value) => {
-        if (value !== RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY) {
-          return error('Unknown Runtime Host operator capability');
-        }
-        if (operatorCapabilities.includes(value)) {
-          return error(`Duplicate Runtime Host operator capability: ${value}`);
-        }
-        operatorCapabilities.push(value);
       },
     },
     ...(action === 'uninstall'
@@ -246,7 +235,6 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     action,
     ...options,
     ...(clientDataRoot ? { clientDataRoot } : {}),
-    ...(operatorCapabilities.length > 0 ? { operatorCapabilities } : {}),
     ...(retainManagedDeployment ? { retainManagedDeployment: true } : {}),
   };
 }
@@ -755,7 +743,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     return error(
       action
         ? `Unexpected runtime-host access command: ${action}`
-        : 'runtime-host access requires list, issue, or revoke',
+        : 'runtime-host access requires list, issue, prepare, or revoke',
     );
   }
   let rootPath: string | undefined;
@@ -765,7 +753,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   let principalKind: 'remote_owner' | 'capability_provider' = 'remote_owner';
   let principalKindSpecified = false;
   let credentialId: string | undefined;
-  let protectedCredentialFingerprint: string | undefined;
+  let currentCredentialFingerprint: string | undefined;
   const operationGrants: string[] = [];
   let canPublishClientCapabilities = false;
   let canUseHostPaths = false;
@@ -793,7 +781,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       argument === '--principal' ||
       argument === '--grant' ||
       argument === '--credential' ||
-      argument === '--protect-fingerprint'
+      argument === '--current-fingerprint'
     ) {
       const parsed = optionValue(argv, index, argument);
       if (typeof parsed !== 'string') return parsed;
@@ -815,7 +803,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       if (argument === '--principal') principalId = parsed;
       if (argument === '--grant') operationGrants.push(parsed);
       if (argument === '--credential') credentialId = parsed;
-      if (argument === '--protect-fingerprint') protectedCredentialFingerprint = parsed;
+      if (argument === '--current-fingerprint') currentCredentialFingerprint = parsed;
       index += 1;
       continue;
     }
@@ -833,7 +821,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       canUseHostPaths ||
       preset ||
       credentialId ||
-      protectedCredentialFingerprint
+      currentCredentialFingerprint
     ) {
       return error('Credential mutation options are not valid for access list');
     }
@@ -844,13 +832,34 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       framed,
     };
   }
-  if (action === 'issue' || action === 'prepare') {
-    if (action === 'issue' && framed) return error('--framed is only valid for access management');
-    if (action === 'prepare' && !framed) {
-      return error('access prepare is reserved for framed operator management');
+  if (action === 'prepare') {
+    if (!framed) return error('access prepare is reserved for framed operator management');
+    if (!currentCredentialFingerprint) return error('--current-fingerprint is required');
+    if (!/^[a-f0-9]{32}$/u.test(currentCredentialFingerprint)) {
+      return error('--current-fingerprint must be a Runtime Host credential fingerprint');
     }
+    if (
+      principalId ||
+      principalKindSpecified ||
+      operationGrants.length > 0 ||
+      canPublishClientCapabilities ||
+      canUseHostPaths ||
+      preset ||
+      credentialId
+    ) {
+      return error('Credential issue options are not valid for access prepare');
+    }
+    return {
+      kind: 'runtime-host-access-prepare',
+      ...(rootPath ? { rootPath } : {}),
+      ...(expectedRootId ? { expectedRootId } : {}),
+      currentCredentialFingerprint,
+    };
+  }
+  if (action === 'issue') {
+    if (framed) return error('--framed is only valid for access management');
     if (!principalId) return error('--principal is required');
-    if (credentialId || protectedCredentialFingerprint) {
+    if (credentialId || currentCredentialFingerprint) {
       return error('Credential target options are only valid for access revoke');
     }
     if (
@@ -865,10 +874,8 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     if (preset) {
       return {
         kind: 'runtime-host-access-issue',
-        mode: action,
         ...(rootPath ? { rootPath } : {}),
         ...(expectedRootId ? { expectedRootId } : {}),
-        framed,
         principalKind: 'remote_owner',
         principalId,
         operationGrants,
@@ -893,10 +900,8 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     }
     return {
       kind: 'runtime-host-access-issue',
-      mode: action,
       ...(rootPath ? { rootPath } : {}),
       ...(expectedRootId ? { expectedRootId } : {}),
-      framed,
       principalKind,
       principalId,
       operationGrants,
@@ -905,8 +910,11 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     };
   }
   if (!credentialId) return error('--credential is required');
-  if (protectedCredentialFingerprint && !/^[a-f0-9]{32}$/u.test(protectedCredentialFingerprint)) {
-    return error('--protect-fingerprint must be a Runtime Host credential fingerprint');
+  if (framed && !currentCredentialFingerprint) {
+    return error('--current-fingerprint is required for framed access revoke');
+  }
+  if (currentCredentialFingerprint && !/^[a-f0-9]{32}$/u.test(currentCredentialFingerprint)) {
+    return error('--current-fingerprint must be a Runtime Host credential fingerprint');
   }
   if (
     principalId ||
@@ -923,7 +931,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     ...(rootPath ? { rootPath } : {}),
     ...(expectedRootId ? { expectedRootId } : {}),
     credentialId,
-    ...(protectedCredentialFingerprint ? { protectedCredentialFingerprint } : {}),
+    ...(currentCredentialFingerprint ? { currentCredentialFingerprint } : {}),
     framed,
   };
 }

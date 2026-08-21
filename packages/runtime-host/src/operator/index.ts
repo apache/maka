@@ -23,13 +23,14 @@ export {
   RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
   decodeRuntimeHostAccessManagementFrame,
   encodeRuntimeHostAccessManagementFrame,
-  runtimeHostAccessCredentialFingerprint,
   type RuntimeHostAccessCredentialMetadata,
   type RuntimeHostAccessManagementAction,
   type RuntimeHostAccessManagementFrame,
 } from './access-management-frame.js';
+export { runtimeHostAccessCredentialFingerprint } from '../access-credential-identity.js';
 export {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,

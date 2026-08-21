@@ -238,6 +238,8 @@ test('reads a framed service result without projecting it into the SSH terminal'
   await waitFor(() => harness.pty.hasDataListener());
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /\.local\/share\/maka\/operator/u);
+  assert.match(remoteCommand, /MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST/u);
+  assert.match(remoteCommand, /access-management-v1/u);
   assert.doesNotMatch(remoteCommand, /npx|maka-agent@/u);
   harness.pty.emitData('Password: ');
   harness.pty.emitData(
@@ -278,7 +280,7 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
     rootPath: '/srv/maka',
     expectedRootId: 'a'.repeat(64),
     action: 'prepare',
-    principalId: 'desktop:stable-client',
+    currentCredentialFingerprint: 'b'.repeat(32),
   });
   await waitFor(() => harness.pty.hasDataListener());
   harness.pty.emitData('Password: ');
@@ -310,7 +312,8 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   assert.doesNotMatch(JSON.stringify(harness.events), /secret-replacement|MAKA_RUNTIME/u);
   const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(command, /access.*prepare/u);
-  assert.match(command, /desktop:stable-client/u);
+  assert.match(command, /--current-fingerprint/u);
+  assert.match(command, new RegExp('b{32}', 'u'));
   assert.doesNotMatch(command, /secret-replacement/u);
   await harness.terminal.close();
 });
@@ -324,7 +327,7 @@ test('accepts the revoked result for an access revoke action', async () => {
     expectedRootId: 'a'.repeat(64),
     action: 'revoke',
     credentialId: 'credential-1',
-    protectedCredentialFingerprint: 'b'.repeat(32),
+    currentCredentialFingerprint: 'b'.repeat(32),
   });
   await waitFor(() => harness.pty.hasDataListener());
   harness.pty.emitData(

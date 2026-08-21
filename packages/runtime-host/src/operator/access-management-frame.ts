@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 export const RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX =
@@ -8,7 +7,6 @@ export const RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_MESSAGE_MAX_BYTES = 2 * 1024;
 
 const FRAME_MAX_BYTES = 768 * 1024;
 const CREDENTIAL_MAX_BYTES = 8 * 1024;
-const CREDENTIAL_FINGERPRINT_HEX_LENGTH = 32;
 const ACCESS_ACTIONS = ['list', 'prepare', 'revoke'] as const;
 
 const boundedString = (maxBytes: number) =>
@@ -106,11 +104,4 @@ export function decodeRuntimeHostAccessManagementFrame(
   } catch {
     return undefined;
   }
-}
-
-export function runtimeHostAccessCredentialFingerprint(credential: string): string {
-  return createHash('sha256')
-    .update(credential)
-    .digest('hex')
-    .slice(0, CREDENTIAL_FINGERPRINT_HEX_LENGTH);
 }

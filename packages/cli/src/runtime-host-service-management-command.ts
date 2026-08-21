@@ -21,9 +21,10 @@ import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { release } from 'node:os';
 import {
   encodeRuntimeHostServiceManagementFrame,
+  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
-  type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceSummary,
 } from '@maka/runtime-host/operator';
@@ -40,7 +41,6 @@ import { createSystemdUserRuntimeHostService } from './runtime-host-systemd-serv
 export interface RuntimeHostServiceManagementCliOptions extends RuntimeHostManagedServiceInput {
   readonly json: boolean;
   readonly framed?: boolean;
-  readonly operatorCapabilities?: readonly RuntimeHostOperatorCapability[];
 }
 
 export interface RuntimeHostServiceManagementCliDeps {
@@ -62,20 +62,11 @@ export async function runManagedRuntimeHostServiceCli(
     ...overrides,
   };
   try {
-    const {
-      json: _json,
-      framed: _framed,
-      operatorCapabilities: _operatorCapabilities,
-      ...input
-    } = options;
+    const { json: _json, framed: _framed, ...input } = options;
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
     const result = await deps.manage(input, deps.createBackend(serviceId));
     if (options.framed) {
-      deps.writeOutput(
-        encodeRuntimeHostServiceManagementFrame(
-          successFrame(result, options.operatorCapabilities ?? []),
-        ),
-      );
+      deps.writeOutput(encodeRuntimeHostServiceManagementFrame(successFrame(result)));
     } else {
       deps.writeOutput(
         options.json ? `${JSON.stringify({ ...result, ok: true })}\n` : formatHumanResult(result),
@@ -133,10 +124,7 @@ function formatHumanResult(result: RuntimeHostManagedServiceResult): string {
   return `Runtime Host service is ${service.state}.\n`;
 }
 
-function successFrame(
-  result: RuntimeHostManagedServiceResult,
-  operatorCapabilities: readonly RuntimeHostOperatorCapability[],
-): RuntimeHostServiceManagementFrame {
+function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServiceManagementFrame {
   const config = result.service.config;
   const service: RuntimeHostServiceSummary = {
     platform: process.platform,
@@ -154,7 +142,10 @@ function successFrame(
     kind: 'result',
     action: result.action,
     service,
-    operatorCapabilities: [...operatorCapabilities],
+    ...(process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] ===
+    RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY
+      ? { operatorCapabilities: [RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY] }
+      : {}),
     ...(result.retainedStateRoot ? { retainedStateRoot: result.retainedStateRoot } : {}),
     ...(result.logs !== undefined ? { logs: result.logs } : {}),
   };

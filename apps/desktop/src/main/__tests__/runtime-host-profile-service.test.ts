@@ -522,8 +522,13 @@ test("preserves a staged pairing when finalization is interrupted", async () => 
     setDefault: () => undefined,
     finalizePairing: async () => undefined,
   });
+  await assert.rejects(
+    recovered.resolveManagedAccess(MANAGED_PROFILE.id),
+    /unfinished pairing/u,
+  );
   await recovered.startEnabledProfiles();
 
+  assert.ok(await recovered.resolveManagedAccess(MANAGED_PROFILE.id));
   assert.equal(
     (await recovered.getSnapshot()).entries.find(
       (entry) => entry.profile.id === MANAGED_PROFILE.id,
