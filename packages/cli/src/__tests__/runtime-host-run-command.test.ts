@@ -239,6 +239,33 @@ describe('Runtime Host maka run adapter', () => {
     );
   });
 
+  test('returns exit code 1 when a denied boundary request follows a sandbox failure', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const fixture = runFixture({
+      turnEvents: sandboxBoundaryEvents(
+        'turn-1',
+        'step-1',
+        'step-2',
+        'Boundary was not widened',
+        'request_sandbox_boundary',
+      ),
+    });
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['request inaccessible work'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+
+    assert.equal(exitCode, 1);
+    assert.equal(stdout.join(''), '');
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
+  });
+
   test('returns exit code 0 when the final Graph Turn completes', async () => {
     const stdout: string[] = [];
     const fixture = runFixture({ graph: true });
@@ -272,6 +299,22 @@ describe('Runtime Host maka run adapter', () => {
     const exitCode = await runFixtureCommand(fixture, ['run parallel tools', '--graph']);
 
     assert.equal(exitCode, 1);
+  });
+
+  test('returns exit code 1 when a denied Graph boundary request follows a sandbox failure', async () => {
+    const stdout: string[] = [];
+    const fixture = runFixture({
+      graph: true,
+      finalMessages: sandboxBoundaryMessages('step-1', 'step-2', 'request_sandbox_boundary'),
+    });
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['request inaccessible work', '--graph'],
+      (text) => stdout.push(text),
+    );
+
+    assert.equal(exitCode, 1);
+    assert.equal(stdout.join(''), '');
   });
 
   test('returns exit code 1 when the final Graph Turn fails', async () => {
@@ -1211,16 +1254,17 @@ function graphMessages(includeTerminal = true): StoredMessage[] {
 function sandboxBoundaryMessages(
   failureStepId: string | undefined,
   successStepId: string | undefined,
+  successToolName = 'Read',
 ): StoredMessage[] {
   const sameStep = failureStepId !== undefined && failureStepId === successStepId;
   return [
     ...graphMessages(false),
     ...(failureStepId === undefined ? [] : [storedToolCall('turn-2', 'tool-1', failureStepId, 5)]),
-    ...(sameStep ? [storedToolCall('turn-2', 'tool-2', successStepId, 6)] : []),
+    ...(sameStep ? [storedToolCall('turn-2', 'tool-2', successStepId, 6, successToolName)] : []),
     sandboxFailureToolResult('turn-2', 7),
     ...(successStepId === undefined || sameStep
       ? []
-      : [storedToolCall('turn-2', 'tool-2', successStepId, 8)]),
+      : [storedToolCall('turn-2', 'tool-2', successStepId, 8, successToolName)]),
     successfulToolResult('turn-2', 9),
     {
       type: 'turn_state',
@@ -1332,13 +1376,14 @@ async function* sandboxBoundaryEvents(
   failureStepId: string | undefined,
   successStepId: string | undefined,
   text: string,
+  successToolName = 'Read',
 ): AsyncIterable<SessionEvent> {
   const sameStep = failureStepId !== undefined && failureStepId === successStepId;
   if (failureStepId !== undefined) yield toolStart(turnId, 'tool-1', failureStepId, 1);
-  if (sameStep) yield toolStart(turnId, 'tool-2', successStepId, 2);
+  if (sameStep) yield toolStart(turnId, 'tool-2', successStepId, 2, successToolName);
   yield sandboxFailureToolResult(turnId, 3);
   if (successStepId !== undefined && !sameStep) {
-    yield toolStart(turnId, 'tool-2', successStepId, 4);
+    yield toolStart(turnId, 'tool-2', successStepId, 4, successToolName);
   }
   yield successfulToolResult(turnId, 5);
   yield* eventsFor(turnId, text, 6);
@@ -1477,6 +1522,7 @@ function toolStart(
   toolUseId: string,
   stepId: string,
   ts: number,
+  toolName = 'Read',
 ): Extract<SessionEvent, { type: 'tool_start' }> {
   return {
     type: 'tool_start',
@@ -1484,7 +1530,7 @@ function toolStart(
     turnId,
     ts,
     toolUseId,
-    toolName: 'Read',
+    toolName,
     args: {},
     stepId,
   };
@@ -1495,13 +1541,14 @@ function storedToolCall(
   toolUseId: string,
   stepId: string,
   ts: number,
+  toolName = 'Read',
 ): Extract<StoredMessage, { type: 'tool_call' }> {
   return {
     type: 'tool_call',
     id: toolUseId,
     turnId,
     ts,
-    toolName: 'Read',
+    toolName,
     args: {},
     stepId,
   };

@@ -522,6 +522,7 @@ type TurnOutcomeObservation =
       readonly kind: 'tool_call';
       readonly toolUseId: string;
       readonly stepId: string | undefined;
+      readonly toolName: string;
     }
   | {
       readonly kind: 'tool_result';
@@ -537,7 +538,10 @@ type SandboxBoundaryState =
 
 class TurnOutcomeClassifier {
   readonly #outcomeId: string;
-  readonly #stepByToolUseId = new Map<string, string>();
+  readonly #callByToolUseId = new Map<
+    string,
+    { readonly stepId: string | undefined; readonly toolName: string }
+  >();
   #finalOutput: string | undefined;
   #terminal: TerminalOutcomeObservation | undefined;
   #sandboxBoundary: SandboxBoundaryState = { status: 'none' };
@@ -559,22 +563,24 @@ class TurnOutcomeClassifier {
         }
         return;
       case 'tool_call':
-        if (observation.stepId !== undefined) {
-          this.#stepByToolUseId.set(observation.toolUseId, observation.stepId);
-        }
+        this.#callByToolUseId.set(observation.toolUseId, {
+          stepId: observation.stepId,
+          toolName: observation.toolName,
+        });
         return;
       case 'tool_result': {
-        const stepId = this.#stepByToolUseId.get(observation.toolUseId);
+        const call = this.#callByToolUseId.get(observation.toolUseId);
         if (observation.outcome === 'sandbox_failure') {
-          this.#sandboxBoundary = { status: 'unresolved', failedStepId: stepId };
+          this.#sandboxBoundary = { status: 'unresolved', failedStepId: call?.stepId };
           return;
         }
         if (
           observation.outcome === 'success' &&
+          call?.toolName !== 'request_sandbox_boundary' &&
           this.#sandboxBoundary.status === 'unresolved' &&
-          stepId !== undefined &&
+          call?.stepId !== undefined &&
           this.#sandboxBoundary.failedStepId !== undefined &&
-          stepId !== this.#sandboxBoundary.failedStepId
+          call.stepId !== this.#sandboxBoundary.failedStepId
         ) {
           this.#sandboxBoundary = { status: 'recovered' };
         }
@@ -634,6 +640,7 @@ function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservatio
       kind: 'tool_call',
       toolUseId: event.toolUseId,
       stepId: event.stepId,
+      toolName: event.toolName,
     };
   }
   return event.type === 'tool_result' ? observationFromToolResult(event) : undefined;
@@ -670,6 +677,7 @@ function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObserv
       kind: 'tool_call',
       toolUseId: message.id,
       stepId: message.stepId,
+      toolName: message.toolName,
     };
   }
   return message.type === 'tool_result' ? observationFromToolResult(message) : undefined;
