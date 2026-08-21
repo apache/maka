@@ -41,12 +41,14 @@ export function rekeyPending<T>(
   to: string,
 ): PendingByKey<T> {
   if (from === to) return map;
-  const moved = map[from] ?? [];
-  if (!(from in map) && !(to in map)) return map;
+  const hasFrom = Object.hasOwn(map, from);
+  const hasTo = Object.hasOwn(map, to);
+  if (!hasFrom && !hasTo) return map;
+  const moved = hasFrom ? (map[from] ?? []) : [];
   const next = { ...map };
-  delete next[from];
+  if (hasFrom) delete next[from];
   if (moved.length > 0) next[to] = moved;
-  else delete next[to];
+  else if (hasTo) delete next[to];
   return next;
 }
 
