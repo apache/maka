@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import { type CuDispatchBackend } from '@maka/runtime/computer-use-types';
+import { buildMcpTools, type McpToolProvider } from '@maka/runtime/mcp-tools';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
@@ -145,6 +146,74 @@ test('publishes every production Desktop-owned tool schema through the protocol'
       offers: provider.offers(),
     }),
   );
+});
+
+test('publishes and invokes an MCP tool backed by an AI SDK JSON Schema', async () => {
+  let invocation: { args: Record<string, unknown>; cwd: string } | undefined;
+  const mcpProvider: McpToolProvider = {
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [
+        {
+          binding: 'fixture-binding' as never,
+          descriptor: {
+            serverId: 'fixture',
+            name: 'lookup',
+            inputSchema: {
+              type: 'object',
+              properties: { query: { type: 'string' } },
+              required: ['query'],
+              additionalProperties: false,
+            },
+          },
+        },
+      ],
+    }),
+    async callTool(_binding, args, options) {
+      invocation = { args, cwd: options.context.cwd };
+      return { content: [{ type: 'text', text: 'found' }] };
+    },
+  };
+  const [mcpTool] = buildMcpTools(mcpProvider, { executionLocation: 'remote' });
+  assert.ok(mcpTool);
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
+    additionalGroups: () => [
+      {
+        offerId: 'desktop_mcp',
+        label: 'MCP',
+        description: 'MCP tools',
+        invalidToolPolicy: 'omit',
+        tools: [mcpTool],
+      },
+    ],
+  });
+
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-1',
+      offers: provider.offers(),
+    }),
+  );
+  assert.deepEqual(
+    await call(
+      provider,
+      capabilityFrame({
+        offerId: 'desktop_mcp',
+        serverId: 'desktop_mcp',
+        toolName: mcpTool.name,
+        arguments: { query: 'maka' },
+      }),
+    ),
+    { content: [{ type: 'text', text: 'found' }] },
+  );
+  assert.deepEqual(invocation, {
+    args: { query: 'maka' },
+    cwd: '/workspace',
+  });
 });
 
 test('publishes and admits additional Desktop native-effect services', async () => {

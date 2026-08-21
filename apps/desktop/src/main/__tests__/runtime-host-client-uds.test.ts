@@ -98,6 +98,120 @@ test('drives Desktop Session operations through a real Runtime Host connection',
   }
 });
 
+test('keeps the Desktop candidate usable when an optional MCP tool has an invalid schema', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-desktop-invalid-mcp-'));
+  let host: RuntimeHostKernel | undefined;
+  try {
+    const capability = await resolveStorageRoot({ path: base, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const projected = session('session-invalid-mcp');
+    host = await RuntimeHostKernel.start({
+      owner,
+      idleGraceMs: 10_000,
+      composition: defineInteractiveRuntimeHostComposition(async () => ({
+        handlers: handlers({
+          'client.capability.replace': async (input) => {
+            const mcp = input.offers.find((offer) => offer.offerId === 'desktop_mcp');
+            assert.deepEqual(mcp?.tools.map(({ name }) => name), ['mcp_valid']);
+            return {
+              ok: true,
+              result: { registrationId: input.registrationId, revision: 1 },
+            };
+          },
+          'client.capability.unregister': async (input) => ({
+            ok: true,
+            result: { registrationId: input.registrationId, revision: 2 },
+          }),
+          'session.catalog.query': async (input) => ({
+            ok: true,
+            result:
+              input.kind === 'get'
+                ? { kind: 'session', session: input.sessionId === projected.id ? projected : null }
+                : {
+                    kind: 'page',
+                    revision: catalogRevision('1'),
+                    sessions: [projected],
+                    nextCursor: null,
+                  },
+          }),
+        }),
+        beginDrain() {},
+        async recover() {},
+        async close() {},
+      })),
+    });
+    const ipc = ipcHarness();
+    const diagnostics: unknown[] = [];
+    const invalidTool = {
+      ...nativeTool(),
+      name: 'mcp_invalid',
+      parameters: { jsonSchema: { type: 'string' } },
+    } as unknown as MakaTool;
+    const validTool = {
+      ...nativeTool(),
+      name: 'mcp_valid',
+      parameters: { jsonSchema: { type: 'object', properties: {} } },
+    } as unknown as MakaTool;
+    const started = await startDesktopRuntimeHostCandidate({
+      rootPath: base,
+      candidateEntrypoint: new URL('file:///unused-runtime-host-candidate.js'),
+      ipcMain: ipc,
+      workspaceRoot: base,
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      nativeCapabilities: {
+        browserTools: [],
+        releaseBrowserSession() {},
+        computerUseTools: Object.assign([], {
+          clearSession() {},
+        }) as unknown as ComputerUseToolSet,
+        releaseComputerUseSession() {},
+        additionalGroups: () => [
+          {
+            offerId: 'desktop_mcp',
+            label: 'MCP',
+            description: 'MCP tools',
+            invalidToolPolicy: 'omit',
+            tools: [invalidTool, validTool],
+          },
+        ],
+      },
+      botRegistry: {} as BotRegistry,
+      resolveBotCreateTarget: async () => ({
+        workspace: { kind: 'host_path', path: base },
+      }),
+      resolveSessionCreateProject: async () => ({ kind: 'host_path', path: base }),
+      emitSessionsChanged() {},
+      completeComputerUseTurn() {},
+      onError: (error) => diagnostics.push(error),
+      createSessionCopyCleanup: () => ({
+        ownCreation: (_creation, operation) => operation(),
+        cleanup: async () => undefined,
+        schedule: async () => undefined,
+        abandonOwner: async () => undefined,
+        recover: async () => ({ removed: [], failed: [] }),
+      }),
+    });
+    assert.equal(started.kind, 'ready');
+    if (started.kind !== 'ready') throw new Error('Desktop candidate did not start');
+    const { candidate } = started;
+    ipc.setHost(candidate.client.hostId, ipc.epoch);
+
+    assert.deepEqual(
+      ((await ipc.invoke('sessions:list')) as SessionCatalogProjection[]).map(({ id }) => id),
+      [projected.id],
+    );
+    assert.equal(diagnostics.length, 1);
+    assert.match(String(diagnostics[0]), /desktop_mcp\/mcp_invalid/);
+    await candidate.close();
+  } finally {
+    await host?.close().catch(() => undefined);
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('drives the renderer Session catalog facade through real UDS framing', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-desktop-host-ipc-'));
   let host: RuntimeHostKernel | undefined;

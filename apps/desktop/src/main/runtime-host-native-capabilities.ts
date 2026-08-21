@@ -6,6 +6,7 @@ import {
   type ClientCapabilityProvider,
   type OAuthPresentationBackend,
 } from "@maka/runtime-host/client";
+import { decodeClientCapabilityReplaceInput } from "@maka/runtime-host/protocol";
 import type {
   ClientCapabilityCallFrame,
   ClientCapabilityCallResult,
@@ -27,6 +28,7 @@ export interface DesktopCapabilityGroup {
   readonly label: string;
   readonly description: string;
   readonly tools: readonly MakaTool[];
+  readonly invalidToolPolicy?: "reject" | "omit";
 }
 
 interface NativeToolBinding {
@@ -76,6 +78,7 @@ interface DesktopNativeCapabilityProviderOptions {
   readonly isTargetValid?: () => boolean;
   readonly onSessionUsed?: (sessionId: string) => void;
   readonly onComputerUseTurnUsed?: (sessionId: string, turnId: string) => void;
+  readonly onInvalidTool?: (error: Error) => void;
   readonly onClosed?: () => void;
   readonly nativeSessionId?: (sessionId: string) => string;
   readonly targetScope?: DesktopTargetScope;
@@ -86,8 +89,12 @@ export function createDesktopNativeCapabilityProvider(
   input: DesktopNativeCapabilityProviderInput,
   providerOptions: DesktopNativeCapabilityProviderOptions = {},
 ): DesktopNativeCapabilityProvider {
-  const groups = capabilityGroups(input);
   const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
+  const groups = prepareCapabilityGroups(
+    capabilityGroups(input),
+    hostPathAccess,
+    providerOptions.onInvalidTool,
+  );
   const offers = Object.freeze(
     groups.map((group) => capabilityOffer(group, hostPathAccess)),
   );
@@ -309,8 +316,7 @@ async function invokeNativeTool(
   }
   const signal = AbortSignal.any([options.signal, invocation.signal]);
   signal.throwIfAborted();
-  const parameters = requireZodSchema(binding.tool);
-  const args = await parameters.parseAsync(frame.arguments);
+  const args = await parseToolArguments(binding.tool, frame.arguments);
   signal.throwIfAborted();
   await options.accept();
   signal.throwIfAborted();
@@ -377,14 +383,45 @@ function capabilityOffer(
   });
 }
 
-function toolInputSchema(tool: MakaTool): Record<string, unknown> {
-  const schema = toJSONSchema(requireZodSchema(tool), {
-    io: "input",
-    target: "draft-07",
-    unrepresentable: "any",
-    cycles: "ref",
-    reused: "inline",
+function prepareCapabilityGroups(
+  groups: readonly DesktopCapabilityGroup[],
+  hostPathAccess: ClientCapabilityHostPathAccess,
+  onInvalidTool: ((error: Error) => void) | undefined,
+): DesktopCapabilityGroup[] {
+  return groups.flatMap((group) => {
+    if (group.invalidToolPolicy !== "omit") return [group];
+    const tools = group.tools.filter((tool) => {
+      try {
+        decodeClientCapabilityReplaceInput({
+          registrationId: "desktop_capability_validation",
+          offers: [capabilityOffer({ ...group, tools: [tool] }, hostPathAccess)],
+        });
+        return true;
+      } catch (cause) {
+        onInvalidTool?.(
+          new Error(
+            `Invalid optional Desktop capability tool omitted: ${group.offerId}/${tool.name}`,
+            { cause },
+          ),
+        );
+        return false;
+      }
+    });
+    return tools.length === 0 ? [] : [{ ...group, tools }];
   });
+}
+
+function toolInputSchema(tool: MakaTool): Record<string, unknown> {
+  const schema =
+    tool.parameters instanceof z.ZodType
+      ? toJSONSchema(tool.parameters, {
+          io: "input",
+          target: "draft-07",
+          unrepresentable: "any",
+          cycles: "ref",
+          reused: "inline",
+        })
+      : providerToolInputSchema(tool);
   delete schema.$schema;
   if (schema.type !== "object") {
     throw new Error(
@@ -394,13 +431,67 @@ function toolInputSchema(tool: MakaTool): Record<string, unknown> {
   return Object.freeze(schema);
 }
 
-function requireZodSchema(tool: MakaTool): z.ZodType {
-  if (!(tool.parameters instanceof z.ZodType)) {
+function providerToolInputSchema(tool: MakaTool): Record<string, unknown> {
+  if (!tool.parameters || typeof tool.parameters !== "object") {
     throw new Error(
       `Desktop native capability tool has an invalid schema: ${tool.name}`,
     );
   }
-  return tool.parameters;
+  const schema = (tool.parameters as { jsonSchema?: unknown }).jsonSchema;
+  if (isPromiseLike(schema)) {
+    throw new Error(
+      `Desktop native capability tool requires a synchronous schema: ${tool.name}`,
+    );
+  }
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    throw new Error(
+      `Desktop native capability tool has an invalid schema: ${tool.name}`,
+    );
+  }
+  return structuredClone(schema) as Record<string, unknown>;
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "then" in value &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+async function parseToolArguments(tool: MakaTool, value: unknown): Promise<unknown> {
+  const parameters = tool.parameters as {
+    parseAsync?: (input: unknown) => Promise<unknown>;
+    validate?: (
+      input: unknown,
+    ) =>
+      | { success: true; value: unknown }
+      | { success: false; error: unknown }
+      | PromiseLike<
+          | { success: true; value: unknown }
+          | { success: false; error: unknown }
+        >;
+    jsonSchema?: unknown;
+  };
+  if (typeof parameters?.parseAsync === "function") {
+    return parameters.parseAsync(value);
+  }
+  if (typeof parameters?.validate === "function") {
+    const result = await parameters.validate(value);
+    if (result.success) return result.value;
+    throw result.error;
+  }
+  if (
+    parameters?.jsonSchema &&
+    typeof parameters.jsonSchema === "object" &&
+    !Array.isArray(parameters.jsonSchema)
+  ) {
+    return value;
+  }
+  throw new Error(
+    `Desktop native capability tool has an invalid schema: ${tool.name}`,
+  );
 }
 
 function indexBindings(

@@ -35,6 +35,7 @@ import {
 import {
   FAKE_ASK_SANDBOX_BOUNDARY_PROMPT,
   FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_ERROR_PROMPT_PREFIX,
   FAKE_WAIT_FOR_STEERING_PROMPT,
 } from '@maka/runtime/test-only/fake-backend';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
@@ -738,6 +739,44 @@ test('regenerate replays the durable source content with one recoverable root id
       },
       quotedContent('repeat this request'),
     );
+  });
+});
+
+test('a rate-limited root Turn releases admission before regenerate', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    const sourceTurnId = randomUUID();
+    const regeneratedTurnId = randomUUID();
+    try {
+      await client.startTurn(
+        {
+          sessionId: fixture.sessionId,
+          turnId: sourceTurnId,
+          content: { text: `${FAKE_ERROR_PROMPT_PREFIX}rate_limit` },
+        },
+        PROCESS_TIMEOUT_MS,
+      );
+      const failed = await waitForTerminalTurn(client, fixture.sessionId, sourceTurnId);
+      assert.equal(failed.status, 'failed');
+
+      const regenerated = await client.regenerateTurn(
+        {
+          sessionId: fixture.sessionId,
+          sourceTurnId,
+          turnId: regeneratedTurnId,
+        },
+        PROCESS_TIMEOUT_MS,
+      );
+      assert.equal(regenerated.turnId, regeneratedTurnId);
+      assert.equal(
+        (await waitForTerminalTurn(client, fixture.sessionId, regeneratedTurnId)).status,
+        'failed',
+      );
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
   });
 });
 
