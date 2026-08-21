@@ -453,24 +453,38 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       this.#requireTarget(LOCAL_RUNTIME_HOST_PROFILE.id),
     );
     const quiescence = lifecycle.quiesce();
+    let launchBarrierPaused = false;
+    const resume = () => {
+      if (launchBarrierPaused) {
+        launchBarrierPaused = false;
+        this.#baseInput.candidateLaunchBarrier?.resume();
+      }
+      quiescence.resume();
+    };
     try {
       if (
         quiescence.current.hostLifecycleMode === 'service' ||
         quiescence.current.hostLifecycleMode === 'remote'
       ) {
-        return { kind: 'prepared', rollback: quiescence.resume };
+        return { kind: 'prepared', rollback: resume };
       }
+      this.#baseInput.candidateLaunchBarrier?.pause();
+      launchBarrierPaused = this.#baseInput.candidateLaunchBarrier !== undefined;
+      const diagnostics = await quiescence.current.client.queryHostDiagnostics();
+      // The adopted Host still owns the root here, so every other owned launch
+      // can be settled without allowing it to become a late election winner.
+      await this.#baseInput.candidateLaunchBarrier?.retireExcept(diagnostics.pid);
       const result = await quiescence.current.client.prepareHostUpgrade(
         allowInterruptActiveTasks,
       );
       if (result.kind === 'active_tasks') {
-        quiescence.resume();
+        resume();
         return result;
       }
       await this.waitForHostExit(result.pid);
-      return { kind: 'prepared', rollback: quiescence.resume };
+      return { kind: 'prepared', rollback: resume };
     } catch (error) {
-      quiescence.resume();
+      resume();
       throw error;
     }
   }
@@ -489,6 +503,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     const results = await Promise.allSettled(
       [...this.#targets.values()].map((target) => this.#removeTarget(target)),
     );
+    this.#baseInput.candidateLaunchBarrier?.release();
     this.#ipcMain.close();
     const failures = results.filter(
       (result): result is PromiseRejectedResult => result.status === 'rejected',

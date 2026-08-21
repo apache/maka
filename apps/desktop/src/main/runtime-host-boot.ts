@@ -21,6 +21,7 @@ import { buildMcpTools } from '@maka/runtime/mcp-tools';
 import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
+  createRuntimeHostCandidateLaunchBarrier,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
 } from "@maka/runtime-host/client";
@@ -168,6 +169,7 @@ const userDataDir = app.getPath("userData");
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
+const runtimeHostCandidateLaunchBarrier = createRuntimeHostCandidateLaunchBarrier();
 const runtimeHostCredentialStore = createClientRuntimeHostCredentialStore(userDataDir);
 const runtimeHostProfileCatalog = createClientRuntimeHostProfileCatalog(
   userDataDir,
@@ -509,6 +511,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
     generation: runtimeHostGeneration,
+    candidateLaunchBarrier: runtimeHostCandidateLaunchBarrier,
     // The Desktop E2E composition lives behind its own entry module, which
     // release packaging drops: picking it here is what keeps FakeBackend and
     // the E2E bootstrap out of the shipped Runtime Host.
