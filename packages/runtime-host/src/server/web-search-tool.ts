@@ -7,6 +7,7 @@ import {
 import { queryTavily } from '@maka/runtime/tavily-search';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import type { WebSearchResponse } from '@maka/core/web-search';
+import type { RuntimePolicy } from '@maka/core/runtime-policy';
 import type {
   ResolveWebSearchExecutionInput,
   RuntimePolicyOperationCoordinator,
@@ -25,6 +26,22 @@ export interface HostWebSearchService {
     readonly abortSignal?: AbortSignal;
     readonly policy?: ResolveWebSearchExecutionInput;
   }): Promise<WebSearchResponse>;
+}
+
+export function shouldResolveHostTavilyWebSearchReadiness(
+  policy: Pick<RuntimePolicy, 'privacy' | 'webSearch'>,
+): boolean {
+  return (
+    policy.webSearch.enabled &&
+    policy.webSearch.defaultProvider === 'tavily' &&
+    policy.privacy.incognitoActive !== true
+  );
+}
+
+export async function resolveHostTavilyWebSearchReadiness(
+  policy: Pick<RuntimePolicyOperationCoordinator, 'resolveWebSearchExecution'>,
+): Promise<boolean> {
+  return (await policy.resolveWebSearchExecution({ provider: 'tavily' })).kind === 'ready';
 }
 
 export function createHostWebSearchService(input: HostWebSearchServiceInput): HostWebSearchService {

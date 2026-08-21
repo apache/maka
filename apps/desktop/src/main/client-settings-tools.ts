@@ -23,7 +23,13 @@ type ClientSettingsPatch = z.infer<typeof patchSchema>;
 export interface ClientSettingsToolAuthority {
   read(): Promise<AppSettings>;
   update(patch: UpdateAppSettingsInput): Promise<AppSettings>;
-  confirm(changes: readonly string[]): Promise<boolean>;
+  confirm(changes: readonly ClientSettingsChange[]): Promise<boolean>;
+}
+
+export interface ClientSettingsChange {
+  readonly key: 'theme' | 'palette' | 'uiLocale' | 'runComplete' | 'keepSystemAwake';
+  readonly current: string | boolean | undefined;
+  readonly next: string | boolean;
 }
 
 interface ClientSettingsSnapshot {
@@ -60,9 +66,10 @@ export function buildClientSettingsTools(
     executionSemantics: 'exclusive_step',
     impl: async (input) => {
       const current = await authority.read();
-      const changes = describeChanges(current, input);
+      const proposedChanges = describeChanges(current, input);
+      const changes = proposedChanges.map(describeChange);
       if (changes.length === 0) return unchanged(current);
-      if (!(await authority.confirm(changes))) {
+      if (!(await authority.confirm(proposedChanges))) {
         return {
           kind: 'maka_client_settings_update',
           applied: false,
@@ -123,20 +130,20 @@ function toSettingsPatch(input: ClientSettingsPatch): UpdateAppSettingsInput {
   };
 }
 
-function describeChanges(current: AppSettings, patch: ClientSettingsPatch): string[] {
-  const changes: string[] = [];
-  compare(changes, 'Theme', current.appearance.theme, patch.appearance?.theme);
-  compare(changes, 'Palette', current.appearance.palette, patch.appearance?.palette);
-  compare(changes, 'UI language', current.personalization.uiLocale, patch.uiLocale);
+function describeChanges(current: AppSettings, patch: ClientSettingsPatch): ClientSettingsChange[] {
+  const changes: ClientSettingsChange[] = [];
+  compare(changes, 'theme', current.appearance.theme, patch.appearance?.theme);
+  compare(changes, 'palette', current.appearance.palette, patch.appearance?.palette);
+  compare(changes, 'uiLocale', current.personalization.uiLocale, patch.uiLocale);
   compare(
     changes,
-    'Run-complete notifications',
+    'runComplete',
     current.notifications.runComplete,
     patch.notifications?.runComplete,
   );
   compare(
     changes,
-    'Keep system awake',
+    'keepSystemAwake',
     current.system.keepSystemAwake,
     patch.system?.keepSystemAwake,
   );
@@ -144,12 +151,23 @@ function describeChanges(current: AppSettings, patch: ClientSettingsPatch): stri
 }
 
 function compare(
-  changes: string[],
-  label: string,
+  changes: ClientSettingsChange[],
+  key: ClientSettingsChange['key'],
   current: string | boolean | undefined,
   next: string | boolean | undefined,
 ): void {
   if (next !== undefined && next !== current) {
-    changes.push(`${label}: ${String(current)} → ${String(next)}`);
+    changes.push({ key, current, next });
   }
+}
+
+function describeChange(change: ClientSettingsChange): string {
+  const labels: Record<ClientSettingsChange['key'], string> = {
+    theme: 'Theme',
+    palette: 'Palette',
+    uiLocale: 'UI language',
+    runComplete: 'Run-complete notifications',
+    keepSystemAwake: 'Keep system awake',
+  };
+  return `${labels[change.key]}: ${String(change.current)} → ${String(change.next)}`;
 }

@@ -1,0 +1,569 @@
+import { appendFileSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
+
+const PACKAGE_NAME = 'maka-agent';
+const REGISTRY_ORIGIN = 'https://registry.npmjs.org';
+const REPOSITORY = 'maka-agent/maka-agent';
+const STAGE_WORKFLOW_PATH = '.github/workflows/release-cli-stage.yml';
+const RELEASE_RECORD_KEYS = [
+  'schemaVersion',
+  'packageName',
+  'version',
+  'distTag',
+  'gitTag',
+  'tarball',
+  'sha256',
+  'checksum',
+  'inventory',
+  'source',
+];
+
+export function parseCliReleaseVersion(version) {
+  const { prerelease } = parseReleaseSemver(version);
+  return {
+    version,
+    distTag: prerelease.length > 0 ? 'next' : 'latest',
+    gitTag: `cli-v${version}`,
+    tarball: `${PACKAGE_NAME}-${version}.tgz`,
+  };
+}
+
+export function validateRegistryChannels({ releaseVersion, releaseDistTag, distTags }) {
+  if (!distTags || typeof distTags !== 'object' || Array.isArray(distTags)) {
+    throw new Error('Registry package metadata has no valid dist-tags');
+  }
+  if (distTags[releaseDistTag] !== releaseVersion) {
+    throw new Error(`Registry dist-tag ${releaseDistTag} does not point to ${releaseVersion}`);
+  }
+
+  const latest = distTags.latest;
+  const next = distTags.next;
+  if (releaseDistTag === 'latest' && typeof next !== 'string') {
+    throw channelLagError({ releaseVersion, releaseDistTag, latest, next });
+  }
+  if (typeof latest === 'string' && typeof next === 'string') {
+    if (compareReleaseSemver(next, latest) < 0) {
+      throw channelLagError({ releaseVersion, releaseDistTag, latest, next });
+    }
+  }
+}
+
+export function prepareStageRelease({
+  repoRoot,
+  releaseDirectory,
+  expectedVersion,
+  sourceSha,
+  runId,
+  runAttempt,
+  repository,
+  workflowPath,
+}) {
+  const cliManifest = readJson(join(repoRoot, 'packages/cli/package.json'), 'CLI manifest');
+  if (cliManifest.name !== PACKAGE_NAME) {
+    throw new Error(`CLI package name must be ${PACKAGE_NAME}`);
+  }
+  const identity = parseCliReleaseVersion(cliManifest.version);
+  if (expectedVersion !== identity.version) {
+    throw new Error(
+      `Release version confirmation ${expectedVersion} does not match ${identity.version}`,
+    );
+  }
+  validateSourceIdentity({ sourceSha, runId, runAttempt, repository, workflowPath });
+  const candidate = validateCandidateFiles(releaseDirectory, identity);
+  const record = {
+    schemaVersion: 1,
+    packageName: PACKAGE_NAME,
+    ...identity,
+    sha256: candidate.sha256,
+    checksum: `${identity.tarball}.sha256`,
+    inventory: `${identity.tarball}.files.json`,
+    source: {
+      repository,
+      workflow: workflowPath,
+      commit: sourceSha,
+      runId,
+      runAttempt,
+    },
+  };
+  writeFileSync(join(releaseDirectory, 'release.json'), `${JSON.stringify(record, null, 2)}\n`, {
+    flag: 'wx',
+    mode: 0o644,
+  });
+  return { record, tarballPath: candidate.tarballPath };
+}
+
+export function validateStageRun({ releaseDirectory, expectedVersion, run }) {
+  const record = loadReleaseRecord(releaseDirectory);
+  if (expectedVersion !== record.version) {
+    throw new Error(
+      `Finalization version confirmation ${expectedVersion} does not match ${record.version}`,
+    );
+  }
+  if (
+    !run ||
+    String(run.id) !== record.source.runId ||
+    String(run.run_attempt) !== record.source.runAttempt ||
+    run.path !== record.source.workflow ||
+    run.event !== 'workflow_dispatch' ||
+    run.head_branch !== 'main' ||
+    run.head_sha !== record.source.commit ||
+    run.conclusion !== 'success' ||
+    run.head_repository?.full_name !== record.source.repository
+  ) {
+    throw new Error(
+      'Release record does not belong to the exact successful main stage workflow run',
+    );
+  }
+  return record;
+}
+
+export async function fetchRegistryRelease({
+  releaseDirectory,
+  registryDirectory,
+  fetchImpl = fetch,
+}) {
+  const record = loadReleaseRecord(releaseDirectory);
+  const versionUrl = `${REGISTRY_ORIGIN}/${PACKAGE_NAME}/${encodeURIComponent(record.version)}`;
+  const metadata = await fetchJson(
+    fetchImpl,
+    versionUrl,
+    'package version metadata',
+    'application/json',
+  );
+  if (metadata.name !== PACKAGE_NAME || metadata.version !== record.version) {
+    throw new Error('Registry package identity does not match the staged release');
+  }
+  const tags = await fetchJson(fetchImpl, `${REGISTRY_ORIGIN}/${PACKAGE_NAME}`, 'package metadata');
+  validateRegistryChannels({
+    releaseVersion: record.version,
+    releaseDistTag: record.distTag,
+    distTags: tags['dist-tags'],
+  });
+  const tarballUrl = parseRegistryTarballUrl(metadata.dist?.tarball, record.tarball);
+  const response = await fetchImpl(tarballUrl, { redirect: 'error' });
+  if (!response.ok) {
+    throw new Error(`Registry tarball request failed with status ${response.status}`);
+  }
+  const bytes = await readBoundedBytes(
+    response,
+    CLI_RELEASE_ARTIFACT_LIMITS.compressedBytes,
+    'Registry tarball exceeds the reviewed compressed size limit',
+  );
+  const sha256 = digest('sha256', bytes, 'hex');
+  if (sha256 !== record.sha256) {
+    throw new Error('Registry tarball does not match the staged release checksum');
+  }
+  if (metadata.dist?.integrity !== `sha512-${digest('sha512', bytes, 'base64')}`) {
+    throw new Error('Registry tarball does not match its published integrity');
+  }
+  if (metadata.dist?.shasum !== digest('sha1', bytes, 'hex')) {
+    throw new Error('Registry tarball does not match its published shasum');
+  }
+
+  mkdirSync(registryDirectory, { recursive: true, mode: 0o755 });
+  const tarballPath = join(registryDirectory, record.tarball);
+  writeFileSync(tarballPath, bytes, { flag: 'wx', mode: 0o644 });
+  for (const name of [record.checksum, record.inventory, 'release.json']) {
+    copyFileSync(join(releaseDirectory, name), join(registryDirectory, name));
+  }
+  writeFileSync(join(registryDirectory, 'release-notes.md'), releaseNotes(record), {
+    flag: 'wx',
+    mode: 0o644,
+  });
+  return { ...record, tarballPath, sha256 };
+}
+
+export function validateSignatureAudit({ releaseDirectory, audit }) {
+  const record = loadReleaseRecord(releaseDirectory);
+  if (!Array.isArray(audit?.invalid) || !Array.isArray(audit?.missing)) {
+    throw new Error('npm signature audit did not return its bounded result arrays');
+  }
+  if (audit.invalid.length > 0 || audit.missing.length > 0) {
+    throw new Error('npm signature audit found invalid or missing signatures');
+  }
+  const verified = Array.isArray(audit.verified) ? audit.verified : [];
+  const own = verified.find(
+    (entry) => entry?.name === PACKAGE_NAME && entry.version === record.version,
+  );
+  if (!own?.attestations?.provenance) {
+    throw new Error(
+      `npm signature audit did not include verified provenance for ${record.version}`,
+    );
+  }
+  return record;
+}
+
+export function validateGitHubRelease({ releaseDirectory, release }) {
+  const record = loadReleaseRecord(releaseDirectory);
+  const expectedAssets = [record.tarball, record.checksum, record.inventory, 'release.json'];
+  const expectedPrerelease = record.distTag === 'next';
+  if (
+    release?.tag_name !== record.gitTag ||
+    release.name !== `Maka CLI ${record.version}` ||
+    release.body !== readFileSync(join(releaseDirectory, 'release-notes.md'), 'utf8') ||
+    release.draft !== false ||
+    release.prerelease !== expectedPrerelease ||
+    !Array.isArray(release.assets) ||
+    release.assets.length !== expectedAssets.length
+  ) {
+    throw new Error('GitHub Release metadata does not match the verified CLI release');
+  }
+
+  const assets = new Map(release.assets.map((asset) => [asset?.name, asset]));
+  for (const name of expectedAssets) {
+    const bytes = readFileSync(join(releaseDirectory, name));
+    const asset = assets.get(name);
+    if (
+      asset?.state !== 'uploaded' ||
+      asset.size !== bytes.length ||
+      asset.digest !== `sha256:${digest('sha256', bytes, 'hex')}`
+    ) {
+      throw new Error(`GitHub Release asset does not match the verified file: ${name}`);
+    }
+  }
+  return record;
+}
+
+export function prepareSignatureAuditTree({ releaseDirectory, auditDirectory }) {
+  const record = loadReleaseRecord(releaseDirectory);
+  const packageDirectory = join(auditDirectory, 'node_modules', PACKAGE_NAME);
+  mkdirSync(packageDirectory, { recursive: true, mode: 0o755 });
+  writeJson(
+    join(auditDirectory, 'package.json'),
+    {
+      name: 'maka-cli-signature-audit',
+      private: true,
+      dependencies: { [PACKAGE_NAME]: record.version },
+    },
+    0o644,
+  );
+  writeJson(
+    join(packageDirectory, 'package.json'),
+    { name: PACKAGE_NAME, version: record.version },
+    0o644,
+  );
+  return record;
+}
+
+function loadReleaseRecord(releaseDirectory) {
+  const record = readJson(join(releaseDirectory, 'release.json'), 'release record');
+  exactKeys(record, RELEASE_RECORD_KEYS, 'release record');
+  if (record.schemaVersion !== 1 || record.packageName !== PACKAGE_NAME) {
+    throw new Error('Unsupported CLI release record');
+  }
+  const identity = parseCliReleaseVersion(record.version);
+  for (const key of ['distTag', 'gitTag', 'tarball']) {
+    if (record[key] !== identity[key]) throw new Error(`Release record ${key} is inconsistent`);
+  }
+  if (!/^[0-9a-f]{64}$/u.test(record.sha256)) {
+    throw new Error('Release record sha256 is invalid');
+  }
+  if (
+    record.checksum !== `${identity.tarball}.sha256` ||
+    record.inventory !== `${identity.tarball}.files.json`
+  ) {
+    throw new Error('Release record sidecar names are inconsistent');
+  }
+  exactKeys(
+    record.source,
+    ['repository', 'workflow', 'commit', 'runId', 'runAttempt'],
+    'release source',
+  );
+  validateSourceIdentity({
+    sourceSha: record.source.commit,
+    runId: record.source.runId,
+    runAttempt: record.source.runAttempt,
+    repository: record.source.repository,
+    workflowPath: record.source.workflow,
+  });
+  const candidate = validateCandidateFiles(releaseDirectory, identity);
+  if (candidate.sha256 !== record.sha256) {
+    throw new Error('Release record checksum does not match the candidate');
+  }
+  return record;
+}
+
+function validateCandidateFiles(releaseDirectory, identity) {
+  const tarballPath = join(releaseDirectory, identity.tarball);
+  const bytes = readFileSync(tarballPath);
+  if (bytes.length > CLI_RELEASE_ARTIFACT_LIMITS.compressedBytes) {
+    throw new Error('CLI release candidate exceeds the reviewed compressed size limit');
+  }
+  const checksum = readFileSync(`${tarballPath}.sha256`, 'utf8');
+  const match = /^([0-9a-f]{64}) {2}([^\r\n]+)\r?\n?$/u.exec(checksum);
+  if (!match || match[2] !== identity.tarball) {
+    throw new Error('CLI release candidate checksum sidecar is malformed');
+  }
+  const sha256 = digest('sha256', bytes, 'hex');
+  if (match[1] !== sha256) {
+    throw new Error('CLI release candidate checksum does not match');
+  }
+  const inventory = readJson(`${tarballPath}.files.json`, 'CLI release file inventory');
+  if (!Array.isArray(inventory)) throw new Error('CLI release file inventory must be an array');
+  return { tarballPath, sha256 };
+}
+
+function validateSourceIdentity({ sourceSha, runId, runAttempt, repository, workflowPath }) {
+  if (!/^[0-9a-f]{40}$/u.test(sourceSha)) throw new Error('Release source SHA is invalid');
+  if (!/^[1-9]\d*$/u.test(runId)) throw new Error('Release workflow run ID is invalid');
+  if (!/^[1-9]\d*$/u.test(runAttempt)) throw new Error('Release workflow run attempt is invalid');
+  if (repository !== REPOSITORY) throw new Error(`Release repository must be ${REPOSITORY}`);
+  if (workflowPath !== STAGE_WORKFLOW_PATH) {
+    throw new Error(`Release workflow must be ${STAGE_WORKFLOW_PATH}`);
+  }
+}
+
+function parseReleaseSemver(version) {
+  if (typeof version !== 'string') throw new Error('Expected a valid CLI release version');
+  const match =
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u.exec(
+      version,
+    );
+  if (!match) throw new Error(`Expected a valid CLI release version; found ${version}`);
+  const prerelease = match[4]?.split('.') ?? [];
+  if (
+    prerelease.some(
+      (identifier) => /^\d+$/u.test(identifier) && identifier.length > 1 && identifier[0] === '0',
+    )
+  ) {
+    throw new Error(`Expected a valid CLI release version; found ${version}`);
+  }
+  return {
+    core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
+    prerelease,
+  };
+}
+
+function compareReleaseSemver(left, right) {
+  const a = parseReleaseSemver(left);
+  const b = parseReleaseSemver(right);
+  for (let index = 0; index < a.core.length; index += 1) {
+    if (a.core[index] < b.core[index]) return -1;
+    if (a.core[index] > b.core[index]) return 1;
+  }
+  if (a.prerelease.length === 0) return b.prerelease.length === 0 ? 0 : 1;
+  if (b.prerelease.length === 0) return -1;
+  for (let index = 0; index < Math.max(a.prerelease.length, b.prerelease.length); index += 1) {
+    const leftIdentifier = a.prerelease[index];
+    const rightIdentifier = b.prerelease[index];
+    if (leftIdentifier === undefined) return -1;
+    if (rightIdentifier === undefined) return 1;
+    if (leftIdentifier === rightIdentifier) continue;
+    const leftNumeric = /^\d+$/u.test(leftIdentifier);
+    const rightNumeric = /^\d+$/u.test(rightIdentifier);
+    if (leftNumeric && rightNumeric) {
+      return BigInt(leftIdentifier) < BigInt(rightIdentifier) ? -1 : 1;
+    }
+    if (leftNumeric) return -1;
+    if (rightNumeric) return 1;
+    return leftIdentifier < rightIdentifier ? -1 : 1;
+  }
+  return 0;
+}
+
+function channelLagError({ releaseVersion, releaseDistTag, latest, next }) {
+  const current = typeof next === 'string' ? next : 'missing';
+  if (releaseDistTag === 'next') {
+    return new Error(
+      `Registry next dist-tag (${current}) is behind latest (${latest}); prerelease ${releaseVersion} cannot advance the next channel`,
+    );
+  }
+  return new Error(
+    `Registry next dist-tag (${current}) is behind the latest release. Before finalizing, authenticate interactively with npm and run: npm dist-tag add "${PACKAGE_NAME}@${releaseVersion}" next --registry ${REGISTRY_ORIGIN}/`,
+  );
+}
+
+async function fetchJson(fetchImpl, url, label, accept = 'application/vnd.npm.install-v1+json') {
+  const response = await fetchImpl(url, {
+    headers: { accept },
+    redirect: 'error',
+  });
+  if (!response.ok)
+    throw new Error(`Registry ${label} request failed with status ${response.status}`);
+  const bytes = await readBoundedBytes(
+    response,
+    4 * 1024 * 1024,
+    `Registry ${label} exceeds the bounded response size`,
+  );
+  try {
+    return JSON.parse(bytes.toString('utf8'));
+  } catch (error) {
+    throw new Error(`Registry ${label} is not valid JSON`, { cause: error });
+  }
+}
+
+async function readBoundedBytes(response, limit, errorMessage) {
+  const contentLength = response.headers.get('content-length');
+  if (contentLength !== null && Number(contentLength) > limit) {
+    throw new Error(errorMessage);
+  }
+  if (!response.body) return Buffer.alloc(0);
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel();
+        throw new Error(errorMessage);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
+}
+
+function parseRegistryTarballUrl(value, expectedName) {
+  if (typeof value !== 'string' || !URL.canParse(value)) {
+    throw new Error('Registry package metadata has no valid tarball URL');
+  }
+  const url = new URL(value);
+  if (
+    url.origin !== REGISTRY_ORIGIN ||
+    url.username ||
+    url.password ||
+    basename(url.pathname) !== expectedName
+  ) {
+    throw new Error('Registry package metadata points outside the npm registry release path');
+  }
+  return url.href;
+}
+
+function releaseNotes(record) {
+  const install = record.distTag === 'next' ? `${PACKAGE_NAME}@next` : PACKAGE_NAME;
+  return `Maka CLI ${record.version}\n\nInstall with:\n\n\`\`\`sh\nnpm install --global ${install}\n\`\`\`\n\nSource commit: ${record.source.commit}\nStage workflow run: https://github.com/${record.source.repository}/actions/runs/${record.source.runId} (attempt ${record.source.runAttempt})\nSHA-256: \`${record.sha256}\`\n`;
+}
+
+function exactKeys(value, keys, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${label} fields are invalid`);
+  }
+}
+
+function readJson(path, label) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    throw new Error(`${label} is unavailable or invalid`, { cause: error });
+  }
+}
+
+function writeJson(path, value, mode) {
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode });
+}
+
+function digest(algorithm, bytes, encoding) {
+  return createHash(algorithm).update(bytes).digest(encoding);
+}
+
+function appendOutputs(path, values) {
+  for (const [name, value] of Object.entries(values)) {
+    const text = String(value);
+    if (!/^[a-z_]+$/u.test(name) || /[\r\n]/u.test(text)) {
+      throw new Error('Unsafe GitHub Actions output');
+    }
+    appendFileSync(path, `${name}=${text}\n`, 'utf8');
+  }
+}
+
+async function main() {
+  const [command, ...args] = process.argv.slice(2);
+  if (command === 'prepare-stage' && args.length === 8) {
+    const [
+      releaseDirectory,
+      expectedVersion,
+      sourceSha,
+      runId,
+      runAttempt,
+      repository,
+      workflowPath,
+      output,
+    ] = args;
+    const result = prepareStageRelease({
+      repoRoot: resolve(import.meta.dirname, '..'),
+      releaseDirectory: resolve(releaseDirectory),
+      expectedVersion,
+      sourceSha,
+      runId,
+      runAttempt,
+      repository,
+      workflowPath,
+    });
+    appendOutputs(output, {
+      version: result.record.version,
+      dist_tag: result.record.distTag,
+      git_tag: result.record.gitTag,
+      tarball: result.tarballPath,
+    });
+    return;
+  }
+  if (command === 'validate-stage-run' && args.length === 4) {
+    const [releaseDirectory, runPath, expectedVersion, output] = args;
+    const record = validateStageRun({
+      releaseDirectory: resolve(releaseDirectory),
+      expectedVersion,
+      run: readJson(resolve(runPath), 'stage workflow run'),
+    });
+    appendOutputs(output, {
+      version: record.version,
+      dist_tag: record.distTag,
+      git_tag: record.gitTag,
+      source_sha: record.source.commit,
+      tarball: record.tarball,
+    });
+    return;
+  }
+  if (command === 'prepare-audit' && args.length === 2) {
+    const [releaseDirectory, auditDirectory] = args;
+    prepareSignatureAuditTree({
+      releaseDirectory: resolve(releaseDirectory),
+      auditDirectory: resolve(auditDirectory),
+    });
+    return;
+  }
+  if (command === 'fetch-registry' && args.length === 2) {
+    const [releaseDirectory, registryDirectory] = args;
+    await fetchRegistryRelease({
+      releaseDirectory: resolve(releaseDirectory),
+      registryDirectory: resolve(registryDirectory),
+    });
+    return;
+  }
+  if (command === 'validate-audit' && args.length === 2) {
+    const [releaseDirectory, auditPath] = args;
+    validateSignatureAudit({
+      releaseDirectory: resolve(releaseDirectory),
+      audit: readJson(resolve(auditPath), 'npm signature audit'),
+    });
+    return;
+  }
+  if (command === 'validate-github-release' && args.length === 2) {
+    const [releaseDirectory, releasePath] = args;
+    validateGitHubRelease({
+      releaseDirectory: resolve(releaseDirectory),
+      release: readJson(resolve(releasePath), 'GitHub Release'),
+    });
+    return;
+  }
+  throw new Error(
+    `Usage: release-cli-publication.mjs <prepare-stage|prepare-audit|validate-stage-run|fetch-registry|validate-audit|validate-github-release> ...`,
+  );
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  await main();
+}

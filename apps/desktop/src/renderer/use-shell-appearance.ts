@@ -13,9 +13,9 @@ type ToastApi = {
 /**
  * Owns the appearance / personalization / default-permission-mode slice
  * (issue #1043): the theme + palette + UI-locale + user-label + default
- * permission mode state, plus the `refreshShellSettings` IPC pull that
- * hydrates them from `window.maka.settings` / `e2eFixture` on mount and on
- * close-settings re-reads.
+ * permission mode state, plus the `refreshShellSettings` IPC pull. Desktop
+ * appearance and locale are hydrated independently from the default Host's
+ * chat defaults, so an offline Host cannot block the local UI preferences.
  *
  * `closeSettings` stays in AppShell: on close it calls `refreshShellSettings()`
  * so display mirrors (default permission mode) catch up without an app restart.
@@ -48,32 +48,51 @@ export function useShellAppearance({
 
   async function refreshShellSettings() {
     const uiLocaleHydration = uiLocaleUpdateGate.beginHydration();
-    try {
-      const next = await window.maka.settings.get();
-      const fixtureState = await window.maka.e2eFixture.getState();
-      const pref = fixtureState?.theme ?? next.appearance?.theme ?? 'auto';
-      const palette = next.appearance?.palette ?? 'default';
-      const name = next.personalization?.displayName ?? '';
-      const uiLocale = next.personalization?.uiLocale ?? 'auto';
+    const runtimeHostHydration = window.maka.settings.get().then(
+      (settings) => ({ ok: true as const, settings }),
+      () => ({ ok: false as const }),
+    );
+    const [clientResult, fixtureState] = await Promise.all([
+      window.maka.settings.getClient().then(
+        (settings) => ({ ok: true as const, settings }),
+        (error: unknown) => ({ ok: false as const, error }),
+      ),
+      window.maka.e2eFixture.getState().catch(() => null),
+    ]);
+
+    if (clientResult.ok) {
+      const next = clientResult.settings;
+      const pref = fixtureState?.theme ?? next.appearance.theme ?? 'auto';
+      const palette = next.appearance.palette ?? 'default';
+      const localePreference = next.personalization.uiLocale ?? 'auto';
       setUiLocaleOverride(fixtureState?.locale ?? null);
       uiLocaleUpdateGate.commitHydration(
         uiLocaleHydration,
-        uiLocale,
+        localePreference,
         (preference) => setUiLocalePreference(preference),
       );
       setThemePref(pref);
       setThemePalette(palette);
-      setUserLabel(name);
-      setDefaultPermissionMode(next.chatDefaults?.permissionMode ?? 'ask');
-      setDefaultThinkingLevel(next.chatDefaults?.thinkingLevel);
       applyTheme(pref);
       applyThemePalette(palette);
-    } catch (error) {
+    } else {
       const copy = getShellCopy(uiLocale).app;
       toastApi.error(
         copy.appearanceLoadErrorTitle,
-        localizedShellErrorMessage(error, copy.appearanceLoadErrorFallback, uiLocale),
+        localizedShellErrorMessage(
+          clientResult.error,
+          copy.appearanceLoadErrorFallback,
+          uiLocale,
+        ),
       );
+    }
+
+    const runtimeHostResult = await runtimeHostHydration;
+    if (runtimeHostResult.ok) {
+      const next = runtimeHostResult.settings;
+      setUserLabel(next.personalization.displayName ?? '');
+      setDefaultPermissionMode(next.chatDefaults.permissionMode ?? 'ask');
+      setDefaultThinkingLevel(next.chatDefaults.thinkingLevel);
     }
   }
 

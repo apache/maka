@@ -19,7 +19,7 @@ test('native WebSearch is a provider-executed descriptor, not a local implementa
   assert.throws(() => tool.impl({}, {} as never), /must not execute through ToolRuntime/);
 });
 
-test('turn-start routing keeps native and client-executed search mutually exclusive', () => {
+test('turn-start routing falls back explicitly when native search is unavailable', () => {
   const clientSearch = {
     name: NATIVE_WEB_SEARCH_TOOL_NAME,
     description: 'Tavily',
@@ -44,11 +44,11 @@ test('turn-start routing keeps native and client-executed search mutually exclus
     settings: { enabled: true, defaultProvider: 'model' },
     connection,
     model: 'deepseek-v4-flash',
+    tavilyReady: false,
   });
-  assert.equal(native.filter((tool) => tool.name === NATIVE_WEB_SEARCH_TOOL_NAME).length, 1);
-  assert.equal(
-    native.find((tool) => tool.name === NATIVE_WEB_SEARCH_TOOL_NAME)?.providerTool?.kind,
-    'openai-web-search',
+  assert.deepEqual(
+    native.map((tool) => tool.name),
+    ['Read'],
   );
 
   const external = routeWebSearchTools({
@@ -56,10 +56,23 @@ test('turn-start routing keeps native and client-executed search mutually exclus
     settings: { enabled: true, defaultProvider: 'tavily' },
     connection,
     model: 'deepseek-v4-flash',
+    tavilyReady: true,
   });
   assert.equal(
     external.find((tool) => tool.name === NATIVE_WEB_SEARCH_TOOL_NAME),
     clientSearch,
+  );
+
+  const unavailableExternal = routeWebSearchTools({
+    tools: [read, clientSearch],
+    settings: { enabled: true, defaultProvider: 'tavily' },
+    connection,
+    model: 'deepseek-v4-flash',
+    tavilyReady: false,
+  });
+  assert.deepEqual(
+    unavailableExternal.map((tool) => tool.name),
+    ['Read'],
   );
 
   const disabled = routeWebSearchTools({
@@ -67,6 +80,7 @@ test('turn-start routing keeps native and client-executed search mutually exclus
     settings: { enabled: false, defaultProvider: 'model' },
     connection,
     model: 'deepseek-v4-flash',
+    tavilyReady: false,
   });
   assert.deepEqual(
     disabled.map((tool) => tool.name),
@@ -79,6 +93,7 @@ test('turn-start routing keeps native and client-executed search mutually exclus
     privacy: { incognitoActive: true },
     connection,
     model: 'deepseek-v4-flash',
+    tavilyReady: false,
   });
   assert.deepEqual(
     incognito.map((tool) => tool.name),
@@ -102,6 +117,7 @@ test('turn-start routing compiles Claude models to the CC-compatible Anthropic t
       defaultModel: 'claude-sonnet-4-6',
     },
     model: 'claude-sonnet-4-6',
+    tavilyReady: false,
   });
 
   assert.deepEqual(routed[0]?.providerTool, {
@@ -110,7 +126,7 @@ test('turn-start routing compiles Claude models to the CC-compatible Anthropic t
   });
 });
 
-test('root surfaces may add native search without widening scoped child tools', () => {
+test('root surfaces do not advertise unsupported DeepSeek native search', () => {
   const connection = {
     slug: 'deepseek',
     providerType: 'deepseek' as const,
@@ -121,15 +137,17 @@ test('root surfaces may add native search without widening scoped child tools', 
     settings: { enabled: true, defaultProvider: 'model' },
     connection,
     model: 'deepseek-v4-flash',
+    tavilyReady: false,
     allowAddNative: true,
   });
-  assert.equal(root[0]?.providerTool?.kind, 'openai-web-search');
+  assert.deepEqual(root, []);
 
   const child = routeWebSearchTools({
     tools: [],
     settings: { enabled: true, defaultProvider: 'model' },
     connection,
     model: 'deepseek-v4-flash',
+    tavilyReady: false,
   });
   assert.deepEqual(child, []);
 });
@@ -151,6 +169,7 @@ test('the WebSearch feature gate leaves WebFetch available', () => {
       defaultModel: 'deepseek-v4-flash',
     },
     model: 'deepseek-v4-flash',
+    tavilyReady: false,
   });
 
   assert.deepEqual(

@@ -30,6 +30,7 @@ import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy
 
 export function PersonalizationSettingsSection(props: {
   settings: AppSettings;
+  runtimeHostAvailable: boolean;
   onUpdate(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
 }) {
   const locale = useUiLocale();
@@ -152,42 +153,41 @@ export function PersonalizationSettingsSection(props: {
           the user to fill in something already filled in, and its blur-save
           gave them no way to back out of a change. The row reports the
           settled value and opens on demand; Cancel puts the draft back. */}
-      <SettingsExpandableRow
-        label={copy.displayName}
-        value={value.displayName || copy.displayNameUnset}
-        actionLabel={value.displayName ? copy.displayNameChange : copy.displayNameSet}
-        isEditing={expandedRow === 'displayName'}
-        canSave={displayName.trim() !== value.displayName}
-        saveLabel={sharedCopy.save}
-        cancelLabel={sharedCopy.cancel}
-        onEdit={() => {
-          setDisplayName(value.displayName);
-          setExpandedRow('displayName');
-        }}
-        onCancel={() => {
-          setDisplayName(value.displayName);
-          setExpandedRow(null);
-        }}
-        onSave={async () => {
-          // Only close on a write that landed: a failed save leaves the row
-          // open with the draft intact, which is the promise explicit saving
-          // makes and blur-autosave could not keep.
-          if (await persistPersonalization({ displayName: displayName.trim().slice(0, 60) })) {
-            setExpandedRow(null);
-          }
-        }}
-      >
-        <TextInput
-          type="text"
-          value={displayName}
-          onChange={(value) => setDisplayName(value.slice(0, 60))}
-          placeholder={copy.displayNamePlaceholder}
+      {props.runtimeHostAvailable ? (
+        <SettingsExpandableRow
           label={copy.displayName}
-          description={copy.displayNameHelp}
-          isLabelHidden
-          width="100%"
-        />
-      </SettingsExpandableRow>
+          value={value.displayName || copy.displayNameUnset}
+          actionLabel={value.displayName ? copy.displayNameChange : copy.displayNameSet}
+          isEditing={expandedRow === 'displayName'}
+          canSave={displayName.trim() !== value.displayName}
+          saveLabel={sharedCopy.save}
+          cancelLabel={sharedCopy.cancel}
+          onEdit={() => {
+            setDisplayName(value.displayName);
+            setExpandedRow('displayName');
+          }}
+          onCancel={() => {
+            setDisplayName(value.displayName);
+            setExpandedRow(null);
+          }}
+          onSave={async () => {
+            if (await persistPersonalization({ displayName: displayName.trim().slice(0, 60) })) {
+              setExpandedRow(null);
+            }
+          }}
+        >
+          <TextInput
+            type="text"
+            value={displayName}
+            onChange={(value) => setDisplayName(value.slice(0, 60))}
+            placeholder={copy.displayNamePlaceholder}
+            label={copy.displayName}
+            description={copy.displayNameHelp}
+            isLabelHidden
+            width="100%"
+          />
+        </SettingsExpandableRow>
+      ) : null}
       {/*
         PR-LANG-PREF-0 (WAWQAQ msg `edc9cb41` + kenji `7e532892`
         acceptance criteria): 自动 / 中文 / English. User explicit
@@ -207,7 +207,7 @@ export function PersonalizationSettingsSection(props: {
           ))}
         </SegmentedControl>}
       />
-      <SettingsField>
+      {props.runtimeHostAvailable ? <SettingsField>
         {/* No fixed height style: it lands as inline style on the wrapper,
             which pins the visible box while the inner textarea keeps its
             native `resize: vertical` — dragging then moves only the grip.
@@ -228,7 +228,7 @@ export function PersonalizationSettingsSection(props: {
           description={copy.assistantToneHelp}
           width="100%"
         />
-      </SettingsField>
+      </SettingsField> : null}
     </SettingsSection>
   );
 }

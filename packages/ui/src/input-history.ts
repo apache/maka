@@ -58,6 +58,43 @@ export function readGlobalInputHistory(): string[] | null {
   return loadEntries();
 }
 
+const listeners = new Set<() => void>();
+
+function notifyListeners(): void {
+  // Every listener is told, and a throwing one is its own problem. Calling
+  // them bare let the first failure skip the rest and surface out of a `save`
+  // that had already succeeded — so a subscriber's bug would read as a storage
+  // error to the caller and leave the other holders stale.
+  for (const listener of listeners) {
+    try {
+      listener();
+    } catch {
+      // A listener that cannot reconcile keeps whatever it had; the write it
+      // is being told about has already happened either way.
+    }
+  }
+}
+
+/**
+ * Observe writes to the global history.
+ *
+ * A holder of the entries (`useComposerHistory`) needs to know when they
+ * change, and both writers live here — including the clear behind Settings ·
+ * 数据, which happens while the composer stays mounted. Without this the only
+ * alternatives are a second cached copy of the list or a re-read on every
+ * keystroke, and the first is what lets a just-deleted prompt come back.
+ *
+ * Same-document only, which is the whole product: one renderer owns the
+ * composer, and `localStorage`'s cross-document `storage` event never fires
+ * for the document that performed the write anyway.
+ */
+export function subscribeGlobalInputHistory(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 /**
  * Persist a sent input text to the global history.
  *
@@ -72,6 +109,7 @@ export function saveGlobalInputHistoryEntry(text: string): void {
   // the source of truth until storage is readable again.
   const next = rememberComposerHistoryEntry(loadEntries() ?? [], text);
   saveEntries(next);
+  notifyListeners();
 }
 
 /**
@@ -87,4 +125,8 @@ export function clearGlobalInputHistory(): void {
   } catch {
     // localStorage unavailable (SSR, private browsing) — nothing to clear.
   }
+  // After the write, and unconditionally: a holder re-reads on notify, so a
+  // `removeItem` that threw still ends with the holder agreeing with storage
+  // rather than with a guess about it.
+  notifyListeners();
 }

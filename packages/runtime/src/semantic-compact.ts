@@ -2,22 +2,20 @@ import type { ModelMessage } from './model-protocol.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import {
-  activeFullCompactCoverageFromEntries,
   activeCompactionMessageSignature,
   buildActiveCompactionHeadAnchor,
-  buildActiveFullCompactBlockFromSummary,
-  buildActiveFullCompactSourceIndex,
+  buildActiveCompactionSourceIndex,
   selectActiveCompactionSafeSpan,
-  validateActiveFullCompactBlockForSourceIndex,
-  type ActiveFullCompactArchiveRef,
-  type ActiveFullCompactCoverage,
-  type ActiveFullCompactPolicy,
-  type ActiveFullCompactSourceEntry,
-  type ActiveFullCompactSourceIndex,
-  type ActiveFullCompactSourceRef,
-  type ActiveFullCompactValidationResult,
+  validateActiveCompactionCoverageForSourceIndex,
+  type ActiveCompactionArchiveRef,
+  type ActiveCompactionCoverage,
+  type ActiveCompactionSafeSpanPolicy,
+  type ActiveCompactionSourceEntry,
+  type ActiveCompactionSourceIndex,
+  type ActiveCompactionSourceRef,
+  type ActiveCompactionValidationResult,
   type ActiveCompactionHeadAnchor,
-} from './active-full-compact.js';
+} from './active-compaction-kernel.js';
 import {
   compactionDecisionDiagnosticPatch,
   type CompactionBoundary,
@@ -141,9 +139,9 @@ export interface SemanticCompactBlock {
     estimatedTokensBefore?: number;
     thresholdTokens?: number;
   };
-  coverage: ActiveFullCompactCoverage;
-  sourceRefs: ActiveFullCompactSourceRef[];
-  archiveRefs?: ActiveFullCompactArchiveRef[];
+  coverage: ActiveCompactionCoverage;
+  sourceRefs: ActiveCompactionSourceRef[];
+  archiveRefs?: ActiveCompactionArchiveRef[];
   preservedTail: {
     messageIndexes: number[];
     toolCallIds: string[];
@@ -157,7 +155,7 @@ export interface SemanticCompactBlock {
     sourceIds: string[];
   };
   predecessorBlockId?: string;
-  newCoverage?: ActiveFullCompactCoverage;
+  newCoverage?: ActiveCompactionCoverage;
   cumulativeCoverageDigest?: string;
   projection?: {
     format: 'structured' | 'bounded_text_fallback';
@@ -224,7 +222,7 @@ export interface SemanticCompactRewriteResult {
   reason?: string;
   diagnosticPatch: Partial<ContextBudgetDiagnostic>;
   block?: SemanticCompactBlock;
-  validation?: ActiveFullCompactValidationResult;
+  validation?: ActiveCompactionValidationResult;
 }
 
 export async function rewriteSemanticCompactInMessages(
@@ -241,7 +239,7 @@ export async function rewriteSemanticCompactInMessages(
     return unchanged(messages, brakeReason);
   }
 
-  const index = buildActiveFullCompactSourceIndex({
+  const index = buildActiveCompactionSourceIndex({
     sessionId: input.sessionId,
     turnId: input.turnId,
     ...(input.runId ? { runId: input.runId } : {}),
@@ -298,42 +296,10 @@ export async function rewriteSemanticCompactInMessages(
     };
   }
 
-  const validationBlock = buildActiveFullCompactBlockFromSummary({
-    sessionId: input.sessionId,
-    turnId: input.turnId,
-    ...(input.runId ? { runId: input.runId } : {}),
-    ...(input.invocationId ? { invocationId: input.invocationId } : {}),
-    entries: selection.entries,
-    summary: {
-      schemaVersion: 1,
-      text: 'Semantic compact source validation block.',
-      nextActions: ['Continue from semantic compact summary and preserved recent tail.'],
-    },
-    highWaterName: policy.highWaterName ?? 'semantic-compact-high-water',
-    highWaterSeq: input.stepNumber,
-    trigger: {
-      reason: 'high_water',
-      stepNumber: input.stepNumber,
-      estimatedTokensBefore: index.estimatedTokens,
-      ...(policy.maxActiveEstimatedTokens !== undefined
-        ? {
-            thresholdTokens: Math.floor(
-              policy.maxActiveEstimatedTokens * finiteRatio(policy.highWaterRatio, 0.8),
-            ),
-          }
-        : {}),
-    },
-    now: input.now,
-    charsPerToken,
-    requestShapeHashBefore:
-      input.requestShapeHashBefore ?? input.requestShapeHashForMessages?.(messages),
-    preActiveContextEstimatedTokens: index.estimatedTokens,
-  });
-  const validation = validateActiveFullCompactBlockForSourceIndex(validationBlock, index, {
+  const validation = validateActiveCompactionCoverageForSourceIndex(selection.coverage, index, {
     sessionId: input.sessionId,
     turnId: input.turnId,
     archiveRequired: policy.archiveRequired,
-    charsPerToken,
   });
   if (!validation.valid) {
     return {
@@ -639,7 +605,7 @@ export function renderSemanticCompactBlock(block: SemanticCompactBlock): string 
 function policyForSemanticSelection(
   policy: SemanticCompactPolicy,
   successor: boolean,
-): ActiveFullCompactPolicy & {
+): ActiveCompactionSafeSpanPolicy & {
   minSafePrefixEstimatedTokens: number;
   preserveRecentCompletedEpisodes: number;
 } {
@@ -655,16 +621,14 @@ function policyForSemanticSelection(
     // a state-like projection. Keep the latest completed provider episode
     // verbatim so the next inference retains immediate execution momentum.
     preserveRecentCompletedEpisodes: 1,
-    maxSummaryEstimatedTokens: policy.maxSummaryEstimatedTokens,
     archiveRequired: policy.archiveRequired,
-    highWaterName: policy.highWaterName,
   };
 }
 
 function buildSummarizerMessages(input: {
   selection: Extract<ReturnType<typeof selectActiveCompactionSafeSpan>, { decision: 'selected' }>;
   messages: readonly ModelMessage[];
-  index: ActiveFullCompactSourceIndex;
+  index: ActiveCompactionSourceIndex;
   headAnchor: ActiveCompactionHeadAnchor;
   predecessorMessageIndex?: number;
   predecessorBlock?: SemanticCompactBlock;
@@ -725,7 +689,7 @@ function semanticCompactSystemPrompt(policy: SemanticCompactPolicy): string {
 
 function buildSemanticCompactBlock(input: {
   input: SemanticCompactRewriteInput;
-  index: ActiveFullCompactSourceIndex;
+  index: ActiveCompactionSourceIndex;
   selection: Extract<ReturnType<typeof selectActiveCompactionSafeSpan>, { decision: 'selected' }>;
   headAnchor: ActiveCompactionHeadAnchor;
   predecessorBlock?: SemanticCompactBlock;
@@ -743,7 +707,7 @@ function buildSemanticCompactBlock(input: {
     input.selection.entries.map((entry) => entry.archiveRef).filter(isArchiveRef),
   );
   const sourceRefs = input.selection.entries.map(
-    (entry): ActiveFullCompactSourceRef => ({
+    (entry): ActiveCompactionSourceRef => ({
       kind: entry.archiveRef
         ? 'active_archive_placeholder'
         : entry.runtimeEventId
@@ -766,7 +730,7 @@ function buildSemanticCompactBlock(input: {
   const preservedTailEntries = input.index.entries.filter((entry) =>
     preservedTailIndexes.includes(entry.messageIndex),
   );
-  const newCoverage = activeFullCompactCoverageFromEntries(input.selection.entries);
+  const newCoverage = input.selection.coverage;
   const coverage = input.predecessorBlock
     ? mergeSemanticCoverage(input.predecessorBlock.coverage, newCoverage)
     : newCoverage;
@@ -1001,7 +965,7 @@ function recordAcceptedSemanticCompact(
 function semanticCompactDecisionDiagnosticPatch(input: {
   decision: 'unchanged' | 'replaced' | 'failedOpen';
   boundaryIds?: readonly string[];
-  coverage?: ActiveFullCompactCoverage;
+  coverage?: ActiveCompactionCoverage;
   estimatedTokensBefore?: number;
   estimatedTokensAfter?: number;
   estimatedTokensSaved?: number;
@@ -1089,7 +1053,7 @@ async function callSummarizerWithTimeout(
 }
 
 function estimatePostReplacementTokens(
-  index: ActiveFullCompactSourceIndex,
+  index: ActiveCompactionSourceIndex,
   selectedTokens: number,
   renderedReplacement: string,
   charsPerToken: number,
@@ -1103,7 +1067,7 @@ function estimatePostReplacementTokens(
 }
 
 function preservedTailMessageIndexes(
-  index: ActiveFullCompactSourceIndex,
+  index: ActiveCompactionSourceIndex,
   selection: { endMessageIndex: number },
 ): number[] {
   const indexes = new Set<number>();
@@ -1307,9 +1271,9 @@ function updateProjectionEstimate(block: SemanticCompactBlock, charsPerToken: nu
 }
 
 function mergeSemanticCoverage(
-  previous: ActiveFullCompactCoverage,
-  next: ActiveFullCompactCoverage,
-): ActiveFullCompactCoverage {
+  previous: ActiveCompactionCoverage,
+  next: ActiveCompactionCoverage,
+): ActiveCompactionCoverage {
   return {
     turnIds: uniqueSorted([...previous.turnIds, ...next.turnIds]),
     runtimeEventIds: uniqueSorted([...previous.runtimeEventIds, ...next.runtimeEventIds]),
@@ -1445,7 +1409,7 @@ function newPrivateVerifierSurface(summaryText: string, publicSourceText: string
 
 function rejected(
   messages: ModelMessage[],
-  index: ActiveFullCompactSourceIndex,
+  index: ActiveCompactionSourceIndex,
   reason: string,
   compactCallUsage?: SemanticCompactBlock['compactCallUsage'],
 ): SemanticCompactRewriteResult {
@@ -1489,10 +1453,10 @@ function compactUsage(
 }
 
 function uniqueArchiveRefs(
-  refs: readonly ActiveFullCompactArchiveRef[],
-): ActiveFullCompactArchiveRef[] {
+  refs: readonly ActiveCompactionArchiveRef[],
+): ActiveCompactionArchiveRef[] {
   const seen = new Set<string>();
-  const out: ActiveFullCompactArchiveRef[] = [];
+  const out: ActiveCompactionArchiveRef[] = [];
   for (const ref of refs) {
     const key = `${ref.kind}:${ref.artifactId}:${ref.bodySha256}:${ref.toolCallId ?? ''}`;
     if (seen.has(key)) continue;
@@ -1502,7 +1466,7 @@ function uniqueArchiveRefs(
   return out;
 }
 
-function isArchiveRef(value: unknown): value is ActiveFullCompactArchiveRef {
+function isArchiveRef(value: unknown): value is ActiveCompactionArchiveRef {
   return (
     isRecord(value) &&
     (value.kind === 'toolResult' || value.kind === 'compactSource') &&

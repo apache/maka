@@ -25,7 +25,4 @@ export function registerOnboardingIpc(deps: OnboardingIpcDeps): void {
     // it as a typed reject rather than silently swallowing.
     return deps.onboardingService.setMilestone(id, status);
   });
-  target.handle('onboarding:clearMilestone', async (_event, id: unknown) => {
-    return deps.onboardingService.clearMilestone(id);
-  });
 }

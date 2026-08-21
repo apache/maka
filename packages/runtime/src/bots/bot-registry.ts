@@ -11,7 +11,7 @@ import { FeishuBotBridge } from './feishu-bridge.js';
 import { DiscordBotBridge } from './discord-bridge.js';
 import { QQBotBridge } from './qq-bridge.js';
 import { SlackBotBridge } from './slack-bridge.js';
-import { SimpleBotBridge } from './simple-bridge.js';
+import { TelegramBotBridge } from './telegram-bridge.js';
 import type {
   BotBridge,
   BotIncomingMessage,
@@ -164,7 +164,7 @@ export class BotRegistry extends EventEmitter {
                   ? new QQBotBridge(platform, settings)
                   : platform === 'slack'
                     ? new SlackBotBridge(settings)
-                    : new SimpleBotBridge(platform, settings);
+                    : new TelegramBotBridge(platform, settings);
     this.wire(bridge);
     this.bridges.set(platform, bridge);
     await bridge

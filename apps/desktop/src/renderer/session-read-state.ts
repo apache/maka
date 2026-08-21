@@ -6,11 +6,13 @@ export interface SessionListRefresher<T extends SessionSummary = SessionSummary>
   refresh(): Promise<T[]>;
 }
 
-export interface SessionListRefresherOptions<T extends SessionSummary = SessionSummary> {
+export interface SessionListRefresherOptions<T extends SessionSummary, TRequestContext> {
+  /** Capture renderer-owned state before the authority read it must be compared with. */
+  captureRequestContext: () => TRequestContext;
   listSessions: () => Promise<T[]>;
   readBoundaries: () => Readonly<SessionReadBoundaries>;
   currentSessions: () => T[];
-  commitSessions: (sessions: T[]) => void;
+  commitSessions: (sessions: T[], requestContext: TRequestContext) => void;
   onError: (error: unknown) => void;
 }
 
@@ -49,8 +51,8 @@ export function applyLocalSessionRead<T extends SessionSummary>(
   return applySessionReadOverrides(sessions, boundaries);
 }
 
-export function createSessionListRefresher<T extends SessionSummary>(
-  options: SessionListRefresherOptions<T>,
+export function createSessionListRefresher<T extends SessionSummary, TRequestContext>(
+  options: SessionListRefresherOptions<T, TRequestContext>,
 ): SessionListRefresher<T> {
   let requestedGeneration = 0;
   let completedGeneration = 0;
@@ -62,11 +64,12 @@ export function createSessionListRefresher<T extends SessionSummary>(
       // Session events can arrive in bursts (especially while spawning a swarm). Keep one
       // list IPC in flight and collapse everything that arrived during it into one trailing read.
       const generation = requestedGeneration;
+      const requestContext = options.captureRequestContext();
       try {
         const listed = await options.listSessions();
         if (generation === requestedGeneration) {
           result = applySessionReadOverrides(listed, options.readBoundaries());
-          options.commitSessions(result);
+          options.commitSessions(result, requestContext);
         } else {
           result = options.currentSessions();
         }

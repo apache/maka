@@ -1,7 +1,8 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { createDefaultBotChannel } from '@maka/core/settings';
 
-import { __TEST__ } from '../discord-bridge.js';
+import { DiscordBotBridge, __TEST__ } from '../discord-bridge.js';
 
 const {
   decideDiscordClose,
@@ -12,6 +13,45 @@ const {
   discordMessageToEvent,
   splitDiscordContent,
 } = __TEST__;
+
+class ResetTrackingDiscordBridge extends DiscordBotBridge {
+  receive(payload: string): void {
+    this.handleWsMessage(payload);
+  }
+
+  resetSessionForTest(): void {
+    this.resetSession();
+  }
+
+  currentResumeGatewayUrl(): string | null {
+    return this.resumeGatewayUrl;
+  }
+}
+
+describe('resume gateway url lifecycle', () => {
+  it('clears resumeGatewayUrl when the session is dropped', () => {
+    const bridge = new ResetTrackingDiscordBridge('discord', {
+      ...createDefaultBotChannel('discord'),
+      enabled: true,
+      token: 'token',
+    });
+    bridge.receive(
+      JSON.stringify({
+        op: 0,
+        t: 'READY',
+        s: 3,
+        d: {
+          session_id: 'sess-1',
+          resume_gateway_url: 'wss://resume.example',
+          user: { id: '42', username: 'maka' },
+        },
+      }),
+    );
+    assert.equal(bridge.currentResumeGatewayUrl(), 'wss://resume.example');
+    bridge.resetSessionForTest();
+    assert.equal(bridge.currentResumeGatewayUrl(), null);
+  });
+});
 
 describe('Discord gateway helpers', () => {
   it('classifies stopped, fatal, resumable, and non-resumable closes', () => {

@@ -44,12 +44,6 @@ export function registerRuntimeHostArtifactsIpc(
   );
   handleReconnectableRead(
     deps.ipcMain,
-    "artifacts:get",
-    (_event, sessionId: string, artifactId: string) =>
-      deps.client.getArtifact(sessionId, artifactId),
-  );
-  handleReconnectableRead(
-    deps.ipcMain,
     "artifacts:readText",
     (_event, sessionId: string, artifactId: string) =>
       deps.client.readArtifactText(sessionId, artifactId),

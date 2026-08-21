@@ -2,19 +2,24 @@
  * PR-BOT-DISCORD-OPERATIONAL-0 (external bot research: Discord Gateway):
  * full Discord bot lifecycle — gateway WebSocket, identify, heartbeat,
  * MESSAGE_CREATE dispatch, REST send, reply threading, typing
- * indicator, reconnect with backoff. Mirrors the SimpleBotBridge
- * surface so the registry can swap it in without other code changes.
+ * indicator, reconnect with backoff. Exposes the same bridge surface
+ * as the other platforms so the registry can swap it in without other
+ * code changes.
  *
  * Out of scope: voice, slash commands, sharding (Maka bots target
  * small servers; one shard is plenty under the Discord
  * recommended-shard threshold).
+ *
+ * Gateway plumbing (opcodes, heartbeat, identify/resume, reconnect)
+ * lives in GatewayBridgeBase; this class supplies only Discord's auth
+ * scheme, identify/resume payloads, dispatch event names, and REST
+ * send routes.
  */
 
-import { WebSocket } from 'undici';
-import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
+import { GatewayBridgeBase } from './gateway-bridge-base.js';
 import { proxiedFetch } from './proxied-fetch.js';
-import type { BotPlatform, BotSendOptions, BotStatus, SendCapable } from './types.js';
+import type { BotSendOptions, SendCapable } from './types.js';
+import type { WsCloseDecision } from './ws-bridge-base.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const DISCORD_GATEWAY_VERSION = 10;
@@ -31,20 +36,8 @@ const DISCORD_INTENT_MESSAGE_CONTENT = 1 << 15;
 const DISCORD_INTENTS =
   DISCORD_INTENT_GUILD_MESSAGES | DISCORD_INTENT_DIRECT_MESSAGES | DISCORD_INTENT_MESSAGE_CONTENT;
 
-const RECONNECT_DELAY_MIN_MS = 1_000;
-const RECONNECT_DELAY_MAX_MS = 30_000;
 const SEND_RETRY_DELAY_MIN_MS = 1_000;
 const SEND_RETRY_DELAY_MAX_MS = 30_000;
-
-// Discord gateway opcodes.
-const OP_DISPATCH = 0;
-const OP_HEARTBEAT = 1;
-const OP_IDENTIFY = 2;
-const OP_RESUME = 6;
-const OP_RECONNECT = 7;
-const OP_INVALID_SESSION = 9;
-const OP_HELLO = 10;
-const OP_HEARTBEAT_ACK = 11;
 
 // Close codes we never auto-recover from.
 const FATAL_CLOSE_CODES = new Set<number>([
@@ -87,15 +80,6 @@ export function decideDiscordClose(code: number, explicitlyStopped: boolean): Di
   // anything not in the fatal set as resumable to maximize uptime.
   const resumable = code !== 1000 && code !== 1001;
   return { kind: 'reconnect', resumable };
-}
-
-/**
- * Pure helper: compute the next backoff delay given the attempt count.
- * Exponential up to RECONNECT_DELAY_MAX_MS.
- */
-function reconnectBackoffMs(attempts: number): number {
-  const exp = Math.min(2 ** attempts, RECONNECT_DELAY_MAX_MS / RECONNECT_DELAY_MIN_MS);
-  return Math.min(RECONNECT_DELAY_MIN_MS * exp, RECONNECT_DELAY_MAX_MS);
 }
 
 /**
@@ -212,54 +196,93 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export class DiscordBotBridge extends BaseBotAdapter implements SendCapable {
-  private ws: WebSocket | null = null;
-  private heartbeatTimer: NodeJS.Timeout | null = null;
-  private heartbeatInterval = 41_250;
-  private heartbeatAcked = true;
-  private seq: number | null = null;
-  private sessionId: string | null = null;
-  private resumeGatewayUrl: string | null = null;
-  private explicitlyStopped = false;
-  private reconnectAttempts = 0;
-  private reconnectTimer: NodeJS.Timeout | null = null;
+export class DiscordBotBridge extends GatewayBridgeBase implements SendCapable {
+  protected resumeGatewayUrl: string | null = null;
 
-  constructor(platform: BotPlatform, settings: BotChannelSettings) {
-    super(platform, settings);
+  protected override checkCredentials(): string | null {
+    return this.settings.token.trim() ? null : 'no-token';
   }
 
-  async start(): Promise<void> {
-    if (this.running) return;
-    if (!this.settings.enabled) {
-      this.reason = 'disabled';
-      this.readiness = 'scaffolded';
-      return;
-    }
-    if (!this.settings.token.trim()) {
-      this.reason = 'no-token';
-      this.readiness = 'scaffolded';
-      return;
-    }
-    this.explicitlyStopped = false;
-    await this.startGateway();
+  protected override decideClose(code: number, explicitlyStopped: boolean): WsCloseDecision {
+    return decideDiscordClose(code, explicitlyStopped);
   }
 
-  async stop(): Promise<void> {
-    this.explicitlyStopped = true;
-    this.running = false;
-    this.clearHeartbeat();
-    this.clearReconnect();
-    if (this.ws) {
-      try {
-        this.ws.close(1000);
-      } catch {
-        /* swallow */
+  /**
+   * Discord's resume_gateway_url is only valid while the session it
+   * belongs to is alive — never route a fresh identify to it.
+   */
+  protected override resetSession(): void {
+    super.resetSession();
+    this.resumeGatewayUrl = null;
+  }
+
+  protected override async fetchGatewayUrl(): Promise<string | null> {
+    try {
+      const response = await proxiedFetch(`${DISCORD_API}/gateway/bot`, {
+        method: 'GET',
+        headers: { Authorization: `Bot ${this.settings.token}` },
+        timeoutMs: 10_000,
+      });
+      const json = await response.json().catch(() => null);
+      if (!response.ok || !json || typeof json.url !== 'string') {
+        const message = (json as { message?: unknown } | null)?.message;
+        this.reason = typeof message === 'string' ? message : `gateway-bot-${response.status}`;
+        this.readiness = 'configured';
+        this.emitStatusChange();
+        // Usually a transient outage — openConnection schedules the retry.
+        return null;
       }
-      this.ws = null;
+      const gatewayUrl = this.resumeGatewayUrl ?? json.url;
+      return `${gatewayUrl}/?v=${DISCORD_GATEWAY_VERSION}&encoding=json`;
+    } catch (error) {
+      this.reason = error instanceof Error ? error.message : String(error);
+      this.readiness = 'configured';
+      this.emitStatusChange();
+      return null;
     }
-    this.reason = 'stopped';
-    this.readiness = botReadinessFromSettings(this.settings);
-    this.emitStatusChange();
+  }
+
+  protected override buildIdentifyPayload(): Record<string, unknown> {
+    return {
+      token: this.settings.token,
+      intents: DISCORD_INTENTS,
+      properties: { os: 'linux', browser: 'maka', device: 'maka' },
+    };
+  }
+
+  protected override buildResumePayload(): Record<string, unknown> {
+    return {
+      token: this.settings.token,
+      session_id: this.sessionId,
+      seq: this.seq,
+    };
+  }
+
+  protected override onDispatch(type: string, d: unknown): void {
+    if (type === 'READY') {
+      const ready = d as DiscordReadyPayload;
+      this.sessionId = ready.session_id;
+      this.resumeGatewayUrl = ready.resume_gateway_url;
+      this.identity = {
+        id: String(ready.user.id),
+        username: ready.user.username,
+        displayName: ready.user.global_name ?? ready.user.username,
+      };
+      this.promoteToOperational();
+      return;
+    }
+    if (type === 'RESUMED') {
+      this.promoteToOperational();
+      return;
+    }
+    if (type === 'MESSAGE_CREATE') {
+      const event = discordMessageToEvent(d as DiscordMessagePayload, Date.now());
+      if (!event) return;
+      this.lastEventAt = event.receivedAt;
+      this.emitIncomingMessage(event);
+      this.emitStatusChange();
+      return;
+    }
   }
 
   /**
@@ -317,10 +340,6 @@ export class DiscordBotBridge extends BaseBotAdapter implements SendCapable {
     }
   }
 
-  protected override connectionKind(): BotStatus['connection'] {
-    return 'gateway';
-  }
-
   private async performSend(
     chatId: string,
     body: Record<string, unknown>,
@@ -340,258 +359,6 @@ export class DiscordBotBridge extends BaseBotAdapter implements SendCapable {
     } catch (error) {
       return { kind: 'fatal', description: error instanceof Error ? error.message : String(error) };
     }
-  }
-
-  private async startGateway(): Promise<void> {
-    try {
-      const response = await proxiedFetch(`${DISCORD_API}/gateway/bot`, {
-        method: 'GET',
-        headers: { Authorization: `Bot ${this.settings.token}` },
-        timeoutMs: 10_000,
-      });
-      const json = await response.json().catch(() => null);
-      if (!response.ok || !json || typeof json.url !== 'string') {
-        const message = (json as { message?: unknown } | null)?.message;
-        this.reason = typeof message === 'string' ? message : `gateway-bot-${response.status}`;
-        this.readiness = 'configured';
-        this.emitStatusChange();
-        // Schedule a retry — this is usually a transient outage.
-        this.scheduleReconnect();
-        return;
-      }
-      const gatewayUrl = this.resumeGatewayUrl ?? json.url;
-      this.connect(`${gatewayUrl}/?v=${DISCORD_GATEWAY_VERSION}&encoding=json`);
-    } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
-      this.readiness = 'configured';
-      this.emitStatusChange();
-      this.scheduleReconnect();
-    }
-  }
-
-  private connect(url: string): void {
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(url);
-    } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
-      this.readiness = 'configured';
-      this.emitStatusChange();
-      this.scheduleReconnect();
-      return;
-    }
-    this.ws = ws;
-    ws.addEventListener('open', () => {
-      this.running = true;
-      this.startedAt = Date.now();
-      // Gateway is up; readiness will be promoted to operational
-      // once READY arrives.
-    });
-    ws.addEventListener('message', (event: { data: unknown }) => {
-      const data = event.data;
-      this.handlePayload(typeof data === 'string' ? data : String(data));
-    });
-    ws.addEventListener('close', (event: { code: number; reason: string }) => {
-      this.handleClose(event.code, event.reason);
-    });
-    ws.addEventListener('error', () => {
-      // The `close` event fires immediately after; no separate handling.
-    });
-  }
-
-  private handlePayload(data: string): void {
-    let payload: { op?: number; s?: number | null; t?: string; d?: unknown };
-    try {
-      payload = JSON.parse(data);
-    } catch {
-      return;
-    }
-    if (typeof payload.s === 'number') this.seq = payload.s;
-    switch (payload.op) {
-      case OP_HELLO:
-        this.onHello(payload.d as { heartbeat_interval: number });
-        break;
-      case OP_HEARTBEAT_ACK:
-        this.heartbeatAcked = true;
-        break;
-      case OP_DISPATCH:
-        this.onDispatch(payload.t ?? '', payload.d);
-        break;
-      case OP_HEARTBEAT:
-        this.sendHeartbeat();
-        break;
-      case OP_RECONNECT:
-        this.forceReconnect(true);
-        break;
-      case OP_INVALID_SESSION:
-        this.forceReconnect(payload.d === true);
-        break;
-    }
-  }
-
-  private onHello(d: { heartbeat_interval: number }): void {
-    this.heartbeatInterval = d.heartbeat_interval;
-    this.heartbeatAcked = true;
-    // Jitter the initial heartbeat per Discord recommendation so a
-    // fleet of bots does not synchronize their pings.
-    this.scheduleHeartbeat(Math.random() * d.heartbeat_interval);
-    if (this.sessionId && this.seq !== null) {
-      this.sendResume();
-    } else {
-      this.sendIdentify();
-    }
-  }
-
-  private sendIdentify(): void {
-    this.send({
-      op: OP_IDENTIFY,
-      d: {
-        token: this.settings.token,
-        intents: DISCORD_INTENTS,
-        properties: { os: 'linux', browser: 'maka', device: 'maka' },
-      },
-    });
-  }
-
-  private sendResume(): void {
-    this.send({
-      op: OP_RESUME,
-      d: {
-        token: this.settings.token,
-        session_id: this.sessionId,
-        seq: this.seq,
-      },
-    });
-  }
-
-  private sendHeartbeat(): void {
-    if (!this.ws) return;
-    if (!this.heartbeatAcked) {
-      // Missed ack — Discord docs say reconnect immediately.
-      this.forceReconnect(true);
-      return;
-    }
-    this.heartbeatAcked = false;
-    this.send({ op: OP_HEARTBEAT, d: this.seq });
-  }
-
-  private scheduleHeartbeat(initialDelay: number): void {
-    this.clearHeartbeat();
-    const initial = setTimeout(() => {
-      this.sendHeartbeat();
-      this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), this.heartbeatInterval);
-      this.heartbeatTimer.unref?.();
-    }, initialDelay);
-    initial.unref?.();
-  }
-
-  private onDispatch(type: string, d: unknown): void {
-    if (type === 'READY') {
-      const ready = d as DiscordReadyPayload;
-      this.sessionId = ready.session_id;
-      this.resumeGatewayUrl = ready.resume_gateway_url;
-      this.identity = {
-        id: String(ready.user.id),
-        username: ready.user.username,
-        displayName: ready.user.global_name ?? ready.user.username,
-      };
-      this.readiness = 'operational';
-      this.reason = undefined;
-      this.reconnectAttempts = 0;
-      this.emitStatusChange();
-      return;
-    }
-    if (type === 'RESUMED') {
-      this.readiness = 'operational';
-      this.reason = undefined;
-      this.reconnectAttempts = 0;
-      this.emitStatusChange();
-      return;
-    }
-    if (type === 'MESSAGE_CREATE') {
-      const event = discordMessageToEvent(d as DiscordMessagePayload, Date.now());
-      if (!event) return;
-      this.lastEventAt = event.receivedAt;
-      this.emitIncomingMessage(event);
-      this.emitStatusChange();
-      return;
-    }
-  }
-
-  private send(payload: object): void {
-    if (!this.ws || this.ws.readyState !== 1) return;
-    try {
-      this.ws.send(JSON.stringify(payload));
-    } catch {
-      // Swallow — the close handler will fire if the socket died.
-    }
-  }
-
-  private clearHeartbeat(): void {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
-  }
-
-  private clearReconnect(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-  }
-
-  private handleClose(code: number, reason: string): void {
-    this.clearHeartbeat();
-    this.ws = null;
-    this.running = false;
-    const decision = decideDiscordClose(code, this.explicitlyStopped);
-    if (decision.kind === 'stopped') return;
-    if (decision.kind === 'fatal') {
-      this.readiness = 'configured';
-      this.reason = `gateway-closed-${code}`;
-      this.sessionId = null;
-      this.seq = null;
-      this.emitStatusChange();
-      return;
-    }
-    if (!decision.resumable) {
-      this.sessionId = null;
-      this.seq = null;
-    }
-    this.readiness = 'degraded';
-    this.reason = reason || `gateway-closed-${code}`;
-    this.emitStatusChange();
-    this.scheduleReconnect();
-  }
-
-  private forceReconnect(resumable: boolean): void {
-    if (!resumable) {
-      this.sessionId = null;
-      this.seq = null;
-    }
-    if (this.ws) {
-      try {
-        this.ws.close();
-      } catch {
-        /* swallow */
-      }
-      this.ws = null;
-    }
-    this.clearHeartbeat();
-    this.scheduleReconnect();
-  }
-
-  private scheduleReconnect(): void {
-    if (this.explicitlyStopped) return;
-    this.clearReconnect();
-    const delay = reconnectBackoffMs(this.reconnectAttempts);
-    this.reconnectAttempts += 1;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      void this.startGateway();
-    }, delay);
-    this.reconnectTimer.unref?.();
   }
 }
 

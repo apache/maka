@@ -46,4 +46,36 @@ describe('MCP Tool output validation preparation', () => {
 
     assert.equal(prepared.ok, false);
   });
+
+  test('compiles each tool against its own schema when $ids collide', () => {
+    const preparer = new McpToolCallPreparer();
+    const first = preparer.prepare({
+      name: 'first',
+      inputSchema: { type: 'object' },
+      outputSchema: {
+        $id: 'shared-id',
+        type: 'object',
+        properties: { a: { type: 'number' } },
+        required: ['a'],
+      },
+    });
+    const second = preparer.prepare({
+      name: 'second',
+      inputSchema: { type: 'object' },
+      outputSchema: {
+        $id: 'shared-id',
+        type: 'object',
+        properties: { b: { type: 'number' } },
+        required: ['b'],
+      },
+    });
+
+    assert.equal(first.ok, true);
+    assert.equal(second.ok, true);
+    if (!first.ok || !second.ok) return;
+    assert.equal(first.value.validateOutput?.({ a: 1 }).valid, true);
+    assert.equal(first.value.validateOutput?.({ b: 1 }).valid, false);
+    assert.equal(second.value.validateOutput?.({ b: 1 }).valid, true);
+    assert.equal(second.value.validateOutput?.({ a: 1 }).valid, false);
+  });
 });

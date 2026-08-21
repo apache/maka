@@ -5,6 +5,7 @@ import type {
   CredentialLocator,
   CredentialStatus,
   MutateRuntimePolicyResult,
+  MutateRuntimePolicyInput,
   RuntimePolicySnapshot,
 } from '@maka/core/runtime-policy';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
@@ -66,6 +67,10 @@ type StoreMutationOutcome<T> =
       };
     };
 
+export type RuntimePolicyMutationValidator = (
+  input: MutateRuntimePolicyInput,
+) => Promise<void> | void;
+
 /** Runtime Host control-plane projection over the authentic interactive policy stores. */
 export class HostRuntimePolicyCoordinator {
   readonly modelTools: readonly MakaTool[];
@@ -90,6 +95,7 @@ export class HostRuntimePolicyCoordinator {
     stores: RuntimePolicyStoresWriter,
     private readonly activation: RuntimePolicyActivationGate,
     private readonly onCommittedMutation: () => Promise<void> = async () => {},
+    private readonly validateMutation: RuntimePolicyMutationValidator = async () => {},
   ) {
     this.#stores = authenticateRuntimePolicyStoresWriter(stores);
     this.modelTools = buildHostAgentSettingsTools({
@@ -105,9 +111,18 @@ export class HostRuntimePolicyCoordinator {
   async #mutatePolicy(
     input: RuntimePolicyMutateInput,
   ): Promise<OperationOutcome<'runtime.policy.mutate'>> {
-    return this.#storeMutation(async () =>
-      projectPolicyMutation(await this.#stores.runtimePolicy.mutate(input)),
-    );
+    return this.#storeMutation(async () => {
+      try {
+        await this.validateMutation(input);
+      } catch (error) {
+        throw new RuntimePolicyStoreError(
+          'invalid_policy_input',
+          'Runtime policy mutation failed Host validation',
+          { cause: error },
+        );
+      }
+      return projectPolicyMutation(await this.#stores.runtimePolicy.mutate(input));
+    });
   }
 
   async #queryCatalog(
@@ -155,9 +170,7 @@ export class HostRuntimePolicyCoordinator {
   ): Promise<OperationOutcome<'connection.catalog.update'>> {
     return this.#storeMutation(async () => {
       const result = await this.#stores.connectionCatalog.update(input);
-      if (result.kind === 'connection_stale' || result.kind === 'invalid_default_target') {
-        return result;
-      }
+      if (result.kind === 'connection_stale') return result;
       if (result.kind !== 'committed') {
         throw invariantFailure(`Connection update returned ${result.kind}`);
       }

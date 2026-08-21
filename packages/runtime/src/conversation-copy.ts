@@ -16,6 +16,7 @@ import {
   matchHistoryCompactCheckpointPrefix,
   validateHistoryCompactCheckpointShape,
 } from './history-compact-checkpoint.js';
+import { findCheckpointSummaryDefect } from './history-compact-summary-validation.js';
 import { isHistoryCompactContentEvent } from './history-compact.js';
 import {
   classifyTerminalRuntimeLedger,
@@ -621,6 +622,20 @@ function cloneAgentRunEvent(
     if (match.reason) {
       throw new Error(`Cannot copy unmatched history compact checkpoint ${event.id}`);
     }
+    // Copy is an admission seam for the sectioned summary contract: a marked
+    // checkpoint whose summary no longer satisfies the COMPLETE predicate —
+    // including the size floor, re-runnable here because the matched covered
+    // span is in hand — must not propagate into a fresh session. Unmarked
+    // legacy summaries stay copyable under the truncation-only load policy
+    // and keep their unmarked identity in the target.
+    if (
+      sourceCheckpoint.summaryFormat !== undefined &&
+      findCheckpointSummaryDefect(sourceCheckpoint.summary, {
+        coveredRuntimeEvents: match.coveredRuntimeEvents,
+      }) !== undefined
+    ) {
+      throw new Error(`Cannot copy invalid history compact checkpoint ${event.id}`);
+    }
     const coveredRuntimeEvents = match.coveredRuntimeEvents.map((sourceEvent) => {
       const cloned = clonedRuntimeEvents.get(sourceEvent.id);
       if (!cloned) {
@@ -643,6 +658,7 @@ function cloneAgentRunEvent(
       sessionId: references.targetSessionId,
       coveredRuntimeEvents,
       summary: sourceCheckpoint.summary,
+      summaryFormat: sourceCheckpoint.summaryFormat ?? 'legacy_freeform',
       highWaterName: sourceCheckpoint.highWaterName,
       highWaterSeq: sourceCheckpoint.highWaterSeq,
       now: sourceCheckpoint.createdAt,
@@ -826,7 +842,7 @@ function isCopiedAgentRunEvent(event: AgentRunEvent): event is EmittedAgentRunEv
   // into the target with source identities intact. The ledger's `type` is open, so such an event
   // may predate a retired writer or postdate this build entirely (#1942).
   if (!isEmittedAgentRunEventType(event.type)) return false;
-  // Active/semantic blocks hash the exact provider-visible source. Rewriting
+  // Semantic blocks hash the exact provider-visible source. Rewriting
   // target-owned RuntimeEvent and Artifact references invalidates that
   // evidence, so a copied Session starts without these derived diagnostics.
   return (
@@ -834,7 +850,6 @@ function isCopiedAgentRunEvent(event: AgentRunEvent): event is EmittedAgentRunEv
     event.type !== 'run_failed' &&
     event.type !== 'run_cancelled' &&
     event.type !== 'event_corrupt' &&
-    event.type !== 'active_full_compact_block_recorded' &&
     event.type !== 'semantic_compact_block_recorded'
   );
 }

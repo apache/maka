@@ -220,7 +220,7 @@ describe('SessionManager terminal ledger invariants', () => {
     const runStore = new TinyAgentRunStore();
     const backends = new BackendRegistry();
     let backend: StopDuringSendBackend | undefined;
-    backends.register('fake', (ctx) => {
+    backends.register('ai-sdk', (ctx) => {
       backend = new StopDuringSendBackend(ctx);
       return backend;
     });
@@ -264,7 +264,7 @@ describe('SessionManager terminal ledger invariants', () => {
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore();
     const backends = new BackendRegistry();
-    backends.register('fake', (ctx) => new NeverEndingBackend(ctx));
+    backends.register('ai-sdk', (ctx) => new NeverEndingBackend(ctx));
     const manager = new SessionManager({
       store,
       runStore,
@@ -305,7 +305,7 @@ describe('SessionManager terminal ledger invariants', () => {
       },
     });
     const backends = new BackendRegistry();
-    backends.register('fake', (ctx) => new NeverEndingBackend(ctx));
+    backends.register('ai-sdk', (ctx) => new NeverEndingBackend(ctx));
     const manager = new SessionManager({
       store,
       runStore,
@@ -338,7 +338,7 @@ describe('SessionManager terminal ledger invariants', () => {
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore();
     const backends = new BackendRegistry();
-    backends.register('fake', (ctx) => new NeverEndingBackend(ctx));
+    backends.register('ai-sdk', (ctx) => new NeverEndingBackend(ctx));
     const manager = new SessionManager({
       store,
       runStore,
@@ -378,7 +378,7 @@ describe('SessionManager terminal ledger invariants', () => {
     });
     const backends = new BackendRegistry();
     backends.register(
-      'fake',
+      'ai-sdk',
       (ctx) => new ScriptBackend(ctx, [{ type: 'complete', stopReason: 'step_limit' }]),
     );
     const manager = new SessionManager({
@@ -2137,7 +2137,7 @@ async function makeHarness(
   const store = options.store ?? new TinySessionStore();
   const runStore = new TinyAgentRunStore();
   const backends = new BackendRegistry();
-  backends.register('fake', (ctx) => new ScriptBackend(ctx, events));
+  backends.register('ai-sdk', (ctx) => new ScriptBackend(ctx, events));
   const manager = new SessionManager({
     store,
     runStore,
@@ -2152,7 +2152,7 @@ async function makeHarness(
 }
 
 class ScriptBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly sessionId: string;
 
   constructor(
@@ -2181,7 +2181,7 @@ class ScriptBackend implements AgentBackend {
 }
 
 class StopDuringSendBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly sessionId: string;
   private readonly stopStarted = deferred<void>();
   private readonly stopReturned = deferred<void>();
@@ -2228,7 +2228,7 @@ class StopDuringSendBackend implements AgentBackend {
  * can finalize the run.
  */
 class NeverEndingBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly sessionId: string;
 
   constructor(ctx: BackendFactoryContext) {
@@ -2282,7 +2282,7 @@ class TinySessionStore implements SessionStore {
       ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
       ...(input.branchOfTurnId ? { branchOfTurnId: input.branchOfTurnId } : {}),
       hasUnread: false,
-      backend: input.backend,
+      backend: 'ai-sdk',
       llmConnectionSlug: input.llmConnectionSlug,
       connectionLocked: false,
       model: input.model ?? 'fake-model',
@@ -2359,14 +2359,6 @@ class TinySessionStore implements SessionStore {
     const next = { ...current, ...patch };
     this.headers.set(sessionId, next);
     return clone(next);
-  }
-
-  async archive(sessionId: string): Promise<void> {
-    await this.updateHeader(sessionId, { isArchived: true, status: 'archived' });
-  }
-
-  async unarchive(sessionId: string): Promise<void> {
-    await this.updateHeader(sessionId, { isArchived: false, status: 'active' });
   }
 
   async setFlagged(sessionId: string, isFlagged: boolean): Promise<void> {
@@ -2573,7 +2565,6 @@ class BatchingRuntimeEventStore implements RuntimeEventStore {
 function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {
   return {
     cwd: '/tmp/cwd',
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',

@@ -22,6 +22,24 @@ export interface AdvanceAgentGraphEpochRequest {
   readonly nextGraphId: string;
 }
 
+export interface AgentGraphEpochPageRequest {
+  readonly rootSessionId: string;
+  readonly beforeEpoch?: number;
+  readonly limit: number;
+}
+
+export interface AgentGraphEpochPage {
+  readonly epochs: readonly AgentGraphEpochBinding[];
+  readonly nextBeforeEpoch: number | null;
+  /**
+   * Current epoch observed by the same read as the page rows, or null when the
+   * store holds no durable rows for the root Session. Keeping this on the page
+   * prevents a rollover between two reads from splitting the current marker
+   * from the directory it annotates.
+   */
+  readonly currentEpoch: number | null;
+}
+
 /**
  * Root-to-graph identity authority.
  *
@@ -34,6 +52,8 @@ export interface AgentGraphEpochStore {
     request: ResolveAgentGraphEpochRequest,
   ): Promise<AgentGraphEpochBinding>;
   advanceAgentGraphEpoch(request: AdvanceAgentGraphEpochRequest): Promise<AgentGraphEpochBinding>;
+  readAgentGraphEpochByGraphId(graphId: string): Promise<AgentGraphEpochBinding | undefined>;
+  listAgentGraphEpochPage(request: AgentGraphEpochPageRequest): Promise<AgentGraphEpochPage>;
   listAgentGraphEpochs(rootSessionId: string): Promise<AgentGraphEpochBinding[]>;
 }
 

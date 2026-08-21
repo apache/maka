@@ -161,7 +161,7 @@ function shellRunSnapshotContent(record: ShellRunRecord): ShellRunSnapshotResult
 function sandboxDenialForRecord(record: ShellRunRecord):
   | {
       likely: true;
-      backend?: 'macos-seatbelt' | 'linux';
+      backend?: 'macos-seatbelt' | 'linux' | 'windows';
     }
   | undefined {
   if (record.status !== 'failed' || record.sandboxExecution?.enforced !== true) return undefined;
@@ -170,7 +170,9 @@ function sandboxDenialForRecord(record: ShellRunRecord):
   const backend = record.sandboxExecution.type;
   return {
     likely: true,
-    ...(backend === 'macos-seatbelt' || backend === 'linux' ? { backend } : {}),
+    ...(backend === 'macos-seatbelt' || backend === 'linux' || backend === 'windows'
+      ? { backend }
+      : {}),
   };
 }
 

@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import { exec } from 'node:child_process';
+import { exec, execFile } from 'node:child_process';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import {
@@ -17,6 +17,7 @@ import { isSupportedImagePath, readWorkspaceImage } from './image-file.js';
 import type { ImageMimeType } from './image-file.js';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export type WorkspaceIsolationKind = ToolExecutionFacts['isolation'];
 export type WorkspaceWriteBackMode = ToolExecutionFacts['writeBack'];
@@ -330,10 +331,9 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
   async grepFiles(input: WorkspaceGrepInput): Promise<WorkspaceGrepResult> {
     const args = ['-n', '--no-heading', `--max-count=${input.maxCountPerFile}`];
     if (input.glob) args.push('--glob', input.glob);
-    args.push(input.pattern, input.path);
-    const command = `rg ${args.map(shellEscape).join(' ')}`;
+    args.push('--', input.pattern, input.path);
     try {
-      const { stdout } = await execAsync(command, {
+      const { stdout } = await execFileAsync('rg', args, {
         cwd: input.cwd,
         maxBuffer: 5 * 1024 * 1024,
         timeout: input.timeoutMs,
@@ -349,10 +349,6 @@ export class LocalWorkspaceExecutor implements WorkspaceExecutor {
 
 export function createLocalWorkspaceExecutor(): WorkspaceExecutor {
   return new LocalWorkspaceExecutor();
-}
-
-function shellEscape(arg: string): string {
-  return `'${arg.replaceAll("'", "'\\''")}'`;
 }
 
 /**

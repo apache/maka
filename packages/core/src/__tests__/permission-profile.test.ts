@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import { expect } from './test-helpers.js';
+import { pathWithinRoot } from '../absolute-path.js';
 import {
   canReadPath,
   canWritePath,
@@ -66,6 +67,28 @@ describe('PermissionProfile factories', () => {
       isProtectedMetadataPath('/workspace/project/.gitignore', WORKSPACE_CONTEXT.workspaceRoots),
     ).toBe(false);
     expect(canWritePath(profile, '/workspace/project/.gitignore', WORKSPACE_CONTEXT)).toBe(true);
+  });
+
+  test('matches Windows drive roots and protected metadata by backslash-separated segment', () => {
+    expect(pathWithinRoot('C:\\Windows', 'C:\\')).toBe(true);
+    expect(pathWithinRoot('C:\\workspace2', 'C:\\workspace')).toBe(false);
+    expect(isProtectedMetadataPath('C:\\workspace\\.git\\config', ['C:\\workspace'])).toBe(true);
+    expect(
+      isProtectedMetadataPath('C:\\workspace\\packages\\demo\\.agents\\state.json', [
+        'C:\\workspace',
+      ]),
+    ).toBe(true);
+    expect(isProtectedMetadataPath('C:\\workspace\\.gitignore', ['C:\\workspace'])).toBe(false);
+    // Windows containment is case-insensitive, so metadata names must be too:
+    // `.GIT\config` reaches the real `.git\config` on a Windows filesystem.
+    expect(isProtectedMetadataPath('C:\\workspace\\.GIT\\config', ['C:\\workspace'])).toBe(true);
+    expect(isProtectedMetadataPath('C:\\WORKSPACE\\.Git\\HEAD', ['C:\\workspace'])).toBe(true);
+    // POSIX filesystems are case-sensitive; `.GIT` is a distinct directory.
+    expect(isProtectedMetadataPath('/workspace/.GIT/config', ['/workspace'])).toBe(false);
+    expect(pathWithinRoot('C:\\workspace\\..\\secret', 'C:\\workspace')).toBe(false);
+    expect(pathWithinRoot('/workspace/../secret', '/workspace')).toBe(false);
+    expect(pathWithinRoot('C:\\workspace\\file:stream', 'C:\\workspace')).toBe(false);
+    expect(pathWithinRoot('\\\\server\\share\\file', '\\\\server\\share')).toBe(false);
   });
 
   test('danger-full-access profile is managed unrestricted access with network enabled', () => {

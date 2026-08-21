@@ -1894,8 +1894,6 @@ class ReadOnlyStore implements SessionStore {
     return { ...makeHeader(id), ...patch };
   }
 
-  async archive(_sessionId: string): Promise<void> {}
-  async unarchive(_sessionId: string): Promise<void> {}
   async setFlagged(_sessionId: string, _isFlagged: boolean): Promise<void> {}
   async rename(_sessionId: string, _name: string): Promise<void> {}
   async remove(_sessionId: string): Promise<void> {}

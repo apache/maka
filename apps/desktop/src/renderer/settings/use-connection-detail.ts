@@ -31,6 +31,8 @@ import {
   type ConnectionsBridge,
   type CredentialPresenceStatus,
 } from './provider-panel-shared';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
@@ -42,16 +44,19 @@ export interface OAuthLoginService {
   display: { name: string; shortName: string };
 }
 
-export function oauthLoginServiceFor(providerType: ProviderType): OAuthLoginService | null {
+export function oauthLoginServiceFor(
+  providerType: ProviderType,
+  host: import('../../preload/bridge-contract.js').DesktopRuntimeHostRef,
+): OAuthLoginService | null {
   switch (providerType) {
     case 'openai-codex':
       return {
-        bridge: window.maka.openAiCodex as unknown as OAuthLoginFlowBridge,
+        bridge: runtimeHostOAuthLoginBridge(window.maka.openAiCodex, host),
         display: { name: 'OpenAI Codex', shortName: 'Codex' },
       };
     case 'xai-oauth':
       return {
-        bridge: window.maka.xaiOAuth as unknown as OAuthLoginFlowBridge,
+        bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host),
         display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
       };
     default:
@@ -76,6 +81,7 @@ export interface ConnectionDetailProps {
 // the guard, lifecycle gate, and cross-calls (save auto-fetches models) stay in
 // one place with zero behavior change.
 export function useConnectionDetail(props: ConnectionDetailProps) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
@@ -108,7 +114,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const toast = useToast();
   const supportsApiKey = providerAuthSupportsApiKey(connection.providerType);
   const needsOAuth = defaults.authKind === 'oauth_token';
-  const oauthLoginService = needsOAuth ? oauthLoginServiceFor(connection.providerType) : null;
+  const oauthLoginService = needsOAuth
+    ? oauthLoginServiceFor(connection.providerType, host)
+    : null;
   const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);
@@ -328,7 +336,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
-  // Per-model profile declarations for openai-compatible relays, edited as a
+  // Per-model profile declarations for custom OpenAI relays, edited as a
   // LOCAL DRAFT and committed by an explicit 保存 button — never keystroke by
   // keystroke. A draft is `Record<modelId, RelayModelProfile>` seeded from the
   // saved table; entries a user empties fully drop out of the map, and the
@@ -396,6 +404,17 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
         return Object.keys(rest).length > 0 ? rest : undefined;
       }
       return { ...(current ?? {}), contextWindow };
+    });
+  }
+
+  function setDraftServiceTier(modelId: string, serviceTier: 'fast' | undefined): void {
+    updateRelayProfileDraft(modelId, (current) => {
+      if (serviceTier === undefined) {
+        if (!current) return current;
+        const { serviceTier: _dropped, ...rest } = current;
+        return Object.keys(rest).length > 0 ? rest : undefined;
+      }
+      return { ...(current ?? {}), serviceTier };
     });
   }
 
@@ -633,6 +652,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setDraftThinkingLevels,
     setDraftVision,
     setDraftContextWindow,
+    setDraftServiceTier,
     saveRelayProfiles,
     runTest,
     refreshModels,

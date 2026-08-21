@@ -5,7 +5,11 @@ import {
   createRuntimeHostSessionProjectionSeed,
   RuntimeHostSessionProjector,
 } from '../adapter/session-projector.js';
-import type { SessionContinuitySnapshot, SubscriptionFrame } from '../protocol/index.js';
+import {
+  SESSION_CONTINUITY_SCHEMA_VERSION,
+  type SessionContinuitySnapshot,
+  type SubscriptionFrame,
+} from '../protocol/index.js';
 
 test('applies authoritative replacement once and does not complete it again at Turn terminal', () => {
   const projector = new RuntimeHostSessionProjector(
@@ -265,7 +269,7 @@ function deltaFrame(
 
 function snapshot(overrides: Partial<SessionContinuitySnapshot> = {}): SessionContinuitySnapshot {
   return {
-    schemaVersion: 3,
+    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session: {
       sessionId: 'session-1',
       metadataRevision: 1,

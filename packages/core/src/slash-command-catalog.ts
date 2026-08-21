@@ -12,6 +12,7 @@ export const SLASH_COMMAND_CATALOG = [
   { id: 'compact', session: 'required', surfaces: ['desktop', 'tui'] },
   { id: 'context', session: 'required', surfaces: ['tui'] },
   { id: 'exit', aliases: ['quit'], session: 'none', surfaces: ['tui'] },
+  { id: 'goal', session: 'required', surfaces: ['tui'] },
   { id: 'graph', session: 'none', surfaces: ['desktop', 'tui'] },
   { id: 'help', session: 'none', surfaces: ['tui'] },
   { id: 'model', session: 'required', surfaces: ['tui'] },

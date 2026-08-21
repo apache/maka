@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 186 files — blocker 0, polish 0, aligned 186.
+**Totals:** 190 files — blocker 0, polish 0, aligned 190.
 
 ## Exclusions (explicit)
 
@@ -43,6 +43,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/command-palette.tsx` | dialog-overlay | EmptyState | aligned — uses Astryx (EmptyState) | aligned |
 | `apps/desktop/src/renderer/custom-pet-companion.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/error-boundary.tsx` | other | Button, Card | aligned — uses Astryx (Button, Card) | aligned |
+| `apps/desktop/src/renderer/goal-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text, TextInput, VStack | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text, TextInput) | aligned |
 | `apps/desktop/src/renderer/keyboard-help.tsx` | dialog-overlay | Dialog, DialogHeader, Heading, Layout, LayoutContent | aligned — uses Astryx (Dialog, DialogHeader, Heading, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/live-turn-reconciler.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/maka-tokens.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
@@ -52,10 +53,11 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/plan-mode-panel.tsx` | shell-chrome-or-panel | Badge, Banner, Button, Collapsible | aligned — uses Astryx (Badge, Banner, Button, Collapsible) | aligned |
 | `apps/desktop/src/renderer/quote-companion-panel.tsx` | shell-chrome-or-panel | Banner, Spinner | aligned — uses Astryx (Banner, Spinner) | aligned |
 | `apps/desktop/src/renderer/reference-shell.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
+| `apps/desktop/src/renderer/remote-project-directory-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text) | aligned |
 | `apps/desktop/src/renderer/session-inspector-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, HStack, Heading, Section, Text, TextInput, ToggleButton, Tooltip, VStack | aligned — uses Astryx (Banner, Button, EmptyState, HStack, Heading, Section, Text, TextInput) | aligned |
 | `apps/desktop/src/renderer/session-review-panel.tsx` | shell-chrome-or-panel | Banner, Button, Collapsible, EmptyState, HStack, Section, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, EmptyState, HStack, Section, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/session-terminal-panel.tsx` | shell-chrome-or-panel | Banner, EmptyState | aligned — uses Astryx (Banner, EmptyState) | aligned |
-| `apps/desktop/src/renderer/session-workbar.tsx` | shell-chrome-or-panel | Badge, Button, Card, ContextMenu, Heading, IconButton, List, ListItem, Section, Spinner, Toolbar, Tooltip | aligned — uses Astryx (Badge, Button, Card, ContextMenu, Heading, IconButton, List, ListItem) | aligned |
+| `apps/desktop/src/renderer/session-workbar.tsx` | shell-chrome-or-panel | Badge, Button, Card, ContextMenu, Heading, IconButton, List, ListItem, Section, Spinner, Tooltip | aligned — uses Astryx (Badge, Button, Card, ContextMenu, Heading, IconButton, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/about-settings-page.tsx` | settings-page | Badge, Banner, Button, List, ListItem | aligned — uses Astryx (Badge, Banner, Button, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/appearance-settings-page.tsx` | settings-page | HStack, Text, VStack | aligned — uses Astryx (HStack, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/bot-chat-detail.tsx` | settings-module | Banner, Button, Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Text, VStack | aligned — uses Astryx (Banner, Button, Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Text) | aligned |
@@ -77,7 +79,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/password-input.tsx` | settings-module | IconButton | aligned — uses Astryx (IconButton) | aligned |
 | `apps/desktop/src/renderer/settings/permission-center-page.tsx` | settings-page | Banner, Button, Collapsible, HStack, List, ListItem, MetadataList, MetadataListItem, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, HStack, List, ListItem, MetadataList, MetadataListItem) | aligned |
 | `apps/desktop/src/renderer/settings/personalization-settings-section.tsx` | settings-module | SegmentedControl, SegmentedControlItem | aligned — uses Astryx (SegmentedControl, SegmentedControlItem) | aligned |
-| `apps/desktop/src/renderer/settings/projects-settings-page.tsx` | settings-page | Badge, Button, EmptyState, HStack, List, ListItem | aligned — uses Astryx (Badge, Button, EmptyState, HStack, List, ListItem) | aligned |
+| `apps/desktop/src/renderer/settings/projects-settings-page.tsx` | settings-page | Badge, Banner, Button, EmptyState, HStack, List, ListItem | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/provider-add-form.tsx` | settings-module | Banner, Button, Collapsible, HStack, VStack | aligned — uses Astryx (Banner, Button, Collapsible, HStack, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/provider-brand-marks.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/provider-catalog-page.tsx` | settings-page | Banner, Button, EmptyState, HStack, List, ListItem, Section, Selector, VStack | aligned — uses Astryx (Banner, Button, EmptyState, HStack, List, ListItem, Section, Selector) | aligned |
@@ -87,7 +89,9 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/provider-oauth-section.tsx` | settings-module | Banner, Button, HStack, Text, VStack | aligned — uses Astryx (Banner, Button, HStack, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/providers-panel.tsx` | settings-module | Badge, Banner, Button, EmptyState, HStack, Heading, List, ListItem, Text, VStack | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, Heading, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/request-customization-editor.tsx` | settings-module | Button, HStack, IconButton, Text, VStack | aligned — uses Astryx (Button, HStack, IconButton, Text, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx` | settings-module | Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner, Text | aligned — uses Astryx (Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner, Text) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx` | settings-module | Badge, Banner, Button, HStack, List, ListItem, SegmentedControl, SegmentedControlItem, Switch | aligned — uses Astryx (Badge, Banner, Button, HStack, List, ListItem, SegmentedControl, SegmentedControlItem) | aligned |
+| `apps/desktop/src/renderer/settings/runtime-host-settings-target.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-ssh-terminal-dialog.tsx` | settings-module | Banner, Button, Dialog, DialogHeader, Layout, LayoutContent | aligned — uses Astryx (Banner, Button, Dialog, DialogHeader, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/settings/settings-expandable-row.tsx` | settings-module | Button, HStack, Text | aligned — uses Astryx (Button, HStack, Text) | aligned |
 | `apps/desktop/src/renderer/settings/settings-metric-card.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -96,7 +100,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/settings-rows.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/settings-section.tsx` | settings-module | Divider, HStack, Heading, Item, Text, VStack | aligned — uses Astryx (Divider, HStack, Heading, Item, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/settings-skeleton.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `apps/desktop/src/renderer/settings/settings-surface.tsx` | settings-module | Badge, Button, IconButton, Layout, LayoutContent, LayoutHeader, LayoutPanel, SideNav | aligned — uses Astryx (Badge, Button, IconButton, Layout, LayoutContent, LayoutHeader, LayoutPanel, SideNav) | aligned |
+| `apps/desktop/src/renderer/settings/settings-surface.tsx` | settings-module | Badge, Banner, Button, IconButton, Layout, LayoutContent, LayoutHeader, LayoutPanel, SideNav | aligned — uses Astryx (Badge, Banner, Button, IconButton, Layout, LayoutContent, LayoutHeader, LayoutPanel) | aligned |
 | `apps/desktop/src/renderer/settings/subagent-settings-page.tsx` | settings-page | Badge, Banner, Button, EmptyState, HStack, IconButton, VStack | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, IconButton, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/tasks-settings-page.tsx` | settings-page | Button, EmptyState, HStack, List, ListItem, TextInput | aligned — uses Astryx (Button, EmptyState, HStack, List, ListItem, TextInput) | aligned |
 | `apps/desktop/src/renderer/settings/usage-settings-page.tsx` | settings-page | Banner, Button, Card, EmptyState, SegmentedControl, SegmentedControlItem, Tab, TabList | aligned — uses Astryx (Banner, Button, Card, EmptyState, SegmentedControl, SegmentedControlItem, Tab, TabList) | aligned |

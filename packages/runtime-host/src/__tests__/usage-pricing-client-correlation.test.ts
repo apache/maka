@@ -295,7 +295,6 @@ async function withProtocolPeer(
     });
     const connected = await connectRuntimeHost({
       rootPath: root,
-      surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.equal(connected.kind, 'connected');

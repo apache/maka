@@ -9,7 +9,10 @@
 import { z } from 'zod';
 import type { MakaTool } from './tool-runtime.js';
 import {
+  GOAL_BLOCK_CAP_LIMIT,
   GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_MAX_ITERATIONS_LIMIT,
+  GOAL_TOKEN_BUDGET_MINIMUM,
   isGoalTextWithinLimit,
   TERMINAL_GOAL_STATUSES,
   type GoalManager,
@@ -123,8 +126,6 @@ export interface GoalToolsDeps {
     GoalContinuationCoordinator,
     'activateGoal' | 'mutateGoal' | 'activationStanding' | 'mutationStanding'
   >;
-  /** Current cumulative token count for a session (baseline for budget). */
-  getTokenCount?: (sessionId: string) => number;
   /**
    * Reject new model-owned mutations while the enclosing authority drains.
    *
@@ -179,14 +180,14 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
         .number()
         .int()
         .min(1)
-        .max(200)
+        .max(GOAL_MAX_ITERATIONS_LIMIT)
         .optional()
         .describe('Absolute ceiling on total turns before giving up. Defaults to 50.'),
       block_cap: z
         .number()
         .int()
         .min(1)
-        .max(50)
+        .max(GOAL_BLOCK_CAP_LIMIT)
         .optional()
         .describe(
           'Stop after this many consecutive turns with no progress (stall detection). Defaults to 8.',
@@ -194,7 +195,7 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
       token_budget: z
         .number()
         .int()
-        .min(1000)
+        .min(GOAL_TOKEN_BUDGET_MINIMUM)
         .optional()
         .describe(
           'Optional token budget; the goal stops (budget_limited) once this many tokens are spent working toward it.',
@@ -209,13 +210,11 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
           'Clear or complete it before setting another goal.'
         );
       }
-      const tokensAtStart = deps.getTokenCount?.(ctx.sessionId) ?? 0;
       const goal = deps.goalContinuation.activateGoal(ctx.sessionId, ctx.turnId, () => {
         return deps.goalManager.create(ctx.sessionId, input.condition, {
           maxIterations: input.max_iterations,
           blockCap: input.block_cap,
           tokenBudget: input.token_budget,
-          tokensAtStart,
         }).goal;
       });
       if (!goal) {

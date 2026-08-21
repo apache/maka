@@ -13,8 +13,9 @@ import {
   type RuntimeHostSessionSubscription,
 } from '../client/index.js';
 import { RUNTIME_HOST_PROTOCOL_VERSION, type SubscriptionFrame } from '../protocol/index.js';
+import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
-import { RuntimeHostKernel } from '../server/host-kernel.js';
+import { RuntimeHostKernel, type RuntimeHostCompositionFactory } from '../server/host-kernel.js';
 
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -36,7 +37,6 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     const planStore = await openInteractivePlanStoreForWrite(owner.lease);
     const session = await setupStores.sessionStore.create({
       cwd: root,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'explore',
@@ -62,10 +62,10 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
+      composition: defineInteractiveRuntimeHostComposition(deterministicBackendComposition),
     });
     owner = undefined;
-    [desktop, tui] = await Promise.all([connect(root, 'desktop'), connect(root, 'tui')]);
+    [desktop, tui] = await Promise.all([connect(root), connect(root)]);
     const subscription = await desktop.openSessionSubscription({
       sessionId: session.id,
       transcript: { kind: 'none' },
@@ -115,10 +115,10 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
+      composition: defineInteractiveRuntimeHostComposition(deterministicBackendComposition),
     });
     owner = undefined;
-    tui = await connect(root, 'tui');
+    tui = await connect(root);
 
     const replayed = await tui.startPlanTurn(approval);
     assert.equal(replayed.plan.executionId, approved.executionId);
@@ -176,11 +176,8 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
   }
 });
 
-async function connect(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
-  const result = await connectRuntimeHost({ rootPath, surface, protocol: PROTOCOL });
+async function connect(rootPath: string): Promise<RuntimeHostConnection> {
+  const result = await connectRuntimeHost({ rootPath, protocol: PROTOCOL });
   assert.equal(result.kind, 'connected');
   if (result.kind !== 'connected') throw new Error('Unable to connect to Runtime Host');
   return result.connection;
@@ -235,3 +232,14 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
     );
   });
 }
+
+/**
+ * The production composition registers no test backend; the deterministic one
+ * rides the same `primaryBackendFactory` seam Desktop E2E uses.
+ */
+const deterministicBackendComposition: RuntimeHostCompositionFactory = (context) =>
+  createExecutionRuntimeHostComposition(
+    context,
+    {},
+    { primaryBackendFactory: (backendContext) => new FakeBackend(backendContext) },
+  );

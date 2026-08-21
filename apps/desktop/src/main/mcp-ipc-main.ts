@@ -2,11 +2,16 @@ import type { IpcMain } from 'electron';
 import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
 import type { McpConfigStore } from '@maka/storage';
+import {
+  redactMcpConfigSecrets,
+  restoreMcpConfigSecrets,
+  restoreMcpServerSecret,
+} from './mcp-secret-guard.js';
 
 export interface McpIpcMainDeps {
   ipcMain: Pick<IpcMain, 'handle'>;
   store: McpConfigStore;
-  manager: Pick<McpClientManager, 'sync' | 'statuses' | 'test' | 'reconnect' | 'cancelConnect'>;
+  manager: Pick<McpClientManager, 'sync' | 'statuses' | 'test' | 'cancelConnect'>;
   ensureReady(): Promise<void>;
   publishCapabilities(): Promise<void>;
   onPublicationError(error: unknown): void;
@@ -15,25 +20,41 @@ export interface McpIpcMainDeps {
 
 export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
   const installs = new Map<string, { cancelled: boolean; settled: Promise<void>; settle(): void }>();
+  // The renderer is semi-trusted (SECURITY.md §3): every config that crosses
+  // toward it leaves with clientSecret replaced by the sentinel, and every
+  // config it sends back has sentinels restored from disk before the store
+  // and the manager (which needs the real secret) see it.
   deps.ipcMain.handle('mcp:getConfig', async () => {
     await deps.ensureReady();
-    return deps.store.get();
+    return redactMcpConfigSecrets(await deps.store.get());
   });
   deps.ipcMain.handle('mcp:listStatuses', async () => {
     await deps.ensureReady();
     return deps.manager.statuses();
   });
+  // Restore runs INSIDE the store's serialized transform: reading a
+  // snapshot first and writing later would let a concurrent update commit a
+  // rotated secret in between, and the marker-bearing write would then
+  // restore the OLD secret over it.
   deps.ipcMain.handle('mcp:setConfig', async (_event, config: McpConfigFile) => {
-    const next = await deps.store.set(config);
+    const next = await deps.store.transform((current) =>
+      restoreMcpConfigSecrets(config, current),
+    );
     await deps.manager.sync(next);
     changed(deps);
-    return next;
+    return redactMcpConfigSecrets(next);
   });
   deps.ipcMain.handle('mcp:upsert', async (_event, serverId: string, config: McpServerConfig) => {
-    const next = await deps.store.upsert(serverId, config);
+    const next = await deps.store.transform((current) => ({
+      ...current,
+      mcpServers: {
+        ...current.mcpServers,
+        [serverId]: restoreMcpServerSecret(serverId, config, current),
+      },
+    }));
     await deps.manager.sync(next);
     changed(deps);
-    return next;
+    return redactMcpConfigSecrets(next);
   });
   deps.ipcMain.handle('mcp:install', async (_event, serverId: string, config: McpServerConfig) => {
     if (installs.has(serverId)) throw new Error(`MCP install already in progress: ${serverId}`);
@@ -45,15 +66,21 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
     };
     installs.set(serverId, operation);
     try {
-      const next = await deps.store.upsert(serverId, config);
-      if (operation.cancelled) return next;
+      const next = await deps.store.transform((current) => ({
+        ...current,
+        mcpServers: {
+          ...current.mcpServers,
+          [serverId]: restoreMcpServerSecret(serverId, config, current),
+        },
+      }));
+      if (operation.cancelled) return redactMcpConfigSecrets(next);
       try {
         await deps.manager.sync(next);
       } catch (error) {
         if (!operation.cancelled) throw error;
       }
       if (!operation.cancelled) changed(deps);
-      return next;
+      return redactMcpConfigSecrets(next);
     } finally {
       if (installs.get(serverId) === operation) installs.delete(serverId);
       operation.settle();
@@ -63,7 +90,9 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
     const next = await deps.store.remove(serverId);
     await deps.manager.sync(next);
     changed(deps);
-    return next;
+    // Still a full config crossing toward the renderer: the remaining
+    // servers' secrets must leave as sentinels here too.
+    return redactMcpConfigSecrets(next);
   });
   deps.ipcMain.handle('mcp:cancelInstall', async (_event, serverId: string) => {
     const operation = installs.get(serverId);
@@ -73,18 +102,12 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
     const next = await deps.store.remove(serverId);
     await deps.manager.sync(next);
     changed(deps);
-    return next;
+    return redactMcpConfigSecrets(next);
   });
   deps.ipcMain.handle('mcp:test', async (_event, serverId: string) => {
     await deps.ensureReady();
     const result = await deps.manager.test(serverId);
     deps.emitChanged(deps.manager.statuses());
-    return result;
-  });
-  deps.ipcMain.handle('mcp:reconnect', async (_event, serverId: string) => {
-    await deps.ensureReady();
-    const result = await deps.manager.reconnect(serverId);
-    changed(deps);
     return result;
   });
 }

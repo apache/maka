@@ -1,4 +1,5 @@
 import type { UsageGroupBy } from './types.js';
+import { pricingModelKey } from './pricing.js';
 
 /**
  * The bucket key for one model call, shared by every Usage source.
@@ -17,7 +18,7 @@ export function usageBucketKey(
     case 'provider':
       return call.providerId;
     case 'model':
-      return `${call.providerId}:${call.modelId}`;
+      return pricingModelKey(call.providerId, call.modelId);
     case 'day':
       return new Date(call.ts).toISOString().slice(0, 10);
     case 'hour':

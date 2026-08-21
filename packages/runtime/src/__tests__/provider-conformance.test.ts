@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
 import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
-import { openai } from '@ai-sdk/openai';
 import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, isStepCount, streamText, tool, type ModelMessage } from 'ai';
 import { z } from 'zod';
@@ -615,42 +614,19 @@ describe('models.dev provider conformance', () => {
     assert.equal(gpt4o.text, 'Chat wire.');
   });
 
-  test('DeepSeek V4 Flash uses Responses and accepts provider-native web search', async () => {
+  test('DeepSeek V4 Flash uses standard Responses function tools', async () => {
     let requestBody: Record<string, unknown> | undefined;
     let requestUrl: string | undefined;
-    let authorization: string | undefined;
     const server = await startJsonServer(async (request, response) => {
       requestUrl = request.url;
-      authorization = request.headers.authorization;
       requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
       respondJson(response, 200, {
-        id: 'resp_deepseek_search',
+        id: 'resp_deepseek_tool',
         object: 'response',
         created_at: 1,
         status: 'completed',
         model: 'deepseek-v4-flash',
-        output: [
-          {
-            type: 'web_search_call',
-            id: 'search_deepseek',
-            status: 'completed',
-            action: { type: 'search', queries: ['latest Maka'] },
-          },
-          {
-            type: 'message',
-            id: 'msg_deepseek',
-            status: 'completed',
-            role: 'assistant',
-            content: [
-              {
-                type: 'output_text',
-                text: 'Search complete.',
-                annotations: [],
-                logprobs: [],
-              },
-            ],
-          },
-        ],
+        output: [],
         usage: { input_tokens: 8, output_tokens: 3, total_tokens: 11 },
       });
     });
@@ -671,103 +647,28 @@ describe('models.dev provider conformance', () => {
         apiKey: 'deepseek-test-key',
         modelId: connection.defaultModel,
       }),
-      prompt: 'Search.',
-      tools: { WebSearch: openai.tools.webSearch() },
+      prompt: 'Read a file.',
+      tools: {
+        Read: tool({ description: 'Read', inputSchema: z.object({ path: z.string() }) }),
+      },
       maxRetries: 0,
     });
 
     assert.equal(requestUrl, '/responses');
-    assert.equal(authorization, 'Bearer deepseek-test-key');
-    assert.deepEqual(requestBody?.tools, [{ type: 'web_search' }]);
-  });
-
-  test('DeepSeek Responses replays hosted web search as an item reference, not an orphan output', async () => {
-    let requestBody: Record<string, unknown> | undefined;
-    const server = await startJsonServer(async (request, response) => {
-      requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
-      respondJson(response, 200, {
-        id: 'resp_deepseek_search_replay',
-        object: 'response',
-        created_at: 2,
-        status: 'completed',
-        model: 'deepseek-v4-flash',
-        output: [
-          {
-            type: 'message',
-            id: 'msg_deepseek_replay',
-            status: 'completed',
-            role: 'assistant',
-            content: [
-              {
-                type: 'output_text',
-                text: 'Replay complete.',
-                annotations: [],
-                logprobs: [],
-              },
-            ],
-          },
-        ],
-        usage: { input_tokens: 8, output_tokens: 3, total_tokens: 11 },
-      });
-    });
-    const connection: LlmConnection = {
-      slug: 'deepseek-search-replay',
-      name: 'DeepSeek Search Replay',
-      providerType: 'deepseek',
-      baseUrl: server.url,
-      defaultModel: 'deepseek-v4-flash',
-      enabled: true,
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    const messages: ModelMessage[] = [
-      { role: 'user', content: 'Search.' },
+    assert.deepEqual(requestBody?.tools, [
       {
-        role: 'assistant',
-        content: [
-          {
-            type: 'tool-call',
-            toolCallId: 'search_deepseek',
-            toolName: 'WebSearch',
-            input: {},
-            providerExecuted: true,
-          },
-          {
-            type: 'tool-result',
-            toolCallId: 'search_deepseek',
-            toolName: 'WebSearch',
-            output: {
-              type: 'json',
-              value: { action: { type: 'search', queries: ['latest Maka'] } },
-            },
-          },
-        ],
+        type: 'function',
+        name: 'Read',
+        description: 'Read',
+        parameters: {
+          $schema: 'http://json-schema.org/draft-07/schema#',
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+          additionalProperties: false,
+        },
       },
-      { role: 'user', content: 'Continue without searching.' },
-    ];
-
-    await generateText({
-      model: getAIModel({
-        connection,
-        apiKey: 'deepseek-test-key',
-        modelId: connection.defaultModel,
-      }),
-      messages,
-      tools: { WebSearch: openai.tools.webSearch() },
-      maxRetries: 0,
-    });
-
-    const input = requestBody?.input as Array<Record<string, unknown>> | undefined;
-    assert.equal(
-      input?.some((item) => item.type === 'function_call_output'),
-      false,
-      JSON.stringify(input),
-    );
-    assert.equal(
-      input?.some((item) => item.type === 'item_reference' && item.id === 'search_deepseek'),
-      true,
-      JSON.stringify(input),
-    );
+    ]);
   });
 
   test('OpenCode Zen routes GPT through Responses and preserves tool results across both stages', async () => {
@@ -952,6 +853,28 @@ describe('models.dev provider conformance', () => {
     assert.equal((await testConnection(connection, 'deepseek-token')).ok, true);
     assert.equal(body?.model, 'deepseek-v4-pro');
     assert.equal(body?.store, false);
+  });
+
+  test('an Open Responses probe normalizes a base URL that already names the endpoint', async () => {
+    let probedPath: string | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      probedPath = request.url;
+      respondJson(response, 200, {});
+    });
+    const connection: LlmConnection = {
+      slug: 'deepseek',
+      name: 'DeepSeek',
+      providerType: 'deepseek',
+      baseUrl: `${server.url}/v1/responses`,
+      defaultModel: 'deepseek-v4-pro',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    assert.equal((await testConnection(connection, 'deepseek-token')).ok, true);
+    assert.equal(probedPath, '/v1/responses');
   });
 
   test('Ollama Cloud requests usage in streamed chat completions', async () => {

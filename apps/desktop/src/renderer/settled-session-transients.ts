@@ -32,10 +32,39 @@ export function settledSessionTransientIds(options: {
     // entirely by a crash — so anything the runtime still reports as running
     // keeps its transients regardless of what the header says.
     if (session.runningTurnIds?.length) return [];
-    if (session.status === 'running' || session.status === 'waiting_for_user') return [];
+    if (session.status === 'waiting_for_user') return [];
+    if (session.runningTurnIds === undefined && session.status === 'running') return [];
     const projection = options.liveTurnBySession[session.id];
     if (projection?.unconfirmed) return [];
     if (session.id === options.activeId && projection?.terminal) return [];
     return [session.id];
   });
+}
+
+/**
+ * Reconcile one accepted authority read against the exact live projections
+ * observed before that read began. The conditional clear is a compare-and-swap:
+ * a Turn confirmed, replaced, or otherwise advanced while the read was in
+ * flight cannot be retired by that older catalog snapshot.
+ */
+export function reconcileSettledSessionTransients(options: {
+  activeId?: string;
+  sessions: readonly SessionSummary[];
+  observedLiveTurnBySession: Readonly<Record<string, LiveTurnProjection>>;
+  clearTurnTransientStateIfCurrent: (
+    sessionId: string,
+    expected: LiveTurnProjection | undefined,
+  ) => void;
+}): void {
+  const sessionIds = settledSessionTransientIds({
+    activeId: options.activeId,
+    sessions: options.sessions,
+    liveTurnBySession: options.observedLiveTurnBySession,
+  });
+  for (const sessionId of sessionIds) {
+    options.clearTurnTransientStateIfCurrent(
+      sessionId,
+      options.observedLiveTurnBySession[sessionId],
+    );
+  }
 }

@@ -37,6 +37,10 @@ export function runtimeHostStartupError(reason: RuntimeHostStartupFailureReason)
       return new Error(
         'Runtime Host failed while recovering this workspace. Try again; if the problem persists, report diagnostic code INTERNAL_STARTUP_FAILURE.',
       );
+    case 'local_ipc_security_failed':
+      return new Error(
+        'Runtime Host could not secure its Local IPC endpoint. Try again; if the problem persists, report diagnostic code LOCAL_IPC_SECURITY_FAILED.',
+      );
     case 'composition_mismatch':
       return new RuntimeHostStartupError(
         reason,

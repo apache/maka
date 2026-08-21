@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   Badge,
   Button,
-  Card,
   IconButton,
   Layout,
   LayoutContent,
@@ -25,10 +24,14 @@ import type {
   UsageStats,
 } from '@maka/core/settings';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
-import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
+import type {
+  DesktopRuntimeHostProfileSnapshot,
+  DesktopRuntimeHostRef,
+  DesktopSessionSummary,
+} from '../../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { createDefaultSettings } from '@maka/core/settings';
-import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Banner, Selector, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
 import { SubagentSettingsPage } from './subagent-settings-page';
 import { safeLocalStorageSet } from '../browser-storage';
@@ -43,7 +46,13 @@ import { HealthCenterPage } from './health-center-page';
 import { MemorySettingsPage } from './memory-settings-page';
 import { PermissionCenterPage } from './permission-center-page';
 import { SettingsSkeleton } from './settings-skeleton';
-import { SETTINGS_NAV, groupedNav, navLabel, readLastSettingsSection } from './settings-nav';
+import {
+  SETTINGS_NAV,
+  groupedNav,
+  navLabel,
+  readLastSettingsSection,
+  settingsSectionScope,
+} from './settings-nav';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
 import { SettingRow } from './settings-rows';
 import { SettingsPage } from './settings-section';
@@ -54,13 +63,50 @@ import { UsageSettingsPage } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+import {
+  runtimeHostConnectionsBridge,
+  type RuntimeHostSettingsConnectionsBridge,
+} from './runtime-host-settings-bridge.js';
+import {
+  hasRuntimeHostSettingsPatch,
+  projectClientOwnedSettings,
+} from '../../shared/settings-ownership.js';
+import { RuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 const NARROW_SETTINGS_QUERY = '(max-width: 760px)';
 
+type ResourceState<T> =
+  | { status: 'idle' }
+  | { status: 'loading'; key: string }
+  | { status: 'ready'; key: string; value: T }
+  | { status: 'error'; key: string; message: string };
+
+type RuntimeHostCatalogState =
+  | { status: 'loading' }
+  | { status: 'ready'; snapshot: DesktopRuntimeHostProfileSnapshot }
+  | { status: 'error'; message: string };
+
+function beginResourceLoad<T>(current: ResourceState<T>, key: string): ResourceState<T> {
+  return current.status === 'ready' && current.key === key
+    ? current
+    : { status: 'loading', key };
+}
+
+function failResourceLoad<T>(
+  current: ResourceState<T>,
+  key: string,
+  message: string,
+): ResourceState<T> {
+  return current.status === 'ready' && current.key === key
+    ? current
+    : { status: 'error', key, message };
+}
+
+function runtimeHostKey(host: DesktopRuntimeHostRef): string {
+  return `${host.profileId}:${host.hostId}`;
+}
+
 export function SettingsSurface(props: {
-  connections: LlmConnection[];
-  defaultSlug: string | null;
-  onRefresh(): Promise<void>;
   onClose(): void;
   themePref: ThemePreference;
   onThemeChange(pref: ThemePreference): void;
@@ -80,6 +126,7 @@ export function SettingsSurface(props: {
   onOpenSession?(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
+  onRemoteHostAdded(profileId: string): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -152,14 +199,135 @@ export function SettingsSurface(props: {
   useEffect(() => {
     safeLocalStorageSet('maka-settings-section-v1', section);
   }, [section]);
-  const [settings, setSettings] = useState<AppSettings>(() => createDefaultSettings());
+  const defaultSettings = useMemo(() => createDefaultSettings(), []);
+  const [clientSettings, setClientSettings] = useState(defaultSettings);
+  const [runtimeHostSettings, setRuntimeHostSettings] = useState<ResourceState<AppSettings>>({
+    status: 'idle',
+  });
+  const [runtimeHostConnections, setRuntimeHostConnections] = useState<
+    ResourceState<{ connections: LlmConnection[]; defaultSlug: string | null }>
+  >({ status: 'idle' });
+  const [runtimeHostCatalog, setRuntimeHostCatalog] = useState<RuntimeHostCatalogState>({
+    status: 'loading',
+  });
+  const [selectedProfileId, setSelectedProfileId] = useState<string>();
   const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [clientLoading, setClientLoading] = useState(true);
   const settingsModalMountedRef = useMountedRef();
-  const settingsReloadTicketRef = useRef(0);
-  const settingsUpdateTicketRef = useRef(0);
+  const clientSettingsTicketRef = useRef(0);
+  const runtimeHostSettingsTicketRef = useRef(0);
+  const runtimeHostConnectionsTicketRef = useRef(0);
   const usageReloadTicketRef = useRef(0);
+  const runtimeHostReloadTicketRef = useRef(0);
   const toast = useToast();
+
+  const runtimeHosts = runtimeHostCatalog.status === 'ready'
+    ? runtimeHostCatalog.snapshot
+    : undefined;
+
+  const selectedRuntimeHostEntry = runtimeHosts?.entries.find(
+    (entry) => entry.profile.id === selectedProfileId,
+  );
+  const selectedRuntimeHost = useMemo<DesktopRuntimeHostRef | undefined>(() => {
+    if (
+      selectedRuntimeHostEntry?.readiness !== 'ready' ||
+      !selectedRuntimeHostEntry.hostId
+    ) return undefined;
+    return {
+      profileId: selectedRuntimeHostEntry.profile.id,
+      hostId: selectedRuntimeHostEntry.hostId,
+    };
+  }, [
+    selectedRuntimeHostEntry?.hostId,
+    selectedRuntimeHostEntry?.profile.id,
+    selectedRuntimeHostEntry?.readiness,
+  ]);
+  const connectionsBridge = useMemo(
+    () => selectedRuntimeHost
+      ? runtimeHostConnectionsBridge(selectedRuntimeHost)
+      : undefined,
+    [selectedRuntimeHost],
+  );
+  const selectedRuntimeHostKey = selectedRuntimeHost
+    ? runtimeHostKey(selectedRuntimeHost)
+    : undefined;
+  const selectedRuntimeHostKeyRef = useRef(selectedRuntimeHostKey);
+  selectedRuntimeHostKeyRef.current = selectedRuntimeHostKey;
+  const selectedRuntimeHostSettings =
+    selectedRuntimeHostKey &&
+    runtimeHostSettings.status === 'ready' &&
+    runtimeHostSettings.key === selectedRuntimeHostKey
+      ? runtimeHostSettings.value
+      : undefined;
+  const selectedConnections =
+    selectedRuntimeHostKey &&
+    runtimeHostConnections.status === 'ready' &&
+    runtimeHostConnections.key === selectedRuntimeHostKey
+      ? runtimeHostConnections.value
+      : undefined;
+  const settings = useMemo(
+    () => projectClientOwnedSettings(
+      selectedRuntimeHostSettings ?? defaultSettings,
+      clientSettings,
+    ),
+    [clientSettings, defaultSettings, selectedRuntimeHostSettings],
+  );
+  const connections = selectedConnections?.connections ?? [];
+  const defaultSlug = selectedConnections?.defaultSlug ?? null;
+  const sectionScope = settingsSectionScope(section);
+  const showsRuntimeHost = sectionScope !== 'client';
+  const requiresRuntimeHost = sectionScope === 'runtime-host';
+  const runtimeHostCatalogFailed = runtimeHostCatalog.status === 'error';
+  const runtimeHostSettingsLoading = Boolean(
+    selectedRuntimeHostKey &&
+    !(
+      (runtimeHostSettings.status === 'ready' || runtimeHostSettings.status === 'error') &&
+      runtimeHostSettings.key === selectedRuntimeHostKey
+    ),
+  );
+  const runtimeHostConnectionsLoading = Boolean(
+    selectedRuntimeHostKey &&
+    !(
+      (runtimeHostConnections.status === 'ready' ||
+        runtimeHostConnections.status === 'error') &&
+      runtimeHostConnections.key === selectedRuntimeHostKey
+    ),
+  );
+  const sectionNeedsSettings = ['general', 'subagents', 'memory', 'search'].includes(section);
+  const sectionNeedsConnections = ['general', 'subagents', 'daily-review'].includes(section);
+  const runtimeHostDataLoading =
+    (sectionNeedsSettings && runtimeHostSettingsLoading) ||
+    (sectionNeedsConnections && runtimeHostConnectionsLoading);
+  const runtimeHostDataFailed = Boolean(
+    selectedRuntimeHostKey &&
+    ((sectionNeedsSettings &&
+      runtimeHostSettings.status === 'error' &&
+      runtimeHostSettings.key === selectedRuntimeHostKey) ||
+      (sectionNeedsConnections &&
+        runtimeHostConnections.status === 'error' &&
+        runtimeHostConnections.key === selectedRuntimeHostKey)),
+  );
+  const runtimeHostContentReady = Boolean(
+    selectedRuntimeHost &&
+    (!sectionNeedsSettings || selectedRuntimeHostSettings) &&
+    (!sectionNeedsConnections || selectedConnections),
+  );
+  const runtimeHostContentStatus: 'loading' | 'ready' | 'unavailable' | 'error' =
+    runtimeHostCatalog.status === 'loading'
+      ? 'loading'
+      : runtimeHostCatalogFailed || runtimeHostDataFailed
+      ? 'error'
+      : !selectedRuntimeHost
+        ? selectedRuntimeHostEntry?.readiness === 'connecting' ||
+          selectedRuntimeHostEntry?.readiness === 'reconnecting'
+          ? 'loading'
+          : 'unavailable'
+        : runtimeHostDataLoading || !runtimeHostContentReady
+          ? 'loading'
+          : 'ready';
+  const loading =
+    clientLoading ||
+    (requiresRuntimeHost && runtimeHostContentStatus === 'loading');
 
   useEffect(() => {
     if (!loading && section === 'models' && providerCatalogRequested) {
@@ -167,56 +335,126 @@ export function SettingsSurface(props: {
     }
   }, [loading, providerCatalogRequested, section]);
 
-  useEffect(() => {
-    return () => {
-      settingsReloadTicketRef.current += 1;
-      settingsUpdateTicketRef.current += 1;
-      usageReloadTicketRef.current += 1;
-    };
-  }, []);
-
-  async function reloadSettings() {
-    const ticket = settingsReloadTicketRef.current + 1;
-    settingsReloadTicketRef.current = ticket;
+  async function reloadRuntimeHostSettings(host = selectedRuntimeHost) {
+    if (!host) return;
+    const key = runtimeHostKey(host);
+    const ticket = ++runtimeHostSettingsTicketRef.current;
+    setRuntimeHostSettings((current) => beginResourceLoad(current, key));
     try {
-      const next = await window.maka.settings.get();
-      if (settingsModalMountedRef.current && ticket === settingsReloadTicketRef.current) {
-        setSettings(next);
+      const next = await window.maka.settings.get(host);
+      if (
+        settingsModalMountedRef.current &&
+        ticket === runtimeHostSettingsTicketRef.current &&
+        selectedRuntimeHostKeyRef.current === key
+      ) {
+        setRuntimeHostSettings({ status: 'ready', key, value: next });
       }
     } catch (error) {
-      if (settingsModalMountedRef.current && ticket === settingsReloadTicketRef.current) {
-        toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+      if (
+        settingsModalMountedRef.current &&
+        ticket === runtimeHostSettingsTicketRef.current &&
+        selectedRuntimeHostKeyRef.current === key
+      ) {
+        const message = settingsActionErrorMessage(error, locale);
+        setRuntimeHostSettings((current) => failResourceLoad(current, key, message));
       }
+    }
+  }
+
+  async function reloadClientSettings(): Promise<void> {
+    const ticket = ++clientSettingsTicketRef.current;
+    try {
+      const next = await window.maka.settings.getClient();
+      if (!settingsModalMountedRef.current || ticket !== clientSettingsTicketRef.current) return;
+      setClientSettings(next);
     } finally {
-      if (settingsModalMountedRef.current && ticket === settingsReloadTicketRef.current) {
-        setLoading(false);
+      if (settingsModalMountedRef.current && ticket === clientSettingsTicketRef.current) {
+        setClientLoading(false);
+      }
+    }
+  }
+
+  async function reloadConnections(
+    bridge = connectionsBridge,
+    host = selectedRuntimeHost,
+  ): Promise<void> {
+    if (!bridge || !host) return;
+    const key = runtimeHostKey(host);
+    const ticket = ++runtimeHostConnectionsTicketRef.current;
+    setRuntimeHostConnections((current) => beginResourceLoad(current, key));
+    try {
+      const snapshot = await bridge.getSnapshot();
+      if (
+        !settingsModalMountedRef.current ||
+        ticket !== runtimeHostConnectionsTicketRef.current ||
+        selectedRuntimeHostKeyRef.current !== key
+      ) return;
+      setRuntimeHostConnections({
+        status: 'ready',
+        key,
+        value: {
+          connections: snapshot.connections,
+          defaultSlug: snapshot.defaultConnection,
+        },
+      });
+    } catch (error) {
+      if (
+        settingsModalMountedRef.current &&
+        ticket === runtimeHostConnectionsTicketRef.current &&
+        selectedRuntimeHostKeyRef.current === key
+      ) {
+        const message = settingsActionErrorMessage(error, locale);
+        setRuntimeHostConnections((current) => failResourceLoad(current, key, message));
       }
     }
   }
 
   async function updateSettings(patch: Parameters<typeof window.maka.settings.update>[0]) {
-    const ticket = settingsUpdateTicketRef.current + 1;
-    settingsUpdateTicketRef.current = ticket;
     const uiLocaleTicket = props.uiLocaleUpdateGate.begin(
       patch.personalization?.uiLocale !== undefined,
     );
     try {
-      const result = await window.maka.settings.update(patch);
-      const next = result.settings;
+      const updatesRuntimeHost = hasRuntimeHostSettingsPatch(patch);
+      if (updatesRuntimeHost && !selectedRuntimeHost) {
+        throw new Error(copy.runtimeHostUnavailable);
+      }
+      const host = updatesRuntimeHost ? selectedRuntimeHost : undefined;
+      const hostKey = host ? runtimeHostKey(host) : undefined;
+      const hostTicket = host
+        ? ++runtimeHostSettingsTicketRef.current
+        : undefined;
+      const clientTicket = updatesRuntimeHost
+        ? undefined
+        : ++clientSettingsTicketRef.current;
+      const result = host
+        ? await window.maka.settings.update(patch, host)
+        : await window.maka.settings.updateClient(patch);
       props.uiLocaleUpdateGate.commit(
         uiLocaleTicket,
-        next.personalization.uiLocale,
+        result.settings.personalization.uiLocale,
         props.onUiLocalePreferenceChange,
       );
-      if (patch.chatDefaults?.permissionMode !== undefined) {
-        // The empty composer lives outside Settings and mirrors this value.
-        // Update it from the committed result even if Settings closed while
-        // the save was in flight; a close-time re-read can race the write.
-        props.onDefaultPermissionModeChange(next.chatDefaults.permissionMode);
+      const acceptedHostUpdate = Boolean(
+        hostKey &&
+        hostTicket === runtimeHostSettingsTicketRef.current &&
+        selectedRuntimeHostKeyRef.current === hostKey,
+      );
+      if (acceptedHostUpdate && selectedProfileId === runtimeHosts?.defaultProfileId) {
+        if (patch.chatDefaults?.permissionMode !== undefined) {
+          props.onDefaultPermissionModeChange(result.settings.chatDefaults.permissionMode);
+        }
+        props.onUserLabelChange?.(result.settings.personalization.displayName);
       }
-      if (settingsModalMountedRef.current && ticket === settingsUpdateTicketRef.current) {
-        setSettings(next);
-        props.onUserLabelChange?.(next.personalization.displayName);
+      if (!settingsModalMountedRef.current) {
+        return result;
+      }
+      if (acceptedHostUpdate && hostKey) {
+        setRuntimeHostSettings({ status: 'ready', key: hostKey, value: result.settings });
+      } else if (
+        clientTicket !== undefined &&
+        clientTicket === clientSettingsTicketRef.current
+      ) {
+        setClientSettings(result.settings);
       }
       return result;
     } catch (error) {
@@ -240,9 +478,94 @@ export function SettingsSurface(props: {
     }
   }
 
+  async function reloadRuntimeHosts(): Promise<void> {
+    const ticket = ++runtimeHostReloadTicketRef.current;
+    setRuntimeHostCatalog((current) =>
+      current.status === 'ready' ? current : { status: 'loading' });
+    try {
+      const next = await window.maka.runtimeHostProfiles.getSnapshot();
+      if (!settingsModalMountedRef.current || ticket !== runtimeHostReloadTicketRef.current) {
+        return;
+      }
+      setRuntimeHostCatalog({ status: 'ready', snapshot: next });
+      setSelectedProfileId((current) => {
+        if (
+          current &&
+          next.entries.some((entry) => entry.profile.id === current && entry.enabled)
+        ) {
+          return current;
+        }
+        return next.defaultProfileId;
+      });
+    } catch (error) {
+      if (settingsModalMountedRef.current && ticket === runtimeHostReloadTicketRef.current) {
+        setRuntimeHostCatalog((current) =>
+          current.status === 'ready'
+            ? current
+            : {
+                status: 'error',
+                message: settingsActionErrorMessage(error, locale),
+              });
+      }
+      throw error;
+    }
+  }
+
   useEffect(() => {
-    void reloadSettings();
-  }, []);
+    let disposed = false;
+    const unsubscribe = window.maka.runtimeHostProfiles.subscribeChanges(() => {
+      void reloadRuntimeHosts().catch(() => undefined);
+    });
+    void reloadRuntimeHosts().catch((error) => {
+      if (!disposed) {
+        toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+      }
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [copy.settingsLoadFailed, locale, toast]);
+
+  useEffect(() => {
+    void reloadClientSettings().catch((error) => {
+      if (!settingsModalMountedRef.current) return;
+      setClientLoading(false);
+      toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+    });
+    return window.maka.settings.subscribeClientChanged(() => {
+      void reloadClientSettings().catch((error) => {
+        if (settingsModalMountedRef.current) {
+          toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+        }
+      });
+    });
+  }, [copy.settingsLoadFailed, locale, toast]);
+
+  useEffect(() => {
+    runtimeHostSettingsTicketRef.current += 1;
+    runtimeHostConnectionsTicketRef.current += 1;
+    if (!selectedRuntimeHost || !connectionsBridge) {
+      setRuntimeHostSettings({ status: 'idle' });
+      setRuntimeHostConnections({ status: 'idle' });
+      return;
+    }
+    void Promise.all([
+      reloadRuntimeHostSettings(selectedRuntimeHost),
+      reloadConnections(connectionsBridge, selectedRuntimeHost),
+    ]);
+    const unsubscribeSettings = window.maka.settings.subscribeExternalChanged(
+      () => void reloadRuntimeHostSettings(selectedRuntimeHost),
+      selectedRuntimeHost,
+    );
+    const unsubscribeConnections = connectionsBridge.subscribeEvents?.(() => {
+      void reloadConnections(connectionsBridge, selectedRuntimeHost);
+    });
+    return () => {
+      unsubscribeSettings();
+      unsubscribeConnections?.();
+    };
+  }, [connectionsBridge, selectedRuntimeHost]);
 
   useEffect(() => {
     if (section === 'usage') void reloadUsage();
@@ -256,6 +579,31 @@ export function SettingsSurface(props: {
   // silently rendering 通用 copy over a different page's body. The nav
   // highlight below still keys off `section === item.id` independently.
   const headerCopy = getSettingsNavigationCopy(locale).sections[section];
+  const runtimeHostOptions = (runtimeHosts?.entries ?? [])
+    .filter((entry) => entry.enabled)
+    .map((entry) => ({
+      value: entry.profile.id,
+      label: entry.profile.name,
+      disabled: entry.readiness !== 'ready' || !entry.hostId,
+    }));
+
+  async function retryRuntimeHostContent(): Promise<void> {
+    try {
+      if (runtimeHostCatalog.status === 'error') {
+        await reloadRuntimeHosts();
+        return;
+      }
+      if (!selectedRuntimeHost || !connectionsBridge) return;
+      await Promise.all([
+        reloadRuntimeHostSettings(selectedRuntimeHost),
+        reloadConnections(connectionsBridge, selectedRuntimeHost),
+      ]);
+    } catch (error) {
+      if (settingsModalMountedRef.current) {
+        toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+      }
+    }
+  }
 
   return (
     <div className="settingsSurface" data-modal="true">
@@ -344,6 +692,19 @@ export function SettingsSurface(props: {
                         <p className="settingsPageHeaderDescription">{headerCopy.description}</p>
                       )}
                     </div>
+                    {showsRuntimeHost && runtimeHostOptions.length > 0 ? (
+                      <div className="settingsRuntimeHostSelector">
+                        <Selector
+                          label={copy.runtimeHost}
+                          isLabelHidden
+                          value={selectedProfileId ?? runtimeHosts?.defaultProfileId ?? 'local'}
+                          options={runtimeHostOptions}
+                          isDisabled={!runtimeHosts}
+                          width={220}
+                          onChange={setSelectedProfileId}
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 </LayoutHeader>
               )}
@@ -351,31 +712,68 @@ export function SettingsSurface(props: {
                 <LayoutContent padding={6}>
                   {loading ? (
                     <SettingsSkeleton />
-                  ) : (
-                    <SettingsPageBody
-                      section={section}
-                      settings={settings}
-                      usageStats={usageStats}
-                      connections={props.connections}
-                      defaultSlug={props.defaultSlug}
-                      themePref={props.themePref}
-                      themePalette={props.themePalette}
-                      onRefreshConnections={props.onRefresh}
-                      onUpdateSettings={updateSettings}
-                      onReloadSettings={reloadSettings}
-                      onReloadUsage={reloadUsage}
-                      onThemeChange={props.onThemeChange}
-                      onThemePaletteChange={props.onThemePaletteChange}
-                      onOpenDailyReview={props.onOpenDailyReview}
-                      onOpenKeyboardHelp={props.onOpenKeyboardHelp}
-                      onOpenSession={props.onOpenSession}
-                      archivedTasks={props.archivedTasks}
-                      onTaskImported={props.onTaskImported}
-                      openProviderCatalog={providerCatalogRequested}
-                      initialConnectionSlug={props.initialConnectionSlug}
-                      initialCreateProviderType={createProviderRequest}
-                      onInitialCreateProviderConsumed={() => setCreateProviderRequest(undefined)}
+                  ) : requiresRuntimeHost && runtimeHostContentStatus === 'error' ? (
+                    <Banner
+                      status="error"
+                      title={copy.settingsLoadFailed}
+                      description={
+                        runtimeHostCatalog.status === 'error'
+                          ? runtimeHostCatalog.message
+                          : runtimeHostSettings.status === 'error'
+                            ? runtimeHostSettings.message
+                            : runtimeHostConnections.status === 'error'
+                              ? runtimeHostConnections.message
+                              : undefined
+                      }
+                      endContent={(
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          label={copy.retry}
+                          onClick={() => void retryRuntimeHostContent()}
+                        />
+                      )}
                     />
+                  ) : requiresRuntimeHost && !runtimeHostContentReady ? (
+                    <Banner status="warning" title={copy.runtimeHostUnavailable} />
+                  ) : (
+                    <RuntimeHostSettingsTarget
+                      key={selectedRuntimeHost
+                        ? `${selectedRuntimeHost.profileId}:${selectedRuntimeHost.hostId}`
+                        : 'client'}
+                      host={selectedRuntimeHost}
+                    >
+                      <SettingsPageBody
+                        section={section}
+                        settings={settings}
+                        usageStats={usageStats}
+                        connections={connections}
+                        connectionsBridge={connectionsBridge}
+                        defaultSlug={defaultSlug}
+                        runtimeHost={selectedRuntimeHost}
+                        runtimeHostStatus={runtimeHostContentStatus}
+                        themePref={props.themePref}
+                        themePalette={props.themePalette}
+                        onRefreshConnections={reloadConnections}
+                        onUpdateSettings={updateSettings}
+                        onReloadSettings={reloadRuntimeHostSettings}
+                        onReloadClientSettings={reloadClientSettings}
+                        onRetryRuntimeHost={retryRuntimeHostContent}
+                        onReloadUsage={reloadUsage}
+                        onThemeChange={props.onThemeChange}
+                        onThemePaletteChange={props.onThemePaletteChange}
+                        onOpenDailyReview={props.onOpenDailyReview}
+                        onOpenKeyboardHelp={props.onOpenKeyboardHelp}
+                        onOpenSession={props.onOpenSession}
+                        archivedTasks={props.archivedTasks}
+                        onTaskImported={props.onTaskImported}
+                        onRemoteHostAdded={props.onRemoteHostAdded}
+                        openProviderCatalog={providerCatalogRequested}
+                        initialConnectionSlug={props.initialConnectionSlug}
+                        initialCreateProviderType={createProviderRequest}
+                        onInitialCreateProviderConsumed={() => setCreateProviderRequest(undefined)}
+                      />
+                    </RuntimeHostSettingsTarget>
                   )}
                 </LayoutContent>
               )}
@@ -392,12 +790,17 @@ function SettingsPageBody(props: {
   settings: AppSettings;
   usageStats: UsageStats | null;
   connections: LlmConnection[];
+  connectionsBridge: RuntimeHostSettingsConnectionsBridge | undefined;
   defaultSlug: string | null;
+  runtimeHost: DesktopRuntimeHostRef | undefined;
+  runtimeHostStatus: 'loading' | 'ready' | 'unavailable' | 'error';
   themePref: ThemePreference;
   themePalette: ThemePalette;
   onRefreshConnections(): Promise<void>;
   onUpdateSettings(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
   onReloadSettings(): Promise<void>;
+  onReloadClientSettings(): Promise<void>;
+  onRetryRuntimeHost(): Promise<void>;
   onReloadUsage(range?: UsageRange): Promise<void>;
   onThemeChange(pref: ThemePreference): void;
   onThemePaletteChange(palette: ThemePalette): void;
@@ -406,6 +809,7 @@ function SettingsPageBody(props: {
   onOpenSession?(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
+  onRemoteHostAdded(profileId: string): void;
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -421,10 +825,11 @@ function SettingsPageBody(props: {
   // pattern (PR-STOP-ERROR-SURFACE-0 / PR-BOT-RESTART-RACE-0).
     switch (props.section) {
     case 'models':
+      if (!props.connectionsBridge) return null;
       return (
         <SettingsPage className="settingsModelsPage">
           <ProvidersPanel
-            bridge={window.maka.connections}
+            bridge={props.connectionsBridge}
             initialPage={props.openProviderCatalog ? 'catalog' : 'connections'}
             initialConnectionSlug={props.initialConnectionSlug}
             initialCreateProviderType={props.initialCreateProviderType}
@@ -455,7 +860,7 @@ function SettingsPageBody(props: {
         <BotChatSettingsPage
           settings={props.settings}
           onUpdate={props.onUpdateSettings}
-          onReload={props.onReloadSettings}
+          onReload={props.onReloadClientSettings}
         />
       );
     case 'about':
@@ -466,13 +871,25 @@ function SettingsPageBody(props: {
           settings={props.settings}
           connections={props.connections}
           defaultSlug={props.defaultSlug}
+          connectionsBridge={props.connectionsBridge}
+          runtimeHostStatus={props.runtimeHostStatus}
+          testNetworkProxy={props.runtimeHost
+            ? (input) => window.maka.settings.testNetworkProxy(input, props.runtimeHost)
+            : undefined}
           onUpdate={props.onUpdateSettings}
           onRefreshConnections={props.onRefreshConnections}
+          onRetryRuntimeHost={props.onRetryRuntimeHost}
         />
       );
     case 'projects':
       return (
-        <ProjectsSettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />
+        <ProjectsSettingsPage
+          settings={props.settings}
+          runtimeHostStatus={props.runtimeHostStatus}
+          onUpdate={props.onUpdateSettings}
+          onRetryRuntimeHost={props.onRetryRuntimeHost}
+          onRemoteHostAdded={props.onRemoteHostAdded}
+        />
       );
     case 'appearance':
       return (
@@ -487,9 +904,19 @@ function SettingsPageBody(props: {
     case 'archived-tasks':
       return <TasksSettingsPage {...props.archivedTasks} />;
     case 'import-tasks':
-      return <ImportTasksSettingsPage onImported={props.onTaskImported} />;
+      return (
+        <ImportTasksSettingsPage
+          onImported={props.onTaskImported}
+          onOpenImported={props.onOpenSession}
+        />
+      );
     case 'data':
-      return <DataSettingsPage />;
+      return (
+        <DataSettingsPage
+          runtimeHostStatus={props.runtimeHostStatus}
+          onRetryRuntimeHost={props.onRetryRuntimeHost}
+        />
+      );
     case 'permissions':
       return <PermissionCenterPage />;
     case 'health':

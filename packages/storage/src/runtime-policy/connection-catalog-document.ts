@@ -163,22 +163,18 @@ export class ConnectionCatalogDocumentOwner {
       );
     }
     const fallbackModels = fallbackInventory(input.connection.providerType);
-    const next: ConnectionCatalogDocument = {
-      ...current,
-      revision: nextRevision(current.revision),
-      connections: [
-        ...current.connections,
-        {
-          ...input.connection,
-          connectionId: randomUUID(),
-          revision: 1,
-          models: fallbackModels,
-          ...(fallbackModels.length > 0
-            ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
-            : {}),
-        },
-      ],
-    };
+    const next = this.nextDocument(current, [
+      ...current.connections,
+      {
+        ...input.connection,
+        connectionId: randomUUID(),
+        revision: 1,
+        models: fallbackModels,
+        ...(fallbackModels.length > 0
+          ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
+          : {}),
+      },
+    ]);
     await this.write(root, next);
     return committed(next);
   }
@@ -257,10 +253,7 @@ export class ConnectionCatalogDocumentOwner {
         ? {}
         : { lastTest: previous.lastTest }),
     };
-    if (current.defaultTarget && !isValidTarget(current.defaultTarget, connections)) {
-      return deepFreeze({ kind: 'invalid_default_target', target: current.defaultTarget });
-    }
-    const next = { ...current, revision: nextRevision(current.revision), connections };
+    const next = this.nextDocument(current, connections);
     await this.write(root, next);
     return committed(next);
   }
@@ -276,15 +269,10 @@ export class ConnectionCatalogDocumentOwner {
     if (!previous || previous.revision !== input.expected.revision) {
       return connectionStale(input.expected, previous ? connectionBasis(previous) : null);
     }
-    const next: ConnectionCatalogDocument = {
-      ...current,
-      revision: nextRevision(current.revision),
-      defaultTarget:
-        current.defaultTarget && sameConnectionIdentity(current.defaultTarget, previous)
-          ? null
-          : current.defaultTarget,
-      connections: current.connections.filter((_item, candidate) => candidate !== index),
-    };
+    const next = this.nextDocument(
+      current,
+      current.connections.filter((_item, candidate) => candidate !== index),
+    );
     await this.write(root, next);
     return committed(next);
   }
@@ -298,14 +286,12 @@ export class ConnectionCatalogDocumentOwner {
     if (current.revision !== input.expectedCatalogRevision) {
       return revisionConflict(input.expectedCatalogRevision, current.revision);
     }
+    // The one call that states a target, so the one place an unusable one is
+    // the caller's error rather than a consequence to release.
     if (input.target && !isValidTarget(input.target, current.connections)) {
       return deepFreeze({ kind: 'invalid_default_target', target: input.target });
     }
-    const next = {
-      ...current,
-      revision: nextRevision(current.revision),
-      defaultTarget: input.target,
-    };
+    const next = this.nextDocument(current, current.connections, input.target);
     await this.write(root, next);
     return committed(next);
   }
@@ -348,9 +334,18 @@ export class ConnectionCatalogDocumentOwner {
             defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0] ?? '',
             enabledModelIds: previous.enabledModelIds,
           };
+    // Discovery MOVES a target: a provider's model rename carries the default
+    // across by alias. A default outside the selection the reconciler just
+    // decided is its own bug — fail closed where it is still attributable.
     const defaultTarget = currentDefaultTarget
       ? { connectionId: previous.connectionId, modelId: reconciled.defaultModel }
       : current.defaultTarget;
+    if (currentDefaultTarget && !reconciled.enabledModelIds.includes(reconciled.defaultModel)) {
+      throw codecError(
+        'invalid_document',
+        'Model discovery reconciled a default outside its own selection',
+      );
+    }
     // A refresh is a new enabledModelIds authority on the same endpoint:
     // profiles keyed by a model the refresh dropped would violate the
     // subset invariant, and this write path bypasses the canonical decoder,
@@ -457,13 +452,11 @@ export class ConnectionCatalogDocumentOwner {
       modelSource: result.source,
       modelsFetchedAt: result.fetchedAt,
     };
-    const defaultTarget =
-      current.defaultTarget === null
-        ? { connectionId, modelId: changes.enabledModelIds[0]! }
-        : current.defaultTarget.connectionId === connectionId &&
-            !changes.enabledModelIds.includes(current.defaultTarget.modelId)
-          ? { connectionId, modelId: changes.enabledModelIds[0]! }
-          : current.defaultTarget;
+    // Onboarding only seeds the first default.
+    const defaultTarget = current.defaultTarget ?? {
+      connectionId,
+      modelId: changes.enabledModelIds[0]!,
+    };
     if (
       previous?.enabled &&
       sameStringArray(previous.enabledModelIds, changes.enabledModelIds) &&
@@ -486,12 +479,7 @@ export class ConnectionCatalogDocumentOwner {
     const entry = testBasisChanged || invalidateLastTest ? finalizedWithoutLastTest : finalized;
     if (previous) connections[index] = entry;
     else connections.push(entry);
-    const next = {
-      ...current,
-      revision: nextRevision(current.revision),
-      defaultTarget,
-      connections,
-    };
+    const next = this.nextDocument(current, connections, defaultTarget);
     this.assertDocumentSize(next);
     return { kind: 'ready', document: next, changed: true };
   }
@@ -555,11 +543,7 @@ export class ConnectionCatalogDocumentOwner {
         revision: nextRevision(connection.revision),
       };
     });
-    await this.write(root, {
-      ...current,
-      revision: nextRevision(current.revision),
-      connections,
-    });
+    await this.write(root, this.nextDocument(current, connections));
     return true;
   }
 
@@ -572,17 +556,24 @@ export class ConnectionCatalogDocumentOwner {
   ): Promise<ConnectionCatalogSnapshot> {
     const connections = [...current.connections];
     connections[index] = patched;
-    if (defaultTarget && !isValidTarget(defaultTarget, connections)) {
-      throw codecError('invalid_document', 'Connection effect produced an invalid default target');
-    }
-    const next = {
-      ...current,
-      revision: nextRevision(current.revision),
-      defaultTarget,
-      connections,
-    };
+    const next = this.nextDocument(current, connections, defaultTarget);
     await this.write(root, next);
     return catalogSnapshot(next);
+  }
+
+  // The catalog's only next-version constructor: callers state the target they
+  // want kept, never the one they have to police.
+  private nextDocument(
+    current: ConnectionCatalogDocument,
+    connections: readonly ConnectionCatalogEntry[],
+    defaultTarget: ConnectionTarget | null = current.defaultTarget,
+  ): ConnectionCatalogDocument {
+    return {
+      ...current,
+      revision: nextRevision(current.revision),
+      defaultTarget: retainedDefaultTarget(defaultTarget, connections),
+      connections,
+    };
   }
 
   private async write(root: string, document: ConnectionCatalogDocument): Promise<void> {
@@ -680,6 +671,16 @@ function isValidTarget(
 ): boolean {
   const connection = connections.find((item) => sameConnectionIdentity(item, target));
   return Boolean(connection?.enabled && connection.enabledModelIds.includes(target.modelId));
+}
+
+// `reconcileConnectionAfterEnabledModelsChange`'s rule, at catalog scope: a
+// mutation that drops what the target names drops the target with it. Nothing
+// here picks a replacement — see that function for why.
+function retainedDefaultTarget(
+  target: ConnectionTarget | null,
+  connections: readonly ConnectionCatalogEntry[],
+): ConnectionTarget | null {
+  return target && isValidTarget(target, connections) ? target : null;
 }
 
 function sameStringArray(actual: readonly string[], expected: readonly string[]): boolean {

@@ -16,18 +16,30 @@ on:
       - 'apps/desktop/electron-builder.config.mjs'
       - 'apps/desktop/package.json'
       - 'scripts/package-windows-x64.mjs'
+      - 'scripts/verify-windows-sandbox-e2e.mjs'
       - 'scripts/prepare-bundled-git.mjs'
       - 'scripts/verify-windows-x64.mjs'
+      - 'scripts/verify-windows-sandbox-e2e.mjs'
       - 'scripts/verify-windows-installer-lifecycle.mjs'
+      - 'scripts/verify-windows-autoupdate.mjs'
+      - 'scripts/package-windows-autoupdate-next.mjs'
+      # The packaged updater's feed behavior — and the boot wiring that hands
+      # MAKA_UPDATE_TEST_FEED to it — is only observable on this path.
+      - 'apps/desktop/src/main/app-update-service.ts'
+      - 'apps/desktop/src/main/runtime-host-boot.ts'
       - 'scripts/prepare-windows-upgrade-baseline.mjs'
       - 'scripts/windows-upgrade-baseline.json'
       - 'scripts/verify-packaged-app.mjs'
       - 'scripts/npm-spawn.mjs'
       - 'scripts/generate-third-party-notices.mjs'
+      - 'scripts/generate-windows-cargo-notices.mjs'
+      - 'experiments/windows-sandbox/launcher/**'
+      - 'experiments/windows-sandbox/*.ps1'
       - '.gitattributes'
       - 'package.json'
       - 'package-lock.json'
       - 'apps/desktop/resources/licenses/git/NOTICE.txt'
+      - 'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt'
       - '.github/workflows/release-windows-check.yml'
   workflow_dispatch:
 
@@ -41,7 +53,7 @@ concurrency:
 jobs:
   package:
     runs-on: windows-2025
-    timeout-minutes: 60
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
@@ -83,3 +95,13 @@ jobs:
           npm run verify:windows-installer -- \
             "apps/desktop/release/Maka-${version}-win-x64.exe" \
             "${{ steps.previous.outputs.exe }}"
+
+      - name: Build the version-bumped autoupdate installer
+        run: npm run package:windows-autoupdate-next
+
+      - name: Verify automatic update end to end
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          npm run verify:windows-autoupdate -- \
+            "apps/desktop/release/Maka-${version}-win-x64.exe" \
+            apps/desktop/release-autoupdate-next

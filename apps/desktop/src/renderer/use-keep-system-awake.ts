@@ -3,8 +3,8 @@ import { useMountedRef } from '@maka/ui';
 
 /**
  * Reads + writes the 保持系统唤醒 (`settings.system.keepSystemAwake`) toggle
- * that surfaces on the 定时任务 page. Rides the existing `settings:get` /
- * `settings:update` bridge — no dedicated IPC channel.
+ * that surfaces on the 定时任务 page. This is a Desktop preference, so it
+ * remains available when the selected Runtime Host is offline.
  *
  * `supported` gates the whole capability on bridge presence: when the
  * preload bridge is absent (older main, or a non-Electron host), the caller
@@ -32,15 +32,15 @@ export function useKeepSystemAwake(): KeepSystemAwakeController {
   // `typeof … === 'function'` probe is the honest runtime guard for a
   // non-Electron host or an older preload that predates this capability.
   const supported =
-    typeof window.maka?.settings?.get === 'function' &&
-    typeof window.maka?.settings?.update === 'function';
+    typeof window.maka?.settings?.getClient === 'function' &&
+    typeof window.maka?.settings?.updateClient === 'function';
   const [keepSystemAwake, setSnapshot] = useState<boolean>();
   const mountedRef = useMountedRef();
 
   const refresh = useCallback(async () => {
     if (!supported) return;
     try {
-      const settings = await window.maka.settings.get();
+      const settings = await window.maka.settings.getClient();
       if (mountedRef.current) setSnapshot(settings.system.keepSystemAwake);
     } catch {
       // The persisted default is false. Falling back to that known-safe value
@@ -54,14 +54,14 @@ export function useKeepSystemAwake(): KeepSystemAwakeController {
     void refresh();
     if (!supported) return;
     // Keep the snapshot honest when settings.json is edited out of band.
-    return window.maka.settings.subscribeExternalChanged(() => {
+    return window.maka.settings.subscribeClientChanged(() => {
       void refresh();
     });
   }, [supported, refresh]);
 
   const setKeepSystemAwake = useCallback(
     async (next: boolean) => {
-      const result = await window.maka.settings.update({ system: { keepSystemAwake: next } });
+      const result = await window.maka.settings.updateClient({ system: { keepSystemAwake: next } });
       if (mountedRef.current) setSnapshot(result.settings.system.keepSystemAwake);
     },
     [mountedRef],

@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { AppSettings } from '@maka/core/settings';
 import { isExternalUrl } from './external-link-guard.js';
-import { errorMessage } from './chat-readiness.js';
 import { readSavedBounds, writeSavedBounds, SAFE_MIN_HEIGHT, SAFE_MIN_WIDTH, type SavedBounds } from './window-state.js';
 import { BrowserViewController } from './browser/controller.js';
 import { BrowserViewManager } from './browser/view-manager.js';
@@ -701,6 +700,7 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
       console.log(`[real-window-smoke] diagnostic ${JSON.stringify({ ...windowState, renderer: rendererState })}`);
     })
     .catch((err: unknown) => {
-      console.log(`[real-window-smoke] diagnostic ${JSON.stringify({ ...windowState, rendererError: errorMessage(err) })}`);
+      const rendererError = err instanceof Error ? err.message : String(err);
+      console.log(`[real-window-smoke] diagnostic ${JSON.stringify({ ...windowState, rendererError })}`);
     });
 }

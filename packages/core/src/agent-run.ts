@@ -8,7 +8,7 @@ import {
   type EffectiveOrchestrationSource,
   type OrchestrationMode,
 } from './orchestration.js';
-import type { BackendKind } from './session.js';
+import type { PersistedBackendKind } from './session.js';
 import {
   defineObjectShape,
   hasExactShape,
@@ -129,7 +129,7 @@ export interface AgentRunHeader {
   sessionId: string;
   turnId: string;
   status: AgentRunStatus;
-  backendKind: BackendKind;
+  backendKind: PersistedBackendKind;
   llmConnectionSlug: string;
   modelId: string;
   cwd: string;
@@ -389,7 +389,6 @@ export const AGENT_RUN_EVENT_TYPES = [
   'provider_request_attempt_recorded',
   'model_call_attempt_recorded',
   'history_compact_checkpoint_recorded',
-  'active_full_compact_block_recorded',
   'semantic_compact_block_recorded',
   'task_gate_decided',
   'abort_requested',
@@ -594,7 +593,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     typeof value.sessionId === 'string' &&
     typeof value.turnId === 'string' &&
     (AGENT_RUN_STATUSES as readonly unknown[]).includes(status) &&
-    isBackendKind(value.backendKind) &&
+    isPersistedBackendKind(value.backendKind) &&
     typeof value.llmConnectionSlug === 'string' &&
     typeof value.modelId === 'string' &&
     typeof value.cwd === 'string' &&
@@ -709,7 +708,11 @@ export function decodeAgentRunEvent(value: unknown): AgentRunEvent {
   return value as unknown as AgentRunEvent;
 }
 
-function isBackendKind(value: unknown): value is BackendKind {
+/**
+ * Decode guard for a durable run header. `'fake'` stays accepted: runs written
+ * by builds that shipped FakeBackend must keep decoding (#3211).
+ */
+function isPersistedBackendKind(value: unknown): value is PersistedBackendKind {
   return value === 'ai-sdk' || value === 'fake';
 }
 

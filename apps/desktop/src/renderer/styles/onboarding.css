@@ -33,6 +33,25 @@
   overscroll-behavior: contain;
 }
 
+/* The first-run screen is a viewport, not a transcript. ChatMessageList keeps
+   an empty flex spacer before its empty state so ordinary chat heroes settle
+   low in the message flow; here that spacer gives the full-height onboarding
+   surface only half of the available block size. The surface then overflows
+   ChatLayout and its self-scroll root exposes a phantom page scrollbar. */
+.maka-chat-layout:has(.maka-onboarding-surface) {
+  overflow-y: hidden;
+}
+
+.maka-chat-layout:has(.maka-onboarding-surface) > :first-child {
+  flex: 1 1 auto;
+  padding-block-end: 0;
+  overflow: hidden;
+}
+
+.maka-chat-message-list:has(.maka-onboarding-surface) > div > [aria-hidden]:has(+ :last-child) {
+  display: none;
+}
+
 /* ChatLayout always paints its frosted composer dock, even when the Composer
    itself is hidden. Onboarding owns the whole empty surface, so that dock has
    no content to support and would blur the card actions behind it. Derive the
@@ -62,8 +81,11 @@
   display: grid;
   place-items: center;
   width: 100%;
-  min-height: calc(100dvh - 84px);
+  height: 100%;
+  min-height: 0;
   padding: var(--space-8) var(--space-6);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 @media (max-width: 560px) {

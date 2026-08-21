@@ -105,7 +105,6 @@ export class CanonicalSessionProjectionReader {
       createdAt: header.createdAt,
       lastUsedAt: header.lastUsedAt,
       isArchived: header.isArchived,
-      ...(header.archivedAt !== undefined ? { archivedAt: header.archivedAt } : {}),
     };
     return { session, rootTurn, goal, queue, interactions };
   }

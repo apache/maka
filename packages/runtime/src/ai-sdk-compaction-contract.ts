@@ -3,7 +3,6 @@ import type { HistoryCompactRoute } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
-import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { ActiveToolResultArchiveCandidate } from './active-tool-result-prune.js';
 import type {
   ArchiveRetrievalMode,
@@ -130,6 +129,17 @@ export interface HistoryCompactSummaryInput {
    */
   providerRequestTracker?: ProviderRequestTracker;
 }
+/**
+ * Produces the checkpoint summary that REPLACES the folded history. A string
+ * result must satisfy the mandated checkpoint format — the sections, fence,
+ * truncation, and size-floor rules owned by
+ * `history-compact-summary-validation.ts` (its `SUMMARY_FORMAT_TEMPLATE` is
+ * the shape to emit) — because every checkpoint write gate rejects a
+ * defective summary and fails the compaction open (#3029). A free-form
+ * plain-text summary is no longer persistable. Provider-native state objects
+ * bypass text validation; `undefined`/empty falls to the `empty_summary`
+ * gate.
+ */
 export type HistoryCompactSummarizer = (
   input: HistoryCompactSummaryInput,
 ) =>
@@ -144,9 +154,6 @@ export type HistoryCompactCheckpointLoader = () =>
 export type HistoryCompactCheckpointRecorder = (
   checkpoint: HistoryCompactCheckpoint,
   turnId: string,
-) => void | Promise<void>;
-export type ActiveFullCompactBlockRecorder = (
-  block: ActiveFullCompactBlock,
 ) => void | Promise<void>;
 export type SemanticCompactBlockRecorder = (block: SemanticCompactBlock) => void | Promise<void>;
 
@@ -192,8 +199,6 @@ export interface AiSdkCompactionCapabilities {
   loadTurnRuntimeEvents?: (turnId: string) => Promise<RuntimeEvent[]>;
   /** Explicit capability for folding current-run events into session-scoped history. */
   allowMidTurnHistoryCompaction?: boolean;
-  /** Optional best-effort durable recorder for accepted active full compact blocks. */
-  recordActiveFullCompactBlock?: ActiveFullCompactBlockRecorder;
   /** Optional best-effort durable recorder for accepted semantic compact blocks. */
   recordSemanticCompactBlock?: SemanticCompactBlockRecorder;
 }

@@ -3,9 +3,10 @@ import { EventEmitter } from "node:events";
 import test from "node:test";
 import type { SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
-import type {
-  SessionContinuitySnapshot,
-  SubscriptionFrame,
+import {
+  SESSION_CONTINUITY_SCHEMA_VERSION,
+  type SessionContinuitySnapshot,
+  type SubscriptionFrame,
 } from "@maka/runtime-host/protocol";
 import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
@@ -2246,7 +2247,7 @@ function continuitySnapshot(
   overrides: Partial<SessionContinuitySnapshot> = {},
 ): SessionContinuitySnapshot {
   return {
-    schemaVersion: 3,
+    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session: {
       sessionId: "session-1",
       metadataRevision: 1,

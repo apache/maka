@@ -1,0 +1,9 @@
+{
+  "name": "maka-eval-deepseek-harness-toolchain",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned dependency tree installed into the DeepSeek Harness Eval toolchain.",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.0-rc.6"
+  }
+}

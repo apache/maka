@@ -1,10 +1,15 @@
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { createInterface } from 'node:readline/promises';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
 import { createForeignSessionStore } from '@maka/storage';
 import { formatMakaResumeHint } from './cli-invocation.js';
-import { connectRuntimeHostCli, RuntimeHostCliConflictError } from './runtime-host-cli-context.js';
+import {
+  connectRuntimeHostCli,
+  RuntimeHostCliConflictError,
+  shouldRetryRuntimeHostConflict,
+} from './runtime-host-cli-context.js';
 import { createRuntimeHostOnboardingSurface } from './runtime-host-onboarding.js';
 import type { MakaPiTuiTurnActivitySurface } from './pi-tui-contracts.js';
 import { runMakaPiTui } from './pi-tui-runner.js';
@@ -16,6 +21,7 @@ export interface RunRuntimeHostTuiInput {
   readonly clientDataRoot: string;
   readonly workspaceRoot: string;
   readonly cwd: string;
+  readonly locale: UiLocale;
   readonly resumeSessionId?: string;
   readonly resumeCwd?: string;
   readonly hostProfileId?: string;
@@ -43,6 +49,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       input.clientDataRoot,
       input.workspaceRoot,
       input.cwd,
+      input.locale,
       input.hostProfileId,
     );
     if (!configured) throw error;
@@ -53,6 +60,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       driver: context.driver,
       title: context.profile.kind === 'local' ? 'Maka' : `Maka — ${context.profile.name}`,
       cwd: context.cwd,
+      locale: input.locale,
       model: context.model,
       models: context.modelChoices
         .filter((choice) => choice.connectionSlug === context.connectionSlug)
@@ -64,6 +72,7 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       permissionMode: 'ask',
       turnActivity: context.turnActivity,
       listSkills: context.listSkills,
+      agentGraphHistory: context.agentGraphHistory,
       onboarding: context.onboarding,
       recap: context.recap,
       ...(context.profile.kind === 'local'
@@ -96,24 +105,18 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
 async function createTuiContextWithHostConflictPrompt(
   input: Parameters<typeof createRuntimeHostTuiContext>[0],
 ): Promise<Awaited<ReturnType<typeof createRuntimeHostTuiContext>> | null> {
-  let waitingForHost = false;
   while (true) {
     try {
       return await createRuntimeHostTuiContext(input);
     } catch (error) {
       if (!(error instanceof RuntimeHostCliConflictError) || !process.stdin.isTTY) throw error;
-      if (waitingForHost) {
-        await waitForHostRetry();
-        continue;
-      }
       process.stderr.write(`${error.message}\n`);
       const readline = createInterface({ input: process.stdin, output: process.stderr });
       try {
-        const answer = (await readline.question('Wait and try again, or cancel? [W/c] '))
-          .trim()
-          .toLowerCase();
-        if (answer === 'c' || answer === 'cancel') return null;
-        waitingForHost = true;
+        const answer = await readline.question(
+          'Wait only if the existing Host is expected to become idle, or cancel? [w/C] ',
+        );
+        if (!shouldRetryRuntimeHostConflict(answer)) return null;
       } finally {
         readline.close();
       }
@@ -130,12 +133,13 @@ async function runFirstRunOnboarding(
   clientDataRoot: string,
   rootPath: string,
   cwd: string,
+  locale: UiLocale,
   hostProfileId?: string,
 ): Promise<boolean> {
   const connected = await connectRuntimeHostCli({
     clientDataRoot,
     rootPath,
-    surface: 'tui',
+    interactiveSsh: true,
     ...(hostProfileId ? { profileId: hostProfileId } : {}),
   });
   try {
@@ -143,6 +147,7 @@ async function runFirstRunOnboarding(
       driver: createFirstRunSessionDriver(),
       title: 'Maka',
       cwd,
+      locale,
       model: '',
       connectionSlug: '',
       permissionMode: 'ask',

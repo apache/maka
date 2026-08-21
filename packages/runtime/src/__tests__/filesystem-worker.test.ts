@@ -112,6 +112,42 @@ describe('filesystem worker operations', () => {
     await assert.rejects(readFile(link, 'utf8'), { code: 'ENOENT' });
   });
 
+  test('fails Grep closed inside the Windows sandbox instead of approximating its contract', async () => {
+    const root = await temporaryDirectory('maka-worker-grep-sandboxed-');
+    const target = join(root, 'file.ts');
+    await writeFile(target, 'const healthSignal = true;', 'utf8');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        {
+          kind: 'grep',
+          cwd: root,
+          path: target,
+          pattern: 'healthSignal',
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 1_000,
+        },
+        { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'file' },
+      ),
+      {
+        grepExecutable: '/usr/bin/rg',
+        windowsSandboxed: true,
+        // A configured runner must not rescue the sandboxed path: nothing may
+        // execute inside the AppContainer on Grep's behalf.
+        runGrep: async () => {
+          throw new Error('grep must not run inside the Windows sandbox');
+        },
+      },
+    );
+
+    assert.equal(response.ok, false);
+    if (!response.ok) {
+      assert.equal(response.error.code, 'grep_unavailable');
+      assert.match(response.error.message, /Windows sandbox preview/);
+    }
+  });
+
   test('runs Grep from the filesystem root without broadening its target permission', async () => {
     const root = await temporaryDirectory('maka-worker-grep-root-');
     const target = join(root, 'file.ts');

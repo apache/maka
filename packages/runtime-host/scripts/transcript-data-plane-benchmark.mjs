@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSessionStore } from '@maka/storage';
 import { ClientSessionSubscription } from '../dist/client/session-subscription.js';
+import { SESSION_CONTINUITY_SCHEMA_VERSION } from '../dist/protocol/index.js';
 import {
   createSessionTranscriptBootstrap,
   readSessionTranscriptPage,
@@ -62,7 +63,7 @@ async function runFixture(fixture) {
         activeAssistantStreams: [],
         transcript: bootstrap,
         snapshot: {
-          schemaVersion: 3,
+          schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
           session: {
             sessionId: state.sessionId,
             metadataRevision: 1,

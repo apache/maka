@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { createDefaultBotChannel } from '@maka/core/settings';
-import { __TEST__, SimpleBotBridge } from '../simple-bridge.js';
+import { __TEST__, TelegramBotBridge } from '../telegram-bridge.js';
 
 const { createTelegramReplyStream, normalizeTelegramPrivateChatId, telegramDraftId } = __TEST__;
 
@@ -9,7 +9,7 @@ const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe('Telegram reply streaming', () => {
   test('keeps private-only drafts disabled for Telegram groups', () => {
-    class RunningTelegramBridge extends SimpleBotBridge {
+    class RunningTelegramBridge extends TelegramBotBridge {
       markRunning(): void {
         this.running = true;
       }

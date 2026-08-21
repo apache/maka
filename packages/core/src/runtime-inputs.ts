@@ -4,7 +4,6 @@
 
 import type { MessageContent } from './events.js';
 import type {
-  BackendKind,
   SessionBlockedReason,
   SessionStatus,
   SessionToolProfile,
@@ -35,7 +34,14 @@ export interface CreateSessionInput {
   projectId?: string | null;
   /** If omitted, runtime auto-derives a placeholder; users may rename later. */
   name?: string;
-  backend: BackendKind;
+  /**
+   * No `backend`: a live build has exactly one, so the field carried no choice
+   * — only the chance of writing the retired `'fake'` into a new row (#3211).
+   * The store stamps every new header instead. Sessions derived from an older
+   * one (branch, revision, subagent) no longer inherit its backend; a copy of a
+   * legacy row is a real session whose connection slug resolves to nothing,
+   * which is what the readiness projection already says about it.
+   */
   llmConnectionSlug: string;
   /** Falls back to the connection's defaultModel if omitted. */
   model?: string;
@@ -138,9 +144,6 @@ export interface ReviseBeforeTurnInput {
 }
 
 export interface SessionListFilter {
-  isArchived?: boolean;
-  isFlagged?: boolean;
-  labelSlug?: string;
   /** Return linked subagent sessions owned by this parent session. */
   subagentParentSessionId?: string;
 }

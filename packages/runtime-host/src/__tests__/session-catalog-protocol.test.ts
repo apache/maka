@@ -8,10 +8,101 @@ import {
   decodeSessionCatalogQueryResult,
   HOST_OPERATION_SPECS,
   SESSION_CATALOG_PAGE_MAX_ITEMS,
+  SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS,
   type SessionCatalogProjection,
 } from '../protocol/index.js';
 
 describe('Session catalog protocol', () => {
+  test('decodes versioned live run state without collapsing absent and known-empty', () => {
+    const unknown = projection();
+    const knownEmpty = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: [] },
+    };
+    const running = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1', 'turn-2'] },
+    };
+
+    assert.deepEqual(decodeSessionCatalogItem(unknown), unknown);
+    assert.deepEqual(decodeSessionCatalogItem(knownEmpty), knownEmpty);
+    assert.deepEqual(decodeSessionCatalogItem(running), running);
+  });
+
+  test('rejects malformed or open live run state', () => {
+    const liveRunState = { schemaVersion: 1, runningTurnIds: ['turn-1'] };
+
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: { ...liveRunState, extra: true },
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: { ...liveRunState, schemaVersion: 2 },
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: { ...liveRunState, runningTurnIds: ['turn-1', 'turn-1'] },
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: { ...liveRunState, runningTurnIds: 'turn-1' },
+        }),
+      isProtocolError,
+    );
+  });
+
+  test('bounds the live running-turn collection explicitly', () => {
+    const atLimit = Array.from(
+      { length: SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS },
+      (_, index) => `turn-${index}`,
+    );
+    const projectionAtLimit = {
+      ...projection(),
+      liveRunState: { schemaVersion: 1, runningTurnIds: atLimit },
+    };
+
+    assert.deepEqual(decodeSessionCatalogItem(projectionAtLimit), projectionAtLimit);
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: {
+            schemaVersion: 1,
+            runningTurnIds: [...atLimit, 'turn-overflow'],
+          },
+        }),
+      isProtocolError,
+    );
+  });
+
+  test('rejects sparse live running-turn arrays', () => {
+    const runningTurnIds = Array<string>(1);
+
+    assert.throws(
+      () =>
+        decodeSessionCatalogItem({
+          ...projection(),
+          liveRunState: { schemaVersion: 1, runningTurnIds },
+        }),
+      isProtocolError,
+    );
+  });
+
   test('identifies Session creation inputs that expose Host paths', () => {
     assert.equal(
       HOST_OPERATION_SPECS['session.create'].usesHostPaths?.({
@@ -234,6 +325,54 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('accepts only filter-free Session catalog list inputs', () => {
+    const revision = `sha256:${'a'.repeat(64)}` as const;
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-list',
+        operation: 'session.catalog.query',
+        input: { kind: 'list_start' },
+      }),
+      {
+        requestId: 'request-list',
+        operation: 'session.catalog.query',
+        input: { kind: 'list_start' },
+      },
+    );
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-continue',
+        operation: 'session.catalog.query',
+        input: { kind: 'list_continue', revision, cursor: 'cursor-1' },
+      }),
+      {
+        requestId: 'request-continue',
+        operation: 'session.catalog.query',
+        input: { kind: 'list_continue', revision, cursor: 'cursor-1' },
+      },
+    );
+    for (const filter of [{ isArchived: false }, { isFlagged: true }, { labelSlug: 'paged' }]) {
+      assert.throws(
+        () =>
+          decodeClientFrame({
+            requestId: 'request-reject',
+            operation: 'session.catalog.query',
+            input: { kind: 'list_start', filter },
+          }),
+        isProtocolError,
+      );
+      assert.throws(
+        () =>
+          decodeClientFrame({
+            requestId: 'request-reject',
+            operation: 'session.catalog.query',
+            input: { kind: 'list_continue', revision, cursor: 'cursor-1', filter },
+          }),
+        isProtocolError,
+      );
+    }
+  });
+
   test('accepts the complete 80-code-point Session name range', () => {
     const name = '🦊'.repeat(80);
     const decoded = decodeClientFrame({
@@ -366,6 +505,21 @@ describe('Session catalog protocol', () => {
     );
   });
 
+  test('normalizes legacy Session statuses in catalog projections', () => {
+    for (const status of ['review', 'done']) {
+      const decoded = decodeSessionCatalogItem({ ...projection(), status });
+      if ('kind' in decoded) assert.fail('Expected a Session catalog projection');
+      assert.equal(decoded.status, 'active');
+    }
+  });
+
+  test('rejects unknown Session statuses in catalog projections', () => {
+    assert.throws(
+      () => decodeSessionCatalogItem({ ...projection(), status: 'unknown' }),
+      isInvalidSessionStatus,
+    );
+  });
+
   test('bounds pages and preserves revision-pinned continuation results', () => {
     const sessions = Array.from({ length: SESSION_CATALOG_PAGE_MAX_ITEMS }, (_, index) =>
       projection({ id: `session-${index}` }),
@@ -424,4 +578,8 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
 
 function isProtocolError(error: unknown): boolean {
   return error instanceof RuntimeHostProtocolError;
+}
+
+function isInvalidSessionStatus(error: unknown): boolean {
+  return error instanceof RuntimeHostProtocolError && error.message === 'Invalid Session status';
 }

@@ -15,12 +15,14 @@ import {
 
 const LOCAL_CAPABILITIES = {
   chooseClientDirectory: true,
+  chooseHostDirectory: false,
   selectNoProject: true,
   setLocalDefault: true,
   viewClientPath: true,
 } as const;
 const REMOTE_CAPABILITIES = {
   chooseClientDirectory: false,
+  chooseHostDirectory: true,
   selectNoProject: false,
   setLocalDefault: false,
   viewClientPath: false,
@@ -114,6 +116,37 @@ test('adding a nested folder selects that folder instead of the parent project',
   }
 });
 
+test('can register a draft Project without changing the Host selection', async () => {
+  let selected = false;
+  const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: {
+      list: unexpected,
+      register: async (path) => ({
+        id: 'project-1',
+        name: 'Project',
+        locations: [{ path, available: true, isWorktree: false }],
+        preferredPath: path,
+        available: true,
+      }),
+      relink: unexpected,
+      rename: unexpected,
+      archive: unexpected,
+      restore: unexpected,
+    },
+    chooseDirectory: async () => '/workspace',
+    selection: {
+      currentSelection: async () => ({ projectId: undefined, path: '/current' }),
+      setSelection: () => {
+        selected = true;
+      },
+    },
+  });
+
+  assert.equal((await service.add({ select: false })).ok, true);
+  assert.equal(selected, false);
+});
+
 test('rejects malformed Project identities before catalog access', async () => {
   const service = createProjectManagementService({
     capabilities: LOCAL_CAPABILITIES,
@@ -184,6 +217,7 @@ test('does not silently replace a stale Project preference with another Project'
 
 test('does not expose Client directory actions for a remote Host', async () => {
   let pickerCalls = 0;
+  const directoryRequests: unknown[] = [];
   const service = createProjectManagementService({
     capabilities: REMOTE_CAPABILITIES,
     catalog: {
@@ -200,6 +234,17 @@ test('does not expose Client directory actions for a remote Host', async () => {
       rename: unexpected,
       archive: unexpected,
       restore: unexpected,
+    },
+    directoryCatalog: {
+      listDirectoryRoots: async () => [{ id: 'home', label: '~' }],
+      listDirectories: async (rootId, segments) => {
+        directoryRequests.push({ rootId, segments });
+        return [{ name: 'project' }];
+      },
+      registerDirectory: async (rootId, segments) => {
+        directoryRequests.push({ rootId, segments, register: true });
+        return { id: 'added', name: 'Added', locations: [], available: true };
+      },
     },
     chooseDirectory: async () => {
       pickerCalls += 1;
@@ -226,6 +271,19 @@ test('does not expose Client directory actions for a remote Host', async () => {
     path: '/host/project',
   });
   assert.equal(pickerCalls, 0);
+  assert.deepEqual(await service.directoryRoots(), [{ id: 'home', label: '~' }]);
+  assert.deepEqual(
+    await service.listDirectory({ rootId: 'home', segments: ['work'] }),
+    [{ name: 'project' }],
+  );
+  assert.equal(
+    (await service.registerDirectory({ rootId: 'home', segments: ['work', 'project'] })).id,
+    'added',
+  );
+  assert.deepEqual(directoryRequests, [
+    { rootId: 'home', segments: ['work'] },
+    { rootId: 'home', segments: ['work', 'project'], register: true },
+  ]);
 });
 
 function managementCatalog(catalog: ProjectCatalog): ProjectManagementCatalog {

@@ -197,6 +197,8 @@ Enabling a profile connects a Client to that Host. One Desktop enables at most o
 
 Desktop keeps `local` and any enabled remote profiles connected independently. One profile is the default for creating new Sessions and other operations without an existing Host scope; changing it neither reconnects Hosts nor moves existing Sessions. A remote connection failure does not interrupt Local or another remote Host.
 
+Desktop Settings uses an explicit Host selector for Host-owned configuration. Client-owned preferences such as appearance and locale remain a single Desktop setting and do not change with that selector.
+
 Desktop aggregates Session summaries from its connected Hosts. A Session is identified in the product by the pair `(Host rootId, Session id)`, so equal Session IDs from different Hosts remain distinct. Requests, events, and persistent Client-local resources are routed back to the owning Host. Their transport scope also includes the Client target Epoch (`targetEpoch`), which fences out a late request or event after Desktop replaces that profile's connection lifecycle. The Client target Epoch is not the Host Epoch and is not an authentication boundary.
 
 Enabled profiles and the default profile are persisted preferences, not proof that a connection is ready. Desktop keeps an unavailable remote profile visible so the user can retry or disable it. TUI and CLI remain single-Host Clients: they resolve one profile when they start and report an unavailable profile as an error.
@@ -219,7 +221,7 @@ type WorkspaceTarget =
 
 Project summaries do not expose their registered locations. `canUseHostPaths` controls whether a Client may name a Host path in an operation; it is not a path-confidentiality boundary. Canonical Session projections may include the resolved `hostCwd`, which remote Clients treat as Host metadata rather than a path on the Client filesystem. Reading or changing Project locations and asking the Host to reveal a path remain separate operations, while submitting `host_path` requires Host-path authority.
 
-Clients do not combine a path with a Project ID or resolve a Host path themselves. Desktop remembers the selected Project locally for each State Root; selecting it does not mutate global Host state. A remote Client must select an existing Project from the Host that will own the new Session. Desktop never opens a Client-local directory picker as though it named a Host directory, and CLI/TUI do not reinterpret, validate, relocate, or autocomplete Host paths through the Client filesystem.
+Clients do not combine a path with a Project ID or resolve a Host path themselves. Desktop remembers the selected Project locally for each State Root; selecting it does not mutate global Host state. A remote Desktop may browse directories that the Host explicitly publishes, using an opaque root ID and validated path segments, and ask the Host to register the selection through the Project Catalog. It cannot name or inspect paths outside those roots. Desktop never opens a Client-local directory picker as though it named a Host directory, and CLI/TUI do not reinterpret, validate, relocate, or autocomplete Host paths through the Client filesystem.
 
 ## Lifecycle
 
@@ -281,6 +283,7 @@ Runtime Host does not promise that an arbitrary external side effect happens exa
 
 - Protocol messages use closed schemas that reject unknown fields, explicit size and count limits, and stable error codes.
 - Authentication completes before protocol connection admission.
+- Local IPC grants Local Owner authority only after its OS endpoint establishes a same-user trust boundary.
 - Authentication fixes the principal, allowed operations, and path or capability access for the lifetime of a connection.
 - Client Capability offers and reverse calls remain authenticated, size-limited, and tied to that connection.
 - Adding a protocol operation does not expand an existing credential grant.

@@ -12,6 +12,7 @@ import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { dotForStatus, type StatusSemantic } from '@maka/ui';
 import { useKeyedActionGuard } from './use-action-guard';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 /**
  * PR-WEB-SEARCH-TAVILY-0: Settings → Web search.
@@ -30,6 +31,7 @@ export function WebSearchSettingsPage(props: {
   settings: AppSettings;
   onUpdate(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
 }) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getWebSearchSettingsCopy(locale);
   const sharedCopy = getSettingsSharedCopy(locale);
@@ -154,7 +156,7 @@ export function WebSearchSettingsPage(props: {
       const result = await window.maka.webSearch.test({
         provider: webSearch.defaultProvider,
         apiKey: usesDraftKey ? draftKey : undefined,
-      });
+      }, host);
       if (!webSearchMountedRef.current) return;
       if (!usingModelSearch && !usesDraftKey && hasUsableKey) {
         void persistCredentialStatus(webSearchCredentialStatusFromResponse(result), testedCredentialVersion);
@@ -192,7 +194,7 @@ export function WebSearchSettingsPage(props: {
         provider: webSearch.defaultProvider,
         query: trimmed,
         limit: 5,
-      });
+      }, host);
       if (!isCurrentLiveQuery(queryOwner)) return;
       if (result.ok) {
         setLiveQueryResults(result.results);

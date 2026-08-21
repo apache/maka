@@ -14,6 +14,7 @@ import {
 } from '@maka/core/session';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
@@ -29,13 +30,17 @@ import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
 import {
   fitLine,
+  formatTokenCount,
   formatToolResultContent,
   formatUnknown,
   limitText,
   markdownTheme,
   renderIndented,
 } from './pi-transcript-format.js';
+import { goalStatusLineText, isLiveGoalStatus } from './pi-goal.js';
 import { renderToolBlock } from './pi-transcript-tools.js';
+import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
+import type { GoalProjection } from '@maka/runtime-host/protocol';
 
 export interface MakaPiUsageSummary {
   /** Cumulative cost in USD across the session. */
@@ -141,6 +146,7 @@ const LIVE_TOOL_BUFFER_MAX_CHUNKS = 512;
 export type MakaPiTranscriptEntry =
   | { kind: 'user'; text: string }
   | { kind: 'legacy_automation'; text: string }
+  | { kind: 'goal_continuation'; text: string }
   | { kind: 'assistant'; messageId: string; text: string }
   | { kind: 'thinking'; messageId: string; text: string; expanded: boolean }
   | {
@@ -190,6 +196,14 @@ export interface MakaPiTranscriptMetadata {
   /** Elapsed milliseconds of the running agent turn, for the activity strip. */
   turnElapsedMs?: number;
   providerRetry?: ProviderRetryEvent;
+  /** Resolved locale for primary TUI guidance. Defaults to English for direct embeddings. */
+  uiLocale?: UiLocale;
+  /**
+   * Latest known goal projection for the session, or null when no goal is
+   * set. The status line shows live goals only (active/waiting/paused);
+   * terminal goals leave no segment, matching the desktop chip.
+   */
+  goal?: GoalProjection | null;
 }
 
 export function createMakaPiTranscriptState(): MakaPiTranscriptState {
@@ -805,7 +819,12 @@ function chatItemToTranscriptEntries(item: ChatItem): MakaPiTranscriptEntry[] {
     case 'user':
       return [
         {
-          kind: item.message.origin?.kind === 'legacy_automation' ? 'legacy_automation' : 'user',
+          kind:
+            item.message.origin?.kind === 'legacy_automation'
+              ? 'legacy_automation'
+              : item.message.origin?.kind === 'goal'
+                ? 'goal_continuation'
+                : 'user',
           text: item.message.displayText ?? item.message.text,
         },
       ];
@@ -1091,7 +1110,7 @@ export function renderMakaPiTranscript(
   // first screen greets and orients instead of showing an empty pane. Once the
   // first prompt lands, entries take over and it never renders again.
   if (state.entries.length === 0 && !state.pendingInteraction) {
-    return renderWelcomeBlock(safeWidth);
+    return renderWelcomeBlock(safeWidth, metadata.uiLocale ?? 'en');
   }
 
   const entryFirstLine = new Map<MakaPiTranscriptEntry, number>();
@@ -1239,6 +1258,8 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
       return renderUserBlock(entry.text, width);
     case 'legacy_automation':
       return renderLegacyAutomationBlock(entry.text, width);
+    case 'goal_continuation':
+      return renderGoalContinuationBlock(entry.text, width);
     case 'assistant':
       return renderAssistantBlock(entry.text, width);
     case 'thinking':
@@ -1257,6 +1278,8 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
       return `user|${width}|${entry.text.length}`;
     case 'legacy_automation':
       return `legacy_automation|${width}|${entry.text}`;
+    case 'goal_continuation':
+      return `goal_continuation|${width}|${entry.text}`;
     case 'assistant':
       // text_complete authoritatively replaces streamed text, including with a
       // same-length final, so the full value must participate in the cache key.
@@ -1319,6 +1342,21 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
     parts.push(ansi.accent('swarm'));
   } else if (metadata.orchestrationMode === 'graph') {
     parts.push(ansi.accent('graph'));
+  }
+  // An autonomous goal burns tokens between prompts; it must never be
+  // invisible. Terminal goals show nothing (the desktop chip hides them too).
+  if (metadata.goal && isLiveGoalStatus(metadata.goal.status)) {
+    const text = goalStatusLineText(metadata.goal, Date.now());
+    // paused gets warning salience: the loop stopped burning but stays armed
+    // and resumable, which the user must not miss. waiting is a normal
+    // transient between turns, so it stays dim like the other chrome.
+    parts.push(
+      metadata.goal.status === 'active'
+        ? ansi.accent(text)
+        : metadata.goal.status === 'paused'
+          ? ansi.yellow(text)
+          : ansi.dim(text),
+    );
   }
   const usage = metadata.usage;
   if (usage) {
@@ -1456,12 +1494,6 @@ function shortenCwd(cwd: string, homeDir?: string): string {
   if (home && cwd.startsWith(home + '/')) return `~${cwd.slice(home.length)}`;
   if (home && cwd === home) return '~';
   return cwd;
-}
-
-function formatTokenCount(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
-  return String(tokens);
 }
 
 function formatCost(costUsd: number): string {
@@ -1659,12 +1691,27 @@ function renderUserBlock(text: string, width: number): string[] {
   return renderIndented(text, width, 2).map((line) => fitLine(`${prefix} ${line.slice(2)}`, width));
 }
 
-function renderLegacyAutomationBlock(text: string, width: number): string[] {
+/** Provenance header + indented body for non-human-authored prompts. */
+function renderProvenanceBlock(
+  label: string,
+  accent: boolean,
+  text: string,
+  width: number,
+): string[] {
   if (!text.trim()) return [];
+  const styled = accent ? ansi.accent(label) : ansi.dim(label);
   return [
-    fitLine(ansi.dim('Legacy Automation (history only)'), width),
+    fitLine(styled, width),
     ...renderIndented(text, width, 2).map((line) => fitLine(line, width)),
   ];
+}
+
+function renderLegacyAutomationBlock(text: string, width: number): string[] {
+  return renderProvenanceBlock('Legacy Automation (history only)', false, text, width);
+}
+
+function renderGoalContinuationBlock(text: string, width: number): string[] {
+  return renderProvenanceBlock('Goal continuation (autonomous)', true, text, width);
 }
 
 /** An assistant turn: bare markdown prose, no speaker label or indent. */
@@ -1695,16 +1742,17 @@ const MAKA_WORDMARK_LINES = [
 ];
 const MAKA_WORDMARK_WIDTH = Math.max(...MAKA_WORDMARK_LINES.map((line) => line.length));
 
-function renderWelcomeBlock(width: number): string[] {
-  // The branded home greets with the maka wordmark, a short Chinese-first
-  // tagline, and the command-center entry points (direct input, /session,
+function renderWelcomeBlock(width: number, locale: UiLocale): string[] {
+  // The branded home greets with the maka wordmark, a short localized tagline,
+  // and the command-center entry points (direct input, /session,
   // /model, /setup) so a fresh session shows the main actions without typing
   // `/`. The active model and connection live in the statusline, so the
   // welcome does not repeat them.
+  const copy = getTuiPrimaryGuidance(locale).welcome;
   const hints: [string, string][] = [
-    ['/session', '切换或恢复任务'],
-    ['/model', '切换模型'],
-    ['/setup', '配置模型提供商'],
+    ['/session', copy.session],
+    ['/model', copy.model],
+    ['/setup', copy.setup],
   ];
   const keyWidth = Math.max(...hints.map(([key]) => key.length));
   const lines: string[] = [];
@@ -1716,9 +1764,9 @@ function renderWelcomeBlock(width: number): string[] {
     }
   }
   lines.push('');
-  lines.push(fitLine(ansi.dim('陪你把事做完'), width));
+  lines.push(fitLine(ansi.dim(copy.tagline), width));
   lines.push('');
-  lines.push(fitLine('  输入消息开始对话', width));
+  lines.push(fitLine(`  ${copy.start}`, width));
   for (const [key, description] of hints) {
     lines.push(fitLine(ansi.dim(`  ${key.padEnd(keyWidth)}  ${description}`), width));
   }

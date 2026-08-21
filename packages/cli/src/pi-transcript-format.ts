@@ -151,6 +151,12 @@ export function formatUnknownInline(value: unknown): string {
 }
 
 /** Fold line breaks into spaces so a summary can never split a one-line slot. */
+export function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(tokens);
+}
+
 export function collapseToSingleLine(text: string): string {
   return text.replace(/\s*\n\s*/g, ' ');
 }

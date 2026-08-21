@@ -33,6 +33,7 @@ import {
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import {
   buildForeignSessionHandoffMessage,
   foreignSessionHandoffDisplayText,
@@ -53,6 +54,8 @@ import type {
 } from './pi-tui-contracts.js';
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import type { AgentGraphClientSnapshot, AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
+import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
 import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
 import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core/swarm-command';
@@ -114,11 +117,22 @@ import {
   type MakaSlashCommand,
 } from './pi-tui-pickers.js';
 import { formatMakaResumeCommand } from './cli-invocation.js';
+import {
+  goalAttachedNoticeText,
+  goalPausedNoticeText,
+  goalStatusLabel,
+  goalSummaryLines,
+  isLiveGoalStatus,
+} from './pi-goal.js';
+import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
+import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
 
 export interface MakaPiTuiInput {
   /** Launcher command used in resume and recovery instructions. */
   cliCommand?: string;
   title: string;
+  /** Resolved locale for human-facing TUI guidance. Direct embeddings default to English. */
+  locale?: UiLocale;
   driver: MakaSessionDriver;
   cwd: string;
   model: string;
@@ -166,6 +180,11 @@ export interface MakaPiTuiInput {
   listShellRunUpdates?: (sessionId: string) => Promise<ShellRunUpdate[]>;
   /** Host-owned invocable Skill catalog used for picker, completion, and token highlighting. */
   listSkills?: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
+  /** Read-only Runtime Host projection for inspecting current and historical Graph epochs. */
+  agentGraphHistory?: {
+    listEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory>;
+    getSnapshot(rootSessionId: string, graphId: string): Promise<AgentGraphClientSnapshot>;
+  };
   /** Serializes TUI turn and control activity for the attached Session. */
   turnActivity: MakaPiTuiTurnActivitySurface;
   /** API-key onboarding surface (#1098). When present, /setup runs the wizard,
@@ -231,6 +250,8 @@ export function resolveTaskbarProgress(
 }
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
+  const locale = input.locale ?? 'en';
+  const primaryGuidance = getTuiPrimaryGuidance(locale);
   const terminal = input.terminal ?? new ProcessTerminal();
   const taskbarProgress = resolveTaskbarProgress(input.taskbarProgress);
   const setTaskbarProgress = (active: boolean): void => {
@@ -329,6 +350,51 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     rejectClosed = reject;
   });
 
+  // Rendering reads the driver's live projection directly (metadata()); this
+  // cache exists only to detect transitions on the push stream — notably the
+  // abort auto-pause — and to suppress the notice for a pause we initiated.
+  let currentGoal: GoalProjection | null = input.driver.getGoal?.() ?? null;
+  // goalId of a `/goal pause` we initiated: its paused projection must not
+  // re-announce itself — the command prints its own confirmation.
+  let selfInitiatedPauseGoalId: string | null = null;
+  const unsubscribeGoalChanges = input.driver.subscribeGoalChanges?.((goal) => {
+    const previous = currentGoal;
+    currentGoal = goal;
+    if (
+      goal !== null &&
+      goal.status === 'paused' &&
+      previous?.goalId === goal.goalId &&
+      previous.status !== 'paused'
+    ) {
+      if (selfInitiatedPauseGoalId === goal.goalId) {
+        selfInitiatedPauseGoalId = null;
+      } else {
+        // Typically the runtime's abort auto-pause (Ctrl+C on a goal
+        // continuation turn): the loop still exists and can be resumed.
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: goalPausedNoticeText(goal),
+        });
+      }
+    }
+    requestRender();
+  });
+  // Attaching to a session whose durable goal auto-continues after recovery
+  // must never resume a token-burning loop silently. This covers a driver
+  // that is already attached at startup; a resumeSessionId attach happens
+  // later, so switchSession repeats the check after adopting the session.
+  if (
+    currentGoal !== null &&
+    (currentGoal.status === 'active' || currentGoal.status === 'waiting')
+  ) {
+    state.entries.push({
+      kind: 'notice',
+      level: 'info',
+      text: goalAttachedNoticeText(currentGoal),
+    });
+  }
+
   const metadata = (): MakaPiTranscriptMetadata => ({
     title: input.title,
     cwd,
@@ -344,6 +410,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     modelContextWindow,
     turnElapsedMs: turnStartedAt !== undefined ? Date.now() - turnStartedAt : undefined,
     providerRetry: state.providerRetry,
+    uiLocale: locale,
+    goal: input.driver.getGoal?.() ?? null,
   });
 
   const transcript = new MakaTranscriptComponent(state, metadata);
@@ -600,6 +668,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const restoreTerminal = () => {
     removeProcessHandlers();
     unsubscribeSessionTitleChanges();
+    unsubscribeGoalChanges?.();
     unsubscribeStartedTurns();
     unsubscribeResolvedInteractions();
     unsubscribeTranscriptReplacements();
@@ -1015,6 +1084,36 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         }
         return;
       }
+      // Known slash commands typed mid-turn must not steer into the model as
+      // prompt text (review finding on turnRunning routing). `/goal` and
+      // `/recap` answer locally: both are independent of the running turn —
+      // `/goal` is read-only status, and `/recap` uses the separate
+      // session.recap.generate call behind its own in-flight lock. Every other
+      // known command either mutates session state behind the turn's back or
+      // opens a picker the turn would race (and would silently no-op on the
+      // runControl busy gate even if it ran), so refuse it with a clear
+      // message. Unknown slash-prefixed text still steers: it may be intended
+      // prompt text (a skill invocation such as `/skill:<name>`, or a path).
+      const commandToken = prompt.trim().split(/\s+/, 1)[0] ?? '';
+      const knownCommand = slashCommands.find(
+        (candidate) =>
+          `/${candidate.name}` === commandToken ||
+          candidate.aliases?.some((alias) => `/${alias}` === commandToken),
+      );
+      if (knownCommand) {
+        editor.addToHistory(prompt);
+        if (knownCommand.name === 'goal' || knownCommand.name === 'recap') {
+          handleSlashCommand(prompt, 0);
+        } else {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: `Cannot run /${knownCommand.name} while a turn is running — interrupt it (Esc) or wait for it to finish.`,
+          });
+          requestRender();
+        }
+        return;
+      }
       steerRunningTurn(prompt);
       return;
     }
@@ -1361,6 +1460,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       relocateCwd === undefined ? undefined : { relocateCwd },
     );
     await applySwitchResult(result);
+    // Sync the transition cache to the adopted session's goal, then announce a
+    // live durable goal: the init-time check ran before the driver attached
+    // the resumed session, and the goal subscription only announces pause
+    // transitions. Emitting here — after the transcript replacement that
+    // would erase a notice from adoption time — keeps an auto-continuing
+    // token-burning loop from resuming silently.
+    currentGoal = input.driver.getGoal?.() ?? null;
+    if (
+      currentGoal !== null &&
+      (currentGoal.status === 'active' || currentGoal.status === 'waiting')
+    ) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: goalAttachedNoticeText(currentGoal),
+      });
+    }
     if (result.relocation?.changed) {
       const warning =
         result.relocation.oldCwdDirty === true
@@ -2049,22 +2165,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         return `  /${command.name}${aliasSuffix} — ${command.description}`;
       })
       .join('\n');
-    const keybindings = [
-      '  Ctrl+O — expand or collapse all tool output',
-      '  Ctrl+T — expand or collapse the latest thinking block',
-      '  Scroll the transcript with your terminal or trackpad',
-      '  Enter (during a turn) — steer: inject a message into the running turn',
-      '  Alt+Enter (during a turn) — queue a message for the next turn',
-      '  Alt+↑ — take queued messages back into the editor to re-edit',
-      '  Esc Esc (during a turn) — interrupt the turn',
-      '  Esc Esc (when idle) — rewind to an earlier turn',
-      '  Ctrl+C — stop the turn, clear input, or press twice to exit',
-      '  Ctrl+D — exit when input is empty',
-    ].join('\n');
+    const keybindings = primaryGuidance.help.keybindings.join('\n');
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Commands\n${commands}\n\nKeybindings\n${keybindings}`,
+      text: `${primaryGuidance.help.commandsHeading}\n${commands}\n\n${primaryGuidance.help.keybindingsHeading}\n${keybindings}`,
     });
     requestRender();
   };
@@ -2264,6 +2369,62 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
   };
 
+  const showGraphHistory = async (): Promise<void> => {
+    const rootSessionId = input.driver.getSessionId();
+    if (!rootSessionId || !input.agentGraphHistory) {
+      throw new Error('Agent Graph history is unavailable on this session driver.');
+    }
+    const directory = await input.agentGraphHistory.listEpochs(rootSessionId);
+    // The TUI may have shut down while the page reads were in flight.
+    if (closed) return;
+    const { epochs, truncated } = directory;
+    const items: SelectItem[] = epochs.map((entry) => ({
+      value: entry.graphId,
+      label: `Run #${entry.epoch}${entry.current ? ' · Current' : ''}`,
+      description: entry.current ? 'Current graph' : 'History · read-only',
+    }));
+    if (items.length === 0) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'This session has no Agent Graph runs.',
+      });
+      requestRender();
+      return;
+    }
+    const epochsByGraphId = new Map(epochs.map((entry) => [entry.graphId, entry]));
+    showSelectPicker(
+      'Agent Graph History',
+      truncated
+        ? `newest ${items.length} runs (history capped)`
+        : `${items.length} run${items.length === 1 ? '' : 's'}`,
+      items,
+      (item) => {
+        const epoch = epochsByGraphId.get(item.value);
+        if (!epoch) return;
+        void runControl(async () => {
+          const graph = await input.agentGraphHistory!.getSnapshot(rootSessionId, epoch.graphId);
+          if (closed) return;
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: formatAgentGraphHistory(graph, epoch),
+          });
+          requestRender();
+        });
+      },
+      {
+        minPrimaryColumnWidth: 16,
+        maxPrimaryColumnWidth: 28,
+        selectedIndex: Math.max(
+          0,
+          epochs.findIndex((entry) => entry.current),
+        ),
+        hint: '↑↓ move · Enter inspect · Esc close',
+      },
+    );
+  };
+
   const setGraphMode = async (mode: OrchestrationMode) => {
     if (!input.driver.setOrchestrationMode) {
       throw new Error('Graph Mode is unavailable on this session driver.');
@@ -2281,6 +2442,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const runGraphCommand = (command: ParsedGraphCommand, idleMs: number) => {
     if (command.kind === 'status') {
       showGraphStatus();
+      return;
+    }
+    if (command.kind === 'history') {
+      void runControl(showGraphHistory);
       return;
     }
     if (command.kind === 'set_mode') {
@@ -2391,9 +2556,91 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   type TuiSlashCommandId = SlashCommandIdForSurface<'tui'>;
   type TuiSlashCommandHandler = Omit<MakaSlashCommand, 'name' | 'aliases'>;
 
+  const showGoalSummary = () => {
+    // Read the live projection at request time: /goal is the one place the
+    // user asks for the state *right now*.
+    if (!input.driver.getGoal) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'Goal status is unavailable on this runtime.',
+      });
+      requestRender();
+      return;
+    }
+    const goal = input.driver.getGoal();
+    state.entries.push({
+      kind: 'notice',
+      level: 'info',
+      text: goal ? goalSummaryLines(goal, Date.now()).join('\n') : 'No goal set.',
+    });
+    requestRender();
+  };
+
+  const controlGoalCommand = async (action: GoalControlAction): Promise<void> => {
+    const notice = (text: string): void => {
+      state.entries.push({ kind: 'notice', level: 'info', text });
+      requestRender();
+    };
+    const goal = input.driver.getGoal?.() ?? null;
+    if (!goal) {
+      notice('No goal set.');
+      return;
+    }
+    if (!input.driver.controlGoal) {
+      notice('Goal control is unavailable on this runtime.');
+      return;
+    }
+    // Pre-validate against the live projection so an invalid transition gets
+    // a plain message instead of the host's operation error. These mirror the
+    // host's rules exactly: pause requires active|waiting, resume requires
+    // paused, clear rejects a terminal record.
+    if (action === 'pause' && goal.status !== 'active' && goal.status !== 'waiting') {
+      notice(`Cannot pause: the goal is ${goalStatusLabel(goal.status)}.`);
+      return;
+    }
+    if (action === 'resume' && goal.status !== 'paused') {
+      notice(`Cannot resume: the goal is ${goalStatusLabel(goal.status)}.`);
+      return;
+    }
+    if (action === 'clear' && !isLiveGoalStatus(goal.status)) {
+      notice(`Cannot clear: the goal is ${goalStatusLabel(goal.status)}.`);
+      return;
+    }
+    if (action === 'pause') selfInitiatedPauseGoalId = goal.goalId;
+    let result: GoalProjection | null;
+    try {
+      result = await input.driver.controlGoal(action);
+    } catch (error) {
+      selfInitiatedPauseGoalId = null;
+      throw error; // runControl's reportError surfaces it
+    }
+    if (result === null) {
+      // The goal disappeared to a concurrent controller mid-flight.
+      selfInitiatedPauseGoalId = null;
+      notice(action === 'clear' ? 'Goal cleared.' : 'The goal no longer exists.');
+      return;
+    }
+    // Keep the transition cache on the authoritative response: a trailing push
+    // of this same transition then folds onto an identical previous state and
+    // is not mistaken for a fresh one.
+    currentGoal = result;
+    if (action === 'pause') {
+      // Settle the suppression flag: the command's own confirmation has told
+      // the user, and a lingering flag would suppress a later host-initiated
+      // pause of this goal (e.g. the Ctrl+C auto-pause).
+      selfInitiatedPauseGoalId = null;
+      notice('Goal paused. /goal resume continues it, /goal clear stops it.');
+    } else if (action === 'resume') {
+      notice('Goal resumed.');
+    } else {
+      notice('Goal cleared.');
+    }
+  };
+
   const slashCommandHandlers = {
     context: {
-      description: 'Show latest request context usage',
+      description: primaryGuidance.commands.context,
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2418,7 +2665,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     compact: {
-      description: 'Compact session context',
+      description: primaryGuidance.commands.compact,
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2433,25 +2680,63 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     exit: {
-      description: 'Exit Maka',
+      description: primaryGuidance.commands.exit,
       run: () => {
         beginGracefulClose();
       },
     },
+    goal: {
+      description: primaryGuidance.commands.goal,
+      run: (parts: string[]) => {
+        if (parts.length === 1) {
+          // Read-only, so no runControl busy gate: an autonomous loop keeps
+          // the session busy almost by definition, and that is exactly when
+          // the user wants to inspect it.
+          showGoalSummary();
+          return;
+        }
+        const action = parts[1];
+        if (
+          parts.length !== 2 ||
+          (action !== 'pause' && action !== 'resume' && action !== 'clear')
+        ) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /goal [pause|resume|clear]',
+          });
+          requestRender();
+          return;
+        }
+        // Goal control mutates the durable loop, so it takes the runControl
+        // write gate — but say so instead of silently swallowing the command
+        // when a turn or another control action owns the session.
+        if (busy) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Cannot control the goal while a turn or another action is running — interrupt it (Esc) or wait for it to finish.',
+          });
+          requestRender();
+          return;
+        }
+        void runControl(() => controlGoalCommand(action));
+      },
+    },
     help: {
-      description: 'Show commands and keybindings',
+      description: primaryGuidance.commands.help,
       run: () => {
         void runControl(async () => showHelp());
       },
     },
     new: {
-      description: 'Start a new session',
+      description: primaryGuidance.commands.new,
       run: () => {
         void runControl(async () => newSession());
       },
     },
     skill: {
-      description: 'Invoke a skill (or type /skill:<name> inline)',
+      description: primaryGuidance.commands.skill,
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2466,7 +2751,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     setup: {
-      description: 'Set up a model provider (API key)',
+      description: primaryGuidance.commands.setup,
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2481,7 +2766,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     model: {
-      description: 'Select model',
+      description: primaryGuidance.commands.model,
       run: (parts: string[]) => {
         if (parts.length === 1) {
           showModelList();
@@ -2501,7 +2786,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     move: {
-      description: 'Move current session to another directory',
+      description: primaryGuidance.commands.move,
       run: (parts: string[], rawTail?: string) => {
         const targetCwd = (rawTail ?? parts.slice(1).join(' ')).trim();
         if (targetCwd) {
@@ -2512,7 +2797,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     thinking: {
-      description: 'Set thinking level',
+      description: primaryGuidance.commands.thinking,
       run: (parts: string[]) => {
         if (parts.length === 1) {
           if (thinkingLevels.length === 0) {
@@ -2550,7 +2835,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     permissions: {
-      description: 'Set session permissions',
+      description: primaryGuidance.commands.permissions,
       run: (parts: string[]) => {
         if (parts.length === 1) {
           showPermissionModeList();
@@ -2570,13 +2855,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     recap: {
-      description: 'One-sentence recap of the session so far',
+      description: primaryGuidance.commands.recap,
       run: () => {
         void runRecap('manual');
       },
     },
     rename: {
-      description: 'Rename current session',
+      description: primaryGuidance.commands.rename,
       run: (parts: string[]) => {
         const name = parts.slice(1).join(' ').trim();
         if (!name) {
@@ -2601,7 +2886,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     resume: {
-      description: 'Resume latest interrupted run at a safe boundary',
+      description: primaryGuidance.commands.resume,
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2616,13 +2901,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     rewind: {
-      description: 'Rewind to an earlier turn',
+      description: primaryGuidance.commands.rewind,
       run: () => {
         void runControl(showRewindPicker);
       },
     },
     session: {
-      description: 'Resume session',
+      description: primaryGuidance.commands.session,
       run: (parts: string[]) => {
         if (parts.length === 1) {
           void runControl(showSessionList);
@@ -2642,14 +2927,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     graph: {
-      description: 'Show, enable, disable, or run one Graph turn',
+      description: primaryGuidance.commands.graph,
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseGraphCommand(`/graph${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runGraphCommand(parsed, context.idleMs);
       },
     },
     swarm: {
-      description: 'Show, enable, disable, or run one Swarm turn',
+      description: primaryGuidance.commands.swarm,
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseSwarmCommand(`/swarm${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runSwarmCommand(parsed, context.idleMs);
@@ -3023,6 +3308,41 @@ function estimateContextTokens(bytes: number): number {
 
 function formatContextCount(value: number): string {
   return value.toLocaleString('en-US');
+}
+
+function formatAgentGraphHistory(
+  graph: AgentGraphClientSnapshot,
+  epoch: AgentGraphEpochSummary,
+): string {
+  const settled = graph.operators.filter((operator) =>
+    ['completed', 'failed', 'aborted', 'cancelled'].includes(operator.status),
+  ).length;
+  const lines = [
+    `Agent Graph run #${epoch.epoch}${epoch.current ? ' · Current' : ' · History (read-only)'}`,
+    `  ${formatAgentGraphStatus(graph.status)} · ${settled}/${graph.operators.length} operators settled`,
+  ];
+  for (const operator of graph.operators) {
+    lines.push(`  ${operator.agentId}: ${operator.status.replaceAll('_', ' ')}`);
+  }
+  if (graph.finish) {
+    lines.push(`  Selected results: ${graph.finish.resultIds.join(', ') || 'none'}`);
+  }
+  if (graph.omitted.operators > 0) {
+    lines.push(`  ${graph.omitted.operators} more operators omitted`);
+  }
+  return lines.join('\n');
+}
+
+function formatAgentGraphStatus(status: AgentGraphClientSnapshot['status']): string {
+  return {
+    empty: 'Awaiting schedule',
+    active: 'Running',
+    closing: 'Finishing',
+    waiting: 'Waiting',
+    stopped: 'Stopped',
+    failed: 'Failed',
+    completed: 'Completed',
+  }[status];
 }
 
 function flattenLinkedSessionTree(

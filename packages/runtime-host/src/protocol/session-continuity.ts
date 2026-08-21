@@ -2,7 +2,7 @@ import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/eve
 import type { ToolResultPreviewContent } from '@maka/core/events';
 import { decodeToolResultPreviewContent } from '@maka/core/tool-result-preview';
 import type { ToolActivityKind } from '@maka/core/events';
-import { isSessionStatus, type SessionStatus } from '@maka/core/session';
+import type { SessionStatus } from '@maka/core/session';
 import {
   assertExactKeys,
   requireCount,
@@ -12,6 +12,7 @@ import {
   requireRecord,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
+import { decodeSessionStatus } from './session-status.js';
 import {
   decodeSessionInteractionProjection,
   type SessionInteractionProjection,
@@ -30,7 +31,7 @@ import {
   type SessionTranscriptBootstrap,
 } from './session-transcript.js';
 
-export const SESSION_CONTINUITY_SCHEMA_VERSION = 3 as const;
+export const SESSION_CONTINUITY_SCHEMA_VERSION = 4 as const;
 export const SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES = 56 * 1024;
 // Leave transport headroom for the response envelope and request correlation.
 export const SUBSCRIPTION_OPEN_RESULT_MAX_BYTES = 92 * 1024;
@@ -58,7 +59,6 @@ export interface SessionContinuityIdentity {
   createdAt: number;
   lastUsedAt: number;
   isArchived: boolean;
-  archivedAt?: number;
 }
 
 export interface SessionContinuitySnapshot {
@@ -867,7 +867,6 @@ function decodeSessionContinuityIdentity(value: unknown): SessionContinuityIdent
     'createdAt',
     'lastUsedAt',
     'isArchived',
-    'archivedAt',
   ]);
   assertRequiredKeys(record, 'Session continuity identity', [
     'sessionId',
@@ -883,13 +882,10 @@ function decodeSessionContinuityIdentity(value: unknown): SessionContinuityIdent
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     metadataRevision: requirePositiveCount(record.metadataRevision, 'metadataRevision'),
-    status: requireSessionLifecycleStatus(record.status),
+    status: decodeSessionStatus(record.status),
     createdAt: requireCount(record.createdAt, 'createdAt'),
     lastUsedAt: requireCount(record.lastUsedAt, 'lastUsedAt'),
     isArchived: record.isArchived,
-    ...(record.archivedAt === undefined
-      ? {}
-      : { archivedAt: requireCount(record.archivedAt, 'archivedAt') }),
   };
 }
 
@@ -961,11 +957,6 @@ function requireToolActivityKind(value: unknown): ToolActivityKind {
     return value as ToolActivityKind;
   }
   throw invalidProtocolFrame('Invalid Session tool activity kind');
-}
-
-function requireSessionLifecycleStatus(value: unknown): SessionLifecycleStatus {
-  if (isSessionStatus(value)) return value;
-  throw invalidProtocolFrame('Invalid Session lifecycle status');
 }
 
 function requireAgentGraphChangedReason(value: unknown): AgentGraphChangedReason {

@@ -19,7 +19,6 @@ const candidateEntrypoint = new URL('./kernel-candidate.js', import.meta.url);
 const result = await connectOrSpawnRuntimeHostWithDependencies(
   {
     rootPath,
-    surface: 'desktop',
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,

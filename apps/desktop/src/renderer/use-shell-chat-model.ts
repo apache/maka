@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
@@ -14,6 +14,7 @@ import {
 import { deriveSessionHealthNotice } from './session-health-notice';
 import type { ComposerDefaults } from './composer-defaults';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import { useNewTaskChoice } from './use-new-task-choice.js';
 
 export type { NewChatModel } from './shell-chat-model-selection';
 
@@ -42,9 +43,11 @@ export function useShellChatModel(options: {
   chatModelChoices: ChatModelChoice[];
   sessionSendOutcome: SessionSendProjection | undefined;
   defaultConnection: string | null;
+  newTaskKey: string;
   activationCandidate?: NewChatModel;
   activeSession: SessionSummary | undefined;
   persistedComposerDefaults: ComposerDefaults | null;
+  usePersistedComposerDefaults: boolean;
   /** Settings → 通用 → 默认思考级别; undefined means "no preference". */
   defaultThinkingLevel?: ThinkingLevel;
   openSettingsSection: (section: SettingsSection) => void;
@@ -68,11 +71,16 @@ export function useShellChatModel(options: {
 } {
   const { uiLocale, connections, defaultConnection, activationCandidate, activeSession, persistedComposerDefaults, openSettingsSection } = options;
   const conversationCopy = getDesktopConversationCopy(uiLocale);
-  // Persisted composer defaults seed the empty-state model so the home view is
-  // populated before the async `app:info` round-trip completes on mount.
-  const [pendingNewChatModel, setPendingNewChatModel] = useState<NewChatModel | null>(
-    persistedComposerDefaults?.model ?? null,
+  const [pendingNewChatModelChoice, setPendingNewChatModel] = useNewTaskChoice<
+    NewChatModel | null
+  >(
+    options.newTaskKey,
   );
+  const pendingNewChatModel = pendingNewChatModelChoice !== undefined
+    ? pendingNewChatModelChoice
+    : options.usePersistedComposerDefaults
+      ? persistedComposerDefaults?.model ?? null
+      : null;
   const activeConnection = activeSession
     ? connections.find((connection) => connection.slug === activeSession.llmConnectionSlug)
     : undefined;
@@ -86,14 +94,12 @@ export function useShellChatModel(options: {
   // explicitly choosing 模型默认 for this one chat, which must beat the
   // configured default or the per-chat picker could not undo it.
   //
-  // The settings value is read here rather than seeded into useState because it
-  // arrives from an async settings fetch, after this hook first mounts — a
-  // useState initializer would silently keep the mount-time `undefined` and the
-  // setting would never take effect. (`persistedComposerDefaults` above can use
-  // an initializer only because it is read synchronously from localStorage.)
-  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel] = useState<
-    ThinkingLevel | null | undefined
-  >(undefined);
+  // The pick carries its target key so a Host or Project switch cannot apply it
+  // to a different execution authority, even for an identically named model.
+  const [pendingNewChatThinkingLevel, setPendingNewChatThinkingLevel] =
+    useNewTaskChoice<ThinkingLevel | null>(
+      options.newTaskKey,
+    );
   const requestedNewChatThinkingLevel =
     pendingNewChatThinkingLevel === undefined
       ? options.defaultThinkingLevel ?? null
@@ -113,13 +119,20 @@ export function useShellChatModel(options: {
     catalogDefault: catalogDefaultNewChatModel,
     choices: chatModelChoices,
   });
-  const activeConnectionLabel = activeSession?.backend === 'fake'
+  // A task whose backend was retired has no model to name (#3211). That verdict
+  // comes from the readiness projection, not from reading `activeSession.backend`
+  // here: the projection is the single authority on whether a task is usable,
+  // and it already answers `fake_backend` for these rows.
+  const isRetiredBackend =
+    options.sessionSendOutcome?.kind === 'blocked' &&
+    options.sessionSendOutcome.reason === 'fake_backend';
+  const activeConnectionLabel = isRetiredBackend
     ? conversationCopy.model.fakeBackendLabel
     : activeConnection?.name ?? activeSession?.llmConnectionSlug;
-  const activeModel = activeSession?.backend === 'fake'
+  const activeModel = isRetiredBackend
     ? undefined
     : activeSession?.model || activeConnection?.defaultModel;
-  const activeModelLabel = activeSession?.backend === 'fake'
+  const activeModelLabel = isRetiredBackend
     ? undefined
     : chatModelChoiceLabel(chatModelChoices, activeSession?.llmConnectionSlug, activeModel);
   const activeThinkingLevels = useMemo(

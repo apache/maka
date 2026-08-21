@@ -138,6 +138,11 @@ describe('plan mid-turn capacity compaction', () => {
       result('res-b', 'cb', 'turn-1'),
     ];
   }
+  // The write gate validates checkpoint structure (#3029), so stub summaries
+  // must be shaped like real checkpoints while keeping their sentinel text.
+  function structuredSummary(body: string): string {
+    return `## Goal\n${body}\n\n## Progress\n- done\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`;
+  }
   function planInput(
     over: Partial<PlanMidTurnCapacityCompactionInput> = {},
   ): PlanMidTurnCapacityCompactionInput {
@@ -151,7 +156,7 @@ describe('plan mid-turn capacity compaction', () => {
       reserveTailEvents: 1,
       charsPerToken: 4,
       now: 1_800_000_010_000,
-      summarize: () => 'A faithful mid-turn summary.',
+      summarize: () => structuredSummary('A faithful mid-turn summary.'),
       ...over,
     };
   }
@@ -269,6 +274,19 @@ describe('plan mid-turn capacity compaction', () => {
     assert.deepEqual(result, { decision: 'fail_open', reason: 'summarizer_failed' });
   });
 
+  test('the write gate rejects a malformed summary from any producer', async () => {
+    // The default summarizer validates its own completions; the write gate
+    // enforces the same invariant for any other producer (#3029).
+    const result = await planMidTurnCapacityCompaction(
+      planInput({ summarize: () => '这不是结构化摘要，而是一段自由文本。' }),
+    );
+    assert.deepEqual(result, {
+      decision: 'fail_open',
+      reason: 'summarizer_failed',
+      diagnosticReason: 'malformed_summary_missing_section',
+    });
+  });
+
   test('fails open with no_safe_completed_span when the pool has no safe cut past the anchor', async () => {
     // Only the head anchor and one open call/result pair; reserving the tail
     // leaves no safe completed span that also covers a step past the anchor.
@@ -328,7 +346,7 @@ describe('plan mid-turn capacity compaction', () => {
         summarize: ({ newlyFoldedRuntimeEvents, previousCheckpoint }) => {
           seenNewlyFolded = newlyFoldedRuntimeEvents.map((event) => event.id);
           assert.equal(previousCheckpoint?.checkpointId, first.checkpoint.checkpointId);
-          return 'rolled-forward summary';
+          return structuredSummary('rolled-forward summary');
         },
       }),
     );

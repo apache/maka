@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { launchMakaCli } from './cli.js';
+import { launchMakaCli } from './cli-core.js';
 
 launchMakaCli({
   dataProfileName: 'Maka Dev',

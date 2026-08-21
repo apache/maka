@@ -74,7 +74,6 @@ function context() {
   return {
     hostEpoch: 'host-epoch',
     connectionId: 'hosted-execution',
-    surface: 'run' as const,
     principal: 'runtime_host' as const,
     acquireResidency: () => ({ release() {} }),
   };

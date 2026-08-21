@@ -1352,6 +1352,41 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       return;
     }
     const terminalBytes = terminalFrameByteBudget(subscriber, this.#hostEpoch);
+    // Assistant text/thinking floods arrive far faster than the
+    // one-awaited-send-at-a-time flush can drain them, and the queue budget
+    // exists to bound memory, not to force eviction. Fold a delta into the
+    // queued tail when it continues the same stream: projectors apply deltas
+    // by absolute startOffset, so a merged frame carries byte-identical
+    // content, and the absorbed frame never spends a sequence, keeping later
+    // frames contiguous. The in-flight head frame is never touched.
+    const tail = subscriber.queue[subscriber.queue.length - 1];
+    if (tail && (!subscriber.pumping || subscriber.queue.length > 1)) {
+      const mergedText = mergeableAssistantDeltaText(tail.frame, frame);
+      if (mergedText !== undefined && tail.frame.kind === 'subscription.session_delta') {
+        const merged: SubscriptionFrame = {
+          ...tail.frame,
+          delta: { ...tail.frame.delta, text: mergedText },
+        };
+        const mergedEncodedBytes = encodeProtocolMessage(merged).byteLength;
+        // Merging must preserve the wire invariants the split path
+        // guarantees per frame: the decoder rejects a delta text beyond
+        // SESSION_LIVE_DELTA_MAX_BYTES and any subscription frame beyond
+        // SESSION_SUBSCRIPTION_FRAME_MAX_BYTES, so an oversized merge would
+        // break the very subscription coalescing tries to preserve. Keep
+        // the next delta as its own frame instead.
+        if (
+          Buffer.byteLength(mergedText, 'utf8') <= SESSION_LIVE_DELTA_MAX_BYTES &&
+          mergedEncodedBytes <= SESSION_SUBSCRIPTION_FRAME_MAX_BYTES &&
+          subscriber.queuedBytes - tail.encodedBytes + mergedEncodedBytes + terminalBytes <=
+            MAX_SUBSCRIBER_QUEUED_BYTES
+        ) {
+          tail.frame = merged;
+          subscriber.queuedBytes += mergedEncodedBytes - tail.encodedBytes;
+          tail.encodedBytes = mergedEncodedBytes;
+          return;
+        }
+      }
+    }
     if (
       subscriber.queue.length >= MAX_SUBSCRIBER_QUEUED_FRAMES - 1 ||
       subscriber.queuedBytes + encodedBytes + terminalBytes > MAX_SUBSCRIBER_QUEUED_BYTES
@@ -1729,6 +1764,33 @@ function terminalFrameByteBudget(subscriber: Subscriber, hostEpoch: string): num
       reason: 'session_removed',
     }).byteLength,
   );
+}
+
+/**
+ * Returns the concatenated text when `next` continues `tail`'s assistant
+ * stream contiguously, making the two frames safe to ship as one. Reset and
+ * completion frames never merge: a reset must land on its own boundary and a
+ * completion closes the stream.
+ */
+function mergeableAssistantDeltaText(
+  tail: SubscriptionFrame,
+  next: SubscriptionFrame,
+): string | undefined {
+  if (tail.kind !== 'subscription.session_delta' || next.kind !== 'subscription.session_delta')
+    return undefined;
+  const a = tail.delta;
+  const b = next.delta;
+  if (
+    a.kind !== b.kind ||
+    a.turnId !== b.turnId ||
+    a.runId !== b.runId ||
+    a.messageId !== b.messageId
+  )
+    return undefined;
+  if (a.complete === true || b.complete === true || a.reset === true || b.reset === true)
+    return undefined;
+  if (a.startOffset + a.text.length !== b.startOffset) return undefined;
+  return a.text + b.text;
 }
 
 function immutableClone<T>(value: T): T {

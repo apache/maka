@@ -26,7 +26,11 @@ import {
   type RuntimeHostTerminalTurn as TerminalTurnSnapshot,
 } from '@maka/runtime-host/adapter';
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
-import { readRuntimeHostResources, readRuntimeHostSessions } from '@maka/runtime-host/client';
+import {
+  readRuntimeHostResources,
+  readRuntimeHostSessions,
+  RuntimeHostOperationError,
+} from '@maka/runtime-host/client';
 import {
   InteractionPendingSnapshot,
   OperationInput,
@@ -36,6 +40,8 @@ import {
   SessionUpdateResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   WorkspaceTarget,
+  type GoalControlAction,
+  type GoalProjection,
 } from '@maka/runtime-host/protocol';
 import {
   RuntimeHostSessionChannel,
@@ -63,6 +69,9 @@ import {
   resolveMoveCwd,
 } from './session-driver-policy.js';
 const MAX_CATALOG_ATTEMPTS = 3;
+
+/** Optimistic-control retries for goal pause/resume/clear (mirrors the desktop client). */
+const GOAL_CONTROL_MAX_ATTEMPTS = 3;
 
 export interface RuntimeHostMakaSessionDriverInput {
   connection: RuntimeHostSessionDriverConnection;
@@ -136,6 +145,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #sessionGeneration = 0;
   #channelGeneration = 0;
   readonly #startedTurnListeners = new Set<(turn: MakaAttachedSessionTurn) => void>();
+  readonly #goalListeners = new Set<(goal: GoalProjection | null) => void>();
   readonly #pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
   readonly #claimedTurnIds = new Set<string>();
   readonly #shellRunListeners = new Set<(update: ShellRunUpdate) => void>();
@@ -620,6 +630,58 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return this.#sessionId;
   }
 
+  getGoal(): GoalProjection | null {
+    // The session subscription's continuity snapshot carries the goal
+    // projection and is folded on every pushed frame, so this read is as
+    // fresh as the host's last broadcast — no RPC, no staleness window.
+    return this.#channel?.snapshot.goal ?? null;
+  }
+
+  subscribeGoalChanges(listener: (goal: GoalProjection | null) => void): () => void {
+    this.#goalListeners.add(listener);
+    return () => this.#goalListeners.delete(listener);
+  }
+
+  async controlGoal(action: GoalControlAction): Promise<GoalProjection | null> {
+    const sessionId = this.#sessionId;
+    if (!sessionId) return null;
+    let goal = this.getGoal();
+    if (!goal) return null;
+    // Optimistic concurrency with the same shape as the desktop client's
+    // clearGoal: expectedRevision guards against a concurrent controller, and
+    // an operation_conflict retries against a freshly queried projection —
+    // the pushed snapshot may lag the conflicting mutation by a frame.
+    const goalId = goal.goalId;
+    for (let attempt = 0; attempt < GOAL_CONTROL_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const result = await this.#request('goal.control', {
+          sessionId,
+          goalId,
+          expectedRevision: goal.revision,
+          action,
+        });
+        return result.goal;
+      } catch (error) {
+        if (!(error instanceof RuntimeHostOperationError) || error.code !== 'operation_conflict') {
+          throw error;
+        }
+        if (attempt === GOAL_CONTROL_MAX_ATTEMPTS - 1) throw error;
+        const current = (await this.#request('goal.query', { sessionId })).goal;
+        if (!current || current.goalId !== goalId) return null;
+        if (current.revision === goal.revision) {
+          // The host folds invalid transitions into operation_conflict too
+          // ("Goal cannot pause from status paused"). Every accepted transition
+          // bumps the revision, so a conflict at an unchanged revision is a
+          // status refusal, not a race — retrying is futile. Surface the host's
+          // reason instead of a misleading "revision conflict" exhaustion error.
+          throw error;
+        }
+        goal = current;
+      }
+    }
+    throw new Error(`Goal ${action} failed without a result`);
+  }
+
   async getContextDiagnostics(): Promise<ContextDiagnostics> {
     if (!this.#sessionId) return { status: 'unavailable', reason: 'no_completed_request' };
     const diagnostics = await this.#request('context.diagnostics.query', {
@@ -729,6 +791,8 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   async #replaceChannel(next: RuntimeHostSessionChannel | undefined): Promise<void> {
     const previous = this.#channel;
     this.#channel = next;
+    const goal = next?.snapshot.goal ?? null;
+    for (const listener of this.#goalListeners) listener(goal);
     await previous?.close().catch(() => undefined);
   }
 
@@ -914,6 +978,12 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn),
       onTranscriptReplaced: (turnId, messages) =>
         this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect'),
+      onGoalChanged: (goal) => {
+        // A closing channel from a previous session can still be draining a
+        // frame when the swap happens; only the live session may publish.
+        if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
+        for (const listener of this.#goalListeners) listener(goal);
+      },
       onRecovered: () => this.#refreshRuntimeResources(sessionId),
     });
   }

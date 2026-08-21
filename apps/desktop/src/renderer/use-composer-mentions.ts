@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { SkillEntry } from '@maka/ui';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
+import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
 
 /**
  * Owns the composer mention popup wiring so app-shell.tsx keeps no inline
@@ -18,6 +19,7 @@ export function useComposerMentions(options: {
   newSessionModel?: { llmConnectionSlug: string; model: string };
   newSessionCollaborationMode?: 'agent' | 'plan';
   newSessionPermissionMode?: ChatDefaultPermissionMode;
+  newTaskTarget?: DesktopNewTaskTarget;
 }): {
   mentionSkills: ReadonlyArray<{ ref?: string; id: string; name: string; description?: string }>;
   searchMentionFiles(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
@@ -29,6 +31,7 @@ export function useComposerMentions(options: {
     newSessionModel,
     newSessionCollaborationMode,
     newSessionPermissionMode,
+    newTaskTarget,
   } = options;
   const [mentionSkills, setMentionSkills] = useState<InvocableSkillEntry[]>([]);
 
@@ -42,15 +45,19 @@ export function useComposerMentions(options: {
     const refresh = () => {
       const version = ++requestVersion;
       setMentionSkills([]);
-      void window.maka.skills.listInvocable(
-        sessionId,
-        sessionId
-          ? undefined
-          : {
-              ...(newSessionModel ?? {}),
-              collaborationMode: newSessionCollaborationMode ?? 'agent',
-            },
-      ).then(
+      const context = {
+        ...(newSessionModel ?? {}),
+        collaborationMode: newSessionCollaborationMode ?? 'agent',
+        ...(newSessionPermissionMode
+          ? { permissionMode: newSessionPermissionMode }
+          : {}),
+      } as const;
+      const request = sessionId
+        ? window.maka.skills.listInvocable(sessionId)
+        : newTaskTarget
+          ? window.maka.newTasks.listInvocableSkills(newTaskTarget, context)
+          : Promise.resolve([]);
+      void request.then(
         (next) => {
           if (!cancelled && version === requestVersion) setMentionSkills(next);
         },
@@ -73,12 +80,14 @@ export function useComposerMentions(options: {
         refresh();
       }
     });
-    const unsubscribeMcp = window.maka.mcp.subscribeChanges(() => refresh());
+    const unsubscribeContext = sessionId
+      ? window.maka.mcp.subscribeChanges(() => refresh())
+      : window.maka.newTasks.subscribeChanges(() => refresh());
     return () => {
       cancelled = true;
       requestVersion += 1;
       unsubscribeSessions();
-      unsubscribeMcp();
+      unsubscribeContext();
     };
   }, [
     projectPath,
@@ -88,12 +97,19 @@ export function useComposerMentions(options: {
     newSessionModel?.model,
     newSessionCollaborationMode,
     newSessionPermissionMode,
+    newTaskTarget?.profileId,
+    newTaskTarget?.hostId,
+    newTaskTarget?.projectId,
   ]);
 
   const searchMentionFiles = useCallback(
     async (query: string): Promise<ReadonlyArray<{ relativePath: string }>> => {
       try {
-        const result = await window.maka.workspace.searchFiles(query, { sessionId });
+        const result = sessionId
+          ? await window.maka.workspace.searchFiles(query, { sessionId })
+          : newTaskTarget
+            ? await window.maka.newTasks.searchFiles(newTaskTarget, query)
+            : { ok: false as const, reason: 'no_project' as const };
         return result.ok ? result.files : [];
       } catch {
         // Fail soft: a failed search just yields an empty list, so the popup
@@ -101,7 +117,12 @@ export function useComposerMentions(options: {
         return [];
       }
     },
-    [sessionId],
+    [
+      sessionId,
+      newTaskTarget?.profileId,
+      newTaskTarget?.hostId,
+      newTaskTarget?.projectId,
+    ],
   );
 
   return { mentionSkills, searchMentionFiles };

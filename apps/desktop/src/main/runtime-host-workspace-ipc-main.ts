@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
-import type { GitReviewMutationAction, GitReviewSource } from '@maka/core/git-review';
+import type { GitReviewSource } from '@maka/core/git-review';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
-import { mutateGitReview, readGitReview } from './git-review-main.js';
+import { readGitReview } from './git-review-main.js';
 import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
@@ -24,22 +24,6 @@ export function registerRuntimeHostWorkspaceIpc(
     const cwd = await sessionWorkspace(input.client, request.sessionId);
     if (!cwd) return { ok: false as const, reason: 'workspace_unavailable' as const };
     return readGitReview(cwd, request.source, undefined, request.baseBranch);
-  });
-
-  input.ipcMain.handle('git-review:mutate', async (_event, raw: unknown) => {
-    if (input.allowLocalWorkspace === false) {
-      return { ok: false as const, reason: 'git_failed' as const };
-    }
-    const request = mutateRequest(raw);
-    const cwd = await sessionWorkspace(input.client, request.sessionId);
-    if (!cwd) return { ok: false as const, reason: 'git_failed' as const };
-    return mutateGitReview({
-      cwd,
-      source: request.source,
-      revision: request.revision,
-      path: request.path,
-      action: request.action,
-    });
   });
 }
 
@@ -74,35 +58,6 @@ function readRequest(value: unknown): {
     sessionId,
     source: record.source,
     ...(typeof baseBranch === 'string' ? { baseBranch } : {}),
-  };
-}
-
-function mutateRequest(value: unknown): {
-  sessionId: string;
-  source: Extract<GitReviewSource, 'unstaged' | 'staged'>;
-  revision: string;
-  path: string;
-  action: GitReviewMutationAction;
-} {
-  const record = requiredRecord(value, 'Git review mutation');
-  const sessionId = requiredString(record.sessionId, 'Session id');
-  if (record.source !== 'unstaged' && record.source !== 'staged') {
-    throw new Error('Invalid Git review mutation source');
-  }
-  if (typeof record.revision !== 'string' || !/^[a-f0-9]{64}$/u.test(record.revision)) {
-    throw new Error('Invalid Git review revision');
-  }
-  const path = requiredString(record.path, 'Git review path');
-  if (path.length > 4096) throw new Error('Invalid Git review path');
-  if (record.action !== 'stage' && record.action !== 'unstage' && record.action !== 'revert') {
-    throw new Error('Invalid Git review mutation action');
-  }
-  return {
-    sessionId,
-    source: record.source,
-    revision: record.revision,
-    path,
-    action: record.action,
   };
 }
 

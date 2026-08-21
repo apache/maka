@@ -11,7 +11,7 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
     isArchived: true,
     labels: [],
     hasUnread: false,
-    status: 'archived',
+    status: 'active',
     backend: 'fake',
     llmConnectionSlug: 'test',
     connectionLocked: true,
@@ -21,14 +21,9 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
   };
 }
 
-/**
- * A task that left the archive. Both fields move together because that is what
- * `SessionStore.unarchive` writes; flipping only `isArchived` would build a row
- * the store cannot produce, and the sweep would then be tested against a state
- * it will never meet.
- */
+/** A task that left the archive while retaining its independent execution status. */
 function restored(id: string): SessionSummary {
-  return summary(id, { isArchived: false, status: 'active' });
+  return summary(id, { isArchived: false });
 }
 
 type SweepHarness = {

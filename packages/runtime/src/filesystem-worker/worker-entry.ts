@@ -49,6 +49,7 @@ async function main(): Promise<void> {
   writeResponse(
     await executeFilesystemWorkerRequest(parsed.data, {
       grepExecutable: readOption('--grep-executable'),
+      windowsSandboxed: process.env.MAKA_WINDOWS_SANDBOX === '1',
     }),
   );
 }

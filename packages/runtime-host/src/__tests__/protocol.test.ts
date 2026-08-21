@@ -40,8 +40,62 @@ import {
 } from '../protocol/turn.js';
 
 describe('Runtime Host bootstrap protocol', () => {
-  test('publishes a new compatibility epoch for legacy Automation provenance', () => {
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 21);
+  test('decodes a Client hello without a surface identity', () => {
+    const hello = {
+      kind: 'hello',
+      clientInstanceId: 'client-without-surface',
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+    } as const;
+
+    assert.deepEqual(decodeClientFrame(hello), hello);
+  });
+
+  test('ignores a legacy surface identity while decoding a Client hello', () => {
+    const hello = {
+      kind: 'hello',
+      clientInstanceId: 'legacy-surface-client',
+      surface: 'tui',
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+    } as const;
+
+    const { surface: _legacySurface, ...expected } = hello;
+    assert.deepEqual(decodeClientFrame(hello), expected);
+  });
+
+  test('publishes a new compatibility epoch for Session catalog live-run state', () => {
+    // Epoch 22 predates the live-run projection and rejects its added catalog
+    // field, so mixed-version peers must fail during the handshake instead.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 22);
+  });
+
+  test('rejects the legacy connection update result in the current compatibility epoch', () => {
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'connection-update-legacy',
+          operation: 'connection.catalog.update',
+          ok: true,
+          result: {
+            kind: 'invalid_default_target',
+            target: { connectionId: '2a42da77-afac-4fb1-bff1-e7d6e6e55e9f', modelId: 'gpt-5' },
+          },
+        }),
+      isInvalidFrame,
+    );
+  });
+
+  test('publishes a new compatibility epoch for external Session import state', () => {
+    // Epoch 25 added authoritative live run state. Requiring importState on
+    // external catalog items is another closed wire-schema change, so Clients
+    // and Hosts from epoch 25 must fail the handshake instead of decoding each
+    // other's catalog responses asymmetrically.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 25);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -52,7 +106,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('keeps the subscription queue Epoch correlated', () => {
-    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 3);
+    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 4);
     const opened = {
       requestId: 'open-1',
       operation: 'subscription.open',
@@ -143,6 +197,27 @@ describe('Runtime Host bootstrap protocol', () => {
         SUBSCRIPTION_OPEN_RESULT_MAX_BYTES,
     );
     assert.throws(() => decodeHostFrame(oversized), isInvalidFrame);
+  });
+
+  test('normalizes legacy Session statuses in continuity snapshots', () => {
+    for (const status of ['review', 'done']) {
+      const decoded = decodeSessionContinuitySnapshot({
+        ...continuitySnapshot('epoch-1'),
+        session: { ...continuitySnapshot('epoch-1').session, status },
+      });
+      assert.equal(decoded.session.status, 'active');
+    }
+  });
+
+  test('rejects unknown Session statuses in continuity snapshots', () => {
+    assert.throws(
+      () =>
+        decodeSessionContinuitySnapshot({
+          ...continuitySnapshot('epoch-1'),
+          session: { ...continuitySnapshot('epoch-1').session, status: 'unknown' },
+        }),
+      isInvalidSessionStatus,
+    );
   });
 
   test('decodes only privacy-normalized bounded subscription live frames', () => {
@@ -1289,6 +1364,10 @@ describe('Runtime Host bootstrap protocol', () => {
 
 function isInvalidFrame(error: unknown): boolean {
   return error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame';
+}
+
+function isInvalidSessionStatus(error: unknown): boolean {
+  return error instanceof RuntimeHostProtocolError && error.message === 'Invalid Session status';
 }
 
 function queuedMessage(

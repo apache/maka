@@ -10,13 +10,16 @@
  * 7/9/10/11, identify+heartbeat lifecycle); only the auth scheme + dispatch
  * event names differ. Auth uses `QQBot <access_token>` (the app access
  * token from getAppAccessToken), refreshed before expiry.
+ *
+ * Gateway plumbing (opcodes, heartbeat, identify/resume, reconnect)
+ * lives in GatewayBridgeBase; this class supplies QQ's token refresh,
+ * identify/resume payloads, dispatch event mapping, and REST send routes.
  */
 
-import { WebSocket } from 'undici';
-import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
+import { GatewayBridgeBase } from './gateway-bridge-base.js';
 import { proxiedFetch } from './proxied-fetch.js';
-import type { BotPlatform, BotSendOptions, BotStatus, SendCapable } from './types.js';
+import type { BotSendOptions, SendCapable } from './types.js';
+import type { WsCloseDecision } from './ws-bridge-base.js';
 
 const QQ_API = 'https://api.sgroup.qq.com';
 const QQ_BOT_TOKEN = 'https://bots.qq.com/app/getAppAccessToken';
@@ -35,19 +38,8 @@ const QQ_INTENTS =
   QQ_INTENT_PUBLIC_MESSAGES;
 
 const TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1_000;
-const RECONNECT_DELAY_MIN_MS = 1_000;
-const RECONNECT_DELAY_MAX_MS = 30_000;
 const SEND_RETRY_DELAY_MIN_MS = 1_000;
 const SEND_RETRY_DELAY_MAX_MS = 30_000;
-
-const OP_DISPATCH = 0;
-const OP_HEARTBEAT = 1;
-const OP_IDENTIFY = 2;
-const OP_RESUME = 6;
-const OP_RECONNECT = 7;
-const OP_INVALID_SESSION = 9;
-const OP_HELLO = 10;
-const OP_HEARTBEAT_ACK = 11;
 
 // QQ uses these dispatch event types for message arrival.
 const QQ_EVENT_AT_MESSAGE = 'AT_MESSAGE_CREATE';
@@ -99,11 +91,6 @@ export function decideQQClose(code: number, explicitlyStopped: boolean): QQClose
   if (QQ_FATAL_CLOSE_CODES.has(code)) return { kind: 'fatal', code };
   const resumable = code !== 1000 && code !== 1001;
   return { kind: 'reconnect', resumable };
-}
-
-function qqReconnectBackoffMs(attempts: number): number {
-  const exp = Math.min(2 ** attempts, RECONNECT_DELAY_MAX_MS / RECONNECT_DELAY_MIN_MS);
-  return Math.min(RECONNECT_DELAY_MIN_MS * exp, RECONNECT_DELAY_MAX_MS);
 }
 
 /**
@@ -292,53 +279,101 @@ interface CachedToken {
   expiresAt: number;
 }
 
-export class QQBotBridge extends BaseBotAdapter implements SendCapable {
-  private ws: WebSocket | null = null;
-  private heartbeatTimer: NodeJS.Timeout | null = null;
-  private heartbeatInterval = 41_250;
-  private heartbeatAcked = true;
-  private seq: number | null = null;
-  private sessionId: string | null = null;
+export class QQBotBridge extends GatewayBridgeBase implements SendCapable {
   private token: CachedToken | null = null;
-  private explicitlyStopped = false;
-  private reconnectAttempts = 0;
-  private reconnectTimer: NodeJS.Timeout | null = null;
 
-  constructor(platform: BotPlatform, settings: BotChannelSettings) {
-    super(platform, settings);
+  protected override checkCredentials(): string | null {
+    return this.settings.appId?.trim() && this.settings.appSecret?.trim() ? null : 'no-credentials';
   }
 
-  async start(): Promise<void> {
-    if (this.running) return;
-    if (!this.settings.enabled) {
-      this.reason = 'disabled';
-      this.readiness = 'scaffolded';
-      return;
-    }
-    if (!this.settings.appId?.trim() || !this.settings.appSecret?.trim()) {
-      this.reason = 'no-credentials';
-      this.readiness = 'scaffolded';
-      return;
-    }
-    this.explicitlyStopped = false;
-    await this.startGateway();
+  protected override decideClose(code: number, explicitlyStopped: boolean): WsCloseDecision {
+    return decideQQClose(code, explicitlyStopped);
   }
 
-  async stop(): Promise<void> {
-    this.explicitlyStopped = true;
-    this.running = false;
-    this.clearHeartbeat();
-    this.clearReconnect();
-    if (this.ws) {
-      try {
-        this.ws.close(1000);
-      } catch {
-        /* swallow */
+  protected override async fetchGatewayUrl(): Promise<string | null> {
+    const token = await this.refreshTokenIfNeeded();
+    if (!token) {
+      this.readiness = 'configured';
+      this.emitStatusChange();
+      return null;
+    }
+    try {
+      const response = await proxiedFetch(`${QQ_API}/gateway/bot`, {
+        method: 'GET',
+        headers: { Authorization: `QQBot ${token}` },
+        timeoutMs: 10_000,
+      });
+      const json = (await response.json().catch(() => null)) as { url?: unknown } | null;
+      if (!response.ok || !json || typeof json.url !== 'string') {
+        this.reason = `gateway-bot-${response.status}`;
+        this.readiness = 'configured';
+        this.emitStatusChange();
+        return null;
       }
-      this.ws = null;
+      return json.url;
+    } catch (error) {
+      this.reason = error instanceof Error ? error.message : String(error);
+      this.readiness = 'configured';
+      this.emitStatusChange();
+      return null;
     }
-    this.reason = 'stopped';
-    this.readiness = botReadinessFromSettings(this.settings);
+  }
+
+  protected override async buildIdentifyPayload(): Promise<Record<string, unknown> | null> {
+    const token = await this.refreshTokenIfNeeded();
+    if (!token) return null;
+    return {
+      token: `QQBot ${token}`,
+      intents: QQ_INTENTS,
+      shard: [0, 1],
+      properties: { $os: 'linux', $browser: 'maka', $device: 'maka' },
+    };
+  }
+
+  protected override async buildResumePayload(): Promise<Record<string, unknown> | null> {
+    const token = await this.refreshTokenIfNeeded();
+    if (!token) return null;
+    return {
+      token: `QQBot ${token}`,
+      session_id: this.sessionId,
+      seq: this.seq,
+    };
+  }
+
+  protected override onDispatch(type: string, d: unknown): void {
+    if (type === 'READY') {
+      const ready = d as QQReadyPayload;
+      this.sessionId = ready.session_id;
+      this.identity = {
+        id: String(ready.user.id),
+        username: ready.user.username,
+        displayName: ready.user.username,
+      };
+      this.promoteToOperational();
+      return;
+    }
+    if (type === 'RESUMED') {
+      this.promoteToOperational();
+      return;
+    }
+    const receivedAt = Date.now();
+    let event: ReturnType<typeof qqChannelMessageToEvent> = null;
+    if (type === QQ_EVENT_AT_MESSAGE) {
+      event = qqChannelMessageToEvent(d as QQChannelMessagePayload, receivedAt);
+    } else if (type === QQ_EVENT_DIRECT_MESSAGE) {
+      // DMs use the channel-message shape.
+      const channelLike = qqChannelMessageToEvent(d as QQChannelMessagePayload, receivedAt);
+      if (channelLike) {
+        event = { ...channelLike, isGroup: false, chatId: `dm:${channelLike.chatId}` };
+      }
+    } else if (type === QQ_EVENT_GROUP_AT_MESSAGE) {
+      event = qqGroupMessageToEvent(d as QQGroupMessagePayload, receivedAt);
+    } else if (type === QQ_EVENT_C2C_MESSAGE) {
+      event = qqC2CMessageToEvent(d as QQC2CMessagePayload, receivedAt);
+    }
+    if (!event) return;
+    this.lastEventAt = event.receivedAt;
+    this.emitIncomingMessage(event);
     this.emitStatusChange();
   }
 
@@ -395,10 +430,6 @@ export class QQBotBridge extends BaseBotAdapter implements SendCapable {
     } catch {
       return false;
     }
-  }
-
-  protected override connectionKind(): BotStatus['connection'] {
-    return 'gateway';
   }
 
   private async performSend(
@@ -459,272 +490,6 @@ export class QQBotBridge extends BaseBotAdapter implements SendCapable {
       this.reason = error instanceof Error ? error.message : String(error);
       return null;
     }
-  }
-
-  private async startGateway(): Promise<void> {
-    const token = await this.refreshTokenIfNeeded();
-    if (!token) {
-      this.readiness = 'configured';
-      this.emitStatusChange();
-      this.scheduleReconnect();
-      return;
-    }
-    try {
-      const response = await proxiedFetch(`${QQ_API}/gateway/bot`, {
-        method: 'GET',
-        headers: { Authorization: `QQBot ${token}` },
-        timeoutMs: 10_000,
-      });
-      const json = (await response.json().catch(() => null)) as { url?: unknown } | null;
-      if (!response.ok || !json || typeof json.url !== 'string') {
-        this.reason = `gateway-bot-${response.status}`;
-        this.readiness = 'configured';
-        this.emitStatusChange();
-        this.scheduleReconnect();
-        return;
-      }
-      this.connect(json.url);
-    } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
-      this.readiness = 'configured';
-      this.emitStatusChange();
-      this.scheduleReconnect();
-    }
-  }
-
-  private connect(url: string): void {
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(url);
-    } catch (error) {
-      this.reason = error instanceof Error ? error.message : String(error);
-      this.readiness = 'configured';
-      this.emitStatusChange();
-      this.scheduleReconnect();
-      return;
-    }
-    this.ws = ws;
-    ws.addEventListener('open', () => {
-      this.running = true;
-      this.startedAt = Date.now();
-    });
-    ws.addEventListener('message', (event: { data: unknown }) => {
-      const data = event.data;
-      this.handlePayload(typeof data === 'string' ? data : String(data));
-    });
-    ws.addEventListener('close', (event: { code: number; reason: string }) => {
-      this.handleClose(event.code, event.reason);
-    });
-    ws.addEventListener('error', () => {
-      // The close event fires immediately after; no separate handling.
-    });
-  }
-
-  private handlePayload(data: string): void {
-    let payload: { op?: number; s?: number | null; t?: string; d?: unknown };
-    try {
-      payload = JSON.parse(data);
-    } catch {
-      return;
-    }
-    if (typeof payload.s === 'number') this.seq = payload.s;
-    switch (payload.op) {
-      case OP_HELLO:
-        this.onHello(payload.d as { heartbeat_interval: number });
-        break;
-      case OP_HEARTBEAT_ACK:
-        this.heartbeatAcked = true;
-        break;
-      case OP_DISPATCH:
-        this.onDispatch(payload.t ?? '', payload.d);
-        break;
-      case OP_HEARTBEAT:
-        this.sendHeartbeat();
-        break;
-      case OP_RECONNECT:
-        this.forceReconnect(true);
-        break;
-      case OP_INVALID_SESSION:
-        this.forceReconnect(payload.d === true);
-        break;
-    }
-  }
-
-  private onHello(d: { heartbeat_interval: number }): void {
-    this.heartbeatInterval = d.heartbeat_interval;
-    this.heartbeatAcked = true;
-    this.scheduleHeartbeat(Math.random() * d.heartbeat_interval);
-    if (this.sessionId && this.seq !== null) {
-      this.sendResume();
-    } else {
-      void this.sendIdentify();
-    }
-  }
-
-  private async sendIdentify(): Promise<void> {
-    const token = await this.refreshTokenIfNeeded();
-    if (!token) return;
-    this.send({
-      op: OP_IDENTIFY,
-      d: {
-        token: `QQBot ${token}`,
-        intents: QQ_INTENTS,
-        shard: [0, 1],
-        properties: { $os: 'linux', $browser: 'maka', $device: 'maka' },
-      },
-    });
-  }
-
-  private async sendResume(): Promise<void> {
-    const token = await this.refreshTokenIfNeeded();
-    if (!token) return;
-    this.send({
-      op: OP_RESUME,
-      d: {
-        token: `QQBot ${token}`,
-        session_id: this.sessionId,
-        seq: this.seq,
-      },
-    });
-  }
-
-  private sendHeartbeat(): void {
-    if (!this.ws) return;
-    if (!this.heartbeatAcked) {
-      this.forceReconnect(true);
-      return;
-    }
-    this.heartbeatAcked = false;
-    this.send({ op: OP_HEARTBEAT, d: this.seq });
-  }
-
-  private scheduleHeartbeat(initialDelay: number): void {
-    this.clearHeartbeat();
-    const initial = setTimeout(() => {
-      this.sendHeartbeat();
-      this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), this.heartbeatInterval);
-      this.heartbeatTimer.unref?.();
-    }, initialDelay);
-    initial.unref?.();
-  }
-
-  private onDispatch(type: string, d: unknown): void {
-    if (type === 'READY') {
-      const ready = d as QQReadyPayload;
-      this.sessionId = ready.session_id;
-      this.identity = {
-        id: String(ready.user.id),
-        username: ready.user.username,
-        displayName: ready.user.username,
-      };
-      this.readiness = 'operational';
-      this.reason = undefined;
-      this.reconnectAttempts = 0;
-      this.emitStatusChange();
-      return;
-    }
-    if (type === 'RESUMED') {
-      this.readiness = 'operational';
-      this.reason = undefined;
-      this.reconnectAttempts = 0;
-      this.emitStatusChange();
-      return;
-    }
-    const receivedAt = Date.now();
-    let event: ReturnType<typeof qqChannelMessageToEvent> = null;
-    if (type === QQ_EVENT_AT_MESSAGE) {
-      event = qqChannelMessageToEvent(d as QQChannelMessagePayload, receivedAt);
-    } else if (type === QQ_EVENT_DIRECT_MESSAGE) {
-      // DMs use the channel-message shape.
-      const channelLike = qqChannelMessageToEvent(d as QQChannelMessagePayload, receivedAt);
-      if (channelLike) {
-        event = { ...channelLike, isGroup: false, chatId: `dm:${channelLike.chatId}` };
-      }
-    } else if (type === QQ_EVENT_GROUP_AT_MESSAGE) {
-      event = qqGroupMessageToEvent(d as QQGroupMessagePayload, receivedAt);
-    } else if (type === QQ_EVENT_C2C_MESSAGE) {
-      event = qqC2CMessageToEvent(d as QQC2CMessagePayload, receivedAt);
-    }
-    if (!event) return;
-    this.lastEventAt = event.receivedAt;
-    this.emitIncomingMessage(event);
-    this.emitStatusChange();
-  }
-
-  private send(payload: object): void {
-    if (!this.ws || this.ws.readyState !== 1) return;
-    try {
-      this.ws.send(JSON.stringify(payload));
-    } catch {
-      // Swallow — close handler will fire if the socket died.
-    }
-  }
-
-  private clearHeartbeat(): void {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
-  }
-
-  private clearReconnect(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-  }
-
-  private handleClose(code: number, reason: string): void {
-    this.clearHeartbeat();
-    this.ws = null;
-    this.running = false;
-    const decision = decideQQClose(code, this.explicitlyStopped);
-    if (decision.kind === 'stopped') return;
-    if (decision.kind === 'fatal') {
-      this.readiness = 'configured';
-      this.reason = `gateway-closed-${code}`;
-      this.sessionId = null;
-      this.seq = null;
-      this.emitStatusChange();
-      return;
-    }
-    if (!decision.resumable) {
-      this.sessionId = null;
-      this.seq = null;
-    }
-    this.readiness = 'degraded';
-    this.reason = reason || `gateway-closed-${code}`;
-    this.emitStatusChange();
-    this.scheduleReconnect();
-  }
-
-  private forceReconnect(resumable: boolean): void {
-    if (!resumable) {
-      this.sessionId = null;
-      this.seq = null;
-    }
-    if (this.ws) {
-      try {
-        this.ws.close();
-      } catch {
-        /* swallow */
-      }
-      this.ws = null;
-    }
-    this.clearHeartbeat();
-    this.scheduleReconnect();
-  }
-
-  private scheduleReconnect(): void {
-    if (this.explicitlyStopped) return;
-    this.clearReconnect();
-    const delay = qqReconnectBackoffMs(this.reconnectAttempts);
-    this.reconnectAttempts += 1;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      void this.startGateway();
-    }, delay);
-    this.reconnectTimer.unref?.();
   }
 }
 

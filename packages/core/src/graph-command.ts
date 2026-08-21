@@ -2,6 +2,7 @@ import type { OrchestrationMode } from './orchestration.js';
 
 export type ParsedGraphCommand =
   | { kind: 'status' }
+  | { kind: 'history' }
   | { kind: 'set_mode'; mode: OrchestrationMode }
   | { kind: 'run_once'; task: string };
 
@@ -13,6 +14,7 @@ export function parseGraphCommand(input: string): ParsedGraphCommand | null {
 
   const tail = trimmed.slice(commandToken.length).trim();
   if (!tail || tail === 'status') return { kind: 'status' };
+  if (tail === 'history') return { kind: 'history' };
   if (tail === 'on') return { kind: 'set_mode', mode: 'graph' };
   if (tail === 'off') return { kind: 'set_mode', mode: 'default' };
   return { kind: 'run_once', task: tail };

@@ -16,8 +16,6 @@ export type McpToolCallPreparationState =
  * manager's immutable Tool snapshot and always happens before the wire call.
  */
 export class McpToolCallPreparer {
-  private readonly outputSchemas = new AjvJsonSchemaValidator();
-
   prepare(definition: Tool): McpToolCallPreparationState {
     try {
       const definitionForSdk = structuredClone(definition);
@@ -25,7 +23,11 @@ export class McpToolCallPreparer {
       if (definition.outputSchema === undefined) {
         return { ok: true, value: { definitionForSdk } };
       }
-      const validateOutput = this.outputSchemas.getValidator<unknown>(
+      // `$id` is schema-local identity. Reusing one SDK validator cache would
+      // let two independently advertised Tools share the first schema
+      // registered under the same `$id`, whichever server connected first.
+      // Compile per preparation so each published Tool owns its validator.
+      const validateOutput = new AjvJsonSchemaValidator().getValidator<unknown>(
         structuredClone(definition.outputSchema),
       );
       return { ok: true, value: { definitionForSdk, validateOutput } };

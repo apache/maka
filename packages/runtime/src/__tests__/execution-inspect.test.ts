@@ -22,7 +22,6 @@ describe('versioned execution inspect documents', () => {
       const runtimeStore = createWorkspaceRuntimeStore(root);
       const session = await sessionStore.create({
         cwd: '/tmp/workspace',
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',

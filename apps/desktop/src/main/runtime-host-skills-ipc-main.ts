@@ -43,6 +43,9 @@ interface RuntimeHostSkillsIpcDeps {
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
   readonly getSelectedWorkspaceTarget: () => Promise<WorkspaceTarget | undefined>;
+  readonly resolveNewSessionWorkspaceTarget: (
+    projectId: string | null | undefined,
+  ) => Promise<WorkspaceTarget | undefined>;
   readonly getDefaultPermissionMode: () => Promise<ChatDefaultPermissionMode>;
   readonly openPath: (path: string) => Promise<string>;
   readonly allowLocalPaths?: boolean;
@@ -88,14 +91,17 @@ export function registerRuntimeHostSkillsIpc(
       if (typeof sessionId === "string") {
         target = { kind: "session" as const, sessionId };
       } else {
-        const workspace = await deps.getSelectedWorkspaceTarget();
+        const projectId = normalizeNewSessionProjectId(newSessionContext);
+        const workspace = await deps.resolveNewSessionWorkspaceTarget(projectId);
         if (!workspace) return [];
         target = {
           kind: "new_session" as const,
           context: { workspace },
           collaborationMode:
             normalizeNewSessionCollaborationMode(newSessionContext) ?? "agent",
-          permissionMode: await deps.getDefaultPermissionMode(),
+          permissionMode:
+            normalizeNewSessionPermissionMode(newSessionContext) ??
+            await deps.getDefaultPermissionMode(),
         };
       }
       return (await deps.client.listInvocableSkills(target)).map(
@@ -184,22 +190,6 @@ export function registerRuntimeHostSkillsIpc(
       return installSkill(deps, "managed", sourceId);
     },
   );
-
-  handleReconnectableRead(deps.ipcMain, "skills:details", async (_event, idOrRef: string) => {
-    const projection = await loadGovernance(
-      deps,
-      await requireSelectedWorkspaceTarget(deps),
-    );
-    const resolved = resolveGovernanceItem(projection.items, idOrRef);
-    if (!resolved.ok) return resolved;
-    return {
-      ok: true as const,
-      details: toSkillDetails(
-        resolved.item,
-        projection.paths.get(resolved.item.ref) ?? "",
-      ),
-    };
-  });
 
   handleReconnectableRead(
     deps.ipcMain,
@@ -292,23 +282,6 @@ export function registerRuntimeHostSkillsIpc(
     },
   );
 
-  deps.ipcMain.handle("skills:createStarter", async () => {
-    const { result, workspace } = await mutateSkill(deps, "governance", {
-      kind: "create_starter",
-    });
-    if (result.kind === "rejected")
-      return { ok: false as const, reason: mapMutationReason(result.reason) };
-    if (!result.entry)
-      throw new Error("Runtime Host did not project the starter Skill");
-    const path = await resolveProjectedPath(deps, workspace.hostCwd, result.entry.ref);
-    return {
-      ok: true as const,
-      created: result.kind === "committed",
-      skill: toSkillEntry(result.entry, path),
-      filePath: path,
-    };
-  });
-
   deps.ipcMain.handle("skills:delete", async (_event, idOrRef: string) => {
     const { result } = await mutateResolvedSkillRaw(
       deps,
@@ -395,6 +368,21 @@ function normalizeNewSessionCollaborationMode(
   if (!input || typeof input !== "object" || Array.isArray(input)) return;
   const value = (input as Record<string, unknown>).collaborationMode;
   return value === "agent" || value === "plan" ? value : undefined;
+}
+
+function normalizeNewSessionPermissionMode(
+  input: unknown,
+): ChatDefaultPermissionMode | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return;
+  const value = (input as Record<string, unknown>).permissionMode;
+  return value === "ask" || value === "bypass" ? value : undefined;
+}
+
+function normalizeNewSessionProjectId(input: unknown): string | null | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return;
+  const value = (input as Record<string, unknown>).projectId;
+  if (value === null) return null;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function resolveGovernanceItem(

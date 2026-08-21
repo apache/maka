@@ -19,7 +19,7 @@ import type {
 import type { InteractionClosureReason } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
 import type { SandboxBoundaryResponse, SandboxBoundarySettlement } from './sandbox-boundary.js';
-import type { StoredMessage, BackendKind } from './session.js';
+import type { StoredMessage, PersistedBackendKind } from './session.js';
 import type { UserQuestionResponse } from './user-question.js';
 import type { ContextBudgetDiagnostic } from './usage-stats/types.js';
 import type { EffectiveOrchestration } from './orchestration.js';
@@ -181,7 +181,7 @@ export type BackendSessionEvent = Exclude<
 >;
 
 export interface AgentBackend {
-  readonly kind: BackendKind;
+  readonly kind: PersistedBackendKind;
   readonly sessionId: string;
   send(input: BackendSendInput): AsyncIterable<SessionEvent>;
   compactHistory?(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult>;

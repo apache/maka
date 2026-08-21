@@ -1,8 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { access, mkdir } from 'node:fs/promises';
-import { createServer } from 'node:net';
+import { access, mkdir, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 // `timeoutMs` is opt-in, for the commands that have actually hung: node-pty
@@ -74,21 +73,52 @@ export async function assertMissing(path) {
   throw new Error(`Forbidden release resource exists: ${path}`);
 }
 
-async function reserveTcpPort() {
-  const server = createServer();
-  await new Promise((resolvePromise, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolvePromise);
+/**
+ * The authoritative CDP port: Chromium announces it on stderr once the
+ * DevTools socket is actually bound. Callers spawn with
+ * `--remote-debugging-port=0` and wait for this instead of pre-reserving a
+ * port — reserve-then-release had a race window in which another process
+ * could take the port, leaving Electron listening elsewhere while the
+ * verifier polled the stale number for its full deadline ("did not expose
+ * CDP ... fetch failed", observed repeatedly on busy CI runners).
+ */
+export function waitForDevToolsPort(child, { timeoutMs = 30_000 } = {}) {
+  return new Promise((resolvePromise, reject) => {
+    let buffer = '';
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.stderr.off('data', onData);
+      child.off('exit', onExit);
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(
+        new Error(
+          `Packaged Maka did not announce a DevTools port within ${timeoutMs}ms.` +
+            `${buffer.trim() ? `\n${buffer.trim()}` : ''}`,
+        ),
+      );
+    }, timeoutMs);
+    const onData = (chunk) => {
+      buffer = `${buffer}${chunk}`.slice(-16_384);
+      const match = /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//.exec(buffer);
+      if (match) {
+        cleanup();
+        resolvePromise(Number(match[1]));
+      }
+    };
+    const onExit = () => {
+      cleanup();
+      reject(
+        new Error(
+          `Packaged Maka exited before announcing a DevTools port.` +
+            `${buffer.trim() ? `\n${buffer.trim()}` : ''}`,
+        ),
+      );
+    };
+    child.stderr.on('data', onData);
+    child.once('exit', onExit);
   });
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    server.close();
-    throw new Error('Could not reserve a CDP port.');
-  }
-  await new Promise((resolvePromise, reject) => {
-    server.close((error) => (error ? reject(error) : resolvePromise()));
-  });
-  return address.port;
 }
 
 function delay(milliseconds) {
@@ -97,15 +127,24 @@ function delay(milliseconds) {
   });
 }
 
-async function findRendererTarget(port, child) {
-  const deadline = Date.now() + 30_000;
+// The default deadline is generous on purpose: windows-2025 runners have shown
+// first-page creation taking beyond 30 seconds when a smoke follows multiple
+// installs in the same job, and a too-tight deadline fails a good build. The
+// wait is still bounded and fail-closed; a dead child short-circuits it.
+export async function findRendererTarget(port, child, { timeoutMs = 90_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(`Packaged Maka exited before its renderer was ready.`);
     }
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/list`);
+      // A connect that hangs (half-open or filtered socket) would otherwise
+      // run into the OS connect timeout and overshoot the stated deadline by
+      // minutes — observed as a ~6-minute "90 seconds" failure on CI.
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`, {
+        signal: AbortSignal.timeout(2_000),
+      });
       if (response.ok) {
         const targets = await response.json();
         const page = targets.find(
@@ -118,34 +157,91 @@ async function findRendererTarget(port, child) {
     }
     await delay(250);
   }
+  // `fetch failed` alone says nothing; the cause chain carries the socket
+  // errno (ECONNREFUSED vs ETIMEDOUT vs ECONNRESET), which is the evidence
+  // that distinguishes "DevTools never listened" from "something filtered it".
+  const described = [];
+  for (let error = lastError; error; error = error.cause) {
+    if (Array.isArray(error.errors) && error.errors.length) {
+      described.push(error.errors.map((inner) => inner.message ?? String(inner)).join(' & '));
+    } else {
+      described.push(error.message ?? String(error));
+    }
+  }
   throw new Error(
-    `Packaged Maka renderer did not expose CDP within 30 seconds${
-      lastError ? `: ${lastError.message}` : ''
+    `Packaged Maka renderer did not expose CDP within ${Math.round(timeoutMs / 1000)} seconds${
+      described.length ? `: ${described.join(' <- ')}` : ''
     }.`,
   );
 }
 
-async function evaluateRenderer(webSocketDebuggerUrl) {
+/**
+ * Evaluate one expression in a renderer over CDP and return its
+ * `returnByValue` result. `awaitPromise` resolves a returned promise before
+ * reporting, which is how the auto-update harness drives `window.maka.app`
+ * calls; the plain smoke below keeps its original synchronous expression.
+ */
+export async function evaluateInRenderer(
+  webSocketDebuggerUrl,
+  expression,
+  { awaitPromise = false, timeoutMs = 10_000 } = {},
+) {
   if (typeof WebSocket !== 'function') {
     throw new Error('The release verifier requires Node.js WebSocket support.');
   }
   const socket = new WebSocket(webSocketDebuggerUrl);
-  await new Promise((resolvePromise, reject) => {
-    socket.addEventListener('open', resolvePromise, { once: true });
-    socket.addEventListener('error', reject, { once: true });
-  });
+  try {
+    // The handshake needs its own bound: a DevTools port that accepts TCP
+    // but never speaks raises neither `open` nor `error`, and an unbounded
+    // await here would make every retry loop built on this helper hang to
+    // the workflow timeout instead of failing one probe.
+    await new Promise((resolvePromise, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`CDP WebSocket did not open within ${timeoutMs}ms.`));
+      }, timeoutMs);
+      socket.addEventListener(
+        'open',
+        () => {
+          clearTimeout(timeout);
+          resolvePromise();
+        },
+        { once: true },
+      );
+      socket.addEventListener(
+        'error',
+        (event) => {
+          clearTimeout(timeout);
+          reject(event.error ?? new Error('CDP WebSocket connection failed.'));
+        },
+        { once: true },
+      );
+    });
+  } catch (error) {
+    socket.close();
+    throw error;
+  }
 
   try {
     return await new Promise((resolvePromise, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('CDP renderer evaluation timed out.'));
-      }, 10_000);
+      }, timeoutMs);
       socket.addEventListener('message', (event) => {
         const message = JSON.parse(String(event.data));
         if (message.id !== 1) return;
         clearTimeout(timeout);
         if (message.error) {
           reject(new Error(message.error.message));
+          return;
+        }
+        if (message.result?.exceptionDetails) {
+          reject(
+            new Error(
+              message.result.exceptionDetails.exception?.description ??
+                message.result.exceptionDetails.text ??
+                'Renderer evaluation threw.',
+            ),
+          );
           return;
         }
         resolvePromise(message.result?.result?.value);
@@ -155,14 +251,9 @@ async function evaluateRenderer(webSocketDebuggerUrl) {
           id: 1,
           method: 'Runtime.evaluate',
           params: {
-            expression: `({
-              readyState: document.readyState,
-              hasBridge: Boolean(window.maka),
-              hasRoot: Boolean(document.querySelector('#root')),
-              hasPreloadSkeleton: Boolean(document.querySelector('#root > .maka-preload')),
-              hasAppShell: Boolean(document.querySelector('#root [data-agents-page]'))
-            })`,
+            expression,
             returnByValue: true,
+            awaitPromise,
           },
         }),
       );
@@ -172,7 +263,19 @@ async function evaluateRenderer(webSocketDebuggerUrl) {
   }
 }
 
-function isPackagedRendererUsable(rendererState) {
+export const RENDERER_STATE_EXPRESSION = `({
+  readyState: document.readyState,
+  hasBridge: Boolean(window.maka),
+  hasRoot: Boolean(document.querySelector('#root')),
+  hasPreloadSkeleton: Boolean(document.querySelector('#root > .maka-preload')),
+  hasAppShell: Boolean(document.querySelector('#root [data-agents-page]'))
+})`;
+
+function evaluateRenderer(webSocketDebuggerUrl, timeoutMs) {
+  return evaluateInRenderer(webSocketDebuggerUrl, RENDERER_STATE_EXPRESSION, { timeoutMs });
+}
+
+export function isPackagedRendererUsable(rendererState) {
   return (
     rendererState?.readyState === 'complete' &&
     rendererState.hasBridge === true &&
@@ -182,7 +285,49 @@ function isPackagedRendererUsable(rendererState) {
   );
 }
 
-async function stopChild(child) {
+/**
+ * Poll a freshly booted packaged app over CDP until its renderer reports the
+ * usable state. One evaluation can stall past its own socket timeout while
+ * the renderer is still booting — observed on the Windows release runners,
+ * where a single timed-out `Runtime.evaluate` used to fail the whole gate.
+ * The deadline here is the authority: an individual failed probe is retried,
+ * not fatal, and only the deadline (or child exit) fails the wait. The last
+ * probe error or renderer state is reported as evidence either way.
+ */
+export async function waitForUsableRenderer(
+  webSocketDebuggerUrl,
+  child,
+  { deadlineMs = 30_000, description = 'Packaged renderer' } = {},
+) {
+  const deadline = Date.now() + deadlineMs;
+  let state;
+  let lastError;
+  for (;;) {
+    try {
+      state = await evaluateRenderer(
+        webSocketDebuggerUrl,
+        Math.max(1, Math.min(10_000, deadline - Date.now())),
+      );
+      lastError = undefined;
+      if (isPackagedRendererUsable(state)) return;
+    } catch (error) {
+      lastError = error;
+    }
+    if (child.exitCode !== null) {
+      throw new Error(`${description} exited before it became usable.`);
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `${description} did not become usable within ${deadlineMs}ms: ${
+          lastError ? lastError.message : JSON.stringify(state)
+        }`,
+      );
+    }
+    await delay(250);
+  }
+}
+
+export async function stopChild(child) {
   if (child.exitCode !== null) return;
   child.kill('SIGTERM');
   const exited = await Promise.race([
@@ -244,7 +389,6 @@ export function isolatedUserEnv(homeDirectory, { temporaryDirectory = homeDirect
 }
 
 export async function smokePackagedRenderer(executable, { workingDirectory } = {}) {
-  const port = await reserveTcpPort();
   const home = join(workingDirectory, 'home');
   const userData = join(workingDirectory, 'user-data');
   const userEnv = isolatedUserEnv(home);
@@ -254,7 +398,7 @@ export async function smokePackagedRenderer(executable, { workingDirectory } = {
   await mkdir(userEnv.LOCALAPPDATA, { recursive: true });
   const child = spawn(
     executable,
-    [`--remote-debugging-port=${port}`, `--user-data-dir=${userData}`, '--enable-logging=stderr'],
+    ['--remote-debugging-port=0', `--user-data-dir=${userData}`, '--enable-logging=stderr'],
     {
       cwd: workingDirectory,
       env: {
@@ -272,20 +416,9 @@ export async function smokePackagedRenderer(executable, { workingDirectory } = {
   });
 
   try {
+    const port = await waitForDevToolsPort(child);
     const target = await findRendererTarget(port, child);
-    const deadline = Date.now() + 30_000;
-    let rendererState;
-    while (Date.now() < deadline) {
-      rendererState = await evaluateRenderer(target.webSocketDebuggerUrl);
-      if (isPackagedRendererUsable(rendererState)) {
-        return;
-      }
-      if (child.exitCode !== null) {
-        throw new Error('Packaged Maka exited before React mounted.');
-      }
-      await delay(250);
-    }
-    throw new Error(`Packaged renderer did not become usable: ${JSON.stringify(rendererState)}`);
+    await waitForUsableRenderer(target.webSocketDebuggerUrl, child);
   } catch (error) {
     throw new Error(`${error.message}${stderr.trim() ? `\n${stderr.trim()}` : ''}`);
   } finally {
@@ -295,7 +428,15 @@ export async function smokePackagedRenderer(executable, { workingDirectory } = {
 
 export async function assertPackagedResources(
   resourcesPath,
-  { requirePath, forbidPath = assertMissing } = {},
+  {
+    requirePath,
+    forbidPath = assertMissing,
+    requireWindowsSandbox = process.platform === 'win32',
+    // The upgrade-lifecycle check runs this against a previously released
+    // build, which predates the disclaimer being packaged. Requiring it there
+    // would fail a release that was correct when it shipped.
+    requireDisclaimer = true,
+  } = {},
 ) {
   const required = [
     'app.asar',
@@ -306,6 +447,7 @@ export async function assertPackagedResources(
     join('workers', 'filesystem-worker.js'),
     join('licenses', 'maka', 'LICENSE'),
     join('licenses', 'maka', 'NOTICE'),
+    ...(requireDisclaimer ? [join('licenses', 'maka', 'DISCLAIMER-WIP')] : []),
     join('licenses', 'dugite', 'LICENSE'),
     join('licenses', 'git', 'NOTICE.txt'),
     join('licenses', 'electron', 'LICENSE'),
@@ -320,6 +462,12 @@ export async function assertPackagedResources(
     join('licenses', 'renderer', 'ALLOGO_LICENSE.txt'),
     join('licenses', 'renderer', 'SEMI_ICONS_LICENSE.txt'),
     join('licenses', 'renderer', 'MINGCUTE_APACHE_LICENSE.txt'),
+    ...(requireWindowsSandbox
+      ? [
+          join('windows-sandbox', 'maka-windows-sandbox.exe'),
+          join('licenses', 'cargo', 'THIRD_PARTY_NOTICES.txt'),
+        ]
+      : []),
   ];
   for (const path of required) {
     await requirePath(join(resourcesPath, path));
@@ -342,6 +490,54 @@ export async function assertPackagedResources(
   for (const path of forbidden) {
     await forbidPath(join(resourcesPath, path));
   }
+}
+
+/**
+ * Recursive content manifest of a directory tree: POSIX-normalized relative
+ * paths, sorted, each with its file's SHA-256. Nothing is skipped — an install
+ * tree has no entries whose drift would be acceptable — and anything that is
+ * not a plain file or directory (symlinks, junctions, devices) throws: an
+ * install tree must not contain them, and silently hashing a link target would
+ * make two different trees compare equal.
+ */
+export async function directoryTreeManifest(rootDirectory) {
+  const entries = [];
+  const walk = async (directory, prefix) => {
+    const children = await readdir(directory, { withFileTypes: true });
+    // Empty directories are recorded (trailing slash, null hash) so a
+    // restore that loses one shows up as `missing` — files alone cannot
+    // witness an empty directory.
+    if (children.length === 0 && prefix !== '') {
+      entries.push({ path: `${prefix}/`, sha256: null });
+      return;
+    }
+    for (const child of children) {
+      const absolute = join(directory, child.name);
+      const relative = prefix === '' ? child.name : `${prefix}/${child.name}`;
+      if (child.isDirectory()) {
+        await walk(absolute, relative);
+      } else if (child.isFile()) {
+        entries.push({ path: relative, sha256: await sha256File(absolute) });
+      } else {
+        throw new Error(`Unsupported directory entry in ${rootDirectory}: ${relative}`);
+      }
+    }
+  };
+  await walk(rootDirectory, '');
+  entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+  return entries;
+}
+
+/** Difference between two directoryTreeManifest results, keyed by path. */
+export function diffTreeManifests(before, after) {
+  const beforeByPath = new Map(before.map((entry) => [entry.path, entry.sha256]));
+  const afterByPath = new Map(after.map((entry) => [entry.path, entry.sha256]));
+  const missing = before.filter((entry) => !afterByPath.has(entry.path)).map((entry) => entry.path);
+  const extra = after.filter((entry) => !beforeByPath.has(entry.path)).map((entry) => entry.path);
+  const changed = before
+    .filter((entry) => afterByPath.has(entry.path) && afterByPath.get(entry.path) !== entry.sha256)
+    .map((entry) => entry.path);
+  return { missing, extra, changed };
 }
 
 export async function sha256File(path) {

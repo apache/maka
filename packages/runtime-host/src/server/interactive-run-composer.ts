@@ -9,6 +9,7 @@ import {
 } from '@maka/core/explore-agent';
 import { activePlanExecution, type PlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
+import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
 import type { SessionToolProfile } from '@maka/core/session';
 import {
@@ -56,6 +57,11 @@ import { routeWebFetchTools } from '@maka/runtime/web-fetch-tool';
 import { routeWebSearchTools } from '@maka/runtime/native-web-search-tool';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type ToolAvailabilityConfig, type ToolGroup } from '@maka/runtime/tool-availability';
+import {
+  resolveTurnShellPlan,
+  type TurnShellPlan,
+  turnShellDisplayName,
+} from '@maka/runtime/shell-detect';
 import type {
   ClientCapabilitySnapshot,
   HostClientCapabilityCoordinator,
@@ -74,6 +80,7 @@ import {
   hostedExecutionRunProfile,
   projectHostedExecutionTools,
 } from './hosted-execution-tool-profile.js';
+import { shouldResolveHostTavilyWebSearchReadiness } from './web-search-tool.js';
 
 const INTERACTIVE_RUN_COMPOSER_ID = 'maka.interactive';
 const INTERACTIVE_RUN_COMPOSER_REVISION = '1';
@@ -95,7 +102,13 @@ export interface InteractiveRunComposerInput {
   readonly toolProfile?: SessionToolProfile;
   readonly skillBudget?: SkillCatalogBudgetOptions;
   readonly platform?: NodeJS.Platform;
-  readonly shell?: string;
+  /**
+   * Turn-scoped shell resolution captured at backend admission. One plan
+   * drives guidance and every Bash execution for the turn; a broken saved
+   * preference rides along as `setupError` so text-only turns still compose
+   * while the Bash/PTY boundary fails closed.
+   */
+  readonly shell?: TurnShellPlan;
   readonly now?: () => Date;
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
@@ -116,6 +129,10 @@ export interface InteractiveRunComposerInput {
 
 /** Composes one Interactive prompt and tool surface from canonical Host authorities. */
 export function createInteractiveRunComposer(input: InteractiveRunComposerInput): HostRunComposer {
+  const builtinTools =
+    input.builtinTools && input.shell
+      ? { ...input.builtinTools, shell: input.shell }
+      : input.builtinTools;
   const inventorySnapshotFor = createTurnSkillInventorySnapshotResolver(input.skills);
   const inventoryFor: SkillInventoryResolver = async (context) =>
     (await inventorySnapshotFor(context)).inventory;
@@ -127,7 +144,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     : buildDefaultHostTools(
         input.taskLedger,
         inventoryFor,
-        input.builtinTools,
+        builtinTools,
         input.hostTools,
         input.scheduledTaskTool,
         input.goalTools,
@@ -267,7 +284,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         cwd: context.cwd,
         projectGit: await resolveProjectGitInfo(context.cwd),
         ...(input.platform ? { platform: input.platform } : {}),
-        ...(input.shell ? { shell: input.shell } : {}),
+        ...(input.shell ? { shell: turnShellDisplayName(input.shell) } : {}),
         ...(input.now ? { now: input.now() } : {}),
       });
       const tasks = filterModelVisibleTaskLedgerTasks(
@@ -315,17 +332,81 @@ export interface InteractiveRunComposerFactoryInput
     'runtimePolicy' | 'boundTools' | 'boundToolNames' | 'clientCapabilities' | 'plan'
   > {
   readonly clientCapabilities: HostClientCapabilityCoordinator;
+  readonly resolveTavilyWebSearchReadiness: () => Promise<boolean>;
   readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
   readonly childTools?: readonly MakaTool[];
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly planStore?: PlanStore;
   readonly deepResearchTools?: readonly MakaTool[];
+  /** Internal dependency seam for deterministic Host shell-resolution tests. */
+  readonly resolveTurnShellPlan?: typeof resolveTurnShellPlan;
+}
+
+export interface InteractiveRunToolSurfaceInput {
+  readonly runtimePolicy: RuntimePolicySnapshot;
+  readonly connection?: RuntimeExecutionConnection;
+  readonly modelId: string;
+  readonly hostTools: readonly MakaTool[];
+  readonly boundTools?: readonly MakaTool[];
+  readonly childTools?: readonly MakaTool[];
+  readonly parentAgentTools?: readonly MakaTool[];
+  readonly taskLedger: TaskLedgerStore;
+  readonly worktreePatchWriteBackAvailable?: boolean;
+  readonly tavilyReady: boolean;
+}
+
+/** Routes every model-visible tool surface through the same policy and readiness snapshot. */
+export function routeInteractiveRunToolSurface(input: InteractiveRunToolSurfaceInput): {
+  readonly hostTools: readonly MakaTool[];
+  readonly boundTools?: readonly MakaTool[];
+  readonly childTools?: readonly MakaTool[];
+  readonly parentAgentTools?: readonly MakaTool[];
+} {
+  const route = (tools: readonly MakaTool[]): MakaTool[] => {
+    const webFetchTools = routeWebFetchTools(tools, input.runtimePolicy.policy.privacy);
+    if (!input.connection) {
+      return webFetchTools.filter((tool) => tool.name !== 'WebSearch');
+    }
+    return routeWebSearchTools({
+      tools: webFetchTools,
+      settings: input.runtimePolicy.policy.webSearch,
+      connection: input.connection,
+      model: input.modelId,
+      tavilyReady: input.tavilyReady,
+      privacy: input.runtimePolicy.policy.privacy,
+    });
+  };
+  const childTools = input.childTools ? route(input.childTools) : undefined;
+  return {
+    hostTools: route(input.hostTools),
+    ...(input.boundTools ? { boundTools: route(input.boundTools) } : {}),
+    ...(childTools ? { childTools } : {}),
+    ...(childTools
+      ? {
+          parentAgentTools: buildParentAgentTools({
+            taskLedger: input.taskLedger,
+            definitions: listRunnableBuiltinAgentDefinitions({
+              tools: childTools,
+              worktreeChildExecutorAvailable: input.worktreePatchWriteBackAvailable,
+            }),
+          }),
+        }
+      : input.parentAgentTools
+        ? { parentAgentTools: input.parentAgentTools }
+        : {}),
+  };
 }
 
 export function createInteractiveRunComposerFactory(
   input: InteractiveRunComposerFactoryInput,
 ): HostRunComposerFactory {
   return async ({ backendContext, connection, modelId, runtimePolicy, contextWindow }) => {
+    // Turn admission: resolve the Host-owned plan once per backend. The
+    // captured setupError keeps a moved/uninstalled Git Bash scoped to the
+    // Bash/PTY boundary instead of failing text-only turns here.
+    const shell =
+      (backendContext.tools ? backendContext.turnShellPlan : undefined) ??
+      (input.resolveTurnShellPlan ?? resolveTurnShellPlan)(runtimePolicy.policy.shell);
     const clientCapabilities = backendContext.tools
       ? undefined
       : input.clientCapabilities.snapshotForSession(backendContext.sessionId);
@@ -344,36 +425,26 @@ export function createInteractiveRunComposerFactory(
               backendContext.abortSignal,
             )
           : [];
+      const tavilyReady = shouldResolveHostTavilyWebSearchReadiness(runtimePolicy.policy)
+        ? await readDuringBackendCreation(
+            input.resolveTavilyWebSearchReadiness,
+            backendContext.abortSignal,
+          )
+        : false;
       const candidateHostTools = [...(input.hostTools ?? []), ...rootTools];
-      const webSearchRouting = {
-        tools: routeWebFetchTools(candidateHostTools, runtimePolicy.policy.privacy),
-        settings: runtimePolicy.policy.webSearch,
+      const toolSurface = routeInteractiveRunToolSurface({
+        runtimePolicy,
         connection,
-        model: modelId,
-        privacy: runtimePolicy.policy.privacy,
-      } as const;
-      const hostTools = routeWebSearchTools(webSearchRouting);
-      const boundTools = backendContext.tools
-        ? routeWebSearchTools({
-            ...webSearchRouting,
-            tools: routeWebFetchTools(backendContext.tools, runtimePolicy.policy.privacy),
-          })
-        : undefined;
-      const routedChildTools = input.childTools
-        ? routeWebSearchTools({
-            ...webSearchRouting,
-            tools: routeWebFetchTools(input.childTools, runtimePolicy.policy.privacy),
-          })
-        : undefined;
-      const parentAgentTools = routedChildTools
-        ? buildParentAgentTools({
-            taskLedger: input.taskLedger,
-            definitions: listRunnableBuiltinAgentDefinitions({
-              tools: routedChildTools,
-              worktreeChildExecutorAvailable: input.worktreePatchWriteBackAvailable,
-            }),
-          })
-        : input.parentAgentTools;
+        modelId,
+        hostTools: candidateHostTools,
+        ...(backendContext.tools ? { boundTools: backendContext.tools } : {}),
+        ...(input.childTools ? { childTools: input.childTools } : {}),
+        ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
+        taskLedger: input.taskLedger,
+        worktreePatchWriteBackAvailable: input.worktreePatchWriteBackAvailable,
+        tavilyReady,
+      });
+      const { hostTools, boundTools, parentAgentTools } = toolSurface;
       const composer = createInteractiveRunComposer({
         runtimePolicy,
         skills: input.skills,
@@ -411,6 +482,7 @@ export function createInteractiveRunComposerFactory(
           ? { deepResearch: { tools: requireDeepResearchTools(input.deepResearchTools) } }
           : {}),
         skillBudget: contextWindow === null ? {} : { contextWindow },
+        shell,
       });
       return Object.freeze({
         ...composer,

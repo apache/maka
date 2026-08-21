@@ -1,17 +1,20 @@
-import type { ComponentProps, Ref } from 'react';
+import { useLayoutEffect, useRef, type ComponentProps, type RefObject } from 'react';
 import { Button, Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } from '@maka/ui';
 import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
 import {
+  readNewTaskReloadDraft,
   readNewTaskReloadIntent,
+  UNRESOLVED_NEW_TASK_DRAFT_KEY,
   writeNewTaskReloadDraft,
-} from './new-task-reload-intent';
+} from './new-task-reload-intent.js';
 
 const newTaskDraftPersistence = {
   read(key: string | undefined): string | undefined {
-    return key === 'new-session' ? readNewTaskReloadIntent()?.draft : undefined;
+    return key ? readNewTaskReloadDraft(key) : undefined;
   },
   write(key: string | undefined, value: string): void {
-    if (key === 'new-session') writeNewTaskReloadDraft(value);
+    if (!key?.startsWith('new-task:') && !key?.startsWith('["new-task"')) return;
+    writeNewTaskReloadDraft(key, value);
   },
 };
 
@@ -46,11 +49,12 @@ interface BoundaryUnreadableNotice {
  * so AppShell only forwards the orchestration callbacks and the session maps.
  */
 interface ChatComposerRegionProps extends Omit<ComponentProps<typeof Composer>, 'hidden' | 'draftKey' | 'stopPending'> {
-  composerRef: Ref<ComposerHandle>;
+  composerRef: RefObject<ComposerHandle | null>;
   active: boolean;
   onboardingComposerHidden: boolean;
   activeInteraction: ComposerInteraction | undefined;
   activeId: string | undefined;
+  newTaskDraftKey: string;
   stopPendingBySession: Record<string, boolean>;
   respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
   activeSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['request'] | undefined;
@@ -66,6 +70,7 @@ export function ChatComposerRegion({
   onboardingComposerHidden,
   activeInteraction,
   activeId,
+  newTaskDraftKey,
   stopPendingBySession,
   respondToSandboxBoundary,
   activeSandboxBoundary,
@@ -75,6 +80,32 @@ export function ChatComposerRegion({
   boundaryUnreadableNotice,
   ...composerRest
 }: ChatComposerRegionProps) {
+  const previousNewTaskDraftKey = useRef(newTaskDraftKey);
+  useLayoutEffect(() => {
+    const previous = previousNewTaskDraftKey.current;
+    previousNewTaskDraftKey.current = newTaskDraftKey;
+    if (previous !== UNRESOLVED_NEW_TASK_DRAFT_KEY || previous === newTaskDraftKey) return;
+    const composer = composerRef.current;
+    if (!composer) return;
+    const reloadIntent = readNewTaskReloadIntent();
+    const reloadTarget = reloadIntent?.draftKey;
+    const canCarryUnresolvedDraft =
+      !reloadTarget ||
+      reloadTarget === UNRESOLVED_NEW_TASK_DRAFT_KEY ||
+      reloadTarget === newTaskDraftKey;
+    if (!canCarryUnresolvedDraft) return;
+    // The catalog may settle after the user has opened an existing Session.
+    // Read the unresolved new-task slot itself instead of whichever draft is
+    // currently visible, so Session text can never become a new-task draft.
+    const current = composer.getDraft(UNRESOLVED_NEW_TASK_DRAFT_KEY);
+    composer.setDraft(
+      newTaskDraftKey,
+      current.length > 0
+        ? current
+        : (newTaskDraftPersistence.read(newTaskDraftKey) ?? ''),
+    );
+  }, [composerRef, newTaskDraftKey]);
+
   return (
     <>
       <div className="maka-composer-interaction-slot">
@@ -120,7 +151,7 @@ export function ChatComposerRegion({
         ref={composerRef}
         {...composerRest}
         hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
-        draftKey={activeId ?? 'new-session'}
+        draftKey={activeId ?? newTaskDraftKey}
         draftPersistence={newTaskDraftPersistence}
         stopPending={activeId ? stopPendingBySession[activeId] === true : false}
       />

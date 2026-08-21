@@ -7,7 +7,7 @@ import {
 
 export interface WorkspaceSearchIpcDeps {
   ipcMain?: ReconnectableReadIpcMain;
-  getProjectRoot(sessionId: unknown): Promise<string>;
+  getProjectRoot(sessionId: unknown, projectId: unknown): Promise<string>;
   allowLocalWorkspace?: boolean;
 }
 
@@ -19,8 +19,13 @@ export function registerWorkspaceSearchIpc(deps: WorkspaceSearchIpcDeps): void {
   // a bounded walk. See workspace-file-search.ts.
   handleReconnectableRead(ipcMain, 'workspace:searchFiles', async (_event, input: unknown) => {
     if (deps.allowLocalWorkspace === false) return [];
-    const request = (input ?? {}) as { query?: unknown; limit?: unknown; sessionId?: unknown };
-    const projectPath = await deps.getProjectRoot(request.sessionId);
+    const request = (input ?? {}) as {
+      query?: unknown;
+      limit?: unknown;
+      sessionId?: unknown;
+      projectId?: unknown;
+    };
+    const projectPath = await deps.getProjectRoot(request.sessionId, request.projectId);
     return searchWorkspaceFiles(projectPath, { query: request.query, limit: request.limit });
   });
 }

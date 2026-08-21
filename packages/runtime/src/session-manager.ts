@@ -29,6 +29,7 @@ import type {
 import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events';
 import type {
   SessionHeader,
+  SessionHeaderPatch,
   SessionBlockedReason,
   SessionStatus,
   SessionSummary,
@@ -38,7 +39,7 @@ import type {
   UserMessage,
   PermissionDecisionMessage,
   SystemNoteMessage,
-  BackendKind,
+  PersistedBackendKind,
 } from '@maka/core/session';
 import type {
   AgentSpec,
@@ -148,6 +149,7 @@ import {
 
 import type { AgentBackend, BackendStopMode } from '@maka/core/backend-types';
 import type { MakaTool } from './tool-runtime.js';
+import type { TurnShellPlan } from './shell-detect.js';
 import type { RunTraceRecorder } from './run-trace.js';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type {
@@ -157,7 +159,6 @@ import type {
 import { readLatestContextDiagnostics, type ContextDiagnostics } from './context-diagnostics.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
-import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { AgentRunLineage, RuntimeContinuationFailpoint } from './agent-run.js';
@@ -217,7 +218,6 @@ import { buildRuntimeEventModelReplayPlan } from './model-history.js';
 import { stableHash } from './request-shape.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import {
-  buildResumePlanFromRuntimeEvents,
   RuntimeContinuationPlanner,
   type RuntimeContinuation,
   type RuntimeContinuationPlannerInput,
@@ -667,10 +667,10 @@ export interface SessionStore {
   listTurns(sessionId: string): Promise<TurnRecord[]>;
   appendMessage(sessionId: string, m: StoredMessage): Promise<void>;
   appendMessages(sessionId: string, ms: StoredMessage[]): Promise<void>;
-  updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader>;
+  updateHeader(sessionId: string, patch: SessionHeaderPatch): Promise<SessionHeader>;
   updateHeaderVersioned?(
     sessionId: string,
-    patch: Partial<SessionHeader>,
+    patch: SessionHeaderPatch,
     expectedRevision: number,
   ): Promise<VersionedSessionHeader>;
   readHeaderRecordSnapshot?(sessionId: string): Promise<VersionedSessionHeader>;
@@ -678,8 +678,6 @@ export interface SessionStore {
     sessionId: string,
     input: SessionConfigurationStoreUpdate,
   ): Promise<VersionedSessionHeader>;
-  archive(sessionId: string): Promise<void>;
-  unarchive(sessionId: string): Promise<void>;
   setFlagged(sessionId: string, isFlagged: boolean): Promise<void>;
   rename(sessionId: string, name: string): Promise<void>;
   setGeneratedTitleIfAbsent?(sessionId: string, title: string): Promise<SessionHeader | null>;
@@ -702,7 +700,7 @@ export interface StrictRecoveryStores {
 }
 
 // ============================================================================
-// BackendRegistry — factory dispatch by BackendKind
+// BackendRegistry — factory dispatch by the session header's durable backend
 // ============================================================================
 
 export interface BackendFactoryContext {
@@ -738,6 +736,8 @@ export interface BackendFactoryContext {
    * silently strip the decoder for placeholders that child will still receive.
    */
   tools?: readonly MakaTool[];
+  /** Turn-scoped shell plan captured with a bound child tool ceiling. */
+  turnShellPlan?: TurnShellPlan;
   recordRunTrace?: RunTraceRecorder;
   /** Durable AgentRun metadata row written after the private capture artifact. */
   recordProviderRequestCapture?: (capture: ProviderRequestCaptureLedgerRecord) => Promise<void>;
@@ -765,7 +765,6 @@ export interface BackendFactoryContext {
   loadTurnRuntimeEvents?: (turnId: string) => Promise<RuntimeEvent[]>;
   /** Whether this activation may fold its run ledger into session-scoped history. */
   allowMidTurnHistoryCompaction?: boolean;
-  recordActiveFullCompactBlock?: (block: ActiveFullCompactBlock) => void;
   recordSemanticCompactBlock?: (block: SemanticCompactBlock) => void;
   shellRunContextSummary?: () => Promise<string | undefined>;
 }
@@ -773,19 +772,19 @@ export interface BackendFactoryContext {
 export type BackendFactory = (ctx: BackendFactoryContext) => AgentBackend | Promise<AgentBackend>;
 
 export class BackendRegistry {
-  private readonly factories = new Map<BackendKind, BackendFactory>();
+  private readonly factories = new Map<PersistedBackendKind, BackendFactory>();
 
-  register(kind: BackendKind, factory: BackendFactory): void {
+  register(kind: PersistedBackendKind, factory: BackendFactory): void {
     this.factories.set(kind, factory);
   }
 
-  async build(kind: BackendKind, ctx: BackendFactoryContext): Promise<AgentBackend> {
+  async build(kind: PersistedBackendKind, ctx: BackendFactoryContext): Promise<AgentBackend> {
     const f = this.factories.get(kind);
     if (!f) throw new Error(`No backend factory registered for kind="${kind}"`);
     return await f(ctx);
   }
 
-  has(kind: BackendKind): boolean {
+  has(kind: PersistedBackendKind): boolean {
     return this.factories.has(kind);
   }
 }
@@ -817,7 +816,7 @@ interface SessionManagerBaseDeps {
   newId: () => string;
   now: () => number;
   childTools?: readonly MakaTool[];
-  resolveChildTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
+  resolveChildTools?: (sessionId: string) => Promise<ResolvedChildToolActivation>;
   /** Host-owned user catalog. Runtime receives ids from models, never raw model targets. */
   subagentCatalog?: {
     list(): Promise<SubagentPresetListItem[]>;
@@ -857,6 +856,11 @@ interface SessionManagerBaseDeps {
     sourceText: string;
   }) => Promise<string | undefined>;
   onSessionTitleChanged?: (sessionId: string) => void;
+}
+
+export interface ResolvedChildToolActivation {
+  readonly tools: readonly MakaTool[];
+  readonly shell?: TurnShellPlan;
 }
 
 type SessionManagerInteractionDeps =
@@ -974,19 +978,22 @@ export class SessionManager {
     return this.runtimeKernel.runningTurnIds?.(sessionId) ?? [];
   }
 
-  async listSessions(filter?: SessionListFilter): Promise<SessionSummary[]> {
-    const sessions = await this.deps.store.list(filter);
+  #projectLiveRunState(sessions: SessionSummary[]): SessionSummary[] {
     const runningTurnIds = this.runtimeKernel.runningTurnIds?.bind(this.runtimeKernel);
     if (!runningTurnIds) return sessions;
-    return sessions.map((session) => {
-      const turnIds = runningTurnIds(session.id);
-      return turnIds.length === 0 ? session : { ...session, runningTurnIds: turnIds };
-    });
+    return sessions.map((session) => ({
+      ...session,
+      runningTurnIds: runningTurnIds(session.id),
+    }));
+  }
+
+  async listSessions(filter?: SessionListFilter): Promise<SessionSummary[]> {
+    return this.#projectLiveRunState(await this.deps.store.list(filter));
   }
 
   async listChildSessions(parentSessionId: string): Promise<SessionSummary[]> {
     const sessions = await this.deps.store.list({ subagentParentSessionId: parentSessionId });
-    return childSessionsForParent(sessions, parentSessionId);
+    return this.#projectLiveRunState(childSessionsForParent(sessions, parentSessionId));
   }
 
   private async provisionChildWorkspace(
@@ -1142,7 +1149,7 @@ export class SessionManager {
             current.revision,
           );
         }
-        if (current.header.isArchived || current.header.status === 'archived') {
+        if (current.header.isArchived) {
           throw new SessionConfigurationTransitionError(
             'operation_conflict',
             'Archived Session configuration cannot be changed',
@@ -1217,7 +1224,7 @@ export class SessionManager {
           current.revision,
         );
       }
-      if (current.header.isArchived || current.header.status === 'archived') {
+      if (current.header.isArchived) {
         throw new SessionConfigurationTransitionError(
           'operation_conflict',
           'Archived Session workspace cannot be relocated',
@@ -1409,7 +1416,7 @@ export class SessionManager {
 
   private async recoverInterruptedSessionsWithPolicy(policy: RecoveryPolicy): Promise<string[]> {
     const interrupted = (await listSessionsForRecovery(this.deps.store, policy)).filter(
-      (session) => session.status !== 'archived',
+      (session) => !session.isArchived,
     );
     const recovered = new Set<string>();
     for (const session of interrupted) {
@@ -1564,54 +1571,6 @@ export class SessionManager {
       recovered.add(session.id);
     }
     return [...recovered];
-  }
-
-  async updateSession(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionSummary> {
-    const backendConfigChanged = changesBackendConfig(patch);
-    if (backendConfigChanged && this.runtimeKernel.hasActiveRuns(sessionId)) {
-      throw new Error('Cannot change backend configuration while a turn is running');
-    }
-
-    const { permissionMode, name, titleIsManual: _titleIsManual, ...rest } = patch;
-    const permissionSummary =
-      permissionMode === undefined
-        ? undefined
-        : await this.setPermissionMode(sessionId, permissionMode);
-    if (name === undefined && Object.keys(rest).length === 0) {
-      return permissionSummary ?? headerToSummary(await this.deps.store.readHeader(sessionId));
-    }
-
-    if (name !== undefined) await this.deps.store.rename(sessionId, name);
-    const next =
-      Object.keys(rest).length > 0
-        ? await this.deps.store.updateHeader(sessionId, rest)
-        : await this.deps.store.readHeader(sessionId);
-    this.runtimeKernel.updateCachedHeader(sessionId, next);
-    if (changesBackendConfig(rest)) {
-      // AgentBackend instances snapshot backend/model config at construction
-      // time. If a stale session is rebound to a real default connection, the
-      // next turn must build a fresh backend instead of reusing FakeBackend or
-      // an AiSdkBackend pointed at a deleted connection.
-      await this.runtimeKernel.disposeBackend(sessionId);
-    }
-    return headerToSummary(next);
-  }
-
-  async archive(sessionId: string): Promise<void> {
-    const shellRunClose = await this.deps.shellRuns?.terminateSession(sessionId);
-    try {
-      await this.deps.store.archive(sessionId);
-    } catch (error) {
-      if (shellRunClose) this.deps.shellRuns?.rollbackSessionClose(shellRunClose);
-      throw error;
-    }
-    if (shellRunClose) await this.deps.shellRuns?.commitSessionClose(shellRunClose);
-    await this.runtimeKernel.disposeBackend(sessionId);
-  }
-
-  async unarchive(sessionId: string): Promise<void> {
-    await this.deps.store.unarchive(sessionId);
-    this.deps.shellRuns?.resumeSession(sessionId);
   }
 
   async setSessionStatus(
@@ -2591,7 +2550,6 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: resolvedPreset?.name ?? definition.name,
-        backend: parentHeader.backend,
         llmConnectionSlug: resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
         model: resolvedPreset?.model ?? parentHeader.model,
         ...(resolvedPreset
@@ -2890,7 +2848,7 @@ export class SessionManager {
     if (messages.some((message) => 'turnId' in message && message.turnId === claim.targetTurnId)) {
       throw new Error(`Claimed graph turn ${claim.targetTurnId} already has durable messages`);
     }
-    if (child.isArchived || child.status === 'archived' || child.status === 'aborted') {
+    if (child.isArchived || child.status === 'aborted') {
       throw new Error('Claimed graph execution target child session is terminated');
     }
     if (input.abortSignal?.aborted) {
@@ -3130,7 +3088,6 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: input.name ?? input.resolvedPreset?.name ?? definition.name,
-        backend: parentHeader.backend,
         llmConnectionSlug: input.resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
         model: input.resolvedPreset?.model ?? parentHeader.model,
         ...(input.resolvedPreset
@@ -4106,33 +4063,19 @@ export class SessionManager {
     }
     this.assertChildRunHasNoSuccessor(runs, sourceRun.runId);
 
-    const hasAuthority = authority !== undefined;
-    const hasSafetyInspector = this.deps.inspectContinuationSafety !== undefined;
-    if (hasAuthority !== hasSafetyInspector) {
+    if (!authority || !this.deps.inspectContinuationSafety) {
       throw new Error(
         'Child agent retry continuation authority composition is incomplete; refusing legacy fallback',
       );
     }
-    const admissionMode = hasAuthority
-      ? ('durable_continuation' as const)
-      : ('legacy_provider_retry' as const);
-    const continuation =
-      admissionMode === 'durable_continuation'
-        ? await this.planDurableChildProviderRetry({
-            targetSessionId,
-            sourceRun,
-            runs,
-            authority: authority!,
-            inspectSafety: this.deps.inspectContinuationSafety!,
-            availableToolNames: definition.toolNames,
-          })
-        : await this.planLegacyChildProviderRetry({
-            targetSessionId,
-            rawSourceRun,
-            sourceRun,
-            runs,
-            availableToolNames: definition.toolNames,
-          });
+    const continuation = await this.planDurableChildProviderRetry({
+      targetSessionId,
+      sourceRun,
+      runs,
+      authority,
+      inspectSafety: this.deps.inspectContinuationSafety,
+      availableToolNames: definition.toolNames,
+    });
     const retryReplay = buildRuntimeEventModelReplayPlan(continuation.runtimeContext);
     const retryAnchor = retryReplay.items[0];
     if (!retryAnchor || retryAnchor.kind !== 'text' || retryAnchor.role !== 'user') {
@@ -4192,7 +4135,6 @@ export class SessionManager {
                       systemPrompt: definition.systemPrompt,
                     },
                     continuation,
-                    admissionMode,
                     linkedSession: true,
                     onRunStarted,
                   },
@@ -4215,7 +4157,6 @@ export class SessionManager {
                   systemPrompt: definition.systemPrompt,
                 },
                 continuation,
-                admissionMode,
               },
               runtimeExecution,
             ),
@@ -4339,81 +4280,6 @@ export class SessionManager {
       );
     }
     return retryPlan.continuation;
-  }
-
-  /**
-   * Preserves the pre-PR-B provider RateLimit retry for compositions that have
-   * neither continuation authority nor a safety inspector. It is intentionally
-   * not a durable continuation: no claim or continuation-start is written, and
-   * it cannot recover a claim-repair abandonment. The host authority lifecycle
-   * integration replaces this path with a typed SQLite composition.
-   */
-  private async planLegacyChildProviderRetry(input: {
-    targetSessionId: string;
-    rawSourceRun: AgentRunHeader;
-    sourceRun: AgentRunHeader;
-    runs: readonly AgentRunHeader[];
-    availableToolNames: readonly string[];
-  }): Promise<RuntimeContinuation> {
-    if (!this.deps.runtimeEventStore?.readImmutableRuntimeEvents) {
-      throw new Error('Legacy child provider retry requires immutable RuntimeEvent reads');
-    }
-    if (input.sourceRun.failureClass !== 'RateLimit') {
-      throw new Error('Legacy child provider retry only supports provider rate-limit failures');
-    }
-
-    const replaySegments: RuntimeEvent[][] = [];
-    let sourceEvents: RuntimeEvent[] | undefined;
-    let sourceReplay: RuntimeEvent[] | undefined;
-    let chainRun: AgentRunHeader | undefined = input.rawSourceRun;
-    const visited = new Set<string>();
-    while (chainRun) {
-      if (visited.has(chainRun.runId)) {
-        throw new Error('Child agent retry lineage contains a cycle');
-      }
-      visited.add(chainRun.runId);
-      const events = await this.deps.runtimeEventStore.readImmutableRuntimeEvents(
-        input.targetSessionId,
-        chainRun.runId,
-      );
-      const plan = buildResumePlanFromRuntimeEvents(events);
-      if (plan.disposition !== 'safe_replay') {
-        throw new Error(`Child agent retry source is not safely replayable: ${chainRun.runId}`);
-      }
-      replaySegments.unshift(plan.replayRuntimeEvents);
-      if (chainRun.runId === input.sourceRun.runId) {
-        sourceEvents = events;
-        sourceReplay = plan.replayRuntimeEvents;
-      }
-      const previousRunId: string | undefined =
-        chainRun.retriedFromRunId ?? chainRun.resumedFromRunId;
-      if (!previousRunId) break;
-      chainRun = input.runs.find((run) => run.runId === previousRunId);
-      if (!chainRun) throw new Error('Child agent retry lineage source is missing');
-    }
-    if (!sourceEvents || !sourceReplay) {
-      throw new Error('Child agent retry source ledger is missing');
-    }
-    const sourceInvocationId = input.sourceRun.invocationId ?? sourceEvents[0]?.invocationId;
-    if (!sourceInvocationId) throw new Error('Child agent retry source has no invocation id');
-
-    return {
-      sessionId: input.targetSessionId,
-      invocationId: this.deps.newId(),
-      runId: this.deps.newId(),
-      turnId: this.deps.newId(),
-      sourceInvocationId,
-      sourceRunId: input.sourceRun.runId,
-      sourceTurnId: input.sourceRun.turnId,
-      sourceRuntimeEventHighWater: sourceEvents.length,
-      sourceRuntimeContext: sourceReplay,
-      runtimeContext: replaySegments.flat(),
-      safetySnapshot: {
-        workspaceIdentity: input.sourceRun.workspaceIdentity ?? input.sourceRun.cwd,
-        backgroundOperationsSettled: true,
-        availableToolNames: [...input.availableToolNames],
-      },
-    };
   }
 
   private assertChildRunHasNoSuccessor(runs: readonly AgentRunHeader[], sourceRunId: string): void {
@@ -4541,9 +4407,8 @@ export class SessionManager {
   }
 
   private async childToolsForSession(sessionId: string): Promise<readonly MakaTool[]> {
-    return this.deps.resolveChildTools
-      ? await this.deps.resolveChildTools(sessionId)
-      : (this.deps.childTools ?? []);
+    if (!this.deps.resolveChildTools) return this.deps.childTools ?? [];
+    return (await this.deps.resolveChildTools(sessionId)).tools;
   }
 
   async readChildAgentOutput(
@@ -5086,7 +4951,6 @@ export class SessionManager {
       {
         cwd: header.cwd,
         ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        backend: header.backend,
         llmConnectionSlug: header.llmConnectionSlug,
         model: header.model,
         thinkingLevel: header.thinkingLevel,
@@ -5149,7 +5013,6 @@ export class SessionManager {
       {
         cwd: header.cwd,
         ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        backend: header.backend,
         llmConnectionSlug: header.llmConnectionSlug,
         model: header.model,
         thinkingLevel: header.thinkingLevel,
@@ -5376,10 +5239,7 @@ export class SessionManager {
     await this.updateHeader(sessionId, buildStatusPatch(status, ts, blockedReason));
   }
 
-  private async updateHeader(
-    sessionId: string,
-    patch: Partial<SessionHeader>,
-  ): Promise<SessionHeader> {
+  private async updateHeader(sessionId: string, patch: SessionHeaderPatch): Promise<SessionHeader> {
     const next = await this.deps.store.updateHeader(sessionId, patch);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
     return next;
@@ -6447,28 +6307,6 @@ function claimedAgentGraphIntentResult(
     operatorId: claim.targetOperatorId,
     ...result,
   };
-}
-
-export function changesBackendConfig(patch: Partial<SessionHeader>): boolean {
-  return (
-    'backend' in patch ||
-    'llmConnectionSlug' in patch ||
-    'model' in patch ||
-    'thinkingLevel' in patch ||
-    'cwd' in patch ||
-    'collaborationMode' in patch ||
-    // AiSdkBackend snapshots the header at construction and ToolRuntime
-    // reads `header.permissionMode` at every decision, so a mode change
-    // that does not rebuild the backend is persisted but NOT enforced —
-    // the live session keeps deciding with the old mode.
-    //
-    // `setPermissionMode` disposes the backend for exactly this reason.
-    // `updateSession` did not, so every other path that lowers a mode was
-    // advisory: notably the bot-incoming guard re-pinning a conversation
-    // to `explore`, which left an already-built `execute`/`bypass` backend
-    // serving the remote sender.
-    'permissionMode' in patch
-  );
 }
 
 function executionBoundaryMatchesPermissionMode(

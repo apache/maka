@@ -1,12 +1,13 @@
 import { app, clipboard, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { arch as osArch, homedir, release as osRelease } from "node:os";
 import { basename, join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import type { UsageRange } from '@maka/core/settings';
 import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
-import { resolveSystemUiLocale, resolveUiLocale } from '@maka/core/ui-locale';
+import { resolveSystemUiLocale } from '@maka/core/ui-locale';
 import {
   PROVIDER_DEFAULTS,
   providerAuthRequiresSecret,
@@ -18,6 +19,8 @@ import {
 } from '@maka/runtime/scheduled-task-tools';
 import { buildMcpTools } from '@maka/runtime/mcp-tools';
 import {
+  createClientRuntimeHostCredentialStore,
+  createClientRuntimeHostProfileCatalog,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
 } from "@maka/runtime-host/client";
@@ -42,6 +45,8 @@ import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
 import { registerDesktopDiagnosticsIpc } from "./desktop-diagnostics-ipc-main.js";
 import { assembleDesktopNativeCapabilities } from "./desktop-native-capability-assembly.js";
+import { clientSettingsConfirmation } from "./client-settings-confirmation-copy.js";
+import { createDesktopLocaleAuthority } from "./desktop-locale-authority.js";
 import { buildRiveWorkflowTool } from "./rive-workflow-tool.js";
 import { installDesktopShellPresentation } from "./desktop-shell-presentation.js";
 import {
@@ -76,6 +81,7 @@ import {
 import { resolveProjectContextRoot } from "./project-context-root.js";
 import { resolveDefaultPermissionMode } from "./permission-mode-default.js";
 import { createProjectManagementService } from "./project-management-service.js";
+import { projectPickerTitle } from "./project-picker-copy.js";
 import type { ProjectManagementService } from "./project-management-service.js";
 import {
   createProjectRootController,
@@ -90,6 +96,7 @@ import { registerRuntimeHostConfigIpc } from "./runtime-host-config-ipc-main.js"
 import { createCapabilityRevisionPublisher } from "./runtime-host-capability-revision-publisher.js";
 import { buildClientSettingsTools } from "./client-settings-tools.js";
 import { createClientSettingsEffects } from "./client-settings-effects.js";
+import { registerClientSettingsIpc } from "./client-settings-ipc-main.js";
 import { startClientSettingsWatcher } from "./client-settings-watcher.js";
 import { registerRuntimeHostGitHubCopilotIpc } from "./runtime-host-github-copilot-ipc-main.js";
 import { registerRuntimeHostArtifactsIpc } from "./runtime-host-artifacts-ipc-main.js";
@@ -103,14 +110,19 @@ import {
   startRuntimeHostDesktopManager,
   type RuntimeHostDesktopManager,
 } from "./runtime-host-desktop-manager.js";
-import { runtimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
+import { createRuntimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import {
   createDesktopRuntimeHostProfileService,
   registerDesktopRuntimeHostProfileIpc,
   resolveDesktopRuntimeHostStartup,
 } from "./runtime-host-profile-service.js";
-import { createDesktopRuntimeHostSshTerminal } from "./runtime-host-ssh-terminal.js";
+import {
+  createDesktopRuntimeHostSshTerminal,
+  isExactRuntimeHostSetupPackageSpecifier,
+  type DesktopRuntimeHostSetupPackage,
+} from "./runtime-host-ssh-terminal.js";
+import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -156,7 +168,15 @@ const userDataDir = app.getPath("userData");
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
-const runtimeHostStartup = await resolveDesktopRuntimeHostStartup(userDataDir);
+const runtimeHostCredentialStore = createClientRuntimeHostCredentialStore(userDataDir);
+const runtimeHostProfileCatalog = createClientRuntimeHostProfileCatalog(
+  userDataDir,
+  runtimeHostCredentialStore,
+);
+const runtimeHostStartup = await resolveDesktopRuntimeHostStartup(userDataDir, {
+  catalog: runtimeHostProfileCatalog,
+  credentialStore: runtimeHostCredentialStore,
+});
 let runtimeHostManager: RuntimeHostDesktopManager | undefined;
 function activeRuntimeHostRef(): DesktopTargetScope | undefined {
   const current = runtimeHostManager?.current();
@@ -196,6 +216,10 @@ if (!startupLocalStorageRoot) {
 }
 const localRuntimeHostId = startupLocalStorageRoot.rootId;
 const settingsStore = createSettingsStore(workspaceRoot);
+const desktopLocale = createDesktopLocaleAuthority({
+  readSettings: () => settingsStore.get(),
+  preferredSystemLanguages: () => app.getPreferredSystemLanguages(),
+});
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
@@ -232,7 +256,7 @@ const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
 });
 const native = assembleDesktopNativeCapabilities({
   isComputerUseRealModelE2e,
-  settings: settingsStore,
+  locale: desktopLocale,
   keepSystemAwake,
   mainWindow: mainWindowController,
 });
@@ -252,13 +276,7 @@ const releaseComputerUseSession = (sessionId: string): void => {
   native.computerUseTools.clearSession(sessionId);
 };
 const permissionOverlay = createPermissionOverlayMain({
-  resolveLocale: async () => {
-    const settings = await settingsStore.get();
-    return resolveUiLocale(
-      settings.personalization.uiLocale,
-      resolveSystemUiLocale(app.getPreferredSystemLanguages()),
-    );
-  },
+  resolveLocale: () => desktopLocale.resolve(),
 });
 onMainWindowClose = () => {
   native.computerUseOverlay.destroyAll();
@@ -269,8 +287,10 @@ const oauthPresentation = new RuntimeHostOAuthPresentation((url) => shell.openEx
 const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
   startup: runtimeHostStartup,
+  catalog: runtimeHostProfileCatalog,
+  credentialStore: runtimeHostCredentialStore,
   states: () => runtimeHostManager?.entries() ?? [],
-  enable: async (target) => {
+  enable: async (target, sshInteraction) => {
     if (target.profile.kind !== "remote" || !target.credential) {
       throw new Error("A resolved remote Runtime Host profile is required");
     }
@@ -278,20 +298,54 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
     await runtimeHostManager.enable({
       profile: target.profile,
       credential: target.credential,
-      ...(target.profile.transport.kind === "ssh"
-        ? { sshInteraction: "terminal" as const }
-        : {}),
+      ...(target.profile.transport.kind === "ssh" ? { sshInteraction } : {}),
     });
   },
   disable: async (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     await runtimeHostManager.disable(profileId);
   },
+  finalizePairing: async (profileId) => {
+    if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
+    await runtimeHostManager.finalizePairing(profileId);
+  },
   setDefault: (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     runtimeHostManager.setDefaultProfile(profileId);
   },
 });
+const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
+  ipcMain,
+  clientInstanceId: runtimeHostClientInstanceId,
+  profiles: runtimeHostProfileService,
+  runSetup: runtimeHostSshTerminal.runSetup,
+  resolveSetupPackage: runtimeHostSetupPackage,
+  send: (snapshot) =>
+    mainWindowController.send("runtime-host-onboarding:changed", snapshot),
+});
+
+function runtimeHostSetupPackage(): DesktopRuntimeHostSetupPackage {
+  if (!app.isPackaged && process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE) {
+    return { kind: "development_archive", path: process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE };
+  }
+  const manifestPath = app.isPackaged
+    ? join(app.getAppPath(), "package.json")
+    : join(app.getAppPath(), "..", "..", "packages", "cli", "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    name?: unknown;
+    version?: unknown;
+    runtimeHostSetupPackage?: unknown;
+  };
+  const specifier = app.isPackaged
+    ? manifest.runtimeHostSetupPackage
+    : manifest.name === "maka-agent" && typeof manifest.version === "string"
+      ? `maka-agent@${manifest.version}`
+      : undefined;
+  if (!isExactRuntimeHostSetupPackageSpecifier(specifier)) {
+    throw new Error("Desktop does not declare an exact Runtime Host setup package");
+  }
+  return { kind: "npm", specifier };
+}
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>
     runtimeHostManager?.defaultProfileId() ??
@@ -359,7 +413,7 @@ const botRegistry = new BotRegistry({
       .catch((error) => console.error("[runtime-host] bot message failed:", error));
   },
   onStatusChange: (status) => {
-    sendActiveRuntimeHostEvent("settings:bots:statusChanged", status);
+    mainWindowController.send("settings:bots:statusChanged", status);
   },
 });
 const clientSettingsEffects = createClientSettingsEffects({
@@ -370,8 +424,11 @@ const clientSettingsEffects = createClientSettingsEffects({
   applyBotSettings: useBotOnboardingFixture
     ? async () => undefined
     : (settings) => botRegistry.applySettings(settings),
-  emitExternalChanged: () =>
-    sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() }),
+  observeLocale: (settings) => desktopLocale.observe(settings),
+  emitExternalChanged: () => {
+    mainWindowController.send("settings:clientChanged");
+    sendActiveRuntimeHostEvent("settings:externalChanged", { ts: Date.now() });
+  },
 });
 const clientSettingsTools = buildClientSettingsTools({
   read: () => settingsStore.get(),
@@ -381,11 +438,12 @@ const clientSettingsTools = buildClientSettingsTools({
     return settings;
   },
   confirm: async (changes) => {
+    const copy = clientSettingsConfirmation(changes, await desktopLocale.resolve());
     const result = await dialog.showMessageBox({
       type: "question",
-      message: "Allow Maka to update this client's settings?",
-      detail: changes.join("\n"),
-      buttons: ["Apply changes", "Cancel"],
+      message: copy.message,
+      detail: copy.detail,
+      buttons: copy.buttons,
       defaultId: 0,
       cancelId: 1,
       noLink: true,
@@ -414,6 +472,7 @@ const updateMockState =
 const updateService = createAppUpdateService({
   currentVersion: app.getVersion(),
   isPackaged: app.isPackaged,
+  testFeedUrl: process.env.MAKA_UPDATE_TEST_FEED,
   mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
   mockState: updateMockState,
   onStatusChange: (status) =>
@@ -439,6 +498,7 @@ const browserIpc = registerBrowserIpc({
 registerNotificationsIpc({
   ipcMain,
   settingsStore,
+  locale: desktopLocale,
   mainWindowController,
   e2e: isE2e,
 });
@@ -449,10 +509,13 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
     generation: runtimeHostGeneration,
+    // The Desktop E2E composition lives behind its own entry module, which
+    // release packaging drops: picking it here is what keeps FakeBackend and
+    // the E2E bootstrap out of the shipped Runtime Host.
     candidateEntrypoint: new URL(
       import.meta.resolve(
         isE2e
-          ? "@maka/runtime-host/desktop-e2e-execution-candidate-main"
+          ? "@maka/runtime-host/test-only/execution-candidate-e2e-main"
           : "@maka/runtime-host/execution-candidate-main",
       ),
     ),
@@ -566,7 +629,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     openSshTunnel: runtimeHostSshTerminal.openSshTunnel,
   },
   {
-    upgradePrompts: runtimeHostUpgradePrompts,
+    upgradePrompts: createRuntimeHostUpgradePrompts(() => desktopLocale.resolve()),
     onTargetStateChanged: (state) => {
       const hostId = state.readiness === "ready"
         ? state.candidate.client.hostId
@@ -662,6 +725,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+void runtimeHostProfileService.startEnabledProfiles();
 const unavailableDefault = runtimeHostStartup.unavailable.get(
   runtimeHostStartup.preferences.defaultProfileId,
 );
@@ -681,24 +745,6 @@ if (unavailableDefault) {
       console.error("[runtime-host] failed to resolve unavailable default Host:", error),
     );
 }
-// Startup may present one interactive SSH prompt without serializing every
-// enabled Host behind it. Other SSH targets fail batch-mode and remain retryable.
-for (const target of runtimeHostStartup.remotes) {
-  if (target.profile.kind !== "remote" || !target.credential) continue;
-  void runtimeHostManager
-    .enable({
-      profile: target.profile,
-      credential: target.credential,
-      ...(target.profile.transport.kind === "ssh" &&
-      target.profile.id === runtimeHostStartup.preferences.defaultProfileId
-        ? { sshInteraction: "terminal" as const }
-        : {}),
-    })
-    .catch((error) =>
-      console.error(`[runtime-host] ${target.profile.name} is unavailable:`, error),
-    );
-}
-
 const stopComputerUseSession = (sessionId: string): void => {
   const ref = parseDesktopSessionResourceKey(sessionId);
   void runtimeHostManager
@@ -751,9 +797,10 @@ function registerHostClientIpc(
   }));
   const targetProjectManagement = createProjectManagementService({
     catalog: targetProjectCatalog,
+    directoryCatalog: targetProjectCatalog,
     chooseDirectory: async () => {
       const result = await mainWindowController.showOpenDialog({
-        title: "Add project",
+        title: projectPickerTitle(await desktopLocale.resolve()),
         properties: ["openDirectory"],
       });
       return result.canceled ? undefined : result.filePaths[0];
@@ -762,12 +809,14 @@ function registerHostClientIpc(
     capabilities: target.kind === "local"
       ? {
           chooseClientDirectory: true,
+          chooseHostDirectory: false,
           selectNoProject: true,
           setLocalDefault: true,
           viewClientPath: true,
         }
       : {
           chooseClientDirectory: false,
+          chooseHostDirectory: true,
           selectNoProject: false,
           setLocalDefault: false,
           viewClientPath: false,
@@ -880,23 +929,6 @@ function registerHostClientIpc(
       updateRuntimeHostSettings(settingsIpcDeps, patch),
     emitConnectionsChanged: emitTargetConnectionListChanged,
   });
-  const candidateSettingsBotsIpc = registerSettingsBotsIpc({
-    ipcMain: scopedIpc,
-    settingsStore,
-    botRegistry,
-    applySettingsRuntimeEffects: async (settings) => {
-      await clientSettingsEffects.apply(settings, true);
-    },
-    productVersion: app.getVersion(),
-    openExternal: (url) => shell.openExternal(url),
-    ...(useBotOnboardingFixture
-      ? {
-          botOnboardingAdapters: createE2eFixtureBotOnboardingAdapters(),
-          botOnboardingReadChannelStatus: () => ({ running: true }),
-        }
-      : {}),
-  });
-  settingsBotsIpc = candidateSettingsBotsIpc;
   registerRuntimeHostPermissionsIpc({
     ipcMain: scopedIpc,
     client,
@@ -925,6 +957,19 @@ function registerHostClientIpc(
     workspaceRoot,
     mainWindowController,
     getSelectedWorkspaceTarget: () => selectedDesktopWorkspaceTarget(target),
+    resolveNewSessionWorkspaceTarget: async (projectId) => {
+      if (typeof projectId === "string") {
+        return { kind: "project", projectId };
+      }
+      if (projectId === null) {
+        if (target.kind === "remote") return undefined;
+        return {
+          kind: "host_path",
+          path: (await requireRuntimePolicyTarget(target).projectManagement.current()).path,
+        };
+      }
+      return selectedDesktopWorkspaceTarget(target);
+    },
     getDefaultPermissionMode: () =>
       resolveDefaultPermissionMode(() => loadRuntimeHostSettings(settingsIpcDeps)),
     openPath: (path) => shell.openPath(path),
@@ -966,7 +1011,14 @@ function registerHostClientIpc(
   );
   registerWorkspaceSearchIpc({
     ipcMain: scopedIpc,
-    getProjectRoot: resolveProjectRootForContext,
+    getProjectRoot: async (sessionId, projectId) => {
+      if (typeof projectId !== "string") {
+        return resolveProjectRootForContext(sessionId);
+      }
+      const path = await targetProjectManagement.pathFor(projectId);
+      if (!path) throw new Error(`Project is unavailable: ${projectId}`);
+      return path;
+    },
     allowLocalWorkspace: target.kind === "local",
   });
   const onboardingService = createOnboardingService({
@@ -987,7 +1039,6 @@ function registerHostClientIpc(
       (await settingsStore.get()).onboarding.milestones,
     upsertMilestone: (id, status) =>
       settingsStore.upsertOnboardingMilestone(id, status),
-    clearMilestone: (id) => settingsStore.clearOnboardingMilestone(id),
     hasCredential: (connection) =>
       readWithFallback(async () => {
         if (!providerAuthRequiresSecret(connection.providerType)) return true;
@@ -1044,10 +1095,6 @@ function registerHostClientIpc(
     unsubscribeSessionCatalogChanges();
     unsubscribeProjectCatalogChanges();
     unsubscribeScheduledTaskChanges();
-    candidateSettingsBotsIpc.dispose();
-    if (settingsBotsIpc === candidateSettingsBotsIpc) {
-      settingsBotsIpc = undefined;
-    }
     runtimePolicyTargets.delete(target);
     if (runtimePolicyTargetsByEpoch.get(scope.targetEpoch) === targetContext) {
       runtimePolicyTargetsByEpoch.delete(scope.targetEpoch);
@@ -1072,6 +1119,29 @@ function registerPersistentClientIpc(): void {
   });
   registerMarkdownSaveIpc({ ipcMain, mainWindowController });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
+  registerClientSettingsIpc({
+    ipcMain,
+    settingsStore,
+    apply: async (settings) => {
+      await clientSettingsEffects.apply(settings, true);
+    },
+  });
+  settingsBotsIpc = registerSettingsBotsIpc({
+    ipcMain,
+    settingsStore,
+    botRegistry,
+    applySettingsRuntimeEffects: async (settings) => {
+      await clientSettingsEffects.apply(settings, true);
+    },
+    productVersion: app.getVersion(),
+    openExternal: (url) => shell.openExternal(url),
+    ...(useBotOnboardingFixture
+      ? {
+          botOnboardingAdapters: createE2eFixtureBotOnboardingAdapters(),
+          botOnboardingReadChannelStatus: () => ({ running: true }),
+        }
+      : {}),
+  });
   ipcMain.handle("settings:usageStats", async (_event, range?: UsageRange) =>
     projectDesktopUsageStats(
       { hostId: localRuntimeHostId },
@@ -1293,6 +1363,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   permissionOverlay.dismiss();
   const results = await Promise.allSettled([
     runtimeHostManager?.close(),
+    runtimeHostOnboarding.close(),
     runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),
     mcpManager.close(),

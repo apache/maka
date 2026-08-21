@@ -431,7 +431,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
       if (header.conversationCopy?.state === 'preparing') return null;
       return {
-        isArchived: header.isArchived || header.status === 'archived',
+        isArchived: header.isArchived,
         unavailableReason: runtimeHostExternalTurnUnavailableReason(header),
       };
     } catch (error) {
@@ -704,7 +704,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           }
           throw error;
         }
-        if (header.status === 'archived' || header.isArchived) {
+        if (header.isArchived) {
           throw new RuntimeHostedRootUnavailableError(
             input.sessionId,
             'Cannot start a hosted root execution in an archived Session',
@@ -930,15 +930,25 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   async stopAgentGraphSupervisor(
     sessionId: string,
     input: {
+      expectedGraphId?: string;
       source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = {},
   ): Promise<void> {
-    const graphId = await this.resolveCurrentGraphId(sessionId);
     const identity = await this.runCommand(() =>
-      this.sessionAdmission.run(sessionId, () => {
+      this.sessionAdmission.run(sessionId, async () => {
+        const graphId = input.expectedGraphId ?? (await this.resolveCurrentGraphId(sessionId));
         const active = this.#executions.get(sessionId);
-        if (!active || !activeRootOwnsAgentGraph(active, graphId)) return undefined;
+        if (!active?.graphOwnerId) return undefined;
+        if (active.graphOwnerId !== graphId) {
+          if (input.expectedGraphId !== undefined) {
+            throw new RuntimeHostedRootConflictError(
+              sessionId,
+              `Agent graph ${input.expectedGraphId} is no longer current`,
+            );
+          }
+          return undefined;
+        }
         return {
           sessionId,
           turnId: active.turnId,
@@ -1282,7 +1292,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           }
           throw error;
         }
-        if (header.status === 'archived' || header.isArchived) {
+        if (header.isArchived) {
           return completedStart(sessionArchived(request.archivedMessage));
         }
         const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
@@ -1414,7 +1424,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         if (isSessionNotFoundError(error)) return notFound('Session does not exist');
         throw error;
       }
-      if (header.status === 'archived' || header.isArchived) {
+      if (header.isArchived) {
         return sessionArchived('Cannot continue an archived Session');
       }
       const unavailableReason = runtimeHostSafeBoundaryContinuationUnavailableReason(header);
@@ -1593,7 +1603,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             }
             throw error;
           }
-          if (header.status === 'archived' || header.isArchived) {
+          if (header.isArchived) {
             return {
               kind: 'complete',
               outcome: sessionArchived('Cannot continue an archived Session'),
@@ -2728,10 +2738,6 @@ function isTerminalSnapshot(snapshot: TurnSnapshot): boolean {
     snapshot.status === 'failed' ||
     snapshot.status === 'cancelled'
   );
-}
-
-function activeRootOwnsAgentGraph(active: ActiveRootTurn, graphId: string): boolean {
-  return active.graphOwnerId === graphId;
 }
 
 function isShutdownCancelledBackendStart(error: unknown): boolean {

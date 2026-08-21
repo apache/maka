@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -11,6 +21,7 @@ import { createExternalSubjectAdapter } from '../external-subject.js';
 import { createHarborExecutor, createPierExecutor } from '../harness-executor.js';
 import { makaEvalRuntimePolicyDocument } from '../maka-runtime-policy.js';
 import { createMakaSubjectAdapter } from '../maka-subject.js';
+import { DEEPSEEK_V4_FLASH_COST, deepSeekCostUsd } from '../provider-metering.js';
 import {
   runExperiment,
   type ExperimentExecutor,
@@ -430,18 +441,48 @@ test('Maka framework termination is authoritative before stdout decoding', async
     assert.equal(result.costUsd, null);
   }
 
+  // A subject-reported cost that is not Eval's -- the runtime prices this model
+  // from its own table, and did so on every recorded run.
+  const reported = 999;
   const retained = await executeMaka('framework_timeout', (executionId) =>
     JSON.stringify({
       executionId,
       kind: 'settled',
       status: 'cancelled',
       usage: usage(),
-      costUsd: null,
+      costUsd: reported,
     }),
   );
   assert.equal(retained.status, 'failed');
   assert.deepEqual(retained.usage, usage());
-  assert.ok(Math.abs((retained.costUsd ?? 0) - 0.0000029087) < 1e-15);
+  // Eval prices what Eval compares, so the arms cannot bill the same tokens
+  // from two tables. The reported figure survives as evidence, which is what
+  // makes a drift between the two visible rather than silent.
+  assert.equal(retained.costUsd, deepSeekCostUsd(usage()));
+  assert.notEqual(retained.costUsd, reported);
+  assert.deepEqual(
+    retained.artifacts.find((artifact) => artifact.kind === 'subject-reported-cost'),
+    { kind: 'subject-reported-cost', costUsd: reported },
+  );
+
+  // The same rule on the ordinary settled path, which is where every recorded
+  // run went: the runtime prices this model itself, so without this the Maka
+  // arm bills from the runtime's table and every other arm from Eval's.
+  const completed = await executeMaka('exited', (executionId) =>
+    JSON.stringify({
+      executionId,
+      kind: 'settled',
+      status: 'completed',
+      usage: usage(),
+      costUsd: reported,
+    }),
+  );
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.costUsd, deepSeekCostUsd(usage()));
+  assert.deepEqual(
+    completed.artifacts.find((artifact) => artifact.kind === 'subject-reported-cost'),
+    { kind: 'subject-reported-cost', costUsd: reported },
+  );
 
   const external = await createExternalSubjectAdapter().execute({
     cell: cell('external', { command: '/opt/competitor', args: [], result: 'exit-code' }),
@@ -498,6 +539,99 @@ test('Maka forwards the configured Runtime Host settlement budget', async () => 
       ),
     /hostSettlementTimeoutMs/u,
   );
+});
+
+// The relay tears the subject's process group down unless the wrapper exits
+// zero, so every wrapper has to project the same status the same way — an arm
+// whose failures exit zero would keep its background services through the
+// verifier while the others lose theirs. This pins both halves of the Maka
+// side: what the shim projects, and that the adapter reads the frame rather
+// than re-deciding from the code it just projected.
+test('the Maka shim projects only a completed subject as a zero exit', async () => {
+  const shim = new URL('../harbor-maka-subject.js', import.meta.url);
+  for (const [projection, expectedExit, expectedStatus] of [
+    [{ kind: 'settled', status: 'completed' }, 0, 'completed'],
+    [{ kind: 'settled', status: 'failed' }, 1, 'failed'],
+    [{ kind: 'settled', status: 'cancelled' }, 1, 'indeterminate'],
+    [{ kind: 'indeterminate' }, 1, 'indeterminate'],
+  ] as const) {
+    const root = await mkdtemp(join(tmpdir(), 'maka-eval-shim-exit-'));
+    try {
+      const executionId = '00000000-0000-4000-8000-000000000000';
+      // An indeterminate projection carries no usage; the decoder rejects a
+      // frame that offers any.
+      const frame =
+        projection.kind === 'indeterminate'
+          ? { executionId, kind: 'indeterminate', failureReason: 'did not settle' }
+          : { executionId, usage: usage(), costUsd: null, ...projection };
+      // A fake Runtime Host client: the shim is the unit under test, and what
+      // it does with a settled projection is the whole question.
+      const client = join(root, 'client.mjs');
+      await writeFile(
+        client,
+        `export async function runHostedExecution() { return ${JSON.stringify(frame)}; }\n`,
+      );
+      const { exitCode, stdout } = await execFileAsync(
+        process.execPath,
+        [
+          '--import',
+          `data:text/javascript,${encodeURIComponent(
+            `import{register}from"node:module";register("data:text/javascript,${encodeURIComponent(
+              `export async function resolve(s,c,n){return s==="@maka/runtime-host/client"?{url:${JSON.stringify(
+                new URL(`file://${client}`).href,
+              )},shortCircuit:true}:n(s,c)}`,
+            )}",import.meta.url)`,
+          )}`,
+          shim.pathname,
+          Buffer.from(
+            JSON.stringify({
+              rootPath: join(root, 'state'),
+              artifactRoot: join(root, 'artifacts'),
+              baseUrl: 'https://provider.test/v1',
+              hostSettlementTimeoutMs: 1000,
+              execution: { executionId },
+            }),
+          ).toString('base64url'),
+        ],
+        { env: { ...process.env, MAKA_EVAL_RESULT_TOKEN: '0'.repeat(32) } },
+      )
+        .then((settled) => ({ exitCode: 0, stdout: settled.stdout }))
+        .catch((error: { code?: number; stdout?: string }) => ({
+          exitCode: error.code ?? -1,
+          stdout: error.stdout ?? '',
+        }));
+
+      assert.equal(
+        exitCode,
+        expectedExit,
+        `${projection.kind}/${'status' in projection ? projection.status : ''}`,
+      );
+
+      // And the adapter takes its status from the frame, not from that code.
+      const result = await createMakaSubjectAdapter().execute({
+        cell: cell('maka', makaConfig()),
+        context: {
+          cwd: '/workspace',
+          taskInput: 'solve',
+          metadata: {},
+          execute: async (input) => {
+            const payload = JSON.parse(
+              Buffer.from(input.args[1] ?? '', 'base64url').toString(),
+            ) as { execution: { executionId: string } };
+            return {
+              termination: 'exited',
+              exitCode: expectedExit,
+              stdout: JSON.stringify({ ...frame, executionId: payload.execution.executionId }),
+            };
+          },
+        },
+      });
+      assert.equal(result.status, expectedStatus);
+      assert.ok(stdout.includes('MAKA-EVAL-RESULT-V1'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
 });
 
 test('subject preflight settles before the attempt timer starts', async () => {
@@ -673,6 +807,16 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
     ANTHROPIC_API_KEY: 'test-only-key',
     MAKA_EVAL_RESULT_TOKEN: '0123456789abcdef0123456789abcdef',
   };
+  // The DeepSeek Harness arm copies its checked-in profile out of the repo
+  // mount, so the wrapper needs to find it under the fake system root.
+  const profileSource = join(root, 'opt/maka-agent/packages/eval/harbor/deepseek-harness-profile');
+  await mkdir(profileSource, { recursive: true });
+  for (const file of ['package.json', 'cordis.yml', 'cordis.patch.yml']) {
+    await copyFile(
+      new URL(`../../harbor/deepseek-harness-profile/${file}`, import.meta.url),
+      join(profileSource, file),
+    );
+  }
   try {
     for (const args of [
       ['codex', 'https://api.deepseek.com', root, '/usr/bin/true'],
@@ -688,10 +832,17 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
         'max',
       ],
       ['pi', 'https://api.deepseek.com', root, '/usr/bin/true'],
+      ['deepseek-harness', 'https://api.deepseek.com', root, '/usr/bin/true'],
     ]) {
-      const { stdout } = await execFileAsync(process.execPath, [wrapper.pathname, ...args], {
-        env,
-      });
+      // These subjects run `/usr/bin/true` and never reach the provider, so
+      // each one is an infrastructure failure and exits nonzero: the exit code
+      // now carries the semantic status for the relay's benefit.
+      const stdout = await execFileAsync(process.execPath, [wrapper.pathname, ...args], { env })
+        .then((settled) => settled.stdout)
+        .catch((error: { stdout?: string }) => {
+          assert.equal(typeof error.stdout, 'string');
+          return error.stdout as string;
+        });
       assert.equal(
         decodeResultFrame(stdout, '0123456789abcdef0123456789abcdef').schemaVersion,
         'maka.external_subject_result.v2',
@@ -746,13 +897,37 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
       input: ['text'],
       contextWindow: 1_048_576,
       maxTokens: 131_072,
-      cost: {
-        input: 0.145,
-        output: 0.29,
-        cacheRead: 0.0029,
-        cacheWrite: 0.145,
-      },
+      // The table itself, not a second transcription of it: what this pins is
+      // that the config the framework reads and the table Eval bills from are
+      // the same values, which is the drift a literal here would hide.
+      cost: { ...DEEPSEEK_V4_FLASH_COST },
     });
+
+    // The harness resolves `--profile <name>` against DSH_HOME. The wrapper
+    // names the directory and the spec repeats that name in argv; this pins the
+    // two together and checks all three files were materialized.
+    const profileRoot = join(root, 'tmp/maka-eval-deepseek-harness/dsh/profiles');
+    const harnessSpec = JSON.parse(
+      await readFile(
+        new URL(
+          '../../experiments/terminal-bench-2.1-deepseek-v4-flash-deepseek-harness.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ) as { subjects: Array<{ config: { args: string[] } }> };
+    const declared = harnessSpec.subjects[0]!.config.args;
+    const profileName = declared[declared.indexOf('--profile') + 1]!;
+    assert.deepEqual(await readdir(profileRoot), [profileName]);
+    for (const file of ['package.json', 'cordis.yml', 'cordis.patch.yml']) {
+      assert.equal(
+        await readFile(join(profileRoot, profileName, file), 'utf8'),
+        await readFile(
+          new URL(`../../harbor/deepseek-harness-profile/${file}`, import.meta.url),
+          'utf8',
+        ),
+      );
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -825,6 +1000,10 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   assert.match(subjectService, /cap_drop:\s*\n\s+- NET_RAW/u);
   assert.match(egressCompose, /networks:\s*\n\s+- default/u);
   assert.match(egressCompose, /target: \/usr\/local\/bin\/network-policy/u);
+  const sidecarService = egressCompose
+    .split(/\n(?= {2}\S)/u)
+    .find((block) => block.trimStart().startsWith('harbor-docker-egress-control-sidecar:'))!;
+  assert.match(sidecarService, /maka-eval-egress-ca:\/opt\/maka-egress:ro/u);
   // The subject shares the sidecar's network namespace, so any packet mark it
   // could set is one the subject can set too. No live probe can show this any
   // more — without NET_RAW the subject cannot set a mark at all — so the rule's
@@ -834,6 +1013,14 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
     'utf8',
   );
   assert.doesNotMatch(networkPolicy, /meta mark \S+ (?:accept|return)/u);
+  assert.match(networkPolicy, /ip daddr 127\.0\.0\.11 reject/u);
+  assert.doesNotMatch(networkPolicy, /127\.0\.0\.11 (?:udp|tcp) dport 53 reject/u);
+  const dockerDnsReject = networkPolicy.indexOf('ip daddr 127.0.0.11 reject');
+  const localAccept = networkPolicy.indexOf('fib daddr type local accept');
+  assert.ok(dockerDnsReject >= 0 && localAccept > dockerDnsReject);
+  assert.match(networkPolicy, /\/opt\/maka-egress\/proxy-ipv4/u);
+  assert.doesNotMatch(networkPolicy, /\bgetent\b/u);
+  assert.match(egressCompose, /proxy-ipv4/u);
   const entrypoint = await readFile(
     new URL('../../harbor/egress-proxy/entrypoint.sh', import.meta.url),
     'utf8',
@@ -886,6 +1073,71 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   assert.equal(pi.config.args?.includes('--no-session'), true);
   assert.equal(pi.config.args?.includes('--thinking'), true);
   assert.equal(pi.config.args?.includes('max'), true);
+});
+
+test('the DeepSeek Harness arm pins its own minimal composition', async () => {
+  const spec = JSON.parse(
+    await readFile(
+      new URL(
+        '../../experiments/terminal-bench-2.1-deepseek-v4-flash-deepseek-harness.json',
+        import.meta.url,
+      ),
+      'utf8',
+    ),
+  ) as {
+    subjects: Array<{ id: string; config: { args?: string[] } }>;
+    execution: { maxConcurrentTaskGroups: number };
+    executor: { config: { mounts: Array<{ target: string }>; egressProxy: { proxyUrl: string } } };
+  };
+  assert.deepEqual(
+    spec.subjects.map(({ id }) => id),
+    ['deepseek-harness'],
+  );
+  assert.deepEqual(
+    spec.executor.config.mounts.map(({ target }) => target),
+    ['/opt/maka-agent', '/opt/maka-node-toolchain', '/opt/maka-deepseek-harness-toolchain'],
+  );
+  // The single-arm spec keeps the cohort's egress enforcement rather than
+  // running the harness with unaudited network access.
+  assert.equal(spec.executor.config.egressProxy.proxyUrl, 'http://maka-eval-mitmproxy:8080');
+
+  const subject = spec.subjects[0]!;
+  const args = subject.config.args ?? [];
+  // The toolchain carries its own Node so the executed path resolves inside the
+  // mounted root, which is what makes the preflight identity check meaningful.
+  assert.equal(args.includes('/opt/maka-deepseek-harness-toolchain/bin/node'), true);
+  assert.equal(
+    args.includes(
+      '/opt/maka-deepseek-harness-toolchain/lib/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js',
+    ),
+    true,
+  );
+  assert.equal(args.includes('--profile'), true);
+  // The model reaches the harness through the profile, not through argv: `dsh`
+  // has no --model flag, and the composition is the only place it is named.
+  assert.equal(args.includes('--model'), false);
+  assert.equal(args.includes('--patch'), false);
+  // The task prompt is the last argument and is fenced from option parsing, the
+  // same way the other arms fence theirs. `dsh` combines allowUnknownOption with
+  // passThroughOptions, so a dash-leading prompt already reaches the profile
+  // without this; the separator is what stops a prompt that exactly matches a
+  // known option, and what keeps every arm's contract readable as one rule.
+  assert.deepEqual(args.slice(-2), ['--', '{{task.input}}']);
+
+  // Every subject in a task group runs its own container, so a single-arm cohort
+  // at the eight-arm limit would run at an eighth of its machine load.
+  assert.equal(spec.execution.maxConcurrentTaskGroups, 128);
+
+  // The arm's comparability rests on composing over an empty entry list: with no
+  // bundles inherited, an upstream bundle gaining a plugin cannot widen this
+  // arm's tool surface, and nothing needs to be disabled to keep it narrow.
+  const profile = JSON.parse(
+    await readFile(
+      new URL('../../harbor/deepseek-harness-profile/package.json', import.meta.url),
+      'utf8',
+    ),
+  ) as { dsh: { profile: { bundles: string[] } } };
+  assert.deepEqual(profile.dsh.profile.bundles, []);
 });
 
 test('Maka Eval policy enables privacy independently of the tool profile', () => {
@@ -1055,7 +1307,37 @@ test('pier cannot declare an egress proxy it never enforces', () => {
   );
 });
 
-test('launched trial environment does not inherit MAKA_EVAL_FRAMEWORK', {
+test('Pier rejects configured mounts that collide with framework log ownership', () => {
+  const root = join(tmpdir(), 'maka-test-pier-reserved-mount');
+  const restoreEnvironment = setEnvironment({
+    MAKA_TEST_MOUNT: join(root, 'mount'),
+    MAKA_TEST_PYTHON: join(root, 'python'),
+    MAKA_TEST_TASKS: join(root, 'tasks'),
+    MAKA_TEST_TRIALS: join(root, 'trials'),
+  });
+  try {
+    for (const target of ['/logs/agent/../agent', '/logs/verifier/reward.txt']) {
+      assert.throws(
+        () =>
+          createPierExecutor(
+            {
+              ...executorConfig(),
+              tasksRootEnv: 'MAKA_TEST_TASKS',
+              mounts: [{ sourceEnv: 'MAKA_TEST_MOUNT', target, readOnly: true }],
+            },
+            'experiment.json',
+          ),
+        (error) =>
+          error instanceof Error &&
+          error.message === `Pier mount target ${target} is reserved for framework logs`,
+      );
+    }
+  } finally {
+    restoreEnvironment();
+  }
+});
+
+test('Pier preserves its log mounts without inheriting MAKA_EVAL_FRAMEWORK', {
   timeout: 10_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-eval-framework-env-'));
@@ -1069,6 +1351,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 const config = JSON.parse(await readFile(process.argv.at(-1), 'utf8'));
 await writeFile(process.env.MAKA_TEST_ENV, JSON.stringify({
   framework: process.env.MAKA_EVAL_FRAMEWORK ?? null,
+  mounts: config.environment.mounts,
+  trialName: config.trial_name,
 }));
 const socket = connect(config.agent.kwargs.relay_port, config.agent.kwargs.relay_host);
 socket.setEncoding('utf8');
@@ -1104,14 +1388,33 @@ socket.end();
     MAKA_TEST_PYTHON: executable,
     MAKA_TEST_TRIALS: root,
     MAKA_TEST_ENV: envDump,
+    MAKA_TEST_MOUNT: root,
+    MAKA_TEST_TASKS: root,
     MAKA_EVAL_FRAMEWORK: 'pier',
   });
   try {
+    const spec: ExperimentSpec = {
+      ...experiment(),
+      executor: {
+        kind: 'pier',
+        config: {
+          ...executorConfig(),
+          tasksRootEnv: 'MAKA_TEST_TASKS',
+          mounts: [{ sourceEnv: 'MAKA_TEST_MOUNT', target: '/input', readOnly: true }],
+        },
+      },
+      tasks: [{ id: 'task', input: 'solve', config: { pier: { path: 'task' } } }],
+    };
     const results = await runExperiment({
-      spec: experiment(),
+      spec,
       store: new FileAttemptStore(join(root, 'attempts')),
-      executor: createHarborExecutor(
-        { ...executorConfig(), preparationEnvironment: ['MAKA_TEST_ENV'] },
+      executor: createPierExecutor(
+        {
+          ...executorConfig(),
+          tasksRootEnv: 'MAKA_TEST_TASKS',
+          preparationEnvironment: ['MAKA_TEST_ENV'],
+          mounts: [{ sourceEnv: 'MAKA_TEST_MOUNT', target: '/input', readOnly: true }],
+        },
         join(root, 'experiment.json'),
       ),
       subjects: [
@@ -1132,7 +1435,26 @@ socket.end();
       ],
     });
     assert.equal(results.get('task::1::external')?.result.status, 'completed');
-    assert.deepEqual(JSON.parse(await readFile(envDump, 'utf8')), { framework: null });
+    const launched = JSON.parse(await readFile(envDump, 'utf8')) as {
+      framework: string | null;
+      mounts: Array<{ source: string; target: string }>;
+      trialName: string;
+    };
+    assert.equal(launched.framework, null);
+    assert.deepEqual(launched.mounts, [
+      { type: 'bind', source: root, target: '/input', read_only: true },
+      { type: 'bind', source: join(root, launched.trialName, 'agent'), target: '/logs/agent' },
+      {
+        type: 'bind',
+        source: join(root, launched.trialName, 'verifier'),
+        target: '/logs/verifier',
+      },
+      {
+        type: 'bind',
+        source: join(root, launched.trialName, 'artifacts'),
+        target: '/logs/artifacts',
+      },
+    ]);
   } finally {
     restoreEnvironment();
     await rm(root, { recursive: true, force: true });

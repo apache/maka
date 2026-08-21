@@ -272,7 +272,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                   tooltip={copy.setDefaultTitle}
                   clickAction={async () => {
                     try {
-                      await window.maka.connections.setDefault(selected.slug);
+                      await bridge.setDefault(selected.slug);
                       await reload();
                     } catch (error) {
                       // The state is unchanged on failure, so the Badge stays

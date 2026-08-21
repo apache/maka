@@ -1,5 +1,11 @@
 import type { PermissionMode } from './permission.js';
 import {
+  isNormalizedAbsolutePath,
+  pathWithinRoot,
+  samePath,
+  trimTrailingPathSeparators,
+} from './absolute-path.js';
+import {
   FILE_SYSTEM_ACCESS_MODES,
   FILE_SYSTEM_PATH_MATCHES,
   FILE_SYSTEM_SPECIAL_PATHS,
@@ -12,6 +18,7 @@ import {
   type PermissionProfileManaged,
   type PermissionProfileMatchContext,
 } from './permission-profile.js';
+import { serializedByteLength } from './serialized-byte-length.js';
 
 export const SANDBOX_BOUNDARY_ACCESS_MODES = ['read', 'write'] as const;
 export type SandboxBoundaryAccess = (typeof SANDBOX_BOUNDARY_ACCESS_MODES)[number];
@@ -614,10 +621,7 @@ function validateFilesystem(
       );
     }
     if (!isNormalizedAbsolutePath(candidate.path)) {
-      return invalid(
-        'invalid_path',
-        'Sandbox boundary path must be a normalized absolute POSIX path.',
-      );
+      return invalid('invalid_path', 'Sandbox boundary path must be a normalized absolute path.');
     }
     if (candidate.path.length > MAX_SANDBOX_BOUNDARY_PATH_CHARS) {
       return invalid('path_too_long', 'Sandbox boundary path exceeds the length limit.');
@@ -745,34 +749,8 @@ function compareEntries(
   );
 }
 
-function isNormalizedAbsolutePath(path: string): boolean {
-  if (!path.startsWith('/') || path.includes('\0') || path.includes('\\')) return false;
-  if (path.length > 1 && path.endsWith('/')) return false;
-  return !path
-    .split('/')
-    .some((segment, index) => index > 0 && (segment === '' || segment === '.' || segment === '..'));
-}
-
-function pathWithinRoot(path: string, root: string): boolean {
-  const normalizedPath = trimTrailingSlashes(path);
-  const normalizedRoot = trimTrailingSlashes(root);
-  if (normalizedRoot === '/') return normalizedPath.startsWith('/');
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
-}
-
-function samePath(a: string, b: string): boolean {
-  return trimTrailingSlashes(a) === trimTrailingSlashes(b);
-}
-
 function trimTrailingSlashes(value: string): string {
-  if (value === '/') return value;
-  return value.replace(/\/+$/g, '');
-}
-
-function serializedByteLength(value: unknown): number {
-  const json = JSON.stringify(value);
-  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(json).byteLength;
-  return json.length;
+  return trimTrailingPathSeparators(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

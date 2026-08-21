@@ -166,8 +166,8 @@ describe('projectSessionSendOutcome — silent rebind walk', () => {
     const outcome = projectSessionSendOutcome(
       input({
         session: {
-          backend: 'fake',
-          llmConnectionSlug: 'fake',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deleted-connection',
           model: 'fake-model',
           connectionLocked: false,
         },
@@ -180,8 +180,8 @@ describe('projectSessionSendOutcome — silent rebind walk', () => {
     const outcome = projectSessionSendOutcome(
       input({
         session: {
-          backend: 'fake',
-          llmConnectionSlug: 'fake',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deleted-connection',
           model: 'fake-model',
           connectionLocked: false,
         },
@@ -203,7 +203,11 @@ describe('projectSessionSendOutcome — silent rebind walk', () => {
     });
   });
 
-  it('rebind requires a secret on the candidate connection', () => {
+  it('a retired backend never rebinds, even unlocked with a ready connection available', () => {
+    // #3211: activation dispatches off the session header's own `backend`, so
+    // pointing this session at a healthy connection would still leave `'fake'`
+    // in the header and still be refused. Promising a rebind nothing performs
+    // is what pushed the rail and the composer to read `backend` directly.
     const outcome = projectSessionSendOutcome(
       input({
         session: {
@@ -212,11 +216,33 @@ describe('projectSessionSendOutcome — silent rebind walk', () => {
           model: 'fake-model',
           connectionLocked: false,
         },
+      }),
+    );
+    assert.deepEqual(outcome, {
+      kind: 'blocked',
+      reason: 'fake_backend',
+      connectionLocked: false,
+    });
+  });
+
+  it('rebind requires a secret on the candidate connection', () => {
+    const outcome = projectSessionSendOutcome(
+      input({
+        session: {
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deleted-connection',
+          model: 'fake-model',
+          connectionLocked: false,
+        },
         hasSecret: () => false,
       }),
     );
     // Default exists and is enabled but has no key → send still fails.
-    assert.deepEqual(outcome, { kind: 'blocked', reason: 'fake_backend', connectionLocked: false });
+    assert.deepEqual(outcome, {
+      kind: 'blocked',
+      reason: 'connection_missing',
+      connectionLocked: false,
+    });
   });
 
   it('non-rebindable failure blocks even when another ready connection exists', () => {
@@ -236,8 +262,8 @@ describe('projectSessionSendOutcome — silent rebind walk', () => {
     const outcome = projectSessionSendOutcome(
       input({
         session: {
-          backend: 'fake',
-          llmConnectionSlug: 'fake',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deleted-connection',
           model: 'fake-model',
           connectionLocked: false,
         },
@@ -253,8 +279,8 @@ describe('projectSessionSendOutcome — codex normalization', () => {
     const outcome = projectSessionSendOutcome(
       input({
         session: {
-          backend: 'fake',
-          llmConnectionSlug: 'fake',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deleted-connection',
           model: 'fake-model',
           connectionLocked: false,
         },

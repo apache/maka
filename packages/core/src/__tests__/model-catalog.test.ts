@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { isConnectionReady } from '../connection-readiness.js';
-import type { LlmConnection, ProviderType } from '../llm-connections.js';
+import { PROVIDER_DEFAULTS, type LlmConnection, type ProviderType } from '../llm-connections.js';
 import {
   buildConnectionModelCatalogEntries,
   buildModelCatalogEntries,
@@ -143,4 +143,34 @@ test('unknown persisted provider ids return an empty catalog', () => {
     }),
     [],
   );
+});
+
+test('Alibaba Token Plan catalogs the formal Qwen3.8 model instead of its retired preview alias', () => {
+  const modelId = 'qwen3.8-max';
+  for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
+    const defaults = PROVIDER_DEFAULTS[providerType];
+    assert.equal(defaults.fallbackModels[0], modelId, providerType);
+    assert.equal(defaults.fallbackModels.includes('qwen3.8-max-preview'), false, providerType);
+
+    const entries = buildConnectionModelCatalogEntries({
+      connection: {
+        slug: providerType,
+        providerType,
+        defaultModel: modelId,
+        modelSource: 'fallback',
+      },
+    });
+    const model = entries.find((entry) => entry.id === modelId);
+    assert.equal(model?.displayName, 'Qwen3.8 Max', providerType);
+    assert.equal(model?.contextWindow, 1_000_000, providerType);
+    assert.equal(model?.maxOutputTokens, 131_072, providerType);
+    assert.equal(model?.structuredOutput, true, providerType);
+    assert.deepEqual(
+      model?.capabilities,
+      { vision: true, reasoning: true, functionCalling: true },
+      providerType,
+    );
+    assert.deepEqual(model?.modalities, { input: ['text', 'image', 'pdf'], output: ['text'] });
+    assert.equal(model?.canUseAsChatDefault, true, providerType);
+  }
 });

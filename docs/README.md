@@ -25,6 +25,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 
 - [Deep Research durable workspace](./deep-research-durable-workspace.md)
 - [Session task ledger lifecycle](./session-task-ledger-lifecycle.md)
+- [Work Board contract](./work-board-contract.md)
 - [Runtime resume architecture](./architecture/runtime-resume-architecture.md) ([中文](./architecture/runtime-resume-architecture.zh-CN.md))
 - [Runtime Host architecture](./architecture/runtime-host-architecture.md) ([中文](./architecture/runtime-host-architecture.zh-CN.md))
 - [Remote Runtime Host setup](./runtime-host-remote-access.md) ([中文](./runtime-host-remote-access.zh-CN.md))
@@ -49,6 +50,10 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Product design](../DESIGN.md)
 - [Frontend CSS governance](./frontend-css-governance.md) ([中文](./frontend-css-governance.zh-CN.md))
 - [Windows support baseline](./windows-support.md)
+
+### Release operations
+
+- [CLI npm release](./cli-npm-release.md) ([中文](./cli-npm-release.zh-CN.md))
 
 ### Security and privacy
 

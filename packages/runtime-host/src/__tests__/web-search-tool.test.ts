@@ -7,7 +7,50 @@ import type {
   ResolveWebSearchExecutionResult,
   RuntimePolicyOperationCoordinator,
 } from '@maka/storage/runtime-policy-stores';
-import { createHostWebSearchTool } from '../server/web-search-tool.js';
+import {
+  createHostWebSearchTool,
+  resolveHostTavilyWebSearchReadiness,
+  shouldResolveHostTavilyWebSearchReadiness,
+} from '../server/web-search-tool.js';
+
+test('Host only resolves Tavily readiness when that execution path can be exposed', () => {
+  const policy = createDefaultRuntimePolicy();
+  assert.equal(shouldResolveHostTavilyWebSearchReadiness(policy), false);
+  assert.equal(
+    shouldResolveHostTavilyWebSearchReadiness({
+      ...policy,
+      webSearch: { enabled: true, defaultProvider: 'tavily' },
+    }),
+    true,
+  );
+  assert.equal(
+    shouldResolveHostTavilyWebSearchReadiness({
+      ...policy,
+      privacy: { incognitoActive: true },
+      webSearch: { enabled: true, defaultProvider: 'tavily' },
+    }),
+    false,
+  );
+});
+
+test('Host Tavily readiness follows the canonical execution resolver', async () => {
+  assert.equal(
+    await resolveHostTavilyWebSearchReadiness(
+      resolver({
+        kind: 'credential_not_configured',
+        status: {
+          locator: { scope: 'web_search', provider: 'tavily', kind: 'api_key' },
+          configured: false,
+          credentialId: null,
+          revision: null,
+          updatedAt: null,
+        },
+      }),
+    ),
+    false,
+  );
+  assert.equal(await resolveHostTavilyWebSearchReadiness(resolver(readyDirectExecution())), true);
+});
 
 test('Host WebSearch fails closed before transport creation for unavailable policy states', async () => {
   const states: readonly ResolveWebSearchExecutionResult[] = [

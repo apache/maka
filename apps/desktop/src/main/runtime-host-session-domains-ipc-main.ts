@@ -7,9 +7,14 @@ import type {
 } from '@maka/runtime/stream-graph-read-model';
 import type { GoalState } from '@maka/runtime/goal-state';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
-import type { GoalProjection, SessionDomainChange } from '@maka/runtime-host/protocol';
+import type {
+  GoalProjection,
+  SessionDomainChange,
+} from '@maka/runtime-host/protocol';
+import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';
+import { GOAL_ARM_REQUEST_KEYS } from '../shared/goal-arm.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
 import {
   handleReconnectableRead,
@@ -23,11 +28,15 @@ import {
 type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
   Pick<
     DesktopRuntimeHostClient,
+    | 'armGoal'
     | 'clearGoal'
+  | 'controlGoalWithRetry'
   | 'controlPlan'
   | 'getRuntimeResource'
   | 'getPlanState'
   | 'listRuntimeResources'
+  | 'listAgentGraphEpochs'
+  | 'listCurrentAgentGraphEpochs'
   | 'listTasks'
   | 'queryAgentGraph'
   | 'queryAgentGraphOperator'
@@ -86,6 +95,19 @@ export function registerRuntimeHostSessionDomainsIpc(
   });
   ipcMain.handle('goal:clear', async (_event, sessionId: unknown) => {
     await deps.client.clearGoal(requiredId(sessionId, 'Session'));
+  });
+  ipcMain.handle('goal:pause', async (_event, sessionId: unknown) => {
+    await deps.client.controlGoalWithRetry(requiredId(sessionId, 'Session'), 'pause');
+  });
+  ipcMain.handle('goal:resume', async (_event, sessionId: unknown) => {
+    await deps.client.controlGoalWithRetry(requiredId(sessionId, 'Session'), 'resume');
+  });
+  ipcMain.handle('goal:arm', async (_event, sessionId: unknown, input: unknown) => {
+    const result = await deps.client.armGoal({
+      sessionId: requiredId(sessionId, 'Session'),
+      ...requireGoalArmBudgets(input),
+    });
+    return toDesktopGoal(result.goal);
   });
 
   handleReconnectableRead(ipcMain, 'plan-mode:getState', (_event, sessionId: unknown) =>
@@ -188,24 +210,48 @@ export function registerRuntimeHostSessionDomainsIpc(
   );
   handleReconnectableRead(
     ipcMain,
+    'graphs:listEpochs',
+    async (_event, rootSessionId: unknown): Promise<AgentGraphEpochDirectory> =>
+      deps.client.listAgentGraphEpochs(requiredId(rootSessionId, 'root Session')),
+  );
+  handleReconnectableRead(
+    ipcMain,
+    'graphs:listCurrentEpochs',
+    async (_event, rootSessionId: unknown): Promise<AgentGraphEpochDirectory> => {
+      const page = await deps.client.listCurrentAgentGraphEpochs(
+        requiredId(rootSessionId, 'root Session'),
+      );
+      return { epochs: page.epochs, truncated: page.nextBeforeEpoch !== null };
+    },
+  );
+  handleReconnectableRead(
+    ipcMain,
     'graphs:inspectOperator',
     async (
       _event,
       rootSessionId: unknown,
       operatorId: unknown,
+      graphId?: unknown,
     ): Promise<AgentGraphOperatorInspection> =>
       mutableGraphInspection(
         await deps.client.queryAgentGraphOperator({
           rootSessionId: requiredId(rootSessionId, 'root Session'),
+          ...(graphId === undefined
+            ? {}
+            : { graphId: requiredId(graphId, 'Agent graph') }),
           operatorId: requiredId(operatorId, 'Agent graph operator'),
         }),
       ),
   );
-  ipcMain.handle('graphs:stop', async (_event, rootSessionId: unknown) => {
+  ipcMain.handle(
+    'graphs:stop',
+    async (_event, rootSessionId: unknown, expectedGraphId: unknown) => {
     await deps.client.stopAgentGraph({
       rootSessionId: requiredId(rootSessionId, 'root Session'),
+      expectedGraphId: requiredId(expectedGraphId, 'Agent graph'),
     });
-  });
+    },
+  );
 
   const sessionDomainChanged = (change: SessionDomainChange): void => {
     switch (change.domain) {
@@ -265,6 +311,44 @@ async function refreshRuntimeResources(
   }
 }
 
+/**
+ * The renderer sends what the user typed; the Host owns every bound. This only
+ * gets the frame into the shape the protocol decodes — numbers stay numbers,
+ * "not chosen" stays null — so an out-of-range budget is refused once, by the
+ * Host, instead of being clamped here into something the user did not ask for.
+ * The Session comes from the scoped IPC argument, not from this frame, so a
+ * renderer-side Session id can never redirect the operation.
+ */
+function requireGoalArmBudgets(value: unknown): {
+  condition: string;
+  maxIterations: number | null;
+  tokenBudget: number | null;
+} {
+  if (typeof value !== 'object' || value === null) {
+    throw new TypeError('Goal arm input must be an object');
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !GOAL_ARM_REQUEST_KEYS.includes(key as never))) {
+    throw new TypeError('Invalid Goal arm input');
+  }
+  if (typeof record.condition !== 'string' || record.condition.trim().length === 0) {
+    throw new TypeError('Goal condition is required');
+  }
+  return {
+    condition: record.condition,
+    maxIterations: optionalCount(record.maxIterations, 'Goal maxIterations'),
+    tokenBudget: optionalCount(record.tokenBudget, 'Goal tokenBudget'),
+  };
+}
+
+function optionalCount(value: unknown, label: string): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new TypeError(`${label} must be a positive integer`);
+  }
+  return value;
+}
+
 function toDesktopGoal(goal: GoalProjection): GoalState {
   return {
     id: goal.goalId,
@@ -287,18 +371,31 @@ function toDesktopGoal(goal: GoalProjection): GoalState {
   };
 }
 
-function snapshotOptions(value: unknown): AgentGraphClientSnapshotOptions {
+function snapshotOptions(
+  value: unknown,
+): AgentGraphClientSnapshotOptions & { readonly graphId?: string } {
   if (value === undefined) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('Invalid agent graph snapshot options');
   }
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== 'terminalCursor')) {
+  if (Object.keys(record).some((key) => key !== 'graphId' && key !== 'terminalCursor')) {
     throw new TypeError('Invalid agent graph snapshot options');
   }
-  return record.terminalCursor === undefined
-    ? {}
-    : { terminalCursor: requiredId(record.terminalCursor, 'Agent graph terminal cursor', 2_048) };
+  return {
+    ...(record.graphId === undefined
+      ? {}
+      : { graphId: requiredId(record.graphId, 'Agent graph') }),
+    ...(record.terminalCursor === undefined
+      ? {}
+      : {
+          terminalCursor: requiredId(
+            record.terminalCursor,
+            'Agent graph terminal cursor',
+            2_048,
+          ),
+        }),
+  };
 }
 
 function mutableGraphSnapshot(

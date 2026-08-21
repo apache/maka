@@ -56,6 +56,7 @@ describe('agent graph operator handoffs', () => {
     assert.equal(reads, 1, 'records from one activation should share one immutable stream read');
     assert.equal(handoffs.length, 2);
     assert.equal(handoffs[0]?.record.recordId, records[0]?.recordId);
+    assert.equal(handoffs[0]?.record.graphId, 'graph-handoff');
     assert.equal(handoffs[0]?.conclusion?.sourceRuntimeEventId, 'result-event');
     assert.equal(handoffs[1]?.record.recordId, records[1]?.recordId);
     assert.equal(
@@ -147,6 +148,7 @@ describe('agent graph operator handoffs', () => {
           schemaVersion: 1,
           record: {
             recordId: 'record-result',
+            graphId: 'graph-handoff',
             operatorId: 'researcher',
             activationId: 'run-child',
             facets: ['message'],

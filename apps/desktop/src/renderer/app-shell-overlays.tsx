@@ -1,6 +1,6 @@
 import { lazy, Suspense } from 'react';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
-import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type { ProviderType } from '@maka/core/llm-connections';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { Spinner } from '@astryxdesign/core/Spinner';
@@ -35,9 +35,6 @@ function SettingsModalFallback() {
 
 export function AppShellOverlays(props: {
   settingsOpen: boolean;
-  connections: LlmConnection[];
-  defaultConnection: string | null;
-  refreshConnections(): Promise<void>;
   closeSettings(): void;
   themePref: ThemePreference;
   setThemePref(themePref: ThemePreference): void;
@@ -65,6 +62,7 @@ export function AppShellOverlays(props: {
   closePalette(): void;
   commandOptions: AppShellCommandListOptions;
   onExternalSessionImported(session: DesktopSessionSummary): void;
+  onRemoteHostAdded(profileId: string): void;
 }) {
   const {
     closeHelp,
@@ -72,11 +70,8 @@ export function AppShellOverlays(props: {
     closeSearchModal,
     closeSettings,
     commandOptions,
-    connections,
-    defaultConnection,
     helpOpen,
     paletteOpen,
-    refreshConnections,
     searchModalDeps,
     searchModalOnNavigate,
     searchModalOpen,
@@ -104,9 +99,6 @@ export function AppShellOverlays(props: {
       {settingsOpen && (
         <Suspense fallback={<SettingsModalFallback />}>
           <SettingsModal
-            connections={connections}
-            defaultSlug={defaultConnection}
-            onRefresh={refreshConnections}
             onClose={closeSettings}
             themePref={themePref}
             onThemeChange={setThemePref}
@@ -125,6 +117,7 @@ export function AppShellOverlays(props: {
             onOpenSession={props.onOpenSettingsSession}
             archivedTasks={props.archivedTasks}
             onTaskImported={onExternalSessionImported}
+            onRemoteHostAdded={props.onRemoteHostAdded}
           />
         </Suspense>
       )}

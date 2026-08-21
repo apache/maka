@@ -15,10 +15,14 @@ type ToastApi = {
 };
 
 export function useAppShellSessionWorkspace(toastApi: ToastApi) {
-  const sessionList = useAppShellSessionList(toastApi);
-  const sessionUi = useAppShellSessionUiState();
   const [activeId, setActiveIdState] = useState<string | undefined>();
   const activeIdRef = useRef<string | undefined>(undefined);
+  const sessionUi = useAppShellSessionUiState();
+  const sessionList = useAppShellSessionList(toastApi, {
+    activeIdRef,
+    liveTurnBySessionRef: sessionUi.liveTurnBySessionRef,
+    clearTurnTransientStateIfCurrent: sessionUi.clearTurnTransientStateIfCurrent,
+  });
   const selectionRevisionRef = useRef(0);
   const bootstrapSelectionLeaseRef = useRef<ReturnType<typeof createBootstrapSelectionLease> | null>(null);
   const [messages, setMessages] = useState<StoredMessage[]>([]);
@@ -91,6 +95,5 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     setPendingPermissionModeBySession: sessionUi.setPendingPermissionModeBySession,
     setPendingSessionModelBySession: sessionUi.setPendingSessionModelBySession,
     confirmLiveTurn: sessionUi.confirmLiveTurn,
-    clearTurnTransientState: sessionUi.clearTurnTransientState,
   };
 }

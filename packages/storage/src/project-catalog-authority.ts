@@ -85,7 +85,7 @@ function createWriterFacade(
     access: 'write',
     [writerBrand]: true,
     list: () => run(() => catalog.list()),
-    register: (path) => run(() => catalog.register(path)),
+    register: (path, options) => run(() => catalog.register(path, options)),
     resolveHistoricalPath: (path, usedAt) => run(() => catalog.resolveHistoricalPath(path, usedAt)),
     select: (projectId) => run(() => catalog.select(projectId)),
     touch: (projectId, path) => run(() => catalog.touch(projectId, path)),

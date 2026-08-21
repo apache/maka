@@ -70,16 +70,15 @@ export interface RuntimeGateDecision {
 
 /**
  * Narrow preflight interface for readiness/blocked/running/waiting policy.
- * Kept injectable so tests can pass a stub and Phase 6 can move desktop
- * main's readiness/rebind checks behind a real implementation.
+ * Kept injectable so tests and composition boundaries can supply policy
+ * without coupling the runtime runner to a product surface.
  */
 export interface RuntimeGate {
   preflight(request: InvocationRequest): Promise<RuntimeGateDecision>;
 }
 
 /**
- * Functional gate from a callback. Convenient for tests; also the shape a
- * future Phase 6 gate will compose from readiness rules.
+ * Functional gate from a callback. Convenient for tests and adapters.
  */
 export function runtimeGateFromCallback(
   preflight: (request: InvocationRequest) => Promise<RuntimeGateDecision> | RuntimeGateDecision,
@@ -134,11 +133,6 @@ export interface RuntimeContinuationRunOptions {
 
 export interface RuntimeContinuationAdmissionOptions {
   context?: InvocationRequest['context'];
-  orchestration?: InvocationRequest['orchestration'];
-  toolMode?: InvocationRequest['toolMode'];
-}
-
-interface LegacyProviderRetryRunOptions extends RuntimeContinuationRunOptions {
   orchestration?: InvocationRequest['orchestration'];
   toolMode?: InvocationRequest['toolMode'];
 }
@@ -447,45 +441,6 @@ export function runAdmittedRuntimeContinuation(
     ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
   });
   return dispatch(request);
-}
-
-/**
- * @internal Transitional provider-rate-limit retry path for compositions that
- * have not yet installed durable continuation authority. This is deliberately
- * not a continuation admission fallback: SessionManager must select this mode
- * before planning/T1, and RuntimeKernel calls it only from the explicitly
- * tagged legacy provider-retry branch.
- *
- * The function remains package-private (absent from the barrel/exports map).
- * It preserves the pre-authority provider replay behavior until hosted
- * execution owns a typed SQLite authority and lifecycle.
- */
-export function runLegacyProviderRetry(
-  runner: RuntimeRunner,
-  continuation: RuntimeContinuation,
-  options: LegacyProviderRetryRunOptions,
-): Promise<InvocationResult> {
-  assertRuntimeContinuationEnvelope(continuation);
-  const dispatch = admittedContinuationDispatchers.get(runner);
-  if (!dispatch) {
-    throw new Error('RuntimeRunner instance is not registered for provider retry');
-  }
-  return dispatch(
-    snapshotInvocationRequest({
-      sessionId: continuation.sessionId,
-      invocationId: continuation.invocationId,
-      runId: continuation.runId,
-      turnId: continuation.turnId,
-      text: '',
-      context: [],
-      runtimeContext: continuation.runtimeContext,
-      continuation: invocationContinuationMetadata(continuation),
-      source: options.source,
-      ...(options.orchestration ? { orchestration: options.orchestration } : {}),
-      ...(options.toolMode ? { toolMode: options.toolMode } : {}),
-      ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
-    }),
-  );
 }
 
 /**

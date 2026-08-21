@@ -21,7 +21,6 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { ModelChoice, OnboardingProviderEntry } from './pi-tui-contracts.js';
-import { skillInvocationPrefixAt } from './skill-token.js';
 import { ansi, editorTheme, selectListTheme, stripAnsi } from './tui-ansi.js';
 
 export class MakaAutocompleteProvider implements AutocompleteProvider {
@@ -264,6 +263,18 @@ function slashCommandPrefix(lines: string[], cursorLine: number, cursorCol: numb
   return textBeforeCursor.startsWith('/') && !textBeforeCursor.includes(' ')
     ? textBeforeCursor
     : null;
+}
+
+function skillInvocationPrefixAt(
+  lines: string[],
+  cursorLine: number,
+  cursorCol: number,
+): { prefix: string; query: string } | null {
+  const currentLine = lines[cursorLine] || '';
+  const beforeCursor = currentLine.slice(0, cursorCol);
+  const match = /(?:^|\s)(\/skill:([A-Za-z0-9._-]*))$/.exec(beforeCursor);
+  if (!match) return null;
+  return { prefix: match[1], query: match[2] };
 }
 
 // A `/`-token that begins mid-message (after whitespace) on the first line,

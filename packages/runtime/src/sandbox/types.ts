@@ -1,7 +1,7 @@
 import type { PermissionProfile } from '@maka/core/permission-profile';
 import type { ChildFdInput } from '../child-fd-input.js';
 
-export type SandboxType = 'none' | 'macos-seatbelt' | 'linux';
+export type SandboxType = 'none' | 'macos-seatbelt' | 'linux' | 'windows';
 
 export type SandboxablePreference = 'auto' | 'require' | 'forbid';
 

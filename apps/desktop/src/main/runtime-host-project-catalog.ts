@@ -3,16 +3,22 @@ import type {
   ProjectCatalogProject,
   ProjectCatalogProjectDetails,
 } from "@maka/runtime-host/protocol";
-import type { ProjectManagementCatalog } from "./project-management-service.js";
+import type {
+  ProjectDirectoryCatalog,
+  ProjectManagementCatalog,
+} from "./project-management-service.js";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 
-export interface DesktopProjectCatalog extends ProjectManagementCatalog {}
+export interface DesktopProjectCatalog extends ProjectManagementCatalog, ProjectDirectoryCatalog {}
 
 type RuntimeHostProjectClient = Pick<
   DesktopRuntimeHostClient,
   | "archiveProject"
   | "listProjects"
+  | "listProjectDirectories"
+  | "listProjectDirectoryRoots"
   | "registerProject"
+  | "registerProjectDirectory"
   | "relinkProject"
   | "renameProject"
   | "restoreProject"
@@ -32,6 +38,16 @@ export function createRuntimeHostProjectCatalog(
     register: async (path) => {
       const target = resolveTarget();
       return projectRecord(target, await target.client.registerProject(path));
+    },
+    listDirectoryRoots: async () => resolveTarget().client.listProjectDirectoryRoots(),
+    listDirectories: async (rootId, segments) =>
+      resolveTarget().client.listProjectDirectories(rootId, segments),
+    registerDirectory: async (rootId, segments) => {
+      const target = resolveTarget();
+      return projectRecord(
+        target,
+        await target.client.registerProjectDirectory(rootId, segments),
+      );
     },
     relink: async (projectId, path) => {
       const target = resolveTarget();

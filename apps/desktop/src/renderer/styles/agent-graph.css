@@ -30,6 +30,12 @@
 
 .maka-agent-graph-heading-copy {
   min-width: 0;
+  flex-wrap: wrap;
+}
+
+.maka-agent-graph-epoch-selector {
+  min-width: 9rem;
+  max-width: 15rem;
 }
 
 .maka-agent-graph-heading-actions {

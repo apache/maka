@@ -12,6 +12,7 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { dotForStatus } from '@maka/ui';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 /**
  * PR-UI-9 — Health Center read-only page. Consumes `window.maka.health.getSnapshot()`
@@ -29,6 +30,7 @@ import { dotForStatus } from '@maka/ui';
  * will be wired in PR-HC-2 once typed actions are exposed.
 */
 export function HealthCenterPage() {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getHealthCenterCopy(locale);
   const [snapshot, setSnapshot] = useState<HealthSnapshot | null>(null);
@@ -41,7 +43,7 @@ export function HealthCenterPage() {
     setLoading(true);
     setError(null);
     window.maka.health
-      .getSnapshot()
+      .getSnapshot(host)
       .then((next) => {
         if (cancelled) return;
         setSnapshot(next);
@@ -55,7 +57,7 @@ export function HealthCenterPage() {
     return () => {
       cancelled = true;
     };
-  }, [locale, refreshTick]);
+  }, [host, locale, refreshTick]);
 
   if (loading) {
     return (

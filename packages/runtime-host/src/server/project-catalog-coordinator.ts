@@ -23,9 +23,11 @@ import {
   type ProjectCatalogView,
 } from '../protocol/index.js';
 import type { ProjectCatalogOperationHandlerMap } from './operation-dispatcher.js';
-import type { HostProjectCatalogChangeService } from './project-catalog-change-service.js';
+import {
+  HostProjectDirectoryAuthority,
+  type ResolvedProjectDirectoryRegistration,
+} from './project-directory-authority.js';
 import type { HostProjectMembershipGate } from './project-membership-gate.js';
-import type { HostSessionCatalogChangeService } from './session-catalog-change-service.js';
 
 export class HostProjectCatalogCoordinator {
   readonly handlers: ProjectCatalogOperationHandlerMap = {
@@ -35,16 +37,24 @@ export class HostProjectCatalogCoordinator {
 
   constructor(
     private readonly catalog: ProjectCatalog,
-    private readonly projectChanges: HostProjectCatalogChangeService,
-    private readonly sessionChanges: HostSessionCatalogChangeService,
+    private readonly projectChanges: { publish(): void },
+    private readonly sessionChanges: { publish(sessionId: string): void },
     private readonly membership: HostProjectMembershipGate,
     private readonly requestDrain: () => void,
+    private readonly directories = new HostProjectDirectoryAuthority(),
   ) {}
 
   async #query(
     input: ProjectCatalogQueryInput,
   ): Promise<OperationOutcome<'project.catalog.query'>> {
     try {
+      if (
+        input.kind === 'directory_roots' ||
+        input.kind === 'directory_list_start' ||
+        input.kind === 'directory_list_continue'
+      ) {
+        return { ok: true, result: await this.directories.query(input) };
+      }
       const records = await this.catalog.list();
       const items = projectCatalogItems(records, input.view);
       const revision = catalogRevision(items);
@@ -65,7 +75,19 @@ export class HostProjectCatalogCoordinator {
         return queryFailure('invalid_request', 'Project catalog cursor is invalid');
       }
       return successQuery(createPage(input.view, revision, records.length, items, offset));
-    } catch {
+    } catch (error) {
+      if (
+        input.kind === 'directory_roots' ||
+        input.kind === 'directory_list_start' ||
+        input.kind === 'directory_list_continue'
+      ) {
+        if (error instanceof TypeError) {
+          return queryFailure('invalid_request', error.message);
+        }
+        return isInvalidPathError(error)
+          ? queryFailure('invalid_request', 'Project directory is unavailable')
+          : queryFailure('internal_failure', 'Unable to list the project directory');
+      }
       return queryFailure('persistence_failed', 'Project catalog is unavailable');
     }
   }
@@ -73,8 +95,18 @@ export class HostProjectCatalogCoordinator {
   async #mutate(
     input: ProjectCatalogMutateInput,
   ): Promise<OperationOutcome<'project.catalog.mutate'>> {
+    let directoryRegistration: ResolvedProjectDirectoryRegistration | undefined;
+    if (input.kind === 'register_directory') {
+      try {
+        directoryRegistration = await this.directories.resolveRegistration(input);
+      } catch {
+        return mutationFailure('invalid_request', 'Project directory is unavailable');
+      }
+    }
     try {
-      const result = await this.membership.run(() => this.#applyMutation(input));
+      const result = await this.membership.run(() =>
+        this.#applyMutation(input, directoryRegistration),
+      );
       this.projectChanges.publish();
       return { ok: true, result };
     } catch (error) {
@@ -100,10 +132,21 @@ export class HostProjectCatalogCoordinator {
     }
   }
 
-  async #applyMutation(input: ProjectCatalogMutateInput): Promise<ProjectCatalogMutateResult> {
+  async #applyMutation(
+    input: ProjectCatalogMutateInput,
+    directoryRegistration?: ResolvedProjectDirectoryRegistration,
+  ): Promise<ProjectCatalogMutateResult> {
     switch (input.kind) {
       case 'register':
         return projectResult(await this.catalog.register(input.path));
+      case 'register_directory': {
+        if (!directoryRegistration) throw new TypeError('Project directory was not resolved');
+        return projectResult(
+          await this.catalog.register(directoryRegistration.path, {
+            withinRoot: directoryRegistration.rootPath,
+          }),
+        );
+      }
       case 'relink': {
         const result = await this.catalog.relinkWithSessions(input.projectId, input.path);
         for (const sessionId of result.updatedSessionIds) this.sessionChanges.publish(sessionId);
@@ -250,7 +293,7 @@ function successQuery(
 }
 
 function queryFailure(
-  code: 'invalid_request' | 'persistence_failed',
+  code: 'invalid_request' | 'persistence_failed' | 'internal_failure',
   message: string,
 ): OperationOutcome<'project.catalog.query'> {
   return { ok: false, error: { code, message } };

@@ -1,10 +1,15 @@
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+import { meteringCheckpointMacMatches, readBoundedRegularFile } from './metering-checkpoint.js';
 import type { JsonObject } from './experiment.js';
 import type { NormalizedUsage } from './result.js';
 import type { SubjectAdapter } from './runner.js';
+import { deriveMetering } from './provider-metering.js';
 import {
   TOOLCHAIN_IDENTITIES,
   TOOLCHAIN_IDENTITY_ENV,
   type ExternalProfile,
+  isExternalProfile,
   type ToolchainIdentity,
   verifyToolchainDirectory,
 } from './toolchain-verification.js';
@@ -57,6 +62,7 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
     async execute({ cell, context }) {
       const config = decodeConfig(cell.subject.config, cell.subject.credentials);
       const toolchain = wrapperToolchain(config, cell.executor.config);
+      const profile = bundledProfile(config.args);
       const identity = toolchain ? verifiedToolchains.get(cell.subject.id) : undefined;
       if (toolchain && !identity) {
         throw new Error(`${cell.subject.id} toolchain was not verified before execution`);
@@ -83,29 +89,35 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
           ...(config.result === 'exit-code' ? { captureStdout: false } : {}),
         });
         const decoded = execution.stdout.length === 0 ? undefined : decodeResult(execution.stdout);
+        const recovered = await recoverExternalMetering(context.metadata, profile);
+        const recoveryArtifacts = externalRecoveryArtifacts(profile, identity, recovered);
         if (execution.termination === 'framework_timeout') {
           return {
-            usage: decoded?.usage ?? null,
-            costUsd: decoded?.costUsd ?? null,
+            usage: decoded?.usage ?? recovered?.usage ?? null,
+            costUsd: decoded?.costUsd ?? recovered?.costUsd ?? null,
             durationMs: Date.now() - startedAt,
             status: 'failed' as const,
             failureReason: 'external subject exceeded the framework timeout',
             artifacts: [
-              ...(decoded?.artifacts ?? []),
+              ...(decoded?.artifacts ?? recoveryArtifacts),
+              ...(decoded?.usage == null && recovered && decoded ? [recovered.artifact] : []),
               { kind: 'external_process', exitCode: execution.exitCode },
             ],
           };
         }
         if (execution.diagnostic?.category === 'execution-scope-unavailable') {
           return {
-            usage: null,
-            costUsd: null,
+            usage: recovered?.usage ?? null,
+            costUsd: recovered?.costUsd ?? null,
             durationMs: Date.now() - startedAt,
             status: context.signal?.aborted
               ? ('indeterminate' as const)
               : ('infra_failed' as const),
             failureReason: 'external subject execution scope was unavailable',
-            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+            artifacts: [
+              ...recoveryArtifacts,
+              { kind: 'external_process', exitCode: execution.exitCode },
+            ],
           };
         }
         if (config.result === 'exit-code') {
@@ -126,36 +138,41 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
         }
         if (execution.diagnostic?.category.startsWith('result-frame-')) {
           return {
-            usage: null,
-            costUsd: null,
+            usage: recovered?.usage ?? null,
+            costUsd: recovered?.costUsd ?? null,
             durationMs: Date.now() - startedAt,
             status: context.signal?.aborted
               ? ('indeterminate' as const)
-              : ('infra_failed' as const),
+              : recovered && recovered.admittedRequests > 0
+                ? ('failed' as const)
+                : ('infra_failed' as const),
             failureReason: 'external subject result transport failed',
-            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+            artifacts: [
+              ...recoveryArtifacts,
+              { kind: 'external_process', exitCode: execution.exitCode },
+            ],
           };
         }
-        if (execution.exitCode !== 0) {
-          return {
-            usage: null,
-            costUsd: null,
-            durationMs: Date.now() - startedAt,
-            status: context.signal?.aborted ? ('indeterminate' as const) : ('failed' as const),
-            failureReason: `external subject exited ${execution.exitCode}`,
-            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
-          };
-        }
+        // The wrapper's exit code is a projection of the status in its result
+        // frame, carried for the relay's benefit because the relay cannot read
+        // the frame. Where the frame is readable it is the authority, so a
+        // nonzero exit alongside a valid frame is not a second opinion. Only
+        // when no frame arrived does the exit code decide anything.
         if (!decoded) {
           return {
-            usage: null,
-            costUsd: null,
+            usage: recovered?.usage ?? null,
+            costUsd: recovered?.costUsd ?? null,
             durationMs: Date.now() - startedAt,
             status: context.signal?.aborted
               ? ('indeterminate' as const)
-              : ('infra_failed' as const),
+              : recovered && recovered.admittedRequests > 0
+                ? ('failed' as const)
+                : ('infra_failed' as const),
             failureReason: 'external subject returned no result',
-            artifacts: [{ kind: 'external_process', exitCode: execution.exitCode }],
+            artifacts: [
+              ...recoveryArtifacts,
+              { kind: 'external_process', exitCode: execution.exitCode },
+            ],
           };
         }
         return {
@@ -172,19 +189,143 @@ export function createExternalSubjectAdapter(): SubjectAdapter {
           artifacts: decoded.artifacts,
         };
       } catch {
+        // Reaching here means `execute` itself threw: the relay transport, the
+        // executor, or this process — not the subject, which may never have run
+        // at all. Recovered usage is still worth keeping and attributing, but
+        // admitted model work says nothing about whose failure this was, so it
+        // does not turn an infrastructure failure into a recorded zero.
+        const recovered = await recoverExternalMetering(context.metadata, profile);
         return {
-          usage: null,
-          costUsd: null,
+          usage: recovered?.usage ?? null,
+          costUsd: recovered?.costUsd ?? null,
           durationMs: Date.now() - startedAt,
           status: context.signal?.aborted ? ('indeterminate' as const) : ('infra_failed' as const),
           failureReason: context.signal?.aborted
             ? 'external subject cancelled'
-            : 'external subject failed',
-          artifacts: [],
+            : 'external subject execution failed',
+          artifacts: externalRecoveryArtifacts(profile, identity, recovered),
         };
       }
     },
   };
+}
+
+function externalRecoveryArtifacts(
+  profile: ExternalProfile | undefined,
+  identity: ToolchainIdentity | undefined,
+  recovered: Awaited<ReturnType<typeof recoverExternalMetering>>,
+): JsonObject[] {
+  return [
+    ...(profile && identity ? [{ kind: 'toolchain', profile, ...identity }] : []),
+    ...(recovered ? [recovered.artifact] : []),
+  ];
+}
+
+export async function recoverExternalMetering(
+  metadata: JsonObject,
+  profile: ExternalProfile | undefined,
+): Promise<
+  | {
+      readonly usage: NormalizedUsage | null;
+      readonly costUsd: number | null;
+      readonly admittedRequests: number;
+      readonly artifact: JsonObject;
+    }
+  | undefined
+> {
+  if (!profile || typeof metadata.trialPath !== 'string') return undefined;
+  if (typeof metadata.meteringSecret !== 'string') return undefined;
+  const path = join(metadata.trialPath, 'agent', `${profile}.provider-usage.json`);
+  const bytes = await readBoundedRegularFile(path);
+  if (!bytes) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    return undefined;
+  }
+  try {
+    // The checkpoint carries only what the proxy observed. Completeness, cost
+    // and the missing-usage count are worked out here through the same function
+    // the wrapper uses, so there is no second definition of them to disagree
+    // with — and nothing to validate a stored copy against.
+    const checkpoint = exact(
+      value,
+      [
+        'schemaVersion',
+        'profile',
+        'usage',
+        'settled',
+        'requests',
+        'inFlightRequests',
+        'admittedRequests',
+        'usageRequests',
+        'removedWebTools',
+        'models',
+        'toolNames',
+        'mac',
+      ],
+      'external metering checkpoint',
+    );
+    if (
+      checkpoint.schemaVersion !== 'maka.external_provider_usage.v2' ||
+      checkpoint.profile !== profile ||
+      !meteringCheckpointMacMatches(checkpoint, metadata.meteringSecret)
+    ) {
+      return undefined;
+    }
+    const usage = checkpoint.usage === null ? null : decodeUsage(checkpoint.usage);
+    const counts = {
+      usage,
+      settled: boolean(checkpoint.settled, 'external metering settlement'),
+      requests: count(checkpoint.requests, 'external metering requests'),
+      inFlightRequests: count(checkpoint.inFlightRequests, 'external metering in-flight requests'),
+      admittedRequests: count(checkpoint.admittedRequests, 'external metering admitted requests'),
+      usageRequests: count(checkpoint.usageRequests, 'external metering usage requests'),
+      removedWebTools: count(checkpoint.removedWebTools, 'external metering removed web tools'),
+      models: stringList(checkpoint.models, 'external metering models'),
+      toolNames: stringList(checkpoint.toolNames, 'external metering tool names'),
+    };
+    // A request may be admitted while still in flight, so admission is bounded
+    // by the requests made rather than by the requests settled. Settlement is
+    // the one claim the counts can contradict: nothing is in flight once the
+    // proxy has stopped.
+    if (
+      (counts.settled && counts.inFlightRequests > 0) ||
+      counts.inFlightRequests > counts.requests ||
+      counts.admittedRequests > counts.requests ||
+      counts.usageRequests > counts.admittedRequests ||
+      (counts.usageRequests > 0 && usage === null)
+    ) {
+      return undefined;
+    }
+    const derived = deriveMetering(counts);
+    return {
+      usage,
+      costUsd: derived.costUsd,
+      admittedRequests: counts.admittedRequests,
+      artifact: {
+        kind: 'provider-metering-recovery',
+        profile,
+        path: `agent/${profile}.provider-usage.json`,
+        bytes: bytes.byteLength,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        requests: counts.requests,
+        settledRequests: derived.settledRequests,
+        inFlightRequests: counts.inFlightRequests,
+        admittedRequests: counts.admittedRequests,
+        usageRequests: counts.usageRequests,
+        missingUsageRequests: derived.missingUsageRequests,
+        usageComplete: derived.usageComplete,
+        tokenBasis: derived.tokenBasis,
+        removedWebTools: counts.removedWebTools,
+        models: counts.models,
+        toolNames: counts.toolNames,
+      },
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 interface ExternalSubjectConfig {
@@ -255,19 +396,7 @@ function wrapperToolchain(
 
 function bundledProfile(args: readonly string[]): ExternalProfile | undefined {
   if (args[0] !== BUNDLED_EXTERNAL_WRAPPER) return undefined;
-  const profile = args[1];
-  if (
-    profile !== 'codex' &&
-    profile !== 'claude-code' &&
-    profile !== 'reasonix' &&
-    profile !== 'opencode' &&
-    profile !== 'kimi-code' &&
-    profile !== 'zcode' &&
-    profile !== 'pi'
-  ) {
-    return undefined;
-  }
-  return profile;
+  return isExternalProfile(args[1]) ? args[1] : undefined;
 }
 
 function uniqueSubjects(cells: readonly import('./experiment.js').ExperimentCell[]) {
@@ -409,5 +538,23 @@ function text(value: unknown, where: string): string {
 function nonnegative(value: unknown, where: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0)
     throw new Error(`${where} is invalid`);
+  return value;
+}
+
+function count(value: unknown, where: string): number {
+  const decoded = nonnegative(value, where);
+  if (!Number.isSafeInteger(decoded)) throw new Error(`${where} is invalid`);
+  return decoded;
+}
+
+function boolean(value: unknown, where: string): boolean {
+  if (typeof value !== 'boolean') throw new Error(`${where} is invalid`);
+  return value;
+}
+
+function stringList(value: unknown, where: string): readonly string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+    throw new Error(`${where} is invalid`);
+  }
   return value;
 }

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { StoredMessage } from '@maka/core/session';
+import type { SessionExternalOrigin, SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   ExternalSessionAdapterRegistry,
   type ExternalSessionAdapter,
@@ -15,6 +15,28 @@ import {
 import { createSessionStore } from '../session-store.js';
 
 describe('ExternalSessionImporter', () => {
+  test('forwards the exact external Session origin to imported persistence', async () => {
+    const calls: SessionExternalOrigin[] = [];
+    const adapter = fakeAdapter({
+      metadata: { name: 'Imported parser work', cwd: '/external/repo' },
+      messages: [],
+    });
+    const importer = new ExternalSessionImporter(new ExternalSessionAdapterRegistry([adapter]), {
+      createImportedSession: async (_input, _messages, externalOrigin) => {
+        calls.push(externalOrigin);
+        return {} as SessionHeader;
+      },
+    });
+
+    await importer.import({
+      adapterId: 'fake',
+      sourceSessionId: 'source-1',
+      target: target(),
+    });
+
+    assert.deepEqual(calls, [{ adapterId: 'fake', sourceSessionId: 'source-1' }]);
+  });
+
   test('persists adapter output as native Maka StoredMessages', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-external-session-import-'));
     const sessions = createSessionStore(root);
@@ -49,7 +71,23 @@ describe('ExternalSessionImporter', () => {
       assert.equal(header.cwd, '/external/repo');
       assert.equal(header.model, 'maka-model');
       assert.equal(header.connectionLocked, true);
+      assert.deepEqual(header.externalOrigin, {
+        adapterId: 'fake',
+        sourceSessionId: 'source-1',
+      });
       assert.deepEqual(await sessions.readMessages(header.id), messages);
+
+      await sessions.close?.();
+      const reopened = createSessionStore(root);
+      try {
+        assert.deepEqual((await reopened.readHeaderSnapshot(header.id)).externalOrigin, {
+          adapterId: 'fake',
+          sourceSessionId: 'source-1',
+        });
+        assert.deepEqual(await reopened.readMessages(header.id), messages);
+      } finally {
+        await reopened.close?.();
+      }
     } finally {
       await sessions.close?.();
       await rm(root, { recursive: true, force: true });
@@ -112,7 +150,6 @@ describe('ExternalSessionImporter', () => {
 
 function target(overrides: Partial<ExternalSessionImportTarget> = {}): ExternalSessionImportTarget {
   return {
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'maka-model',
     permissionMode: 'ask',

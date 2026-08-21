@@ -70,4 +70,8 @@ const framedResult =
       }
     : result;
 writeRelayResult(resultToken, framedResult);
-if (result.kind === 'indeterminate') process.exitCode = 1;
+// Same projection as every other wrapper: the exit code reports what this
+// process did, so whatever can read only the exit code reads the status the
+// frame carries. Nothing decides the subject's fate from it while the frame is
+// readable, but the two must not be able to say different things.
+process.exitCode = result.kind === 'settled' && result.status === 'completed' ? 0 : 1;

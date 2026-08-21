@@ -59,6 +59,14 @@
 .settingsRuntimeHostSshTerminalActions {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostSetupProgress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 88px;
 }
 
 @media (max-height: 620px) {

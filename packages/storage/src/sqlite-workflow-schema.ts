@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 8;
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 9;
 
 export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -89,6 +89,36 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS workflow_daily_review_archives_order
       ON workflow_daily_review_archives(generated_at DESC, day_from_ms DESC, archive_id);
+
+    CREATE TABLE IF NOT EXISTS workflow_work_board_items (
+      item_id TEXT PRIMARY KEY,
+      revision INTEGER NOT NULL CHECK (revision >= 1),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      scope_kind TEXT NOT NULL CHECK (scope_kind IN ('inbox', 'project')),
+      project_id TEXT,
+      archived INTEGER NOT NULL CHECK (archived IN (0, 1)),
+      record_json TEXT NOT NULL,
+      CHECK (
+        (scope_kind = 'inbox' AND project_id IS NULL)
+        OR
+        (scope_kind = 'project' AND project_id IS NOT NULL)
+      )
+    );
+
+    -- The intermediate Phase 0 dev build shipped this index with item_id ASC;
+    -- drop it once so such databases converge on the released definition.
+    DROP INDEX IF EXISTS workflow_work_board_items_scope_order;
+    CREATE INDEX IF NOT EXISTS workflow_work_board_items_scope_order
+      ON workflow_work_board_items(scope_kind, project_id, updated_at DESC, item_id DESC);
+    CREATE INDEX IF NOT EXISTS workflow_work_board_items_order
+      ON workflow_work_board_items(updated_at DESC, item_id DESC);
+    CREATE INDEX IF NOT EXISTS workflow_work_board_items_active_scope_order
+      ON workflow_work_board_items(scope_kind, project_id, updated_at DESC, item_id DESC)
+      WHERE archived = 0;
+    CREATE INDEX IF NOT EXISTS workflow_work_board_items_active_order
+      ON workflow_work_board_items(updated_at DESC, item_id DESC)
+      WHERE archived = 0;
 
     CREATE TABLE IF NOT EXISTS workflow_goal_authority (
       session_id TEXT PRIMARY KEY,

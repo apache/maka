@@ -31,6 +31,7 @@ type ToastApi = {
 type ComposerImportOwner = {
   sessionId: string | undefined;
   navSection: NavSelection["section"];
+  newTaskDraftKey?: string;
 };
 
 type RefBox<T> = { current: T };

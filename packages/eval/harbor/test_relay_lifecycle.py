@@ -3,6 +3,7 @@ import base64
 import contextlib
 import hashlib
 import importlib
+import json
 import os
 import shutil
 import subprocess
@@ -141,6 +142,24 @@ class FrameworkTimeoutEnvironment(SimultaneousEnvironment):
         self.stopped = delete
 
 
+class LiveScopeEnvironment(SimultaneousEnvironment):
+    """A subject whose process group outlives it, as a task's own service does."""
+
+    def __init__(self):
+        super().__init__()
+        self.signalled = False
+        self.commands = []
+
+    async def exec(self, command, cwd=None, timeout_sec=None):
+        self.commands.append(command)
+        if _is_teardown(command):
+            self.signalled = True
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+        if command.startswith("pgid="):
+            return SimpleNamespace(return_code=3 if self.signalled else 0, stdout="", stderr="")
+        return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
+
+
 class TransportLossEnvironment(SimultaneousEnvironment):
     async def exec(self, command, cwd=None, timeout_sec=None):
         if "kill -TERM" in command:
@@ -155,6 +174,52 @@ class SettleCompletionEnvironment(SimultaneousEnvironment):
             self.release.set()
             return SimpleNamespace(return_code=0, stdout="", stderr=None)
         return await super().exec(command, cwd=cwd, timeout_sec=timeout_sec)
+
+
+def _is_teardown(command: str) -> bool:
+    # `kill -0` is how the relay asks whether the scope is still there; only
+    # TERM and KILL end it.
+    return "kill -TERM" in command or "kill -KILL" in command
+
+
+class RecordingEnvironment:
+    """Runs a subject that exits with a chosen code and records every command."""
+
+    def __init__(self, return_code, status):
+        self.return_code = return_code
+        self.status = status
+        self.signalled = False
+        self.commands = []
+
+    async def upload_file(self, source, target):
+        return None
+
+    async def download_file(self, source, target):
+        shutil.copyfile(source, target)
+
+    async def exec(self, command, cwd=None, timeout_sec=None):
+        self.commands.append(command)
+        if command.startswith("printf ") and "MAKA-EVAL-CWD-V1" in command:
+            prefix = command.split("'", 2)[1]
+            return SimpleNamespace(return_code=0, stdout=f"{prefix}/workspace\n", stderr=None)
+        if command.startswith("setsid"):
+            payload = ('{"kind":"settled","status":"%s"}' % self.status).encode()
+            encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+            frame = (
+                f"MAKA-EVAL-RESULT-V1 {'0' * 32} {len(payload)} "
+                f"{hashlib.sha256(payload).hexdigest()} {encoded}\n"
+            )
+            return SimpleNamespace(return_code=self.return_code, stdout=frame, stderr=None)
+        # The subject's process group outlives it, as a task's own service does,
+        # and dies once something signals it. A teardown would therefore succeed
+        # here rather than fail for its own reasons -- what this test asserts is
+        # that no teardown is attempted at all.
+        if _is_teardown(command):
+            self.signalled = True
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+        if command.startswith("pgid="):
+            return SimpleNamespace(return_code=3 if self.signalled else 0, stdout="", stderr="")
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
 
 
 def load_relay():
@@ -346,7 +411,7 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_terminal_execution_wins_when_framework_cancellation_is_observed(self):
         relay = load_relay()
-        environment = SimultaneousEnvironment()
+        environment = LiveScopeEnvironment()
         token = f"simultaneous-{os.getpid()}"
         connected = asyncio.get_running_loop().create_future()
 
@@ -391,6 +456,15 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
             executed = __import__("json").loads(await reader.readline())
             self.assertEqual(executed["termination"], "exited")
             self.assertEqual(executed["exitCode"], 0)
+            # Cancellation found the subject already stopped, and a stopped
+            # subject is reported as one -- so the verifier reads the same
+            # environment it would have read without the cancellation. Tearing
+            # its scope down here would edit that environment for exactly the
+            # runs the framework happened to interrupt.
+            self.assertEqual(
+                [command for command in environment.commands if _is_teardown(command)],
+                [],
+            )
             with self.assertRaises(asyncio.CancelledError):
                 await running
         finally:
@@ -557,6 +631,132 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(late_write.exists())
             finally:
                 Path(scope_path).unlink(missing_ok=True)
+
+    async def test_an_exited_subject_is_left_alone_whatever_it_reported(self):
+        # The verifier scores the environment the task was left in, so a subject
+        # that stopped on its own keeps whatever it started — a service the task
+        # was asked to run has to still be there. Reading the exit code here to
+        # decide otherwise would make the measurement depend on the framework's
+        # own classification, and only for the subjects it classifies as failed.
+        for return_code, status in ((0, "completed"), (1, "failed")):
+            with self.subTest(return_code=return_code):
+                relay = load_relay()
+                environment = RecordingEnvironment(return_code, status)
+                token = f"exited-{return_code}-{os.getpid()}"
+                connected = asyncio.get_running_loop().create_future()
+
+                async def accept(reader, writer):
+                    connected.set_result((reader, writer))
+
+                server = await asyncio.start_server(accept, "127.0.0.1", 0)
+                port = server.sockets[0].getsockname()[1]
+                agent = relay.RelayAgent(
+                    logs_dir=Path(tempfile.gettempdir()),
+                    relay_host="127.0.0.1",
+                    relay_port=port,
+                    relay_token=token,
+                    teardown_timeout_ms=1_000,
+                )
+                running = asyncio.create_task(agent.run("solve", environment, None))
+                reader, writer = await connected
+                try:
+                    await reader.readline()
+                    writer.write(
+                        (
+                            json.dumps(
+                                {
+                                    "token": token,
+                                    "kind": "execute",
+                                    "command": "/bin/true",
+                                    "args": [],
+                                    "credentials": {},
+                                    "resultToken": "0" * 32,
+                                }
+                            )
+                            + "\n"
+                        ).encode()
+                    )
+                    await writer.drain()
+                    executed = json.loads(await reader.readline())
+                    self.assertEqual(executed["termination"], "exited")
+                    self.assertEqual(executed["exitCode"], return_code)
+                    writer.write(
+                        (json.dumps({"token": token, "kind": "verify"}) + "\n").encode()
+                    )
+                    await writer.drain()
+                    await asyncio.wait_for(running, timeout=2)
+                finally:
+                    writer.close()
+                    with contextlib.suppress(Exception):
+                        await writer.wait_closed()
+                    server.close()
+                    await server.wait_closed()
+                self.assertEqual(
+                    [command for command in environment.commands if _is_teardown(command)],
+                    [],
+                )
+
+    @unittest.skipUnless(shutil.which("node"), "requires Node.js")
+    def test_deepseek_harness_toolchain_patch_preserves_background_descendants(self):
+        patcher = (
+            Path(__file__).parent
+            / "deepseek-harness-toolchain"
+            / "patch-subprocess-local.mjs"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            target = (
+                Path(directory)
+                / "node_modules"
+                / "@deepseek-ai"
+                / "dsh-subprocess-local"
+                / "lib"
+                / "index.js"
+            )
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                """\
+\tterminateForHostExit() {
+\t\tthis.forceStopDescendants();
+\t\tthis.forceStopShell();
+\t\tthis.forceStopDescendants();
+\t}
+\tasync closeOnce() {
+\t\tlet survivors = await this.stopDescendants();
+\t\tif (survivors.length > 0) throw new Error(`terminal cleanup failed; surviving pids: ${survivors.map((member) => member.pid).join(", ")}`);
+\t\tawait this.stopShell();
+\t\tsurvivors = await this.stopDescendants();
+\t\tif (survivors.length > 0) throw new Error(`terminal cleanup failed; surviving pids: ${survivors.map((member) => member.pid).join(", ")}`);
+\t\tthis.dataDisposable.dispose();
+\t\tthis.exitDisposable.dispose();
+\t}
+"""
+            )
+            subprocess.run(
+                [shutil.which("node"), patcher, directory],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            patched = target.read_text()
+            self.assertEqual(
+                patched.count('process.env.DSH_PRESERVE_BACKGROUND_PROCESSES === "1"'),
+                2,
+            )
+            self.assertIn("this.forceStopShell();\n\t\t\treturn;", patched)
+            self.assertIn("await this.stopShell();", patched)
+
+            # The value of this patcher is that an upstream release it no longer
+            # understands stops the build rather than producing a toolchain that
+            # silently kills the task's services again. Running it over its own
+            # output is the cheapest form of drift: the text it anchors on is
+            # gone.
+            drifted = subprocess.run(
+                [shutil.which("node"), patcher, directory],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(drifted.returncode, 0)
+            self.assertNotEqual(target.read_text(), "")
 
 
 if __name__ == "__main__":

@@ -230,9 +230,21 @@ export function isProtectedMetadataPath(
   for (const workspaceRoot of workspaceRoots) {
     const segments = relativeSegments(path, workspaceRoot);
     if (!segments) continue;
-    if (segments.some((segment) => names.includes(segment))) return true;
+    // Windows filesystems and pathWithinRoot are case-insensitive, so the
+    // metadata names must match case-insensitively there too — otherwise a
+    // write to `.GIT\config` bypasses a `.git` deny and still lands in the
+    // real metadata directory.
+    const foldCase = isWindowsDrivePathRoot(workspaceRoot);
+    const matchesName = foldCase
+      ? (segment: string) => names.some((name) => name.toLowerCase() === segment.toLowerCase())
+      : (segment: string) => names.includes(segment);
+    if (segments.some(matchesName)) return true;
   }
   return false;
+}
+
+function isWindowsDrivePathRoot(root: string): boolean {
+  return /^[A-Za-z]:\\/.test(root);
 }
 
 function fileSystemPolicy(profile: PermissionProfile): FileSystemSandboxPolicy | undefined {
@@ -309,26 +321,17 @@ function relativeSegments(path: string, root: string): string[] | undefined {
   const normalizedRoot = trimTrailingSlashes(root);
   if (!pathWithinRoot(normalizedPath, normalizedRoot)) return undefined;
   if (normalizedPath === normalizedRoot) return [];
+  const separator = normalizedRoot.includes('\\') ? '\\' : '/';
   const relative =
     normalizedRoot === '/'
       ? normalizedPath.slice(1)
-      : normalizedPath.slice(normalizedRoot.length + 1);
-  return relative.split('/').filter(Boolean);
+      : normalizedPath.slice(normalizedRoot.length + (normalizedRoot.endsWith(separator) ? 0 : 1));
+  return relative.split(separator).filter(Boolean);
 }
 
-function pathWithinRoot(path: string, root: string): boolean {
-  const normalizedPath = trimTrailingSlashes(path);
-  const normalizedRoot = trimTrailingSlashes(root);
-  if (!normalizedPath || !normalizedRoot) return false;
-  if (normalizedRoot === '/') return normalizedPath.startsWith('/');
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(normalizedRoot + '/');
-}
-
-function samePath(path: string, expected: string): boolean {
-  return trimTrailingSlashes(path) === trimTrailingSlashes(expected);
-}
 function trimTrailingSlashes(value: string): string {
   if (!value) return '';
-  const trimmed = value.replace(/\/+$/, '');
+  const trimmed = trimTrailingPathSeparators(value);
   return trimmed || '/';
 }
+import { pathWithinRoot, samePath, trimTrailingPathSeparators } from './absolute-path.js';

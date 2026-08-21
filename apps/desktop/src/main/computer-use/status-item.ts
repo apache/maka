@@ -89,6 +89,8 @@ export interface ComputerUseStatusItemDeps {
    * main-process strings.
    */
   resolveLocale?: () => UiLocale;
+  /** Registers a listener for resolved-locale changes. */
+  subscribeLocaleChanges?: (listener: () => void) => () => void;
   /** Test seams: the contract is drivable without an Electron main process. */
   loadImage?: () => Electron.NativeImage;
   buildMenu?: (template: Electron.MenuItemConstructorOptions[]) => MenuType;
@@ -227,6 +229,8 @@ export function createComputerUseStatusItem(
     tray = null;
   }
 
+  const unsubscribeLocale = deps.subscribeLocaleChanges?.(rebuildMenu) ?? (() => undefined);
+
   return {
     noteSessionActive(sessionId: string): void {
       if (typeof sessionId !== 'string' || sessionId.length === 0) return;
@@ -266,6 +270,7 @@ export function createComputerUseStatusItem(
     },
 
     destroy(): void {
+      unsubscribeLocale();
       const wasLive = sessions.size > 0;
       sessions.clear();
       hide();

@@ -1,0 +1,272 @@
+name: Finalize CLI npm release
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage_run_id:
+        description: Successful Stage CLI npm release workflow run ID
+        required: true
+        type: string
+      stage_run_attempt:
+        description: Successful Stage CLI npm release workflow run attempt
+        required: true
+        type: string
+      version:
+        description: Exact staged maka-agent version
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: cli-npm-finalize
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    name: Verify the public npm release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      dist_tag: ${{ steps.release.outputs.dist_tag }}
+      git_tag: ${{ steps.release.outputs.git_tag }}
+      public_release_artifact_id: ${{ steps.public-release.outputs.artifact-id }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      tarball: ${{ steps.release.outputs.tarball }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Require main
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          if [[ "$RELEASE_REF" != "refs/heads/main" ]]; then
+            echo "CLI releases must be dispatched from main; found $RELEASE_REF" >&2
+            exit 1
+          fi
+      - name: Load the exact stage workflow run
+        id: stage-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE_RUN_ID: ${{ inputs.stage_run_id }}
+          STAGE_RUN_ATTEMPT: ${{ inputs.stage_run_attempt }}
+        run: |
+          if [[ ! "$STAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Stage workflow run ID must be a positive integer" >&2
+            exit 1
+          fi
+          if [[ ! "$STAGE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Stage workflow run attempt must be a positive integer" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STAGE_RUN_ID/attempts/$STAGE_RUN_ATTEMPT" > "$RUNNER_TEMP/stage-run.json"
+          node -e '
+            const fs = require("node:fs");
+            const run = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (
+              String(run.id) !== process.env.STAGE_RUN_ID ||
+              String(run.run_attempt) !== process.env.STAGE_RUN_ATTEMPT ||
+              run.path !== ".github/workflows/release-cli-stage.yml" ||
+              run.event !== "workflow_dispatch" ||
+              run.head_branch !== "main" ||
+              run.conclusion !== "success" ||
+              run.head_repository?.full_name !== process.env.GITHUB_REPOSITORY
+            ) {
+              throw new Error("Stage run is not an exact successful main CLI stage attempt");
+            }
+            if (!/^[0-9a-f]{40}$/.test(run.head_sha)) throw new Error("Stage run has no valid source SHA");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "source_sha=" + run.head_sha + "\n");
+          ' "$RUNNER_TEMP/stage-run.json"
+      - name: Check out the current release verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Select the release npm toolchain
+        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+      - name: Download the exact staged candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-staged-release-${{ inputs.stage_run_attempt }}
+          path: packages/cli/release
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.stage_run_id }}
+      - name: Verify the stage run and release record
+        id: release
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          node scripts/release-cli-publication.mjs validate-stage-run \
+            packages/cli/release \
+            "$RUNNER_TEMP/stage-run.json" \
+            "$EXPECTED_VERSION" \
+            "$GITHUB_OUTPUT"
+      - name: Fetch and verify the public registry bytes
+        run: |
+          node scripts/release-cli-publication.mjs fetch-registry \
+            packages/cli/release \
+            "$RUNNER_TEMP/registry-release"
+      - name: Verify npm signatures and provenance
+        run: |
+          node scripts/release-cli-publication.mjs prepare-audit \
+            packages/cli/release \
+            "$RUNNER_TEMP/signature-audit"
+          cd "$RUNNER_TEMP/signature-audit"
+          npm audit signatures --json --include-attestations > audit.json
+          node "$GITHUB_WORKSPACE/scripts/release-cli-publication.mjs" validate-audit \
+            "$GITHUB_WORKSPACE/packages/cli/release" \
+            "$RUNNER_TEMP/signature-audit/audit.json"
+      - name: Preserve the verified public release
+        id: public-release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-public-release-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/registry-release
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  publish:
+    name: Create the GitHub CLI release
+    needs: inspect
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: npm-release
+      url: https://github.com/maka-agent/maka-agent/releases/tag/${{ needs.inspect.outputs.git_tag }}
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the current release finalizer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download the verified public release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.inspect.outputs.public_release_artifact_id }}
+          path: ${{ runner.temp }}/registry-release
+      - name: Create the Git tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DIST_TAG: ${{ needs.inspect.outputs.dist_tag }}
+          RELEASE_DIRECTORY: ${{ runner.temp }}/registry-release
+          RELEASE_SHA: ${{ needs.inspect.outputs.source_sha }}
+          RELEASE_TAG: ${{ needs.inspect.outputs.git_tag }}
+          RELEASE_TARBALL_NAME: ${{ needs.inspect.outputs.tarball }}
+          RELEASE_VERSION: ${{ needs.inspect.outputs.version }}
+        run: |
+          tag_json="$RUNNER_TEMP/release-tag.json"
+          tag_ref="repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG"
+          if ! gh api "$tag_ref" > "$tag_json" 2>/dev/null; then
+            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" \
+              -f sha="$RELEASE_SHA" > "$tag_json"; then
+              gh api "$tag_ref" > "$tag_json"
+            fi
+          fi
+          TAG_JSON="$tag_json" node -e '
+            const fs = require("node:fs");
+            const tag = JSON.parse(fs.readFileSync(process.env.TAG_JSON, "utf8"));
+            if (
+              tag.ref !== "refs/tags/" + process.env.RELEASE_TAG ||
+              tag.object?.type !== "commit" ||
+              tag.object.sha !== process.env.RELEASE_SHA
+            ) {
+              throw new Error("Git tag does not point to the verified CLI release commit");
+            }
+          '
+
+          release_flags=(--latest=false)
+          if [[ "$RELEASE_DIST_TAG" == "next" ]]; then
+            release_flags+=(--prerelease)
+          elif [[ "$RELEASE_DIST_TAG" == "latest" ]]; then
+            release_flags+=(--prerelease=false)
+          else
+            echo "Unsupported CLI release dist-tag: $RELEASE_DIST_TAG" >&2
+            exit 1
+          fi
+
+          release_json="$RUNNER_TEMP/github-release.json"
+          release_assets=(
+            "$RELEASE_DIRECTORY/$RELEASE_TARBALL_NAME"
+            "$RELEASE_DIRECTORY/$RELEASE_TARBALL_NAME.sha256"
+            "$RELEASE_DIRECTORY/$RELEASE_TARBALL_NAME.files.json"
+            "$RELEASE_DIRECTORY/release.json"
+          )
+
+          # The REST release-by-tag endpoint does not return drafts. Resolve both draft and
+          # published releases through gh, then use the immutable API URL for exact reads.
+          if ! release_api_url="$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json apiUrl \
+            --jq .apiUrl 2>/dev/null)"; then
+            if ! gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              "${release_flags[@]}" \
+              --title "Maka CLI $RELEASE_VERSION" \
+              --notes-file "$RELEASE_DIRECTORY/release-notes.md"; then
+              echo "GitHub Release creation did not confirm success; inspecting remote state" >&2
+            fi
+            release_api_url="$(gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json apiUrl \
+              --jq .apiUrl)"
+          fi
+          if [[ ! "$release_api_url" =~ ^https://api\.github\.com/repos/$GITHUB_REPOSITORY/releases/[1-9][0-9]*$ ]]; then
+            echo "GitHub Release API URL is not bound to the expected repository: $release_api_url" >&2
+            exit 1
+          fi
+          gh api "$release_api_url" > "$release_json"
+
+          release_draft="$(RELEASE_JSON="$release_json" node -e '
+            const fs = require("node:fs");
+            const release = JSON.parse(fs.readFileSync(process.env.RELEASE_JSON, "utf8"));
+            if (typeof release.draft !== "boolean") throw new Error("GitHub Release draft state is invalid");
+            process.stdout.write(String(release.draft));
+          ')"
+          if [[ "$release_draft" == "true" ]]; then
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft=true \
+              "${release_flags[@]}" \
+              --title "Maka CLI $RELEASE_VERSION" \
+              --notes-file "$RELEASE_DIRECTORY/release-notes.md"
+            gh release upload "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber \
+              "${release_assets[@]}"
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft=false \
+              "${release_flags[@]}" \
+              --title "Maka CLI $RELEASE_VERSION" \
+              --notes-file "$RELEASE_DIRECTORY/release-notes.md"
+          fi
+
+          gh api "$release_api_url" > "$release_json"
+          node scripts/release-cli-publication.mjs validate-github-release \
+            "$RELEASE_DIRECTORY" \
+            "$release_json"
+
+          latest_json="$RUNNER_TEMP/latest-release.json"
+          if gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$latest_json" 2>/dev/null; then
+            LATEST_JSON="$latest_json" node -e '
+              const fs = require("node:fs");
+              const latest = JSON.parse(fs.readFileSync(process.env.LATEST_JSON, "utf8"));
+              if (latest.tag_name === process.env.RELEASE_TAG) {
+                throw new Error("CLI release must not become the repository GitHub Latest release");
+              }
+            '
+          fi

@@ -79,6 +79,28 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'about', Icon: Info, enabled: true, group: 'system' },
 ];
 
+const SETTINGS_SECTION_SCOPES: Record<
+  SettingsSection,
+  'client' | 'mixed' | 'runtime-host'
+> = {
+  general: 'mixed',
+  appearance: 'client',
+  projects: 'mixed',
+  models: 'runtime-host',
+  subagents: 'runtime-host',
+  memory: 'runtime-host',
+  'bot-chat': 'client',
+  search: 'runtime-host',
+  usage: 'client',
+  'archived-tasks': 'client',
+  'import-tasks': 'runtime-host',
+  'daily-review': 'runtime-host',
+  data: 'mixed',
+  permissions: 'runtime-host',
+  health: 'runtime-host',
+  about: 'client',
+};
+
 export type LocalizedSettingsNavItem = SettingsNavItem & { label: string; description: string };
 
 /** Order-preserving grouping used by the nav renderer. */
@@ -108,4 +130,10 @@ export function readLastSettingsSection(): SettingsSection {
 
 export function navLabel(section: SettingsSection, locale: UiLocale): string {
   return getSettingsNavigationCopy(locale).sections[section].label;
+}
+
+export function settingsSectionScope(
+  section: SettingsSection,
+): 'client' | 'mixed' | 'runtime-host' {
+  return SETTINGS_SECTION_SCOPES[section];
 }

@@ -63,7 +63,7 @@ test('two Clients share Daily Review config, generation, and restart recovery', 
       composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     owner = undefined;
-    [desktop, tui] = await Promise.all([connect(root, 'desktop'), connect(root, 'tui')]);
+    [desktop, tui] = await Promise.all([connect(root), connect(root)]);
 
     const initial = await desktop.queryDailyReview({ kind: 'config' });
     assert.deepEqual(initial, {
@@ -143,7 +143,7 @@ test('two Clients share Daily Review config, generation, and restart recovery', 
       composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
     });
     owner = undefined;
-    tui = await connect(root, 'tui');
+    tui = await connect(root);
     assert.deepEqual(
       await tui.queryDailyReview({
         kind: 'archive',
@@ -167,13 +167,9 @@ test('two Clients share Daily Review config, generation, and restart recovery', 
   }
 });
 
-async function connect(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
+async function connect(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: PROTOCOL,
   });
   assert.equal(result.kind, 'connected');

@@ -1,160 +1,53 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, rmSync, statSync } from 'node:fs';
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { signMeteringCheckpoint, writeJsonAtomic } from './metering-checkpoint.js';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { basename, dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
-import { fetch as undiciFetch, ProxyAgent } from 'undici';
+import { Agent, fetch as undiciFetch, ProxyAgent } from 'undici';
 import {
   decodePreverifiedToolchain,
+  isExternalProfile,
   type ExternalProfile as Profile,
 } from './toolchain-verification.js';
 import { isInferenceAdmissionEvent } from './provider-admission.js';
+import {
+  DEEPSEEK_V4_FLASH_COST,
+  deriveMetering,
+  type ProviderMeteringCounts,
+  type ProviderUsage as Usage,
+} from './provider-metering.js';
 import { removeEvalWebTools } from './provider-web-tool-surface.js';
 import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js';
 
 const resultToken = takeRelayResultToken();
 
+// The profile directory this wrapper writes. `dsh` has no environment variable
+// for profile selection, so the spec repeats this name in `--profile`; the
+// lifecycle test pins the two together.
+const DEEPSEEK_HARNESS_PROFILE = 'maka-eval';
+
+const PROVIDER_USAGE_CHECKPOINT_SCHEMA = 'maka.external_provider_usage.v2';
+
 type SubjectStatus = 'completed' | 'failed' | 'infra_failed' | 'indeterminate';
 const CLASSIFIABLE_RECORD_LIMIT_BYTES = 16 * 1024 * 1024;
 
-interface Usage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  reasoningTokens: number;
-  totalTokens: number;
+interface ProfileSetup {
+  readonly env: NodeJS.ProcessEnv;
+  readonly home: string;
+  readonly root: string;
+  readonly proxyBaseUrl: string;
+  readonly executableArgs: readonly string[];
 }
 
-const [rawProfile, baseUrl, systemRoot, command, ...args] = process.argv.slice(2);
-if (!isProfile(rawProfile)) throw new Error('external subject profile is required');
-const profile = rawProfile;
-if (!command) throw new Error('external subject command is required');
-if (!baseUrl || !URL.canParse(baseUrl)) throw new Error('external subject base URL is required');
-if (!systemRoot?.startsWith('/')) throw new Error('external subject system root is required');
-
-let credentialPath: string | undefined;
-let child: ChildProcess | undefined;
-let stopped = false;
-const stop = (signal: NodeJS.Signals) => {
-  stopped = true;
-  removeCredential();
-  child?.kill(signal);
-};
-const terminate = () => stop('SIGTERM');
-const interrupt = () => stop('SIGINT');
-process.once('SIGTERM', terminate);
-process.once('SIGINT', interrupt);
-
-const logsRoot = rooted(systemRoot, '/logs/agent');
-const statePath = join(logsRoot, `${profile}.wrapper-state.json`);
-const artifacts: Record<string, unknown>[] = [];
-let usage: Usage | null = null;
-let costUsd: number | null = null;
-let status: SubjectStatus = 'infra_failed';
-let failureReason: string | null = 'external subject setup failed';
-
-try {
-  await mkdir(logsRoot, { recursive: true, mode: 0o700 });
-  await writeState('started');
-  const identity = decodePreverifiedToolchain(profile, systemRoot, command);
-  artifacts.push({ kind: 'toolchain', profile, ...identity });
-  await writeState('toolchain_verified');
-
-  const key =
-    process.env.OPENAI_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? process.env.DEEPSEEK_API_KEY;
-  delete process.env.OPENAI_API_KEY;
-  delete process.env.ANTHROPIC_API_KEY;
-  delete process.env.DEEPSEEK_API_KEY;
-  if (!key) throw new Error('external subject credential is missing');
-  const proxy = await startMeteringProxy(baseUrl, key, profile === 'claude-code');
-  try {
-    await writeState('proxy_started');
-    const prepared = await prepareProfile(profile, proxy.baseUrl, systemRoot, command, args);
-    credentialPath = prepared.credentialPath;
-    if (profile === 'claude-code') prepareClaudeWorkspace(systemRoot, prepared.home);
-    const result = await runChild(prepared.command, prepared.args, prepared.env, profile);
-    child = undefined;
-    await writeState('child_exited', { exitCode: result.exitCode });
-    usage = proxy.usage();
-    costUsd = usage && proxy.usageComplete() ? estimateCost(usage) : null;
-    const classified = classifyExecution(
-      profile,
-      result.exitCode,
-      result.stdout,
-      proxy.admittedRequestCount(),
-    );
-    status = stopped ? 'indeterminate' : classified.status;
-    failureReason = stopped ? 'external subject cancelled' : classified.failureReason;
-    await writeState('result_ready', {
-      status,
-      requests: proxy.requestCount(),
-      admittedRequests: proxy.admittedRequestCount(),
-      usageRequests: proxy.usageRequestCount(),
-      removedWebTools: proxy.removedWebToolCount(),
-    });
-    artifacts.push(
-      { kind: 'external-process', profile, exitCode: result.exitCode },
-      streamArtifact('stdout', profile, result.stdout),
-      streamArtifact('stderr', profile, result.stderr),
-      {
-        kind: 'provider-metering',
-        profile,
-        requests: proxy.requestCount(),
-        admittedRequests: proxy.admittedRequestCount(),
-        usageRequests: proxy.usageRequestCount(),
-        usageComplete: proxy.usageComplete(),
-        removedWebTools: proxy.removedWebToolCount(),
-        models: proxy.requestModels(),
-        toolNames: proxy.observedToolNames(),
-      },
-      fileArtifact('wrapper-state', statePath, profile),
-    );
-  } finally {
-    await proxy.close();
-  }
-} catch (error) {
-  status = stopped ? 'indeterminate' : 'infra_failed';
-  failureReason = stopped
-    ? 'external subject cancelled'
-    : safeFailure(error, 'external subject setup failed');
-  await writeState('setup_failed', { failureReason }).catch(() => undefined);
-} finally {
-  process.removeListener('SIGTERM', terminate);
-  process.removeListener('SIGINT', interrupt);
-  removeCredential();
-}
-
-writeRelayResult(resultToken, {
-  schemaVersion: 'maka.external_subject_result.v2',
-  status,
-  failureReason,
-  usage,
-  costUsd,
-  artifacts,
-});
-
-async function prepareProfile(
-  selected: Profile,
-  proxyBaseUrl: string,
-  root: string,
-  executable: string,
-  executableArgs: string[],
-): Promise<{
-  command: string;
-  args: string[];
-  env: NodeJS.ProcessEnv;
-  home: string;
-  credentialPath?: string;
-}> {
-  const env = { ...process.env };
-  const home = rooted(root, `/tmp/maka-eval-${selected}`);
-  await mkdir(home, { recursive: true, mode: 0o700 });
-  env.HOME = home;
-
-  if (selected === 'codex') {
+// One preparer per admissible profile, returning the path of any credential
+// file it wrote. Keying the table by ExternalProfile is what makes adding a
+// profile to TOOLCHAIN_IDENTITIES without preparing it a compile error, rather
+// than a silent fallthrough into whichever branch happened to be written last.
+const PROFILE_PREPARERS: Record<Profile, (setup: ProfileSetup) => Promise<string | undefined>> = {
+  codex: async ({ env, home, root, proxyBaseUrl }) => {
     env.OPENAI_API_KEY = 'maka-eval-local';
     env.CODEX_HOME = home;
     const catalog = rooted(root, '/opt/maka-agent/packages/eval/harbor/deepseek-codex-models.json');
@@ -180,7 +73,9 @@ async function prepareProfile(
       'requirements.toml',
       'allowed_web_search_modes = ["disabled"]\n',
     );
-  } else if (selected === 'claude-code') {
+  },
+
+  'claude-code': async ({ env, home, root, proxyBaseUrl }) => {
     env.ANTHROPIC_BASE_URL = proxyBaseUrl;
     env.ANTHROPIC_API_KEY = 'maka-eval-local';
     env.CLAUDE_CODE_HOME = home;
@@ -189,7 +84,9 @@ async function prepareProfile(
       'managed-settings.json',
       '{"permissions":{"deny":["WebSearch","WebFetch","FetchURL"]}}\n',
     );
-  } else if (selected === 'reasonix') {
+  },
+
+  reasonix: async ({ env, home, proxyBaseUrl, executableArgs }) => {
     const modelReference = executableArgs[executableArgs.indexOf('--model') + 1];
     const effort = executableArgs[executableArgs.indexOf('--effort') + 1];
     const [provider, model] = modelReference?.split('/') ?? [];
@@ -205,8 +102,10 @@ async function prepareProfile(
     await writeFile(path, 'OPENAI_API_KEY=maka-eval-local\n', { mode: 0o600 });
     env.OPENAI_API_KEY = 'maka-eval-local';
     env.REASONIX_HOME = home;
-    credentialPath = path;
-  } else if (selected === 'opencode') {
+    return path;
+  },
+
+  opencode: async ({ env, home, proxyBaseUrl }) => {
     env.DEEPSEEK_API_KEY = 'maka-eval-local';
     env.DEEPSEEK_BASE_URL = proxyBaseUrl;
     env.OPENCODE_CONFIG = join(home, 'opencode.json');
@@ -251,7 +150,9 @@ async function prepareProfile(
       })}\n`,
       { mode: 0o600 },
     );
-  } else if (selected === 'kimi-code') {
+  },
+
+  'kimi-code': async ({ env, home, proxyBaseUrl }) => {
     env.KIMI_CODE_HOME = home;
     env.KIMI_MODEL_NAME = 'deepseek-v4-flash';
     env.KIMI_MODEL_API_KEY = 'maka-eval-local';
@@ -281,7 +182,9 @@ async function prepareProfile(
       ].join('\n'),
       { mode: 0o600 },
     );
-  } else if (selected === 'pi') {
+  },
+
+  pi: async ({ env, home, proxyBaseUrl }) => {
     env.OPENAI_API_KEY = 'maka-eval-local';
     env.PI_CODING_AGENT_DIR = home;
     env.PI_CODING_AGENT_SESSION_DIR = join(home, 'sessions');
@@ -313,12 +216,7 @@ async function prepareProfile(
                 input: ['text'],
                 contextWindow: 1_048_576,
                 maxTokens: 131_072,
-                cost: {
-                  input: 0.145,
-                  output: 0.29,
-                  cacheRead: 0.0029,
-                  cacheWrite: 0.145,
-                },
+                cost: { ...DEEPSEEK_V4_FLASH_COST },
               },
             ],
           },
@@ -334,7 +232,32 @@ async function prepareProfile(
       })}\n`,
       { mode: 0o600 },
     );
-  } else {
+  },
+
+  'deepseek-harness': async ({ env, home, root, proxyBaseUrl }) => {
+    // The arm supplies its own profile rather than patching a stock one, so the
+    // composition names every entry the model can observe. DSH_HOME must be
+    // writable: the harness links its bundled packages into
+    // profiles/node_modules on first use, which it does offline.
+    env.DSH_HOME = join(home, 'dsh');
+    const profile = join(env.DSH_HOME, 'profiles', DEEPSEEK_HARNESS_PROFILE);
+    await mkdir(profile, { recursive: true, mode: 0o700 });
+    const source = rooted(root, '/opt/maka-agent/packages/eval/harbor/deepseek-harness-profile');
+    for (const file of ['package.json', 'cordis.yml', 'cordis.patch.yml']) {
+      await copyFile(join(source, file), join(profile, file));
+    }
+    env.DEEPSEEK_API_KEY = 'maka-eval-local';
+    env.DEEPSEEK_BASE_URL = proxyBaseUrl;
+    // The harness kills every descendant of its persistent PTY on shutdown,
+    // which removes a task's own background service before the shared-environment
+    // verifier can reach it. What the verifier scores is the environment the
+    // task was left in, so no framework — this one, Maka, or the relay — may
+    // edit it after the subject stops. The patched subprocess package honours
+    // this flag by closing the shell without killing the process group.
+    env.DSH_PRESERVE_BACKGROUND_PROCESSES = '1';
+  },
+
+  zcode: async ({ env, home, proxyBaseUrl }) => {
     const zcodeHome = join(home, '.zcode');
     const configRoot = join(zcodeHome, 'cli');
     await mkdir(configRoot, { recursive: true, mode: 0o700 });
@@ -385,14 +308,152 @@ async function prepareProfile(
       })}\n`,
       { mode: 0o600 },
     );
+  },
+};
+
+const [rawProfile, baseUrl, systemRoot, command, ...args] = process.argv.slice(2);
+if (!isExternalProfile(rawProfile)) throw new Error('external subject profile is required');
+const profile = rawProfile;
+if (!command) throw new Error('external subject command is required');
+if (!baseUrl || !URL.canParse(baseUrl)) throw new Error('external subject base URL is required');
+if (!systemRoot?.startsWith('/')) throw new Error('external subject system root is required');
+
+let credentialPath: string | undefined;
+let child: ChildProcess | undefined;
+let stopped = false;
+const stop = (signal: NodeJS.Signals) => {
+  stopped = true;
+  removeCredential();
+  child?.kill(signal);
+};
+const terminate = () => stop('SIGTERM');
+const interrupt = () => stop('SIGINT');
+process.once('SIGTERM', terminate);
+process.once('SIGINT', interrupt);
+
+const logsRoot = rooted(systemRoot, '/logs/agent');
+const statePath = join(logsRoot, `${profile}.wrapper-state.json`);
+const usagePath = join(logsRoot, `${profile}.provider-usage.json`);
+const artifacts: Record<string, unknown>[] = [];
+let usage: Usage | null = null;
+let costUsd: number | null = null;
+let status: SubjectStatus = 'infra_failed';
+let failureReason: string | null = 'external subject setup failed';
+
+try {
+  await mkdir(logsRoot, { recursive: true, mode: 0o700 });
+  await writeState('started');
+  const identity = decodePreverifiedToolchain(profile, systemRoot, command);
+  artifacts.push({ kind: 'toolchain', profile, ...identity });
+  await writeState('toolchain_verified');
+
+  const key =
+    process.env.OPENAI_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? process.env.DEEPSEEK_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.DEEPSEEK_API_KEY;
+  if (!key) throw new Error('external subject credential is missing');
+  const proxy = await startMeteringProxy(
+    baseUrl,
+    key,
+    profile === 'claude-code',
+    profile,
+    usagePath,
+  );
+  try {
+    await writeState('proxy_started');
+    const prepared = await prepareProfile(profile, proxy.baseUrl, systemRoot, args);
+    credentialPath = prepared.credentialPath;
+    if (profile === 'claude-code') prepareClaudeWorkspace(systemRoot, prepared.home);
+    const result = await runChild(command, args, prepared.env, profile, async (exitCode) => {
+      proxy.stopAccepting();
+      if (exitCode !== undefined) await writeState('child_exited', { exitCode });
+    });
+    child = undefined;
+    const metering = await proxy.report();
+    const derived = deriveMetering(metering);
+    usage = metering.usage;
+    costUsd = derived.costUsd;
+    const classified = classifyExecution(
+      profile,
+      result.exitCode,
+      result.stdout,
+      metering.admittedRequests,
+    );
+    status = stopped ? 'indeterminate' : classified.status;
+    failureReason = stopped ? 'external subject cancelled' : classified.failureReason;
+    await writeState('result_ready', {
+      status,
+      requests: metering.requests,
+      admittedRequests: metering.admittedRequests,
+      usageRequests: metering.usageRequests,
+      removedWebTools: metering.removedWebTools,
+    });
+    artifacts.push(
+      { kind: 'external-process', profile, exitCode: result.exitCode },
+      streamArtifact('stdout', profile, result.stdout),
+      streamArtifact('stderr', profile, result.stderr),
+      {
+        kind: 'provider-metering',
+        profile,
+        requests: metering.requests,
+        admittedRequests: metering.admittedRequests,
+        usageRequests: metering.usageRequests,
+        usageComplete: derived.usageComplete,
+        removedWebTools: metering.removedWebTools,
+        models: metering.models,
+        toolNames: metering.toolNames,
+      },
+      fileArtifact('wrapper-state', statePath, profile),
+    );
+  } finally {
+    await proxy.close();
   }
-  return {
-    command: executable,
-    args: executableArgs,
+} catch (error) {
+  status = stopped ? 'indeterminate' : 'infra_failed';
+  failureReason = stopped
+    ? 'external subject cancelled'
+    : safeFailure(error, 'external subject setup failed');
+  await writeState('setup_failed', { failureReason }).catch(() => undefined);
+} finally {
+  process.removeListener('SIGTERM', terminate);
+  process.removeListener('SIGINT', interrupt);
+  removeCredential();
+}
+
+// A process's exit code reports what it did, and anything that can read only
+// the exit code — the relay, a log, an operator — should read the same status
+// the frame carries. The adapter still prefers the frame where it has one; this
+// is what it falls back to when the frame carries no status of its own.
+process.exitCode = status === 'completed' ? 0 : 1;
+
+writeRelayResult(resultToken, {
+  schemaVersion: 'maka.external_subject_result.v2',
+  status,
+  failureReason,
+  usage,
+  costUsd,
+  artifacts,
+});
+
+async function prepareProfile(
+  selected: Profile,
+  proxyBaseUrl: string,
+  root: string,
+  executableArgs: string[],
+): Promise<{ env: NodeJS.ProcessEnv; home: string; credentialPath?: string }> {
+  const env = { ...process.env };
+  const home = rooted(root, `/tmp/maka-eval-${selected}`);
+  await mkdir(home, { recursive: true, mode: 0o700 });
+  env.HOME = home;
+  const credential = await PROFILE_PREPARERS[selected]({
     env,
     home,
-    ...(credentialPath ? { credentialPath } : {}),
-  };
+    root,
+    proxyBaseUrl,
+    executableArgs,
+  });
+  return { env, home, ...(credential ? { credentialPath: credential } : {}) };
 }
 
 async function runChild(
@@ -400,6 +461,7 @@ async function runChild(
   executableArgs: string[],
   env: NodeJS.ProcessEnv,
   selected: Profile,
+  onExit: (exitCode?: number) => Promise<void>,
 ): Promise<{ exitCode: number; stdout: ClassifiedStream; stderr: StreamDiagnostic }> {
   const running = spawn(executable, executableArgs, {
     env,
@@ -409,8 +471,18 @@ async function runChild(
   const stdout = classifyStream(running.stdout, selected);
   const stderr = captureStreamDiagnostic(running.stderr);
   const exitCode = await new Promise<number>((resolveExit, reject) => {
-    running.once('error', reject);
-    running.once('exit', (code) => resolveExit(code ?? 1));
+    let settled = false;
+    running.once('error', (error) => {
+      if (settled) return;
+      settled = true;
+      void onExit().then(() => reject(error), reject);
+    });
+    running.once('exit', (code) => {
+      if (settled) return;
+      settled = true;
+      const exitCode = code ?? 1;
+      void onExit(exitCode).then(() => resolveExit(exitCode), reject);
+    });
   });
   const [stdoutResult, stderrResult] = await Promise.all([stdout, stderr]);
   return { exitCode, stdout: stdoutResult, stderr: stderrResult };
@@ -533,7 +605,15 @@ function classifyExecution(
       failureReason: `${selected} output record exceeded the classification limit`,
     };
   }
-  const completed = output.completed || (selected === 'zcode' && exitCode === 0 && output.nonempty);
+  // Neither harness emits a structured completion event: zcode and the DeepSeek
+  // Harness one-shot CLI print the final assistant message and nothing else, so
+  // a clean exit with output is the whole signal on offer. Scores come from the verifier either way; this
+  // only decides whether the attempt reads as completed or failed.
+  const completed =
+    output.completed ||
+    ((selected === 'zcode' || selected === 'deepseek-harness') &&
+      exitCode === 0 &&
+      output.nonempty);
   const reportedError = output.reportedError;
   if (admittedRequests === 0) {
     return { status: 'infra_failed', failureReason: `${selected} failed before model admission` };
@@ -587,84 +667,167 @@ async function startMeteringProxy(
   upstreamBaseUrl: string,
   upstreamKey: string,
   anthropic: boolean,
+  selected: Profile,
+  checkpointPath: string,
 ): Promise<{
   baseUrl: string;
-  usage(): Usage | null;
-  requestCount(): number;
-  admittedRequestCount(): number;
-  usageRequestCount(): number;
-  usageComplete(): boolean;
-  removedWebToolCount(): number;
-  requestModels(): readonly string[];
-  observedToolNames(): readonly string[];
+  // Metering is only readable as one settled snapshot: a request still in
+  // flight when the child exits would otherwise be missing from the counts that
+  // decide admission, usage, and cost.
+  stopAccepting(): void;
+  report(): Promise<ProviderMeteringCounts>;
   close(): Promise<void>;
 }> {
   const total = zeroUsage();
-  let measured = false;
   let requests = 0;
+  let inFlightRequests = 0;
   let admittedRequests = 0;
   let usageRequests = 0;
   let removedWebTools = 0;
+  let settled = false;
   const requestModels = new Set<string>();
   const observedToolNames = new Set<string>();
-  const dispatcher = process.env.HTTPS_PROXY ? new ProxyAgent(process.env.HTTPS_PROXY) : undefined;
+  const snapshot = (): ProviderMeteringCounts => ({
+    usage:
+      usageRequests > 0 ? { ...total, totalTokens: total.inputTokens + total.outputTokens } : null,
+    settled,
+    requests,
+    inFlightRequests,
+    admittedRequests,
+    usageRequests,
+    removedWebTools,
+    models: [...requestModels].sort(),
+    toolNames: [...observedToolNames].sort(),
+  });
+  // The wrapper's own result frame is lost when the process is killed rather
+  // than asked to stop, and a run that is cut off is exactly the run with the
+  // most tokens spent. The checkpoint is therefore written at the start and the
+  // settlement of every request, so whatever survives on disk is a truthful
+  // lower bound at worst. Writes are serialized through one chain: two
+  // concurrent requests must not interleave into a half-written file.
+  // A failed write leaves the previous snapshot on disk, which is still a
+  // truthful lower bound. It must not do more than that: an unhandled rejection
+  // here would propagate down the chain and turn a run that finished into an
+  // infrastructure failure over a file that exists only in case the run does
+  // not finish.
+  let checkpointWrites = Promise.resolve();
+  const persistCheckpoint = () => {
+    const value = signMeteringCheckpoint(
+      {
+        schemaVersion: PROVIDER_USAGE_CHECKPOINT_SCHEMA,
+        profile: selected,
+        ...snapshot(),
+      },
+      resultToken,
+    );
+    checkpointWrites = checkpointWrites.then(() =>
+      writeJsonAtomic(checkpointPath, value).catch(() => undefined),
+    );
+    return checkpointWrites;
+  };
+  await persistCheckpoint();
+  // Undici defaults to aborting a request after 300s without headers or body
+  // bytes. A reasoning model can legitimately be quiet for longer, and killing
+  // it here would turn a slow answer into an infrastructure failure. The
+  // benchmark's own agent timeout stays the only deadline.
+  const timeouts = { headersTimeout: 0, bodyTimeout: 0 };
+  const dispatcher = process.env.HTTPS_PROXY
+    ? new ProxyAgent({ uri: process.env.HTTPS_PROXY, ...timeouts })
+    : new Agent(timeouts);
   const active = new Set<Promise<void>>();
+  let accepting = true;
+  const stopAccepting = () => {
+    accepting = false;
+  };
   const server = createServer((request, response) => {
+    // Refused rather than counted: a request the proxy declined was never
+    // admitted by the provider and never billed, so it is not part of what
+    // this run spent.
+    if (!accepting) {
+      response.statusCode = 503;
+      response.end(JSON.stringify({ error: 'provider proxy has settled' }));
+      return;
+    }
     const operation = (async () => {
       requests += 1;
-      const projected = removeEvalWebTools(await readRequest(request));
-      removedWebTools += projected.removed;
-      if (projected.model) requestModels.add(projected.model);
-      for (const name of projected.toolNames) observedToolNames.add(name);
-      const target = joinUpstream(upstreamBaseUrl, request.url ?? '/');
-      const headers: Record<string, string> = {};
-      for (const [name, value] of Object.entries(request.headers)) {
-        if (
-          value === undefined ||
-          ['host', 'content-length', 'connection', 'authorization', 'x-api-key'].includes(
-            name.toLowerCase(),
-          )
-        )
-          continue;
-        headers[name] = Array.isArray(value) ? value.join(', ') : value;
-      }
-      if (anthropic) headers['x-api-key'] = upstreamKey;
-      else headers.authorization = `Bearer ${upstreamKey}`;
-      const upstream = await undiciFetch(target, {
-        method: request.method,
-        headers,
-        body: projected.body.length === 0 ? undefined : new Uint8Array(projected.body),
-        ...(dispatcher ? { dispatcher } : {}),
-      });
-      response.statusCode = upstream.status;
-      upstream.headers.forEach((value, name) => {
-        if (
-          !['content-length', 'content-encoding', 'transfer-encoding', 'connection'].includes(name)
-        )
-          response.setHeader(name, value);
-      });
-      const parser = usageParser(anthropic);
+      inFlightRequests += 1;
       try {
-        if (upstream.body) {
-          const reader = upstream.body.getReader();
-          for (;;) {
-            const next = await reader.read();
-            if (next.done) break;
-            response.write(Buffer.from(next.value));
-            parser.push(Buffer.from(next.value).toString('utf8'));
-          }
+        await persistCheckpoint();
+        const projected = removeEvalWebTools(await readRequest(request));
+        removedWebTools += projected.removed;
+        if (projected.model) requestModels.add(projected.model);
+        for (const name of projected.toolNames) observedToolNames.add(name);
+        const target = joinUpstream(upstreamBaseUrl, request.url ?? '/');
+        const headers: Record<string, string> = {};
+        for (const [name, value] of Object.entries(request.headers)) {
+          if (
+            value === undefined ||
+            ['host', 'content-length', 'connection', 'authorization', 'x-api-key'].includes(
+              name.toLowerCase(),
+            )
+          )
+            continue;
+          headers[name] = Array.isArray(value) ? value.join(', ') : value;
         }
-        response.end();
-      } finally {
-        const parsed = parser.finish();
-        if (upstream.ok && parsed.admitted) {
+        if (anthropic) headers['x-api-key'] = upstreamKey;
+        else headers.authorization = `Bearer ${upstreamKey}`;
+        const upstream = await undiciFetch(target, {
+          method: request.method,
+          headers,
+          body: projected.body.length === 0 ? undefined : new Uint8Array(projected.body),
+          dispatcher,
+        });
+        response.statusCode = upstream.status;
+        upstream.headers.forEach((value, name) => {
+          if (
+            !['content-length', 'content-encoding', 'transfer-encoding', 'connection'].includes(
+              name,
+            )
+          )
+            response.setHeader(name, value);
+        });
+        const parser = usageParser(anthropic);
+        let counted = false;
+        const admit = async () => {
+          if (counted || !upstream.ok || !parser.admitted()) return;
+          counted = true;
           admittedRequests += 1;
-          if (parsed.usage) {
+          await persistCheckpoint();
+        };
+        try {
+          // Admission is a fact about the provider, not about this request
+          // finishing: once the stream carries the event, the model work has
+          // been done and billed whatever happens to this process next. It is
+          // therefore recorded and persisted the moment it is observed, so a
+          // checkpoint written mid-stream already knows. `admitted` is
+          // monotonic and `counted` makes the increment idempotent, so this
+          // costs one write per request rather than one per chunk.
+          if (upstream.body) {
+            const reader = upstream.body.getReader();
+            for (;;) {
+              const next = await reader.read();
+              if (next.done) break;
+              const chunk = Buffer.from(next.value);
+              parser.push(chunk.toString('utf8'));
+              // Before the chunk is handed to a downstream this process does not
+              // control: once it is written, a disconnect or a kill can end this
+              // request at any point, and the admission would be lost with it.
+              await admit();
+              response.write(chunk);
+            }
+          }
+          response.end();
+        } finally {
+          const parsed = parser.finish();
+          await admit();
+          if (counted && parsed.usage) {
             usageRequests += 1;
-            measured = true;
             addUsage(total, parsed.usage);
           }
         }
+      } finally {
+        inFlightRequests -= 1;
+        await persistCheckpoint();
       }
     })().catch((error: unknown) => {
       response.statusCode = 502;
@@ -678,25 +841,41 @@ async function startMeteringProxy(
   if (!address || typeof address === 'string') throw new Error('provider proxy did not bind');
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
-    usage: () =>
-      measured ? { ...total, totalTokens: total.inputTokens + total.outputTokens } : null,
-    requestCount: () => requests,
-    admittedRequestCount: () => admittedRequests,
-    usageRequestCount: () => usageRequests,
-    usageComplete: () => admittedRequests > 0 && usageRequests === admittedRequests,
-    removedWebToolCount: () => removedWebTools,
-    requestModels: () => [...requestModels].sort(),
-    observedToolNames: () => [...observedToolNames].sort(),
-    close: async () => {
+    stopAccepting,
+    report: async () => {
+      // Admission closes before anything is drained, so settlement is made
+      // true rather than asserted about a moment. The subject's own process has
+      // exited by now, but the processes it left behind have not — they run in
+      // this container and this proxy is still bound — and a request accepted
+      // after the flag was set would leave a checkpoint claiming settlement
+      // with work in flight. Closing the socket would not do this: it stops new
+      // connections while leaving established ones free to send another
+      // request, and it waits on idle keep-alive sockets that may never close.
+      stopAccepting();
       await Promise.allSettled([...active]);
+      // Settlement is something this process observes; it is not recoverable
+      // from the counts. A checkpoint whose last successful write happened
+      // mid-run also has no requests in flight as of that write, so a reader
+      // cannot tell it from this one except by being told.
+      settled = true;
+      await persistCheckpoint();
+      return snapshot();
+    },
+    close: async () => {
+      stopAccepting();
+      await Promise.allSettled([...active]);
+      await checkpointWrites;
       await closeServer(server);
-      await dispatcher?.close();
+      await dispatcher.close();
     },
   };
 }
 
 function usageParser(anthropic: boolean): {
   push(text: string): void;
+  // Monotonic, and readable before the stream ends: the caller records
+  // admission when the provider states it, not when the request settles.
+  admitted(): boolean;
   finish(): { usage: Usage | null; admitted: boolean };
 } {
   let buffered = '';
@@ -722,6 +901,9 @@ function usageParser(anthropic: boolean): {
         buffered = buffered.slice(newline + 1);
         newline = buffered.indexOf('\n');
       }
+    },
+    admitted() {
+      return admitted;
     },
     finish() {
       if (buffered.trim()) consume(buffered);
@@ -749,7 +931,14 @@ function usageFromEvent(event: Record<string, unknown>, anthropic: boolean): Usa
     : isRecord(raw.completion_tokens_details)
       ? raw.completion_tokens_details
       : {};
-  const cacheRead = number(raw.cache_read_input_tokens ?? inputDetails.cached_tokens);
+  // `prompt_cache_hit_tokens` is where DeepSeek's chat-completions responses
+  // put cache reads, and the runtime's own adapter reads it ahead of the
+  // OpenAI-shaped field. Omitting it here would not lose the tokens — they
+  // stay in `prompt_tokens`, and would then be billed as uncached input at
+  // fifty times the cached rate.
+  const cacheRead = number(
+    raw.cache_read_input_tokens ?? raw.prompt_cache_hit_tokens ?? inputDetails.cached_tokens,
+  );
   const cacheWrite = number(
     raw.cache_creation_input_tokens ??
       raw.cache_write_input_tokens ??
@@ -788,13 +977,6 @@ function addUsage(target: Usage, value: Usage): void {
   target.cacheWriteTokens += value.cacheWriteTokens;
   target.reasoningTokens += value.reasoningTokens;
   target.totalTokens = target.inputTokens + target.outputTokens;
-}
-
-function estimateCost(value: Usage): number {
-  const uncached = Math.max(0, value.inputTokens - value.cacheReadTokens - value.cacheWriteTokens);
-  return (
-    (uncached * 0.145 + value.cacheReadTokens * 0.0029 + value.outputTokens * 0.29) / 1_000_000
-  );
 }
 
 function zeroUsage(): Usage {
@@ -869,18 +1051,6 @@ function safeFailure(error: unknown, fallback: string): string {
   if (/credential is missing/u.test(error.message)) return error.message;
   if (/workspace ownership/u.test(error.message)) return error.message;
   return fallback;
-}
-
-function isProfile(value: string | undefined): value is Profile {
-  return (
-    value === 'codex' ||
-    value === 'claude-code' ||
-    value === 'reasonix' ||
-    value === 'opencode' ||
-    value === 'kimi-code' ||
-    value === 'zcode' ||
-    value === 'pi'
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

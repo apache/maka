@@ -5,7 +5,7 @@ import {
   type TraceStep,
   type TraceTotals,
 } from '@maka/core/session-trace';
-
+import { pricingModelKey } from '@maka/core/usage-stats/pricing';
 /**
  * View model for the Inspector panel (#1625).
  *
@@ -31,6 +31,8 @@ export interface InspectorStepRow {
   durationMs?: number;
   /** Retries beyond the first attempt of one logical call. */
   retries?: number;
+  /** Exact Runtime pricing lookup key, exposed only when an attempt was unpriced. */
+  unpricedPricingKey?: string;
   /**
    * The recovery decision that was actually recorded, structured rather than
    * pre-formatted so the panel owns the wording in the reader's language.
@@ -114,6 +116,9 @@ function toStepRow(step: TraceStep, attributedToStepId: string | undefined): Ins
       ...(detail !== undefined ? { detail } : {}),
       durationMs: step.durationMs,
       ...(step.attempts.length > 1 ? { retries: step.attempts.length - 1 } : {}),
+      ...(step.attempts.some((attempt) => attempt.costBasis === 'unpriced')
+        ? { unpricedPricingKey: pricingModelKey(step.providerId, step.modelId) }
+        : {}),
       failed,
     };
   }

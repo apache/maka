@@ -52,6 +52,8 @@ CAPABILITY_FIELDS = ("CapEff", "CapPrm", "CapBnd")
 # than inferring it from something only the shared namespace would expose.
 POLICY_SERVICE = "harbor-docker-egress-control-sidecar"
 NAMESPACE_PROBE = f"printf %s {shlex.quote(NAMESPACE_PREFIX)}; readlink /proc/self/ns/net"
+PROXY_IPV4_PATH = "/opt/maka-egress/proxy-ipv4"
+PROXY_HOSTS_PREFIX = "MAKA-EVAL-PROXY-HOST-V1 "
 # The kernel's own form for a namespace link target. Matching it keeps an
 # unexpected answer from being compared as if it were an identity.
 NAMESPACE_IDENTITY = re.compile(r"^net:\[[0-9]+\]$")
@@ -136,8 +138,13 @@ class RelayAgent(BaseAgent):
             result = execution.result()
             await _persist_subject_outputs(environment, result)
             stdout, diagnostic = _project_result(result, request)
-            if diagnostic["category"] != "execution-scope-unavailable":
-                await _quiesce_scope(environment, cwd, scope_path)
+            # A subject that exited on its own leaves the shared environment as
+            # it left it, and the verifier reads that environment. Nothing is
+            # waiting on those processes here — `environment.exec` has already
+            # returned — so tearing them down would not unblock anything; it
+            # would only edit the thing about to be measured, and edit it for
+            # some subjects and not others. Cancellation still quiesces, because
+            # there the subject has not stopped and the trial is being abandoned.
             if not await _send(
                 writer,
                 {
@@ -163,10 +170,12 @@ class RelayAgent(BaseAgent):
                 if execution_terminal:
                     terminal_result = execution.result()
                     terminal_projection = _project_result(terminal_result, request)
-                if (
-                    terminal_projection is not None
-                    and terminal_projection[1]["category"] == "execution-scope-unavailable"
-                ):
+                # A subject that already exited has nothing left to settle, and
+                # tearing its scope down here would remove what the verifier is
+                # about to score -- the same environment edit this relay stopped
+                # making on the ordinary path. Only a subject still running is
+                # brought to a stop.
+                if terminal_projection is not None:
                     result = terminal_result
                 else:
                     result = await _settle_or_destroy(
@@ -354,6 +363,99 @@ async def _require_constrained_subject(environment: Any) -> None:
             "the subject does not share the network namespace the Eval egress policy "
             "was applied to; remove the task's own networking on the subject service"
         )
+    await _pin_proxy_hostname(environment)
+
+
+HOSTS_ALIAS_AWK = r"""
+/^[[:space:]]*#/ { print; next }
+{
+  for (i = 2; i <= NF; i++) {
+    if ($i == host) next
+  }
+  print
+}
+"""
+
+# Four decimal octets 0-255, no empty fields and no leading zeros. The same
+# program is embedded in egress-proxy/network-policy; the contract test
+# requires the two copies to stay identical.
+IPV4_OCTET_AWK = r"""
+BEGIN { FS = "." }
+NF != 4 { exit 1 }
+{
+  for (i = 1; i <= 4; i++) {
+    if ($i !~ /^(0|[1-9][0-9]*)$/ || $i + 0 > 255) exit 1
+  }
+}
+"""
+
+_PUBLISHED_IPV4 = re.compile(
+    r"^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}"
+    r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$"
+)
+
+
+def _valid_egress_proxy_host(host: str) -> bool:
+    if not host or host.startswith(".") or host.endswith(".") or ".." in host:
+        return False
+    # Match the pin script's `*[!A-Za-z0-9.-]*` class. str.isalnum() also
+    # accepts Unicode letters, which the shell would later reject as a pin
+    # failure instead of an invalid host.
+    return all(
+        (character.isalnum() and character.isascii()) or character in ".-"
+        for character in host
+    )
+
+
+def _valid_published_ipv4(ip: str) -> bool:
+    return bool(_PUBLISHED_IPV4.fullmatch(ip))
+
+
+async def _pin_proxy_hostname(environment: Any) -> None:
+    """Point the proxy hostname at the published IPv4 so Docker DNS can be refused.
+
+    The subject only needs that one name, because the HTTP proxy does remote
+    resolution itself. Pinning it in /etc/hosts lets the namespace policy reject
+    127.0.0.11:53 without breaking HTTPS_PROXY.
+    """
+    host = os.environ.get("MAKA_EVAL_EGRESS_ALLOWED_HOST") or "maka-eval-mitmproxy"
+    if not _valid_egress_proxy_host(host):
+        raise RuntimeError("Eval egress proxy host is invalid")
+    script = f"""
+set -eu
+path={shlex.quote(PROXY_IPV4_PATH)}
+host={shlex.quote(host)}
+case "$host" in
+  ""|.*|*..*|*.) exit 1 ;;
+  *[!A-Za-z0-9.-]*) exit 1 ;;
+esac
+test -f "$path"
+ip=$(tr -d ' \\t\\r\\n' < "$path")
+case "$ip" in
+  ""|*.*.*.*.*|*[!0-9.]*) exit 1 ;;
+esac
+if ! printf '%s\\n' "$ip" | awk {shlex.quote(IPV4_OCTET_AWK)}; then
+  exit 1
+fi
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+if [ -f /etc/hosts ]; then
+  awk -v host="$host" {shlex.quote(HOSTS_ALIAS_AWK)} /etc/hosts > "$tmp"
+fi
+printf '%s %s\\n' "$ip" "$host" >> "$tmp"
+cat "$tmp" > /etc/hosts
+printf %s {shlex.quote(PROXY_HOSTS_PREFIX)}
+printf '%s %s\\n' "$ip" "$host"
+"""
+    # Harbor 0.20.0 BaseEnvironment.exec and DockerEnvironment.exec take user=;
+    # DockerEnvironment._compose_exec forwards it as `docker compose exec -u`.
+    probe = await environment.exec(script, user="root")
+    if probe.return_code != 0:
+        raise RuntimeError("Maka Eval could not pin the Eval egress proxy hostname")
+    reported = _sole_probe_line(probe, PROXY_HOSTS_PREFIX)
+    ip, _, pinned = reported.partition(" ")
+    if pinned != host or not _valid_published_ipv4(ip):
+        raise RuntimeError("Maka Eval could not pin the Eval egress proxy hostname")
 
 
 def _sole_probe_line(probe: Any, prefix: str) -> str:

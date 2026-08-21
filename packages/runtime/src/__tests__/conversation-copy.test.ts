@@ -975,6 +975,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
       summary: 'The source turn called one opaque tool.',
+      summaryFormat: 'legacy_freeform',
       highWaterSeq: 3,
     });
     const providerCheckpoint = buildHistoryCompactCheckpoint({
@@ -1038,6 +1039,8 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         latencyMs: 0.5,
       },
     });
+    // A legacy event from the retired active-full writer is treated like any
+    // other event this build cannot emit and is therefore not copied.
     await runStore.appendEvent('session-source', 'run-source', {
       type: 'active_full_compact_block_recorded',
       id: 'active-compact-source',
@@ -1046,7 +1049,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       turnId: 'turn-1',
       ts: 2.6,
       data: { blockId: 'active-source', block: { sourceOwnedHash: true } },
-    });
+    } as unknown as EmittedAgentRunEvent);
     await runStore.appendEvent('session-source', 'run-source', {
       type: 'semantic_compact_block_recorded',
       id: 'semantic-compact-source',
@@ -1377,6 +1380,7 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
       summary: 'Both retained turns are complete.',
+      summaryFormat: 'legacy_freeform',
       highWaterSeq: 5,
     });
     await runStore.appendEvent('session-source', 'run-2', {
@@ -1555,6 +1559,7 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
       sessionId: 'session-source',
       coveredRuntimeEvents: childSourceEvents,
       summary: 'The resumed child retained both child turns.',
+      summaryFormat: 'legacy_freeform',
       highWaterSeq: 8,
     });
     await runStore.appendEvent('session-source', 'run-child-2', {

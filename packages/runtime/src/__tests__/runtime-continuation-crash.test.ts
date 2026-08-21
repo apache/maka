@@ -15,7 +15,7 @@ import { createSqliteAgentRunStore } from '@maka/storage';
 
 import { type RuntimeContinuationFailpoint } from '../agent-run.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
-import { FakeBackend } from '../fake-backend.js';
+import { FakeBackend } from '../test-only/fake-backend.js';
 import { terminateChildProcessTree } from '../process-tree-terminator.js';
 
 const CRASH_CHILD_ENV = 'MAKA_RUNTIME_CONTINUATION_CRASH_CHILD';
@@ -135,7 +135,7 @@ async function runCrashChild(): Promise<void> {
   const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
   const backends = new BackendRegistry();
   backends.register(
-    'fake',
+    'ai-sdk',
     (ctx) =>
       new FakeBackend({
         sessionId: ctx.sessionId,
@@ -173,7 +173,6 @@ async function runCrashChild(): Promise<void> {
   });
   const session = await manager.createSession({
     cwd: workspaceRoot,
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'execute',
@@ -229,7 +228,7 @@ function createManager(workspaceRoot: string): {
   const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
   const backends = new BackendRegistry();
   backends.register(
-    'fake',
+    'ai-sdk',
     (ctx) =>
       new FakeBackend({
         sessionId: ctx.sessionId,

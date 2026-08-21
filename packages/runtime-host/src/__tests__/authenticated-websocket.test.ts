@@ -7,24 +7,36 @@ import { test } from 'node:test';
 import { resolveRootControlNamespace, resolveStorageRoot } from '@maka/storage/root-authority';
 import { classifyRemoteRuntimeHostConnectFailure } from '../client/connection.js';
 import {
+  connectRemoteRuntimeHostProfile,
   connectRemoteRuntimeHost,
   connectRuntimeHost,
   consumeAccessCredentialDelivery,
+  createRuntimeHostReconnectingConnection,
   RuntimeHostOperationError,
   type RuntimeHostConnection,
 } from '../client/index.js';
+import { RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT } from '../client/host-profile.js';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   type RequestFrame,
 } from '../protocol/index.js';
 import { openRuntimeHostAccessAuthority } from '../server/access-authority.js';
+import {
+  RuntimeHostAccessCommitOutcomeUnknownError,
+  writeAccessCredentialFile,
+} from '../server/access-credential-store.js';
 import { startExecutionRuntimeHostService } from '../server/execution-service.js';
 import { authorizeRuntimeHostOperation } from '../server/connection-authority.js';
 
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
   max: RUNTIME_HOST_PROTOCOL_VERSION,
+} as const;
+const KNOWN_EMPTY_LIVE_RUN_STATE = {
+  schemaVersion: SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
+  runningTurnIds: [],
 } as const;
 
 test('one Local IPC owner and one authenticated WebSocket Client control the same Session', {
@@ -40,9 +52,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
   let local: RuntimeHostConnection | undefined;
   let remote: RuntimeHostConnection | undefined;
   try {
-    local = requireConnection(
-      await connectRuntimeHost({ rootPath: root, surface: 'desktop', protocol: PROTOCOL }),
-    );
+    local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
     const issued = await local.request('access.credential.issue', {
       principalKind: 'remote_owner',
       principalId: 'remote-device',
@@ -54,6 +64,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         'project.catalog.query',
         'project.catalog.mutate',
         'skill.catalog.query',
+        'access.credential.finalize',
       ],
       canPublishClientCapabilities: false,
       canUseHostPaths: false,
@@ -71,7 +82,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         credential,
         expectedRootId: capability.rootId,
         compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-        surface: 'tui',
         protocol: PROTOCOL,
       }),
       /must not contain credentials, a query, or a fragment/u,
@@ -82,7 +92,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       credential,
       expectedRootId: 'f'.repeat(64),
       compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-      surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.deepEqual(wrongRoot, { kind: 'unavailable', reason: 'root_mismatch' });
@@ -92,7 +101,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       credential,
       expectedRootId: capability.rootId,
       compositionId: 'test.other',
-      surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.equal(wrongComposition.kind, 'incompatible');
@@ -114,7 +122,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       credential,
       expectedRootId: capability.rootId,
       compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-      surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.equal(connected.kind, 'connected');
@@ -196,7 +203,10 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         kind: 'get',
         sessionId: 'shared-session',
       }),
-      { kind: 'session', session: created },
+      {
+        kind: 'session',
+        session: { ...created, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
+      },
     );
 
     const catalogChanged = new Promise<string>((resolve) => {
@@ -215,7 +225,10 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
         sessionId: 'shared-session',
       }),
       renamed.kind === 'committed'
-        ? { kind: 'session', session: renamed.session }
+        ? {
+            kind: 'session',
+            session: { ...renamed.session, liveRunState: KNOWN_EMPTY_LIVE_RUN_STATE },
+          }
         : assert.fail('Remote Session rename did not commit'),
     );
 
@@ -266,7 +279,6 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       url,
       credential: providerCredential,
       expectedRootId: capability.rootId,
-      surface: 'capability-provider',
       protocol: PROTOCOL,
       compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
       clientInstanceId: 'remote-provider-instance',
@@ -327,22 +339,53 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       'session',
     );
 
-    assert.deepEqual(
-      await local.request('access.credential.revoke', { credentialId: issued.credentialId }),
-      { credentialId: issued.credentialId, revoked: true },
+    const candidate = await local.request('access.credential.prepare', {
+      principalKind: 'remote_owner',
+      principalId: 'remote-device',
+      operationGrants: issued.operationGrants,
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const replacementCredential = await consumeAccessCredentialDelivery(
+      root,
+      candidate.deliveryId,
+      candidate.credentialId,
     );
-    await remote.closed;
-    remote = undefined;
+    assert.deepEqual(await remote.request('access.credential.finalize', {}), {});
+    const replacementConnection = await connectRemoteRuntimeHost({
+      url,
+      credential: replacementCredential,
+      expectedRootId: capability.rootId,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      protocol: PROTOCOL,
+    });
+    assert.equal(replacementConnection.kind, 'connected');
+    if (replacementConnection.kind === 'connected') {
+      assert.deepEqual(
+        await replacementConnection.connection.request('access.credential.finalize', {}),
+        {},
+      );
+      await remote.closed;
+      remote = undefined;
+      assert.deepEqual(
+        await replacementConnection.connection.request('access.credential.finalize', {}),
+        {},
+      );
+      await replacementConnection.connection.close();
+    }
     assert.deepEqual(
       await connectRemoteRuntimeHost({
         url,
         credential,
         expectedRootId: capability.rootId,
         compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
-        surface: 'tui',
         protocol: PROTOCOL,
       }),
       { kind: 'unavailable', reason: 'authentication_failed' },
+    );
+    assert.deepEqual(
+      await local.request('access.credential.revoke', { credentialId: candidate.credentialId }),
+      { credentialId: candidate.credentialId, revoked: true },
     );
   } finally {
     await Promise.allSettled([remote?.close(), local?.close()]);
@@ -372,6 +415,104 @@ test('classifies safe remote connection failures without exposing raw errors', (
     classifyRemoteRuntimeHostConnectFailure(new Error('unexpected sensitive detail')),
     'connect_failed',
   );
+});
+
+test('an authenticated WebSocket Client reconnects after service restart to canonical state', {
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-authenticated-websocket-restart-'));
+  const root = join(base, 'root');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  let host: Awaited<ReturnType<typeof startExecutionRuntimeHostService>> | undefined =
+    await startExecutionRuntimeHostService({
+      rootPath: root,
+      websocket: { host: '127.0.0.1', port: 0 },
+    });
+  let local: RuntimeHostConnection | undefined;
+  let remote: Awaited<ReturnType<typeof createRuntimeHostReconnectingConnection>> | undefined;
+  try {
+    local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
+    const issued = await local.request('access.credential.issue', {
+      principalKind: 'remote_owner',
+      principalId: 'restart-client',
+      operationGrants: ['host.status', 'session.catalog.query'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const credential = await consumeAccessCredentialDelivery(
+      root,
+      issued.deliveryId,
+      issued.credentialId,
+    );
+    const created = await local.request('session.create', {
+      sessionId: 'session-before-restart',
+      workspace: { kind: 'host_path', path: root },
+      name: 'Created before restart',
+      modelTarget: { kind: 'default' },
+    });
+    assert.ok(!('kind' in created));
+
+    const url = host.websocketEndpoints[0];
+    assert.ok(url);
+    const port = Number(new URL(url).port);
+    const profile = {
+      id: 'restart-host',
+      name: 'Restart Host',
+      kind: 'remote',
+      transport: {
+        kind: 'plaintext',
+        url,
+        acknowledgement: RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
+      },
+      rootId: capability.rootId,
+    } as const;
+    const connectRemote = (signal?: AbortSignal) =>
+      connectRemoteRuntimeHostProfile({
+        profile,
+        credential,
+        clientInstanceId: 'restart-client-instance',
+        ...(signal ? { signal } : {}),
+        connectTimeoutMs: 1_000,
+        readyTimeoutMs: 5_000,
+      });
+    const initialRemote = await connectRemote();
+    const firstHostEpoch = initialRemote.hostEpoch;
+    const expected = await initialRemote.request('session.catalog.query', {
+      kind: 'get',
+      sessionId: 'session-before-restart',
+    });
+    remote = await createRuntimeHostReconnectingConnection({
+      initialConnection: initialRemote,
+      connect: connectRemote,
+      backoff: { minMs: 10, maxMs: 25 },
+    });
+
+    await host.close();
+    await Promise.all([initialRemote.closed, local.closed]);
+    host = undefined;
+    local = undefined;
+
+    const recovered = remote.request(
+      'session.catalog.query',
+      { kind: 'get', sessionId: 'session-before-restart' },
+      20_000,
+    );
+    host = await startExecutionRuntimeHostService({
+      rootPath: root,
+      websocket: { host: '127.0.0.1', port },
+    });
+
+    assert.deepEqual(await recovered, expected);
+    assert.notEqual(remote.hostEpoch, firstHostEpoch);
+  } finally {
+    await Promise.allSettled([remote?.close(), local?.close()]);
+    await host?.close().catch(() => undefined);
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(base, { recursive: true, force: true });
+  }
 });
 
 test('access credentials persist only as hashes and stay revoked after reload', async () => {
@@ -430,6 +571,161 @@ test('access credentials persist only as hashes and stay revoked after reload', 
     assert.equal(
       (await openRuntimeHostAccessAuthority(directory)).authenticate(credential),
       undefined,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('keeps published credential state authoritative when directory sync is uncertain', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-unknown-commit-'));
+  let failNextCommit = false;
+  try {
+    const { consumeAccessCredentialDeliveryFromControlDirectory } = await import(
+      '../control/access-credential-delivery.js'
+    );
+    const authority = await openRuntimeHostAccessAuthority(directory, {
+      writeFile: async (path, file) => {
+        await writeAccessCredentialFile(path, file);
+        if (!failNextCommit) return;
+        failNextCommit = false;
+        throw new RuntimeHostAccessCommitOutcomeUnknownError(new Error('directory sync failed'));
+      },
+    });
+    const issued = await authority.issue({
+      principalKind: 'remote_owner',
+      principalId: 'device-1',
+      operationGrants: ['session.catalog.query'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const credential = await consumeAccessCredentialDeliveryFromControlDirectory(
+      directory,
+      issued.deliveryId,
+      issued.credentialId,
+    );
+    const revoked: string[] = [];
+    authority.subscribeRevocations((credentialId) => revoked.push(credentialId));
+
+    failNextCommit = true;
+    await assert.rejects(
+      authority.revoke({ credentialId: issued.credentialId }),
+      RuntimeHostAccessCommitOutcomeUnknownError,
+    );
+    assert.equal(authority.authenticate(credential), undefined);
+    assert.deepEqual(revoked, [issued.credentialId]);
+
+    await authority.issue({
+      principalKind: 'remote_owner',
+      principalId: 'device-2',
+      operationGrants: ['session.catalog.query'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    assert.equal(authority.authenticate(credential), undefined);
+    assert.equal(
+      (await openRuntimeHostAccessAuthority(directory)).authenticate(credential),
+      undefined,
+    );
+    await authority.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('expired pairing candidates are denied and removed from durable access state', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-expired-pairing-'));
+  const credential = 'maka_rh_expired_pairing';
+  const path = join(directory, 'runtime-host-access.json');
+  try {
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        credentials: [
+          {
+            credentialId: 'expired-pairing',
+            credentialHash: createHash('sha256').update(credential).digest('hex'),
+            principalId: 'expired-client',
+            principalKind: 'remote_owner',
+            status: 'pending',
+            operationGrants: ['host.status', 'access.credential.finalize'],
+            canPublishClientCapabilities: false,
+            canUseHostPaths: false,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            expiresAt: '2026-01-01T00:05:00.000Z',
+          },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const authority = await openRuntimeHostAccessAuthority(directory);
+    assert.equal(authority.authenticate(credential), undefined);
+    await waitForCondition(async () => {
+      const file = JSON.parse(await readFile(path, 'utf8')) as { credentials?: unknown[] };
+      return file.credentials?.length === 0;
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('closed access authority cannot expire credentials owned by its successor', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-close-'));
+  const path = join(directory, 'runtime-host-access.json');
+  const storedCredential = (
+    credentialId: string,
+    credential: string,
+    status: 'pending' | 'active',
+    expiresAt?: string,
+  ) => ({
+    credentialId,
+    credentialHash: createHash('sha256').update(credential).digest('hex'),
+    principalId: 'desktop-client',
+    principalKind: 'remote_owner',
+    status,
+    operationGrants: ['host.status', 'access.credential.finalize'],
+    canPublishClientCapabilities: false,
+    canUseHostPaths: false,
+    createdAt: new Date().toISOString(),
+    ...(expiresAt ? { expiresAt } : {}),
+  });
+  try {
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        credentials: [
+          storedCredential(
+            'pending-credential',
+            'maka_rh_pending',
+            'pending',
+            new Date(Date.now() + 100).toISOString(),
+          ),
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+    const authority = await openRuntimeHostAccessAuthority(directory);
+    await authority.close();
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        credentials: [storedCredential('successor-credential', 'maka_rh_successor', 'active')],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+
+    const file = JSON.parse(await readFile(path, 'utf8')) as {
+      credentials?: Array<{ credentialId?: string }>;
+    };
+    assert.deepEqual(
+      file.credentials?.map((credential) => credential.credentialId),
+      ['successor-credential'],
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -581,4 +877,12 @@ function requireConnection(
 ): RuntimeHostConnection {
   if (result.kind !== 'connected') throw new Error(`Local Client did not connect: ${result.kind}`);
   return result.connection;
+}
+
+async function waitForCondition(condition: () => Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail('condition did not become true');
 }

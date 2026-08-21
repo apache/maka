@@ -19,7 +19,7 @@ const SANDBOX_ERROR_STAGES = [
 ] as const;
 export type SandboxErrorStage = (typeof SANDBOX_ERROR_STAGES)[number];
 
-const SANDBOX_TYPES = ['none', 'macos-seatbelt', 'linux'] as const;
+const SANDBOX_TYPES = ['none', 'macos-seatbelt', 'linux', 'windows'] as const;
 const STABLE_CODE_PATTERN = /^[a-z0-9_]+$/;
 const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9._:-]+$/;
 const MAX_METADATA_VALUE_CHARS = 128;

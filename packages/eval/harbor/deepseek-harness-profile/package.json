@@ -1,0 +1,10 @@
+{
+  "name": "dsh-profile-maka-eval",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": []
+    }
+  }
+}

@@ -128,7 +128,9 @@
 .maka-mcp-primary-fields {
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* The second column holds a full command line or URL; the first is a short
+     slug. Equal halves squeezed the field that actually carries content. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   gap: var(--space-3);
 }
 

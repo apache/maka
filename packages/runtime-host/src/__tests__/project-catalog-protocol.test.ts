@@ -7,6 +7,7 @@ import {
   decodeProjectCatalogQueryResult,
   HOST_OPERATION_SPECS,
   PROJECT_CATALOG_PAGE_MAX_ITEMS,
+  REMOTE_OWNER_OPERATION_GRANTS,
 } from '../protocol/index.js';
 
 const projectPath = process.platform === 'win32' ? 'C:\\workspace' : '/workspace';
@@ -138,6 +139,65 @@ describe('Project catalog protocol', () => {
           operation: 'project.catalog.mutate',
           ok: true,
           result: { kind: 'project', projectId: 'project-1' },
+        }),
+      isProtocolError,
+    );
+  });
+
+  test('remote directory selection carries opaque path segments instead of Host paths', () => {
+    assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('project.catalog.query'), true);
+    assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('project.catalog.mutate'), true);
+    assert.equal(
+      HOST_OPERATION_SPECS['project.catalog.query'].usesHostPaths?.({ kind: 'directory_roots' }),
+      false,
+    );
+    assert.deepEqual(
+      decodeProjectCatalogQueryResult({
+        kind: 'directory_roots',
+        roots: [
+          { id: 'root-a', label: 'Projects' },
+          { id: 'root-b', label: 'Shared data' },
+        ],
+      }),
+      {
+        kind: 'directory_roots',
+        roots: [
+          { id: 'root-a', label: 'Projects' },
+          { id: 'root-b', label: 'Shared data' },
+        ],
+      },
+    );
+    assert.throws(
+      () =>
+        decodeProjectCatalogQueryResult({
+          kind: 'directory_roots',
+          roots: [{ id: 'root-a' }],
+        }),
+      isProtocolError,
+    );
+    assert.equal(
+      HOST_OPERATION_SPECS['project.catalog.mutate'].usesHostPaths?.({
+        kind: 'register_directory',
+        rootId: 'home',
+        segments: ['work'],
+      }),
+      false,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'directory-traversal',
+          operation: 'project.catalog.mutate',
+          input: { kind: 'register_directory', rootId: 'home', segments: ['..'] },
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'directory-separator',
+          operation: 'project.catalog.query',
+          input: { kind: 'directory_list_start', rootId: 'home', segments: ['work/project'] },
         }),
       isProtocolError,
     );

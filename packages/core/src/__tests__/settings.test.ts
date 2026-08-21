@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import { expect } from './test-helpers.js';
-import { normalizeSettings } from '../settings.js';
+import { createDefaultSettings, mergeSettings, normalizeSettings } from '../settings.js';
 
 test('normalizes user-approved subagent presets without widening the catalog', () => {
   const normalized = normalizeSettings({
@@ -65,6 +65,29 @@ describe('custom pet selection settings', () => {
       expect(normalized.personalization.selectedPetId).toBe(null);
     }
   });
+});
+
+test('shell settings default, normalize, and merge through their shared boundary', () => {
+  const defaults = createDefaultSettings();
+  expect(defaults.shell).toEqual({ preference: 'auto', executable: '' });
+
+  expect(
+    normalizeSettings({
+      shell: { preference: 'git_bash', executable: ' C:\\Program Files\\Git\\bin\\bash.exe ' },
+    }).shell,
+  ).toEqual({
+    preference: 'git_bash',
+    executable: 'C:\\Program Files\\Git\\bin\\bash.exe',
+  });
+  expect(normalizeSettings({ shell: { preference: 'fish', executable: 42 } }).shell).toEqual({
+    preference: 'auto',
+    executable: '',
+  });
+  expect(
+    mergeSettings(defaults, {
+      shell: { preference: 'git_bash', executable: 'C:\\Git\\bin\\bash.exe' },
+    }).shell,
+  ).toEqual({ preference: 'git_bash', executable: 'C:\\Git\\bin\\bash.exe' });
 });
 
 test('a chat-default thinking level the app does not recognize drops to no preference', () => {

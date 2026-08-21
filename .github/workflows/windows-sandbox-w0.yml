@@ -1,0 +1,94 @@
+name: Windows sandbox W0 evidence
+
+# The paths below are a pre-filter, not this lane's real input. The real input
+# is the import closure of the sandbox and filesystem-worker sources, which
+# reaches well past any list worth hand-maintaining. So they name the
+# directories that own the sandbox, which keeps a change there blocking before
+# merge, and the nightly run is what covers transitive edits once they land.
+on:
+  pull_request:
+    paths:
+      - 'experiments/windows-sandbox/**'
+      - 'packages/runtime/src/sandbox/**'
+      - 'packages/runtime/src/filesystem-worker/**'
+      - 'packages/runtime/src/__tests__/filesystem-worker-windows-smoke.test.ts'
+      - '.github/workflows/windows-sandbox-w0.yml'
+  schedule:
+    # Offset from windows-baseline so the two Windows lanes do not overlap.
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Pull request pushes supersede each other. Scheduled and manual runs each get
+# a unique group, so neither can discard the other while pending or running.
+concurrency:
+  group: windows-sandbox-w0-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  protocol:
+    name: windows_sandbox_w0_protocol
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Record atomic launcher capability
+        shell: pwsh
+        run: ./experiments/windows-sandbox/atomic-launch-capability.ps1
+
+      - name: Build process-containment launcher
+        working-directory: experiments/windows-sandbox/launcher
+        run: cargo build --locked
+      # Rust is the shipped protocol authority. Its tests consume the exact
+      # manifest structs used by the broker instead of a parallel MJS parser.
+      - name: Verify launcher protocol and broker authorization
+        working-directory: experiments/windows-sandbox/launcher
+        run: cargo test --locked
+      - name: Verify secure broker pipe
+        shell: pwsh
+        run: ./experiments/windows-sandbox/broker-pipe-smoke.ps1
+      - name: Verify broker client handoff
+        shell: pwsh
+        run: ./experiments/windows-sandbox/broker-client-smoke.ps1
+      - name: Verify one-shot local broker lifecycle
+        shell: pwsh
+        run: ./experiments/windows-sandbox/broker-local-smoke.ps1
+      - name: Verify AppContainer identity candidate
+        shell: pwsh
+        run: ./experiments/windows-sandbox/appcontainer-smoke.ps1
+      - name: Verify production-identity readiness probe
+        shell: pwsh
+        run: ./experiments/windows-sandbox/readiness-probe-smoke.ps1
+      - name: Verify filesystem-worker stdio relay
+        shell: pwsh
+        run: ./experiments/windows-sandbox/stdio-relay-smoke.ps1
+      - name: Verify ACL grant recovery
+        shell: pwsh
+        run: ./experiments/windows-sandbox/acl-recovery-smoke.ps1
+      - name: Probe atomic Job launch candidate
+        shell: pwsh
+        run: ./experiments/windows-sandbox/atomic-launch-smoke.ps1
+      - name: Probe unprivileged restricted-token candidate
+        shell: pwsh
+        run: ./experiments/windows-sandbox/launcher-smoke.ps1
+
+      - name: Install workspace dependencies
+        run: npm ci
+      # The runtime's tsc build resolves types from its workspace dependencies'
+      # dist output, so each dependency builds first in topological order.
+      - name: Build core workspace
+        run: npm run build --workspace @maka/core
+      - name: Build storage workspace
+        run: npm run build --workspace @maka/storage
+      - name: Build runtime workspace
+        run: npm run build --workspace @maka/runtime
+      - name: Run real filesystem-worker operations through the broker
+        run: node --test packages/runtime/dist/__tests__/filesystem-worker-windows-smoke.test.js

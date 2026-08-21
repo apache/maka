@@ -17,6 +17,7 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { useActionGuard } from './use-action-guard';
 import { getDataSettingsCopy, type DataSettingsCopy } from '../locales/settings-data-copy';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 const CONFIG_CATEGORY_IDS: readonly ConfigCategory[] = ['connections', 'settings', 'memory', 'credentials'];
 
@@ -35,7 +36,11 @@ function summarizeImportResult(result: ConfigImportResult, copy: DataSettingsCop
   return parts.join(' · ') || copy.importSummary.empty;
 }
 
-export function DataSettingsPage() {
+export function DataSettingsPage(props: {
+  runtimeHostStatus: 'loading' | 'ready' | 'unavailable' | 'error';
+  onRetryRuntimeHost(): Promise<void>;
+}) {
+  const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getDataSettingsCopy(locale);
   const sharedCopy = getSettingsSharedCopy(locale);
@@ -50,10 +55,16 @@ export function DataSettingsPage() {
   );
   const [importStrategy, setImportStrategy] = useState<'skip' | 'overwrite'>('skip');
   const [configBusy, setConfigBusy] = useState<null | 'export' | 'import'>(null);
+  const runtimeHostAvailable = host !== undefined && props.runtimeHostStatus === 'ready';
 
   useEffect(() => {
+    if (!host) {
+      setInfo(null);
+      setInfoError(null);
+      return;
+    }
     let cancelled = false;
-    void window.maka.app.info().then((next) => {
+    void window.maka.app.info(host).then((next) => {
       if (!cancelled) {
         setInfo(next);
         setInfoError(null);
@@ -68,7 +79,7 @@ export function DataSettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [locale, toast]);
+  }, [host, locale, toast]);
 
   async function runDataAction(action: string, run: () => Promise<void>) {
     if (!dataActionGuard.begin(action)) return;
@@ -90,7 +101,7 @@ export function DataSettingsPage() {
     if (!info) return;
     await runDataAction('workspace:open', async () => {
       try {
-        const result = await window.maka.app.openPath('workspace');
+        const result = await window.maka.app.openPath('workspace', undefined, host);
         if (!dataPageMountedRef.current) return;
         if (!result.ok) {
           toast.error(
@@ -141,7 +152,7 @@ export function DataSettingsPage() {
   }
 
   async function exportConfig() {
-    if (configBusy) return;
+    if (configBusy || !host) return;
     const categories = [...selectedCategories];
     if (categories.length === 0) {
       toast.error(copy.selectCategory);
@@ -149,7 +160,7 @@ export function DataSettingsPage() {
     }
     setConfigBusy('export');
     try {
-      const res = await window.maka.config.export({ categories });
+      const res = await window.maka.config.export({ categories }, host);
       if (res.ok) {
         toast.success(copy.exported, copy.exportedDetail(res.includedData));
       } else if (res.reason !== 'canceled') {
@@ -163,10 +174,10 @@ export function DataSettingsPage() {
   }
 
   async function importConfig() {
-    if (configBusy) return;
+    if (configBusy || !host) return;
     setConfigBusy('import');
     try {
-      const res = await window.maka.config.import({ strategy: importStrategy });
+      const res = await window.maka.config.import({ strategy: importStrategy }, host);
       if (res.ok) {
         toast.success(copy.imported, summarizeImportResult(res.result, copy));
       } else if (res.reason !== 'canceled') {
@@ -184,6 +195,22 @@ export function DataSettingsPage() {
 
   return (
     <SettingsPage>
+      {!runtimeHostAvailable ? (
+        <Banner
+          status={props.runtimeHostStatus === 'error' ? 'error' : 'warning'}
+          title={props.runtimeHostStatus === 'loading'
+            ? sharedCopy.loading
+            : sharedCopy.runtimeHostUnavailable}
+          endContent={props.runtimeHostStatus === 'error' ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              label={sharedCopy.retry}
+              onClick={() => void props.onRetryRuntimeHost()}
+            />
+          ) : undefined}
+        />
+      ) : null}
       <SettingsSection
         title={sharedCopy.groups.dataLocation}
         description={sharedCopy.groups.dataLocationHelp}
@@ -251,7 +278,7 @@ export function DataSettingsPage() {
           other group now; the Switch's own label/description layout IS the
           row, so each one is a SettingsField (padded, divided) rather than
           a re-labeled SettingsRow. */}
-      <SettingsSection
+      {runtimeHostAvailable ? <SettingsSection
         title={copy.configTitle}
         description={copy.configHelp}
       >
@@ -306,7 +333,7 @@ export function DataSettingsPage() {
               secondary. Two filled buttons recommended neither. */}
           <Button variant="secondary" isDisabled={configBusy !== null} clickAction={() => importConfig()} label={copy.importConfig} />
         </SettingsActions>
-      </SettingsSection>
+      </SettingsSection> : null}
     </SettingsPage>
   );
 }

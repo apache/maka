@@ -2,11 +2,8 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
-import {
-  isPathInside,
-  realpathAllowMissing,
-  resolveCanonicalDirectoryEntryTarget,
-} from '../path-containment.js';
+import { isPathInside } from '../path-containment.js';
+import { sandboxPathApi } from './sandbox-paths.js';
 import { sandboxBoundaryExpansionAllowsPath } from '@maka/core/sandbox-boundary';
 import {
   ApplyPatchRejectedError,
@@ -29,6 +26,11 @@ import {
 } from './protocol.js';
 import { isLikelySandboxDenial } from '../sandbox/detect.js';
 
+// Canonicalisation must match the sandbox the worker runs in: realpath-based
+// on POSIX, lexical + reparse-rejecting inside the Windows AppContainer where
+// realpath is denied. See sandbox-paths.ts.
+const { realpath, realpathAllowMissing, resolveCanonicalDirectoryEntryTarget } = sandboxPathApi();
+
 const DEFAULT_GLOB_LIMIT = 200;
 const MAX_GREP_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_GREP_STDERR_BYTES = 16 * 1024;
@@ -36,6 +38,8 @@ const MAX_GREP_STDERR_BYTES = 16 * 1024;
 export interface FilesystemWorkerOperationDependencies {
   grepExecutable?: string;
   runGrep?: FilesystemWorkerGrepRunner;
+  /** Set when the worker runs inside the Windows AppContainer sandbox. */
+  windowsSandboxed?: boolean;
 }
 
 export interface FilesystemWorkerGrepRunInput {
@@ -280,6 +284,21 @@ export async function executeFilesystemOperation(
         'read',
         operationBoundary,
       );
+      // The Windows AppContainer cannot create grandchild processes (the
+      // desktop object is not granted to the container SID), so ripgrep
+      // cannot run there — and no in-process substitute preserves Grep's
+      // advertised regex/ripgrep contract (pattern dialect, gitignore
+      // filtering, glob and truncation behavior). The Windows sandbox
+      // preview therefore does not expose Grep: failing closed keeps the
+      // public contract honest until a contract-preserving search engine
+      // exists. Glob and Read remain available; an unsandboxed Windows
+      // worker never carries this marker and keeps full ripgrep behavior.
+      if (dependencies.windowsSandboxed) {
+        throw operationError(
+          'grep_unavailable',
+          'Grep is not available inside the Windows sandbox preview; use Glob and Read instead.',
+        );
+      }
       if (!dependencies.grepExecutable)
         throw operationError('grep_unavailable', 'Grep is unavailable in this runtime.');
       const args = ['-n', '--no-heading', `--max-count=${operation.maxCountPerFile}`];
@@ -383,7 +402,7 @@ async function resolveWritableAllowed(
 ): Promise<string> {
   const { root, candidate } = await resolveCandidate(cwd, inputPath, label, 'write', permission);
   try {
-    const target = await fs.realpath(candidate);
+    const target = await realpath(candidate);
     assertAllowed(root, target, label, 'write', permission);
     return target;
   } catch (error) {
@@ -395,7 +414,7 @@ async function resolveWritableAllowed(
   // so the worker enforces its own boundary instead of trusting the caller to
   // have canonicalised the path for it.
   const followed = await realpathAllowMissing(candidate);
-  const parent = await fs.realpath(dirname(followed));
+  const parent = await realpath(dirname(followed));
   assertAllowed(root, followed, label, 'write', permission);
   if (!isPathInside(root, parent) && !exactWriteCoversParent(permission, followed, parent)) {
     throw operationError(
@@ -425,7 +444,7 @@ async function resolveExistingAllowed(
   permission: FilesystemWorkerRequest['operationBoundary'],
 ): Promise<string> {
   const { root, candidate } = await resolveCandidate(cwd, inputPath, label, access, permission);
-  const target = await fs.realpath(candidate);
+  const target = await realpath(candidate);
   assertAllowed(root, target, label, access, permission);
   return target;
 }
@@ -437,7 +456,7 @@ async function resolveCandidate(
   access: 'read' | 'write',
   permission: FilesystemWorkerRequest['operationBoundary'],
 ): Promise<{ root: string; candidate: string }> {
-  const root = await fs.realpath(cwd);
+  const root = await realpath(cwd);
   const candidate = resolve(root, inputPath);
   if (
     !isPathInside(root, candidate) &&

@@ -23,8 +23,9 @@ describe('sandbox diagnostics', () => {
     });
     assert.deepEqual(unsupportedSnapshot.capabilities.command.failure, {
       stage: 'selection',
-      reason: 'unsupported_platform',
+      reason: 'backend_not_available',
     });
+    assert.equal(unsupportedSnapshot.capabilities.command.backend, 'windows');
 
     const noWorker = createSandboxDiagnosticsProvider({
       platform: 'darwin',

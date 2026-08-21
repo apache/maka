@@ -16,6 +16,15 @@ reviews:
       instructions: |
         Review the diff adversarially against the problem it claims to solve.
         Determine whether it is the smallest coherent solution at the existing source of truth.
+        Treat the reported problem and the proposed remedy as separate decisions.
+        Report only concrete, reproducible risks, and give each finding one disposition:
+        - fix-now: the current PR violates its stated behavior or an existing invariant;
+        - follow-up: the risk is real but pre-existing or outside the PR's goal;
+        - optional: the change would be an improvement but is not required for correctness or coherence.
+
+        Choose remedies in this order: delete an unnecessary path, consolidate duplicated authority, reuse the closest existing seam, make the smallest local correction, then add new behavior only when the earlier options cannot satisfy the invariant.
+        For an additive remedy, explain why deletion, consolidation, or reuse is insufficient and identify any new state, branch, configuration, public surface, authority, or test-maintenance burden it introduces.
+        Carry resolved and dismissed decisions into incremental reviews; reopen them only when new code or concrete evidence changes the risk.
         Flag concrete cases where code can be deleted or simplified.
         Flag tests that duplicate existing coverage, assert implementation details, or do not protect observable behavior.
         Do not suggest speculative refactors or alternatives without a concrete correctness or maintenance benefit.
@@ -30,12 +39,17 @@ reviews:
     4. What code or tests, if any, can be deleted or simplified without weakening behavior or regression coverage.
     5. The concrete risks and validation performed.
 
+    Include a section named "Complexity delta":
+    - State what authorities, states, branches, configuration, public surface, and test-maintenance burden the PR adds and removes.
+    - Conclude whether total maintenance complexity decreases, stays justified, or increases without enough evidence.
+    - Treat optional and follow-up findings as non-blocking; they are not implementation requests for the current PR.
+
     End with a section named "Review-relevant risks":
     - Identify, with concrete evidence from the current diff, any apparent effect on user-visible behavior, public contracts, security, licensing, releases, or governance.
     - For each apparent effect, state that material changes in that area require independent human review under the repository policy.
     - If none is identified, state only that no protected-area effect was identified in the current diff.
     - Treat the final status of required checks as unverified unless direct evidence is available.
-    - Do not classify the PR as a fast-path candidate or present the assessment as authorization. State that the person performing the merge reviews the final diff and a maintainer makes the final determination.
+    - Do not present the assessment as authorization to merge. State that the person performing the merge reviews the final diff and a maintainer makes the final determination.
 
   pre_merge_checks:
     docstrings:
@@ -64,4 +78,5 @@ reviews:
 
   auto_review:
     enabled: true
+    auto_incremental_review: true
     drafts: false

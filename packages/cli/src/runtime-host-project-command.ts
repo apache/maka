@@ -51,7 +51,6 @@ function defaultDeps(): RuntimeHostProjectCommandDeps {
 async function connectLocalOwner(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectExistingRuntimeHost({
     rootPath,
-    surface: 'run',
     protocol: PROTOCOL,
   });
   if (result.kind !== 'connected') {

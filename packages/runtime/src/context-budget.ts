@@ -109,7 +109,6 @@ import {
   compactionDecisionDiagnosticPatch,
   historyCompactBlockToCompactionBoundary,
 } from './compaction-boundary.js';
-import type { ActiveFullCompactPolicy } from './active-full-compact.js';
 import type { SemanticCompactPolicy } from './semantic-compact.js';
 import {
   historyCompactCheckpointToRuntimeEvent,
@@ -139,11 +138,6 @@ export interface ContextBudgetPolicy {
    * AI SDK step. Defaults off and does not mutate persisted session messages.
    */
   activeToolResultPrune?: ActiveToolResultPrunePolicy;
-  /**
-   * Optional active-loop full compact replacement. When enabled, request projection can
-   * replace a validated older provider-message span with a source-bearing block.
-   */
-  activeFullCompact?: ActiveFullCompactPolicy;
   /**
    * Optional current-turn LLM semantic compact replacement. Runs after active
    * tool-result pruning and before the next provider step.

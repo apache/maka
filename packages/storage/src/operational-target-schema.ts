@@ -61,6 +61,12 @@ function buildOperationalTargetSchema(): ReadonlyMap<string, string> {
 }
 
 function readSchema(database: DatabaseSync): ReadonlyMap<string, string> {
+  return new Map(readSchemaObjects(database).map((object) => [object.key, object.signature]));
+}
+
+function readSchemaObjects(
+  database: DatabaseSync,
+): Array<{ key: string; tableName: string; signature: string }> {
   const rows = database
     .prepare(`
       SELECT type, name, tbl_name, sql
@@ -69,12 +75,109 @@ function readSchema(database: DatabaseSync): ReadonlyMap<string, string> {
       ORDER BY type, name
     `)
     .all() as Array<{ type: string; name: string; tbl_name: string; sql: string }>;
-  return new Map(
-    rows.map(({ type, name, tbl_name, sql }) => [
-      `${type}:${name}`,
-      normalizeReleasedSchemaException(name, `${type}:${tbl_name}:${normalizeSql(sql)}`),
-    ]),
-  );
+  return rows.map(({ type, name, tbl_name, sql }) => ({
+    key: `${type}:${name}`,
+    tableName: tbl_name,
+    signature: normalizeReleasedSchemaException(name, `${type}:${tbl_name}:${normalizeSql(sql)}`),
+  }));
+}
+
+/**
+ * Released DDL for the pre-authority migration metadata tables, verbatim from
+ * commit 1caea265c^ (before SQLite became the sole operational authority). These
+ * strings are only ever read back through {@link readSchemaObjects} in a throwaway
+ * database, so their exact whitespace/case is irrelevant — the normalized
+ * `type:tbl_name:sql` signature (including CHECK/FK constraints and any attached
+ * index/trigger) is what the retirement gate recognizes.
+ */
+const RELEASED_LEGACY_RETIREMENT_DDL: ReadonlyMap<string, string> = new Map([
+  [
+    'cutover_journal',
+    `CREATE TABLE IF NOT EXISTS cutover_journal (
+      store_name TEXT PRIMARY KEY,
+      source_path TEXT NOT NULL,
+      source_fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('started', 'completed')),
+      started_at INTEGER NOT NULL CHECK (started_at >= 0),
+      completed_at INTEGER,
+      validation_json TEXT
+    )`,
+  ],
+  [
+    'runtime_import_sources',
+    `CREATE TABLE runtime_import_sources (
+      source_path TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      imported_at INTEGER NOT NULL
+    )`,
+  ],
+  [
+    'session_metadata_import_sources',
+    `CREATE TABLE session_metadata_import_sources (
+      source_path TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      imported_at INTEGER NOT NULL,
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    )`,
+  ],
+]);
+
+let cachedLegacyRetirementSchema: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
+
+function buildLegacyRetirementSchema(): ReadonlyMap<string, ReadonlyMap<string, string>> {
+  const database = new DatabaseSync(':memory:');
+  try {
+    database.exec('PRAGMA foreign_keys = OFF');
+    for (const ddl of RELEASED_LEGACY_RETIREMENT_DDL.values()) database.exec(ddl);
+    const byTable = new Map<string, Map<string, string>>();
+    for (const object of readSchemaObjects(database)) {
+      const bucket = byTable.get(object.tableName) ?? new Map<string, string>();
+      bucket.set(object.key, object.signature);
+      byTable.set(object.tableName, bucket);
+    }
+    return byTable;
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Fail closed unless every schema object attached to a legacy metadata table
+ * (`tableName`) matches the released layout down to CHECK/FK constraints and has
+ * no extra index/trigger grafted on. Unlike a column-only comparison this rejects
+ * a table that shares the released column names/types but carries altered
+ * constraints or additional objects — the destructive retirement below must only
+ * DROP shapes it can positively recognize.
+ */
+export function assertReleasedLegacyRetirementShape(
+  database: DatabaseSync,
+  tableName: string,
+): void {
+  const canonical = (cachedLegacyRetirementSchema ??= buildLegacyRetirementSchema()).get(tableName);
+  if (canonical === undefined) {
+    throw new Error(`No released legacy retirement signature is registered for ${tableName}`);
+  }
+  const observed = new Map<string, string>();
+  for (const object of readSchemaObjects(database)) {
+    if (object.tableName === tableName) observed.set(object.key, object.signature);
+  }
+  for (const [key, signature] of canonical) {
+    const actual = observed.get(key);
+    if (actual === undefined) {
+      throw new Error(`Legacy operational metadata object ${key} is missing its released shape`);
+    }
+    if (actual !== signature) {
+      throw new Error(`Legacy operational metadata object ${key} has an unfamiliar released shape`);
+    }
+  }
+  for (const key of observed.keys()) {
+    if (!canonical.has(key)) {
+      throw new Error(
+        `Legacy operational metadata table ${tableName} carries an unexpected object ${key}`,
+      );
+    }
+  }
 }
 
 function normalizeReleasedSchemaException(name: string, signature: string): string {

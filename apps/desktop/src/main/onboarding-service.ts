@@ -10,9 +10,8 @@
  *      and OAuth-subscription connections (Claude/Codex), and MUST be
  *      read-only — it must never refresh an OAuth token or otherwise
  *      mutate credential state just because onboarding status was
- *      read. See `hasConnectionSecret` in main.ts for the production
- *      wiring and why it deliberately does NOT reuse the send-path's
- *      refreshing `resolveConnectionSecret`.
+ *      read. Production wiring queries the Runtime Host credential
+ *      projection without resolving or refreshing credential material.
  *   3. SessionStore.list() (the runtime layer's listSessions handles
  *      this for us; we pass it in as a callback)
  *   4. SettingsStore.get() for milestones (already sanitized by
@@ -68,7 +67,6 @@ export interface OnboardingServiceDeps {
     id: OnboardingMilestoneId,
     status: 'completed' | 'skipped',
   ): Promise<OnboardingMilestone[]>;
-  clearMilestone(id: OnboardingMilestoneId): Promise<OnboardingMilestone[]>;
   /**
    * Whether `connection` has a usable credential — an API key OR (for
    * OAuth-subscription providers) a stored OAuth token. MUST be
@@ -84,7 +82,6 @@ export interface OnboardingService {
     id: unknown,
     status: unknown,
   ): Promise<OnboardingSnapshot>;
-  clearMilestone(id: unknown): Promise<OnboardingSnapshot>;
 }
 
 /**
@@ -149,36 +146,6 @@ export function createOnboardingService(deps: OnboardingServiceDeps): Onboarding
       // the user finished `first_chat_sent` while in `ready_empty`
       // → next derive should reflect new history). Re-using the
       // already-fetched milestones avoids a settings round-trip.
-      const [connections, defaultSlug, sessions] = await Promise.all([
-        deps.listConnections(),
-        deps.getDefaultSlug(),
-        deps.listSessions(),
-      ]);
-      const secretEntries = await Promise.all(
-        connections.map(async (connection) => {
-          try {
-            return [connection.slug, await deps.hasCredential(connection)] as const;
-          } catch {
-            return [connection.slug, false] as const;
-          }
-        }),
-      );
-      const secrets: Record<string, boolean> = Object.fromEntries(secretEntries);
-      const logicalSessions = collapseSessionRevisions(sessions);
-      const state = deriveOnboardingState({
-        connections,
-        defaultSlug: defaultSlug ?? undefined,
-        sessions: logicalSessions,
-        secrets,
-      });
-      return buildSnapshot(state, milestones, sessions, connections, defaultSlug, secrets);
-    },
-
-    async clearMilestone(id: unknown): Promise<OnboardingSnapshot> {
-      if (typeof id !== 'string' || !isOnboardingMilestoneId(id)) {
-        throw new Error('INVALID_MILESTONE_ID');
-      }
-      const milestones = await deps.clearMilestone(id);
       const [connections, defaultSlug, sessions] = await Promise.all([
         deps.listConnections(),
         deps.getDefaultSlug(),

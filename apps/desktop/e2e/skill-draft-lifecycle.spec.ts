@@ -8,11 +8,17 @@ import { expect, test, COMPOSER_INPUT } from './fixtures';
  * here — begin edit, prepare the branch, fail the send, cancel back — moves it
  * by moving the text. The point of these journeys is that nothing has to carry
  * the Skill separately for that to hold.
+ *
+ * The Skill itself comes from the real catalog (the invocable-skills fixture
+ * plus the Skills module page), not a Desktop-only starter IPC.
  */
-async function createStarterSkill(page: Page): Promise<void> {
-  const result = await page.evaluate(() => window.maka.skills.createStarter());
-  expect(result.ok).toBe(true);
-  await page.reload();
+async function openInstalledWorkspaceSkill(page: Page): Promise<void> {
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await sidebar.getByRole('button', { name: '扩展' }).click();
+  await expect(page.locator('[data-module="skills"]')).toBeVisible();
+  await expect(page.getByText('Workspace Only', { exact: true })).toBeVisible();
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
   await expect(page.locator(COMPOSER_INPUT)).toBeVisible();
 }
 
@@ -41,9 +47,9 @@ async function beginRevision(page: Page): Promise<void> {
   await expect(page.locator('[data-revision-notice="true"]')).toBeVisible();
 }
 
-async function failStarterSkillRevision(page: Page): Promise<void> {
+async function failWorkspaceSkillRevision(page: Page): Promise<void> {
   const disabled = await page.evaluate(() =>
-    window.maka.skills.setEnabled('starter-skill', false),
+    window.maka.skills.setEnabled('workspace-only', false),
   );
   expect(disabled.ok).toBe(true);
 
@@ -55,20 +61,20 @@ async function failStarterSkillRevision(page: Page): Promise<void> {
   // composer draws chips from. A chip here would promise a Skill that no longer
   // resolves — the text is the honest rendering, and re-enabling it below sends.
   await expect(composer).toContainText('edited with skill');
-  await expect(composer).toContainText('/skill:starter-skill');
+  await expect(composer).toContainText('/skill:workspace-only');
 }
 
 test('a successful revision retry clears both child and source drafts', async ({
-  window: page,
+  invocableSkillsWindow: page,
 }) => {
-  await createStarterSkill(page);
+  await openInstalledWorkspaceSkill(page);
   await seedEditableTurn(page);
   await beginRevision(page);
-  await composeWithSkill(page, 'edited with skill', /示例技能/);
-  await failStarterSkillRevision(page);
+  await composeWithSkill(page, 'edited with skill', /Workspace Only/);
+  await failWorkspaceSkillRevision(page);
 
   const enabled = await page.evaluate(() =>
-    window.maka.skills.setEnabled('starter-skill', true),
+    window.maka.skills.setEnabled('workspace-only', true),
   );
   expect(enabled.ok).toBe(true);
   await page.locator(COMPOSER_INPUT).press('Enter');
@@ -85,14 +91,14 @@ test('a successful revision retry clears both child and source drafts', async ({
 test('cancelling a failed revision restores the complete pre-edit draft', async ({
   invocableSkillsWindow: page,
 }) => {
-  await createStarterSkill(page);
+  await openInstalledWorkspaceSkill(page);
   await seedEditableTurn(page);
 
   const composer = page.locator(COMPOSER_INPUT);
-  await composeWithSkill(page, 'previous unsent draft', /Workspace Only/);
+  await composeWithSkill(page, 'previous unsent draft', /Project Only/);
   await beginRevision(page);
-  await composeWithSkill(page, 'edited with skill', /示例技能/);
-  await failStarterSkillRevision(page);
+  await composeWithSkill(page, 'edited with skill', /Workspace Only/);
+  await failWorkspaceSkillRevision(page);
 
   await page.getByRole('button', { name: '取消' }).click();
 
@@ -102,6 +108,6 @@ test('cancelling a failed revision restores the complete pre-edit draft', async 
   // redraws it from that text, not because anything carried it separately.
   await expect(composer).toContainText('previous unsent draft');
   await expect(
-    page.locator('[data-astryx-token-value="/skill:workspace-only"]'),
-  ).toContainText('Workspace Only');
+    page.locator('[data-astryx-token-value="/skill:project-only"]'),
+  ).toContainText('Project Only');
 });

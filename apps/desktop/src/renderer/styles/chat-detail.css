@@ -35,14 +35,12 @@
   min-height: 0;
   overflow: hidden;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  /* Plate, on the same terms as the conversation beside it: same surface, same
-     corner, and its own clearance so the tabs start below the chrome strip.
-     Reading the clearance from the frame rather than restating it is what keeps
-     the two plates' top edges on one line. */
+  grid-template-rows: var(--maka-plate-titlebar-clearance) minmax(0, 1fr);
+  /* Plate, on the same terms as the conversation beside it: same surface and
+     same corner. The right workbar's tab toolbar owns the shared titlebar band
+     instead of starting below it, so tabs and the panel toggle form one row. */
   background: var(--agents-content-area-bg);
   border-radius: var(--radius-modal);
-  padding-top: var(--maka-plate-titlebar-clearance);
   box-sizing: border-box;
 }
 
@@ -61,7 +59,7 @@
   min-height: 180px;
   max-height: 520px;
   margin-top: var(--agents-content-area-gap);
-  padding-top: 0;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .maka-session-workbar[data-collapsed] {
@@ -91,7 +89,7 @@
   min-width: 320px;
   max-width: 600px;
   margin-left: var(--agents-content-area-gap);
-  padding-top: calc(var(--maka-plate-titlebar-clearance) + var(--size-element-sm));
+  padding-top: var(--maka-plate-titlebar-clearance);
 }
 
 .maka-session-workbar-panel[data-overlay][data-placement="bottom"] {
@@ -107,12 +105,35 @@
 .maka-session-workbar-toolbar {
   position: relative;
   z-index: 2;
+  display: flex;
+  align-items: center;
   min-width: 0;
+  box-sizing: border-box;
 }
 
-.maka-session-workbar-toolbar [role="toolbar"] > div {
-  width: 100%;
-  min-width: 0;
+.maka-session-workbar[data-placement="right"] > .maka-session-workbar-toolbar {
+  /* The window titlebar is a transparent drag overlay at z-titlebar. This
+     panel-local toolbar intentionally occupies the same band, so it must sit
+     above that hit-test surface while its empty space remains draggable. */
+  z-index: calc(var(--z-titlebar) + 1);
+  height: var(--maka-plate-titlebar-clearance);
+  padding-inline: var(--space-2)
+    calc(var(--space-6) + var(--maka-titlebar-overlay-right-width));
+  -webkit-app-region: drag;
+}
+
+.maka-session-workbar[data-placement="right"]
+  > .maka-session-workbar-toolbar
+  :is(button, [role="button"], [role="tab"]) {
+  -webkit-app-region: no-drag;
+}
+
+.maka-session-workbar[data-placement="bottom"] > .maka-session-workbar-toolbar {
+  padding: var(--space-2) var(--space-4);
+}
+
+.maka-session-workbar > .maka-lazy-fallback {
+  grid-row: 2;
 }
 
 .maka-workbar-tab-strip {
@@ -247,6 +268,11 @@
   margin-left: var(--space-1);
 }
 
+.maka-workbar-panel-toggle {
+  flex: 0 0 auto;
+  margin-left: var(--space-1);
+}
+
 .maka-session-workbar-panel {
   min-height: 0;
   overflow: hidden;
@@ -272,8 +298,16 @@
   padding: var(--space-5);
 }
 
+.maka-workbar-launcher-frame {
+  width: 100%;
+  max-width: 360px;
+  min-width: 0;
+}
+
 .maka-workbar-launcher-list {
-  width: min(100%, 360px);
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 /* Session trace (#1625): a read-only causal timeline in the workbar.
@@ -524,6 +558,19 @@
 .maka-inspector-step-detail {
   color: var(--muted-foreground);
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.maka-inspector-pricing-key {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--warning-text);
+}
+
+.maka-inspector-pricing-key code {
   overflow-wrap: anywhere;
 }
 
@@ -883,12 +930,11 @@
   border-bottom: var(--border-width-hairline) solid var(--border);
 }
 
-.maka-browser-toolbar-start {
-  display: flex;
-  min-width: 0;
+/* Astryx sizes its toolbar slots to content; only the product knows the address
+   field, not the nav buttons, should eat the free width. */
+.maka-browser-toolbar div:has(> .maka-browser-address-field) {
   flex: 1 1 auto;
-  align-items: center;
-  gap: var(--space-1);
+  min-width: 0;
 }
 
 .maka-browser-address-field {
@@ -897,20 +943,9 @@
 }
 
 .maka-browser-strip {
-  position: relative;
   flex: 1 1 auto;
   min-height: 0;
-}
-
-.maka-browser-empty {
-  position: absolute;
-  inset: 0;
-  padding-block: 32px;
-  color: var(--muted-foreground);
-}
-
-@media (min-width: 768px) {
-  .maka-browser-empty { padding-block: 39px; }
+  display: grid;
 }
 
 .maka-artifact-pane {

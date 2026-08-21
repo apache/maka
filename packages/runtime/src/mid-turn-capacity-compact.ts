@@ -4,6 +4,7 @@ import {
   HistoryCompactSummarizerError,
   type HistoryCompactSummarizerFailureReason,
 } from './history-compact-error.js';
+import { findCheckpointSummaryDefect } from './history-compact-summary-validation.js';
 import {
   buildHistoryCompactCheckpoint,
   historyCompactCheckpointToRuntimeEvent,
@@ -339,6 +340,16 @@ export async function planMidTurnCapacityCompaction(
   }
   if (!compacted) {
     return { decision: 'fail_open', reason: 'summarizer_failed' };
+  }
+  // The write gate enforces the invariant regardless of which summarizer
+  // produced the text (#3029): a malformed summary must not replace folded
+  // history. The default summarizer already threw with the same reasons; any
+  // other producer is validated here.
+  if (typeof compacted === 'string') {
+    const defect = findCheckpointSummaryDefect(compacted, { coveredRuntimeEvents, charsPerToken });
+    if (defect) {
+      return { decision: 'fail_open', reason: 'summarizer_failed', diagnosticReason: defect };
+    }
   }
 
   const checkpoint = buildHistoryCompactCheckpoint({

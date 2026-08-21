@@ -10,6 +10,7 @@ import {
   MAKA_SUBJECT_STDERR_PATH,
   MAKA_SUBJECT_STDOUT_PATH,
 } from './maka-artifacts.js';
+import { deepSeekCostUsd } from './provider-metering.js';
 import type { NormalizedUsage } from './result.js';
 import type { SubjectAdapter, SubjectExecutionContext } from './runner.js';
 
@@ -65,13 +66,11 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
         const settled = projection?.kind === 'settled' ? projection : undefined;
         return {
           usage: settled?.usage ?? null,
-          costUsd: settled
-            ? (settled.costUsd ?? estimateDeepSeekCost(settled.usage, config.model))
-            : null,
+          costUsd: settled ? estimateDeepSeekCost(settled.usage, config.model) : null,
           durationMs: Date.now() - startedAt,
           status: 'failed' as const,
           failureReason: 'Maka subject exceeded the framework timeout',
-          artifacts: makaArtifacts(executionId, process),
+          artifacts: makaArtifacts(executionId, process, settled?.costUsd),
         };
       }
       if (process.stdout.length === 0) {
@@ -110,15 +109,21 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
         failureReason: string | null,
       ) => ({
         usage: projection.usage,
-        costUsd: projection.costUsd ?? estimateDeepSeekCost(projection.usage, config.model),
+        // Eval prices what Eval compares. The subject reports a cost of its
+        // own, from its own table, and taking it here would mean one arm
+        // billed at the runtime's rates and the others at this package's --
+        // a difference in the reported figure that no agent behaviour caused.
+        // It is kept as evidence below rather than used as the authority.
+        costUsd: estimateDeepSeekCost(projection.usage, config.model),
         durationMs: Date.now() - startedAt,
         status,
         failureReason,
-        artifacts: makaArtifacts(executionId, process),
+        artifacts: makaArtifacts(executionId, process, projection.costUsd),
       });
-      if (process.exitCode !== 0) {
-        return result('indeterminate', 'Maka execution shim did not settle cleanly');
-      }
+      // The shim's exit code projects this same projection's status for the
+      // relay's benefit, so reading it here would only ask the same question
+      // twice and get a coarser answer. A shim that died without settling
+      // leaves no decodable projection, and the branches above catch that.
       if (projection.status === 'cancelled') {
         return result('indeterminate', 'Maka subject cancelled');
       }
@@ -209,8 +214,16 @@ function subjectFailure(
 function makaArtifacts(
   executionId: string | undefined,
   process?: Awaited<ReturnType<SubjectExecutionContext['execute']>>,
+  // What the subject billed itself, when it said. Recording it is what makes a
+  // disagreement with Eval's own figure visible instead of silent -- the two
+  // are computed from the same usage, so they should differ only when a price
+  // table has drifted.
+  subjectReportedCostUsd?: number | null,
 ): JsonObject[] {
   return [
+    ...(subjectReportedCostUsd === undefined || subjectReportedCostUsd === null
+      ? []
+      : [{ kind: 'subject-reported-cost', costUsd: subjectReportedCostUsd }]),
     {
       kind: 'maka-runtime-state',
       path: MAKA_RUNTIME_ARTIFACT_PATH,
@@ -301,8 +314,5 @@ function positive(value: unknown, where: string): number {
 
 function estimateDeepSeekCost(usage: NormalizedUsage, model: string): number | null {
   if (model !== 'deepseek-v4-flash') return null;
-  const uncached = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens);
-  return (
-    (uncached * 0.145 + usage.cacheReadTokens * 0.0029 + usage.outputTokens * 0.29) / 1_000_000
-  );
+  return deepSeekCostUsd(usage);
 }

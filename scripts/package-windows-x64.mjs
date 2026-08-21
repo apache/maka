@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, readFile, rm } from 'node:fs/promises';
+import { access, copyFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { npmSpawnOptions } from './npm-spawn.mjs';
@@ -8,6 +8,24 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
 const releaseDirectory = join(desktopRoot, 'release');
 const electronDistributionDirectory = join(repoRoot, 'node_modules', 'electron', 'dist');
+const sandboxManifestPath = join(
+  repoRoot,
+  'experiments',
+  'windows-sandbox',
+  'launcher',
+  'Cargo.toml',
+);
+const sandboxBinaryPath = join(
+  repoRoot,
+  'experiments',
+  'windows-sandbox',
+  'launcher',
+  'target',
+  'release',
+  'maka-windows-sandbox.exe',
+);
+const sandboxResourceDirectory = join(desktopRoot, 'resources', 'windows-sandbox');
+const sandboxResourcePath = join(sandboxResourceDirectory, 'maka-windows-sandbox.exe');
 const requiredElectronLicensePaths = [
   join(electronDistributionDirectory, 'LICENSE'),
   join(electronDistributionDirectory, 'LICENSES.chromium.html'),
@@ -66,6 +84,10 @@ export async function packageWindowsX64({
 
   await run('npm', ['run', 'clean']);
   await run('npm', ['run', 'build']);
+  await run('cargo', ['build', '--manifest-path', sandboxManifestPath, '--release', '--locked']);
+  await run('npm', ['run', 'check:windows-cargo-notices']);
+  await mkdir(sandboxResourceDirectory, { recursive: true });
+  await copyFile(sandboxBinaryPath, sandboxResourcePath);
   await run('npm', ['run', 'prepare:bundled-git']);
   await run('npm', ['run', 'check:release']);
   await remove(releaseDirectory, { recursive: true, force: true });

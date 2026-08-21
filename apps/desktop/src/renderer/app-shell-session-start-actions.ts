@@ -1,6 +1,7 @@
 import type { SessionStartMode } from '@maka/core/explore-agent';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
+import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
   isNoRealConnectionError,
@@ -15,6 +16,7 @@ import {
 type ComposerImportOwner = {
   sessionId: string | undefined;
   navSection: NavSelection['section'];
+  newTaskDraftKey?: string;
 };
 
 type RefBox<T> = { current: T };
@@ -44,7 +46,7 @@ export function createAppShellSessionStartActions(deps: {
   composerRef: RefBox<ComposerFocusHandle | null>;
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
   openSessionInChat: (sessionId: string, turnId?: string) => void;
-  newChatProjectId: string | null | undefined;
+  newTaskTarget: DesktopNewTaskTarget | undefined;
   sessionStartPendingRef: RefBox<boolean>;
   refreshOnboarding: () => void;
   refreshSessions: () => Promise<unknown>;
@@ -63,7 +65,7 @@ export function createAppShellSessionStartActions(deps: {
     composerRef,
     isShellSurfaceOwnerActive,
     openSessionInChat,
-    newChatProjectId,
+    newTaskTarget,
     sessionStartPendingRef,
     refreshOnboarding,
     refreshSessions,
@@ -74,14 +76,14 @@ export function createAppShellSessionStartActions(deps: {
 
   async function startModeSession(mode: SessionStartMode): Promise<boolean> {
     if (sessionStartPendingRef.current) return false;
+    if (!newTaskTarget) return false;
     const owner = captureComposerImportOwner();
     sessionStartPendingRef.current = true;
     try {
       // #1433: the one session-creation channel. Main derives the
       // permission boundary, name and labels from `mode`.
-      const session = await window.maka.sessions.create({
+      const session = await window.maka.newTasks.create(newTaskTarget, {
         mode,
-        ...(newChatProjectId !== undefined ? { projectId: newChatProjectId } : {}),
       });
       if (isShellSurfaceOwnerActive(owner)) {
         openSessionInChat(session.id);
@@ -101,7 +103,7 @@ export function createAppShellSessionStartActions(deps: {
       // is not the other one":
       //
       //   workspace_unavailable → `SESSION_WORKSPACE_UNAVAILABLE:` (project-context-root.ts)
-      //   setup_required        → `NO_REAL_CONNECTION:<reason>:`   (chat-readiness.ts)
+      //   setup_required        → `NO_REAL_CONNECTION:<reason>:`   (Runtime Host execution composition)
       //
       // Anything else is a genuine failure (storage, disk, a bug) and must
       // not be silently relabelled as "your setup is incomplete".

@@ -51,6 +51,38 @@ test('rejects numeric string sizes on icon tags', () => {
   );
 });
 
+test('rejects statically provable expressions, passthroughs, and props spreads', () => {
+  assert.deepEqual(
+    expressions(`
+      import { Search } from '@maka/ui/icons';
+      const raw = 8 + 8;
+      const props = { size: '16' };
+      export const Example = () => <>
+        <Search size={'16'} />
+        <Search size={\`16\`} />
+        <Search size={8 + 8} />
+        <Search size={raw} />
+        <Search size={props.size} />
+        <Search {...props} />
+      </>;
+    `),
+    ["size={'16'}", 'size={`16`}', 'size={8 + 8}', 'size={raw}', 'size={props.size}', '{...props}'],
+  );
+});
+
+test('tracks icon provenance through Object.entries, flatMap, and destructured map callbacks', () => {
+  assert.deepEqual(
+    expressions(`
+      import * as Icons from '@maka/ui/icons';
+      const ICONS = Object.entries(Icons)
+        .flatMap(([name, value]) => value ? [{ name, Comp: value }] : [])
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      export const Example = () => ICONS.map(({ Comp }) => <Comp size={20} />);
+    `),
+    ['size={20}'],
+  );
+});
+
 test('does not treat shadowed or unrelated local tags as icons', () => {
   assert.deepEqual(
     expressions(`

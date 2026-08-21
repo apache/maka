@@ -35,6 +35,29 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe('runtime policy stores', () => {
+  test('upgrades schema v2 with the automatic Host shell default', async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const { shell: _shell, ...policyV2 } = createDefaultRuntimePolicy();
+      await writeFile(
+        join(root, 'runtime-policy.json'),
+        `${JSON.stringify({ schemaVersion: 2, revision: 4, policy: policyV2 })}\n`,
+      );
+
+      const snapshot = await stores.runtimePolicy.getSnapshot();
+      assert.equal(snapshot.revision, 4);
+      assert.deepEqual(snapshot.policy.shell, { preference: 'auto', executable: '' });
+      const committed = await stores.runtimePolicy.mutate({
+        expectedRevision: 4,
+        operation: { kind: 'set_shell', value: snapshot.policy.shell },
+      });
+      assert.equal(committed.kind, 'committed');
+      const persisted = JSON.parse(await readFile(join(root, 'runtime-policy.json'), 'utf8')) as {
+        schemaVersion: number;
+      };
+      assert.equal(persisted.schemaVersion, 3);
+    });
+  });
+
   test('persists extra request bodies and resolves custom headers as secret execution material', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(stores, 0, {
@@ -1048,6 +1071,106 @@ describe('runtime policy stores', () => {
       const expected = { connectionId: connection.connectionId, modelId: 'llama3.3' };
       assert.deepEqual(completed.snapshot.defaultTarget, expected);
       assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, expected);
+    });
+  });
+
+  test('releases the canonical default target when a selection change removes its model', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('selection-default', 'ollama', 'Selection default'),
+      );
+      const widened = await stores.connectionCatalog.update({
+        expected: connectionBasis(connection),
+        changes: {
+          name: connection.name,
+          enabled: true,
+          enabledModelIds: ['gpt-5', 'llama3.3'],
+          relayModelProfiles: null,
+        },
+      });
+      assert.equal(widened.kind, 'committed');
+      if (widened.kind !== 'committed') return;
+      const widenedEntry = widened.snapshot.connections[0];
+      assert.ok(widenedEntry);
+      assert.equal(
+        (
+          await stores.connectionCatalog.setDefaultTarget({
+            expectedCatalogRevision: widened.snapshot.revision,
+            target: { connectionId: connection.connectionId, modelId: 'gpt-5' },
+          })
+        ).kind,
+        'committed',
+      );
+
+      const narrowed = await stores.connectionCatalog.update({
+        expected: connectionBasis(widenedEntry),
+        changes: {
+          name: connection.name,
+          enabled: true,
+          enabledModelIds: ['llama3.3'],
+          relayModelProfiles: null,
+        },
+      });
+      assert.equal(narrowed.kind, 'committed');
+      if (narrowed.kind !== 'committed') return;
+      // Not `llama3.3`: a surviving member of the set is not the user's answer.
+      assert.equal(narrowed.snapshot.defaultTarget, null);
+      assert.equal((await stores.connectionCatalog.getSnapshot()).defaultTarget, null);
+    });
+  });
+
+  test('releases the canonical default target when its connection is disabled', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('default-disabled', 'ollama', 'Default disabled'),
+      );
+      const catalog = await stores.connectionCatalog.getSnapshot();
+      assert.equal(
+        (
+          await stores.connectionCatalog.setDefaultTarget({
+            expectedCatalogRevision: catalog.revision,
+            target: { connectionId: connection.connectionId, modelId: 'gpt-5' },
+          })
+        ).kind,
+        'committed',
+      );
+
+      const disabled = await stores.connectionCatalog.update({
+        expected: connectionBasis(connection),
+        changes: {
+          name: connection.name,
+          enabled: false,
+          enabledModelIds: connection.enabledModelIds,
+          relayModelProfiles: null,
+        },
+      });
+      assert.equal(disabled.kind, 'committed');
+      if (disabled.kind !== 'committed') return;
+      assert.equal(disabled.snapshot.defaultTarget, null);
+      assert.equal((await stores.connectionCatalog.getSnapshot()).defaultTarget, null);
+    });
+  });
+
+  test('rejects a stated default target that names an unselected model', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('stated-default', 'ollama', 'Stated default'),
+      );
+      const catalog = await stores.connectionCatalog.getSnapshot();
+      const rejected = await stores.connectionCatalog.setDefaultTarget({
+        expectedCatalogRevision: catalog.revision,
+        target: { connectionId: connection.connectionId, modelId: 'llama3.3' },
+      });
+      assert.equal(rejected.kind, 'invalid_default_target');
+      const unchanged = await stores.connectionCatalog.getSnapshot();
+      assert.equal(unchanged.defaultTarget, null);
+      assert.equal(unchanged.revision, catalog.revision);
     });
   });
 

@@ -185,7 +185,7 @@ async function probeCommandCapability(
     return unavailable(
       expectedSandboxType(input.platform),
       'selection',
-      input.platform === 'darwin' || input.platform === 'linux'
+      input.platform === 'darwin' || input.platform === 'linux' || input.platform === 'win32'
         ? 'backend_not_available'
         : 'unsupported_platform',
     );
@@ -219,7 +219,7 @@ async function probeCommandCapability(
         pathContext: {
           workspaceRoots: input.workspaceRoots,
           tmpdir: await canonicalPath(tmpdir()),
-          slashTmp: await canonicalPath('/tmp'),
+          ...(input.platform === 'win32' ? {} : { slashTmp: await canonicalPath('/tmp') }),
         },
       },
     });
@@ -381,6 +381,7 @@ function unavailable(
 function expectedSandboxType(platform: SandboxPlatform): SandboxType {
   if (platform === 'darwin') return 'macos-seatbelt';
   if (platform === 'linux') return 'linux';
+  if (platform === 'win32') return 'windows';
   return 'none';
 }
 

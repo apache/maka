@@ -148,7 +148,7 @@ export class HostContextCoordinator {
       if (isSessionNotFoundError(error)) return notFound('Session does not exist');
       throw error;
     }
-    if (header.status === 'archived' || header.isArchived) {
+    if (header.isArchived) {
       return sessionArchived('Cannot compact an archived Session');
     }
     const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);

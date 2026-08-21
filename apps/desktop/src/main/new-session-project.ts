@@ -35,9 +35,10 @@ export async function resolveDesktopSessionWorkspace(
       if (options.allowHostPath === false) throw remoteProjectRequired();
       return { kind: 'host_path', path: (await selection.current()).path };
     }
-    const selected = await selection.select(input.projectId);
-    if (!selected.project) throw new Error(`Project does not exist: ${input.projectId}`);
-    return { kind: 'project', projectId: selected.project.id };
+    // Session creation names a Project; it must not also mutate the Host's
+    // persisted current-Project preference. The Runtime Host validates the
+    // identity at the workspace authority boundary.
+    return { kind: 'project', projectId: input.projectId };
   }
 
   const configuredDefault = await selection.defaultProjectId?.();

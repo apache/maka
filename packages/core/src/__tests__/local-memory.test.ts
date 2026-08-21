@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
 import {
   LOCAL_MEMORY_MAX_BYTES,
@@ -8,14 +9,24 @@ import {
   appendManualLocalMemoryEntryDraft,
   approveLocalMemoryProposalDraft,
   buildLocalMemoryPromptBody,
+  defaultLocalMemoryMarkdown,
   defaultLocalMemorySettings,
   findLocalMemoryEntryDraft,
   normalizeLocalMemorySettings,
   parseLocalMemoryMarkdown,
   rejectLocalMemoryProposalDraft,
   setLocalMemoryEntryStatusDraft,
+  stableLocalMemoryEntryId,
+  stableLocalMemoryIdMaterial,
   stableLocalMemoryProposalId,
+  type Sha256Digest,
 } from '../local-memory.js';
+
+const nodeSha256: Sha256Digest = {
+  digest(input: string): Uint8Array {
+    return new Uint8Array(createHash('sha256').update(input, 'utf8').digest());
+  },
+};
 
 describe('local MEMORY.md contract', () => {
   it('defaults file enabled but agent read disabled', () => {
@@ -173,7 +184,11 @@ describe('local MEMORY.md contract', () => {
   });
 
   it('creates pending proposals and keeps approval explicit', () => {
-    const proposalId = stableLocalMemoryProposalId('Remember dark mode preference.', 1700000000000);
+    const proposalId = stableLocalMemoryProposalId(
+      'Remember dark mode preference.',
+      1700000000000,
+      nodeSha256,
+    );
     const pending = appendLocalMemoryProposalDraft('# Maka Pending Memory\n', {
       proposalId,
       title: 'Theme preference',
@@ -299,14 +314,24 @@ describe('local MEMORY.md contract', () => {
 
   it('rejects blank manual draft entries and oversized resulting drafts', () => {
     assert.deepEqual(
-      appendManualLocalMemoryEntryDraft('', { title: ' ', content: 'body', now: 1 }),
+      appendManualLocalMemoryEntryDraft('', {
+        title: ' ',
+        content: 'body',
+        now: 1,
+        sha256: nodeSha256,
+      }),
       {
         ok: false,
         reason: 'empty_title',
       },
     );
     assert.deepEqual(
-      appendManualLocalMemoryEntryDraft('', { title: 'title', content: ' ', now: 1 }),
+      appendManualLocalMemoryEntryDraft('', {
+        title: 'title',
+        content: ' ',
+        now: 1,
+        sha256: nodeSha256,
+      }),
       {
         ok: false,
         reason: 'empty_content',
@@ -316,8 +341,49 @@ describe('local MEMORY.md contract', () => {
       title: 'title',
       content: 'body',
       now: 1,
+      sha256: nodeSha256,
     });
     assert.deepEqual(oversized, { ok: false, reason: 'oversize' });
+  });
+
+  it('pins persisted memory ids to the injected Node digest', () => {
+    const content = 'Remember dark mode preference.';
+    const createdAt = 1_700_000_000_000;
+    const { material } = stableLocalMemoryIdMaterial(content, createdAt);
+    assert.equal(material, `${content}\n${createdAt}`);
+    assert.equal(stableLocalMemoryEntryId(content, createdAt, nodeSha256), 'mem-e6ab8f36e9096a9f');
+    assert.equal(
+      stableLocalMemoryProposalId(content, createdAt, nodeSha256),
+      'proposal-e6ab8f36e9096a9f',
+    );
+    assert.equal(
+      stableLocalMemoryEntryId(content, createdAt, nodeSha256),
+      stableLocalMemoryEntryId(content, createdAt, nodeSha256),
+    );
+
+    const markdown = defaultLocalMemoryMarkdown(nodeSha256, createdAt);
+    assert.match(markdown, /id=mem-e060c48e23fe4573/);
+    assert.match(markdown, /createdAt=1700000000000/);
+
+    const exampleContent =
+      '这里写你希望 Maka 记住的长期偏好。默认不会提供给模型；需要在设置里单独开启“模型上下文可读取”。';
+    const fractional = defaultLocalMemoryMarkdown(nodeSha256, -1.7);
+    const { timestamp } = stableLocalMemoryIdMaterial(exampleContent, -1.7);
+    assert.equal(timestamp, 0);
+    assert.match(
+      fractional,
+      new RegExp(`id=${stableLocalMemoryEntryId(exampleContent, timestamp, nodeSha256)}`),
+    );
+    assert.match(fractional, /createdAt=0/);
+    const added = appendManualLocalMemoryEntryDraft('# Maka Memory\n', {
+      title: 'Theme',
+      content,
+      now: createdAt,
+      sha256: nodeSha256,
+    });
+    assert.equal(added.ok, true);
+    if (!added.ok) return;
+    assert.match(added.draft, /id=mem-e6ab8f36e9096a9f/);
   });
 
   it('returns safe mode instead of parsing oversized content', () => {
