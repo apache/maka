@@ -18,14 +18,27 @@
 // function operates on a string — binary-*file* byte safety is the caller's I/O
 // concern.
 //
-// Strategies are adapted from opencode's edit.ts (sourced from cline diff-apply
-// + gemini-cli editCorrector). We keep the three distinctly-reachable full-span
-// matchers (line-trimmed, whitespace-normalized, escape-normalized) and omit:
+// ATTRIBUTION: the fuzzy matching strategies below are adapted from opencode's
+// edit.ts (packages/opencode/src/tool/edit.ts, which credits cline diff-apply +
+// gemini-cli editCorrector upstream of it). We keep the three
+// distinctly-reachable full-span matchers (line-trimmed, whitespace-normalized,
+// escape-normalized) and omit:
 //   - indentation-flexible and trimmed-boundary, which are strictly shadowed by
 //     line-trimmed / whitespace-normalized here (they add no reachable match);
 //   - block-anchor and context-aware, which match on partial signal (first/last
 //     line + similarity) and need a tuned similarity threshold — deliberately
 //     deferred to keep wrong-location risk out.
+// The escape-normalizing replacer is the closest to upstream: the regular
+// expression and its nine branches are carried over unchanged.
+//
+//   Source:    https://github.com/anomalyco/opencode
+//   Revision:  fc80874f45a595ff6874a4d36b1090f6a64424d2
+//   License:   MIT
+//   Copyright: Copyright (c) 2025 opencode
+//
+// Scope: the adapted material only; the rest is Maka source under the
+// repository Apache-2.0 license, so there is no whole-file SPDX identifier.
+// See LICENSE, THIRD-PARTY COMPONENTS for the notice and the upstream chain.
 
 export type EditMatchStrategy = 'exact' | 'line-trimmed' | 'whitespace' | 'escape';
 

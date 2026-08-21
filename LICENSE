@@ -289,6 +289,92 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
+anomalyco/opencode (adapted source)
+
+Source: https://github.com/anomalyco/opencode
+Revision: fc80874f45a595ff6874a4d36b1090f6a64424d2
+Copyright (c) 2025 opencode
+License: MIT
+
+Maka's tool-output truncation (packages/runtime/src/tool-output.ts) and
+string-edit matching strategies (packages/runtime/src/edit-replace.ts) include
+adaptations of this software. Each file marks the adapted portion in its header;
+the surrounding Maka source stays under this repository's Apache-2.0 license.
+
+opencode's edit.ts credits cline diff-apply and the gemini-cli editCorrector
+upstream of itself. The escape-normalizing replacer in edit-replace.ts shares
+the first eight branches of its escape set, in order, with gemini-cli's
+editCorrector.ts, which is Copyright 2025 Google LLC under Apache-2.0; opencode
+added a ninth branch and changed the pattern, and Maka took the result from
+opencode. The chain is recorded in full rather than stopping at the nearest
+upstream.
+
+The following MIT License applies to the adapted material:
+
+MIT License
+
+Copyright (c) 2025 opencode
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+sst/models.dev (generated model catalog snapshot)
+
+Source: https://models.dev/api.json
+Repository: https://github.com/sst/models.dev
+Copyright (c) 2025 models.dev
+License: MIT
+
+packages/core/src/model-metadata.generated.ts and
+packages/runtime/src/telemetry/model-pricing.generated.ts are generated from the
+models.dev catalog by scripts/sync-model-metadata.mjs and are redistributed with
+Maka. They copy and transform selected model and provider metadata from that
+catalog, including upstream display names and descriptive text, lifecycle status
+values, reasoning effort options, context and output limits, modalities, and
+prices. Field selection and ordering are the generator's; it narrows most of
+what it emits to the providers Maka supports, and keeps every provider in the
+catalog in its provider directory. The following MIT License applies to the
+material taken from upstream:
+
+MIT License
+
+Copyright (c) 2025 models.dev
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
 Geist and Geist Mono (bundled webfonts)
 
 Source: https://github.com/vercel/geist-font
