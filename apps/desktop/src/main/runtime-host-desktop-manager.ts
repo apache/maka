@@ -773,11 +773,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 }
 
 function pairingFinalizeRetry(error: unknown): boolean {
+  // Finalization is idempotent for the current credential, so both a known
+  // non-dispatch and an unknown outcome converge on the replacement connection.
   if (
     error instanceof RuntimeHostRequestInterruptedError &&
     error.operation === 'access.credential.finalize' &&
-    error.reason === 'connection_lost' &&
-    error.dispatch === 'dispatched'
+    error.reason === 'connection_lost'
   ) {
     return true;
   }

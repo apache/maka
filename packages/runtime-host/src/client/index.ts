@@ -31,6 +31,7 @@ export {
   isRuntimeHostReconnectingConnection,
 } from './reconnecting-connection.js';
 export {
+  normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,
   type RuntimeHostSshInteraction,
   type RuntimeHostSshProcess,

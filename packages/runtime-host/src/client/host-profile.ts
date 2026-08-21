@@ -17,7 +17,11 @@ import {
 } from './connection.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 import { RuntimeHostRemoteCompatibilityError } from './remote-compatibility-error.js';
-import { openRuntimeHostSshTunnel, type RuntimeHostSshInteraction } from './ssh-tunnel.js';
+import {
+  normalizeRuntimeHostSshDestination,
+  openRuntimeHostSshTunnel,
+  type RuntimeHostSshInteraction,
+} from './ssh-tunnel.js';
 import { waitForRuntimeHostReady } from './wait-for-ready.js';
 
 const PROFILE_SCHEMA_VERSION = 1;
@@ -599,7 +603,9 @@ function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRemoteTran
       ['kind', 'destination', 'remotePort', 'websocketPath'],
       ['sshPort'],
     );
-    const destination = requireSshDestination(record.destination);
+    const destination = normalizeRuntimeHostSshDestination(
+      requireString(record.destination, 'Runtime Host SSH destination'),
+    );
     const sshPort = optionalPort(record.sshPort, 'Runtime Host SSH port');
     const remotePort = requirePort(record.remotePort, 'Runtime Host SSH remote port');
     const websocketPath = requireWebSocketPath(record.websocketPath);
@@ -684,19 +690,6 @@ function requireProfileName(value: unknown): string {
 function requireString(value: unknown, label: string): string {
   if (typeof value !== 'string') throw new Error(`${label} must be a string`);
   return value;
-}
-
-function requireSshDestination(value: unknown): string {
-  const destination = requireString(value, 'Runtime Host SSH destination').trim();
-  if (
-    destination.length === 0 ||
-    destination.length > 512 ||
-    destination.startsWith('-') ||
-    /\s|[\u0000-\u001f\u007f]/u.test(destination)
-  ) {
-    throw new Error('Runtime Host SSH destination is invalid');
-  }
-  return destination;
 }
 
 function optionalPort(value: unknown, label: string): number | undefined {

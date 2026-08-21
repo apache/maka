@@ -209,16 +209,20 @@ export function createDesktopRuntimeHostProfileService(input: {
     return pending;
   };
 
+  const assertPreferencesWritable = (): void => {
+    // The Local fallback is effective startup state, not a replacement for
+    // preferences whose durable value is unknown.
+    if (input.startup.preferencesReadFailure) {
+      throw new Error(
+        "Saved Runtime Host settings could not be read; restart Maka before changing them",
+        { cause: input.startup.preferencesReadFailure },
+      );
+    }
+  };
+
   const mutateProfiles = <T>(operation: () => Promise<T>): Promise<T> =>
     mutate(async () => {
-      // The Local fallback is effective startup state, not a replacement for
-      // preferences whose durable value is unknown.
-      if (input.startup.preferencesReadFailure) {
-        throw new Error(
-          "Saved Runtime Host settings could not be read; restart Maka before changing them",
-          { cause: input.startup.preferencesReadFailure },
-        );
-      }
+      assertPreferencesWritable();
       if (pairingReadFailure) {
         throw new Error(
           "Resolve the unreadable Runtime Host pairing recovery state before changing profiles",
@@ -561,6 +565,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     },
     resolvePairingRecovery() {
       return mutate(async () => {
+        assertPreferencesWritable();
         if (pairingReadFailure) {
           try {
             pairingIntents = new Map(
@@ -677,8 +682,11 @@ function assertRootIsNotEnabled(
           : undefined;
     return stateRootId === rootId;
   });
-  if (duplicateProfile || duplicateState) {
-    throw new Error(`Runtime Host ${rootId} is already enabled`);
+  const duplicate = duplicateProfile ?? duplicateState?.target.profile;
+  if (duplicate) {
+    throw new Error(
+      `Runtime Host profile "${duplicate.name}" is already connected to this computer; disable it before adding another connection`,
+    );
   }
 }
 

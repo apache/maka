@@ -6,6 +6,7 @@ import type { IPty } from 'node-pty';
 import { spawn as spawnPty } from 'node-pty';
 import {
   decodeRuntimeHostSetupFrame,
+  normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostSetupFrame,
@@ -279,7 +280,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       setupInput.signal?.throwIfAborted();
       const cancellation = cancellableUntilComplete(setupInput.signal);
       try {
-        const destination = requireSetupDestination(setupInput.destination);
+        const destination = normalizeRuntimeHostSshDestination(setupInput.destination);
         const sshPort = setupInput.sshPort === undefined
           ? undefined
           : requireSetupPort(setupInput.sshPort);
@@ -402,9 +403,20 @@ function createSetupOutputFilter(
   onError: (error: Error) => void,
 ): { push(data: string): string; finish(): string } {
   let pending = '';
+  let discardReservedLine = false;
   const drain = (finished: boolean): string => {
     let visible = '';
     while (pending) {
+      if (discardReservedLine) {
+        const newline = pending.indexOf('\n');
+        if (newline < 0) {
+          pending = '';
+          break;
+        }
+        pending = pending.slice(newline + 1);
+        discardReservedLine = false;
+        continue;
+      }
       const marker = pending.indexOf(RUNTIME_HOST_SETUP_FRAME_PREFIX);
       if (marker >= 0) {
         visible += pending.slice(0, marker);
@@ -417,6 +429,7 @@ function createSetupOutputFilter(
           } else if (pending.length > SETUP_FRAME_PENDING_MAX) {
             onError(new Error('Remote Maka setup returned an oversized result'));
             pending = '';
+            discardReservedLine = true;
           }
           break;
         }
@@ -618,7 +631,7 @@ function runtimeHostSetupRemoteCommand(
     : `npx --yes --prefix "$maka_setup_prefix" --package ${quotePosix(setupPackage.specifier)} ${setupArguments}`;
   const command = setupPackage.removeAfterSetup
     ? `cd "$HOME" || exit 1; maka_setup_exit=0; ${setup} || maka_setup_exit=$?; rm -f -- ${quotePosix(setupPackage.removeAfterSetup)}; exit "$maka_setup_exit"`
-    : `maka_setup_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_setup_prefix"' EXIT; cd "$maka_setup_prefix" || exit 1; ${setup}`;
+    : `maka_setup_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_setup_prefix"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; cd "$maka_setup_prefix" || exit 1; ${setup}`;
   const loginCommand = `exec /bin/sh -c ${quotePosix(command)}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(loginCommand)}`;
 }
@@ -632,19 +645,6 @@ function requireSetupPort(value: number): number {
     throw new Error('SSH port is invalid');
   }
   return value;
-}
-
-function requireSetupDestination(value: string): string {
-  const destination = value.trim();
-  if (
-    !destination ||
-    destination.length > 512 ||
-    destination.startsWith('-') ||
-    /[\0\r\n]/u.test(destination)
-  ) {
-    throw new Error('SSH destination is invalid');
-  }
-  return destination;
 }
 
 function findConnecting(

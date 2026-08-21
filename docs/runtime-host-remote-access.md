@@ -131,6 +131,8 @@ Use **Configure manually** for an existing TLS, SSH, or explicitly acknowledged 
 
 The credential is stored separately from the Profile. Desktop keeps Local and every enabled remote Host connected independently. Choose one as the default for new Sessions; existing Sessions continue to use their owning Host. A failed remote connection remains visible without interrupting the other Hosts. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
 
+During guided pairing, the delivered credential has the selected Client grants and expires after 15 minutes unless Desktop explicitly finalizes it after saving the local binding.
+
 ## Connect TUI or CLI
 
 Store the target as a shared Profile. Supply the credential through an environment variable only while creating or updating it:

@@ -224,6 +224,7 @@ async function applySystemdDeployment(
     ['enable', context.unitName],
     'Enabling the Runtime Host service failed',
   );
+  await context.runSystemctl(['reset-failed', context.unitName]);
   await requireSystemctl(
     context.runSystemctl,
     ['restart', context.unitName],

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+} from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -220,30 +223,40 @@ test('replays pairing finalization after an unknown commit and reconnect', async
   await manager.close();
 });
 
-test('does not replay a pairing command rejected before dispatch', async () => {
-  const local = candidateHarness({ hostId: 'host-a' });
-  const remoteHostId = 'a'.repeat(64);
-  const remote = candidateHarness({
-    hostId: remoteHostId,
-    finalizeFailures: [
-      new RuntimeHostOperationError(
-        'access.credential.finalize',
-        'host_draining',
-        'Runtime Host is draining',
-      ),
-    ],
-  });
-  const queue = [local.candidate, remote.candidate];
-  const manager = await startRuntimeHostDesktopManager(
-    {} as DesktopRuntimeHostCandidateStartInput,
-    { startCandidate: async () => ready(queue.shift()!) },
-  );
-  await manager.enable(remoteTarget('office'));
+for (const dispatch of ['not_dispatched', 'dispatched'] as const) {
+  test(`replays ${dispatch} pairing finalization after connection loss`, async () => {
+    const local = candidateHarness({ hostId: 'host-a' });
+    const remoteHostId = 'a'.repeat(64);
+    const first = candidateHarness({
+      hostId: remoteHostId,
+      finalizeFailures: [
+        new RuntimeHostRequestInterruptedError(
+          'access.credential.finalize',
+          'command',
+          dispatch,
+          'connection_lost',
+        ),
+      ],
+      disconnectOnFinalizeFailure: true,
+    });
+    const replacement = candidateHarness({ hostId: remoteHostId });
+    const queue = [local.candidate, first.candidate, replacement.candidate];
+    const manager = await startRuntimeHostDesktopManager(
+      {} as DesktopRuntimeHostCandidateStartInput,
+      {
+        startCandidate: async () => ready(queue.shift()!),
+        reconnectBackoff: { minMs: 0, maxMs: 0 },
+      },
+    );
+    await manager.enable(remoteTarget('office'));
 
-  await assert.rejects(() => manager.finalizePairing('office'), /draining/u);
-  assert.equal(remote.finalizeCalls, 1);
-  await manager.close();
-});
+    await manager.finalizePairing('office');
+
+    assert.equal(first.finalizeCalls, 1);
+    assert.equal(replacement.finalizeCalls, 1);
+    await manager.close();
+  });
+}
 
 test('defers reconnecting pairing finalization when the manager closes', async () => {
   const local = candidateHarness({ hostId: 'host-a' });

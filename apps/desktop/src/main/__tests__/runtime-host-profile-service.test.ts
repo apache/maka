@@ -16,7 +16,10 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from "@maka/runtime-host/protocol";
-import type { RuntimeHostDesktopTargetState } from "../runtime-host-desktop-manager.js";
+import {
+  RuntimeHostPairingFinalizationInterruptedError,
+  type RuntimeHostDesktopTargetState,
+} from "../runtime-host-desktop-manager.js";
 import {
   createDesktopRuntimeHostProfileService,
   resolveDesktopRuntimeHostStartup,
@@ -203,7 +206,7 @@ test("does not enable the same State Root twice", async () => {
 
   await assert.rejects(
     () => service.addAndEnable({ profile: PROFILE, credential: "token" }),
-    /already enabled/,
+    /profile "Local".*disable/u,
   );
   assert.equal(
     (await service.getSnapshot()).entries.some((entry) => entry.profile.id === PROFILE.id),
@@ -444,6 +447,50 @@ test("finishes a persisted pairing after Desktop restarts before finalization", 
   );
 });
 
+test("preserves a staged pairing when finalization is interrupted", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  await catalog.create(PROFILE, "old-token");
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => {
+      throw new RuntimeHostPairingFinalizationInterruptedError();
+    },
+  });
+
+  await assert.rejects(
+    () => service.addAndEnableVerified({ profile: PROFILE, credential: "new-token" }),
+    RuntimeHostPairingFinalizationInterruptedError,
+  );
+  assert.equal((await catalog.resolve(PROFILE.id)).credential, "new-token");
+
+  const recoveredStartup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  assert.equal(recoveredStartup.pairingIntents.length, 1);
+  const recovered = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup: recoveredStartup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+  await recovered.startEnabledProfiles();
+
+  assert.deepEqual(
+    (await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents,
+    [],
+  );
+});
+
 test("keeps an offline pairing recoverable without blocking another Host", async () => {
   const root = await clientRoot();
   const catalog = await stageInterruptedPairing(root);
@@ -638,6 +685,32 @@ test("retries pairing recovery before discarding it", async () => {
   assert.equal((await service.resolvePairingRecovery()).pairingRecoveryBlocked, undefined);
   assert.deepEqual(finalized, [PROFILE.id]);
   assert.equal((await catalog.resolve(PROFILE.id)).credential, "new-token");
+});
+
+test("does not recover pairing through unreadable saved preferences", async () => {
+  const root = await clientRoot();
+  const catalog = await stageInterruptedPairing(root);
+  const preferencesPath = join(root, "runtime-host-profile-selection.json");
+  const savedPreferences = await readFile(preferencesPath, "utf8");
+  const startup = await resolveDesktopRuntimeHostStartup(root, {
+    catalog,
+    readPreferences: async () => {
+      throw new Error("preferences are temporarily unavailable");
+    },
+  });
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async () => assert.fail("pairing recovery must not connect"),
+    disable: async () => assert.fail("pairing recovery must not disconnect"),
+    setDefault: () => assert.fail("pairing recovery must not change the default"),
+    finalizePairing: async () => assert.fail("pairing recovery must not finalize"),
+  });
+
+  await assert.rejects(() => service.resolvePairingRecovery(), /restart Maka before changing/u);
+  assert.equal(await readFile(preferencesPath, "utf8"), savedPreferences);
 });
 
 test("does not retain a startup connection after its profile is disabled", async () => {

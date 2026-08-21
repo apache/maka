@@ -58,7 +58,7 @@ export async function openRuntimeHostSshTunnel(
   } = {},
 ): Promise<RuntimeHostSshTunnel> {
   input.signal?.throwIfAborted();
-  const destination = requireSshDestination(input.destination);
+  const destination = normalizeRuntimeHostSshDestination(input.destination);
   const sshPort = input.sshPort === undefined ? undefined : requirePort(input.sshPort, 'SSH port');
   const remotePort = requirePort(input.remotePort, 'Runtime Host remote port');
   const websocketPath = requireWebSocketPath(input.websocketPath);
@@ -412,7 +412,7 @@ async function terminateWindowsProcessTree(pid: number): Promise<void> {
   });
 }
 
-function requireSshDestination(value: string): string {
+export function normalizeRuntimeHostSshDestination(value: string): string {
   const destination = value.trim();
   if (
     destination.length === 0 ||

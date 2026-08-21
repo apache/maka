@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import type { IPty } from 'node-pty';
 import {
   encodeRuntimeHostSetupFrame,
+  RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostSshProcessFactory,
 } from '@maka/runtime-host/client';
 import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
@@ -110,6 +111,31 @@ test('keeps setup credentials out of the interactive terminal projection', async
   assert.match(JSON.stringify(harness.events), /Password/u);
   assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /mktemp -d/u);
   assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /--prefix/u);
+  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /trap.*HUP.*trap.*INT.*trap.*TERM/u);
+  await harness.terminal.close();
+});
+
+test('discards an oversized reserved setup line instead of projecting its tail', async () => {
+  const harness = createHarness('pending');
+  const setup = harness.terminal.runSetup(
+    {
+      destination: 'operator@example.com',
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@1.2.3' },
+      principalId: 'desktop:stable-client',
+    },
+    () => undefined,
+  );
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData(`${RUNTIME_HOST_SETUP_FRAME_PREFIX}${'x'.repeat(21 * 1024)}`);
+  harness.pty.emitData('"credential":"must-not-reach-renderer"}\nvisible output\n');
+  harness.pty.exit(1);
+
+  await assert.rejects(setup, /oversized result/u);
+  assert.doesNotMatch(
+    JSON.stringify([harness.events, await harness.getSnapshot()]),
+    /must-not-reach-renderer/u,
+  );
+  assert.match(JSON.stringify(harness.events), /visible output/u);
   await harness.terminal.close();
 });
 

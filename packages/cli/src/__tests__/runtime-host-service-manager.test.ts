@@ -156,6 +156,9 @@ describe('managed Runtime Host service', () => {
     assert.equal(installed.service.enabled, true);
     assert.equal(installed.service.config?.websocket.port, 47_777);
     assert.match(await readFile(unitPath, 'utf8'), /ExecStart=.*runtime-host.*serve/u);
+    const resetFailed = systemd.calls.findIndex(([command]) => command === 'reset-failed');
+    const restart = systemd.calls.findIndex(([command]) => command === 'restart');
+    assert.ok(resetFailed >= 0 && resetFailed < restart);
 
     const reinstalled = await manageRuntimeHostService(
       { ...common, action: 'install' },
@@ -536,6 +539,7 @@ describe('managed Runtime Host service', () => {
 
 function createFakeSystemd(unitPath: string): {
   readonly failNext: (command: string) => void;
+  readonly calls: readonly (readonly string[])[];
   readonly run: (args: readonly string[]) => Promise<{
     exitCode: number;
     stdout: string;
@@ -546,11 +550,14 @@ function createFakeSystemd(unitPath: string): {
   let enabled = false;
   let active = false;
   let failureCommand: string | undefined;
+  const calls: string[][] = [];
   return {
+    calls,
     failNext: (command) => {
       failureCommand = command;
     },
     run: async (args) => {
+      calls.push([...args]);
       if (
         ['show', 'enable', 'disable', 'start', 'restart', 'stop', 'reset-failed'].includes(
           args[0] ?? '',
