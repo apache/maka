@@ -1561,9 +1561,10 @@ export class DesktopRuntimeHostClient {
   request<K extends DirectRequestOperationKey>(
     operation: K,
     input: OperationInput<K>,
+    timeoutMs?: number,
   ): Promise<OperationOutput<K>> {
     this.#assertOpen();
-    return this.connection.request(operation, input);
+    return this.connection.request(operation, input, timeoutMs);
   }
 
   #assertOpen(): void {

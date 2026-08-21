@@ -61,6 +61,8 @@ export interface AppShellCommandListOptions {
   dailyReviewBridge: DailyReviewBridge;
   messages: StoredMessage[];
   newTaskProfileId: string | undefined;
+  settingsOpen: boolean;
+  settingsProfileId: string | undefined;
   sessions: SessionSummary[];
   themePref: ThemePreference;
   visibleSessions: SessionSummary[];
@@ -91,7 +93,14 @@ export interface AppShellCommandListOptions {
 export function resolveManualDiagnosticTarget(
   owner: Pick<ComposerImportOwner, 'navSection' | 'sessionId'>,
   newTaskProfileId: string | undefined,
+  settingsOpen = false,
+  settingsProfileId?: string,
 ): DesktopManualDiagnosticTarget | undefined {
+  if (settingsOpen) {
+    return settingsProfileId
+      ? { kind: 'profile', profileId: settingsProfileId }
+      : undefined;
+  }
   if (owner.navSection !== 'sessions') return undefined;
   if (owner.sessionId) return { kind: 'session', sessionId: owner.sessionId };
   return newTaskProfileId
@@ -385,10 +394,17 @@ export function buildAppShellCommandList(
       const {
         captureComposerImportOwner,
         newTaskProfileId,
+        settingsOpen,
+        settingsProfileId,
         toastApi,
       } = optionsRef.current;
       const owner = captureComposerImportOwner();
-      const target = resolveManualDiagnosticTarget(owner, newTaskProfileId);
+      const target = resolveManualDiagnosticTarget(
+        owner,
+        newTaskProfileId,
+        settingsOpen,
+        settingsProfileId,
+      );
       try {
         await window.maka.diagnostics.copyReport({
           surface: "manual",

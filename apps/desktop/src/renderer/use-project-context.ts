@@ -43,7 +43,6 @@ export function useAppShellProjectContext(options: {
   sessionCwd?: string;
   sessionProjectId?: string | null;
   sessionProfileKind?: 'local' | 'remote';
-  defaultProfileId?: string;
   onProjectSelected(ownerSessionId?: string): void;
   toastApi: ToastApi;
 }): AppShellProjectActions & {
@@ -66,7 +65,6 @@ export function useAppShellProjectContext(options: {
     sessionCwd,
     sessionProjectId,
     sessionProfileKind,
-    defaultProfileId,
     onProjectSelected,
     toastApi,
   } = options;
@@ -224,7 +222,6 @@ export function useAppShellProjectContext(options: {
     projects,
     projectCapabilities,
     sessionId,
-    defaultProfileId,
     onProjectSelected,
     toastApi,
   });

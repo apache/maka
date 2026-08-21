@@ -57,6 +57,7 @@ export function SettingsModal(props: {
   /** Receives the task 导入任务 just created, and opens it. */
   onTaskImported(session: DesktopSessionSummary): void;
   onRemoteHostAdded(profileId: string): void;
+  onSelectedRuntimeHostProfileIdChange(profileId: string | undefined): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -111,6 +112,7 @@ export function SettingsModal(props: {
         archivedTasks={props.archivedTasks}
         onTaskImported={props.onTaskImported}
         onRemoteHostAdded={props.onRemoteHostAdded}
+        onSelectedRuntimeHostProfileIdChange={props.onSelectedRuntimeHostProfileIdChange}
       />
     </div>
   );

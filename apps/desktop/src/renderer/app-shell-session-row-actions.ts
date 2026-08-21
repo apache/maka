@@ -40,10 +40,11 @@ export interface SessionPurgeOutcome {
    */
   restored: string[];
   verified: boolean;
-  /** First rejection, so the caller can show a reason rather than a count. */
-  firstError: unknown;
-  /** Session whose Host produced `firstError`. */
-  firstErrorSessionId?: string;
+  /** First rejection and the Session whose Host produced it. */
+  firstFailure?: {
+    error: unknown;
+    sessionId: string;
+  };
 }
 
 export interface AppShellSessionRowActions {
@@ -214,8 +215,7 @@ export function createAppShellSessionRowActions(deps: {
   async function purgeSessions(sessionIds: readonly string[]): Promise<SessionPurgeOutcome> {
     const unsettled: string[] = [];
     const restored: string[] = [];
-    let firstError: unknown;
-    let firstErrorSessionId: string | undefined;
+    let firstFailure: SessionPurgeOutcome['firstFailure'];
     let removed = 0;
     for (const sessionId of sessionIds) {
       const key = `${sessionId}:delete`;
@@ -234,10 +234,7 @@ export function createAppShellSessionRowActions(deps: {
         else removed += 1;
       } catch (error) {
         unsettled.push(sessionId);
-        if (firstError === undefined) {
-          firstError = error;
-          firstErrorSessionId = sessionId;
-        }
+        firstFailure ??= { error, sessionId };
       } finally {
         pendingSessionRowActionsRef.current.delete(key);
       }
@@ -249,8 +246,7 @@ export function createAppShellSessionRowActions(deps: {
         remaining: [],
         restored,
         verified: true,
-        firstError,
-        firstErrorSessionId,
+        firstFailure,
       };
     }
     let listed: SessionSummary[] | undefined;
@@ -266,8 +262,7 @@ export function createAppShellSessionRowActions(deps: {
         remaining: [],
         restored,
         verified: false,
-        firstError,
-        firstErrorSessionId,
+        firstFailure,
       };
     }
     const present = new Set(listed.map((session) => session.id));
@@ -277,8 +272,7 @@ export function createAppShellSessionRowActions(deps: {
       remaining,
       restored,
       verified: true,
-      firstError,
-      firstErrorSessionId,
+      firstFailure,
     };
   }
 

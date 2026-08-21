@@ -24,4 +24,21 @@ test('targets manual diagnostics to the current task or new-task Host profile', 
     ),
     undefined,
   );
+  assert.deepEqual(
+    resolveManualDiagnosticTarget(
+      { navSection: 'sessions', sessionId: '["hidden-host","hidden-session"]' },
+      'hidden-new-task-profile',
+      true,
+      'settings-profile',
+    ),
+    { kind: 'profile', profileId: 'settings-profile' },
+  );
+  assert.equal(
+    resolveManualDiagnosticTarget(
+      { navSection: 'sessions', sessionId: '["hidden-host","hidden-session"]' },
+      'hidden-new-task-profile',
+      true,
+    ),
+    undefined,
+  );
 });

@@ -127,6 +127,7 @@ export function SettingsSurface(props: {
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
   onRemoteHostAdded(profileId: string): void;
+  onSelectedRuntimeHostProfileIdChange(profileId: string | undefined): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -277,6 +278,12 @@ export function SettingsSurface(props: {
   const sectionScope = settingsSectionScope(section);
   const showsRuntimeHost = sectionScope !== 'client';
   const requiresRuntimeHost = sectionScope === 'runtime-host';
+  useEffect(() => {
+    props.onSelectedRuntimeHostProfileIdChange(
+      showsRuntimeHost ? selectedProfileId : undefined,
+    );
+    return () => props.onSelectedRuntimeHostProfileIdChange(undefined);
+  }, [props.onSelectedRuntimeHostProfileIdChange, selectedProfileId, showsRuntimeHost]);
   const runtimeHostCatalogFailed = runtimeHostCatalog.status === 'error';
   const runtimeHostSettingsLoading = Boolean(
     selectedRuntimeHostKey &&
@@ -588,19 +595,26 @@ export function SettingsSurface(props: {
     }));
 
   async function retryRuntimeHostContent(): Promise<void> {
+    let diagnosticTarget: { profileId: string } | undefined;
     try {
       if (runtimeHostCatalog.status === 'error') {
         await reloadRuntimeHosts();
         return;
       }
       if (!selectedRuntimeHost || !connectionsBridge) return;
+      diagnosticTarget = { profileId: selectedRuntimeHost.profileId };
       await Promise.all([
         reloadRuntimeHostSettings(selectedRuntimeHost),
         reloadConnections(connectionsBridge, selectedRuntimeHost),
       ]);
     } catch (error) {
       if (settingsModalMountedRef.current) {
-        toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.settingsLoadFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          diagnosticTarget,
+        );
       }
     }
   }

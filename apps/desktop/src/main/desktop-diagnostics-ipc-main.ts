@@ -20,8 +20,11 @@ type RuntimeHostDiagnosticsClient = {
   readonly getTurnTrace: (
     sessionId: string,
     turnId: string,
+    timeoutMs: number,
   ) => Promise<TurnTrace | undefined>;
 };
+
+const EXECUTION_DIAGNOSTIC_TIMEOUT_MS = 2_000;
 
 export interface DesktopDiagnosticsIpcDeps {
   readonly ipcMain: Pick<IpcMain, 'handle'>;
@@ -38,7 +41,11 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
     async (_event, scope: unknown, rawInput: unknown): Promise<void> => {
       const input = parseDesktopDiagnosticInput(rawInput);
       let runtime: RuntimeHostDiagnosticsClient | undefined;
-      if (input.hostTarget === 'default') {
+      if (input.hostTarget === 'none') {
+        if (scope !== undefined) {
+          throw new Error('Desktop-only diagnostics must not carry a Host scope');
+        }
+      } else if (input.hostTarget === 'default') {
         if (scope !== undefined) {
           throw new Error('Default Desktop diagnostics must not carry a Host scope');
         }
@@ -59,16 +66,19 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
       }
       let runtimeHost: RuntimeHostDiagnosticRead;
       if (!runtime) {
-        runtimeHost = {
-          ok: false,
-          error: input.hostTarget === 'default'
-            ? input.surface === 'manual'
-              ? 'Runtime Host is unavailable'
-              : 'Runtime Host is reconnecting'
-            : input.surface !== 'manual' && scope !== undefined
-              ? 'Runtime Host is reconnecting'
-              : 'Runtime Host for this task is unavailable',
-        };
+        let error: string;
+        if (input.hostTarget === 'none') {
+          error = 'No Runtime Host authority was associated with this error';
+        } else if (input.hostTarget === 'default') {
+          error = input.surface === 'manual'
+            ? 'Runtime Host is unavailable'
+            : 'Runtime Host is reconnecting';
+        } else {
+          error = input.surface !== 'manual' && scope !== undefined
+            ? 'Runtime Host is reconnecting'
+            : 'Runtime Host for this task is unavailable';
+        }
+        runtimeHost = { ok: false, error };
       } else {
         try {
           runtimeHost = { ok: true, value: await runtime.getDiagnostics() };
@@ -89,6 +99,7 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
           const turn = await runtime.getTurnTrace(
             execution.sessionId,
             execution.turnId,
+            EXECUTION_DIAGNOSTIC_TIMEOUT_MS,
           );
           runtimeExecution = turn
             ? { ok: true, value: turn }

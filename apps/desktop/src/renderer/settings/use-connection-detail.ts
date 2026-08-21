@@ -552,6 +552,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       toast.error(
         saved ? copy.refreshFailed : copy.saveModelsFailed,
         providerPanelActionErrorMessage(error, locale),
+        undefined,
+        { profileId: host.profileId },
       );
     } finally {
       releaseSaveModels();

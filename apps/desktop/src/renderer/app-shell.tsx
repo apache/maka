@@ -536,6 +536,8 @@ function AppShellContent({
     openConnectionDetail,
     openProviderCreate,
   } = useSettingsModal();
+  const [settingsDiagnosticProfileId, setSettingsDiagnosticProfileId] =
+    useState<string>();
   const {
     themePref,
     setThemePref,
@@ -1901,9 +1903,6 @@ function AppShellContent({
     sessionCwd: activeSession?.cwd,
     sessionProjectId: activeSession?.projectId,
     sessionProfileKind: activeDesktopSession?.profileKind,
-    defaultProfileId: newTask.catalog.hosts.length > 0
-      ? newTask.catalog.defaultProfileId
-      : undefined,
     onProjectSelected: (ownerSessionId) => {
       void refreshSkills();
       void refreshManagedSkillSources();
@@ -2876,6 +2875,8 @@ function AppShellContent({
     dailyReviewBridge,
     messages,
     newTaskProfileId: newTask.selectedProfileId,
+    settingsOpen,
+    settingsProfileId: settingsDiagnosticProfileId,
     sessions,
     themePref,
     visibleSessions,
@@ -3712,6 +3713,7 @@ function AppShellContent({
           openNewTaskSurface();
           void newTask.chooseProjectForProfile(profileId).catch(() => undefined);
         }}
+        onSelectedRuntimeHostProfileIdChange={setSettingsDiagnosticProfileId}
       />
     </div>
   );

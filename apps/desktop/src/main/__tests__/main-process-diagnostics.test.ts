@@ -118,6 +118,25 @@ test('accepts only a Runtime Host target and renderer context for capture', () =
     },
   );
   assert.throws(
+    () => parseDesktopDiagnosticInput({
+      surface: 'manual',
+      hostTarget: 'none',
+    }),
+    /Manual Desktop diagnostics require Runtime Host authority/,
+  );
+  assert.deepEqual(
+    parseDesktopDiagnosticInput({
+      surface: 'toast',
+      title: 'Renderer failed',
+      hostTarget: 'none',
+    }),
+    {
+      surface: 'toast',
+      title: 'Renderer failed',
+      hostTarget: 'none',
+    },
+  );
+  assert.throws(
     () => parseDesktopDiagnosticInput({ surface: 'manual', title: 'Not an error' }),
     /Invalid Desktop diagnostic input/,
   );
@@ -215,7 +234,7 @@ test('copies Desktop diagnostics while the scoped Host is reconnecting', async (
   assert.match(clipboard, /Diagnostics unavailable: Runtime Host is reconnecting/);
 });
 
-test('copies error diagnostics when the default Runtime Host cannot be resolved', async () => {
+test('keeps renderer-only error diagnostics Desktop-only', async () => {
   type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
   const handlers = new Map<string, IpcHandler>();
   let clipboard = '';
@@ -228,10 +247,10 @@ test('copies error diagnostics when the default Runtime Host cannot be resolved'
     environment: () => environment,
     mainLogs: () => ['main remained available'],
     resolveActiveRuntimeHost: () => {
-      throw new Error('The default Runtime Host is unavailable');
+      throw new Error('Desktop-only diagnostics must not resolve the default Host');
     },
     resolveRuntimeHost: () => {
-      throw new Error('Default capture must not resolve a task Host');
+      throw new Error('Desktop-only diagnostics must not resolve a task Host');
     },
     writeClipboard: (value) => {
       clipboard = value;
@@ -243,11 +262,14 @@ test('copies error diagnostics when the default Runtime Host cannot be resolved'
   await handler(
     {} as never,
     undefined,
-    { surface: 'renderer_crash', title: 'Renderer failed', hostTarget: 'default' },
+    { surface: 'renderer_crash', title: 'Renderer failed', hostTarget: 'none' },
   );
 
   assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
-  assert.match(clipboard, /Diagnostics unavailable: Runtime Host is reconnecting/);
+  assert.match(
+    clipboard,
+    /Diagnostics unavailable: No Runtime Host authority was associated with this error/,
+  );
 });
 
 test('copies task error diagnostics without Host evidence when its scope is unavailable', async () => {
@@ -300,9 +322,10 @@ test('copies bounded evidence for the exact failed Turn', async () => {
   let clipboard = '';
   const runtime: ReturnType<DesktopDiagnosticsIpcDeps['resolveRuntimeHost']> = {
     getDiagnostics: async () => runtimeHostDiagnostics,
-    getTurnTrace: async (sessionId: string, turnId: string) => {
+    getTurnTrace: async (sessionId: string, turnId: string, timeoutMs: number) => {
       assert.equal(sessionId, 'session-1');
       assert.equal(turnId, 'turn-1');
+      assert.equal(timeoutMs, 2_000);
       return {
         turnId,
         runId: 'run-1',
@@ -609,6 +632,44 @@ test('rejects a default diagnostic request that carries a task Host scope', asyn
       },
     ),
     /Default Desktop diagnostics must not carry a Host scope/,
+  );
+});
+
+test('rejects Desktop-only diagnostics that carry a Host scope', async () => {
+  type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+  const handlers = new Map<string, IpcHandler>();
+  registerDesktopDiagnosticsIpc({
+    ipcMain: {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    environment: () => environment,
+    mainLogs: () => [],
+    resolveActiveRuntimeHost: () => {
+      throw new Error('Desktop-only capture must be rejected before Host resolution');
+    },
+    resolveRuntimeHost: () => {
+      throw new Error('Desktop-only capture must be rejected before Host resolution');
+    },
+    writeClipboard() {
+      throw new Error('Desktop-only capture must be rejected before clipboard output');
+    },
+  });
+
+  const handler = handlers.get('diagnostics:copyReport');
+  assert.ok(handler);
+  await assert.rejects(
+    handler(
+      {} as never,
+      { hostId: 'unrelated-host', targetEpoch: 'unrelated-target' },
+      {
+        surface: 'toast',
+        title: 'Renderer failed',
+        hostTarget: 'none',
+      },
+    ),
+    /Desktop-only diagnostics must not carry a Host scope/,
   );
 });
 

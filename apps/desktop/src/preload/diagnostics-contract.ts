@@ -35,11 +35,18 @@ export interface DesktopErrorDiagnosticInput {
 
 export type DesktopDiagnosticInput = DesktopManualDiagnosticInput | DesktopErrorDiagnosticInput;
 
-export type DesktopDiagnosticHostTarget = 'default' | 'task';
+/**
+ * Runtime Host authority attached to one diagnostic request.
+ *
+ * `none` is intentionally distinct from `default`: renderer-local failures
+ * have no Runtime Host whose logs can be attributed to them, while a manual
+ * capture with no explicit task asks for the current default Host.
+ */
+export type DesktopDiagnosticHostTarget = 'none' | 'default' | 'task';
 
 export type DesktopManualDiagnosticWireInput = Omit<DesktopManualDiagnosticInput, 'target'> &
   DesktopDiagnosticRendererContext & {
-    readonly hostTarget: DesktopDiagnosticHostTarget;
+    readonly hostTarget: Exclude<DesktopDiagnosticHostTarget, 'none'>;
   };
 
 export type DesktopErrorDiagnosticWireInput = Omit<DesktopErrorDiagnosticInput, 'target'> &

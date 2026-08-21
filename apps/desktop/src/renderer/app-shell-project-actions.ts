@@ -56,7 +56,6 @@ export function createAppShellProjectActions(deps: {
   projects: readonly ProjectRecord[];
   projectCapabilities: DesktopProjectCapabilities;
   sessionId?: string;
-  defaultProfileId?: string;
   onProjectSelected(ownerSessionId?: string): void;
   toastApi: ToastApi;
 }): AppShellProjectActions {
@@ -71,15 +70,17 @@ export function createAppShellProjectActions(deps: {
     projects,
     projectCapabilities,
     sessionId,
-    defaultProfileId,
     onProjectSelected,
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).projectActions;
-  const defaultDiagnosticTarget = defaultProfileId ? { profileId: defaultProfileId } : undefined;
   const sessionDiagnosticTarget = sessionId ? { sessionId } : undefined;
   const showDefaultProjectError = (title: string, description?: string) => {
-    toastApi.error(title, description, undefined, defaultDiagnosticTarget);
+    // These operations use the default Host implicitly. Without an explicit
+    // Host ref captured by the operation, a profile sampled elsewhere could
+    // identify a different Host after a default switch. Desktop-only evidence
+    // is preferable to a confidently wrong Runtime Host report.
+    toastApi.error(title, description);
   };
   const showSessionProjectError = (title: string, description?: string) => {
     toastApi.error(title, description, undefined, sessionDiagnosticTarget);

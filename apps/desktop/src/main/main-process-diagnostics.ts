@@ -69,7 +69,7 @@ export function parseDesktopDiagnosticInput(input: unknown): DesktopDiagnosticWi
     }
     return {
       surface: 'manual',
-      hostTarget: parseDiagnosticHostTarget(record.hostTarget),
+      hostTarget: parseManualDiagnosticHostTarget(record.hostTarget),
       ...optionalBoundedString(record, 'rendererUserAgent', INPUT_LIMITS.rendererUserAgent),
       ...optionalBoundedString(record, 'rendererLocale', INPUT_LIMITS.rendererLocale),
     };
@@ -170,8 +170,18 @@ export function formatDesktopDiagnosticReport(
 }
 
 function parseDiagnosticHostTarget(value: unknown): DesktopDiagnosticHostTarget {
-  if (value === 'default' || value === 'task') return value;
+  if (value === 'none' || value === 'default' || value === 'task') return value;
   throw new TypeError('Invalid Desktop diagnostic Runtime Host target');
+}
+
+function parseManualDiagnosticHostTarget(
+  value: unknown,
+): Exclude<DesktopDiagnosticHostTarget, 'none'> {
+  const target = parseDiagnosticHostTarget(value);
+  if (target === 'none') {
+    throw new TypeError('Manual Desktop diagnostics require Runtime Host authority');
+  }
+  return target;
 }
 
 function parseExecutionDiagnosticTarget(value: unknown): DesktopExecutionDiagnosticTarget {

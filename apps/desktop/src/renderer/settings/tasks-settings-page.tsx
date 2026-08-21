@@ -125,15 +125,15 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
         // still running, and "N still there" gives the reader nothing to do.
         const reason = !outcome.verified
           ? copy.purgeUnverified
-          : outcome.firstError
-            ? settingsActionErrorMessage(outcome.firstError, locale)
+          : outcome.firstFailure
+            ? settingsActionErrorMessage(outcome.firstFailure.error, locale)
             : copy.purgeFailedBody(outcome.remaining.length);
         toast.error(
           copy.purgeFailedTitle,
           kept ? `${reason} ${kept}` : reason,
           undefined,
-          outcome.firstErrorSessionId
-            ? { sessionId: outcome.firstErrorSessionId }
+          outcome.firstFailure
+            ? { sessionId: outcome.firstFailure.sessionId }
             : undefined,
         );
       } else {

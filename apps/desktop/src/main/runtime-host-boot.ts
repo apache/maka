@@ -1287,12 +1287,12 @@ function resolveRuntimeHostDiagnostics(scope: DesktopTargetScope) {
   const client = current.client;
   return {
     getDiagnostics: () => client.queryHostDiagnostics(),
-    getTurnTrace: async (sessionId: string, turnId: string) => {
+    getTurnTrace: async (sessionId: string, turnId: string, timeoutMs: number) => {
       const result = await client.request('execution.inspect.query', {
         kind: "turn_trace",
         sessionId,
         turnId,
-      });
+      }, timeoutMs);
       return result.kind === "turn_trace" ? result.turn : undefined;
     },
   };

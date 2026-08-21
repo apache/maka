@@ -49,7 +49,6 @@ import {
 } from './transcript-contract.js';
 import type {
   DesktopDiagnosticInput,
-  DesktopDiagnosticHostTarget,
   DesktopErrorDiagnosticWireInput,
   DesktopManualDiagnosticTarget,
   DesktopManualDiagnosticWireInput,
@@ -305,10 +304,13 @@ async function runtimeHostSessionRef(sessionId: string): Promise<{
   return { scope, sessionId: ref.sessionId };
 }
 
-type DiagnosticRuntimeHostResolution = {
-  readonly hostTarget: DesktopDiagnosticHostTarget;
+type DiagnosticRuntimeHostResolution<TTarget extends 'none' | 'default' | 'task'> = {
+  readonly hostTarget: TTarget;
   readonly scope?: DesktopTargetScope;
 };
+
+type TaskDiagnosticRuntimeHostResolution = DiagnosticRuntimeHostResolution<'task'>;
+type ManualDiagnosticRuntimeHostResolution = DiagnosticRuntimeHostResolution<'default' | 'task'>;
 
 type ManualDiagnosticHostSelector =
   | { readonly kind: 'host'; readonly hostId: string }
@@ -316,7 +318,7 @@ type ManualDiagnosticHostSelector =
 
 async function resolveManualDiagnosticRuntimeHost(
   value: DesktopManualDiagnosticTarget | undefined,
-): Promise<DiagnosticRuntimeHostResolution> {
+): Promise<ManualDiagnosticRuntimeHostResolution> {
   if (value === undefined) return { hostTarget: 'default' };
   const selector = parseManualDiagnosticTarget(value);
   return resolveTaskDiagnosticRuntimeHost(selector);
@@ -324,7 +326,7 @@ async function resolveManualDiagnosticRuntimeHost(
 
 async function resolveTaskDiagnosticRuntimeHost(
   selector: ManualDiagnosticHostSelector,
-): Promise<DiagnosticRuntimeHostResolution> {
+): Promise<TaskDiagnosticRuntimeHostResolution> {
   try {
     await runtimeHostScopeList();
   } catch {
@@ -2687,7 +2689,9 @@ const makaBridge = {
       }
       const { execution, target, ...errorInput } = input;
       if (!execution) {
-        const resolution = await resolveManualDiagnosticRuntimeHost(target);
+        const resolution: DiagnosticRuntimeHostResolution<'none' | 'default' | 'task'> = target
+          ? await resolveManualDiagnosticRuntimeHost(target)
+          : { hostTarget: 'none' };
         const wireInput: DesktopErrorDiagnosticWireInput = {
           ...errorInput,
           hostTarget: resolution.hostTarget,

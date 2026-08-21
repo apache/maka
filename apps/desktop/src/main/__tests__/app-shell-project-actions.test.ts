@@ -93,7 +93,6 @@ test('Project errors preserve the Host authority of the failed operation', async
         viewClientPath: false,
       },
       sessionId: 'session-key',
-      defaultProfileId: 'default-profile',
       onProjectSelected: () => {},
       toastApi: {
         success: () => {},
@@ -107,7 +106,7 @@ test('Project errors preserve the Host authority of the failed operation', async
     await actions.openProjectFolder();
 
     assert.deepEqual(diagnosticTargets, [
-      { profileId: 'default-profile' },
+      undefined,
       { sessionId: 'session-key' },
     ]);
   } finally {

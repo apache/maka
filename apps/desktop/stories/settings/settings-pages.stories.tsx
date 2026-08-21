@@ -1179,6 +1179,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           archivedTasks={archivedTasks}
           onTaskImported={noop}
           onRemoteHostAdded={noop}
+          onSelectedRuntimeHostProfileIdChange={noop}
         />
       </div>
     </>

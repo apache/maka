@@ -5,6 +5,15 @@ import { diagnosticInputForErrorToast } from '../../renderer/app-shell-toast-dia
 test('preserves stable Host targets independently from optional execution evidence', () => {
   assert.deepEqual(
     diagnosticInputForErrorToast({
+      title: 'Client failure',
+    }),
+    {
+      surface: 'toast',
+      title: 'Client failure',
+    },
+  );
+  assert.deepEqual(
+    diagnosticInputForErrorToast({
       title: 'Task operation failed',
       diagnosticTarget: { sessionId: '["remote-host","session-1"]' },
     }),
