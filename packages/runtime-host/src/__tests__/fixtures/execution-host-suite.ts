@@ -517,7 +517,6 @@ export class ExecutionFixture {
           systemPrompt: 'Read the assigned workspace task.',
           toolNames: ['Read', 'Glob', 'Grep'],
           categoryPolicy: { read: 'allow' },
-          permissionCeiling: 'ask',
         },
         subagentSpawn: {
           schemaVersion: 1,

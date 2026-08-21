@@ -1874,7 +1874,6 @@ describe('SqliteSessionMetadataStore', () => {
       systemPrompt: 'Read the assigned workspace task.',
       toolNames: ['Read', 'Glob', 'Grep'],
       categoryPolicy: { read: 'allow' as const },
-      permissionCeiling: 'ask' as const,
     };
     const subagentSpawn = {
       schemaVersion: 1 as const,
@@ -1973,7 +1972,6 @@ describe('SqliteSessionMetadataStore', () => {
       systemPrompt: 'Original durable prompt.',
       toolNames: ['Read'],
       categoryPolicy: { read: 'allow' as const },
-      permissionCeiling: 'ask' as const,
     };
     const childHeader = (overrides: Partial<SessionHeader>): SessionHeader =>
       fullHeader({
@@ -3086,7 +3084,6 @@ function graphChildHeader(overrides: Partial<SessionHeader> = {}): SessionHeader
       systemPrompt: 'Read only.',
       toolNames: ['Read'],
       categoryPolicy: { read: 'allow' },
-      permissionCeiling: 'ask',
     },
     subagentSpawn: {
       schemaVersion: 1,

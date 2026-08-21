@@ -204,3 +204,31 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
     ...overrides,
   };
 }
+
+describe('legacy child execution snapshots', () => {
+  const runtime = {
+    schemaVersion: 1,
+    definitionVersion: 1,
+    agentId: 'agent-1',
+    agentName: 'Reader',
+    profile: 'local_read',
+    systemPrompt: 'Read only.',
+    toolNames: ['Read'],
+    categoryPolicy: { read: 'allow' },
+  } as const;
+
+  test('accepts a snapshot carrying a retired key', () => {
+    // Written before `permissionCeiling` was dropped. Rejecting it would make
+    // the whole child Session unreadable, and nothing reads the value.
+    assert.equal(isSubagentSessionRuntime({ ...runtime, permissionCeiling: 'execute' }), true);
+    assert.equal(isSubagentSessionRuntime({ ...runtime, permissionCeiling: 'ask' }), true);
+  });
+
+  test('accepts a current snapshot without the key', () => {
+    assert.equal(isSubagentSessionRuntime(runtime), true);
+  });
+
+  test('still rejects a key that was never part of the shape', () => {
+    assert.equal(isSubagentSessionRuntime({ ...runtime, notAField: 'x' }), false);
+  });
+});
