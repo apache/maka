@@ -1,6 +1,6 @@
 # Maka CLI
 
-[简体中文](https://github.com/maka-agent/maka-agent/blob/main/packages/cli/README.zh-CN.md)
+[简体中文](https://github.com/apache/maka/blob/main/packages/cli/README.zh-CN.md)
 
 Maka is a local-first agent workspace. The `maka-agent` npm package installs the interactive
 terminal UI, the non-interactive CLI, Runtime Host tooling, and the Eval command.
@@ -58,7 +58,7 @@ to switch models.
 API keys and workspace state stay in the local `Maka` profile. The current credential vault is a
 local plaintext file protected by the operating-system account boundary; on POSIX systems Maka
 enforces owner-only directory and file modes. It is not an OS keychain. See the repository
-[security policy](https://github.com/maka-agent/maka-agent/blob/main/SECURITY.md) for the current
+[security policy](https://github.com/apache/maka/blob/main/SECURITY.md) for the current
 boundary.
 
 Run one non-interactive turn with:
@@ -158,7 +158,7 @@ python3.12 -m venv ~/.venvs/maka-pier-0.3.0
 Set the spec's `pythonPathEnv` to the corresponding `bin/python` path. Do not reuse one environment
 for both frameworks: their dependency and trial contracts differ. Advanced experiment and
 toolchain details live in the
-[Eval documentation](https://github.com/maka-agent/maka-agent/tree/main/packages/eval).
+[Eval documentation](https://github.com/apache/maka/tree/main/packages/eval).
 
 ## Troubleshooting
 
@@ -178,10 +178,10 @@ maka --version
 - When reporting a problem, include the three versions above, the operating system and
   architecture, the command, and the complete error with credentials removed.
 
-Report issues at <https://github.com/maka-agent/maka-agent/issues>.
+Report issues at <https://github.com/apache/maka/issues>.
 
 ## Links
 
-- [Repository](https://github.com/maka-agent/maka-agent)
-- [Release operations](https://github.com/maka-agent/maka-agent/blob/main/docs/cli-npm-release.md)
-- [License](https://github.com/maka-agent/maka-agent/blob/main/LICENSE)
+- [Repository](https://github.com/apache/maka)
+- [Release operations](https://github.com/apache/maka/blob/main/docs/cli-npm-release.md)
+- [License](https://github.com/apache/maka/blob/main/LICENSE)

@@ -61,7 +61,8 @@ test('stage builds the npm candidate from the exact product release commit', () 
   assert.match(workflow, /source_commit: \$\{\{ needs\.authorize\.outputs\.source_commit \}\}/u);
   assert.match(workflow, /ref: \$\{\{ needs\.authorize\.outputs\.source_commit \}\}/u);
   assert.match(workflow, /product-release-authority\.mjs verify-draft/u);
-  assert.match(workflow, /EXPECTED_PRODUCT_SOURCE_COMMIT/u);
+  assert.match(workflow, /EXPECTED_PRODUCT_VERSION/u);
+  assert.doesNotMatch(workflow, /EXPECTED_PRODUCT_TAG|EXPECTED_PRODUCT_SOURCE_COMMIT/u);
   assert.match(workflow, /RELEASE_SHA: \$\{\{ github\.sha \}\}/u);
   const bind = namedStep(workflowSteps(workflow), 'Bind the candidate to this workflow run');
   assert.match(bind, /PRODUCT_TAG: \$\{\{ needs\.authorize\.outputs\.product_tag \}\}/u);

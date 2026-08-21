@@ -8,7 +8,6 @@ import { promisify } from 'node:util';
 import { parse as parseYaml } from 'yaml';
 import desktopBuilderConfig from '../apps/desktop/electron-builder.config.mjs';
 import {
-  assertProductReleaseExpectation,
   parseAsfSourceReferenceTag,
   resolveProductManifestIdentity,
   resolveProductReleaseIdentity,
@@ -227,6 +226,13 @@ test('the product identity CLI uses the checked-out commit outside GitHub Action
   ]);
 
   assert.equal(stdout.trim(), `Product release v${manifest.version} from ${head.trim()}`);
+  await assert.rejects(
+    execFileAsync(process.execPath, [join(repoRoot, 'scripts/product-release-identity.mjs')], {
+      cwd: repoRoot,
+      env: { ...env, EXPECTED_PRODUCT_VERSION: '9.9.9' },
+    }),
+    /does not match requested release/u,
+  );
 });
 
 test('product release identity rejects a non-canonical version at its boundary', () => {
@@ -241,33 +247,6 @@ test('product release identity rejects a non-canonical version at its boundary',
       }),
     /valid product release version/u,
   );
-});
-
-test('an npm candidate must name the exact product tag, version, and source commit', () => {
-  const identity = resolveProductReleaseIdentity({
-    rootManifest,
-    desktopManifest: { version: '1.2.3' },
-    cliManifest: { version: '1.2.3', bin: { maka: './dist/cli.js' } },
-    sha: 'a'.repeat(40),
-  });
-
-  assert.doesNotThrow(() =>
-    assertProductReleaseExpectation(identity, {
-      version: '1.2.3',
-      tag: 'v1.2.3',
-      sourceCommit: 'a'.repeat(40),
-    }),
-  );
-  for (const expected of [
-    { version: '1.2.4', tag: 'v1.2.3', sourceCommit: 'a'.repeat(40) },
-    { version: '1.2.3', tag: 'v1.2.4', sourceCommit: 'a'.repeat(40) },
-    { version: '1.2.3', tag: 'v1.2.3', sourceCommit: 'b'.repeat(40) },
-  ]) {
-    assert.throws(
-      () => assertProductReleaseExpectation(identity, expected),
-      /does not match product release/u,
-    );
-  }
 });
 
 test('product tag creation is exact and idempotent but rejects a conflicting commit', async () => {

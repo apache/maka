@@ -126,23 +126,9 @@ export function resolveProductReleaseIdentity({
     dmg,
     exe,
     cliArchive,
-    cliChecksum: `${cliArchive}.sha256`,
     sourceArchive,
     artifacts,
   };
-}
-
-export function assertProductReleaseExpectation(identity, { version, tag, sourceCommit }) {
-  if (
-    identity.version !== version ||
-    identity.tag !== tag ||
-    identity.sourceCommit !== sourceCommit
-  ) {
-    throw new Error(
-      `Checked source ${identity.tag} at ${identity.sourceCommit} does not match product release ${tag} at ${sourceCommit}`,
-    );
-  }
-  return identity;
 }
 
 async function readProductManifests() {
@@ -186,7 +172,6 @@ function githubOutputEntries(identity) {
     dmg: identity.dmg,
     exe: identity.exe,
     cli_archive: identity.cliArchive,
-    cli_checksum: identity.cliChecksum,
     source_archive: identity.sourceArchive,
     node_version: identity.nodeVersion,
     node_archive: identity.nodeArchive,
@@ -198,16 +183,11 @@ function githubOutputEntries(identity) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const identity = await readProductReleaseIdentity();
-  if (
-    process.env.EXPECTED_PRODUCT_VERSION ||
-    process.env.EXPECTED_PRODUCT_TAG ||
-    process.env.EXPECTED_PRODUCT_SOURCE_COMMIT
-  ) {
-    assertProductReleaseExpectation(identity, {
-      version: process.env.EXPECTED_PRODUCT_VERSION,
-      tag: process.env.EXPECTED_PRODUCT_TAG,
-      sourceCommit: process.env.EXPECTED_PRODUCT_SOURCE_COMMIT,
-    });
+  const expectedVersion = process.env.EXPECTED_PRODUCT_VERSION;
+  if (expectedVersion !== undefined && identity.version !== expectedVersion) {
+    throw new Error(
+      `Checked product version ${identity.version} does not match requested release ${expectedVersion}`,
+    );
   }
   if (process.env.GITHUB_OUTPUT) {
     const output = Object.entries(githubOutputEntries(identity))

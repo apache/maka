@@ -56,8 +56,6 @@ jobs:
         env:
           GITHUB_SHA: ${{ steps.product.outputs.source_commit }}
           EXPECTED_PRODUCT_VERSION: ${{ inputs.version }}
-          EXPECTED_PRODUCT_TAG: ${{ steps.product.outputs.product_tag }}
-          EXPECTED_PRODUCT_SOURCE_COMMIT: ${{ steps.product.outputs.source_commit }}
         run: node scripts/product-release-identity.mjs
 
   validate:

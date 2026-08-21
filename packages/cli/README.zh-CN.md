@@ -54,7 +54,7 @@ maka
 API Key 和工作空间状态保存在本机的 `Maka` profile 中。当前 credential vault 是受操作系统
 账号边界保护的本地明文文件；在 POSIX 系统上，Maka 会强制使用仅 owner 可访问的目录和文件
 权限。它不是操作系统 Keychain。当前边界详见仓库的
-[安全策略](https://github.com/maka-agent/maka-agent/blob/main/SECURITY.md)。
+[安全策略](https://github.com/apache/maka/blob/main/SECURITY.md)。
 
 执行一次非交互 Turn：
 
@@ -147,7 +147,7 @@ python3.12 -m venv ~/.venvs/maka-pier-0.3.0
 
 把 spec 的 `pythonPathEnv` 指向相应的 `bin/python`。不要让两个 framework 复用一个环境：
 它们的依赖和 trial contract 不同。高级实验和 toolchain 说明位于
-[Eval 文档](https://github.com/maka-agent/maka-agent/tree/main/packages/eval)。
+[Eval 文档](https://github.com/apache/maka/tree/main/packages/eval)。
 
 ## 故障排查
 
@@ -166,10 +166,10 @@ maka --version
 - 报告问题时，请提供以上三个版本、操作系统和架构、执行的命令，以及移除凭证后的完整
   错误信息。
 
-请在 <https://github.com/maka-agent/maka-agent/issues> 报告问题。
+请在 <https://github.com/apache/maka/issues> 报告问题。
 
 ## 链接
 
-- [代码仓库](https://github.com/maka-agent/maka-agent)
-- [发布操作手册](https://github.com/maka-agent/maka-agent/blob/main/docs/cli-npm-release.zh-CN.md)
-- [许可证](https://github.com/maka-agent/maka-agent/blob/main/LICENSE)
+- [代码仓库](https://github.com/apache/maka)
+- [发布操作手册](https://github.com/apache/maka/blob/main/docs/cli-npm-release.zh-CN.md)
+- [许可证](https://github.com/apache/maka/blob/main/LICENSE)

@@ -28,7 +28,6 @@ jobs:
       dmg: ${{ steps.identity.outputs.dmg }}
       exe: ${{ steps.identity.outputs.exe }}
       cli_archive: ${{ steps.identity.outputs.cli_archive }}
-      cli_checksum: ${{ steps.identity.outputs.cli_checksum }}
       source_archive: ${{ steps.identity.outputs.source_archive }}
       node_version: ${{ steps.identity.outputs.node_version }}
       npm_version: ${{ steps.identity.outputs.npm_version }}
