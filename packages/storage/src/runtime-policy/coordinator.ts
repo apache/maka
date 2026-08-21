@@ -29,6 +29,7 @@ import {
   type RequestHeaderUpdate,
   type SavedRequestHeaders,
   type SetCredentialInput,
+  type MigrateSystemSeedInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
@@ -294,6 +295,10 @@ export class RuntimePolicyCoordinator {
 
   setDefaultTarget(input: SetDefaultConnectionTargetInput) {
     return this.inLane((root) => this.catalog.setDefaultTarget(root, input));
+  }
+
+  migrateSystemSeed(input: MigrateSystemSeedInput) {
+    return this.inLane((root) => this.catalog.migrateSystemSeed(root, input));
   }
 
   setCredential(rawInput: SetCredentialInput) {

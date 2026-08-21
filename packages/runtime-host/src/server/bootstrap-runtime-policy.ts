@@ -41,6 +41,22 @@ export async function ensureBootstrapRuntimePolicy(input: {
   const journalPath = join(input.workspaceRoot, JOURNAL_FILE);
   const resuming = await readJournal(journalPath);
   const initialCatalog = await input.stores.connectionCatalog.getSnapshot();
+  if (initialCatalog.connections.length > 0) {
+    // One atomic catalog mutation: enabled ids, static inventory, and a
+    // retarget of a system default the migration removes all land in the same
+    // document write, so no restart can observe a half-migrated row.
+    try {
+      await input.stores.connectionCatalog.migrateSystemSeed({
+        slug: 'opencode-free',
+        providerType: 'opencode-free',
+        legacyEnabledModelIds: LEGACY_OPENCODE_FREE_SEEDS,
+        enabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+        defaultModelId: OPENCODE_FREE_DEFAULT_MODEL,
+      });
+    } catch (error) {
+      input.onDeferredError?.(error);
+    }
+  }
   if (!resuming) {
     if (initialCatalog.connections.length > 0) return;
     await writeJournal(journalPath);
@@ -145,6 +161,21 @@ async function ensureConnection(
   }
   throw new Error(`Bootstrap Connection could not be created: ${seed.slug}`);
 }
+
+/**
+ * Every opencode-free inventory a past release seeded, verbatim. A row still
+ * equal to one of these is provably system-owned and may follow the current
+ * seed; any other value is a user selection and is never touched. Every
+ * release that changes the derived seed must append the previous value here,
+ * or rows it planted read as user selections forever. (This exact-match
+ * enumeration is deliberately lossy; the versioned seed policy discussed in
+ * #3354 is the durable replacement.)
+ */
+const LEGACY_OPENCODE_FREE_SEEDS: readonly (readonly string[])[] = [
+  ['big-pickle'],
+  ['nemotron-3-ultra-free'],
+  ['nemotron-3-ultra-free', 'mimo-v2.5-free', 'deepseek-v4-flash-free'],
+];
 
 async function removeFailedBootstrapConnection(
   stores: RuntimePolicyStoresWriter,

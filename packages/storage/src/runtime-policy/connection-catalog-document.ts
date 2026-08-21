@@ -25,6 +25,7 @@ import {
   type CreateCatalogConnectionInput,
   type RemoveCatalogConnectionInput,
   type SetDefaultConnectionTargetInput,
+  type MigrateSystemSeedInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
 import {
@@ -306,6 +307,66 @@ export class ConnectionCatalogDocumentOwner {
       current,
       current.connections.filter((_item, candidate) => candidate !== index),
     );
+    await this.write(root, next);
+    return committed(next);
+  }
+
+  /**
+   * Built-in seed evolution as ONE atomic catalog mutation. A row whose
+   * `enabledModelIds` still exactly match a historical system seed is provably
+   * system-owned: it follows the current seed, its static inventory is
+   * re-derived from the current build, and a default target the migration
+   * removes is retargeted inside the same document write — so no restart can
+   * observe enabled ids without their inventory, or a nulled default awaiting
+   * a second write. Any other inventory (including a reordering) is a user
+   * selection and is never touched; an already-null default stays null.
+   */
+  async migrateSystemSeed(
+    root: string,
+    input: MigrateSystemSeedInput,
+  ): Promise<ConnectionCatalogMutationResult> {
+    if (!input.enabledModelIds.includes(input.defaultModelId)) {
+      throw codecError('invalid_connection_input', 'Seed default must be in the seed selection');
+    }
+    const current = await this.read(root);
+    const index = current.connections.findIndex(
+      (item) => item.slug === input.slug && item.providerType === input.providerType,
+    );
+    const previous = current.connections[index];
+    const sameIds = (left: readonly string[], right: readonly string[]) =>
+      left.length === right.length && left.every((id, position) => id === right[position]);
+    if (
+      !previous ||
+      sameIds(previous.enabledModelIds, input.enabledModelIds) ||
+      !input.legacyEnabledModelIds.some((seed) => sameIds(previous.enabledModelIds, seed))
+    ) {
+      return committed(current);
+    }
+    const fallbackModels = fallbackInventory(previous.providerType);
+    const {
+      lastTest: _lastTest,
+      modelSource: _modelSource,
+      modelsFetchedAt: _modelsFetchedAt,
+      ...retained
+    } = previous;
+    const connections = [...current.connections];
+    connections[index] = {
+      ...retained,
+      revision: nextRevision(previous.revision),
+      enabledModelIds: [...input.enabledModelIds],
+      models: fallbackModels,
+      ...(fallbackModels.length > 0
+        ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
+        : {}),
+    };
+    const target = current.defaultTarget;
+    const defaultTarget =
+      target !== null &&
+      target.connectionId === previous.connectionId &&
+      !input.enabledModelIds.includes(target.modelId)
+        ? { connectionId: previous.connectionId, modelId: input.defaultModelId }
+        : target;
+    const next = this.nextDocument(current, connections, defaultTarget);
     await this.write(root, next);
     return committed(next);
   }
