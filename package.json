@@ -8,6 +8,7 @@
   },
   "packageManager": "npm@11.19.0",
   "releaseToolchain": {
+    "appleTeamIdentifier": "FABM2QUA8Q",
     "node": "24.18.1",
     "nodeDarwinArm64Sha256": "1d60b703fe5d7e7072489be8187f430f1a095a658c31e5e1e281331a5873fac3"
   },

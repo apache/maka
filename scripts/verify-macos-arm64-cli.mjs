@@ -20,9 +20,11 @@ import { promisify, stripVTControlCharacters } from 'node:util';
 import {
   assertMacosArm64CliHost,
   assertNoDanglingSymlinks,
+  extractOfficialNodeEntitlements,
   inspectNativeArtifacts,
   isMacosArm64MachO,
   listApplicableDependencyPatchNames,
+  NODE_RUNTIME_ENTITLEMENTS,
   resolveCliWorkspacePackages,
   resolveMacosArm64CliArtifactPaths,
 } from './package-macos-arm64-cli.mjs';
@@ -266,7 +268,7 @@ async function smokePackagedEval(archiveRoot, sourceCommit, environment, run) {
       benchmark: {
         id: 'release-smoke',
         version: sourceCommit,
-        config: { repository: 'https://github.com/maka-agent/maka-agent.git' },
+        config: { repository: 'https://github.com/apache/maka.git' },
       },
       executor: {
         kind: 'harbor',
@@ -454,8 +456,10 @@ async function smokePatchedStreamingToolCalls(archiveRoot) {
   assertPatchedStreamingToolCalls(parts);
 }
 
-async function verifyBinarySignatures(binaryPaths, { requireReleaseSigning, run }) {
-  let expectedTeamIdentifier;
+async function verifyBinarySignatures(
+  binaryPaths,
+  { expectedTeamIdentifier, nodePath, requireReleaseSigning, run },
+) {
   for (const binaryPath of binaryPaths) {
     await run('codesign', ['--verify', '--strict', '--verbose=2', binaryPath]);
     if (!requireReleaseSigning) continue;
@@ -464,9 +468,14 @@ async function verifyBinarySignatures(binaryPaths, { requireReleaseSigning, run 
     if (!details.authority || !details.hardenedRuntime || !details.teamIdentifier) {
       throw new Error(`${binaryPath} is not signed with a hardened Developer ID identity.`);
     }
-    expectedTeamIdentifier ??= details.teamIdentifier;
     if (details.teamIdentifier !== expectedTeamIdentifier) {
-      throw new Error(`${binaryPath} is signed by a different Developer ID team.`);
+      throw new Error(
+        `${binaryPath} is signed by Apple team ${details.teamIdentifier}, expected ${expectedTeamIdentifier}.`,
+      );
+    }
+    if (resolve(binaryPath) === resolve(nodePath)) {
+      const entitlements = await run('codesign', ['-d', '--entitlements', ':-', binaryPath]);
+      extractOfficialNodeEntitlements(`${entitlements.stdout}\n${entitlements.stderr}`);
     }
   }
   return expectedTeamIdentifier;
@@ -558,7 +567,9 @@ export async function verifyMacosArm64Cli(
       metadata.node?.sourceUrl !== toolchain.nodeSourceUrl ||
       metadata.node?.archive !== toolchain.nodeArchive ||
       metadata.node?.archiveSha256 !== toolchain.nodeArchiveSha256 ||
+      JSON.stringify(metadata.node?.entitlements) !== JSON.stringify(NODE_RUNTIME_ENTITLEMENTS) ||
       metadata.npmVersion !== toolchain.npmVersion ||
+      (requireReleaseSigning && metadata.signingTeamIdentifier !== toolchain.appleTeamIdentifier) ||
       JSON.stringify(metadata.publicCommands) !== JSON.stringify(['maka'])
     ) {
       throw new Error('CLI release metadata does not match the product release identity.');
@@ -602,6 +613,8 @@ export async function verifyMacosArm64Cli(
     const nodeDependencies = await run('otool', ['-L', nodePath]);
     assertSelfContainedNode(nodeDependencies.stdout);
     const signingTeamIdentifier = await verifyBinarySignatures(machOBinaries, {
+      expectedTeamIdentifier: toolchain.appleTeamIdentifier,
+      nodePath,
       requireReleaseSigning,
       run,
     });

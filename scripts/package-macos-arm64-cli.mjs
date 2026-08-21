@@ -45,6 +45,14 @@ const requiredSigningEnvironment = [
   'APPLE_API_KEY_ID',
   'APPLE_API_ISSUER',
 ];
+export const NODE_RUNTIME_ENTITLEMENTS = Object.freeze([
+  'com.apple.security.cs.allow-dyld-environment-variables',
+  'com.apple.security.cs.allow-jit',
+  'com.apple.security.cs.allow-unsigned-executable-memory',
+  'com.apple.security.cs.disable-executable-page-protection',
+  'com.apple.security.cs.disable-library-validation',
+  'com.apple.security.get-task-allow',
+]);
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
@@ -331,14 +339,36 @@ export function assertOfficialNodeRuntime({
   }
 }
 
+export function extractOfficialNodeEntitlements(output) {
+  const start = output.indexOf('<?xml');
+  const end = output.indexOf('</plist>');
+  if (start < 0 || end < start) {
+    throw new Error('Official Node runtime has no readable entitlement plist.');
+  }
+  const plist = output.slice(start, end + '</plist>'.length);
+  const allKeys = [...plist.matchAll(/<key>([^<]+)<\/key>/gu)].map((match) => match[1]).sort();
+  const keys = [...plist.matchAll(/<key>([^<]+)<\/key>\s*<true\s*\/>/gu)]
+    .map((match) => match[1])
+    .sort();
+  if (
+    JSON.stringify(allKeys) !== JSON.stringify(NODE_RUNTIME_ENTITLEMENTS) ||
+    JSON.stringify(keys) !== JSON.stringify(NODE_RUNTIME_ENTITLEMENTS)
+  ) {
+    throw new Error('Official Node runtime entitlements do not match the reviewed contract.');
+  }
+  return plist;
+}
+
 async function inspectReleaseToolchain({ execPath, env, inspect, toolchain }) {
-  const [nodeVersion, npmVersion, architectures, signature, dependencies] = await Promise.all([
-    inspect(execPath, ['-p', 'process.versions.node'], { env }),
-    inspect('npm', ['--version'], { env }),
-    inspect('lipo', ['-archs', execPath], { env }),
-    inspect('codesign', ['-d', '--verbose=4', execPath], { env }),
-    inspect('otool', ['-L', execPath], { env }),
-  ]);
+  const [nodeVersion, npmVersion, architectures, signature, entitlements, dependencies] =
+    await Promise.all([
+      inspect(execPath, ['-p', 'process.versions.node'], { env }),
+      inspect('npm', ['--version'], { env }),
+      inspect('lipo', ['-archs', execPath], { env }),
+      inspect('codesign', ['-d', '--verbose=4', execPath], { env }),
+      inspect('codesign', ['-d', '--entitlements', ':-', execPath], { env }),
+      inspect('otool', ['-L', execPath], { env }),
+    ]);
   assertOfficialNodeRuntime({
     actualVersion: nodeVersion.stdout.trim(),
     expectedVersion: toolchain.nodeVersion,
@@ -351,6 +381,7 @@ async function inspectReleaseToolchain({ execPath, env, inspect, toolchain }) {
       `CLI release requires npm ${toolchain.npmVersion}, found ${npmVersion.stdout.trim()}.`,
     );
   }
+  return extractOfficialNodeEntitlements(`${entitlements.stdout}\n${entitlements.stderr}`);
 }
 
 export async function assertOfficialNodeArchive(
@@ -547,15 +578,31 @@ export function decodeSigningCertificate(value) {
 
 export function parseDeveloperIdApplicationIdentity(output) {
   const identities = [...output.matchAll(/^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"([^"]+)"\s*$/gmu)]
-    .map((match) => ({ hash: match[1].toUpperCase(), name: match[2] }))
+    .map((match) => ({
+      hash: match[1].toUpperCase(),
+      name: match[2],
+      teamIdentifier: / \(([A-Z0-9]{10})\)$/u.exec(match[2])?.[1],
+    }))
     .filter(({ name }) => name.startsWith('Developer ID Application:'));
   if (identities.length !== 1) {
     throw new Error('CLI signing keychain must contain one Developer ID Application identity.');
   }
+  if (!identities[0].teamIdentifier) {
+    throw new Error('Developer ID Application identity has no exact Apple Team ID.');
+  }
   return identities[0];
 }
 
-async function createSigningKeychain({ env, run, inspect }) {
+export function assertExpectedAppleTeam(identity, expectedTeamIdentifier) {
+  if (identity.teamIdentifier !== expectedTeamIdentifier) {
+    throw new Error(
+      `CLI signing identity belongs to Apple team ${identity.teamIdentifier}, expected ${expectedTeamIdentifier}.`,
+    );
+  }
+  return identity;
+}
+
+async function createSigningKeychain({ env, expectedTeamIdentifier, run, inspect }) {
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'maka-cli-signing-'));
   const certificatePath = join(temporaryRoot, 'identity.p12');
   const pemPath = join(temporaryRoot, 'identity.pem');
@@ -615,9 +662,14 @@ async function createSigningKeychain({ env, run, inspect }) {
       ['find-identity', '-v', '-p', 'codesigning', keychainFile],
       { env },
     );
+    const identity = assertExpectedAppleTeam(
+      parseDeveloperIdApplicationIdentity(identityOutput.stdout),
+      expectedTeamIdentifier,
+    );
     return {
       cleanup,
-      identity: parseDeveloperIdApplicationIdentity(identityOutput.stdout),
+      directory: temporaryRoot,
+      identity,
       keychainFile,
     };
   } catch (error) {
@@ -626,11 +678,18 @@ async function createSigningKeychain({ env, run, inspect }) {
   }
 }
 
-async function signCliBinaries(machOBinaries, { env, run, inspect }) {
+async function signCliBinaries(
+  machOBinaries,
+  { env, expectedTeamIdentifier, run, inspect, nodeEntitlements, nodePath },
+) {
   assertReleaseSigningEnvironment(env);
-  const signing = await createSigningKeychain({ env, run, inspect });
+  const signing = await createSigningKeychain({ env, expectedTeamIdentifier, run, inspect });
   try {
+    const nodeEntitlementsPath = join(signing.directory, 'node-entitlements.plist');
+    await writeFile(nodeEntitlementsPath, `${nodeEntitlements}\n`, { mode: 0o600 });
     for (const binaryPath of machOBinaries) {
+      const entitlements =
+        resolve(binaryPath) === resolve(nodePath) ? ['--entitlements', nodeEntitlementsPath] : [];
       await run(
         'codesign',
         [
@@ -638,6 +697,7 @@ async function signCliBinaries(machOBinaries, { env, run, inspect }) {
           '--options',
           'runtime',
           '--timestamp',
+          ...entitlements,
           '--sign',
           signing.identity.hash,
           '--keychain',
@@ -648,9 +708,18 @@ async function signCliBinaries(machOBinaries, { env, run, inspect }) {
       );
       await run('codesign', ['--verify', '--strict', '--verbose=2', binaryPath], { env });
     }
+    const signedNodeEntitlements = await inspect(
+      'codesign',
+      ['-d', '--entitlements', ':-', nodePath],
+      { env },
+    );
+    extractOfficialNodeEntitlements(
+      `${signedNodeEntitlements.stdout}\n${signedNodeEntitlements.stderr}`,
+    );
     return {
       identityName: signing.identity.name,
       machOBinaryCount: machOBinaries.length,
+      teamIdentifier: signing.identity.teamIdentifier,
     };
   } finally {
     await signing.cleanup();
@@ -750,7 +819,12 @@ export async function packageMacosArm64Cli({
       toolchain,
       { env, run },
     );
-    await inspectReleaseToolchain({ execPath: officialNode.execPath, env, inspect, toolchain });
+    const nodeEntitlements = await inspectReleaseToolchain({
+      execPath: officialNode.execPath,
+      env,
+      inspect,
+      toolchain,
+    });
 
     const installRoot = join(stagingRoot, 'install');
     await mkdir(installRoot, { recursive: true });
@@ -832,6 +906,7 @@ export async function packageMacosArm64Cli({
         sourceUrl: toolchain.nodeSourceUrl,
         archive: toolchain.nodeArchive,
         archiveSha256: toolchain.nodeArchiveSha256,
+        entitlements: NODE_RUNTIME_ENTITLEMENTS,
       },
       npmVersion: toolchain.npmVersion,
       dependencyPatches,
@@ -840,6 +915,7 @@ export async function packageMacosArm64Cli({
       workspacePackages: workspacePackages.map(({ name }) => name).sort(),
       machOBinaries: machOBinaries.map((path) => relative(archiveRoot, path)).sort(),
       signing: releaseSigning ? 'developer-id-notarized' : 'development',
+      signingTeamIdentifier: releaseSigning ? toolchain.appleTeamIdentifier : null,
     };
     await writeFile(
       join(archiveRoot, 'RELEASE.json'),
@@ -848,7 +924,16 @@ export async function packageMacosArm64Cli({
     );
 
     let signing;
-    if (releaseSigning) signing = await signCliBinaries(machOBinaries, { env, run, inspect });
+    if (releaseSigning) {
+      signing = await signCliBinaries(machOBinaries, {
+        env,
+        expectedTeamIdentifier: toolchain.appleTeamIdentifier,
+        run,
+        inspect,
+        nodeEntitlements,
+        nodePath: join(embeddedNodeDirectory, 'bin', 'node'),
+      });
+    }
     await createCliZip(archiveRoot, archivePath, { env, run });
     if (releaseSigning) await notarizeCliZip(archivePath, { env, inspect });
 

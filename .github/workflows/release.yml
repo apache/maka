@@ -3,9 +3,9 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      source_commit:
-        description: Exact main ancestor used only to retry an interrupted Draft publication
-        required: false
+      source_reference_tag:
+        description: Exact approved ASF source candidate tag (v<version>-incubating-rc<positive-integer>)
+        required: true
         type: string
 
 permissions:
@@ -17,13 +17,13 @@ concurrency:
 
 jobs:
   release-identity:
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       version: ${{ steps.identity.outputs.version }}
       tag: ${{ steps.identity.outputs.tag }}
       source_commit: ${{ steps.identity.outputs.source_commit }}
+      source_reference_tag: ${{ steps.identity.outputs.source_reference_tag }}
       dmg: ${{ steps.identity.outputs.dmg }}
       exe: ${{ steps.identity.outputs.exe }}
       cli_archive: ${{ steps.identity.outputs.cli_archive }}
@@ -39,46 +39,41 @@ jobs:
       - name: Check out the dispatched commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_commit || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Resolve product release identity
         id: identity
         env:
-          GITHUB_SHA: ${{ inputs.source_commit || github.sha }}
+          GITHUB_SHA: ${{ github.sha }}
+          SOURCE_REFERENCE_TAG: ${{ inputs.source_reference_tag }}
         run: node scripts/product-release-identity.mjs
 
-      - name: Require the release source on main
+      - name: Require the exact ASF source reference
         env:
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
           SOURCE_COMMIT: ${{ steps.identity.outputs.source_commit }}
-        run: git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
-
-      - name: Restrict an explicit source to Draft recovery
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RECOVERY_SOURCE: ${{ inputs.source_commit }}
-          SOURCE_COMMIT: ${{ steps.identity.outputs.source_commit }}
-          TAG: ${{ steps.identity.outputs.tag }}
+          SOURCE_REFERENCE_TAG: ${{ steps.identity.outputs.source_reference_tag }}
         run: |
-          if [[ -z "$RECOVERY_SOURCE" ]]; then
-            exit 0
-          fi
-          tagged_source="$(git ls-remote --tags --refs origin "refs/tags/$TAG" | awk '{print $1}')"
-          if [[ "$tagged_source" != "$SOURCE_COMMIT" ]]; then
-            echo "Recovery tag ${TAG} does not point to ${SOURCE_COMMIT}." >&2
+          if [[ "$RELEASE_REPOSITORY" != "apache/maka" ]]; then
+            echo "Product releases must run in apache/maka; found $RELEASE_REPOSITORY" >&2
             exit 1
           fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]]; then
-              echo "Recovery cannot replace published Release ${TAG}." >&2
-              exit 1
-            fi
+          if [[ "$RELEASE_REF" != "refs/tags/$SOURCE_REFERENCE_TAG" ]]; then
+            echo "Product releases must be dispatched from $SOURCE_REFERENCE_TAG; found $RELEASE_REF" >&2
+            exit 1
           fi
+          git fetch --force --no-tags origin \
+            "refs/tags/$SOURCE_REFERENCE_TAG:refs/tags/$SOURCE_REFERENCE_TAG"
+          test "$(git cat-file -t "refs/tags/$SOURCE_REFERENCE_TAG")" = tag
+          test "$(git rev-parse "refs/tags/$SOURCE_REFERENCE_TAG^{commit}")" = "$SOURCE_COMMIT"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
 
   desktop:
     needs: release-identity
-    if: github.ref == 'refs/heads/main'
     strategy:
       # Both platforms ship from one dispatch, so a failure on one still leaves
       # the other artifact available for diagnosis.
@@ -234,7 +229,6 @@ jobs:
 
   cli-macos-arm64:
     needs: release-identity
-    if: github.ref == 'refs/heads/main'
     runs-on: macos-15
     environment: release
     timeout-minutes: 45
@@ -326,7 +320,6 @@ jobs:
 
   source:
     needs: release-identity
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -380,7 +373,6 @@ jobs:
     # One draft release carries both platforms, so it is created once, after
     # every platform has been packaged and verified.
     needs: [release-identity, desktop, cli-macos-arm64, source]
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -423,6 +415,18 @@ jobs:
             (cd "$(dirname "$checksum")" && sha256sum -c "$(basename "$checksum")")
           done < <(find release-assets -type f -name '*.sha256' -print0)
 
+      - name: Revalidate the live ASF source reference
+        env:
+          SOURCE_COMMIT: ${{ needs.release-identity.outputs.source_commit }}
+          SOURCE_REFERENCE_TAG: ${{ needs.release-identity.outputs.source_reference_tag }}
+        run: |
+          git fetch --force --no-tags origin \
+            "refs/tags/$SOURCE_REFERENCE_TAG:refs/tags/$SOURCE_REFERENCE_TAG"
+          test "$(git cat-file -t "refs/tags/$SOURCE_REFERENCE_TAG")" = tag
+          test "$(git rev-parse "refs/tags/$SOURCE_REFERENCE_TAG^{commit}")" = "$SOURCE_COMMIT"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
+
       - name: Ensure the exact product tag
         env:
           GH_TOKEN: ${{ github.token }}
@@ -438,8 +442,9 @@ jobs:
           VERSION: ${{ needs.release-identity.outputs.version }}
           TAG: ${{ needs.release-identity.outputs.tag }}
           SOURCE_COMMIT: ${{ needs.release-identity.outputs.source_commit }}
+          SOURCE_REFERENCE_TAG: ${{ needs.release-identity.outputs.source_reference_tag }}
         run: |
-          notes="Maka Desktop and the required Apple Silicon CLI/TUI artifact built from commit ${SOURCE_COMMIT}.
+          notes="Maka Desktop and the required Apple Silicon CLI/TUI artifact built from approved ASF source reference ${SOURCE_REFERENCE_TAG} at commit ${SOURCE_COMMIT}.
 
           Before publishing, download these draft assets on another Apple Silicon Mac and on a Windows x64 machine, and complete .github/RELEASE_CHECKLIST.md.
 

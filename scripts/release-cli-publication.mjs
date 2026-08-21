@@ -7,7 +7,7 @@ import { parseProductReleaseVersion } from './release-version.mjs';
 
 const PACKAGE_NAME = 'maka-agent';
 const REGISTRY_ORIGIN = 'https://registry.npmjs.org';
-const REPOSITORY = 'maka-agent/maka-agent';
+const REPOSITORY = 'apache/maka';
 const STAGE_WORKFLOW_PATH = '.github/workflows/release-cli-stage.yml';
 const RELEASE_RECORD_KEYS = [
   'schemaVersion',

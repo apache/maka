@@ -453,11 +453,11 @@ function writeReleaseManifest(cli, publishable) {
     engines: root.engines,
     repository: {
       type: 'git',
-      url: 'git+https://github.com/maka-agent/maka-agent.git',
+      url: 'git+https://github.com/apache/maka.git',
       directory: 'packages/cli',
     },
-    homepage: 'https://github.com/maka-agent/maka-agent#readme',
-    bugs: { url: 'https://github.com/maka-agent/maka-agent/issues' },
+    homepage: 'https://github.com/apache/maka#readme',
+    bugs: { url: 'https://github.com/apache/maka/issues' },
     keywords: ['ai', 'agent', 'cli', 'tui', 'local-first'],
     publishConfig: publishable
       ? {

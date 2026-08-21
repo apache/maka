@@ -29,7 +29,7 @@ const STAGE_RUN = {
   head_branch: PRODUCT_TAG,
   head_sha: SOURCE_SHA,
   conclusion: 'success',
-  head_repository: { full_name: 'maka-agent/maka-agent' },
+  head_repository: { full_name: 'apache/maka' },
 };
 
 test('release versions map prereleases and stable versions to distinct channels', () => {
@@ -95,7 +95,7 @@ test('stage records bind the checked candidate to one source workflow run', () =
     sourceSha: SOURCE_SHA,
     runId: '321',
     runAttempt: '1',
-    repository: 'maka-agent/maka-agent',
+    repository: 'apache/maka',
     workflowPath: WORKFLOW_PATH,
   });
 
@@ -124,7 +124,7 @@ test('stage preparation rejects a product tag that does not match the version', 
         sourceSha: SOURCE_SHA,
         runId: '321',
         runAttempt: '1',
-        repository: 'maka-agent/maka-agent',
+        repository: 'apache/maka',
         workflowPath: WORKFLOW_PATH,
       }),
     /Product tag .* does not match/u,
@@ -143,7 +143,7 @@ test('stage preparation rejects confirmation and checksum drift', () => {
         sourceSha: SOURCE_SHA,
         runId: '321',
         runAttempt: '1',
-        repository: 'maka-agent/maka-agent',
+        repository: 'apache/maka',
         workflowPath: WORKFLOW_PATH,
       }),
     /confirmation/u,
@@ -160,7 +160,7 @@ test('stage preparation rejects confirmation and checksum drift', () => {
         sourceSha: SOURCE_SHA,
         runId: '321',
         runAttempt: '1',
-        repository: 'maka-agent/maka-agent',
+        repository: 'apache/maka',
         workflowPath: WORKFLOW_PATH,
       }),
     /checksum does not match/u,
@@ -341,7 +341,7 @@ test('signature audit binds provenance to the exact tag, source, workflow, and r
     },
     (statement) => {
       statement.predicate.runDetails.metadata.invocationId =
-        'https://github.com/maka-agent/maka-agent/actions/runs/999/attempts/1';
+        'https://github.com/apache/maka/actions/runs/999/attempts/1';
     },
     (statement) => {
       statement.predicate.buildDefinition.externalParameters.workflow.repository =
@@ -414,7 +414,7 @@ test('prepare-stage CLI emits only consumed GitHub Actions outputs', () => {
       SOURCE_SHA,
       '321',
       '1',
-      'maka-agent/maka-agent',
+      'apache/maka',
       WORKFLOW_PATH,
       output,
     ],
@@ -443,7 +443,7 @@ test('validate-stage-run CLI accepts the canonical staged release identity', () 
       head_branch: PRODUCT_TAG,
       head_sha: SOURCE_SHA,
       conclusion: 'success',
-      head_repository: { full_name: 'maka-agent/maka-agent' },
+      head_repository: { full_name: 'apache/maka' },
     }),
   );
 
@@ -477,7 +477,7 @@ function createPreparedCandidate() {
     sourceSha: SOURCE_SHA,
     runId: '321',
     runAttempt: '1',
-    repository: 'maka-agent/maka-agent',
+    repository: 'apache/maka',
     workflowPath: WORKFLOW_PATH,
   });
   return fixture;
@@ -492,14 +492,14 @@ function provenanceBundle(mutate = () => {}) {
         buildType: 'https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1',
         externalParameters: {
           workflow: {
-            repository: 'https://github.com/maka-agent/maka-agent',
+            repository: 'https://github.com/apache/maka',
             ref: `refs/tags/${PRODUCT_TAG}`,
             path: WORKFLOW_PATH,
           },
         },
         resolvedDependencies: [
           {
-            uri: `git+https://github.com/maka-agent/maka-agent@refs/tags/${PRODUCT_TAG}`,
+            uri: `git+https://github.com/apache/maka@refs/tags/${PRODUCT_TAG}`,
             digest: { gitCommit: SOURCE_SHA },
           },
         ],
@@ -508,7 +508,7 @@ function provenanceBundle(mutate = () => {}) {
       runDetails: {
         builder: { id: 'https://github.com/actions/runner/github-hosted' },
         metadata: {
-          invocationId: 'https://github.com/maka-agent/maka-agent/actions/runs/321/attempts/1',
+          invocationId: 'https://github.com/apache/maka/actions/runs/321/attempts/1',
         },
       },
     },

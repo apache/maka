@@ -6,7 +6,7 @@
 
 ## 发布不变量
 
-- 产品 Release 和 npm Finalize workflow 只从 `main` dispatch；npm Stage 只从已有的产品 `v<version>` tag dispatch；
+- 产品 Release workflow 只能从已批准的 ASF source candidate tag dispatch；npm Stage 只能从随后创建的产品 `v<version>` tag dispatch，npm Finalize 只能从 `main` dispatch；
 - 预发布版本使用 `next`，稳定版本使用 `latest`；`next` 不得指向比 `latest` 更旧的版本；没有
   更新的预发布版本时，两个 tag 都指向稳定版；
 - 不创建 npm 专属 Git tag 或 GitHub Release；产品 `v<version>` tag 与 GitHub Release 只由 `Release` workflow 管理，并且必须先于 npm staging 存在；
@@ -42,8 +42,8 @@ token。
 
 | 字段 | 值 |
 | --- | --- |
-| Organization or user | `maka-agent` |
-| Repository | `maka-agent` |
+| Organization or user | `apache` |
+| Repository | `maka` |
 | Workflow filename | `release-cli-stage.yml` |
 | Environment name | `npm-release` |
 | Allowed actions | 仅 `npm stage publish` |
@@ -57,10 +57,9 @@ authentication and disallow tokens**，然后撤销不再使用的 publish token
 
 ## 准备发布
 
-1. 将本次包、文档和发布变更全部合并到 `main`；
-2. 将根产品版本、`apps/desktop/package.json` 与 `packages/cli/package.json` 设置为同一个尚未使用的目标版本并合并。npm 渠道会把 prerelease 映射到 `next`，stable 映射到 `latest`；
-3. 运行产品 `Release` workflow，确认其 Draft `v<version>` Release 指向预期 source commit；npm
-   staging 消费这个身份，不能先于它运行；
+1. 将本次包、文档和发布变更全部合并到 `main`，准备 ASF source candidate，并完成 podling 和 Incubator PMC 两轮投票；
+2. 确认已批准 source commit 上的根产品版本、`apps/desktop/package.json` 与 `packages/cli/package.json` 是同一个尚未使用的目标版本。npm 渠道会把 prerelease 映射到 `next`，stable 映射到 `latest`；
+3. 从精确的已批准 `v<version>-incubating-rc<rc>` tag dispatch 产品 `Release` workflow，并将同一个 tag 作为 `source_reference_tag`。确认其 Draft `v<version>` Release 指向已批准 commit；npm staging 消费这个身份，不能先于它运行；
 4. 确认目标版本既不在公共 registry，也不在 staged package 中：
 
    ```sh

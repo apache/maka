@@ -6,7 +6,8 @@ This runbook is the operational authority for publishing the `maka-agent` npm in
 
 ## Release invariants
 
-- Dispatch the product Release and npm Finalize workflows only from `main`. Dispatch npm Stage only from the existing product `v<version>` tag.
+- Dispatch the product Release workflow only from the exact approved ASF source candidate tag.
+  Dispatch npm Stage only from the resulting product `v<version>` tag and npm Finalize from `main`.
 - Publish prereleases under `next` and stable versions under `latest`. `next` must never resolve to
   a version older than `latest`; when no newer prerelease exists, both tags point to the stable
   version.
@@ -45,8 +46,8 @@ In the `maka-agent` package settings, configure one GitHub Actions trusted publi
 
 | Field | Value |
 | --- | --- |
-| Organization or user | `maka-agent` |
-| Repository | `maka-agent` |
+| Organization or user | `apache` |
+| Repository | `maka` |
 | Workflow filename | `release-cli-stage.yml` |
 | Environment name | `npm-release` |
 | Allowed actions | `npm stage publish` only |
@@ -60,10 +61,15 @@ package owner or recovery access as part of that change.
 
 ## Prepare a release
 
-1. Merge all intended package, documentation, and release changes to `main`.
-2. Set the root product version, `apps/desktop/package.json`, and `packages/cli/package.json` to the same unused target version and merge that change. The npm channel maps prerelease versions to `next` and stable versions to `latest`.
-3. Run the product `Release` workflow and confirm its Draft `v<version>` Release points to the
-   intended source commit. npm staging consumes this identity and cannot precede it.
+1. Merge all intended package, documentation, and release changes to `main`, prepare the ASF source
+   candidate, and complete both the podling and Incubator PMC votes.
+2. Confirm the root product version, `apps/desktop/package.json`, and
+   `packages/cli/package.json` have the same unused target version at the approved source commit.
+   The npm channel maps prerelease versions to `next` and stable versions to `latest`.
+3. Dispatch the product `Release` workflow from the exact approved
+   `v<version>-incubating-rc<rc>` tag, supplying that same tag as `source_reference_tag`. Confirm its
+   Draft `v<version>` Release points to the approved commit. npm staging consumes this identity and
+   cannot precede it.
 4. Confirm the target version is absent from both public and staged package state:
 
    ```sh

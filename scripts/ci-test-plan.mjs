@@ -16,7 +16,21 @@ const FULL_SUITE_FILES = new Set([
   'scripts/run-workspace-tests-parallel.mjs',
 ]);
 
-const RELEASE_CONTRACT_FILES = new Set(['.github/workflows/release.yml']);
+const RELEASE_CONTRACT_FILES = new Set([
+  '.github/workflows/cli-package-validation.yml',
+  '.github/workflows/release-cli-finalize.yml',
+  '.github/workflows/release-cli-stage.yml',
+  '.github/workflows/release.yml',
+  'scripts/package-macos-arm64-cli.mjs',
+  'scripts/prepare-windows-upgrade-baseline.mjs',
+  'scripts/prepare-windows-upgrade-baseline.test.mjs',
+  'scripts/product-release-identity.mjs',
+  'scripts/product-release-tag.mjs',
+  'scripts/product-release.test.mjs',
+  'scripts/release-checksum.mjs',
+  'scripts/release-version.mjs',
+  'scripts/verify-macos-arm64-cli.mjs',
+]);
 
 const TYPECHECK_ONLY_FILES = new Set([
   'biome.jsonc',
@@ -61,6 +75,10 @@ function isCliPackagePath(path) {
   return CLI_PACKAGE_WORKSPACES.some(
     (workspace) => path === workspace || path.startsWith(`${workspace}/`),
   );
+}
+
+function isReleaseContractPath(path) {
+  return RELEASE_CONTRACT_FILES.has(path) || path.startsWith('scripts/release-cli-');
 }
 
 const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host']);
@@ -253,6 +271,7 @@ export function planTests(changedFiles, options = {}) {
       code: true,
       e2e: true,
       full: true,
+      releaseContract: true,
       runtimeSandbox: graph.dirs.includes('packages/cli'),
       // A complete functional suite is still the default release/main gate.
       // Stress multipliers and native child-process lock probes run only when
@@ -296,10 +315,6 @@ export function planTests(changedFiles, options = {}) {
       code = true;
       continue;
     }
-    if (RELEASE_CONTRACT_FILES.has(path)) {
-      code = true;
-      continue;
-    }
     if (path.startsWith('.github/') || isDocumentation(path)) continue;
     code = true;
     unknownCode = true;
@@ -312,16 +327,18 @@ export function planTests(changedFiles, options = {}) {
   const workspaces = reverseDependencyClosure(directWorkspaces, graph);
   const storageStress = files.some((path) => STORAGE_STRESS_FILES.has(path));
 
+  const cliPackage = files.some((path) => isCliPackagePath(path));
   return {
     asfSource: files.some((path) => ASF_SOURCE_FILES.has(path)),
     astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
-    cliPackage: files.some((path) => isCliPackagePath(path)),
+    cliPackage,
     code,
     // Electron E2E + alignment audit (same job). Product desktop/ui sources and
     // e2e drivers only — a storage/runtime change must not drag cold Electron
     // boots, and packages/ui unit-test-only PRs must not either.
     e2e: files.some((path) => isE2eProductPath(path)),
     full: false,
+    releaseContract: cliPackage || files.some((path) => isReleaseContractPath(path)),
     // packages/cli/src/__tests__/runtime-host-session-driver.test.ts executes real sandboxed
     // shell tools, so the bubblewrap + user-namespace setup is required whenever
     // the cli workspace runs in the dependency closure, not only for direct
@@ -346,6 +363,7 @@ export function formatGitHubOutputs(plan) {
     `e2e=${plan.e2e}`,
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
+    `release_contract=${plan.releaseContract}`,
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,
     `standard_workspaces=${plan.standardWorkspaces.join(',')}`,

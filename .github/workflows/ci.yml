@@ -62,7 +62,7 @@ jobs:
         run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         with:
           node-version: '24'
           cache: npm
@@ -100,7 +100,7 @@ jobs:
           fi
 
       - name: Install dependencies
-        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
 
       - name: Lint
@@ -112,11 +112,11 @@ jobs:
         run: npm run format:check
 
       - name: Build
-        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm run build
 
       - name: Release contracts
-        if: steps.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.release_contract == 'true'
         run: npm run check:release
 
       - name: Typecheck

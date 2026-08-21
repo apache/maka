@@ -1,8 +1,10 @@
 # Product release checklist
 
-The `Release` workflow is Maka's single release entry point. Desktop, CLI/TUI, and source
-materials share one source commit, root product version, tag, GitHub Release, Draft decision,
-and release gate. The workflow creates no Draft until every required artifact job succeeds.
+The `Release` workflow is Maka's convenience-artifact release entry point. Desktop, CLI/TUI, and
+bundled Git source materials are built from the exact IPMC-approved ASF source candidate commit.
+They share that source commit, the root product version, one convenience tag, one GitHub Release,
+one Draft decision, and one release gate. The workflow creates no Draft until every required
+artifact job succeeds.
 
 Phase 1 requires:
 
@@ -23,6 +25,10 @@ configure:
 - `APPLE_API_KEY_ID`: App Store Connect API key ID;
 - `APPLE_API_ISSUER`: App Store Connect API issuer ID.
 
+The checked-in release configuration pins Maka's Apple Team ID to `FABM2QUA8Q`. Confirm every
+replacement `CSC_LINK` belongs to that team before changing credentials; changing the pinned Team
+ID requires its own reviewed product-release change.
+
 Windows remains unsigned until an Authenticode policy and certificate are added. Release secrets
 must never be exposed to fork or ordinary pull-request jobs.
 
@@ -35,31 +41,36 @@ These controls close the check-to-upload and check-to-stage windows. Keep the Re
 
 ## Create the complete Draft
 
-1. Confirm the intended commit is on `main`, required CI is green, and root `package.json`
-   contains a product version that has never been released.
-2. Confirm `apps/desktop/package.json` and `packages/cli/package.json` exactly match the root
+1. Confirm the podling and Incubator PMC votes have both passed for one immutable source candidate.
+   Record both result URLs and independently verify its signed annotated
+   `v<version>-incubating-rc<rc>` tag.
+2. Confirm that tag resolves to a commit on `main`, required CI is green for that exact commit, and
+   root `package.json` contains a product version that has never been released.
+3. Confirm `apps/desktop/package.json` and `packages/cli/package.json` exactly match the root
    version, and the CLI manifest exposes only the `maka` command.
-3. In GitHub Actions, run `Release` against `main`.
-4. Confirm `release-identity`, both Desktop matrix entries, `cli-macos-arm64`, `source`, and
+4. Dispatch `Release` from the exact approved candidate tag and supply the same tag as
+   `source_reference_tag`. A rerun must use that same tag; never select current `main` instead.
+5. Confirm `release-identity`, both Desktop matrix entries, `cli-macos-arm64`, `source`, and
    `publish` pass. A skipped or failed required job must prevent Draft creation.
-5. Confirm one Draft named `v<version>` targets the intended source SHA and contains at least:
+6. Confirm one Draft named `v<version>` targets the approved source SHA, identifies the ASF source
+   reference in its notes, and contains at least:
    - `Maka-<version>-mac-arm64.dmg` and checksum;
    - `Maka-<version>-win-x64.exe` and checksum;
    - `Maka-<version>-cli-mac-arm64.zip` and checksum;
    - `Maka-<version>-bundled-git-source.tar.gz` and checksum;
    - the platform update metadata and Desktop ZIPs produced by electron-builder.
-6. Inspect the CLI ZIP. It must contain `bin/maka`, `RELEASE.json`, `DISCLAIMER-WIP`, `LICENSE`, `NOTICE`,
+7. Inspect the CLI ZIP. It must contain `bin/maka`, `RELEASE.json`, `DISCLAIMER-WIP`, `LICENSE`, `NOTICE`,
    `THIRD_PARTY_NOTICES.txt`, the pinned Node license, and no `bin/maka-agent`.
-7. Confirm `RELEASE.json` records the Draft's product version and source SHA, the official Node
+8. Confirm `RELEASE.json` records the Draft's product version and source SHA, Apple Team ID
+   `FABM2QUA8Q`, the official Node
    URL/archive/digest, npm version, workspace and production dependency closures, dependency
    patches, Mach-O inventory, and `developer-id-notarized` signing state.
-8. Extract the bundled Git source-materials archive. Confirm `SOURCE_MANIFEST.json`, `README.txt`,
+9. Extract the bundled Git source-materials archive. Confirm `SOURCE_MANIFEST.json`, `README.txt`,
    all manifest archives, and the expected Dugite native release are present.
 
-If the publish job created the product tag or Draft but failed before every asset was uploaded, rerun
-`Release` from `main` with `source_commit` set to the exact commit already named by the tag. This
-input is recovery-only: the workflow requires it to remain an ancestor of `main`, rejects a tag that
-points elsewhere, and refuses to replace a published Release. Existing Draft assets must exactly
+If the publish job created the product tag or Draft but failed before every asset was uploaded,
+rerun `Release` from the same approved ASF source candidate tag with the same
+`source_reference_tag` input. Existing Draft assets must exactly
 match the newly verified bytes; the retry keeps matching assets and uploads only missing ones. If an
 asset conflicts or is unexpected, inspect and remove it manually while the Release is still a Draft,
 then rerun. If only the tag exists, the retry creates the missing Draft.
@@ -97,6 +108,8 @@ Download the installer, Windows Desktop ZIP, and both checksum files through a b
 5. Run one terminal task and confirm packaged `node-pty` behavior.
 6. Confirm the documented Computer Use limitation remains accurate.
 
-Publish only after both independent-machine acceptance passes. If any required artifact or
+Immediately before publication, reverify that the approved ASF candidate tag and convenience
+`v<version>` tag still resolve to the same recorded commit. Publish only after both
+independent-machine acceptance passes. If any required artifact or
 acceptance step fails, keep the Draft unpublished, fix the issue, increment the root product
 version, and run the full workflow again. Never replace an existing release identity.

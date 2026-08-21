@@ -81,8 +81,30 @@ test('release metadata selects only the gate that consumes it', () => {
   for (const path of ['LICENSE', 'NOTICE']) {
     const plan = planTests([path], { graph });
     assert.equal(plan.cliPackage, true, path);
+    assert.equal(plan.releaseContract, true, path);
     assert.equal(plan.asfSource, false, path);
   }
+});
+
+test('release authority changes select their dedicated contract gate', () => {
+  for (const path of [
+    '.github/workflows/cli-package-validation.yml',
+    '.github/workflows/release-cli-finalize.yml',
+    '.github/workflows/release-cli-stage.yml',
+    '.github/workflows/release.yml',
+    'scripts/package-macos-arm64-cli.mjs',
+    'scripts/prepare-windows-upgrade-baseline.mjs',
+    'scripts/product-release-identity.mjs',
+    'scripts/product-release-tag.mjs',
+    'scripts/product-release.test.mjs',
+    'scripts/release-checksum.mjs',
+    'scripts/release-version.mjs',
+    'scripts/release-cli-publication.test.mjs',
+    'scripts/verify-macos-arm64-cli.mjs',
+  ]) {
+    assert.equal(planTests([path], { graph }).releaseContract, true, path);
+  }
+  assert.equal(planTests(['.github/RELEASE_CHECKLIST.md'], { graph }).releaseContract, false);
 });
 
 test('ASF source authority changes select their dedicated gate', () => {
@@ -112,6 +134,7 @@ test('full selection covers every live surface', () => {
   assert.equal(plan.e2e, true);
   assert.equal(plan.storybook, true);
   assert.equal(plan.runtimeHost, true);
+  assert.equal(plan.releaseContract, true);
   assert.deepEqual(plan.workspaces, dirs);
 });
 
@@ -197,8 +220,12 @@ test('release contracts run against built CLI outputs', () => {
   const releaseIndex = workflow.indexOf('      - name: Release contracts\n');
 
   assert.ok(buildIndex >= 0);
-  assert.match(workflow.slice(buildIndex, buildEnd), /cli_package == 'true'/u);
+  assert.match(workflow.slice(buildIndex, buildEnd), /release_contract == 'true'/u);
   assert.ok(buildIndex < releaseIndex);
+  assert.match(
+    workflow.slice(releaseIndex),
+    /if: steps\.plan\.outputs\.release_contract == 'true'/u,
+  );
 });
 
 test('pull request triggers stay on an explicit allowlist', () => {

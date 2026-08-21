@@ -44,7 +44,7 @@ export async function prepareWindowsUpgradeBaseline(
   outputDirectory,
   {
     manifestPath = defaultManifestPath,
-    repository = process.env.GITHUB_REPOSITORY ?? 'maka-agent/maka-agent',
+    repository = process.env.GITHUB_REPOSITORY ?? 'apache/maka',
     run = runFile,
     checksum = sha256File,
   } = {},

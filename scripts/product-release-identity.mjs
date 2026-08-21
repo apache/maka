@@ -9,11 +9,15 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const execFileAsync = promisify(execFile);
 
 export function releaseToolchainFromManifest(rootManifest) {
+  const appleTeamIdentifier = rootManifest.releaseToolchain?.appleTeamIdentifier;
   const nodeVersion = rootManifest.releaseToolchain?.node;
   const nodeArchiveSha256 = rootManifest.releaseToolchain?.nodeDarwinArm64Sha256;
   const npmMatch = /^npm@(\d+\.\d+\.\d+)$/u.exec(rootManifest.packageManager ?? '');
   if (typeof nodeVersion !== 'string' || !/^\d+\.\d+\.\d+$/u.test(nodeVersion)) {
     throw new Error('package.json must define an exact releaseToolchain.node version');
+  }
+  if (typeof appleTeamIdentifier !== 'string' || !/^[A-Z0-9]{10}$/u.test(appleTeamIdentifier)) {
+    throw new Error('releaseToolchain.appleTeamIdentifier must be an exact Apple Team ID');
   }
   const nodeArchive = `node-v${nodeVersion}-darwin-arm64.tar.xz`;
   if (typeof nodeArchiveSha256 !== 'string' || !/^[0-9a-f]{64}$/u.test(nodeArchiveSha256)) {
@@ -21,6 +25,7 @@ export function releaseToolchainFromManifest(rootManifest) {
   }
   if (!npmMatch) throw new Error('package.json packageManager must pin an exact npm version');
   return {
+    appleTeamIdentifier,
     nodeVersion,
     nodeArchive,
     nodeArchiveSha256,
@@ -29,7 +34,26 @@ export function releaseToolchainFromManifest(rootManifest) {
   };
 }
 
-export function resolveProductReleaseIdentity({ rootManifest, desktopManifest, cliManifest, sha }) {
+export function parseAsfSourceReferenceTag(tag) {
+  const match = typeof tag === 'string' ? /^v(.+)-incubating-rc([1-9]\d*)$/u.exec(tag) : undefined;
+  if (!match) {
+    throw new Error('ASF source reference must match v<version>-incubating-rc<positive-integer>');
+  }
+  try {
+    parseProductReleaseVersion(match[1]);
+  } catch {
+    throw new Error('ASF source reference must match v<version>-incubating-rc<positive-integer>');
+  }
+  return { rcNumber: match[2], tag, version: match[1] };
+}
+
+export function resolveProductReleaseIdentity({
+  rootManifest,
+  desktopManifest,
+  cliManifest,
+  sha,
+  sourceReferenceTag,
+}) {
   const { version } = parseProductReleaseVersion(rootManifest.version);
   for (const [label, manifest] of [
     ['Desktop', desktopManifest],
@@ -47,6 +71,14 @@ export function resolveProductReleaseIdentity({ rootManifest, desktopManifest, c
   if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/u.test(sha)) {
     throw new Error('Product releases require an exact 40-character source commit SHA');
   }
+  if (sourceReferenceTag !== undefined) {
+    const sourceReference = parseAsfSourceReferenceTag(sourceReferenceTag);
+    if (sourceReference.version !== version) {
+      throw new Error(
+        `ASF source reference version ${sourceReference.version} does not match product ${version}`,
+      );
+    }
+  }
 
   const toolchain = releaseToolchainFromManifest(rootManifest);
   const cliArchive = `Maka-${version}-cli-mac-arm64.zip`;
@@ -56,6 +88,7 @@ export function resolveProductReleaseIdentity({ rootManifest, desktopManifest, c
     version,
     tag: `v${version}`,
     sourceCommit: sha,
+    sourceReferenceTag,
     dmg: `Maka-${version}-mac-arm64.dmg`,
     exe: `Maka-${version}-win-x64.exe`,
     cliArchive,
@@ -78,7 +111,10 @@ export function assertProductReleaseExpectation(identity, { version, tag, source
   return identity;
 }
 
-export async function readProductReleaseIdentity({ sha } = {}) {
+export async function readProductReleaseIdentity({
+  sha,
+  sourceReferenceTag = process.env.SOURCE_REFERENCE_TAG,
+} = {}) {
   const [rootManifest, desktopManifest, cliManifest] = await Promise.all([
     readFile(join(repoRoot, 'package.json'), 'utf8').then(JSON.parse),
     readFile(join(repoRoot, 'apps/desktop/package.json'), 'utf8').then(JSON.parse),
@@ -93,6 +129,7 @@ export async function readProductReleaseIdentity({ sha } = {}) {
     desktopManifest,
     cliManifest,
     sha: sourceCommit,
+    sourceReferenceTag,
   });
 }
 
@@ -101,6 +138,7 @@ function githubOutputEntries(identity) {
     version: identity.version,
     tag: identity.tag,
     source_commit: identity.sourceCommit,
+    source_reference_tag: identity.sourceReferenceTag,
     dmg: identity.dmg,
     exe: identity.exe,
     cli_archive: identity.cliArchive,
@@ -129,6 +167,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   if (process.env.GITHUB_OUTPUT) {
     const output = Object.entries(githubOutputEntries(identity))
+      .filter(([, value]) => value !== undefined)
       .map(([name, value]) => `${name}=${value}`)
       .join('\n');
     await appendFile(process.env.GITHUB_OUTPUT, `${output}\n`, 'utf8');

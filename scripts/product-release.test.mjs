@@ -10,11 +10,14 @@ import { parseCliReleaseVersion } from './release-cli-publication.mjs';
 import { planTests } from './ci-test-plan.mjs';
 import {
   assertProductReleaseExpectation,
+  parseAsfSourceReferenceTag,
   releaseToolchainFromManifest,
   resolveProductReleaseIdentity,
 } from './product-release-identity.mjs';
 import {
+  assertExpectedAppleTeam,
   decodeSigningCertificate,
+  extractOfficialNodeEntitlements,
   macosArm64MachOAction,
   parseDeveloperIdApplicationIdentity,
   pruneThirdPartyDevelopmentArtifacts,
@@ -35,6 +38,7 @@ const rootManifest = {
   version: '1.2.3',
   packageManager: 'npm@11.19.0',
   releaseToolchain: {
+    appleTeamIdentifier: 'FABM2QUA8Q',
     node: '24.18.1',
     nodeDarwinArm64Sha256: '1'.repeat(64),
   },
@@ -46,15 +50,39 @@ test('one root version defines every product artifact from one source commit', (
     desktopManifest: { version: '1.2.3' },
     cliManifest: { version: '1.2.3', bin: { maka: './dist/cli.js' } },
     sha: 'a'.repeat(40),
+    sourceReferenceTag: 'v1.2.3-incubating-rc2',
   });
 
   assert.equal(identity.version, '1.2.3');
   assert.equal(identity.tag, 'v1.2.3');
   assert.equal(identity.sourceCommit, 'a'.repeat(40));
+  assert.equal(identity.sourceReferenceTag, 'v1.2.3-incubating-rc2');
   assert.equal(identity.dmg, 'Maka-1.2.3-mac-arm64.dmg');
   assert.equal(identity.exe, 'Maka-1.2.3-win-x64.exe');
   assert.equal(identity.cliArchive, 'Maka-1.2.3-cli-mac-arm64.zip');
   assert.equal(identity.sourceArchive, 'Maka-1.2.3-bundled-git-source.tar.gz');
+});
+
+test('product releases accept only an exact same-version ASF source reference', () => {
+  assert.deepEqual(parseAsfSourceReferenceTag('v1.2.3-incubating-rc2'), {
+    rcNumber: '2',
+    tag: 'v1.2.3-incubating-rc2',
+    version: '1.2.3',
+  });
+  for (const tag of ['v1.2.3-incubating-rc0', 'v1.2.3-incubating-rc01', 'v1.2.3-rc1']) {
+    assert.throws(() => parseAsfSourceReferenceTag(tag), /ASF source reference must match/u);
+  }
+  assert.throws(
+    () =>
+      resolveProductReleaseIdentity({
+        rootManifest,
+        desktopManifest: { version: '1.2.3' },
+        cliManifest: { version: '1.2.3', bin: { maka: './dist/cli.js' } },
+        sha: 'a'.repeat(40),
+        sourceReferenceTag: 'v1.2.4-incubating-rc1',
+      }),
+    /source reference version 1\.2\.4 does not match product 1\.2\.3/u,
+  );
 });
 
 test('the product identity CLI uses the checked-out commit outside GitHub Actions', async () => {
@@ -157,6 +185,7 @@ test('product tag creation is exact and idempotent but rejects a conflicting com
 
 test('the root manifest pins the Node archive and npm used by release jobs', () => {
   assert.deepEqual(releaseToolchainFromManifest(rootManifest), {
+    appleTeamIdentifier: 'FABM2QUA8Q',
     nodeVersion: '24.18.1',
     nodeArchive: 'node-v24.18.1-darwin-arm64.tar.xz',
     nodeArchiveSha256: '1'.repeat(64),
@@ -215,11 +244,12 @@ test('CLI signing accepts one base64 PKCS12 and one isolated Developer ID identi
   assert.throws(() => decodeSigningCertificate('not base64!'), /base64-encoded/u);
   assert.deepEqual(
     parseDeveloperIdApplicationIdentity(
-      '  1) ABCDEF0123456789ABCDEF0123456789ABCDEF01 "Developer ID Application: Maka Test (TEAMID)"\n     1 valid identities found\n',
+      '  1) ABCDEF0123456789ABCDEF0123456789ABCDEF01 "Developer ID Application: Maka Test (FABM2QUA8Q)"\n     1 valid identities found\n',
     ),
     {
       hash: 'ABCDEF0123456789ABCDEF0123456789ABCDEF01',
-      name: 'Developer ID Application: Maka Test (TEAMID)',
+      name: 'Developer ID Application: Maka Test (FABM2QUA8Q)',
+      teamIdentifier: 'FABM2QUA8Q',
     },
   );
   assert.throws(
@@ -228,6 +258,35 @@ test('CLI signing accepts one base64 PKCS12 and one isolated Developer ID identi
         '  1) ABCDEF0123456789ABCDEF0123456789ABCDEF01 "Apple Development: Test"\n',
       ),
     /one Developer ID Application/u,
+  );
+  assert.throws(
+    () =>
+      assertExpectedAppleTeam(
+        { teamIdentifier: 'ABCDEFGHIJ' },
+        rootManifest.releaseToolchain.appleTeamIdentifier,
+      ),
+    /belongs to Apple team ABCDEFGHIJ, expected FABM2QUA8Q/u,
+  );
+});
+
+test('CLI signing preserves the reviewed official Node entitlement contract', () => {
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>com.apple.security.cs.allow-jit</key><true/>
+<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+<key>com.apple.security.cs.disable-executable-page-protection</key><true/>
+<key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+<key>com.apple.security.cs.disable-library-validation</key><true/>
+<key>com.apple.security.get-task-allow</key><true/>
+</dict></plist>`;
+
+  assert.equal(extractOfficialNodeEntitlements(`Executable=/node\n${plist}`), plist);
+  assert.throws(
+    () =>
+      extractOfficialNodeEntitlements(
+        plist.replace(/<key>com\.apple\.security\.cs\.allow-jit<\/key><true\/>/u, ''),
+      ),
+    /entitlements do not match/u,
   );
 });
 
@@ -341,12 +400,24 @@ test('one product workflow gates one draft release on every required artifact', 
     'cli-macos-arm64',
     'source',
   ]);
-  assert.equal(jobs.publish.if, "github.ref == 'refs/heads/main'");
+  assert.equal(jobs.publish.if, undefined);
   assert.equal(Object.hasOwn(jobs, 'npm'), false);
-  assert.equal(
-    jobs['release-identity'].steps[0].with.ref,
-    '${{ inputs.source_commit || github.sha }}',
-  );
+  assert.equal(workflow.on.workflow_dispatch.inputs.source_reference_tag.required, true);
+  assert.equal(jobs['release-identity'].steps[0].with.ref, '${{ github.sha }}');
+  const sourceAuthority = jobs['release-identity'].steps.find(
+    (step) => step.name === 'Require the exact ASF source reference',
+  ).run;
+  assert.match(sourceAuthority, /RELEASE_REPOSITORY.*apache\/maka/su);
+  assert.match(sourceAuthority, /refs\/tags\/\$SOURCE_REFERENCE_TAG/u);
+  assert.match(sourceAuthority, /git cat-file -t/u);
+  assert.match(sourceAuthority, /git rev-parse.*\^\{commit\}/u);
+  assert.match(sourceAuthority, /git merge-base --is-ancestor/u);
+  const liveSourceAuthority = jobs.publish.steps.find(
+    (step) => step.name === 'Revalidate the live ASF source reference',
+  ).run;
+  assert.match(liveSourceAuthority, /git fetch --force --no-tags origin/u);
+  assert.match(liveSourceAuthority, /git rev-parse.*\^\{commit\}/u);
+  assert.match(liveSourceAuthority, /git merge-base --is-ancestor/u);
   for (const name of ['desktop', 'cli-macos-arm64', 'source', 'publish']) {
     const checkout = jobs[name].steps.find((step) =>
       String(step.uses).startsWith('actions/checkout@'),
@@ -382,7 +453,7 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.match(commands, /npm run package:windows-autoupdate-next/u);
   assert.match(commands, /npm run verify:windows-autoupdate/u);
   assert.match(commands, /product-release-tag\.mjs ensure/u);
-  assert.match(commands, /RECOVERY_SOURCE/u);
+  assert.doesNotMatch(commands, /RECOVERY_SOURCE|inputs\.source_commit/u);
   assert.match(commands, /if gh release view "\$TAG"/u);
   assert.doesNotMatch(commands, /requires an existing Draft release/u);
   assert.match(commands, /--json isDraft/u);
@@ -422,7 +493,8 @@ test('product workflow changes select the release contracts in CI', () => {
     dependents: new Map(),
   };
   const plan = planTests(['.github/workflows/release.yml'], { graph });
-  assert.equal(plan.code, true);
+  assert.equal(plan.releaseContract, true);
+  assert.equal(plan.code, false);
   assert.equal(plan.full, false);
   assert.equal(plan.e2e, false);
   assert.equal(plan.storybook, false);
