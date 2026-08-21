@@ -14,6 +14,10 @@ export type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-b
 
 type MainWindowController = Pick<ReturnType<typeof createMainWindowController>, 'send'>;
 
+export interface WorkBoardIpcRegistration {
+  close(): void;
+}
+
 /**
  * Desktop main process owns the Work Board store (the v1 mutation boundary).
  * Renderer code reads a projection through IPC and reloads on the change
@@ -25,7 +29,7 @@ export function registerWorkBoardIpc(input: {
   readonly mainWindowController: MainWindowController;
   readonly store?: WorkBoardStore;
   readonly now?: () => number;
-}): void {
+}): WorkBoardIpcRegistration {
   const store = input.store ?? createWorkBoardStore(input.workspaceRoot);
   const now = input.now ?? Date.now;
   const emitChanged = (): void => {
@@ -129,6 +133,10 @@ export function registerWorkBoardIpc(input: {
       }
     },
   );
+
+  return {
+    close: () => store.close(),
+  };
 }
 
 function requireWorkBoardId(id: unknown): string {

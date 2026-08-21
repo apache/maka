@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type {
-  CreateWorkBoardItemInput,
-  UpdateWorkBoardItemInput,
-  WorkBoardItem,
-  WorkBoardListQuery,
+import {
+  WORK_BOARD_PAGE_SIZE_MAX,
+  type CreateWorkBoardItemInput,
+  type UpdateWorkBoardItemInput,
+  type WorkBoardItem,
+  type WorkBoardListQuery,
+  type WorkBoardPage,
 } from '@maka/core/work-board';
 import type { WorkBoardMutationOptions } from '@maka/storage/work-board-store';
 import type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-board-ipc.js';
@@ -40,6 +42,37 @@ const EMPTY_SNAPSHOT: WorkBoardSnapshot = {
   continuationCursor: undefined,
 };
 
+type WorkBoardList = (
+  query?: WorkBoardListQuery,
+) => Promise<WorkBoardIpcResult<WorkBoardPage>>;
+
+async function listWindow(
+  list: WorkBoardList,
+  query: WorkBoardListQuery | undefined,
+  targetCount: number,
+): Promise<WorkBoardIpcResult<WorkBoardPage>> {
+  const first = await list(
+    targetCount > 0
+      ? { ...query, limit: Math.min(WORK_BOARD_PAGE_SIZE_MAX, targetCount) }
+      : query,
+  );
+  if (!first.ok || targetCount <= first.value.items.length || !first.value.nextCursor) {
+    return first;
+  }
+
+  const items = [...first.value.items];
+  let nextCursor: string | undefined = first.value.nextCursor;
+  while (items.length < targetCount && nextCursor) {
+    const page = await list({ ...query, limit: WORK_BOARD_PAGE_SIZE_MAX, cursor: nextCursor });
+    if (!page.ok) return page;
+    const known = new Set(items.map((item) => item.id));
+    items.push(...page.value.items.filter((item) => !known.has(item.id)));
+    nextCursor = page.value.nextCursor;
+    if (page.value.items.length === 0) break;
+  }
+  return { ok: true, value: { items, nextCursor } };
+}
+
 function requireResult<T>(result: WorkBoardIpcResult<T>): T {
   if (result.ok) return result.value;
   throw new Error(result.message);
@@ -52,20 +85,26 @@ function requireResult<T>(result: WorkBoardIpcResult<T>): T {
  */
 export function useWorkBoard(query?: WorkBoardListQuery): UseWorkBoardResult {
   const revisionRef = useRef(0);
+  const loadedItemCountRef = useRef(0);
   const [snapshot, setSnapshot] = useState<WorkBoardSnapshot>(EMPTY_SNAPSHOT);
 
   const load = useCallback(
     (preserveItems: boolean) => {
       const revision = ++revisionRef.current;
-      setSnapshot((current) => ({
-        items: preserveItems ? current.items : [],
-        nextCursor: preserveItems ? current.nextCursor : undefined,
-        loading: true,
-      }));
-      void window.maka.workBoard.list(query).then(
+      const loadedItemCount = preserveItems ? loadedItemCountRef.current : 0;
+      setSnapshot((current) => {
+        if (!preserveItems) loadedItemCountRef.current = 0;
+        return {
+          items: preserveItems ? current.items : [],
+          nextCursor: preserveItems ? current.nextCursor : undefined,
+          loading: true,
+        };
+      });
+      void listWindow(window.maka.workBoard.list, query, loadedItemCount).then(
         (result) => {
           if (revision !== revisionRef.current) return;
           if (result.ok) {
+            loadedItemCountRef.current = result.value.items.length;
             setSnapshot({
               items: result.value.items,
               nextCursor: result.value.nextCursor,
@@ -97,7 +136,7 @@ export function useWorkBoard(query?: WorkBoardListQuery): UseWorkBoardResult {
           }));
         },
       );
-    },
+      },
     [query],
   );
 
@@ -140,8 +179,10 @@ export function useWorkBoard(query?: WorkBoardListQuery): UseWorkBoardResult {
           const appended = result.value.items.filter(
             (item: WorkBoardItem) => !known.has(item.id),
           );
+          const items = [...current.items, ...appended];
+          loadedItemCountRef.current = items.length;
           return {
-            items: [...current.items, ...appended],
+            items,
             nextCursor: result.value.nextCursor,
             loading: false,
             continuationError: undefined,

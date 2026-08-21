@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Banner, EmptyState, Spinner } from '@astryxdesign/core';
 import { Button } from '@astryxdesign/core/Button';
+import { TextInput } from '@astryxdesign/core/TextInput';
 import { useUiLocale } from '@maka/ui';
 import type {
   CreateWorkBoardItemInput,
@@ -42,17 +43,26 @@ function WorkBoardRow(props: {
     <li className="maka-work-board-row" data-archived={item.archived || undefined}>
       <div className="maka-work-board-row-main">
         {props.renaming ? (
-          <input
+          <TextInput
             className="maka-work-board-rename-input"
+            size="sm"
+            label={copy.rename}
+            isLabelHidden
+            hasAutoFocus
             value={props.renameValue}
-            onChange={(event) => props.onRenameChange(event.target.value)}
+            onChange={props.onRenameChange}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+              event.stopPropagation();
+              if (event.nativeEvent.isComposing || event.key === 'Process') return;
+              if (event.key === 'Enter') {
+                event.preventDefault();
                 props.onRenameSave();
               }
-              if (event.key === 'Escape') props.onRenameCancel();
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                props.onRenameCancel();
+              }
             }}
-            aria-label={copy.rename}
           />
         ) : (
           <span className="maka-work-board-title">{item.title}</span>
@@ -153,7 +163,7 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
   const saveRename = async (item: WorkBoardItem): Promise<void> => {
     const title = renamingTitle.trim();
     if (!title) return;
-    if (await runAction(() => board.update(item.id, { title }))) {
+    if (await runAction(() => board.update(item.id, { title }, { expectedRevision: item.revision }))) {
       setRenamingId(null);
     }
   };
@@ -190,15 +200,22 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
         />
       </div>
       <div className="maka-work-board-create">
-        <input
+        <TextInput
           className="maka-work-board-create-input"
+          size="sm"
+          label={copy.createPlaceholder}
+          isLabelHidden
           value={newTitle}
-          onChange={(event) => setNewTitle(event.target.value)}
+          onChange={setNewTitle}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.nativeEvent.isComposing) void create();
+            event.stopPropagation();
+            if (event.nativeEvent.isComposing || event.key === 'Process') return;
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              void create();
+            }
           }}
           placeholder={copy.createPlaceholder}
-          aria-label={copy.createPlaceholder}
         />
         <Button
           size="sm"
@@ -263,15 +280,25 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
                   onRenameSave={() => void saveRename(item)}
                   onRenameCancel={() => setRenamingId(null)}
                   onComplete={() =>
-                    void runAction(() => board.update(item.id, { state: 'done' }))
+                    void runAction(() => board.update(item.id, { state: 'done' }, { expectedRevision: item.revision }))
                   }
                   onReopen={() =>
-                    void runAction(() => board.update(item.id, { state: 'todo' }))
+                    void runAction(() => board.update(item.id, { state: 'todo' }, { expectedRevision: item.revision }))
                   }
-                  onMove={() => void runAction(() => board.update(item.id, { scope: moveScope(item) }))}
-                  onArchive={() => void runAction(() => board.archive(item.id))}
-                  onUnarchive={() => void runAction(() => board.unarchive(item.id))}
-                  onRemove={() => void runAction(() => board.remove(item.id))}
+                  onMove={() =>
+                    void runAction(() =>
+                      board.update(item.id, { scope: moveScope(item) }, { expectedRevision: item.revision }),
+                    )
+                  }
+                  onArchive={() =>
+                    void runAction(() => board.archive(item.id, { expectedRevision: item.revision }))
+                  }
+                  onUnarchive={() =>
+                    void runAction(() => board.unarchive(item.id, { expectedRevision: item.revision }))
+                  }
+                  onRemove={() =>
+                    void runAction(() => board.remove(item.id, { expectedRevision: item.revision }))
+                  }
                 />
               ))}
               {archivedItems.map((item) => (
@@ -290,8 +317,12 @@ export function WorkBoardPanel(props: { projectId: string | null }) {
                   onReopen={() => undefined}
                   onMove={() => undefined}
                   onArchive={() => undefined}
-                  onUnarchive={() => void runAction(() => board.unarchive(item.id))}
-                  onRemove={() => void runAction(() => board.remove(item.id))}
+                  onUnarchive={() =>
+                    void runAction(() => board.unarchive(item.id, { expectedRevision: item.revision }))
+                  }
+                  onRemove={() =>
+                    void runAction(() => board.remove(item.id, { expectedRevision: item.revision }))
+                  }
                 />
               ))}
                 </ul>
