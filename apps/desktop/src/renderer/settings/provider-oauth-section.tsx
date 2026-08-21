@@ -243,19 +243,10 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
     display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
     onLoginSuccess: props.onLoginSuccess,
   });
-  // Sign-in presents an OAuth app identity Maka does not own yet, so the Host
-  // keeps it behind an opt-in; the local import below is the shipped path.
-  const [signInEnabled, setSignInEnabled] = useState(false);
+  // Sign-in is always offered, exactly as Codex and xAI are: the Host owns the
+  // enrollment gate and refuses the start with `experimental_disabled`, so the
+  // renderer must not carry a second copy of that decision.
   const [directAction, setDirectAction] = useState<'import' | 'refresh' | null>(null);
-  useEffect(() => {
-    void window.maka.githubCopilotSubscription
-      .isExperimentalEnabled(host)
-      .then((enabled) => {
-        if (mountedRef.current) setSignInEnabled(enabled);
-      })
-      .catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   const loggedIn = flow.isLoggedIn;
   const actionBusy = flow.actionBusy || directAction !== null;
   // Importing an existing `gh` credential and re-verifying it are single main
@@ -297,11 +288,11 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
         </Text>
       )}
       <HStack gap={2} hAlign="end">
-        {signInEnabled && !loggedIn && (
+        {!loggedIn && (
           <Button variant="primary" onClick={() => void flow.startLogin()} isDisabled={actionBusy} label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.copilotSignIn} />
         )}
         <Button
-          variant={signInEnabled || loggedIn ? 'secondary' : 'primary'}
+          variant="secondary"
           onClick={() => void runDirectAction('import', () => window.maka.githubCopilotSubscription.connectExistingLogin(host))}
           isDisabled={actionBusy}
           label={directAction === 'import' ? copy.importing : loggedIn ? copy.reimport : copy.importCredential}

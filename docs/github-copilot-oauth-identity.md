@@ -42,16 +42,17 @@ the same.
 
 Consequences, and what is required before this changes:
 
-- The interactive device flow is **opt-in and off by default**. It is admitted
-  only when `MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL=1`
-  (`isOAuthEnrollmentProviderEnabled` in
-  `packages/runtime/src/oauth-provider-contracts.ts`). With the variable unset,
-  the Host refuses to start the login and Desktop does not offer the button.
-- The shipped sign-in path stays the import of a credential the user already
-  holds locally (`gh auth token` or a fine-grained PAT with Copilot Requests
-  permission). That credential is issued to an identity the user chose, so it
-  raises none of the questions above.
-- Turning the device flow on by default requires either a public GitHub
-  authorization or compatibility basis for reusing this identity — linked from
-  this file — or an OAuth app identity registered to and authorized for Maka,
-  replacing the client ID above.
+- The interactive device flow ships **on**, so the sign-in is present in
+  Settings, but it carries a kill switch:
+  `MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL=0` refuses the login at the
+  Host (`isOAuthEnrollmentProviderEnabled` in
+  `packages/runtime/src/oauth-provider-contracts.ts`) without a release. This
+  matches how Codex enrollment is gated.
+- Importing a credential the user already holds locally (`gh auth token` or a
+  fine-grained PAT with Copilot Requests permission) stays available beside it.
+  That credential is issued to an identity the user chose, so it raises none of
+  the questions above and remains the fallback if the device flow is turned off.
+- Resolving this entry requires either a public GitHub authorization or
+  compatibility basis for reusing this identity — linked from this file — or an
+  OAuth app identity registered to and authorized for Maka, replacing the client
+  ID above. Until then the consent identity mismatch described above stands.

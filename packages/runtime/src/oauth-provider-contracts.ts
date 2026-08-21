@@ -60,9 +60,8 @@ export const OAUTH_PROVIDER_CONTRACTS = {
     // today — but GitHub has not published an authorization for third-party
     // reuse of this identity either. Provenance, consent identity, and the
     // open authorization question are recorded in
-    // `docs/github-copilot-oauth-identity.md`; until that basis exists the
-    // device flow stays behind an explicit opt-in and the local `gh` import
-    // remains the shipped sign-in path.
+    // `docs/github-copilot-oauth-identity.md`, along with the kill switch
+    // below that turns this sign-in off without a release.
     clientId: 'Iv1.b507a08c87ecfe98',
     deviceEndpoint: 'https://github.com/login/device/code',
     tokenEndpoint: 'https://github.com/login/oauth/access_token',
@@ -91,12 +90,8 @@ export function isOAuthEnrollmentProviderEnabled(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
   if (provider === 'xai-oauth') return true;
-  // Opt-in rather than opt-out: the Copilot device flow presents an OAuth app
-  // identity Maka does not own, so it must not become a public sign-in path
-  // before that authorization basis is established.
-  if (provider === 'github-copilot') {
-    return environment[OAUTH_PROVIDER_CONTRACTS[provider].experimentalEnvironmentVariable] === '1';
-  }
+  // Codex and GitHub Copilot both carry a kill switch: enrollment is on unless
+  // the operator sets the flag to '0'.
   return environment[OAUTH_PROVIDER_CONTRACTS[provider].experimentalEnvironmentVariable] !== '0';
 }
 

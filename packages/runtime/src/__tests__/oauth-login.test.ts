@@ -61,21 +61,13 @@ describe('OAuth enrollment policy', () => {
     assert.equal(isOAuthEnrollmentProviderEnabled('openai-codex', {}), true);
   });
 
-  it('keeps GitHub Copilot enrollment opt-in until its app identity is authorized', () => {
-    // Opt-in, not opt-out: an unset variable must not expose a sign-in that
-    // presents an OAuth app identity Maka does not own.
-    assert.equal(isOAuthEnrollmentProviderEnabled('github-copilot', {}), false);
+  it('keeps a GitHub Copilot kill switch without hiding the sign-in by default', () => {
+    assert.equal(isOAuthEnrollmentProviderEnabled('github-copilot', {}), true);
     assert.equal(
       isOAuthEnrollmentProviderEnabled('github-copilot', {
         MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL: '0',
       }),
       false,
-    );
-    assert.equal(
-      isOAuthEnrollmentProviderEnabled('github-copilot', {
-        MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL: '1',
-      }),
-      true,
     );
   });
 });
