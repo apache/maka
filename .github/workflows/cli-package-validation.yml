@@ -12,6 +12,9 @@ on:
       release_candidate_artifact_id:
         description: Immutable artifact produced by the build job
         value: ${{ jobs.build.outputs.release_candidate_artifact_id }}
+      release_candidate_run_attempt:
+        description: Workflow attempt that built the immutable artifact
+        value: ${{ jobs.build.outputs.release_candidate_run_attempt }}
   workflow_dispatch:
 
 permissions:
@@ -27,6 +30,7 @@ jobs:
     timeout-minutes: 60
     outputs:
       release_candidate_artifact_id: ${{ steps.release-candidate.outputs.artifact-id }}
+      release_candidate_run_attempt: ${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,7 +52,6 @@ jobs:
           path: |
             packages/cli/release/*.tgz
             packages/cli/release/*.tgz.sha256
-            packages/cli/release/*.tgz.sha512
             packages/cli/release/*.tgz.files.json
           if-no-files-found: error
           retention-days: 7

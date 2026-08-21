@@ -16,8 +16,8 @@ produces one unsigned handoff artifact containing:
 - `maka-agent-<version>.tgz.sha512` for ASF release review;
 - the npm pack file inventory; and
 - `maka-agent-<version>.tgz.asf-candidate.json`, which binds those exact bytes
-  to `v<version>-incubating-rc<rc>`, its full source commit, and the producing
-  workflow run attempt.
+  to the source reference `v<version>-incubating-rc<rc>`, its full commit, and
+  the producing workflow run attempt.
 
 The workflow builds the tarball once and passes the same bytes through the
 Linux, macOS, Windows, and Eval validation matrix. It does not call npm
@@ -27,8 +27,10 @@ that the source candidate has passed either required vote.
 ## Prerequisites
 
 1. The intended source candidate tag
-   `v<version>-incubating-rc<rc>` exists as an annotated tag at a commit on
-   `main`.
+   `v<version>-incubating-rc<rc>` exists as a signed annotated tag at a commit
+   on `main`. The Release Manager has independently verified the tag signature
+   with the trusted ASF `KEYS` material as required by the source-release
+   runbook.
 2. The root product version and `packages/cli/package.json` version both equal
    `<version>` at that commit.
 3. The source candidate was prepared and reviewed under
@@ -48,12 +50,15 @@ gh workflow run asf-npm-candidate.yml \
   -f rc_number="$rc"
 ```
 
-The workflow rejects a lightweight tag, a tag/version/RC mismatch, a tag that
-does not resolve to the dispatched commit, and a commit outside current
-`main`. Its reusable validation job builds one clean-source npm tarball and
-tests that exact artifact across the supported platform matrix. The final job
-adds only the source-RC/run record and uploads a new handoff artifact; it never
-rebuilds the tarball.
+The workflow rejects a fork repository, a lightweight tag, a tag/version/RC
+mismatch, a tag that does not resolve to the dispatched commit, and a commit
+outside current `main`. These checks pin a source reference; they do not
+authenticate its signature or establish source-release approval. Its reusable
+validation job builds one clean-source npm tarball and tests that exact artifact
+across the supported platform matrix. The final job adds only the source
+reference/run record and uploads a new handoff artifact; it never rebuilds the
+tarball. A partial job rerun is rejected because it would combine authority and
+artifact facts from different workflow attempts; use **Re-run all jobs**.
 
 ## Verify the handoff
 
@@ -65,10 +70,10 @@ npm run release:asf:npm:verify -- \
   <candidate-dir>/maka-agent-<version>.tgz.asf-candidate.json
 ```
 
-Review the JSON record directly and confirm the full source commit, source RC
-tag, workflow run ID, and run attempt against GitHub. Treat the tarball as
-immutable after it enters release review. Any byte change requires a new npm
-package version and, when the source commit changes, a new source RC.
+Review the JSON record directly and confirm the full source commit, source
+reference tag, workflow run ID, and run attempt against GitHub. Treat the
+tarball as immutable after it enters release review. Any byte change requires a
+new npm package version and, when the source commit changes, a new source RC.
 
 ## Publication boundary
 

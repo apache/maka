@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { parseProductReleaseVersion } from './release-version.mjs';
 
 const PACKAGE_NAME = 'maka-agent';
-const REPOSITORY = 'apache/maka';
+const ASF_REPOSITORY = 'apache/maka';
 const WORKFLOW_PATH = '.github/workflows/asf-npm-candidate.yml';
 const RECORD_SCHEMA_VERSION = 1;
 const defaultRepoRoot = resolve(import.meta.dirname, '..');
@@ -24,7 +24,7 @@ export function asfNpmCandidateIdentity(version) {
   };
 }
 
-export function parseAsfSourceCandidateTag(tag, version) {
+export function parseAsfSourceReferenceTag(tag, version) {
   asfNpmCandidateIdentity(version);
   const prefix = `v${version}-incubating-rc`;
   if (typeof tag !== 'string' || !tag.startsWith(prefix)) {
@@ -34,27 +34,38 @@ export function parseAsfSourceCandidateTag(tag, version) {
   if (!/^[1-9]\d*$/u.test(rc)) {
     throw new Error(`Source candidate tag must match ${prefix}<positive-integer>`);
   }
-  return { tag, rc: Number(rc) };
+  return tag;
 }
 
 export function createAsfNpmCandidateRecord({
   repoRoot = defaultRepoRoot,
   releaseDirectory = join(repoRoot, 'packages/cli/release'),
   version,
-  sourceCandidateTag,
+  sourceReferenceTag,
   sourceCommit,
+  repository,
   runId,
   runAttempt,
 }) {
   const identity = asfNpmCandidateIdentity(version);
   validateRepositoryVersion(repoRoot, version);
-  const source = validateSourceIdentity({
-    sourceCandidateTag,
+  const sourceReference = validateSourceReference({
+    sourceReferenceTag,
     sourceCommit,
     version,
   });
-  const workflow = validateWorkflowIdentity({ runId, runAttempt });
+  const workflow = validateWorkflowIdentity({
+    repository,
+    path: WORKFLOW_PATH,
+    runId,
+    runAttempt,
+  });
   const candidate = validateCandidateFiles(releaseDirectory, identity);
+  writeFileSync(
+    join(releaseDirectory, identity.sha512),
+    `${candidate.sha512}  ${identity.tarball}\n`,
+    { flag: 'wx', mode: 0o644 },
+  );
   const record = {
     schemaVersion: RECORD_SCHEMA_VERSION,
     artifactType: 'npm-convenience-candidate',
@@ -65,7 +76,7 @@ export function createAsfNpmCandidateRecord({
       sha256: candidate.sha256,
       sha512: candidate.sha512,
     },
-    sourceRelease: source,
+    sourceReference,
     workflow,
   };
   const recordPath = join(releaseDirectory, identity.record);
@@ -87,7 +98,7 @@ export function verifyAsfNpmCandidateRecord({ recordPath }) {
       'version',
       'tarball',
       'digests',
-      'sourceRelease',
+      'sourceReference',
       'workflow',
     ],
     'ASF npm candidate record',
@@ -104,18 +115,22 @@ export function verifyAsfNpmCandidateRecord({ recordPath }) {
     throw new Error('ASF npm candidate record tarball is inconsistent');
   }
   exactKeys(record.digests, ['sha256', 'sha512'], 'ASF npm candidate digests');
-  const source = validateSourceIdentity({
-    sourceCandidateTag: record.sourceRelease?.candidateTag,
-    sourceCommit: record.sourceRelease?.commit,
+  exactKeys(record.sourceReference, ['candidateTag', 'commit'], 'ASF source reference');
+  validateSourceReference({
+    sourceReferenceTag: record.sourceReference.candidateTag,
+    sourceCommit: record.sourceReference.commit,
     version: record.version,
   });
-  exactKeys(record.sourceRelease, ['candidateTag', 'commit', 'rc'], 'ASF source release identity');
-  if (record.sourceRelease.rc !== source.rc) {
-    throw new Error('ASF npm candidate record RC number is inconsistent');
-  }
   exactKeys(record.workflow, ['repository', 'path', 'runId', 'runAttempt'], 'workflow identity');
-  validateWorkflowIdentity(record.workflow ?? {});
-  const candidate = validateCandidateFiles(dirname(resolve(recordPath)), identity);
+  validateWorkflowIdentity(record.workflow);
+  const releaseDirectory = dirname(resolve(recordPath));
+  const candidate = validateCandidateFiles(releaseDirectory, identity);
+  validateChecksumFile(
+    join(releaseDirectory, identity.sha512),
+    identity.tarball,
+    candidate.sha512,
+    128,
+  );
   if (record.digests.sha256 !== candidate.sha256 || record.digests.sha512 !== candidate.sha512) {
     throw new Error('ASF npm candidate record digest does not match the tarball');
   }
@@ -132,21 +147,18 @@ function validateRepositoryVersion(repoRoot, version) {
   }
 }
 
-function validateSourceIdentity({ sourceCandidateTag, sourceCommit, version }) {
-  const { tag, rc } = parseAsfSourceCandidateTag(sourceCandidateTag, version);
+function validateSourceReference({ sourceReferenceTag, sourceCommit, version }) {
+  const tag = parseAsfSourceReferenceTag(sourceReferenceTag, version);
   if (typeof sourceCommit !== 'string' || !/^[0-9a-f]{40}$/u.test(sourceCommit)) {
     throw new Error('ASF source candidate commit must be a full lowercase Git SHA');
   }
-  return { candidateTag: tag, rc, commit: sourceCommit };
+  return { candidateTag: tag, commit: sourceCommit };
 }
 
-function validateWorkflowIdentity({
-  repository = REPOSITORY,
-  path = WORKFLOW_PATH,
-  runId,
-  runAttempt,
-}) {
-  if (repository !== REPOSITORY) throw new Error(`Workflow repository must be ${REPOSITORY}`);
+function validateWorkflowIdentity({ repository, path, runId, runAttempt }) {
+  if (repository !== ASF_REPOSITORY) {
+    throw new Error(`Workflow repository must be ${ASF_REPOSITORY}`);
+  }
   if (path !== WORKFLOW_PATH) throw new Error(`Workflow path must be ${WORKFLOW_PATH}`);
   if (!isPositiveIntegerString(runId)) throw new Error('Workflow run ID is invalid');
   if (!isPositiveIntegerString(runAttempt)) throw new Error('Workflow run attempt is invalid');
@@ -164,7 +176,6 @@ function validateCandidateFiles(releaseDirectory, identity) {
   const sha256 = digest(bytes, 'sha256');
   const sha512 = digest(bytes, 'sha512');
   validateChecksumFile(join(releaseDirectory, identity.sha256), identity.tarball, sha256, 64);
-  validateChecksumFile(join(releaseDirectory, identity.sha512), identity.tarball, sha512, 128);
   const inventory = readJson(join(releaseDirectory, identity.inventory), 'npm candidate inventory');
   if (
     !Array.isArray(inventory) ||
@@ -219,26 +230,35 @@ function readJson(path, label) {
 function main() {
   const [command, ...arguments_] = process.argv.slice(2);
   if (command === 'record') {
-    const [releaseDirectory, version, sourceCandidateTag, sourceCommit, runId, runAttempt] =
-      arguments_;
+    const [
+      releaseDirectory,
+      version,
+      sourceReferenceTag,
+      sourceCommit,
+      repository,
+      runId,
+      runAttempt,
+    ] = arguments_;
     if (
-      arguments_.length !== 6 ||
+      arguments_.length !== 7 ||
       !releaseDirectory ||
       !version ||
-      !sourceCandidateTag ||
+      !sourceReferenceTag ||
       !sourceCommit ||
+      !repository ||
       !runId ||
       !runAttempt
     ) {
       throw new Error(
-        'Usage: asf-npm-candidate.mjs record <release-directory> <version> <source-candidate-tag> <source-commit> <run-id> <run-attempt>',
+        'Usage: asf-npm-candidate.mjs record <release-directory> <version> <source-reference-tag> <source-commit> <repository> <run-id> <run-attempt>',
       );
     }
     const result = createAsfNpmCandidateRecord({
       releaseDirectory: resolve(releaseDirectory),
       version,
-      sourceCandidateTag,
+      sourceReferenceTag,
       sourceCommit,
+      repository,
       runId,
       runAttempt,
     });

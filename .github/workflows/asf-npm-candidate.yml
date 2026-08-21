@@ -20,61 +20,78 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  authorize:
-    name: Resolve ASF source candidate
+  resolve:
+    name: Resolve source reference
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       source_commit: ${{ steps.source.outputs.source_commit }}
-      source_candidate_tag: ${{ steps.source.outputs.source_candidate_tag }}
+      source_reference_tag: ${{ steps.source.outputs.source_reference_tag }}
+      run_attempt: ${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Require the exact ASF source candidate tag
+      - name: Resolve the requested source reference
         id: source
         env:
           RELEASE_REF: ${{ github.ref }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_VERSION: ${{ inputs.version }}
           RC_NUMBER: ${{ inputs.rc_number }}
         run: |
+          if [[ "$RELEASE_REPOSITORY" != "apache/maka" ]]; then
+            echo "ASF npm candidates must run in apache/maka; found $RELEASE_REPOSITORY" >&2
+            exit 1
+          fi
           node scripts/release-version.mjs "$RELEASE_VERSION"
           node -e "if (!/^[1-9]\\d*$/.test(process.env.RC_NUMBER)) throw new Error('RC number must be a positive integer')"
-          source_candidate_tag="v${RELEASE_VERSION}-incubating-rc${RC_NUMBER}"
-          if [[ "$RELEASE_REF" != "refs/tags/$source_candidate_tag" ]]; then
-            echo "ASF npm candidates must be dispatched from $source_candidate_tag; found $RELEASE_REF" >&2
+          source_reference_tag="v${RELEASE_VERSION}-incubating-rc${RC_NUMBER}"
+          if [[ "$RELEASE_REF" != "refs/tags/$source_reference_tag" ]]; then
+            echo "ASF npm candidates must be dispatched from $source_reference_tag; found $RELEASE_REF" >&2
             exit 1
           fi
           git fetch --force --no-tags origin \
-            "refs/tags/$source_candidate_tag:refs/tags/$source_candidate_tag"
-          test "$(git cat-file -t "refs/tags/$source_candidate_tag")" = tag
-          source_commit="$(git rev-parse "refs/tags/$source_candidate_tag^{commit}")"
+            "refs/tags/$source_reference_tag:refs/tags/$source_reference_tag"
+          test "$(git cat-file -t "refs/tags/$source_reference_tag")" = tag
+          source_commit="$(git rev-parse "refs/tags/$source_reference_tag^{commit}")"
           test "$source_commit" = "$GITHUB_SHA"
           git fetch --no-tags origin main:refs/remotes/origin/main
           git merge-base --is-ancestor "$source_commit" origin/main
           echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
-          echo "source_candidate_tag=$source_candidate_tag" >> "$GITHUB_OUTPUT"
+          echo "source_reference_tag=$source_reference_tag" >> "$GITHUB_OUTPUT"
 
   validate:
     name: Validate immutable npm candidate
-    needs: authorize
+    needs: resolve
     permissions:
       contents: read
     uses: ./.github/workflows/cli-package-validation.yml
     with:
-      source_commit: ${{ needs.authorize.outputs.source_commit }}
+      source_commit: ${{ needs.resolve.outputs.source_commit }}
 
   handoff:
     name: Record unsigned ASF npm candidate
-    needs: [authorize, validate]
+    needs: [resolve, validate]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - name: Require a complete workflow rerun
+        env:
+          CURRENT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          RESOLVE_RUN_ATTEMPT: ${{ needs.resolve.outputs.run_attempt }}
+          VALIDATE_RUN_ATTEMPT: ${{ needs.validate.outputs.release_candidate_run_attempt }}
+        run: |
+          if [[ "$RESOLVE_RUN_ATTEMPT" != "$CURRENT_RUN_ATTEMPT" || "$VALIDATE_RUN_ATTEMPT" != "$CURRENT_RUN_ATTEMPT" ]]; then
+            echo "Candidate provenance cannot cross workflow attempts; use Re-run all jobs." >&2
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.authorize.outputs.source_commit }}
+          ref: ${{ needs.resolve.outputs.source_commit }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -85,27 +102,40 @@ jobs:
         with:
           artifact-ids: ${{ needs.validate.outputs.release_candidate_artifact_id }}
           path: packages/cli/release
-      - name: Bind the npm candidate to the ASF source RC
+      - name: Bind the npm candidate to the source reference
         env:
           RELEASE_VERSION: ${{ inputs.version }}
-          SOURCE_CANDIDATE_TAG: ${{ needs.authorize.outputs.source_candidate_tag }}
-          SOURCE_COMMIT: ${{ needs.authorize.outputs.source_commit }}
+          SOURCE_REFERENCE_TAG: ${{ needs.resolve.outputs.source_reference_tag }}
+          SOURCE_COMMIT: ${{ needs.resolve.outputs.source_commit }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           npm run release:asf:npm:record -- \
             packages/cli/release \
             "$RELEASE_VERSION" \
-            "$SOURCE_CANDIDATE_TAG" \
+            "$SOURCE_REFERENCE_TAG" \
             "$SOURCE_COMMIT" \
+            "$RELEASE_REPOSITORY" \
             "$RELEASE_RUN_ID" \
             "$RELEASE_RUN_ATTEMPT"
           npm run release:asf:npm:verify -- \
             "packages/cli/release/maka-agent-${RELEASE_VERSION}.tgz.asf-candidate.json"
+      - name: Revalidate the live source reference
+        env:
+          SOURCE_REFERENCE_TAG: ${{ needs.resolve.outputs.source_reference_tag }}
+          SOURCE_COMMIT: ${{ needs.resolve.outputs.source_commit }}
+        run: |
+          git fetch --force --no-tags origin \
+            "refs/tags/$SOURCE_REFERENCE_TAG:refs/tags/$SOURCE_REFERENCE_TAG"
+          test "$(git cat-file -t "refs/tags/$SOURCE_REFERENCE_TAG")" = tag
+          test "$(git rev-parse "refs/tags/$SOURCE_REFERENCE_TAG^{commit}")" = "$SOURCE_COMMIT"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
       - name: Upload the unsigned ASF npm candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: apache-maka-${{ inputs.version }}-incubating-rc${{ inputs.rc_number }}-npm-${{ needs.authorize.outputs.source_commit }}-unsigned
+          name: apache-maka-${{ inputs.version }}-incubating-rc${{ inputs.rc_number }}-npm-${{ needs.resolve.outputs.source_commit }}-unsigned
           path: |
             packages/cli/release/*.tgz
             packages/cli/release/*.tgz.sha256
@@ -117,15 +147,15 @@ jobs:
       - name: Record Release Manager handoff
         env:
           RELEASE_VERSION: ${{ inputs.version }}
-          SOURCE_CANDIDATE_TAG: ${{ needs.authorize.outputs.source_candidate_tag }}
-          SOURCE_COMMIT: ${{ needs.authorize.outputs.source_commit }}
-          RUNBOOK_URL: https://github.com/${{ github.repository }}/blob/${{ needs.authorize.outputs.source_commit }}/.github/ASF_NPM_RELEASE.md
+          SOURCE_REFERENCE_TAG: ${{ needs.resolve.outputs.source_reference_tag }}
+          SOURCE_COMMIT: ${{ needs.resolve.outputs.source_commit }}
+          RUNBOOK_URL: https://github.com/${{ github.repository }}/blob/${{ needs.resolve.outputs.source_commit }}/.github/ASF_NPM_RELEASE.md
         run: |
           {
             echo "## Unsigned ASF npm convenience candidate"
             echo
             echo "- Version: \`$RELEASE_VERSION\`"
-            echo "- ASF source candidate: \`$SOURCE_CANDIDATE_TAG\`"
+            echo "- Source reference: \`$SOURCE_REFERENCE_TAG\`"
             echo "- Source commit: \`$SOURCE_COMMIT\`"
             echo "- Runbook: $RUNBOOK_URL"
             echo
