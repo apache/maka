@@ -41,13 +41,13 @@ export type RuntimeHostCliCommand =
       action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'logs' | 'uninstall';
       json: boolean;
       framed?: true;
+      clientDataRoot?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
       websocketPath?: string;
       expectedTarget?: RuntimeHostManagedServiceTarget;
       retainManagedDeployment?: true;
-      resumeManagedDeploymentCleanup?: true;
     }
   | {
       kind: 'runtime-host-access-issue';
@@ -168,10 +168,17 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   }
 
   let retainManagedDeployment = false;
-  let resumeManagedDeploymentCleanup = false;
+  let clientDataRoot: string | undefined;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: action === 'install',
     allowFramed: true,
+    valueOptions: {
+      '--client-data-root': (value) => {
+        if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
+        if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
+        clientDataRoot = value;
+      },
+    },
     ...(action === 'uninstall'
       ? {
           flagOptions: {
@@ -179,31 +186,17 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
               if (retainManagedDeployment) return error('Duplicate --retain-managed-deployment');
               retainManagedDeployment = true;
             },
-            '--resume-managed-deployment-cleanup': () => {
-              if (resumeManagedDeploymentCleanup) {
-                return error('Duplicate --resume-managed-deployment-cleanup');
-              }
-              resumeManagedDeploymentCleanup = true;
-            },
           },
         }
       : {}),
   });
   if ('kind' in options) return options;
-  if (retainManagedDeployment && resumeManagedDeploymentCleanup) {
-    return error(
-      '--retain-managed-deployment cannot be combined with --resume-managed-deployment-cleanup',
-    );
-  }
-  if (resumeManagedDeploymentCleanup && !options.expectedTarget) {
-    return error('--resume-managed-deployment-cleanup requires the complete expected target');
-  }
   return {
     kind: 'runtime-host-service-manage',
     action,
     ...options,
+    ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(retainManagedDeployment ? { retainManagedDeployment: true } : {}),
-    ...(resumeManagedDeploymentCleanup ? { resumeManagedDeploymentCleanup: true } : {}),
   };
 }
 
@@ -259,7 +252,8 @@ function parseManagedServiceOptions(
       argument === '--expected-service-id' ||
       argument === '--expected-root-path' ||
       argument === '--expected-root-id';
-    if (input.allowConfiguration === false && !isTargetOption) {
+    const isExplicitlyAllowedOption = Object.hasOwn(input.valueOptions ?? {}, argument ?? '');
+    if (input.allowConfiguration === false && !isTargetOption && !isExplicitlyAllowedOption) {
       return error(`Unexpected argument: ${argument ?? ''}`);
     }
     if (
@@ -350,6 +344,10 @@ function parseManagedServiceOptions(
           },
         }),
   };
+}
+
+function isSafeAbsolutePath(value: string): boolean {
+  return isAbsolute(value) && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {

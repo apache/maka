@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveMakaDataRoots } from './workspace-root.js';
+import { deriveMakaDataRoots, resolveMakaDataRoots } from './workspace-root.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
 import { resolveCliUiLocale } from './cli-ui-locale.js';
 
@@ -232,12 +232,15 @@ export async function runMakaCli(
       const { runManagedRuntimeHostServiceCli } = await import(
         './runtime-host-service-management-command.js'
       );
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
       return runManagedRuntimeHostServiceCli({
         action: command.action,
         json: command.json,
         framed: command.framed ?? false,
-        clientDataRoot: dataRoots.clientDataRoot,
-        defaultRootPath: dataRoots.workspaceRoot,
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        defaultRootPath: serviceDataRoots.workspaceRoot,
         nodePath: process.execPath,
         cliPath: process.argv[1] ?? '',
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
@@ -248,7 +251,6 @@ export async function runMakaCli(
         ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
         ...(command.retainManagedDeployment ? { retainManagedDeployment: true } : {}),
-        ...(command.resumeManagedDeploymentCleanup ? { resumeManagedDeploymentCleanup: true } : {}),
       });
     }
     case 'runtime-host-access-issue': {

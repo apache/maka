@@ -367,7 +367,7 @@ export type DesktopRuntimeHostManagementAction =
   | 'start'
   | 'restart'
   | 'logs'
-  | 'repair'
+  | 'install'
   | 'uninstall';
 
 export type DesktopRuntimeHostManagementResult = Extract<

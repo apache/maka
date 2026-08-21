@@ -106,27 +106,17 @@ describe('managed Runtime Host service', () => {
     assert.deepEqual(
       parseRuntimeHostCommand([
         'service',
-        'uninstall',
+        'status',
         '--framed',
-        '--resume-managed-deployment-cleanup',
-        '--expected-service-id',
-        'b'.repeat(64),
-        '--expected-root-path',
-        '/srv/maka',
-        '--expected-root-id',
-        'a'.repeat(64),
+        '--client-data-root',
+        '/var/lib/maka-client',
       ]),
       {
         kind: 'runtime-host-service-manage',
-        action: 'uninstall',
+        action: 'status',
         json: false,
         framed: true,
-        resumeManagedDeploymentCleanup: true,
-        expectedTarget: {
-          serviceId: 'b'.repeat(64),
-          rootPath: '/srv/maka',
-          rootId: 'a'.repeat(64),
-        },
+        clientDataRoot: '/var/lib/maka-client',
       },
     );
     assert.equal(parseRuntimeHostCommand(['service', 'status', '--root', '/tmp']).kind, 'error');
@@ -187,7 +177,6 @@ describe('managed Runtime Host service', () => {
     const cliPath = join(deploymentRoot, 'versions', '0.2.0', 'dist', 'cli.js');
     await mkdir(dirname(cliPath), { recursive: true });
     await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
-    const canonicalDeploymentRoot = await realpath(deploymentRoot);
     const canonicalCliPath = await realpath(cliPath);
     const unitPath = resolveSystemdUserRuntimeHostServicePath(serviceId, env, homeDir);
     const systemd = createFakeSystemd(unitPath);
@@ -204,7 +193,6 @@ describe('managed Runtime Host service', () => {
       defaultRootPath: rootPath,
       nodePath: process.execPath,
       cliPath: canonicalCliPath,
-      managedDeploymentRoot: canonicalDeploymentRoot,
     } as const;
     const managerDeps = {
       allocateLoopbackPort: async () => 49_999,
@@ -318,7 +306,6 @@ describe('managed Runtime Host service', () => {
       {
         ...common,
         action: 'uninstall',
-        resumeManagedDeploymentCleanup: true,
         expectedTarget: {
           serviceId,
           rootPath: root.canonicalPath,

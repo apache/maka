@@ -381,6 +381,7 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   ipcMain,
   profiles: runtimeHostProfileService,
   runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
+  cleanupManagedDeployment: runtimeHostSshTerminal.cleanupManagedDeployment,
 });
 
 function runtimeHostSetupPackage(): DesktopRuntimeHostSetupPackage {

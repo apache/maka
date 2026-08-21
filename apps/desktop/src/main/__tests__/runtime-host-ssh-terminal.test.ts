@@ -248,13 +248,12 @@ test('reads a framed service result without projecting it into the SSH terminal'
   await harness.terminal.close();
 });
 
-test('recognizes an already removed operator while resuming uninstall', async () => {
+test('rejects a framed service result for a different action', async () => {
   const harness = createHarness('pending');
   const management = harness.terminal.runServiceManagement({
     destination: 'operator@example.com',
     operatorPath: '/home/operator/.local/share/maka/operator',
     action: 'uninstall',
-    allowMissingOperator: true,
     expectedTarget: {
       serviceId: 'b'.repeat(64),
       rootPath: '/srv/maka',
@@ -262,29 +261,42 @@ test('recognizes an already removed operator while resuming uninstall', async ()
     },
   });
   await waitFor(() => harness.pty.hasDataListener());
-  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /if \[ ! -e/u);
   harness.pty.emitData(
     encodeRuntimeHostServiceManagementFrame({
       schemaVersion: 1,
-      kind: 'error',
-      action: 'uninstall',
-      error: {
-        code: 'operator_missing',
-        message: 'operator is absent',
+      kind: 'result',
+      action: 'status',
+      service: {
+        platform: 'linux',
+        arch: 'x64',
+        osRelease: '6.8.0',
+        state: 'running',
+        pid: 42,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        projectDirectoryRoots: [],
       },
     }),
   );
   harness.pty.exit(0);
 
-  assert.deepEqual(await management, {
-    schemaVersion: 1,
-    kind: 'error',
-    action: 'uninstall',
-    error: {
-      code: 'operator_missing',
-      message: 'operator is absent',
-    },
+  await assert.rejects(management, /returned status for uninstall/u);
+  await harness.terminal.close();
+});
+
+test('treats an absent operator as completed deployment cleanup', async () => {
+  const harness = createHarness('pending');
+  const cleanup = harness.terminal.cleanupManagedDeployment({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
   });
+  await waitFor(() => harness.pty.hasDataListener());
+  const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(remoteCommand, /if \[ ! -e/u);
+  assert.match(remoteCommand, /__cleanup-managed-deployment/u);
+  harness.pty.exit(0);
+
+  await cleanup;
   await harness.terminal.close();
 });
 

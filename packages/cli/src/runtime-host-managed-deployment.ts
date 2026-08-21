@@ -43,6 +43,7 @@ export function isRuntimeHostDevelopmentPackageVersion(value: unknown): value is
 export async function prepareRuntimeHostManagedPackageDeployment(
   input: {
     readonly serviceId: string;
+    readonly clientDataRoot: string;
     readonly sourcePackageRoot: string;
     readonly version: string;
   },
@@ -56,9 +57,10 @@ export async function prepareRuntimeHostManagedPackageDeployment(
   const versionsRoot = join(deploymentRoot, 'versions');
   const packageRoot = join(versionsRoot, input.version);
   const cliPath = join(packageRoot, 'dist', 'cli.js');
+  const clientDataRoot = resolve(input.clientDataRoot);
   if (await pathExists(packageRoot)) {
     await validatePackage(packageRoot, input.version);
-    return deployment(input.version, deploymentRoot, packageRoot, cliPath, false);
+    return deployment(input.version, deploymentRoot, packageRoot, cliPath, clientDataRoot, false);
   }
 
   await removeAbandonedStagingPackages(versionsRoot, input.version);
@@ -77,9 +79,9 @@ export async function prepareRuntimeHostManagedPackageDeployment(
       if (!isNodeError(error, 'EEXIST') && !isNodeError(error, 'ENOTEMPTY')) throw error;
       await validatePackage(packageRoot, input.version);
       await rm(stagingRoot, { recursive: true, force: true });
-      return deployment(input.version, deploymentRoot, packageRoot, cliPath, false);
+      return deployment(input.version, deploymentRoot, packageRoot, cliPath, clientDataRoot, false);
     }
-    return deployment(input.version, deploymentRoot, packageRoot, cliPath, true);
+    return deployment(input.version, deploymentRoot, packageRoot, cliPath, clientDataRoot, true);
   } catch (error) {
     await rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
     if (error instanceof RuntimeHostManagedDeploymentError) throw error;
@@ -237,6 +239,7 @@ function deployment(
   root: string,
   packageRoot: string,
   cliPath: string,
+  clientDataRoot: string,
   created: boolean,
 ): RuntimeHostManagedPackageDeployment {
   const operatorPath = join(root, 'operator');
@@ -246,7 +249,7 @@ function deployment(
     cliPath,
     operatorPath,
     commit: async () => {
-      await writeOperatorLauncher(operatorPath, process.execPath, cliPath);
+      await writeOperatorLauncher(operatorPath, process.execPath, cliPath, clientDataRoot);
       await pruneInactiveDevelopmentPackages(dirname(packageRoot), version);
     },
     rollback: () =>
@@ -258,9 +261,26 @@ async function writeOperatorLauncher(
   path: string,
   nodePath: string,
   cliPath: string,
+  clientDataRoot: string,
 ): Promise<void> {
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
-  const contents = `#!/bin/sh\nexec ${quotePosix(nodePath)} ${quotePosix(cliPath)} "$@"\n`;
+  const deploymentRoot = dirname(path);
+  const contents = [
+    '#!/bin/sh',
+    'if [ "$#" -eq 1 ] && [ "$1" = "__cleanup-managed-deployment" ]; then',
+    `  for entry in ${quotePosix(deploymentRoot)}/* ${quotePosix(deploymentRoot)}/.[!.]* ${quotePosix(deploymentRoot)}/..?*; do`,
+    `    [ "$entry" = ${quotePosix(path)} ] && continue`,
+    '    if [ -e "$entry" ] || [ -L "$entry" ]; then',
+    '      rm -rf -- "$entry" || exit 1',
+    '    fi',
+    '  done',
+    `  rm -f -- ${quotePosix(path)} || exit 1`,
+    `  rmdir -- ${quotePosix(deploymentRoot)} || exit 1`,
+    '  exit 0',
+    'fi',
+    `exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service "$@" --client-data-root ${quotePosix(clientDataRoot)}`,
+    '',
+  ].join('\n');
   try {
     const file = await open(temporaryPath, 'wx', 0o700);
     try {

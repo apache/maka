@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createDesktopRuntimeHostManagement } from '../runtime-host-management.js';
-import type { DesktopRuntimeHostSshManagementInput } from '../runtime-host-ssh-terminal.js';
+import type {
+  DesktopRuntimeHostSshCleanupInput,
+  DesktopRuntimeHostSshManagementInput,
+} from '../runtime-host-ssh-terminal.js';
 
 test('manages only the service identity bound by Desktop onboarding', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const managementInputs: DesktopRuntimeHostSshManagementInput[] = [];
+  const cleanupInputs: DesktopRuntimeHostSshCleanupInput[] = [];
   const uninstallOrder: string[] = [];
   let cleared = 0;
   const managedProfile = {
@@ -47,9 +51,13 @@ test('manages only the service identity bound by Desktop onboarding', async () =
     runServiceManagement: async (input) => {
       managementInputs.push(input);
       if (input.action === 'uninstall') {
-        uninstallOrder.push(input.retainManagedDeployment ? 'retain-operator' : 'purge-package');
+        uninstallOrder.push('uninstall-service');
       }
       return serviceResult(input.action);
+    },
+    cleanupManagedDeployment: async (input) => {
+      cleanupInputs.push(input);
+      uninstallOrder.push('cleanup-deployment');
     },
   });
   const run = handlers.get('runtime-host-management:run');
@@ -75,7 +83,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
     },
   });
 
-  await run({}, 'office', 'repair');
+  await run({}, 'office', 'install');
   const repairInput = managementInputs.at(-1);
   assert.deepEqual(repairInput && {
     action: repairInput.action,
@@ -92,17 +100,20 @@ test('manages only the service identity bound by Desktop onboarding', async () =
   await run({}, 'office', 'uninstall');
   assert.equal(cleared, 1);
   assert.deepEqual(uninstallOrder, [
-    'retain-operator',
+    'uninstall-service',
     'mark-uninstalling',
-    'purge-package',
+    'cleanup-deployment',
     'clear-binding',
   ]);
-  assert.equal(managementInputs.at(-1)?.resumeManagedDeploymentCleanup, true);
+  assert.deepEqual(cleanupInputs, [{
+    destination: managedProfile.transport.destination,
+    operatorPath: managedService.operatorPath,
+  }]);
   management.close();
   assert.equal(handlers.size, 0);
 });
 
-test('retains the remote operator when local uninstall cleanup fails', async () => {
+test('resumes deployment cleanup without repeating the committed service uninstall', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const profile = {
     id: 'office',
@@ -122,24 +133,31 @@ test('retains the remote operator when local uninstall cleanup fails', async () 
     operatorPath: '/home/operator/.local/share/maka/operator',
   };
   const calls: DesktopRuntimeHostSshManagementInput[] = [];
+  let cleanups = 0;
+  let state: 'active' | 'uninstalling' = 'active';
+  let clearAttempts = 0;
   createDesktopRuntimeHostManagement({
     ipcMain: {
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
     },
     profiles: {
-      resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
-      markManagedServiceUninstalling: async (binding) => ({
-        ...binding,
-        state: 'uninstalling' as const,
-      }),
+      resolveManagedService: async () => ({ profile, service, state }),
+      markManagedServiceUninstalling: async (binding) => {
+        state = 'uninstalling';
+        return { ...binding, state };
+      },
       clearManagedServiceBinding: async () => {
-        throw new Error('local metadata is unavailable');
+        clearAttempts += 1;
+        if (clearAttempts === 1) throw new Error('local metadata is unavailable');
       },
     },
     runServiceManagement: async (input) => {
       calls.push(input);
       return serviceResult(input.action);
+    },
+    cleanupManagedDeployment: async () => {
+      cleanups += 1;
     },
   });
 
@@ -149,32 +167,19 @@ test('retains the remote operator when local uninstall cleanup fails', async () 
     run({}, profile.id, 'uninstall') as Promise<unknown>,
     /local metadata is unavailable/u,
   );
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
   assert.equal(calls[0]?.retainManagedDeployment, true);
-  assert.equal(calls[1]?.allowMissingOperator, true);
-  assert.equal(calls[1]?.resumeManagedDeploymentCleanup, true);
+  assert.deepEqual(await run({}, profile.id, 'uninstall'), {
+    kind: 'uninstalled',
+    retainedStateRoot: service.rootPath,
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(cleanups, 2);
 });
 
-test('finishes local uninstall cleanup after the remote operator was removed', async () => {
+test('does not commit uninstall until the remote service confirms it is removed', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  const profile = {
-    id: 'office',
-    name: 'Office',
-    kind: 'remote' as const,
-    rootId: 'a'.repeat(64),
-    transport: {
-      kind: 'ssh' as const,
-      destination: 'operator@example.com',
-      remotePort: 7443,
-      websocketPath: '/runtime-host',
-    },
-  };
-  const service = {
-    id: 'b'.repeat(64),
-    rootPath: '/srv/maka',
-    operatorPath: '/home/operator/.local/share/maka/operator',
-  };
-  let cleared = false;
+  let marked = false;
   createDesktopRuntimeHostManagement({
     ipcMain: {
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
@@ -182,33 +187,48 @@ test('finishes local uninstall cleanup after the remote operator was removed', a
     },
     profiles: {
       resolveManagedService: async () => ({
-        profile,
-        service,
-        state: 'uninstalling' as const,
+        profile: {
+          id: 'office',
+          name: 'Office',
+          kind: 'remote' as const,
+          rootId: 'a'.repeat(64),
+          transport: {
+            kind: 'ssh' as const,
+            destination: 'operator@example.com',
+            remotePort: 7443,
+            websocketPath: '/runtime-host',
+          },
+        },
+        service: {
+          id: 'b'.repeat(64),
+          rootPath: '/srv/maka',
+          operatorPath: '/home/operator/.local/share/maka/operator',
+        },
+        state: 'active' as const,
       }),
-      markManagedServiceUninstalling: async () => assert.fail('already uninstalling'),
-      clearManagedServiceBinding: async () => {
-        cleared = true;
+      markManagedServiceUninstalling: async (binding) => {
+        marked = true;
+        return { ...binding, state: 'uninstalling' as const };
       },
+      clearManagedServiceBinding: async () => assert.fail('uninstall was not committed'),
     },
-    runServiceManagement: async () => ({
-      schemaVersion: 1,
-      kind: 'error',
-      action: 'uninstall',
-      error: {
-        code: 'operator_missing',
-        message: 'operator is absent',
-      },
-    }),
+    runServiceManagement: async () => {
+      const result = serviceResult('uninstall');
+      return {
+        ...result,
+        service: { ...result.service, state: 'running' as const, pid: 42 },
+      };
+    },
+    cleanupManagedDeployment: async () => assert.fail('cleanup must not start'),
   });
 
   const run = handlers.get('runtime-host-management:run');
   assert.ok(run);
-  assert.deepEqual(await run({}, profile.id, 'uninstall'), {
-    kind: 'uninstalled',
-    retainedStateRoot: service.rootPath,
-  });
-  assert.equal(cleared, true);
+  await assert.rejects(
+    run({}, 'office', 'uninstall') as Promise<unknown>,
+    /did not confirm/u,
+  );
+  assert.equal(marked, false);
 });
 
 function serviceResult(action: DesktopRuntimeHostSshManagementInput['action']) {

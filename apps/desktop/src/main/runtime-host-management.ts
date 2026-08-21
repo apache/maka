@@ -6,6 +6,7 @@ import type {
 } from '../preload/bridge-contract.js';
 import type { DesktopRuntimeHostProfileService } from './runtime-host-profile-service.js';
 import type {
+  DesktopRuntimeHostSshCleanupInput,
   DesktopRuntimeHostSshManagementInput,
 } from './runtime-host-ssh-terminal.js';
 
@@ -14,7 +15,7 @@ const MANAGEMENT_ACTIONS = new Set<DesktopRuntimeHostManagementAction>([
   'start',
   'restart',
   'logs',
-  'repair',
+  'install',
   'uninstall',
 ]);
 
@@ -29,6 +30,9 @@ export function createDesktopRuntimeHostManagement(input: {
   readonly runServiceManagement: (
     input: DesktopRuntimeHostSshManagementInput,
   ) => Promise<RuntimeHostServiceManagementFrame>;
+  readonly cleanupManagedDeployment: (
+    input: DesktopRuntimeHostSshCleanupInput,
+  ) => Promise<void>;
 }): { close(): void } {
   const resolveManagedService = async (value: unknown) => {
     if (typeof value !== 'string' || value.length === 0 || value.length > 128) {
@@ -46,27 +50,26 @@ export function createDesktopRuntimeHostManagement(input: {
     if (!MANAGEMENT_ACTIONS.has(action as DesktopRuntimeHostManagementAction)) {
       throw new Error('Runtime Host service management action is invalid');
     }
+    const managementAction = action as DesktopRuntimeHostManagementAction;
     const managed = await resolveManagedService(profileId);
     const { profile, service } = managed;
     if (profile.transport.kind !== 'ssh') {
       throw new Error('This Runtime Host profile is not bound to a managed service');
     }
-    if (managed.state === 'uninstalling' && action !== 'uninstall') {
+    if (managed.state === 'uninstalling' && managementAction !== 'uninstall') {
       throw new Error('Finish uninstalling this Runtime Host service before managing it');
     }
     const managementInput: DesktopRuntimeHostSshManagementInput = {
       destination: profile.transport.destination,
       ...(profile.transport.sshPort === undefined ? {} : { sshPort: profile.transport.sshPort }),
       operatorPath: service.operatorPath,
-      action: action === 'repair'
-        ? 'install'
-        : action as Exclude<DesktopRuntimeHostManagementAction, 'repair'>,
+      action: managementAction,
       expectedTarget: {
         serviceId: service.id,
         rootPath: service.rootPath,
         rootId: profile.rootId,
       },
-      ...(action === 'repair'
+      ...(managementAction === 'install'
         ? {
             rootPath: service.rootPath,
             websocketPort: profile.transport.remotePort,
@@ -74,12 +77,8 @@ export function createDesktopRuntimeHostManagement(input: {
           }
         : {}),
     };
-    if (action !== 'uninstall') {
-      const response = await input.runServiceManagement(managementInput);
-      if (isOperatorMissingError(response)) {
-        throw new Error('The Runtime Host operator disappeared during service management');
-      }
-      return response;
+    if (managementAction !== 'uninstall') {
+      return input.runServiceManagement(managementInput);
     }
 
     let pending = managed;
@@ -88,18 +87,17 @@ export function createDesktopRuntimeHostManagement(input: {
         ...managementInput,
         retainManagedDeployment: true,
       });
-      if (isOperatorMissingError(response)) {
-        throw new Error('The Runtime Host operator disappeared before uninstall began');
-      }
       if (response.kind === 'error') return response;
+      assertUninstalled(response);
       pending = await input.profiles.markManagedServiceUninstalling(managed);
     }
-    const response = await input.runServiceManagement({
-      ...managementInput,
-      allowMissingOperator: true,
-      resumeManagedDeploymentCleanup: true,
+    await input.cleanupManagedDeployment({
+      destination: managementInput.destination,
+      ...(managementInput.sshPort === undefined
+        ? {}
+        : { sshPort: managementInput.sshPort }),
+      operatorPath: managementInput.operatorPath,
     });
-    if (response.kind === 'error' && !isOperatorMissingError(response)) return response;
     await input.profiles.clearManagedServiceBinding(pending);
     return { kind: 'uninstalled', retainedStateRoot: service.rootPath };
   };
@@ -115,6 +113,10 @@ export function createDesktopRuntimeHostManagement(input: {
   };
 }
 
-function isOperatorMissingError(frame: RuntimeHostServiceManagementFrame): boolean {
-  return frame.kind === 'error' && frame.error.code === 'operator_missing';
+function assertUninstalled(
+  frame: Extract<RuntimeHostServiceManagementFrame, { kind: 'result' }>,
+): void {
+  if (frame.action !== 'uninstall' || frame.service.state !== 'not_installed') {
+    throw new Error('Remote Runtime Host service did not confirm a completed uninstall');
+  }
 }

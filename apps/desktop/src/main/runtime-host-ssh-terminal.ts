@@ -15,7 +15,6 @@ import {
 import {
   decodeRuntimeHostServiceManagementFrame,
   decodeRuntimeHostSetupFrame,
-  encodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostServiceManagementAction,
@@ -68,8 +67,13 @@ export interface DesktopRuntimeHostSshManagementInput {
   readonly websocketPort?: number;
   readonly websocketPath?: string;
   readonly retainManagedDeployment?: boolean;
-  readonly resumeManagedDeploymentCleanup?: boolean;
-  readonly allowMissingOperator?: boolean;
+  readonly signal?: AbortSignal;
+}
+
+export interface DesktopRuntimeHostSshCleanupInput {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly operatorPath: string;
   readonly signal?: AbortSignal;
 }
 
@@ -100,6 +104,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   runServiceManagement(
     input: DesktopRuntimeHostSshManagementInput,
   ): Promise<RuntimeHostServiceManagementFrame>;
+  cleanupManagedDeployment(input: DesktopRuntimeHostSshCleanupInput): Promise<void>;
   close(): Promise<void>;
 } {
   let active: ActiveTerminal | undefined;
@@ -399,6 +404,12 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         decode: decodeRuntimeHostServiceManagementFrame,
         label: 'Remote Runtime Host service management',
         onFrame: (next) => {
+          if (next.action !== managementInput.action) {
+            frameFailure = new Error(
+              `Remote Runtime Host service management returned ${next.action} for ${managementInput.action}`,
+            );
+            return;
+          }
           if (frame) {
             frameFailure = new Error(
               'Remote Runtime Host service management returned multiple results',
@@ -442,6 +453,37 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       }
       completePresentation(terminal);
       return frame;
+    },
+    cleanupManagedDeployment: async (cleanupInput) => {
+      if (closed) throw new Error('Runtime Host SSH terminal is closed');
+      cleanupInput.signal?.throwIfAborted();
+      const destination = normalizeRuntimeHostSshDestination(cleanupInput.destination);
+      const sshPort = cleanupInput.sshPort === undefined
+        ? undefined
+        : requireSetupPort(cleanupInput.sshPort);
+      const { process, terminal } = startTerminalProcess(
+        'ssh',
+        sshRemoteCommandArgs(
+          destination,
+          sshPort,
+          runtimeHostManagedDeploymentCleanupRemoteCommand(cleanupInput.operatorPath),
+        ),
+        undefined,
+        true,
+      );
+      const result = await waitForTerminalProcess(process, {
+        signal: cleanupInput.signal,
+        timeoutMs: MANAGEMENT_TIMEOUT_MS,
+        timeoutMessage: 'Remote Runtime Host deployment cleanup timed out',
+        stopGraceMs: input.processStopGraceMs,
+        onAbort: () => dismissPresentation(terminal),
+      });
+      if (result.code !== 0) {
+        throw new Error(
+          `Remote Runtime Host deployment cleanup exited with code ${String(result.code)}`,
+        );
+      }
+      completePresentation(terminal);
     },
     close: async () => {
       closed = true;
@@ -718,13 +760,8 @@ function runtimeHostSetupRemoteCommand(
 function runtimeHostServiceManagementRemoteCommand(
   input: DesktopRuntimeHostSshManagementInput,
 ): string {
-  if (input.allowMissingOperator && input.action !== 'uninstall') {
-    throw new Error('A missing Runtime Host operator is only valid during uninstall recovery');
-  }
   const command = [
     input.operatorPath,
-    'runtime-host',
-    'service',
     input.action,
     '--framed',
     ...(input.rootPath ? ['--root', input.rootPath] : []),
@@ -733,24 +770,15 @@ function runtimeHostServiceManagementRemoteCommand(
       : ['--websocket-port', String(input.websocketPort)]),
     ...(input.websocketPath ? ['--websocket-path', input.websocketPath] : []),
     ...(input.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
-    ...(input.resumeManagedDeploymentCleanup
-      ? ['--resume-managed-deployment-cleanup']
-      : []),
     ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
-  const invocation = input.allowMissingOperator
-    ? `if [ ! -e ${quotePosix(input.operatorPath)} ]; then printf %s ${quotePosix(
-        encodeRuntimeHostServiceManagementFrame({
-          schemaVersion: 1,
-          kind: 'error',
-          action: 'uninstall',
-          error: {
-            code: 'operator_missing',
-            message: 'The managed Runtime Host operator is no longer installed',
-          },
-        }),
-      )}; else exec ${command}; fi`
-    : `exec ${command}`;
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
+}
+
+function runtimeHostManagedDeploymentCleanupRemoteCommand(operatorPath: string): string {
+  const operator = quotePosix(operatorPath);
+  const invocation =
+    `if [ ! -e ${operator} ]; then exit 0; fi; exec ${operator} __cleanup-managed-deployment`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
 }
 

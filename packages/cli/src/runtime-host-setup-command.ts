@@ -129,6 +129,7 @@ async function runRuntimeHostSetupLocked(
   emit({ kind: 'progress', phase: 'installing_package' });
   const deployment = await deps.prepareDeployment({
     serviceId,
+    clientDataRoot: options.clientDataRoot,
     sourcePackageRoot: options.sourcePackageRoot,
     version: options.version,
   });
@@ -141,7 +142,6 @@ async function runRuntimeHostSetupLocked(
         ...common,
         action: 'install',
         cliPath: deployment.cliPath,
-        managedDeploymentRoot: deployment.root,
         ...(options.rootPath ? { rootPath: options.rootPath } : {}),
         ...(options.projectDirectoryRoots
           ? { projectDirectoryRoots: options.projectDirectoryRoots }

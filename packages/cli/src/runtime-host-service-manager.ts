@@ -107,9 +107,7 @@ export interface RuntimeHostManagedServiceInput {
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
-  readonly managedDeploymentRoot?: string;
   readonly retainManagedDeployment?: boolean;
-  readonly resumeManagedDeploymentCleanup?: boolean;
   readonly nodePath: string;
   readonly cliPath: string;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
@@ -184,12 +182,6 @@ async function manageRuntimeHostServiceLocked(
   configPath: string,
 ): Promise<RuntimeHostManagedServiceResult> {
   const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
-  if (input.resumeManagedDeploymentCleanup && !input.expectedTarget) {
-    throw new RuntimeHostServiceManagerError(
-      'target_mismatch',
-      'Managed Runtime Host deployment cleanup requires the expected service identity',
-    );
-  }
   if (
     input.expectedTarget &&
     (!/^[a-f0-9]{64}$/u.test(input.expectedTarget.serviceId) ||
@@ -236,9 +228,8 @@ async function manageRuntimeHostServiceLocked(
       await readServiceConfigForUninstall(configPath);
     const serviceStateAlreadyRemoved = before === null && !invalidConfig;
     const expectedRootPath =
-      serviceStateAlreadyRemoved &&
-      (input.retainManagedDeployment || input.resumeManagedDeploymentCleanup)
-        ? input.expectedTarget?.rootPath
+      serviceStateAlreadyRemoved && input.expectedTarget
+        ? input.expectedTarget.rootPath
         : await resolveExpectedServiceRoot(before, input);
     const managedDeploymentRoot =
       before?.managedDeploymentRoot ??
@@ -396,7 +387,6 @@ async function prepareServiceConfig(
     input.websocketPort ?? previous?.websocket.port ?? (await deps.allocateLoopbackPort());
   const websocketPath = input.websocketPath ?? previous?.websocket.path ?? DEFAULT_WEBSOCKET_PATH;
   const requestedManagedDeploymentRoot =
-    input.managedDeploymentRoot ??
     previous?.managedDeploymentRoot ??
     resolveRuntimeHostManagedDeploymentForCli(serviceId, cliPath);
   const managedDeploymentRoot = requestedManagedDeploymentRoot

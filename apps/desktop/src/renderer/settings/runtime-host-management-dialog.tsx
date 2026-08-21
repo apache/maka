@@ -200,7 +200,7 @@ export function RuntimeHostManagementDialog(props: {
                       variant="secondary"
                       label={copy.repairService}
                       isDisabled={loading}
-                      clickAction={() => run('repair')}
+                      clickAction={() => run('install')}
                     />
                   ) : null}
                   {result && profile && !uninstalled ? (
