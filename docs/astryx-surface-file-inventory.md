@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 189 files — blocker 0, polish 0, aligned 189.
+**Totals:** 190 files — blocker 0, polish 0, aligned 190.
 
 ## Exclusions (explicit)
 
