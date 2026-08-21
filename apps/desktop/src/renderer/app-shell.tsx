@@ -3513,7 +3513,8 @@ function AppShellContent({
             {navSelection.section === 'sessions' && activeId && (
               <ChatWorkbar
                 activeId={activeId}
-                projectId={currentProjectId}
+                projectId={currentProject?.id ?? currentProjectId}
+                projectAliases={currentProject?.aliases ?? []}
                 rightCollapsed={workbarCollapsed}
                 bottomOpen={bottomPanelOpen}
                 hidden={shellObscured}

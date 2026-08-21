@@ -163,6 +163,22 @@ describe('Work Board store', () => {
         await store.archive(ids[0]!, {}, 7);
         assert.equal((await store.list()).items.length, 5);
         assert.equal((await store.list({ includeArchived: true })).items.length, 6);
+
+        const absorbedProjectItem = await store.create(
+          itemInput({
+            title: 'absorbed project item',
+            scope: { kind: 'project', projectId: 'project-stale' },
+          }),
+          8,
+        );
+        const projectWithAliases = await store.list({
+          scope: { kind: 'project', projectId: 'p1' },
+          projectIds: ['p1', 'project-stale'],
+        });
+        assert.deepEqual(
+          projectWithAliases.items.map((item) => item.id),
+          [absorbedProjectItem.id, projectItem.id],
+        );
       } finally {
         store.close();
       }
@@ -249,6 +265,21 @@ describe('Work Board store', () => {
           (error: unknown) =>
             error instanceof WorkBoardStoreError && error.code === 'invalid_input',
         );
+
+        const aliasItem = await store.create(
+          itemInput({ scope: { kind: 'project', projectId: 'absorbed' } }),
+          200,
+        );
+        const aliasPage = await store.list({
+          limit: 1,
+          scope: { kind: 'project', projectId: 'canonical' },
+          projectIds: ['canonical', 'absorbed'],
+        });
+        assert.deepEqual(
+          aliasPage.items.map((item) => item.id),
+          [aliasItem.id],
+        );
+        assert.equal(aliasPage.nextCursor, undefined);
         await assert.rejects(
           store.list({ includeArchived: true, cursor: inboxPage.nextCursor }),
           (error: unknown) =>

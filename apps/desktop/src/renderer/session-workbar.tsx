@@ -656,6 +656,7 @@ function WorkbarLauncher(props: {
 export function SessionWorkbar(props: {
   sessionId: string;
   projectId?: string | null;
+  projectAliases?: readonly string[];
   hidden: boolean;
   onDismissPanel: (placement: SessionWorkbarPlacement) => void;
   panelsState: SessionWorkbarPanelsState;
@@ -811,7 +812,12 @@ export function SessionWorkbar(props: {
             />
           );
         } else if (tab.kind === 'work-board') {
-          content = <WorkBoardPanel projectId={props.projectId ?? null} />;
+          content = (
+            <WorkBoardPanel
+              projectId={props.projectId ?? null}
+              projectAliases={props.projectAliases}
+            />
+          );
         } else if (tab.kind === 'browser') {
           content = (
             <Suspense fallback={<WorkbarPanelLoading label={copy.browser} />}>

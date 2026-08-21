@@ -107,15 +107,23 @@ function WorkBoardRow(props: {
   );
 }
 
-export function WorkBoardPanel(props: { projectId: string | null }) {
+export function WorkBoardPanel(props: {
+  projectId: string | null;
+  projectAliases?: readonly string[];
+}) {
   const copy = getDesktopConversationCopy(useUiLocale()).workBoardPanel;
   const [filter, setFilter] = useState<'inbox' | 'project'>('inbox');
+  const projectScopeIds = useMemo(() => {
+    if (props.projectId === null) return undefined;
+    return [...new Set([props.projectId, ...(props.projectAliases ?? [])])];
+  }, [props.projectAliases, props.projectId]);
   const query: WorkBoardListQuery = useMemo(
     () => ({
       scope: scopeForFilter(filter, props.projectId),
       includeArchived: true,
+      ...(filter === 'project' && projectScopeIds ? { projectIds: projectScopeIds } : {}),
     }),
-    [filter, props.projectId],
+    [filter, projectScopeIds, props.projectId],
   );
   const board = useWorkBoard(query);
   const [newTitle, setNewTitle] = useState('');
