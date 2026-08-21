@@ -25,6 +25,7 @@ import {
   isOperationKey,
   REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type AccessCredentialRevokeInput,
   type AccessCredentialPrincipalKind,
   type OperationKey,
 } from '@maka/runtime-host/protocol';
@@ -135,15 +136,10 @@ export async function runRuntimeHostAccessPrepareCli(
       before.credentials,
       options.currentCredentialFingerprint,
     );
-    const prepared = await prepareRuntimeHostAccessCredential({
-      ...options,
-      principalKind: current.principalKind,
-      principalId: current.principalId,
-      operationGrants: [],
-      canPublishClientCapabilities: false,
-      canUseHostPaths: false,
-      preset: 'desktop-client',
-    });
+    const prepared = await prepareRuntimeHostAccessCredentialReplacement(
+      options,
+      current.credentialId,
+    );
     const listed = await listRuntimeHostAccessCredentials(options);
     if (
       !listed.credentials.some((credential) => credential.credentialId === prepared.credentialId)
@@ -185,6 +181,27 @@ export function replaceRuntimeHostAccessCredential(
 }
 
 export type ReplacedRuntimeHostAccessCredential = IssuedRuntimeHostAccessCredential;
+
+async function prepareRuntimeHostAccessCredentialReplacement(
+  options: RuntimeHostAccessListOptions,
+  replacementOfCredentialId: string,
+): Promise<IssuedRuntimeHostAccessCredential> {
+  const connection = await connectLocalOwner(options.rootPath, options.expectedRootId);
+  try {
+    const result = await connection.request('access.credential.prepare', {
+      replacementOfCredentialId,
+    });
+    const credential = await consumeAccessCredentialDelivery(
+      options.rootPath,
+      result.deliveryId,
+      result.credentialId,
+    );
+    const { deliveryId: _deliveryId, ...metadata } = result;
+    return { rootId: connection.rootId, credential, ...metadata };
+  } finally {
+    await connection.close();
+  }
+}
 
 async function mutateRuntimeHostAccessCredential(
   options: RuntimeHostAccessIssueOptions,
@@ -251,13 +268,25 @@ export async function runRuntimeHostAccessRevokeCli(
     const target = before.credentials.find(
       (credential) => credential.credentialId === options.credentialId,
     );
-    if (options.currentCredentialFingerprint) {
-      requireCurrentDesktopCredential(before.credentials, options.currentCredentialFingerprint);
-    }
+    const current = options.currentCredentialFingerprint
+      ? requireCurrentDesktopCredential(before.credentials, options.currentCredentialFingerprint)
+      : undefined;
     if (target?.credentialFingerprint === options.currentCredentialFingerprint) {
       throw new Error('Rotate this Desktop credential instead of revoking it');
     }
-    const result = await revokeRuntimeHostAccessCredential(options);
+    if (current && !target) {
+      throw new Error('The credential changed before it could be revoked');
+    }
+    const result = await revokeRuntimeHostAccessCredential(
+      options,
+      current && target
+        ? {
+            credentialId: target.credentialId,
+            protectedCredentialId: current.credentialId,
+            expectedStatus: target.status,
+          }
+        : undefined,
+    );
     const listed = await listRuntimeHostAccessCredentials(options);
     process.stdout.write(
       framed
@@ -304,12 +333,16 @@ function mutableCredentialMetadata(credentials: readonly RuntimeHostAccessCreden
   }));
 }
 
-export async function revokeRuntimeHostAccessCredential(options: RuntimeHostAccessRevokeOptions) {
+export async function revokeRuntimeHostAccessCredential(
+  options: RuntimeHostAccessRevokeOptions,
+  guardedInput?: Extract<AccessCredentialRevokeInput, { protectedCredentialId: string }>,
+) {
   const connection = await connectLocalOwner(options.rootPath, options.expectedRootId);
   try {
-    return await connection.request('access.credential.revoke', {
-      credentialId: options.credentialId,
-    });
+    return await connection.request(
+      'access.credential.revoke',
+      guardedInput ?? { credentialId: options.credentialId },
+    );
   } finally {
     await connection.close();
   }

@@ -18,7 +18,13 @@
  */
 
 import { invalidProtocolFrame } from './errors.js';
-import { requireExactRecord, requireId, requireString, requireUtf8String } from './codec.js';
+import {
+  requireExactRecord,
+  requireId,
+  requireRecord,
+  requireString,
+  requireUtf8String,
+} from './codec.js';
 import { defineOperation } from './operation-spec.js';
 import type { OperationKey } from './operations.js';
 
@@ -56,12 +62,18 @@ export interface AccessCredentialIssueResult {
 
 export type AccessCredentialReplaceInput = AccessCredentialIssueInput;
 export type AccessCredentialReplaceResult = AccessCredentialIssueResult;
-export type AccessCredentialPrepareInput = AccessCredentialIssueInput;
+export type AccessCredentialPrepareInput =
+  | AccessCredentialIssueInput
+  | { readonly replacementOfCredentialId: string };
 export type AccessCredentialPrepareResult = AccessCredentialIssueResult;
 
-export interface AccessCredentialRevokeInput {
-  readonly credentialId: string;
-}
+export type AccessCredentialRevokeInput =
+  | { readonly credentialId: string }
+  | {
+      readonly credentialId: string;
+      readonly protectedCredentialId: string;
+      readonly expectedStatus: 'active' | 'pending';
+    };
 
 export interface AccessCredentialRevokeResult {
   readonly credentialId: string;
@@ -102,7 +114,7 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
     mode: 'command',
     availability: 'ready',
     errors: ACCESS_ERRORS,
-    decodeInput: decodeAccessCredentialIssueInput,
+    decodeInput: decodeAccessCredentialPrepareInput,
     decodeOutput: decodeAccessCredentialIssueResult,
   }),
   'access.credential.revoke': defineOperation<
@@ -173,6 +185,22 @@ export function decodeAccessCredentialIssueResult(value: unknown): AccessCredent
   };
 }
 
+export function decodeAccessCredentialPrepareInput(value: unknown): AccessCredentialPrepareInput {
+  const record = requireRecord(value, 'access credential prepare input');
+  if (Object.hasOwn(record, 'replacementOfCredentialId')) {
+    const replacement = requireExactRecord(record, 'access credential replacement input', [
+      'replacementOfCredentialId',
+    ]);
+    return {
+      replacementOfCredentialId: requireId(
+        replacement.replacementOfCredentialId,
+        'replacementOfCredentialId',
+      ),
+    };
+  }
+  return decodeAccessCredentialIssueInput(record);
+}
+
 function principalKind(value: unknown): AccessCredentialPrincipalKind {
   if (value !== 'remote_owner' && value !== 'capability_provider') {
     throw invalidProtocolFrame('Invalid access credential principalKind');
@@ -181,8 +209,24 @@ function principalKind(value: unknown): AccessCredentialPrincipalKind {
 }
 
 export function decodeAccessCredentialRevokeInput(value: unknown): AccessCredentialRevokeInput {
-  const record = requireExactRecord(value, 'access credential revoke input', ['credentialId']);
-  return { credentialId: requireId(record.credentialId, 'credentialId') };
+  const record = requireRecord(value, 'access credential revoke input');
+  if (Object.hasOwn(record, 'protectedCredentialId') || Object.hasOwn(record, 'expectedStatus')) {
+    const guarded = requireExactRecord(record, 'guarded access credential revoke input', [
+      'credentialId',
+      'protectedCredentialId',
+      'expectedStatus',
+    ]);
+    if (guarded.expectedStatus !== 'active' && guarded.expectedStatus !== 'pending') {
+      throw invalidProtocolFrame('Invalid access credential expectedStatus');
+    }
+    return {
+      credentialId: requireId(guarded.credentialId, 'credentialId'),
+      protectedCredentialId: requireId(guarded.protectedCredentialId, 'protectedCredentialId'),
+      expectedStatus: guarded.expectedStatus,
+    };
+  }
+  const unguarded = requireExactRecord(record, 'access credential revoke input', ['credentialId']);
+  return { credentialId: requireId(unguarded.credentialId, 'credentialId') };
 }
 
 export function decodeAccessCredentialRevokeResult(value: unknown): AccessCredentialRevokeResult {

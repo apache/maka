@@ -98,7 +98,10 @@ export interface DesktopRuntimeHostProfileService {
   resolveManagedAccess(
     profileId: string,
   ): Promise<
-    | (DesktopRuntimeHostManagedServiceBinding & { readonly credentialFingerprint: string })
+    | (DesktopRuntimeHostManagedServiceBinding & {
+        readonly credentialFingerprint: string;
+        readonly enabled: boolean;
+      })
     | undefined
   >;
   clearManagedServiceBinding(expected: DesktopRuntimeHostManagedServiceBinding): Promise<void>;
@@ -670,6 +673,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           ? {
               ...binding,
               credentialFingerprint: runtimeHostAccessCredentialFingerprint(resolved.credential),
+              enabled: preferences.enabledRemoteProfileIds.includes(profileId),
             }
           : undefined;
       });

@@ -45,6 +45,11 @@ const MANAGEMENT_ACTIONS = new Set<DesktopRuntimeHostManagementAction>([
   'uninstall',
 ]);
 
+type RuntimeHostAccessCredentialMetadata = Extract<
+  RuntimeHostAccessManagementFrame,
+  { kind: 'result'; action: 'list' }
+>['credentials'][number];
+
 export function createDesktopRuntimeHostManagement(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
   readonly profiles: Pick<
@@ -160,6 +165,7 @@ export function createDesktopRuntimeHostManagement(input: {
     return {
       profileId,
       managed,
+      canRotate: managed.enabled,
       currentCredentialFingerprint: managed.credentialFingerprint,
       target: {
         destination: managed.profile.transport.destination,
@@ -178,8 +184,10 @@ export function createDesktopRuntimeHostManagement(input: {
       RuntimeHostAccessManagementFrame,
       { kind: 'result'; action: 'list' }
     >['credentials'],
-    currentFingerprint: string | undefined,
+    currentFingerprint: string,
+    canRotate: boolean,
   ): DesktopRuntimeHostAccessSnapshot => ({
+    canRotate,
     credentials: credentials.map((credential) => ({
       credentialId: credential.credentialId,
       principalKind: credential.principalKind,
@@ -203,13 +211,20 @@ export function createDesktopRuntimeHostManagement(input: {
     if (response.action !== 'list') {
       throw new Error('Remote Runtime Host did not return its access credentials');
     }
-    return accessSnapshot(response.credentials, access.currentCredentialFingerprint);
+    return accessSnapshot(
+      response.credentials,
+      access.currentCredentialFingerprint,
+      access.canRotate,
+    );
   };
 
   const rotateCredential = async (
     profileId: unknown,
   ): Promise<DesktopRuntimeHostAccessSnapshot> => {
     const access = await resolveAccess(profileId);
+    if (!access.canRotate) {
+      throw new Error('Enable this Runtime Host before rotating its access credential');
+    }
     const response = await input.runAccessManagement({
       ...access.target,
       action: 'prepare',
@@ -235,10 +250,7 @@ export function createDesktopRuntimeHostManagement(input: {
       current.canUseHostPaths ||
       !replacement ||
       replacement.status !== 'pending' ||
-      replacement.principalKind !== 'remote_owner' ||
-      replacement.principalId !== current.principalId ||
-      !replacement.canPublishClientCapabilities ||
-      replacement.canUseHostPaths
+      !sameCredentialAuthority(current, replacement)
     ) {
       throw new Error('Remote Runtime Host returned an invalid Desktop credential replacement');
     }
@@ -254,7 +266,7 @@ export function createDesktopRuntimeHostManagement(input: {
         ? []
         : [credential];
     });
-    return accessSnapshot(finalized, replacementFingerprint);
+    return accessSnapshot(finalized, replacementFingerprint, true);
   };
 
   const revokeCredential = async (
@@ -275,7 +287,11 @@ export function createDesktopRuntimeHostManagement(input: {
     if (response.action !== 'revoke') {
       throw new Error('Remote Runtime Host did not confirm credential revocation');
     }
-    return accessSnapshot(response.credentials, access.currentCredentialFingerprint);
+    return accessSnapshot(
+      response.credentials,
+      access.currentCredentialFingerprint,
+      access.canRotate,
+    );
   };
 
   const channels = [
@@ -301,6 +317,20 @@ export function createDesktopRuntimeHostManagement(input: {
       for (const channel of channels) input.ipcMain.removeHandler(channel);
     },
   };
+}
+
+function sameCredentialAuthority(
+  current: RuntimeHostAccessCredentialMetadata,
+  replacement: RuntimeHostAccessCredentialMetadata,
+): boolean {
+  return (
+    current.principalKind === replacement.principalKind &&
+    current.principalId === replacement.principalId &&
+    current.canPublishClientCapabilities === replacement.canPublishClientCapabilities &&
+    current.canUseHostPaths === replacement.canUseHostPaths &&
+    current.operationGrants.length === replacement.operationGrants.length &&
+    current.operationGrants.every((grant) => replacement.operationGrants.includes(grant))
+  );
 }
 
 function assertUninstalled(

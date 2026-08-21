@@ -416,6 +416,7 @@ export interface DesktopRuntimeHostAccessCredential {
 }
 
 export interface DesktopRuntimeHostAccessSnapshot {
+  readonly canRotate: boolean;
   readonly credentials: readonly DesktopRuntimeHostAccessCredential[];
 }
 

@@ -596,6 +596,79 @@ test('access credentials persist only as hashes and stay revoked after reload', 
   }
 });
 
+test('credential rotation preserves authority and cannot outlive its active source', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-rotation-'));
+  const authority = await openRuntimeHostAccessAuthority(directory);
+  try {
+    const source = await authority.issue({
+      principalKind: 'remote_owner',
+      principalId: 'desktop-client',
+      operationGrants: ['access.credential.finalize', 'session.catalog.query'],
+      canPublishClientCapabilities: true,
+      canUseHostPaths: false,
+    });
+    const replacement = await authority.prepare({
+      replacementOfCredentialId: source.credentialId,
+    });
+    assert.deepEqual(replacement.operationGrants, source.operationGrants);
+    assert.equal(replacement.principalId, source.principalId);
+    assert.equal(replacement.canPublishClientCapabilities, source.canPublishClientCapabilities);
+
+    await authority.revoke({ credentialId: source.credentialId });
+    await assert.rejects(authority.finalize(replacement.credentialId), /no longer active/u);
+    await assert.rejects(
+      authority.prepare({ replacementOfCredentialId: source.credentialId }),
+      /no longer active/u,
+    );
+  } finally {
+    await authority.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('guarded credential revocation rejects stale caller and target state', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-guarded-revoke-'));
+  const authority = await openRuntimeHostAccessAuthority(directory);
+  try {
+    const desktop = await authority.issue({
+      principalKind: 'remote_owner',
+      principalId: 'desktop-client',
+      operationGrants: ['access.credential.finalize'],
+      canPublishClientCapabilities: true,
+      canUseHostPaths: false,
+    });
+    const target = await authority.prepare({
+      principalKind: 'remote_owner',
+      principalId: 'other-client',
+      operationGrants: ['access.credential.finalize'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    await authority.finalize(target.credentialId);
+    await assert.rejects(
+      authority.revoke({
+        credentialId: target.credentialId,
+        protectedCredentialId: desktop.credentialId,
+        expectedStatus: 'pending',
+      }),
+      /changed before it could be revoked/u,
+    );
+
+    await authority.revoke({ credentialId: desktop.credentialId });
+    await assert.rejects(
+      authority.revoke({
+        credentialId: target.credentialId,
+        protectedCredentialId: desktop.credentialId,
+        expectedStatus: 'active',
+      }),
+      /current Desktop credential is no longer active/u,
+    );
+  } finally {
+    await authority.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('keeps published credential state authoritative when directory sync is uncertain', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-unknown-commit-'));
   let failNextCommit = false;

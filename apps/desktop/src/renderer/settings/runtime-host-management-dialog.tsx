@@ -250,6 +250,11 @@ export function RuntimeHostManagementDialog(props: {
               {access ? (
                 <div className="settingsRuntimeHostAccess">
                   <Text type="body" weight="semibold">{copy.accessTitle}</Text>
+                  {!access.canRotate ? (
+                    <Text type="supporting" color="secondary">
+                      {copy.enableBeforeRotate}
+                    </Text>
+                  ) : null}
                   {revokeTarget ? (
                     <Banner
                       status="warning"
@@ -289,7 +294,9 @@ export function RuntimeHostManagementDialog(props: {
                                 variant="secondary"
                                 size="sm"
                                 label={copy.rotateCredential}
-                                isDisabled={loading || credential.status === 'pending'}
+                                isDisabled={
+                                  loading || credential.status === 'pending' || !access.canRotate
+                                }
                                 clickAction={rotateCredential}
                               />
                             ) : (

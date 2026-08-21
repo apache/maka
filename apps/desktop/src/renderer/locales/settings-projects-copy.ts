@@ -110,6 +110,7 @@ export type SettingsProjectsCopy = {
     accessPending: string;
     accessCreated(date: string): string;
     rotateCredential: string;
+    enableBeforeRotate: string;
     revokeCredential: string;
     revokeCredentialConfirm(name: string): string;
     accessActionFailed: string;
@@ -268,6 +269,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       accessPending: '等待确认',
       accessCreated: (date: string) => `创建于 ${date}`,
       rotateCredential: '轮换凭据',
+      enableBeforeRotate: '请先启用这个 Runtime Host，再轮换当前 Desktop 的凭据。',
       revokeCredential: '撤销',
       revokeCredentialConfirm: (name: string) => `撤销 ${name} 的访问权限？`,
       accessActionFailed: '无法管理访问权限',
@@ -424,6 +426,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       accessPending: 'Pending confirmation',
       accessCreated: (date: string) => `Created ${date}`,
       rotateCredential: 'Rotate credential',
+      enableBeforeRotate: 'Enable this Runtime Host before rotating this Desktop credential.',
       revokeCredential: 'Revoke',
       revokeCredentialConfirm: (name: string) => `Revoke access for ${name}?`,
       accessActionFailed: 'Unable to manage access',
