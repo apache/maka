@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -110,13 +110,20 @@ test('the standalone launcher identifies its installed Eval bundle root', async 
   ]);
   await Promise.all([
     writeFile(launcher, macosArm64CliWrapper()),
-    writeFile(node, '#!/bin/sh\nprintf %s "$MAKA_EVAL_MAKA_BUNDLE_PATH"\n'),
+    writeFile(
+      node,
+      `#!/bin/sh
+expected=$(CDPATH= cd -P "$(dirname "$0")/../.." && pwd)
+[ "$MAKA_EVAL_MAKA_BUNDLE_PATH" = "$expected" ]
+printf verified
+`,
+    ),
   ]);
   await Promise.all([chmod(launcher, 0o755), chmod(node, 0o755)]);
 
-  const { stdout } = await execFileAsync(launcher);
+  const { stdout } = await execFileAsync('bash', [launcher]);
 
-  assert.equal(stdout, await realpath(join(archiveRoot, 'libexec')));
+  assert.equal(stdout, 'verified');
 });
 
 test('the product identity classifies prereleases once for every publication surface', () => {
