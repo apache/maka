@@ -67,7 +67,8 @@ export function createAppShellSessionSettingsActions(deps: {
     model: { llmConnectionSlug: string; model: string };
   }) => void;
   sessionsRef: RefBox<DesktopSessionSummary[]>;
-  setNewTaskPermissionMode: (mode: ChatDefaultPermissionMode) => void;
+  /** Persists the chat default; awaited so a failure surfaces as one. */
+  setNewTaskPermissionMode: (mode: ChatDefaultPermissionMode) => void | Promise<void>;
   setPendingPermissionModeBySession: BooleanRecordUpdater;
   setPendingSessionModelBySession: BooleanRecordUpdater;
   setSessions: (
@@ -146,7 +147,7 @@ export function createAppShellSessionSettingsActions(deps: {
           prev.map((session) => (session.id === sessionId ? next : session)),
         );
       } else {
-        setNewTaskPermissionMode(mode);
+        await setNewTaskPermissionMode(mode);
       }
       toastApi.success(
         copy.permissionSwitched(copy.permissionLabels[nextMode]),

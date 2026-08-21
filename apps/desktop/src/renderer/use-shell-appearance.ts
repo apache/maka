@@ -18,7 +18,7 @@
  */
 
 import { useState, type Dispatch, type SetStateAction } from 'react';
-import type { ChatDefaultPermissionMode, ThemePalette, ThemePreference } from '@maka/core/settings';
+import type { ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { createUiLocaleUpdateGate } from './settings/ui-locale-update-gate';
@@ -30,15 +30,19 @@ type ToastApi = {
 };
 
 /**
- * Owns the appearance / personalization / default-permission-mode slice
- * (issue #1043): the theme + palette + UI-locale + user-label + default
- * permission mode state, plus the `refreshShellSettings` IPC pull. Desktop
- * appearance and locale are hydrated independently from the default Host's
- * chat defaults, so an offline Host cannot block the local UI preferences.
+ * Owns the appearance / personalization slice (issue #1043): the theme +
+ * palette + UI-locale + user-label state, plus the `refreshShellSettings` IPC
+ * pull. Desktop appearance and locale are hydrated independently from the
+ * default Host's chat defaults, so an offline Host cannot block the local UI
+ * preferences.
+ *
+ * The default permission mode is deliberately absent. It is per-Host and the
+ * composer reads it from the Host that would run the task; a copy hydrated
+ * here from the *default* Host would name a different Host's setting as soon
+ * as more than one is connected.
  *
  * `closeSettings` stays in AppShell: on close it calls `refreshShellSettings()`
- * so display mirrors (default permission mode) catch up without an app restart.
- * The full settings hydration lives here.
+ * so the remaining display mirrors catch up without an app restart.
  */
 export function useShellAppearance({
   toastApi,
@@ -55,13 +59,6 @@ export function useShellAppearance({
   const [themePalette, setThemePalette] = useState<ThemePalette>('default');
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
   const [userLabel, setUserLabel] = useState<string>('');
-  // Settings -> 通用 -> 默认权限模式 - DISPLAY-ONLY mirror. The composer's
-  // picker shows it before the user makes a per-session choice; the actual
-  // authority for a new session's mode is main.ts's sessions:create fallback
-  // (the renderer omits permissionMode unless the user explicitly picked),
-  // so a stale value here can briefly mislabel the chip but never changes
-  // which mode a session is created with.
-  const [defaultPermissionMode, setDefaultPermissionMode] = useState<ChatDefaultPermissionMode>('ask');
   // undefined = the user expressed no preference, so each model uses its own.
   const [defaultThinkingLevel, setDefaultThinkingLevel] = useState<ThinkingLevel | undefined>(undefined);
 
@@ -110,7 +107,6 @@ export function useShellAppearance({
     if (runtimeHostResult.ok) {
       const next = runtimeHostResult.settings;
       setUserLabel(next.personalization.displayName ?? '');
-      setDefaultPermissionMode(next.chatDefaults.permissionMode ?? 'ask');
       setDefaultThinkingLevel(next.chatDefaults.thinkingLevel);
     }
   }
@@ -123,9 +119,7 @@ export function useShellAppearance({
     uiLocaleUpdateGate,
     userLabel,
     setUserLabel,
-    defaultPermissionMode,
     defaultThinkingLevel,
-    setDefaultPermissionMode,
     refreshShellSettings,
   };
 }
