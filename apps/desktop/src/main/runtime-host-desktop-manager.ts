@@ -137,10 +137,6 @@ export async function startRuntimeHostDesktopManager(
       registration: HostRegistration,
       signal: AbortSignal,
     ) => Promise<void>;
-    readLocalHostRegistration?: () => Promise<HostRegistration | undefined>;
-    verifyHostIdentity?: (registration: HostRegistration) => Promise<boolean>;
-    isHostAlive?: (pid: number) => boolean;
-    killHost?: (pid: number) => void;
     reconnectBackoff?: RuntimeHostReconnectBackoff;
     onTargetStateChanged?: (state: RuntimeHostDesktopTargetState) => void;
     onTargetRemoved?: (state: RuntimeHostDesktopTargetState) => void;
@@ -155,27 +151,6 @@ export async function startRuntimeHostDesktopManager(
     options.upgradePrompts,
     options.waitForHostExit ?? waitForProcessExit,
     options.waitForHostRetirement ?? waitForProcessRetirement,
-    // Reading the registration needs the storage-root capability, which the
-    // boot layer owns; without the wiring the residue sweep is inert and the
-    // installer's own app-running handling remains the only line of defense.
-    options.readLocalHostRegistration ?? (async () => undefined),
-    // Identity is proved by the boot-injected handshake probe; without the
-    // wiring nothing can be proved, so the default refuses and the sweep
-    // never terminates anything.
-    options.verifyHostIdentity ?? (async () => false),
-    options.isHostAlive ?? isProcessAlive,
-    // ESRCH means the residue exited between the liveness probe and the
-    // kill (an idle ephemeral host self-terminates on its grace timer) —
-    // a benign race that must not fail the update. EPERM stays fatal:
-    // an unkillable residue really would defeat the installer.
-    options.killHost ??
-      ((pid) => {
-        try {
-          process.kill(pid);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-        }
-      }),
     options.reconnectBackoff,
     options.onTargetStateChanged,
     options.onTargetRemoved,
@@ -211,10 +186,6 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       registration: HostRegistration,
       signal: AbortSignal,
     ) => Promise<void>,
-    private readonly readLocalHostRegistration: () => Promise<HostRegistration | undefined>,
-    private readonly verifyHostIdentity: (registration: HostRegistration) => Promise<boolean>,
-    private readonly isHostAlive: (pid: number) => boolean,
-    private readonly killHost: (pid: number) => void,
     private readonly reconnectBackoff: RuntimeHostReconnectBackoff | undefined,
     private readonly onTargetStateChanged:
       | ((state: RuntimeHostDesktopTargetState) => void)
@@ -441,65 +412,13 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         return result;
       }
       await this.waitForHostExit(result.pid);
-      await this.#drainRegisteredHostResidue(result.pid);
+      // Only the Host authenticated by this connection is safe to drain.
+      // The installer remains responsible for any untracked process residue.
       return { kind: 'prepared', rollback: quiescence.resume };
     } catch (error) {
       quiescence.resume();
       throw error;
     }
-  }
-
-  /**
-   * The tracked connection is not the whole update-drain story. Election
-   * winners record themselves in the root-scoped registration file, and a
-   * host this manager never adopted — a late election winner, or a survivor
-   * from a previous app generation — keeps running from the installation
-   * directory the updater is about to replace. Windows delivers no
-   * cross-process SIGTERM, and the NSIS upgrade quits when it cannot clear
-   * such a process, leaving the update silently unapplied (#3340).
-   *
-   * So on the update path, and only here, a live registered ephemeral host
-   * that is not the one `prepareHostUpgrade` just drained is terminated
-   * outright: its executable image is about to be replaced, its committed
-   * state is crash-safe by the platform's recovery evidence, and a failed
-   * upgrade is strictly worse. A residue that survives termination rejects,
-   * which surfaces as install_failed instead of a doomed installer handoff.
-   */
-  async #drainRegisteredHostResidue(drainedPid: number): Promise<void> {
-    let registration: HostRegistration | undefined;
-    try {
-      registration = await this.readLocalHostRegistration();
-    } catch {
-      // An unreadable or torn registration cannot name a pid to clear; the
-      // installer's own app-running handling remains the last line.
-      return;
-    }
-    // Destructive polarity: only an explicitly ephemeral registration is
-    // swept. lifecycleMode predates none of the current writers, but a
-    // registration written before the field existed could belong to a
-    // deployment-owned service host — for those the sweep stays inert and
-    // the installer's app-running handling remains the line of defense.
-    if (registration?.lifecycleMode !== 'ephemeral') return;
-    if (registration.pid === drainedPid) return;
-    if (!this.isHostAlive(registration.pid)) return;
-    // Identity before destruction: a crashed host leaves its registration
-    // behind, and Windows reuses pids, so a liveness probe alone cannot
-    // prove the pid still belongs to the registered host. The probe
-    // authenticates the registered control plane through the existing
-    // connection handshake (root identity, composition and Host Epoch) and
-    // must report the same Host Epoch this sweep read; anything short of a
-    // full match - endpoint dead, handshake refused, epoch moved, probe
-    // threw - leaves the process alone, with the installer's own
-    // app-running handling as the remaining line.
-    let identityProved = false;
-    try {
-      identityProved = await this.verifyHostIdentity(registration);
-    } catch {
-      identityProved = false;
-    }
-    if (!identityProved) return;
-    this.killHost(registration.pid);
-    await this.waitForHostExit(registration.pid);
   }
 
   close(): Promise<void> {
