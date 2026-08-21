@@ -1719,7 +1719,7 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('rejects a handshake whose compatibility epoch does not match', async () => {
+  test('rejects a previous-epoch Client before admitting ScheduledTask commands', async () => {
     await withHostPaths(async (paths) => {
       const candidate = await startTestRuntimeHostCandidate(paths, {
         rootPath: paths.root,
@@ -1732,10 +1732,10 @@ describe('non-serving Runtime Host kernel', () => {
       try {
         await writeClientFrame(transport, {
           kind: 'hello',
-          clientInstanceId: 'epoch-mismatch-client',
+          clientInstanceId: 'previous-epoch-client',
           protocolMin: CURRENT_PROTOCOL.min,
           protocolMax: CURRENT_PROTOCOL.max,
-          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH + 1,
+          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
           compositionId: 'maka.interactive',
         });
         const response = decodeHostFrame(await transport.read(2_000));
@@ -1747,9 +1747,9 @@ describe('non-serving Runtime Host kernel', () => {
         await assert.rejects(
           () =>
             writeClientFrame(transport, {
-              requestId: 'post-epoch-mismatch-status',
-              operation: 'host.status',
-              input: {},
+              requestId: 'post-epoch-mismatch-scheduled-task-query',
+              operation: 'scheduled-task.query',
+              input: { kind: 'list' },
             }),
           (error: unknown) => error instanceof RuntimeHostTransportError && error.code === 'closed',
         );
