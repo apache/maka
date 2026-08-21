@@ -1,5 +1,9 @@
 import { Buffer } from "node:buffer";
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import {
+  jsonSchemaErrorSummary,
+  validateJsonSchemaInput,
+} from '@maka/runtime/json-schema-validation';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   createOAuthPresentationClientProvider,
@@ -388,27 +392,46 @@ function prepareCapabilityGroups(
   hostPathAccess: ClientCapabilityHostPathAccess,
   onInvalidTool: ((error: Error) => void) | undefined,
 ): DesktopCapabilityGroup[] {
-  return groups.flatMap((group) => {
-    if (group.invalidToolPolicy !== "omit") return [group];
-    const tools = group.tools.filter((tool) => {
+  const selectedOptionalTools = new Map<DesktopCapabilityGroup, readonly MakaTool[]>();
+  const selectedGroups = (): DesktopCapabilityGroup[] =>
+    groups.flatMap((group) => {
+      if (group.invalidToolPolicy !== "omit") return [group];
+      const tools = selectedOptionalTools.get(group) ?? [];
+      return tools.length === 0 ? [] : [{ ...group, tools }];
+    });
+  const validateSelectedGroups = () => {
+    const selected = selectedGroups();
+    if (selected.length === 0) return;
+    decodeClientCapabilityReplaceInput({
+      registrationId: "desktop_capability_validation",
+      offers: selected.map((group) => capabilityOffer(group, hostPathAccess)),
+    });
+  };
+
+  // Required Desktop capabilities remain fail-closed, even when optional MCP
+  // capabilities are eligible for omission.
+  validateSelectedGroups();
+  for (const group of groups) {
+    if (group.invalidToolPolicy !== "omit") continue;
+    const tools: MakaTool[] = [];
+    for (const tool of group.tools) {
+      selectedOptionalTools.set(group, [...tools, tool]);
       try {
-        decodeClientCapabilityReplaceInput({
-          registrationId: "desktop_capability_validation",
-          offers: [capabilityOffer({ ...group, tools: [tool] }, hostPathAccess)],
-        });
-        return true;
+        validateSelectedGroups();
+        tools.push(tool);
       } catch (cause) {
+        selectedOptionalTools.set(group, tools);
         onInvalidTool?.(
           new Error(
             `Invalid optional Desktop capability tool omitted: ${group.offerId}/${tool.name}`,
             { cause },
           ),
         );
-        return false;
       }
-    });
-    return tools.length === 0 ? [] : [{ ...group, tools }];
-  });
+    }
+    selectedOptionalTools.set(group, tools);
+  }
+  return selectedGroups();
 }
 
 function toolInputSchema(tool: MakaTool): Record<string, unknown> {
@@ -487,7 +510,14 @@ async function parseToolArguments(tool: MakaTool, value: unknown): Promise<unkno
     typeof parameters.jsonSchema === "object" &&
     !Array.isArray(parameters.jsonSchema)
   ) {
-    return value;
+    try {
+      return validateJsonSchemaInput(await parameters.jsonSchema, value);
+    } catch (error) {
+      throw new Error(
+        `Invalid arguments for tool "${tool.name}": ${jsonSchemaErrorSummary(error)}`,
+        { cause: error },
+      );
+    }
   }
   throw new Error(
     `Desktop native capability tool has an invalid schema: ${tool.name}`,

@@ -104,13 +104,11 @@ import type {
   UserContent,
 } from './model-protocol.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
-import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
-import Ajv2019 from 'ajv/dist/2019.js';
-import Ajv2020 from 'ajv/dist/2020.js';
 import { z } from 'zod';
 
 import { AsyncEventQueue } from './async-queue.js';
 import { AdmissionLimiter } from './admission-limiter.js';
+import { jsonSchemaErrorSummary, validateJsonSchemaInput } from './json-schema-validation.js';
 import {
   type CodeModeExecutionResult,
   DEFAULT_CODE_MODE_EXECUTION_POLICY,
@@ -561,16 +559,6 @@ function nestableToolSnapshot(
   );
 }
 
-const codeModeJsonSchemaOptions = {
-  allErrors: true,
-  strict: false,
-  validateFormats: false,
-} as const;
-const codeModeDraft7Validator = new Ajv(codeModeJsonSchemaOptions);
-const codeModeDraft2019Validator = new Ajv2019(codeModeJsonSchemaOptions);
-const codeModeDraft2020Validator = new Ajv2020(codeModeJsonSchemaOptions);
-const codeModeCompiledSchemas = new WeakMap<object, ValidateFunction>();
-
 async function validateCodeModeToolInput(tool: MakaTool, input: unknown): Promise<unknown> {
   const parameters = tool.parameters as {
     safeParseAsync?: (
@@ -602,29 +590,11 @@ async function validateCodeModeToolInput(tool: MakaTool, input: unknown): Promis
   }
 
   const schema = await parameters.jsonSchema;
-  const validator = compileCodeModeJsonSchema(schema ?? tool.parameters);
-  if (!validator || validator(input)) return input;
-  throw invalidCodeModeToolArguments(tool.name, validator.errors);
-}
-
-function compileCodeModeJsonSchema(schema: unknown): ValidateFunction | undefined {
-  if (typeof schema === 'boolean') return codeModeDraft2020Validator.compile(schema);
-  if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return undefined;
-  const cached = codeModeCompiledSchemas.get(schema);
-  if (cached) return cached;
-  const declaredDialect = (schema as { readonly $schema?: unknown }).$schema;
-  const dialect = typeof declaredDialect === 'string' ? declaredDialect : '';
-  const validator = dialect.includes('draft-07')
-    ? codeModeDraft7Validator
-    : dialect.includes('2019-09')
-      ? codeModeDraft2019Validator
-      : codeModeDraft2020Validator;
-  const schemaForCompile = dialect.startsWith('https://json-schema.org/draft-07/schema')
-    ? { ...schema, $schema: dialect.replace('https://', 'http://') }
-    : schema;
-  const compiled = validator.compile(schemaForCompile as AnySchema);
-  codeModeCompiledSchemas.set(schema, compiled);
-  return compiled;
+  try {
+    return validateJsonSchemaInput(schema ?? tool.parameters, input);
+  } catch (error) {
+    throw invalidCodeModeToolArguments(tool.name, error);
+  }
 }
 
 function invalidCodeModeToolArguments(toolName: string, error: unknown): Error {
@@ -644,17 +614,7 @@ function schemaErrorSummary(error: unknown): string {
       .join('; ')
       .slice(0, 1000);
   }
-  if (Array.isArray(error)) {
-    return (error as ErrorObject[])
-      .slice(0, 5)
-      .map((issue) => {
-        const path = issue.instancePath || issue.schemaPath;
-        return `${path || 'input'} ${issue.message ?? 'is invalid'}`;
-      })
-      .join('; ')
-      .slice(0, 1000);
-  }
-  return 'input does not match the declared schema';
+  return jsonSchemaErrorSummary(error);
 }
 
 function joinPromptFragments(fragments: readonly (string | undefined)[]): string | undefined {
