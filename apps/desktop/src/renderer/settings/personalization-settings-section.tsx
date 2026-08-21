@@ -38,6 +38,7 @@ import { TextArea, TextInput, useMountedRef, useToast, useUiLocale } from '@maka
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { SettingsRowSkeleton } from './settings-skeleton.js';
 
 // PR-TONE-AUTOSAVE-0: the personalization block used to be the page's ONLY
 // control with an explicit 保存 button + helper line — every neighboring row
@@ -50,7 +51,9 @@ import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-ta
 
 export function PersonalizationSettingsSection(props: {
   settings: AppSettings;
-  runtimeHostAvailable: boolean;
+  runtimeHostSettingsAvailable: boolean;
+  runtimeHostSettingsInteractive: boolean;
+  showRuntimeHostSettingsPlaceholder: boolean;
   onUpdate(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
 }) {
   const host = useOptionalRuntimeHostSettingsTarget();
@@ -116,6 +119,9 @@ export function PersonalizationSettingsSection(props: {
   // know, or a failed write collapses the row onto the old value and drops
   // the draft with only a toast to show for it.
   async function persistPersonalization(patch: Partial<PersonalizationSettings>): Promise<boolean> {
+    const updatesRuntimeHost =
+      patch.displayName !== undefined || patch.assistantTone !== undefined;
+    if (updatesRuntimeHost && !props.runtimeHostSettingsInteractive) return false;
     const ticket = ++persistTicketRef.current;
     const localeTicket = patch.uiLocale === undefined ? null : ++localePersistTicketRef.current;
     persistPendingCountRef.current += 1;
@@ -181,13 +187,14 @@ export function PersonalizationSettingsSection(props: {
           the user to fill in something already filled in, and its blur-save
           gave them no way to back out of a change. The row reports the
           settled value and opens on demand; Cancel puts the draft back. */}
-      {props.runtimeHostAvailable ? (
+      {props.runtimeHostSettingsAvailable ? (
         <SettingsExpandableRow
           label={copy.displayName}
           value={value.displayName || copy.displayNameUnset}
           actionLabel={value.displayName ? copy.displayNameChange : copy.displayNameSet}
           isEditing={expandedRow === 'displayName'}
           canSave={displayName.trim() !== value.displayName}
+          isDisabled={!props.runtimeHostSettingsInteractive}
           saveLabel={sharedCopy.save}
           cancelLabel={sharedCopy.cancel}
           onEdit={() => {
@@ -213,8 +220,15 @@ export function PersonalizationSettingsSection(props: {
             description={copy.displayNameHelp}
             isLabelHidden
             width="100%"
+            isDisabled={!props.runtimeHostSettingsInteractive}
           />
         </SettingsExpandableRow>
+      ) : props.showRuntimeHostSettingsPlaceholder ? (
+        <SettingsRowSkeleton
+          label={copy.displayName}
+          description={copy.displayNameHelp}
+          width="7rem"
+        />
       ) : null}
       {/*
         PR-LANG-PREF-0 (WAWQAQ msg `edc9cb41` + kenji `7e532892`
@@ -235,7 +249,7 @@ export function PersonalizationSettingsSection(props: {
           ))}
         </SegmentedControl>}
       />
-      {props.runtimeHostAvailable ? <SettingsField>
+      {props.runtimeHostSettingsAvailable ? <SettingsField>
         {/* No fixed height style: it lands as inline style on the wrapper,
             which pins the visible box while the inner textarea keeps its
             native `resize: vertical` — dragging then moves only the grip.
@@ -255,8 +269,16 @@ export function PersonalizationSettingsSection(props: {
           label={copy.assistantTone}
           description={copy.assistantToneHelp}
           width="100%"
+          isDisabled={!props.runtimeHostSettingsInteractive}
         />
-      </SettingsField> : null}
+      </SettingsField> : props.showRuntimeHostSettingsPlaceholder ? (
+        <SettingsRowSkeleton
+          label={copy.assistantTone}
+          description={copy.assistantToneHelp}
+          width="10rem"
+          height={42}
+        />
+      ) : null}
     </SettingsSection>
   );
 }

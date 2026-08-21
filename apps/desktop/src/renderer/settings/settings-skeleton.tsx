@@ -20,6 +20,8 @@
 import { Skeleton } from '@astryxdesign/core';
 import { useUiLocale } from '@maka/ui';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+import type { ReactNode } from 'react';
+import { SettingsRow } from './settings-section.js';
 
 type SkeletonLine = { width: string; size?: 'lg' | 'sm' };
 
@@ -67,5 +69,33 @@ export function SettingsSkeleton() {
         <Skeleton width="48%" height={12} radius="rounded" index={5} />
       </div>
     </div>
+  );
+}
+
+/**
+ * Keeps a mixed-ownership page's row topology stable while one authority is
+ * still hydrating. The row copy remains readable; only the unknown control is
+ * represented by a neutral, non-interactive placeholder.
+ */
+export function SettingsRowSkeleton(props: {
+  label: ReactNode;
+  description?: ReactNode;
+  width?: string;
+  height?: number;
+}) {
+  return (
+    <SettingsRow
+      label={props.label}
+      description={props.description}
+      end={(
+        <span aria-hidden="true">
+          <Skeleton
+            width={props.width ?? '5.5rem'}
+            height={props.height ?? 28}
+            radius="rounded"
+          />
+        </span>
+      )}
+    />
   );
 }
