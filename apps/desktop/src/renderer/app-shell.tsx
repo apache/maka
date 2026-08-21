@@ -124,7 +124,7 @@ import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { useShellSearch } from './use-shell-search';
-import { useSessionGoal } from './use-session-goal';
+import { isGoalArmedAwaitingFirstTurn, useSessionGoal } from './use-session-goal';
 import { deriveStaleSessionIds } from './stale-sessions';
 import { pendingSessionView } from './pending-session-view';
 import { deriveProjectGroups, deriveWorktreeSessionIds } from './session-project-grouping';
@@ -3328,6 +3328,9 @@ function AppShellContent({
                           iterations: activeGoal.iterations,
                           maxIterations: activeGoal.maxIterations,
                           setAt: activeGoal.setAt,
+                          ...(isGoalArmedAwaitingFirstTurn(activeGoal, turnActive)
+                            ? { armedAt: activeGoal.armedAt }
+                            : {}),
                           tokensSpent: activeGoal.tokensNow,
                           ...(activeGoal.tokenBudget !== undefined
                             ? { tokenBudget: activeGoal.tokenBudget }

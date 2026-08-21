@@ -32,6 +32,7 @@ function goal(overrides: Partial<GoalProjection> = {}): GoalProjection {
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+    armedAt: null,
     ...overrides,
   };
 }

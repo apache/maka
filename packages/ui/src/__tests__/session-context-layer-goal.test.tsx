@@ -80,3 +80,19 @@ test('a waiting goal reads as waiting without looking active or paused', () => {
   assert.ok(!markup.includes('Resume autonomous goal'));
   assert.ok(markup.includes('12k / 100k'));
 });
+
+test('an armed goal waits for its first Turn without looking like it is running', () => {
+  const markup = renderGoalChip({
+    condition: 'Ship the feature',
+    status: 'active',
+    armedAt: Date.now() - 30_000,
+    iterations: 0,
+    maxIterations: 50,
+    setAt: Date.now() - 30_000,
+    onPause: () => undefined,
+    onClear: () => undefined,
+  });
+  assert.ok(markup.includes('Autonomous goal set; takes hold on the next Turn'));
+  assert.ok(!markup.includes('Autonomous goal running'));
+  assert.ok(!markup.includes('Autonomous goal paused'));
+});

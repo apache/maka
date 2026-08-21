@@ -29,6 +29,15 @@ function isLiveGoal(goal: GoalState): goal is LiveGoalState {
   );
 }
 
+export function isGoalArmedAwaitingFirstTurn(
+  goal: Pick<GoalState, 'armedAt'>,
+  turnActive: boolean,
+): boolean {
+  // The durable armed marker clears when the first Turn settles, so it alone
+  // does not prove that the Goal is still awaiting a Turn.
+  return goal.armedAt !== undefined && !turnActive;
+}
+
 export function useSessionGoal(sessionId: string | undefined): LiveGoalState | null {
   const [goal, setGoal] = useState<LiveGoalState | null>(null);
 

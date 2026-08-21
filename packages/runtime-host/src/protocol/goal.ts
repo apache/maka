@@ -46,6 +46,8 @@ export interface GoalProjection {
   readonly lastReason: string | null;
   readonly achievedAt: number | null;
   readonly pausedAt: number | null;
+  /** Epoch ms while a user-armed Goal is waiting for its first Turn. */
+  readonly armedAt: number | null;
 }
 
 export interface GoalQueryInput {
@@ -150,6 +152,7 @@ export function decodeGoalProjection(value: unknown): GoalProjection {
     'lastReason',
     'achievedAt',
     'pausedAt',
+    'armedAt',
   ]);
   const condition = requireUtf8String(
     record.condition,
@@ -176,6 +179,7 @@ export function decodeGoalProjection(value: unknown): GoalProjection {
     lastReason,
     achievedAt: requireNullableCount(record.achievedAt, 'Goal achievedAt'),
     pausedAt: requireNullableCount(record.pausedAt, 'Goal pausedAt'),
+    armedAt: requireNullableCount(record.armedAt, 'Goal armedAt'),
   };
 }
 
