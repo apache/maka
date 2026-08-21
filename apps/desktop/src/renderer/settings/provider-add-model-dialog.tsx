@@ -26,12 +26,14 @@ export function AddModelDialog(props: {
   /** Another write is in flight; the store would drop this one on the floor. */
   isSubmitDisabled?: boolean;
   onOpenChange(open: boolean): void;
-  onSubmit(id: string, contextWindow: number): void;
+  /** Resolves to whether the write landed; the draft is held until it did. */
+  onSubmit(id: string, contextWindow: number): Promise<boolean>;
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).detail;
   const [id, setId] = useState('');
   const [contextWindow, setContextWindow] = useState<number | null>(null);
   const [submitAttempted, setSubmitAttempted] = useState(false);
+  const [isSaving, setSaving] = useState(false);
 
   const trimmedId = id.trim();
   const idError = !trimmedId
@@ -52,19 +54,29 @@ export function AddModelDialog(props: {
     props.onOpenChange(false);
   }
 
-  function submit(event: FormEvent) {
+  // Closing on submit would clear the draft before the write settles, and an
+  // exact model id is not something a user can reproduce from memory. The
+  // failure is reported by the caller's toast; what this owes them is the
+  // typed text, still there to retry from.
+  async function submit(event: FormEvent) {
     event.preventDefault();
     setSubmitAttempted(true);
-    if (idError || !contextWindow) return;
-    props.onSubmit(trimmedId, contextWindow);
-    close();
+    if (idError || !contextWindow || isSaving) return;
+    setSaving(true);
+    try {
+      if (await props.onSubmit(trimmedId, contextWindow)) close();
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <Dialog
       isOpen={props.isOpen}
       onOpenChange={(open) => {
-        if (!open) close();
+        // A write in flight owns the draft until it settles: dismissing here
+        // would discard the very text the retry needs.
+        if (!open && !isSaving) close();
       }}
       purpose="form"
       width={480}
@@ -74,13 +86,13 @@ export function AddModelDialog(props: {
           <DialogHeader
             title={copy.addModel}
             onOpenChange={(open) => {
-              if (!open) close();
+              if (!open && !isSaving) close();
             }}
           />
         }
         content={
           <LayoutContent>
-            <form id="maka-add-model-form" onSubmit={submit}>
+            <form id="maka-add-model-form" onSubmit={(event) => void submit(event)}>
               <FormLayout>
                 {/* The exact id, kept verbatim through selection and inference
                     — `deepseek-v4-pro-beta` is a different model from
@@ -127,7 +139,8 @@ export function AddModelDialog(props: {
                 variant="primary"
                 type="submit"
                 form="maka-add-model-form"
-                isDisabled={props.isSubmitDisabled}
+                isDisabled={props.isSubmitDisabled || isSaving}
+                isLoading={isSaving}
                 label={copy.addModelConfirm}
               />
             </HStack>

@@ -559,7 +559,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
              this submission silently, taking the typed id with it. */
           isSubmitDisabled={allActionsBusy}
           onOpenChange={setAddModelOpen}
-          onSubmit={(id, contextWindow) => void addDeclaredModel(id, contextWindow)}
+          onSubmit={addDeclaredModel}
         />
       </DetailSection>
       )}

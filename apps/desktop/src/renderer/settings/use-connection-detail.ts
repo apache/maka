@@ -504,15 +504,15 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
    * The draft is then caught up by hand, because a dirty draft deliberately
    * does not reseed from props — see `relayProfileDraftReseedPlan`.
    */
-  async function addDeclaredModel(id: string, contextWindow: number) {
+  async function addDeclaredModel(id: string, contextWindow: number): Promise<boolean> {
     const modelId = id.trim();
-    if (!modelId || enabledModelIds.includes(modelId)) return;
-    if (connectionDetailActionGuard.has('save-enabled-models') || detailActionBusy) return;
+    if (!modelId || enabledModelIds.includes(modelId)) return false;
+    if (connectionDetailActionGuard.has('save-enabled-models') || detailActionBusy) return false;
     const next = [...enabledModelIds, modelId];
     const previous = enabledModelIds;
     const lifecycle = connectionDetailLifecycleRef.current;
     const releaseSaveModels = connectionDetailActionGuard.begin('save-enabled-models');
-    if (!releaseSaveModels) return;
+    if (!releaseSaveModels) return false;
     setSavingEnabledModels(true);
     setEnabledModelIds(next);
     let saved = false;
@@ -522,7 +522,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
         relayModelProfiles: { ...(savedRelayProfiles ?? {}), [modelId]: { contextWindow } },
       });
       saved = true;
-      if (!isConnectionDetailCurrent(lifecycle)) return;
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
       // The editor's draft is a second copy of this table, and while it is
       // dirty it does not reseed from props — that is what keeps an unrelated
       // reload from discarding typed work. So the declaration just written has
@@ -533,7 +533,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       setRelayProfileDrafts((current) => ({ ...current, [modelId]: { contextWindow } }));
       await props.onChanged();
     } catch (error) {
-      if (!isConnectionDetailCurrent(lifecycle)) return;
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
       if (!saved) setEnabledModelIds(previous);
       toast.error(
         saved ? copy.refreshFailed : copy.saveModelsFailed,
@@ -543,6 +543,10 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       releaseSaveModels();
       if (isConnectionDetailCurrent(lifecycle)) setSavingEnabledModels(false);
     }
+    // Whether the write landed. The dialog holds the typed id and context
+    // window until it did: a rejected write leaves nothing to retype from, and
+    // an exact model id is not something a user can reproduce from memory.
+    return saved;
   }
 
   async function runTest() {
