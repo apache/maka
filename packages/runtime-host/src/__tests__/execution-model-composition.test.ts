@@ -1623,6 +1623,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     // agent-permission tools cannot be the thing that decides whether the child
     // can read back a result the runtime itself pruned.
     assert.deepEqual(toolNames(requests[2]?.body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
+    assert.doesNotMatch(JSON.stringify(requests[2]?.body), /## Response format/u);
     assert.ok(toolNames(requests[3]?.body).includes('agent_spawn'));
 
     const sessions = await execution.sessionStore.listForRecovery();
@@ -2573,6 +2574,18 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   assert.match(nextPrompt ?? '', /NEW_DESCRIPTION/);
   assert.doesNotMatch(nextPrompt ?? '', /OLD_DESCRIPTION/);
   assert.equal(inventoryReads, 2);
+
+  for (const prompt of [firstPrompt, nextPrompt]) {
+    assert.match(prompt ?? '', /^## Response format$/mu);
+    assert.equal(prompt?.match(/Use GitHub-Flavored Markdown for responses\./gmu)?.length, 1);
+    assert.match(
+      prompt ?? '',
+      /Keep simple answers simple; do not add headings or lists to simple answers\./u,
+    );
+    assert.match(prompt ?? '', /Use short headings and flat lists to organize longer answers\./u);
+    assert.match(prompt ?? '', /inline commands/u);
+    assert.match(prompt ?? '', /descriptive link text/u);
+  }
 });
 
 test('one composer freezes Runtime Policy while each Run freezes its remaining prompt sources', async () => {
