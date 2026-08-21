@@ -18,11 +18,16 @@ import {
 } from '@maka/runtime/scheduled-task-tools';
 import { buildMcpTools } from '@maka/runtime/mcp-tools';
 import {
+  connectExistingRuntimeHost,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
   readHostRegistration,
 } from "@maka/runtime-host/client";
-import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type WorkspaceTarget,
+} from "@maka/runtime-host/protocol";
 import { McpClientManager } from "@maka/mcp";
 import {
   createSettingsStore,
@@ -590,6 +595,29 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         startupLocalStorageRoot,
       );
       return readHostRegistration(controlDirectory);
+    },
+    // Identity proof for the residue sweep: connect through the published
+    // control plane only (no filesystem writes) - the handshake validates
+    // root identity, composition and Host Epoch - and require the epoch to
+    // match the registration the sweep read. A dead endpoint, a refused
+    // handshake, or a moved epoch all report false, and the sweep then
+    // leaves the process alone.
+    verifyHostIdentity: async (registration) => {
+      const result = await connectExistingRuntimeHost({
+        rootPath: workspaceRoot,
+        protocol: {
+          min: RUNTIME_HOST_PROTOCOL_VERSION,
+          max: RUNTIME_HOST_PROTOCOL_VERSION,
+        },
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        clientInstanceId: runtimeHostClientInstanceId,
+        connectTimeoutMs: 5_000,
+        handshakeTimeoutMs: 5_000,
+      });
+      if (result.kind !== "connected") return false;
+      const proved = result.connection.hostEpoch === registration.hostEpoch;
+      await result.connection.close().catch(() => undefined);
+      return proved;
     },
     onTargetStateChanged: (state) => {
       const hostId = state.readiness === "ready"

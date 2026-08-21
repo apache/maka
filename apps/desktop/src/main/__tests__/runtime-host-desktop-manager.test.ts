@@ -157,6 +157,10 @@ test('terminates a registered host the tracked update drain did not cover', asyn
     },
     readLocalHostRegistration: async () =>
       ({ pid: 77, lifecycleMode: 'ephemeral' }) as HostRegistration,
+    verifyHostIdentity: async (registration) => {
+      events.push(`verify:${registration.pid}`);
+      return true;
+    },
     isHostAlive: (pid) => pid === 77,
     killHost: (pid) => {
       events.push(`kill:${pid}`);
@@ -166,9 +170,49 @@ test('terminates a registered host the tracked update drain did not cover', asyn
   const preparation = await owner.prepareForUpdate(false);
   assert.equal(preparation.kind, 'prepared');
   // The tracked host (42) drains through the wire verb first; the registered
-  // orphan (77) is killed BEFORE being awaited — the await is the
-  // confirmation, not the mechanism.
-  assert.deepEqual(events, ['wait:42', 'kill:77', 'wait:77']);
+  // orphan (77) is identity-proved, then killed BEFORE being awaited — the
+  // await is the confirmation, not the mechanism.
+  assert.deepEqual(events, ['wait:42', 'verify:77', 'kill:77', 'wait:77']);
+  await owner.close();
+});
+
+test('a stale registration whose pid was reused is never terminated', async () => {
+  // The Codex-review regression (#3348): a crashed host leaves its
+  // registration behind, Windows reuses the pid, and the liveness probe
+  // reports the unrelated process as alive. Identity cannot be proved
+  // against the dead control plane, so nothing may be killed.
+  const current = candidateHarness({ disconnectOnPrepare: true });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async (pid) => {
+      assert.notEqual(pid, 77, 'the unproved pid must not be awaited');
+    },
+    readLocalHostRegistration: async () =>
+      ({ pid: 77, lifecycleMode: 'ephemeral' }) as HostRegistration,
+    verifyHostIdentity: async () => false,
+    isHostAlive: (pid) => pid === 77,
+    killHost: () => assert.fail('an unproved identity must not be terminated'),
+  });
+
+  assert.equal((await owner.prepareForUpdate(false)).kind, 'prepared');
+  await owner.close();
+});
+
+test('an identity probe failure refuses termination rather than failing the update', async () => {
+  const current = candidateHarness({ disconnectOnPrepare: true });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async () => {},
+    readLocalHostRegistration: async () =>
+      ({ pid: 77, lifecycleMode: 'ephemeral' }) as HostRegistration,
+    verifyHostIdentity: async () => {
+      throw new Error('handshake transport failed');
+    },
+    isHostAlive: (pid) => pid === 77,
+    killHost: () => assert.fail('a failed identity probe must not be terminated'),
+  });
+
+  assert.equal((await owner.prepareForUpdate(false)).kind, 'prepared');
   await owner.close();
 });
 
@@ -229,6 +273,9 @@ test('does not terminate service-mode, unlabeled, dead, or unregistered residue'
         startCandidate: async () => ready(current.candidate),
         waitForHostExit: async () => {},
         readLocalHostRegistration: async () => registration,
+        // Identity would prove: each case must be protected by its own
+        // specific guard, not by the identity refusal.
+        verifyHostIdentity: async () => true,
         isHostAlive: () => alive,
         killHost: () => assert.fail(`${name} must not terminate anything`),
       },
@@ -247,6 +294,7 @@ test('a residue that survives termination rejects the update preparation', async
     },
     readLocalHostRegistration: async () =>
       ({ pid: 77, lifecycleMode: 'ephemeral' }) as HostRegistration,
+    verifyHostIdentity: async () => true,
     isHostAlive: (pid) => pid === 77,
     killHost: () => {},
   });

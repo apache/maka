@@ -138,6 +138,7 @@ export async function startRuntimeHostDesktopManager(
       signal: AbortSignal,
     ) => Promise<void>;
     readLocalHostRegistration?: () => Promise<HostRegistration | undefined>;
+    verifyHostIdentity?: (registration: HostRegistration) => Promise<boolean>;
     isHostAlive?: (pid: number) => boolean;
     killHost?: (pid: number) => void;
     reconnectBackoff?: RuntimeHostReconnectBackoff;
@@ -158,6 +159,10 @@ export async function startRuntimeHostDesktopManager(
     // boot layer owns; without the wiring the residue sweep is inert and the
     // installer's own app-running handling remains the only line of defense.
     options.readLocalHostRegistration ?? (async () => undefined),
+    // Identity is proved by the boot-injected handshake probe; without the
+    // wiring nothing can be proved, so the default refuses and the sweep
+    // never terminates anything.
+    options.verifyHostIdentity ?? (async () => false),
     options.isHostAlive ?? isProcessAlive,
     // ESRCH means the residue exited between the liveness probe and the
     // kill (an idle ephemeral host self-terminates on its grace timer) —
@@ -207,6 +212,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       signal: AbortSignal,
     ) => Promise<void>,
     private readonly readLocalHostRegistration: () => Promise<HostRegistration | undefined>,
+    private readonly verifyHostIdentity: (registration: HostRegistration) => Promise<boolean>,
     private readonly isHostAlive: (pid: number) => boolean,
     private readonly killHost: (pid: number) => void,
     private readonly reconnectBackoff: RuntimeHostReconnectBackoff | undefined,
@@ -476,6 +482,22 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     if (registration?.lifecycleMode !== 'ephemeral') return;
     if (registration.pid === drainedPid) return;
     if (!this.isHostAlive(registration.pid)) return;
+    // Identity before destruction: a crashed host leaves its registration
+    // behind, and Windows reuses pids, so a liveness probe alone cannot
+    // prove the pid still belongs to the registered host. The probe
+    // authenticates the registered control plane through the existing
+    // connection handshake (root identity, composition and Host Epoch) and
+    // must report the same Host Epoch this sweep read; anything short of a
+    // full match - endpoint dead, handshake refused, epoch moved, probe
+    // threw - leaves the process alone, with the installer's own
+    // app-running handling as the remaining line.
+    let identityProved = false;
+    try {
+      identityProved = await this.verifyHostIdentity(registration);
+    } catch {
+      identityProved = false;
+    }
+    if (!identityProved) return;
     this.killHost(registration.pid);
     await this.waitForHostExit(registration.pid);
   }
