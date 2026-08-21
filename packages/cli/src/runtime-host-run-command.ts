@@ -217,6 +217,13 @@ async function prepareRuntimeHostRunInput(
   return preparedInput;
 }
 
+type ActiveRuntimeHostTurn = {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly runId: string;
+  outcome: TurnOutcomeClassifier;
+};
+
 class RuntimeHostRunRuntime implements MakaRunRuntime {
   readonly #connection: RuntimeHostConnection;
   readonly #driver: RuntimeHostMakaSessionDriver;
@@ -226,7 +233,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   readonly #maxSteps: number | undefined;
   readonly #unsubscribeTranscriptReplacements: () => void;
   #sessionId: string | undefined;
-  #activeTurn: { sessionId: string; turnId: string; runId: string } | undefined;
+  #activeTurn: ActiveRuntimeHostTurn | undefined;
   #stopRequested = false;
   #closed = false;
   readonly #interactions: NonInteractiveInteractionController;
@@ -259,7 +266,10 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       this.#stopForInteraction(pending),
     );
     this.#unsubscribeTranscriptReplacements = driver.subscribeTranscriptReplacements(
-      (_sessionId, _turnId, messages) => this.#acceptGraphTranscript(messages),
+      (sessionId, turnId, messages) => {
+        this.#acceptRootTranscript(sessionId, turnId, messages);
+        this.#acceptGraphTranscript(messages);
+      },
     );
   }
 
@@ -287,14 +297,19 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       ...(maxSteps !== undefined ? { maxSteps } : {}),
     });
     if (!turn.runId) throw new Error('Runtime Host did not return a Run identity');
-    const activeTurn = { sessionId: turn.sessionId, turnId: turn.turnId, runId: turn.runId };
+    const activeTurn = {
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      runId: turn.runId,
+      outcome: new TurnOutcomeClassifier(turn.runId),
+    };
     this.#activeTurn = activeTurn;
     if (this.#stopRequested) {
       await this.#stopTurn(activeTurn);
       if (input.turnOrchestration?.mode === 'graph') await this.#stopGraph(sessionId);
     }
     try {
-      yield* this.#observeTurn(turn);
+      yield* this.#observeTurn(turn, activeTurn);
     } finally {
       if (this.#activeTurn === activeTurn) this.#activeTurn = undefined;
     }
@@ -407,8 +422,10 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     this.#sessionId = sessionId;
   }
 
-  async *#observeTurn(turn: MakaPreparedSessionTurn): AsyncIterable<SessionEvent> {
-    const classifier = new TurnOutcomeClassifier(turn.runId ?? turn.turnId);
+  async *#observeTurn(
+    turn: MakaPreparedSessionTurn,
+    active: ActiveRuntimeHostTurn,
+  ): AsyncIterable<SessionEvent> {
     const events = turn.events[Symbol.asyncIterator]();
     for (;;) {
       const next = await this.#interactions.race(events.next());
@@ -417,11 +434,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       if (event.type === 'user_question_request' || event.type === 'sandbox_boundary_request') {
         continue;
       }
-      classifier.accept(observationFromSessionEvent(event));
+      active.outcome.accept(observationFromSessionEvent(event));
       yield event;
     }
     await this.#interactions.settle();
-    await this.#observer?.(classifier.outcome('fail'));
+    await this.#observer?.(active.outcome.outcome('fail'));
   }
 
   async #stopTurn(turn: { sessionId: string; turnId: string; runId: string }): Promise<void> {
@@ -447,6 +464,12 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
         waiter.resolve(replacement);
       }
     }
+  }
+
+  #acceptRootTranscript(sessionId: string, turnId: string, messages: StoredMessage[]): void {
+    const active = this.#activeTurn;
+    if (!active || active.sessionId !== sessionId || active.turnId !== turnId) return;
+    active.outcome = classifierFromStoredTurn(messages, turnId, active.runId);
   }
 
   #waitForGraphTurnTerminal(turnId: string): Promise<StoredMessage[]> {
@@ -531,10 +554,6 @@ type TurnOutcomeObservation =
     };
 
 type TerminalOutcomeObservation = Extract<TurnOutcomeObservation, { kind: 'terminal' }>;
-type SandboxBoundaryState =
-  | { readonly status: 'none' }
-  | { readonly status: 'unresolved'; readonly failedStepId: string | undefined }
-  | { readonly status: 'recovered' };
 
 class TurnOutcomeClassifier {
   readonly #outcomeId: string;
@@ -542,9 +561,13 @@ class TurnOutcomeClassifier {
     string,
     { readonly stepId: string | undefined; readonly toolName: string }
   >();
+  readonly #unresolvedSandboxFailures = new Map<
+    string,
+    { readonly failedStepId: string | undefined }
+  >();
   #finalOutput: string | undefined;
   #terminal: TerminalOutcomeObservation | undefined;
-  #sandboxBoundary: SandboxBoundaryState = { status: 'none' };
+  #sandboxBoundaryRecovered = false;
 
   constructor(outcomeId: string) {
     this.#outcomeId = outcomeId;
@@ -571,18 +594,24 @@ class TurnOutcomeClassifier {
       case 'tool_result': {
         const call = this.#callByToolUseId.get(observation.toolUseId);
         if (observation.outcome === 'sandbox_failure') {
-          this.#sandboxBoundary = { status: 'unresolved', failedStepId: call?.stepId };
+          this.#unresolvedSandboxFailures.set(observation.toolUseId, {
+            failedStepId: call?.stepId,
+          });
           return;
         }
+        const unresolved = [...this.#unresolvedSandboxFailures.values()];
+        // The wire has no retry identity. A later success can only prove recovery
+        // when there is exactly one unresolved candidate.
         if (
           observation.outcome === 'success' &&
           call?.toolName !== 'request_sandbox_boundary' &&
-          this.#sandboxBoundary.status === 'unresolved' &&
+          unresolved.length === 1 &&
           call?.stepId !== undefined &&
-          this.#sandboxBoundary.failedStepId !== undefined &&
-          call.stepId !== this.#sandboxBoundary.failedStepId
+          unresolved[0]?.failedStepId !== undefined &&
+          call.stepId !== unresolved[0].failedStepId
         ) {
-          this.#sandboxBoundary = { status: 'recovered' };
+          this.#unresolvedSandboxFailures.clear();
+          this.#sandboxBoundaryRecovered = true;
         }
         return;
       }
@@ -595,6 +624,12 @@ class TurnOutcomeClassifier {
     const terminal = this.#terminal;
     if (!terminal && incomplete === 'pending') return undefined;
     const completed = terminal?.status === 'completed';
+    const sandboxBoundary =
+      this.#unresolvedSandboxFailures.size > 0
+        ? 'unresolved'
+        : this.#sandboxBoundaryRecovered
+          ? 'recovered'
+          : 'none';
     const failure =
       terminal?.status === 'failed'
         ? terminal.failure
@@ -607,7 +642,7 @@ class TurnOutcomeClassifier {
       status: completed ? 'completed' : 'failed',
       ...(completed && this.#finalOutput !== undefined ? { finalOutput: this.#finalOutput } : {}),
       ...(!completed ? { failure } : {}),
-      sandboxBoundary: this.#sandboxBoundary.status,
+      sandboxBoundary,
     };
   }
 }
@@ -746,11 +781,19 @@ function outcomeFromStoredTurn(
   messages: readonly StoredMessage[],
   turnId: string,
 ): MakaRunOutcome | undefined {
-  const classifier = new TurnOutcomeClassifier(turnId);
+  return classifierFromStoredTurn(messages, turnId, turnId).outcome('pending');
+}
+
+function classifierFromStoredTurn(
+  messages: readonly StoredMessage[],
+  turnId: string,
+  outcomeId: string,
+): TurnOutcomeClassifier {
+  const classifier = new TurnOutcomeClassifier(outcomeId);
   for (const message of messages) {
     if (message.turnId === turnId) classifier.accept(observationFromStoredMessage(message));
   }
-  return classifier.outcome('pending');
+  return classifier;
 }
 
 class NonInteractiveInteractionController {

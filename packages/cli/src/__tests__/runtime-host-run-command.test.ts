@@ -18,6 +18,7 @@ import { resolveRuntimeHostCliTarget } from '../runtime-host-cli-context.js';
 import { createRuntimeHostRunContext, runRuntimeHostTextCli } from '../runtime-host-run-command.js';
 import type { RuntimeHostMakaSessionDriver } from '../runtime-host-session-driver.js';
 import type { MakaRunContextInput, MakaRunOutcome } from '../run-command-core.js';
+import type { MakaTranscriptReplacementReason } from '../session-driver.js';
 
 describe('Runtime Host maka run adapter', () => {
   test('stops before context creation when CLI preflight finds a confirmed blocker', async () => {
@@ -266,6 +267,33 @@ describe('Runtime Host maka run adapter', () => {
     );
   });
 
+  test('returns exit code 1 when reconnect restores a missed sandbox failure', async () => {
+    let publishReplacement = () => {};
+    const fixture = runFixture({
+      turnEvents: eventsAfterTranscriptReplacement(() => publishReplacement()),
+    });
+    publishReplacement = () =>
+      fixture.publishTranscriptReplacement(
+        'turn-1',
+        [storedToolCall('turn-1', 'tool-1', 'step-1', 1), sandboxFailureToolResult('turn-1', 2)],
+        'reconnect',
+      );
+
+    const exitCode = await runFixtureCommand(fixture, ['resume protected work']);
+
+    assert.equal(exitCode, 1);
+  });
+
+  test('returns exit code 1 when one retry follows two sandbox failures', async () => {
+    const fixture = runFixture({
+      turnEvents: multipleSandboxFailureEvents('turn-1'),
+    });
+
+    const exitCode = await runFixtureCommand(fixture, ['retry one blocked operation']);
+
+    assert.equal(exitCode, 1);
+  });
+
   test('returns exit code 0 when the final Graph Turn completes', async () => {
     const stdout: string[] = [];
     const fixture = runFixture({ graph: true });
@@ -315,6 +343,17 @@ describe('Runtime Host maka run adapter', () => {
 
     assert.equal(exitCode, 1);
     assert.equal(stdout.join(''), '');
+  });
+
+  test('returns exit code 1 when one Graph retry follows two sandbox failures', async () => {
+    const fixture = runFixture({
+      graph: true,
+      finalMessages: multipleSandboxFailureMessages(),
+    });
+
+    const exitCode = await runFixtureCommand(fixture, ['retry one blocked operation', '--graph']);
+
+    assert.equal(exitCode, 1);
   });
 
   test('returns exit code 1 when the final Graph Turn fails', async () => {
@@ -820,7 +859,12 @@ function runFixture(input: {
   let turnStops = 0;
   const pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
   const transcriptListeners = new Set<
-    (sessionId: string, turnId: string, messages: StoredMessage[]) => void
+    (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void
   >();
   let messageReads = 0;
   const preparedMaxSteps: Array<number | undefined> = [];
@@ -832,7 +876,7 @@ function runFixture(input: {
         if (input.graphMultiWakeRace) {
           queueMicrotask(() => {
             for (const listener of transcriptListeners) {
-              listener('session-created', 'turn-2', structuredClone(graphMessages()));
+              listener('session-created', 'turn-2', structuredClone(graphMessages()), 'terminal');
             }
           });
         }
@@ -842,7 +886,7 @@ function runFixture(input: {
         queueMicrotask(() => {
           const terminal = multiWakeGraphMessages(true);
           for (const listener of transcriptListeners) {
-            listener('session-created', 'turn-3', structuredClone(terminal));
+            listener('session-created', 'turn-3', structuredClone(terminal), 'terminal');
           }
         });
         return multiWakeGraphMessages(false);
@@ -855,7 +899,7 @@ function runFixture(input: {
       if (input.graphProjectionRace) {
         queueMicrotask(() => {
           for (const listener of transcriptListeners) {
-            listener('session-created', 'turn-2', structuredClone(messages));
+            listener('session-created', 'turn-2', structuredClone(messages), 'terminal');
           }
         });
         return graphMessages(false);
@@ -918,7 +962,12 @@ function runFixture(input: {
     },
     subscribeStartedTurns: () => () => {},
     subscribeTranscriptReplacements: (
-      listener: (sessionId: string, turnId: string, messages: StoredMessage[]) => void,
+      listener: (
+        sessionId: string,
+        turnId: string,
+        messages: StoredMessage[],
+        reason: MakaTranscriptReplacementReason,
+      ) => void,
     ) => {
       transcriptListeners.add(listener);
       return () => transcriptListeners.delete(listener);
@@ -985,6 +1034,15 @@ function runFixture(input: {
     createContext,
     publishPendingInteraction(pending: InteractionPendingSnapshot) {
       for (const listener of pendingInteractionListeners) listener(structuredClone(pending));
+    },
+    publishTranscriptReplacement(
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) {
+      for (const listener of transcriptListeners) {
+        listener('session-created', turnId, structuredClone(messages), reason);
+      }
     },
     get turnStops() {
       return turnStops;
@@ -1277,6 +1335,26 @@ function sandboxBoundaryMessages(
   ];
 }
 
+function multipleSandboxFailureMessages(): StoredMessage[] {
+  return [
+    ...graphMessages(false),
+    storedToolCall('turn-2', 'tool-1', 'step-1', 5),
+    storedToolCall('turn-2', 'tool-2', 'step-1', 6),
+    sandboxFailureToolResult('turn-2', 7, 'tool-1'),
+    sandboxFailureToolResult('turn-2', 8, 'tool-2'),
+    storedToolCall('turn-2', 'tool-3', 'step-2', 9),
+    successfulToolResult('turn-2', 10, 'tool-3'),
+    {
+      type: 'turn_state',
+      id: 'state-turn-2',
+      turnId: 'turn-2',
+      ts: 11,
+      status: 'completed',
+      partialOutputRetained: true,
+    },
+  ];
+}
+
 function abortedGraphMessages(): StoredMessage[] {
   return [
     ...graphMessages(false),
@@ -1371,6 +1449,11 @@ async function* eventsFor(turnId: string, text: string, ts = 1): AsyncIterable<S
   yield { type: 'complete', id: `${turnId}-complete`, turnId, ts: ts + 1, stopReason: 'end_turn' };
 }
 
+async function* eventsAfterTranscriptReplacement(publish: () => void): AsyncIterable<SessionEvent> {
+  publish();
+  yield* eventsFor('turn-1', 'Incomplete answer', 3);
+}
+
 async function* sandboxBoundaryEvents(
   turnId: string,
   failureStepId: string | undefined,
@@ -1417,6 +1500,16 @@ async function* projectedSameStepSandboxFailureEvents(turnId: string): AsyncIter
   } satisfies SubscriptionFrame).events;
   yield successfulToolResult(turnId, 4);
   yield* eventsFor(turnId, 'Incomplete answer', 5);
+}
+
+async function* multipleSandboxFailureEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield toolStart(turnId, 'tool-1', 'step-1', 1);
+  yield toolStart(turnId, 'tool-2', 'step-1', 2);
+  yield sandboxFailureToolResult(turnId, 3, 'tool-1');
+  yield sandboxFailureToolResult(turnId, 4, 'tool-2');
+  yield toolStart(turnId, 'tool-3', 'step-2', 5);
+  yield successfulToolResult(turnId, 6, 'tool-3');
+  yield* eventsFor(turnId, 'Incomplete answer', 7);
 }
 
 function continuitySnapshot(
@@ -1570,13 +1663,13 @@ function sandboxFailureToolResult(
   };
 }
 
-function successfulToolResult(turnId: string, ts: number): SharedToolResult {
+function successfulToolResult(turnId: string, ts: number, toolUseId = 'tool-2'): SharedToolResult {
   return {
     type: 'tool_result',
-    id: `${turnId}-tool-success`,
+    id: `${turnId}-${toolUseId}-success`,
     turnId,
     ts,
-    toolUseId: 'tool-2',
+    toolUseId,
     isError: false,
     content: { kind: 'text', text: 'ok' },
   };
