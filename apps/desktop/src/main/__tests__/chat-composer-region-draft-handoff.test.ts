@@ -34,7 +34,15 @@ afterEach(async () => {
   Object.assign(globalThis, originalGlobals);
 });
 
-test('hands off only the unresolved new-task draft while a Session is open', async () => {
+/**
+ * Mounts the region on a linkedom document and returns its composer handle
+ * plus a `render(activeId, newTaskDraftKey)` that re-renders with new props —
+ * the two inputs the draft handoff is keyed on.
+ */
+async function mountRegion(): Promise<{
+  composer: { current: ComposerHandle | null };
+  render(activeId: string | undefined, newTaskDraftKey: string): Promise<void>;
+}> {
   const { document, window } = parseHTML('<div id="root"></div>');
   const storage = new Map<string, string>();
   Object.assign(document, {
@@ -65,8 +73,6 @@ test('hands off only the unresolved new-task draft while a Session is open', asy
   const root = createRoot(container);
   mountedRoot = root;
   const composer = createRef<ComposerHandle>();
-  markNewTaskReloadIntent();
-  writeNewTaskReloadDraft(UNRESOLVED_NEW_TASK_DRAFT_KEY, 'new task draft');
 
   const render = async (activeId: string | undefined, newTaskDraftKey: string) => {
     await act(async () => {
@@ -99,11 +105,83 @@ test('hands off only the unresolved new-task draft while a Session is open', asy
     });
   };
 
+  return { composer, render };
+}
+
+test('hands off only the unresolved new-task draft while a Session is open', async () => {
+  const { composer, render } = await mountRegion();
+  markNewTaskReloadIntent();
+  writeNewTaskReloadDraft(UNRESOLVED_NEW_TASK_DRAFT_KEY, 'new task draft');
+
   await render('session-1', UNRESOLVED_NEW_TASK_DRAFT_KEY);
   await act(() => composer.current?.setText('session draft'));
 
   await render('session-1', 'new-task:local:project-1');
   await render(undefined, 'new-task:local:project-1');
 
+  assert.equal(composer.current?.getText(), 'new task draft');
+});
+
+test('carries the visible new-task draft when the target Project changes', async () => {
+  const { composer, render } = await mountRegion();
+
+  await render(undefined, 'new-task:local:project-1');
+  await act(() => composer.current?.setText('draft in flight'));
+
+  await render(undefined, 'new-task:local:project-2');
+  assert.equal(composer.current?.getText(), 'draft in flight');
+
+  // …and it keeps following the target rather than leaving copies behind: an
+  // edit made under project-2 is what project-1 shows on the way back, not the
+  // text that was carried away from it.
+  await act(() => composer.current?.setText('draft in flight, edited'));
+  await render(undefined, 'new-task:local:project-1');
+  assert.equal(composer.current?.getText(), 'draft in flight, edited');
+});
+
+test('does not resurrect a sent new-task draft from a target passed through', async () => {
+  const { composer, render } = await mountRegion();
+
+  await render(undefined, 'new-task:local:project-1');
+  await act(() => composer.current?.setText('sent text'));
+  // Out to project-2 and back, so both slots have now held this text.
+  await render(undefined, 'new-task:local:project-2');
+  await render(undefined, 'new-task:local:project-1');
+  // …and the send clears the slot it was submitted from, as Composer does.
+  await act(() => composer.current?.clearDraft('new-task:local:project-1'));
+  assert.equal(composer.current?.getText(), '');
+
+  await render(undefined, 'new-task:local:project-2');
+  assert.equal(composer.current?.getText(), '');
+});
+
+test('restores a reload draft when its own target is selected later', async () => {
+  const { composer, render } = await mountRegion();
+  markNewTaskReloadIntent();
+  writeNewTaskReloadDraft('new-task:local:project-1', 'draft that survived a reload');
+
+  // Startup settles on a different target than the reload draft belongs to, so
+  // that draft stays put rather than being pasted into project-2.
+  await render(undefined, UNRESOLVED_NEW_TASK_DRAFT_KEY);
+  await render(undefined, 'new-task:local:project-2');
+  assert.equal(composer.current?.getText(), '');
+
+  await render(undefined, 'new-task:local:project-1');
+  assert.equal(composer.current?.getText(), 'draft that survived a reload');
+});
+
+test('leaves a Session draft alone when the new-task target changes behind it', async () => {
+  const { composer, render } = await mountRegion();
+
+  await render(undefined, 'new-task:local:project-1');
+  await act(() => composer.current?.setText('new task draft'));
+
+  await render('session-1', 'new-task:local:project-1');
+  await act(() => composer.current?.setText('session draft'));
+
+  await render('session-1', 'new-task:local:project-2');
+  assert.equal(composer.current?.getText(), 'session draft');
+
+  await render(undefined, 'new-task:local:project-2');
   assert.equal(composer.current?.getText(), 'new task draft');
 });

@@ -34,6 +34,8 @@ const execFileAsync = promisify(execFile);
 export const COMPOSER_INPUT = '.maka-composer-editor [contenteditable="true"]';
 export const PARENT_REMOVAL_PARENT_NAME = '待删除的父任务';
 export const PARENT_REMOVAL_CHILD_NAME = '应归档的子任务';
+/** Directory basename, and so the Project name the workspace picker lists. */
+export const NEW_TASK_PROJECT_NAME = 'new-task-project';
 
 /**
  * Wait for Runtime's authoritative Skill projection, not merely for the
@@ -270,6 +272,20 @@ async function seedE2eGitReviewProject(
   await seedCurrentProject(workspaceRoot, projectRoot);
 }
 
+/**
+ * One registered Project and nothing else, so the workspace picker under the
+ * new-task composer offers two selectable targets: this Project and the Host's
+ * implicit "no project". The new-task draft slot is keyed by (profile, host,
+ * project), so moving between them is what re-keys it (#3408). The directory is
+ * plain — its basename becomes the Project name the picker menu shows.
+ */
+async function seedE2eNewTaskProject(userDataDir: string): Promise<void> {
+  const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
+  const projectRoot = path.join(userDataDir, NEW_TASK_PROJECT_NAME);
+  await mkdir(projectRoot, { recursive: true });
+  await seedCurrentProject(workspaceRoot, projectRoot);
+}
+
 async function seedCurrentProject(workspaceRoot: string, projectRoot: string): Promise<void> {
   const storageRoot = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
   const catalog = createProjectCatalog(workspaceRoot);
@@ -304,6 +320,7 @@ async function withE2eWindow(
     invocableSkills,
     gitReviewExtraFiles,
     parentRemovalSessions,
+    newTaskProject,
   }: {
     seed: boolean;
     readinessSelector: string;
@@ -318,6 +335,7 @@ async function withE2eWindow(
     invocableSkills?: boolean;
     gitReviewExtraFiles?: number;
     parentRemovalSessions?: boolean;
+    newTaskProject?: boolean;
   },
   use: (page: Page, context: { userDataDir: string }) => Promise<void>,
 ): Promise<void> {
@@ -336,6 +354,7 @@ async function withE2eWindow(
     if (gitReviewExtraFiles !== undefined) {
       await seedE2eGitReviewProject(userDataDir, gitReviewExtraFiles);
     }
+    if (newTaskProject) await seedE2eNewTaskProject(userDataDir);
     // Legacy E2E specs assert Chinese labels and should not inherit the CI
     // host locale. E2e-fixture workspaces use the explicit renderer override.
     if (locale && !e2eFixtureScenario) await seedE2eLocale(userDataDir, locale);
@@ -405,6 +424,7 @@ export const test = base.extend<{
   promptRailWindow: Page;
   promptRailMotionWindow: Page;
   requestHeaderRowWindow: Page;
+  newTaskTargetWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
@@ -452,6 +472,17 @@ export const test = base.extend<{
   },
   // A real project with several sessions. Shown because the contract under
   // test is native focus order across independently interactive row controls.
+  // Seeded connection so the composer is ready, plus one registered Project so
+  // the workspace picker under it has a second target to move to.
+  newTaskTargetWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: true,
+      readinessSelector: COMPOSER_INPUT,
+      locale: 'zh',
+      newTaskProject: true,
+      showWindow: true,
+    }, use);
+  },
   projectSidebarWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,

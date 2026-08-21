@@ -29,6 +29,27 @@ export function removePendingItems<T>(
   return { ...map, [key]: remaining };
 }
 
+/**
+ * Move one key's staged items to another, leaving nothing behind under the old
+ * one. The destination takes exactly what the source had — including nothing —
+ * so a bucket left under a key the composer merely passed through can never
+ * resurface later as that key's own staged set.
+ */
+export function rekeyPending<T>(
+  map: PendingByKey<T>,
+  from: string,
+  to: string,
+): PendingByKey<T> {
+  if (from === to) return map;
+  const moved = map[from] ?? [];
+  if (!(from in map) && !(to in map)) return map;
+  const next = { ...map };
+  delete next[from];
+  if (moved.length > 0) next[to] = moved;
+  else delete next[to];
+  return next;
+}
+
 export function clearPending<T>(map: PendingByKey<T>, key: string): PendingByKey<T> {
   const next = { ...map };
   delete next[key];

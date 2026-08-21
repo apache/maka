@@ -84,24 +84,46 @@ export function ChatComposerRegion({
   useLayoutEffect(() => {
     const previous = previousNewTaskDraftKey.current;
     previousNewTaskDraftKey.current = newTaskDraftKey;
-    if (previous !== UNRESOLVED_NEW_TASK_DRAFT_KEY || previous === newTaskDraftKey) return;
+    if (previous === newTaskDraftKey) return;
     const composer = composerRef.current;
     if (!composer) return;
-    const reloadIntent = readNewTaskReloadIntent();
-    const reloadTarget = reloadIntent?.draftKey;
-    const canCarryUnresolvedDraft =
-      !reloadTarget ||
-      reloadTarget === UNRESOLVED_NEW_TASK_DRAFT_KEY ||
-      reloadTarget === newTaskDraftKey;
-    if (!canCarryUnresolvedDraft) return;
     // The catalog may settle after the user has opened an existing Session.
-    // Read the unresolved new-task slot itself instead of whichever draft is
-    // currently visible, so Session text can never become a new-task draft.
-    const current = composer.getDraft(UNRESOLVED_NEW_TASK_DRAFT_KEY);
+    // Read the slot the key is LEAVING instead of whichever draft is currently
+    // visible, so Session text can never become a new-task draft. With no
+    // Session open that slot IS the active one, so this is the visible text.
+    const carried = composer.getDraft(previous);
+    // Leaving the UNRESOLVED slot is startup settling, not a choice the user
+    // made: its draft may have been persisted for one specific target by a
+    // reload, and must not be pasted into a different one. Every other change
+    // is the user picking a different target for the task they are already
+    // writing — the workspace picker sits directly under the composer, so
+    // "type, then pick where it runs" is the ordinary order, and the draft
+    // follows the selection rather than staying behind in the slot they
+    // navigated away from, which read as the text being destroyed (#3408).
+    // The slots themselves stay keyed per target, so #3122's Host-scoped
+    // new-task state is unchanged.
+    if (previous === UNRESOLVED_NEW_TASK_DRAFT_KEY) {
+      const reloadIntent = readNewTaskReloadIntent();
+      const reloadTarget = reloadIntent?.draftKey;
+      const canCarryUnresolvedDraft =
+        !reloadTarget ||
+        reloadTarget === UNRESOLVED_NEW_TASK_DRAFT_KEY ||
+        reloadTarget === newTaskDraftKey;
+      if (!canCarryUnresolvedDraft) return;
+    }
+    // Assigned even when nothing is carried, so the target the user arrives at
+    // shows what they arrived with and nothing else. The swap leaves a copy
+    // under every key it passes through (the composer's draft hook re-remembers
+    // the live text under the key it is leaving), so skipping the empty case
+    // would let one of those copies surface later: send the task, come back to
+    // an empty composer, pick another target, and the text just sent would
+    // reappear as that target's own draft. Its persisted draft still wins over
+    // an empty carry — that one outlived a renderer reload rather than being
+    // left behind by this effect.
     composer.setDraft(
       newTaskDraftKey,
-      current.length > 0
-        ? current
+      carried.length > 0
+        ? carried
         : (newTaskDraftPersistence.read(newTaskDraftKey) ?? ''),
     );
   }, [composerRef, newTaskDraftKey]);

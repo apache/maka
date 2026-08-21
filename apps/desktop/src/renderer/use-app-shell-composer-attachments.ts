@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { attachmentKindFromMimeType, guessMimeFromName } from '@maka/core/attachments';
 import { useUiLocale } from '@maka/ui';
-import { pendingAttachmentSourceKey, type PendingAttachment } from './app-shell-chat-actions';
+import { pendingAttachmentSourceKey, type PendingAttachment } from './app-shell-chat-actions.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
@@ -10,7 +10,8 @@ import {
   removePendingItems,
   selectPending,
   type PendingByKey,
-} from './app-shell-pending-attachments';
+} from './app-shell-pending-attachments.js';
+import { useNewTaskPendingCarry } from './use-new-task-pending-carry.js';
 
 type ToastApi = {
   error(title: string, description?: string): void;
@@ -66,6 +67,8 @@ function releasePreviewUrl(url: string | undefined): void {
 
 export function useAppShellComposerAttachments(options: {
   draftKey: string;
+  /** The new-task target's own key; see useNewTaskPendingCarry. */
+  newTaskDraftKey?: string;
   toastApi: ToastApi;
 }) {
   const uiLocale = useUiLocale();
@@ -79,6 +82,9 @@ export function useAppShellComposerAttachments(options: {
   // Live mirror of every staged item's key, for async preview arrivals to
   // check before writing: state snapshots inside a .then are stale by design.
   const stagedKeysRef = useRef<Set<string>>(new Set());
+  // A carried bucket keeps its item objects, so every stagingKey stays live and
+  // the preview cleanup effect below has nothing to revoke.
+  useNewTaskPendingCarry(options.newTaskDraftKey, setPendingByKey);
   const stagedAttachments = selectPending(pendingByKey, options.draftKey);
   const pendingAttachments = useMemo(
     () =>

@@ -415,6 +415,7 @@ function AppShellContent({
     clearSubmittedAttachments,
   } = useAppShellComposerAttachments({
     draftKey: attachmentDraftKey,
+    newTaskDraftKey: currentNewTaskDraftKey,
     toastApi,
   });
   const {
@@ -422,7 +423,10 @@ function AppShellContent({
     addQuote,
     removeQuote,
     clearQuotes,
-  } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
+  } = useAppShellComposerQuotes({
+    draftKey: attachmentDraftKey,
+    newTaskDraftKey: currentNewTaskDraftKey,
+  });
   // What a new chat will start with, held the way the Session holds it: a
   // Plan toggle and one orchestration value, not one fused choice.
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
