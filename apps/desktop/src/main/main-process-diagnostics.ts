@@ -7,6 +7,7 @@ import type {
   DesktopDiagnosticInput,
   DesktopExecutionDiagnosticTarget,
 } from '../preload/diagnostics-contract.js';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 
 const INPUT_LIMITS = {
   title: 512,
@@ -58,11 +59,15 @@ export function parseDesktopDiagnosticInput(input: unknown): DesktopDiagnosticIn
   const record = input as Record<string, unknown>;
   const rendererKeys = new Set(['surface', 'rendererUserAgent', 'rendererLocale']);
   if (record.surface === 'manual') {
-    if (Object.keys(record).some((key) => !rendererKeys.has(key))) {
+    const manualKeys = new Set([...rendererKeys, 'targetSessionId']);
+    if (Object.keys(record).some((key) => !manualKeys.has(key))) {
       throw new TypeError('Invalid Desktop diagnostic input');
     }
     return {
       surface: 'manual',
+      ...(record.targetSessionId !== undefined
+        ? { targetSessionId: requireDesktopDiagnosticSessionKey(record.targetSessionId) }
+        : {}),
       ...optionalBoundedString(record, 'rendererUserAgent', INPUT_LIMITS.rendererUserAgent),
       ...optionalBoundedString(record, 'rendererLocale', INPUT_LIMITS.rendererLocale),
     };
@@ -159,6 +164,18 @@ export function formatDesktopDiagnosticReport(
 
   const redacted = redactSecrets(lines.join('\n'));
   return collapseHomePath(redacted, environment.homePath, environment.platform);
+}
+
+function requireDesktopDiagnosticSessionKey(value: unknown): string {
+  if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > 512) {
+    throw new TypeError('Invalid Desktop diagnostic targetSessionId');
+  }
+  try {
+    parseDesktopSessionKey(value);
+  } catch {
+    throw new TypeError('Invalid Desktop diagnostic targetSessionId');
+  }
+  return value;
 }
 
 function parseExecutionDiagnosticTarget(value: unknown): DesktopExecutionDiagnosticTarget {

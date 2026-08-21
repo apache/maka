@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import { Badge, Link, List, ListItem } from '@astryxdesign/core';
 import { Sparkles } from '@maka/ui/icons';
 import {
@@ -98,53 +98,6 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     }
   }
 
-  const diagnosticActions = (
-    <SettingsSection title={sharedCopy.groups.buildInfo}>
-      <SettingsActions>
-        <Button
-          variant="primary"
-          isDisabled={copyingDiagnostics}
-          aria-describedby={diagnosticsHelpId}
-          onClick={() => void copyDiagnostics()}
-          label={copyingDiagnostics ? copy.copying : copy.copyDiagnostics}
-        />
-        <Link href={ISSUE_TRACKER_URL} target="_blank" rel="noreferrer noopener">
-          {copy.reportIssueLabel}
-        </Link>
-        <p id={diagnosticsHelpId}>{copy.copyHelp}</p>
-      </SettingsActions>
-    </SettingsSection>
-  );
-
-  if (!info && !infoError) {
-    return (
-      <SettingsPage>
-        <SettingsSkeletonStack
-          label={copy.loading}
-          lines={[
-            { width: '38%', size: 'lg' },
-            { width: '70%' },
-            { width: '52%' },
-          ]}
-        />
-        {diagnosticActions}
-      </SettingsPage>
-    );
-  }
-
-  if (!info) {
-    return (
-      <SettingsPage>
-        <Banner
-          status="info"
-          role="alert"
-          title={copy.unavailable}
-          description={infoError} />
-        {diagnosticActions}
-      </SettingsPage>
-    );
-  }
-
   async function checkForUpdates() {
     if (!checkUpdateGuard.begin('check')) return;
     setCheckingUpdate(true);
@@ -164,83 +117,125 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     }
   }
 
-  return (
-    <SettingsPage>
-      <PageHeader
-        as_wrapper="div"
-        className="settingsAboutHero"
-        as="h2"
-        icon={<Sparkles size={30} /> /* 64% of the 48px plate, matching .providerLogo's fill */}
-        iconClassName="settingsAboutLogo"
-        headingRowClassName="settingsAboutHeading"
-        title="Maka"
-        badge={
-          <>
-            <Badge variant="neutral" label={`v${info.appVersion}`} />
-            <Badge
-              variant="blue"
-              label={info.buildMode === 'dev'
-                ? info.buildCommit
-                  ? `${copy.devBuild} · ${info.buildCommit}`
-                  : copy.devBuild
-                : copy.packagedBuild}
-            />
-          </>
-        }
-        subtitle={copy.subtitle}
-        subtitleClassName="settingsAboutTagline"
+  let aboutContent: ReactNode;
+  if (!info && !infoError) {
+    aboutContent = (
+      <SettingsSkeletonStack
+        label={copy.loading}
+        lines={[
+          { width: '38%', size: 'lg' },
+          { width: '70%' },
+          { width: '52%' },
+        ]}
       />
-      {/* Detail audit: the five privacy commitments rendered inside an info
-          Banner — five lines of bold status-blue body copy, the exact blue
-          flood DESIGN.md's Signal-Not-Texture rule forbids. They are ordinary
-          statements, so they read as a quiet marker list in a labeled group. */}
-      <SettingsSection variant="bare" title={copy.privacyTitle}>
-        <List aria-label={copy.privacyLabel} density="compact" listStyle="disc">
-          {/* Fragment-wrapped: ListItem single-line-truncates STRING labels,
-              and a privacy commitment must wrap, not ellipsize. */}
-          {copy.privacyPoints.map((point) => <ListItem key={point} label={<>{point}</>} />)}
-        </List>
-      </SettingsSection>
-      {/* The keyboard sheet's home. It used to be reachable only from the
-          titlebar's `…` drawer and from two shortcuts — which made the panel
-          that lists the shortcuts openable only by shortcut. It is reference
-          material about the app, so it belongs on 关于, and this is the entry
-          a mouse can find. */}
-      {props.onOpenKeyboardHelp && (
-        <SettingsSection title={sharedCopy.groups.reference}>
+    );
+  } else if (!info) {
+    aboutContent = (
+      <Banner
+        status="info"
+        role="alert"
+        title={copy.unavailable}
+        description={infoError} />
+    );
+  } else {
+    aboutContent = (
+      <>
+        <PageHeader
+          as_wrapper="div"
+          className="settingsAboutHero"
+          as="h2"
+          icon={<Sparkles size={30} /> /* 64% of the 48px plate, matching .providerLogo's fill */}
+          iconClassName="settingsAboutLogo"
+          headingRowClassName="settingsAboutHeading"
+          title="Maka"
+          badge={
+            <>
+              <Badge variant="neutral" label={`v${info.appVersion}`} />
+              <Badge
+                variant="blue"
+                label={info.buildMode === 'dev'
+                  ? info.buildCommit
+                    ? `${copy.devBuild} · ${info.buildCommit}`
+                    : copy.devBuild
+                  : copy.packagedBuild}
+              />
+            </>
+          }
+          subtitle={copy.subtitle}
+          subtitleClassName="settingsAboutTagline"
+        />
+        {/* Detail audit: the five privacy commitments rendered inside an info
+            Banner — five lines of bold status-blue body copy, the exact blue
+            flood DESIGN.md's Signal-Not-Texture rule forbids. They are ordinary
+            statements, so they read as a quiet marker list in a labeled group. */}
+        <SettingsSection variant="bare" title={copy.privacyTitle}>
+          <List aria-label={copy.privacyLabel} density="compact" listStyle="disc">
+            {/* Fragment-wrapped: ListItem single-line-truncates STRING labels,
+                and a privacy commitment must wrap, not ellipsize. */}
+            {copy.privacyPoints.map((point) => <ListItem key={point} label={<>{point}</>} />)}
+          </List>
+        </SettingsSection>
+        {/* The keyboard sheet's home. It used to be reachable only from the
+            titlebar's `…` drawer and from two shortcuts — which made the panel
+            that lists the shortcuts openable only by shortcut. It is reference
+            material about the app, so it belongs on 关于, and this is the entry
+            a mouse can find. */}
+        {props.onOpenKeyboardHelp && (
+          <SettingsSection title={sharedCopy.groups.reference}>
+            <SettingRow
+              title={copy.keyboardShortcuts}
+              detail={copy.keyboardShortcutsHelp}
+              action={(
+                <Button variant="ghost" size="sm" onClick={props.onOpenKeyboardHelp} label={copy.keyboardShortcutsOpen} />
+              )}
+            />
+          </SettingsSection>
+        )}
+        <SettingsSection title={copy.updatesTitle}>
           <SettingRow
-            title={copy.keyboardShortcuts}
-            detail={copy.keyboardShortcutsHelp}
+            title={copy.checkForUpdates}
+            detail={aboutUpdateStatusDetail(updateStatus, copy, {
+              isDevBuild: info.buildMode === 'dev',
+            })}
             action={(
-              <Button variant="ghost" size="sm" onClick={props.onOpenKeyboardHelp} label={copy.keyboardShortcutsOpen} />
+              <Button
+                variant="secondary"
+                size="sm"
+                isDisabled={checkingUpdate || info.buildMode === 'dev'}
+                aria-describedby={updateHelpId}
+                onClick={() => void checkForUpdates()}
+                label={checkingUpdate || updateStatus?.state === 'checking'
+                  ? copy.checkingForUpdates
+                  : copy.checkForUpdates}
+              />
             )}
           />
+          <p id={updateHelpId}>
+            {info.buildMode === 'dev' ? copy.updateDevBuildHelp : copy.updateHelp}
+          </p>
         </SettingsSection>
-      )}
-      <SettingsSection title={copy.updatesTitle}>
-        <SettingRow
-          title={copy.checkForUpdates}
-          detail={aboutUpdateStatusDetail(updateStatus, copy, {
-            isDevBuild: info.buildMode === 'dev',
-          })}
-          action={(
-            <Button
-              variant="secondary"
-              size="sm"
-              isDisabled={checkingUpdate || info.buildMode === 'dev'}
-              aria-describedby={updateHelpId}
-              onClick={() => void checkForUpdates()}
-              label={checkingUpdate || updateStatus?.state === 'checking'
-                ? copy.checkingForUpdates
-                : copy.checkForUpdates}
-            />
-          )}
-        />
-        <p id={updateHelpId}>
-          {info.buildMode === 'dev' ? copy.updateDevBuildHelp : copy.updateHelp}
-        </p>
+      </>
+    );
+  }
+
+  return (
+    <SettingsPage>
+      {aboutContent}
+      <SettingsSection title={sharedCopy.groups.buildInfo}>
+        <SettingsActions>
+          <Button
+            variant="primary"
+            isDisabled={copyingDiagnostics}
+            aria-describedby={diagnosticsHelpId}
+            onClick={() => void copyDiagnostics()}
+            label={copyingDiagnostics ? copy.copying : copy.copyDiagnostics}
+          />
+          <Link href={ISSUE_TRACKER_URL} target="_blank" rel="noreferrer noopener">
+            {copy.reportIssueLabel}
+          </Link>
+          <p id={diagnosticsHelpId}>{copy.copyHelp}</p>
+        </SettingsActions>
       </SettingsSection>
-      {diagnosticActions}
     </SettingsPage>
   );
 }

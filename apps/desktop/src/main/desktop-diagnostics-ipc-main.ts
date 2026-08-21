@@ -5,6 +5,7 @@ import type { TurnTrace } from '@maka/core/session-trace';
 import type { HostDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { DesktopDiagnosticCopyResult } from '../preload/diagnostics-contract.js';
 import {
+  parseDesktopSessionKey,
   requireDesktopTargetScope,
   type DesktopTargetScope,
 } from '../shared/runtime-host-identity.js';
@@ -38,15 +39,32 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
     'diagnostics:copyReport',
     async (_event, scope: unknown, rawInput: unknown): Promise<DesktopDiagnosticCopyResult> => {
       const input = parseDesktopDiagnosticInput(rawInput);
-      const runtime = input.surface === 'manual'
-        ? deps.resolveActiveRuntimeHost()
-        : deps.resolveRuntimeHost(requireDesktopTargetScope(scope));
+      let runtime: RuntimeHostDiagnosticsClient | undefined;
+      if (input.surface !== 'manual') {
+        runtime = deps.resolveRuntimeHost(requireDesktopTargetScope(scope));
+      } else if (input.targetSessionId === undefined) {
+        runtime = deps.resolveActiveRuntimeHost();
+      } else if (scope !== undefined) {
+        const target = requireDesktopTargetScope(scope);
+        if (target.hostId !== parseDesktopSessionKey(input.targetSessionId).hostId) {
+          throw new Error('Desktop diagnostic target belongs to a different Runtime Host');
+        }
+        try {
+          runtime = deps.resolveRuntimeHost(target);
+        } catch {
+          // A task's Host may disappear between preload scope resolution and
+          // this handler. Manual capture still returns Desktop diagnostics.
+          runtime = undefined;
+        }
+      }
       let runtimeHost: RuntimeHostDiagnosticRead;
       if (!runtime) {
         runtimeHost = {
           ok: false,
           error: input.surface === 'manual'
-            ? 'Runtime Host is unavailable'
+            ? input.targetSessionId === undefined
+              ? 'Runtime Host is unavailable'
+              : 'Runtime Host for this task is unavailable'
             : 'Runtime Host is reconnecting',
         };
       } else {

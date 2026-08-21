@@ -11,6 +11,8 @@ interface DesktopDiagnosticRendererContext {
 
 export interface DesktopManualDiagnosticInput extends DesktopDiagnosticRendererContext {
   readonly surface: 'manual';
+  /** Desktop session key whose Runtime Host should contribute diagnostics. */
+  readonly targetSessionId?: string;
 }
 
 export interface DesktopErrorDiagnosticInput extends DesktopDiagnosticRendererContext {

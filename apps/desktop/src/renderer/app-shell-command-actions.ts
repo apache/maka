@@ -364,10 +364,14 @@ export function buildAppShellCommandList(
       }
     },
     onCopyDiagnostics: async () => {
-      const { toastApi } = optionsRef.current;
+      const { captureComposerImportOwner, toastApi } = optionsRef.current;
+      const owner = captureComposerImportOwner();
       try {
         const result = await window.maka.diagnostics.copyReport({
           surface: "manual",
+          ...(owner.navSection === "sessions" && owner.sessionId
+            ? { targetSessionId: owner.sessionId }
+            : {}),
           rendererUserAgent: navigator.userAgent,
           rendererLocale: navigator.language,
         });

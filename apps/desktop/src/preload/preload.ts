@@ -2604,7 +2604,20 @@ const makaBridge = {
   diagnostics: {
     async copyReport(input: DesktopDiagnosticInput): Promise<DesktopDiagnosticCopyResult> {
       if (input.surface === 'manual') {
-        return ipcRenderer.invoke('diagnostics:copyReport', undefined, input);
+        if (!input.targetSessionId) {
+          return ipcRenderer.invoke('diagnostics:copyReport', undefined, input);
+        }
+        const ref = parseDesktopSessionKey(input.targetSessionId);
+        try {
+          await runtimeHostScopeList();
+        } catch {
+          return ipcRenderer.invoke('diagnostics:copyReport', undefined, input);
+        }
+        return ipcRenderer.invoke(
+          'diagnostics:copyReport',
+          runtimeHostScopes.get(ref.hostId),
+          input,
+        );
       }
       if (!input.execution) {
         return invokeActiveRuntimeHost('diagnostics:copyReport', input);
