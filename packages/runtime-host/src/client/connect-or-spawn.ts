@@ -1,22 +1,3 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 import { randomUUID } from 'node:crypto';
 import {
   prepareStorageRootControlDirectory,
@@ -28,6 +9,7 @@ import {
   requireClientInstanceId,
   requireHostCompositionId,
   validateProtocolRange,
+  type HostRegistration,
   type HostIncompatible,
   type ProtocolRange,
 } from '../protocol/index.js';
@@ -39,7 +21,9 @@ import {
 import {
   launchDetachedRuntimeHostCandidate,
   launchOwnedRuntimeHostCandidate,
+  type CandidateProcessExit,
   type CandidateLauncher,
+  type DetachedCandidateAttempt,
   type OwnedCandidateAttempt,
 } from './launcher.js';
 import {
@@ -78,20 +62,16 @@ interface ConnectOrSpawnRuntimeHostDependencies {
   random(): number;
   /** Defaults to `process.env`; injected so tests never mutate the real environment. */
   env?: NodeJS.ProcessEnv;
+  connectHost?: typeof connectResolvedRuntimeHost;
 }
+
+type ElectionConnectionResult = Awaited<ReturnType<typeof connectResolvedRuntimeHost>>;
 
 const defaultDependencies: ConnectOrSpawnRuntimeHostDependencies = {
   launchCandidate: launchDetachedRuntimeHostCandidate,
   random: Math.random,
 };
 
-/**
- * Resolves the operator override for the client election deadline. Large
- * workspaces can legitimately take longer than the default window on their
- * first start after an upgrade, so the deadline must be raisable without a
- * code change. Invalid values fail closed: a silently ignored typo would leave
- * the operator believing they widened the window when they did not.
- */
 export function electionDeadlineMsFromEnvironment(
   rawValue: string | undefined,
 ): number | undefined {
@@ -117,11 +97,55 @@ export type ConnectOrSpawnRuntimeHostResult =
       kind: 'failed';
       reason: 'composition_mismatch';
       requiredCompositionId: string;
+      diagnostic?: RuntimeHostElectionDiagnostic;
     }
   | {
       kind: 'failed';
       reason: CandidateStartupFailure['reason'] | 'startup_timeout' | 'host_unresponsive';
+      diagnostic?: RuntimeHostElectionDiagnostic;
     };
+
+export interface RuntimeHostElectionDiagnostic {
+  readonly deadlineMs: number;
+  readonly elapsedMs: number;
+  readonly candidateLaunches: number;
+  readonly sawEndpointConnected: boolean;
+  readonly observations: {
+    readonly notRegistered: number;
+    readonly connectFailed: number;
+    readonly handshakeFailed: number;
+    readonly connected: number;
+    readonly readyWaitFailed: number;
+    readonly deadlineElapsed: number;
+  };
+  readonly lastRegistration?: {
+    readonly pid: number;
+    readonly state: HostRegistration['state'];
+    readonly lifecycleMode: HostRegistration['lifecycleMode'];
+    readonly generation?: string;
+  };
+  readonly latestCandidate?: {
+    readonly pid: number;
+    readonly startupAttemptId?: string;
+    readonly state: 'running' | 'exited' | 'unknown';
+    readonly exitCode?: number | null;
+    readonly signal?: NodeJS.Signals | null;
+  };
+}
+
+interface MutableElectionObservations {
+  notRegistered: number;
+  connectFailed: number;
+  handshakeFailed: number;
+  connected: number;
+  readyWaitFailed: number;
+  deadlineElapsed: number;
+}
+
+interface ObservedCandidateAttempt {
+  readonly attempt: DetachedCandidateAttempt;
+  exit?: CandidateProcessExit;
+}
 
 export async function connectOrSpawnRuntimeHost(
   input: ConnectOrSpawnRuntimeHostInput,
@@ -249,12 +273,23 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   let startupFailure: CandidateStartupFailureReport | undefined;
   let pendingCandidateReports = 0;
   let electionSettled = false;
-  let candidateInFlight = false;
+  const candidateLaunches = new Set<ReturnType<CandidateLauncher>>();
+  let sawEndpointConnected = false;
+  let lastRegistration: HostRegistration | undefined;
+  let latestCandidate: ObservedCandidateAttempt | undefined;
+  const observations: MutableElectionObservations = {
+    notRegistered: 0,
+    connectFailed: 0,
+    handshakeFailed: 0,
+    connected: 0,
+    readyWaitFailed: 0,
+    deadlineElapsed: 0,
+  };
 
   try {
     while (performance.now() < deadline) {
       input.signal?.throwIfAborted();
-      const result = await connectResolvedRuntimeHost({
+      const result = await (dependencies.connectHost ?? connectResolvedRuntimeHost)({
         capability,
         controlDirectory,
         protocol: input.protocol,
@@ -268,6 +303,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         handshakeTimeoutMs: input.handshakeTimeoutMs,
         electionDeadline: deadline,
       });
+      const observed = recordElectionResult(result, observations);
+      if (observed.registration) lastRegistration = observed.registration;
+      if (observed.endpointConnected) sawEndpointConnected = true;
       if (result.kind === 'election_deadline_elapsed') {
         if (result.endpointConnected) sawUnresponsiveEndpoint = true;
         break;
@@ -288,6 +326,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           await retireCandidateStartupDiagnostic(capability.rootId, startupFailure);
           return result;
         } catch {
+          observations.readyWaitFailed += 1;
           await result.connection.close().catch(() => undefined);
         }
         input.signal?.throwIfAborted();
@@ -314,7 +353,6 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       if (
         shouldLaunchCandidate(result) &&
         !isPermanentCandidateStartupFailure(startupFailure) &&
-        !candidateInFlight &&
         now >= nextCandidateAt
       ) {
         try {
@@ -327,15 +365,14 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             initialConnectionTimeoutMs: Math.ceil(remaining),
             ...(input.generation === undefined ? {} : { generation: input.generation }),
           });
+          candidateLaunches.add(launch);
           const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
-          candidateInFlight = true;
+          const candidate: ObservedCandidateAttempt = { attempt };
+          latestCandidate = candidate;
           if (attempt.exited) {
-            void attempt.exited.then(
-              () => {
-                candidateInFlight = false;
-              },
-              () => undefined,
-            );
+            void attempt.exited.then((exit) => {
+              candidate.exit = exit;
+            });
           }
           if (attempt.startupFailure) {
             pendingCandidateReports += 1;
@@ -396,10 +433,100 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
     return {
       kind: 'failed',
       reason: sawUnresponsiveEndpoint ? 'host_unresponsive' : 'startup_timeout',
+      diagnostic: createElectionDiagnostic({
+        deadlineMs,
+        startedAt,
+        candidateLaunches: candidateLaunches.size,
+        sawEndpointConnected,
+        observations,
+        lastRegistration,
+        latestCandidate,
+      }),
     };
   } finally {
     electionSettled = true;
   }
+}
+
+function recordElectionResult(
+  result: ElectionConnectionResult,
+  observations: MutableElectionObservations,
+): { readonly endpointConnected: boolean; readonly registration?: HostRegistration } {
+  const registration = 'registration' in result ? result.registration : undefined;
+  if (result.kind === 'election_deadline_elapsed') {
+    observations.deadlineElapsed += 1;
+    return {
+      endpointConnected: result.endpointConnected,
+      ...(result.registration ? { registration: result.registration } : {}),
+    };
+  }
+  if (result.kind === 'connected') {
+    observations.connected += 1;
+    return { endpointConnected: true, registration };
+  }
+  if (result.kind !== 'unavailable') {
+    return { endpointConnected: false, ...(registration ? { registration } : {}) };
+  }
+  switch (result.reason) {
+    case 'not_registered':
+      observations.notRegistered += 1;
+      break;
+    case 'connect_failed':
+      observations.connectFailed += 1;
+      break;
+    case 'handshake_failed':
+      observations.handshakeFailed += 1;
+      break;
+  }
+  return {
+    endpointConnected: result.reason === 'handshake_failed',
+    ...(registration ? { registration } : {}),
+  };
+}
+
+function createElectionDiagnostic(input: {
+  readonly deadlineMs: number;
+  readonly startedAt: number;
+  readonly candidateLaunches: number;
+  readonly sawEndpointConnected: boolean;
+  readonly observations: MutableElectionObservations;
+  readonly lastRegistration: HostRegistration | undefined;
+  readonly latestCandidate: ObservedCandidateAttempt | undefined;
+}): RuntimeHostElectionDiagnostic {
+  const candidate = input.latestCandidate;
+  return {
+    deadlineMs: input.deadlineMs,
+    elapsedMs: Math.max(0, Math.round(performance.now() - input.startedAt)),
+    candidateLaunches: input.candidateLaunches,
+    sawEndpointConnected: input.sawEndpointConnected,
+    observations: { ...input.observations },
+    ...(input.lastRegistration
+      ? {
+          lastRegistration: {
+            pid: input.lastRegistration.pid,
+            state: input.lastRegistration.state,
+            lifecycleMode: input.lastRegistration.lifecycleMode,
+            ...(input.lastRegistration.generation === undefined
+              ? {}
+              : { generation: input.lastRegistration.generation }),
+          },
+        }
+      : {}),
+    ...(candidate
+      ? {
+          latestCandidate: {
+            pid: candidate.attempt.pid,
+            ...(candidate.attempt.startupAttemptId === undefined
+              ? {}
+              : { startupAttemptId: candidate.attempt.startupAttemptId }),
+            state: candidate.exit ? 'exited' : candidate.attempt.exited ? 'running' : 'unknown',
+            ...(candidate.exit
+              ? { exitCode: candidate.exit.code, signal: candidate.exit.signal }
+              : {}),
+          },
+        }
+      : {}),
+  };
 }
 
 async function retireCandidateStartupDiagnostic(

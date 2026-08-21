@@ -217,7 +217,103 @@ describe('non-serving Runtime Host kernel', () => {
         },
       );
 
-      assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+      assert.equal(result.kind, 'failed');
+      if (result.kind !== 'failed') return;
+      assert.equal(result.reason, 'startup_timeout');
+      assert.ok(result.diagnostic);
+      assert.equal(result.diagnostic.candidateLaunches, 1);
+    });
+  });
+
+  test('attributes an unresponsive endpoint to the exact running Candidate attempt', async () => {
+    await withHostPaths(async (paths) => {
+      let connectCalls = 0;
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 500,
+        },
+        {
+          random: () => 0.5,
+          connectHost: async () => {
+            connectCalls += 1;
+            return connectCalls === 1
+              ? { kind: 'unavailable' as const, reason: 'not_registered' as const }
+              : { kind: 'election_deadline_elapsed' as const, endpointConnected: true };
+          },
+          launchCandidate: () => ({
+            spawned: Promise.resolve({
+              pid: 4242,
+              startupAttemptId: STARTUP_ATTEMPT_A,
+              exited: new Promise<never>(() => undefined),
+              startupFailure: new Promise<never>(() => undefined),
+            }),
+          }),
+        },
+      );
+
+      assert.equal(result.kind, 'failed');
+      if (result.kind !== 'failed') return;
+      assert.equal(result.reason, 'host_unresponsive');
+      assert.ok(result.diagnostic);
+      assert.equal(result.diagnostic.candidateLaunches, 1);
+      assert.equal(result.diagnostic.sawEndpointConnected, true);
+      assert.deepEqual(result.diagnostic.observations, {
+        notRegistered: 1,
+        connectFailed: 0,
+        handshakeFailed: 0,
+        connected: 0,
+        readyWaitFailed: 0,
+        deadlineElapsed: 1,
+      });
+      assert.deepEqual(result.diagnostic.latestCandidate, {
+        pid: 4242,
+        startupAttemptId: STARTUP_ATTEMPT_A,
+        state: 'running',
+      });
+    });
+  });
+
+  test('counts a coalesced Candidate launch only once across repeated election requests', async () => {
+    await withHostPaths(async (paths) => {
+      let launchRequests = 0;
+      const launch = {
+        spawned: Promise.resolve({
+          pid: 4242,
+          startupAttemptId: STARTUP_ATTEMPT_A,
+          exited: new Promise<never>(() => undefined),
+          startupFailure: new Promise<never>(() => undefined),
+        }),
+      };
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 800,
+        },
+        {
+          random: () => 0,
+          connectHost: async () => ({
+            kind: 'unavailable' as const,
+            reason: 'not_registered' as const,
+          }),
+          launchCandidate: () => {
+            launchRequests += 1;
+            return launch;
+          },
+        },
+      );
+
+      assert.ok(launchRequests > 1);
+      assert.equal(result.kind, 'failed');
+      if (result.kind !== 'failed') return;
+      assert.equal(result.reason, 'startup_timeout');
+      assert.equal(result.diagnostic?.candidateLaunches, 1);
     });
   });
 
@@ -1305,7 +1401,11 @@ describe('non-serving Runtime Host kernel', () => {
               },
             },
           );
-          assert.deepEqual(staleDiscovery, { kind: 'failed', reason: 'startup_timeout' });
+          assert.equal(staleDiscovery.kind, 'failed');
+          if (staleDiscovery.kind !== 'failed') return;
+          assert.equal(staleDiscovery.reason, 'startup_timeout');
+          assert.ok(staleDiscovery.diagnostic);
+          assert.equal(staleDiscovery.diagnostic.candidateLaunches, staleLaunchAttempts);
           assert.ok(staleLaunchAttempts > 0);
 
           const successor = await connectOrSpawnRuntimeHostWithDependencies(
@@ -1681,7 +1781,10 @@ describe('non-serving Runtime Host kernel', () => {
         candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
         electionDeadlineMs: 100,
       });
-      assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+      assert.equal(result.kind, 'failed');
+      if (result.kind !== 'failed') return;
+      assert.equal(result.reason, 'startup_timeout');
+      assert.ok(result.diagnostic);
       assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
       await owner?.close();
     });
@@ -1788,7 +1891,17 @@ describe('non-serving Runtime Host kernel', () => {
           1_000,
           'election exceeded its total deadline',
         );
-        assert.deepEqual(result, { kind: 'failed', reason: 'host_unresponsive' });
+        assert.equal(result.kind, 'failed');
+        if (result.kind !== 'failed') return;
+        assert.equal(result.reason, 'host_unresponsive');
+        assert.ok(result.diagnostic);
+        assert.equal(result.diagnostic.deadlineMs, 50);
+        assert.ok(result.diagnostic.elapsedMs >= 40);
+        assert.equal(result.diagnostic.candidateLaunches, 0);
+        assert.equal(result.diagnostic.sawEndpointConnected, true);
+        assert.ok(result.diagnostic.observations.deadlineElapsed >= 1);
+        assert.equal(result.diagnostic.lastRegistration?.pid, attempt.pid);
+        assert.equal(result.diagnostic.lastRegistration?.state, 'ready');
         assert.equal(launchCount, 0);
       } finally {
         if (stopped) process.kill(attempt.pid, 'SIGCONT');
