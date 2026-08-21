@@ -3,7 +3,6 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
   type ModelInfo,
-  type ProviderType,
 } from '@maka/core/llm-connections';
 import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
@@ -23,7 +22,7 @@ import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { connectionChipStatus } from './provider-connection-status';
 import { relayProfileDraftReseedPlan, relayProfileDraftSeed } from './relay-profile-draft';
 import { useKeyedActionGuard } from './use-action-guard';
-import type { OAuthLoginFlowBridge } from './use-oauth-login-flow';
+import { oauthLoginServiceFor } from './oauth-relogin-service.js';
 import {
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
@@ -32,37 +31,6 @@ import {
   type CredentialPresenceStatus,
 } from './provider-panel-shared';
 import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
-import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
-
-// Maps an OAuth model-connection provider type to the browser-assisted login
-// service that can re-run its authorization from inside the connection dialog. Only
-// the browser-assisted services (Codex and xAI) are one-button-drivable
-// here; Claude's paste-code flow and plain API-key providers return null so the
-// notice falls back to prose instead of rendering a dead button.
-export interface OAuthLoginService {
-  bridge: OAuthLoginFlowBridge;
-  display: { name: string; shortName: string };
-}
-
-export function oauthLoginServiceFor(
-  providerType: ProviderType,
-  host: import('../../preload/bridge-contract.js').DesktopRuntimeHostRef,
-): OAuthLoginService | null {
-  switch (providerType) {
-    case 'openai-codex':
-      return {
-        bridge: runtimeHostOAuthLoginBridge(window.maka.openAiCodex, host),
-        display: { name: 'OpenAI Codex', shortName: 'Codex' },
-      };
-    case 'xai-oauth':
-      return {
-        bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host),
-        display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
-      };
-    default:
-      return null;
-  }
-}
 
 export interface ConnectionDetailProps {
   bridge: ConnectionsBridge;
