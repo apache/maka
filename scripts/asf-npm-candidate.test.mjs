@@ -39,17 +39,39 @@ test('records and independently verifies one npm candidate bound to an ASF sourc
   assert.equal(verifyAsfNpmCandidateRecord({ recordPath }).record.version, VERSION);
 });
 
-test('rejects source tags that do not identify the exact version and positive RC', () => {
+test('parses the version and RC from an exact ASF source candidate tag', () => {
+  assert.deepEqual(parseAsfSourceReferenceTag(`v${VERSION}-incubating-rc2`), {
+    rcNumber: '2',
+    tag: `v${VERSION}-incubating-rc2`,
+    version: VERSION,
+  });
+
   for (const tag of [
-    'v0.1.12-incubating-rc1',
     `v${VERSION}-incubating-rc0`,
     `v${VERSION}-incubating-rc01`,
+    `v${VERSION}-rc1`,
   ]) {
-    assert.throws(
-      () => parseAsfSourceReferenceTag(tag, VERSION),
-      /Source candidate tag must match/u,
-    );
+    assert.throws(() => parseAsfSourceReferenceTag(tag), /ASF source reference must match/u);
   }
+});
+
+test('record creation rejects a source tag for a different product version', async (t) => {
+  const fixture = await createFixture(t);
+
+  assert.throws(
+    () =>
+      createAsfNpmCandidateRecord({
+        repoRoot: fixture.repoRoot,
+        releaseDirectory: fixture.releaseDirectory,
+        version: VERSION,
+        sourceReferenceTag: 'v0.1.12-incubating-rc1',
+        sourceCommit: COMMIT,
+        repository: REPOSITORY,
+        runId: '1234',
+        runAttempt: '1',
+      }),
+    /tag version 0\.1\.12 does not match 0\.1\.11/u,
+  );
 });
 
 test('verification rejects candidate integrity changes after the record was created', async (t) => {

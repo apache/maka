@@ -44,10 +44,10 @@ Dispatch **Prepare ASF npm candidate** from the exact source candidate tag:
 ```sh
 version=0.1.11
 rc=1
+source_reference_tag="v${version}-incubating-rc${rc}"
 gh workflow run asf-npm-candidate.yml \
-  --ref "v${version}-incubating-rc${rc}" \
-  -f version="$version" \
-  -f rc_number="$rc"
+  --ref "$source_reference_tag" \
+  -f source_reference_tag="$source_reference_tag"
 ```
 
 The workflow rejects a fork repository, a lightweight tag, a tag/version/RC
@@ -57,8 +57,10 @@ authenticate its signature or establish source-release approval. Its reusable
 validation job builds one clean-source npm tarball and tests that exact artifact
 across the supported platform matrix. The final job adds only the source
 reference/run record and uploads a new handoff artifact; it never rebuilds the
-tarball. A partial job rerun is rejected because it would combine authority and
-artifact facts from different workflow attempts; use **Re-run all jobs**.
+tarball. The handoff requires validation from the current workflow attempt. If
+validation or handoff must be retried, re-run the validation job and its
+dependent jobs; the handoff independently revalidates the live source tag, so
+the successful resolve job does not need to be repeated.
 
 ## Verify the handoff
 

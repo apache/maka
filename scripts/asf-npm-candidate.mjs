@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseAsfSourceReferenceTag } from './product-release-identity.mjs';
 import { parseProductReleaseVersion } from './release-version.mjs';
+
+export { parseAsfSourceReferenceTag };
 
 const PACKAGE_NAME = 'maka-agent';
 const ASF_REPOSITORY = 'apache/maka';
@@ -22,19 +25,6 @@ export function asfNpmCandidateIdentity(version) {
     inventory: `${tarball}.files.json`,
     record: `${tarball}.asf-candidate.json`,
   };
-}
-
-export function parseAsfSourceReferenceTag(tag, version) {
-  asfNpmCandidateIdentity(version);
-  const prefix = `v${version}-incubating-rc`;
-  if (typeof tag !== 'string' || !tag.startsWith(prefix)) {
-    throw new Error(`Source candidate tag must match ${prefix}<positive-integer>`);
-  }
-  const rc = tag.slice(prefix.length);
-  if (!/^[1-9]\d*$/u.test(rc)) {
-    throw new Error(`Source candidate tag must match ${prefix}<positive-integer>`);
-  }
-  return tag;
 }
 
 export function createAsfNpmCandidateRecord({
@@ -148,11 +138,14 @@ function validateRepositoryVersion(repoRoot, version) {
 }
 
 function validateSourceReference({ sourceReferenceTag, sourceCommit, version }) {
-  const tag = parseAsfSourceReferenceTag(sourceReferenceTag, version);
+  const parsedTag = parseAsfSourceReferenceTag(sourceReferenceTag);
+  if (parsedTag.version !== version) {
+    throw new Error(`Source candidate tag version ${parsedTag.version} does not match ${version}`);
+  }
   if (typeof sourceCommit !== 'string' || !/^[0-9a-f]{40}$/u.test(sourceCommit)) {
     throw new Error('ASF source candidate commit must be a full lowercase Git SHA');
   }
-  return { candidateTag: tag, commit: sourceCommit };
+  return { candidateTag: parsedTag.tag, commit: sourceCommit };
 }
 
 function validateWorkflowIdentity({ repository, path, runId, runAttempt }) {
@@ -229,6 +222,14 @@ function readJson(path, label) {
 
 function main() {
   const [command, ...arguments_] = process.argv.slice(2);
+  if (command === 'source-version') {
+    const [sourceReferenceTag] = arguments_;
+    if (arguments_.length !== 1 || !sourceReferenceTag) {
+      throw new Error('Usage: asf-npm-candidate.mjs source-version <source-reference-tag>');
+    }
+    console.log(parseAsfSourceReferenceTag(sourceReferenceTag).version);
+    return;
+  }
   if (command === 'record') {
     const [
       releaseDirectory,
@@ -276,7 +277,7 @@ function main() {
     console.log(`Verified ${result.tarballPath}`);
     return;
   }
-  throw new Error('Usage: asf-npm-candidate.mjs <record|verify> [options]');
+  throw new Error('Usage: asf-npm-candidate.mjs <source-version|record|verify> [options]');
 }
 
 if (

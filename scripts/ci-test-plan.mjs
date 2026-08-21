@@ -58,6 +58,7 @@ const TYPECHECK_ONLY_FILES = new Set([
 ]);
 
 const CLI_PACKAGE_FILES = new Set([
+  '.github/workflows/cli-package-validation.yml',
   'LICENSE',
   'NOTICE',
   'scripts/apply-dependency-patches.mjs',
@@ -73,6 +74,15 @@ const ASF_SOURCE_FILES = new Set([
   'scripts/asf-source-release.mjs',
   'scripts/asf-source-release.test.mjs',
   'scripts/asf-source-workflow-policy.test.mjs',
+]);
+
+const ASF_NPM_FILES = new Set([
+  '.github/workflows/asf-npm-candidate.yml',
+  '.github/workflows/cli-package-validation.yml',
+  'scripts/asf-npm-candidate.mjs',
+  'scripts/asf-npm-candidate.test.mjs',
+  'scripts/asf-npm-workflow-policy.test.mjs',
+  'scripts/release-version.mjs',
 ]);
 
 const CLI_PACKAGE_WORKSPACES = [
@@ -293,6 +303,7 @@ export function planTests(changedFiles, options = {}) {
   if (full) {
     const workspaces = [...graph.dirs];
     return {
+      asfNpm: true,
       asfSource: true,
       astryxSurface: true,
       cliPackage: true,
@@ -357,6 +368,7 @@ export function planTests(changedFiles, options = {}) {
 
   const cliPackage = files.some((path) => isCliPackagePath(path));
   return {
+    asfNpm: files.some((path) => ASF_NPM_FILES.has(path)),
     asfSource: files.some((path) => ASF_SOURCE_FILES.has(path)),
     astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
     cliPackage,
@@ -384,6 +396,7 @@ export function planTests(changedFiles, options = {}) {
 
 export function formatGitHubOutputs(plan) {
   return [
+    `asf_npm=${plan.asfNpm}`,
     `asf_source=${plan.asfSource}`,
     `astryx_surface=${plan.astryxSurface}`,
     `cli_package=${plan.cliPackage}`,
