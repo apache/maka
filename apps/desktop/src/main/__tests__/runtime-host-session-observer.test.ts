@@ -460,6 +460,86 @@ test('restores transcript consumers across Host replacement', async () => {
   await observations.close();
 });
 
+test('fences transcript range failures to the current registration and Host source', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const target: RuntimeHostTranscriptTarget = {
+    id: 19,
+    send() {},
+    once() {},
+    off() {},
+  };
+  const pendingFailure = () => {
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((_resolve, rejectPromise) => {
+      reject = rejectPromise;
+    });
+    return { promise, reject };
+  };
+  const source = (
+    generation: string,
+    loadTranscriptBefore: () => Promise<void>,
+  ) => ({
+    async observe() {},
+    async unobserve() {},
+    async openTranscript(sessionId: string) {
+      return {
+        sessionId,
+        generation,
+        hostEpoch: `host-${generation}`,
+        readThroughMessageId: null,
+      };
+    },
+    loadTranscriptBefore,
+    async loadTranscriptAround() {},
+    async closeTranscript() {},
+  });
+  const request = (consumerId: string, generation: string) => ({
+    consumerId,
+    generation,
+    anchorSequence: null,
+    maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+  });
+
+  const closedFailure = pendingFailure();
+  const first = source('first', () => closedFailure.promise);
+  await observations.attach(first);
+  await observations.openTranscript('session-1', 'consumer-closed', target);
+  const closedRange = observations.loadTranscriptBefore(
+    request('consumer-closed', 'first'),
+    target.id,
+  );
+  await observations.closeTranscript('consumer-closed', target.id);
+  closedFailure.reject(new Error('closed source rejected its range'));
+  await assert.doesNotReject(closedRange);
+  observations.detach(first);
+
+  const replacedFailure = pendingFailure();
+  const second = source('second', () => replacedFailure.promise);
+  await observations.attach(second);
+  await observations.openTranscript('session-1', 'consumer-replaced', target);
+  const replacedRange = observations.loadTranscriptBefore(
+    request('consumer-replaced', 'second'),
+    target.id,
+  );
+  observations.detach(second);
+
+  const currentFailure = new Error('current source failed its range');
+  const third = source('third', async () => {
+    throw currentFailure;
+  });
+  await observations.attach(third);
+  replacedFailure.reject(new Error('replaced source rejected its range'));
+  await assert.doesNotReject(replacedRange);
+  await assert.rejects(
+    observations.loadTranscriptBefore(
+      request('consumer-replaced', 'third'),
+      target.id,
+    ),
+    (error) => error === currentFailure,
+  );
+  await observations.close();
+});
+
 test('cancels a transcript consumer while its replica is still preparing', async () => {
   const transcript = deferred<StoredMessage[]>();
   const events = new AsyncFrameQueue();

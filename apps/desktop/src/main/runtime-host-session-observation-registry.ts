@@ -300,17 +300,21 @@ export class RuntimeHostSessionObservationRegistry {
     return registration.ready.promise;
   }
 
-  loadTranscriptBefore(request: DesktopTranscriptRangeRequest, targetId?: number): Promise<void> {
-    return requireTranscriptSource(this.#transcriptSource(request.consumerId)).loadTranscriptBefore(
-      request,
-      targetId,
+  async loadTranscriptBefore(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptOperation(request.consumerId, (source) =>
+      source.loadTranscriptBefore(request, targetId),
     );
   }
 
-  loadTranscriptAround(request: DesktopTranscriptRangeRequest, targetId?: number): Promise<void> {
-    return requireTranscriptSource(this.#transcriptSource(request.consumerId)).loadTranscriptAround(
-      request,
-      targetId,
+  async loadTranscriptAround(
+    request: DesktopTranscriptRangeRequest,
+    targetId?: number,
+  ): Promise<void> {
+    await this.#runTranscriptOperation(request.consumerId, (source) =>
+      source.loadTranscriptAround(request, targetId),
     );
   }
 
@@ -395,12 +399,28 @@ export class RuntimeHostSessionObservationRegistry {
     );
   }
 
-  #transcriptSource(consumerId: string): SessionObservationSource {
-    if (!this.#transcripts.has(consumerId)) {
+  async #runTranscriptOperation(
+    consumerId: string,
+    operation: (source: SessionObservationSource & TranscriptSource) => Promise<void>,
+  ): Promise<void> {
+    const registration = this.#transcripts.get(consumerId);
+    if (!registration) {
       throw new Error('Desktop transcript consumer does not exist');
     }
-    if (!this.#source) throw new Error('Runtime Host transcript source is unavailable');
-    return this.#source;
+    const source = requireTranscriptSource(this.#source);
+    try {
+      await operation(source);
+    } catch (error) {
+      // Once either owner changes, this rejection belongs to stale work and
+      // must not escape as a failure of the current renderer intent.
+      if (
+        this.#source !== source ||
+        this.#transcripts.get(consumerId) !== registration
+      ) {
+        return;
+      }
+      throw error;
+    }
   }
 
   #deleteTranscript(consumerId: string, registration: TranscriptRegistration): void {
