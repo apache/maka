@@ -517,7 +517,6 @@ export async function createExecutionRuntimeHostComposition(
       store: openedDailyReviewStore,
       usage: openedUsageStores,
       sessions: stores.sessionStore,
-      readRunEvents: (sessionId, runId) => stores.agentRunStore.readEvents(sessionId, runId),
       model: createHostDailyReviewModel({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
@@ -1032,8 +1031,6 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       runtimePolicyActivation,
       registerBackendInvalidation,
-      // The authority read behind Usage read-model repair (#1679).
-      (sessionId, runId) => stores.agentRunStore.readEvents(sessionId, runId),
     );
     const webSearch = new HostWebSearchCoordinator(webSearchService);
     const networkProxy = new HostNetworkProxyCoordinator(runtimePolicyStores.operations);

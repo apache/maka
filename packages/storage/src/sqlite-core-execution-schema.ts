@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 2;
+export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 3;
 
 export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -34,6 +34,9 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS core_agent_run_events_identity
       ON core_agent_run_events(session_id, run_id, event_id);
+
+    CREATE INDEX IF NOT EXISTS core_agent_run_events_type_sequence
+      ON core_agent_run_events(event_type, session_id, run_id, sequence);
 
     CREATE TABLE IF NOT EXISTS core_agent_run_projections (
       session_id TEXT NOT NULL,

@@ -32,6 +32,7 @@ import {
   openInteractiveUsageStoresForRead,
   openInteractiveUsageStoresForWrite,
 } from '../usage-stores.js';
+import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 
 describe('InteractiveUsageStores', () => {
   test('classifies facade failures without exposing concrete errors to callers', () => {
@@ -132,7 +133,7 @@ describe('InteractiveUsageStores', () => {
   });
 
   test('publishes the owning Session after each durable model-usage write', async () => {
-    await withInteractiveRoot(async ({ capability }) => {
+    await withInteractiveRoot(async ({ root, capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert(owner);
       const stores = await openInteractiveUsageStoresForWrite(owner.lease);
@@ -142,7 +143,8 @@ describe('InteractiveUsageStores', () => {
       );
       try {
         await stores.telemetry.recordLlmCall(llmRecord({ sessionId: 'session-legacy' }));
-        await stores.modelCalls.recordModelCallAttempt(modelCallAttempt('session-canonical'));
+        appendModelCallAuthorityEvent(root, modelCallAttempt('session-canonical'));
+        await stores.modelCalls.catchUpModelCallProjection({ sessionId: 'session-canonical' });
         assert.deepEqual(changed, ['session-legacy', 'session-canonical']);
       } finally {
         unsubscribe();
@@ -152,30 +154,8 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
-  test('publishes the owning Session across the pending usage repair lifecycle', async () => {
-    await withInteractiveRoot(async ({ capability }) => {
-      const owner = await tryAcquireInteractiveRootOwner(capability);
-      assert(owner);
-      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
-      const changed: string[] = [];
-      const unsubscribe = stores.subscribeSessionUsageChanges((sessionId) =>
-        changed.push(sessionId),
-      );
-      try {
-        await stores.modelCalls.markRunPendingReprojection('session-pending', 'run-1');
-        assert.deepEqual(changed, ['session-pending']);
-        await stores.modelCalls.clearPendingReprojection('session-pending', 'run-1');
-        assert.deepEqual(changed, ['session-pending', 'session-pending']);
-      } finally {
-        unsubscribe();
-        await stores.close();
-        await owner.close();
-      }
-    });
-  });
-
   test('does not republish idempotent model-usage mutations', async () => {
-    await withInteractiveRoot(async ({ capability }) => {
+    await withInteractiveRoot(async ({ root, capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert(owner);
       const stores = await openInteractiveUsageStoresForWrite(owner.lease);
@@ -185,18 +165,11 @@ describe('InteractiveUsageStores', () => {
       );
       try {
         const record = modelCallAttempt('session-idempotent');
-        await stores.modelCalls.recordModelCallAttempt(record);
-        await stores.modelCalls.recordModelCallAttempt(record);
-        await stores.modelCalls.markRunPendingReprojection('session-idempotent', 'run-1');
-        await stores.modelCalls.markRunPendingReprojection('session-idempotent', 'run-1');
-        await stores.modelCalls.clearPendingReprojection('session-idempotent', 'run-1');
-        await stores.modelCalls.clearPendingReprojection('session-idempotent', 'run-1');
+        appendModelCallAuthorityEvent(root, record);
+        await stores.modelCalls.catchUpModelCallProjection({ sessionId: 'session-idempotent' });
+        await stores.modelCalls.catchUpModelCallProjection({ sessionId: 'session-idempotent' });
 
-        assert.deepEqual(changed, [
-          'session-idempotent',
-          'session-idempotent',
-          'session-idempotent',
-        ]);
+        assert.deepEqual(changed, ['session-idempotent']);
       } finally {
         unsubscribe();
         await stores.close();
@@ -547,4 +520,42 @@ function modelCallAttempt(sessionId: string) {
     costBasis: 'priced' as const,
     costUsd: 0.001,
   };
+}
+
+function appendModelCallAuthorityEvent(
+  root: string,
+  value: ReturnType<typeof modelCallAttempt>,
+): void {
+  const lease = acquireOperationalStateDatabase(root);
+  try {
+    lease.transaction('write', () => {
+      lease.database
+        .prepare(`
+          INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
+          VALUES (?, ?, 0, '{}')
+        `)
+        .run(value.sessionId, value.runId);
+      lease.database
+        .prepare(`
+          INSERT INTO core_agent_run_events(
+            session_id, run_id, sequence, event_id, event_type, event_ts, record_json
+          ) VALUES (?, ?, 0, 'model-call-1', 'model_call_attempt_recorded', 0, ?)
+        `)
+        .run(
+          value.sessionId,
+          value.runId,
+          JSON.stringify({
+            id: 'model-call-1',
+            type: 'model_call_attempt_recorded',
+            ts: 0,
+            sessionId: value.sessionId,
+            runId: value.runId,
+            turnId: value.turnId,
+            data: value,
+          }),
+        );
+    });
+  } finally {
+    lease.close();
+  }
 }

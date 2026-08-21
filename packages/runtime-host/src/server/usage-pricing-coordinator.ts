@@ -42,9 +42,7 @@ import {
 } from '../protocol/index.js';
 import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
-import { readCanonicalUsage, type RunEventReader } from './canonical-usage-reader.js';
-
-export type { RunEventReader } from './canonical-usage-reader.js';
+import { readCanonicalUsage } from './canonical-usage-reader.js';
 
 /** Root-scoped projection over the authentic lease-bound usage stores. */
 export class HostUsagePricingCoordinator {
@@ -55,7 +53,6 @@ export class HostUsagePricingCoordinator {
   };
 
   readonly #stores: InteractiveUsageStoresWriter;
-  readonly #readRunEvents: RunEventReader | undefined;
   readonly #requestDrain: () => void;
   readonly #activation: RuntimePolicyActivationGate;
   readonly #onCommittedPricingMutation: () => void;
@@ -66,10 +63,8 @@ export class HostUsagePricingCoordinator {
     requestDrain: () => void,
     activation: RuntimePolicyActivationGate,
     onCommittedPricingMutation: () => void = () => {},
-    readRunEvents?: RunEventReader,
   ) {
     this.#stores = authenticateInteractiveUsageStoresWriter(stores);
-    this.#readRunEvents = readRunEvents;
     this.#requestDrain = requestDrain;
     this.#activation = activation;
     this.#onCommittedPricingMutation = onCommittedPricingMutation;
@@ -80,7 +75,7 @@ export class HostUsagePricingCoordinator {
    * range is resolved once here so both sources answer the same window.
    */
   async #canonicalUsage(query: UsageQuery, now: number): Promise<CanonicalUsageSource> {
-    return readCanonicalUsage(this.#stores, query, now, this.#readRunEvents);
+    return readCanonicalUsage(this.#stores, query, now);
   }
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {

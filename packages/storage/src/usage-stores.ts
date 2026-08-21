@@ -6,16 +6,16 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
-import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { throwDeduplicatedFailures } from './failure-utils.js';
 import {
   createSqliteModelCallLedger,
+  type CatchUpModelCallProjectionInput,
+  type CatchUpModelCallProjectionResult,
   ModelCallLedgerClosedError,
   ModelCallLedgerPublicationError,
   type ModelCallLedger,
   type ModelCallLedgerPage,
   type ModelCallLedgerReader,
-  type PendingReprojection,
 } from './model-call-ledger.js';
 import {
   PricingCommitUnknownError,
@@ -90,10 +90,9 @@ export interface ModelCallIndexReader {
 }
 
 export interface ModelCallIndexWriter extends ModelCallIndexReader {
-  recordModelCallAttempt(attempt: ModelCallAttempt): Promise<void>;
-  markRunPendingReprojection(sessionId: string, runId: string): Promise<void>;
-  pendingReprojections(sessionId?: string): Promise<PendingReprojection[]>;
-  clearPendingReprojection(sessionId: string, runId: string): Promise<void>;
+  catchUpModelCallProjection(
+    input?: CatchUpModelCallProjectionInput,
+  ): Promise<CatchUpModelCallProjectionResult>;
 }
 
 export interface PricingAuthorityReader {
@@ -368,6 +367,14 @@ function createWriterFacade(
     admit(async () => {
       if (await run(operation)) publishSessionUsageChange(sessionId);
     });
+  const admitModelCallProjectionCatchUp = (
+    input?: CatchUpModelCallProjectionInput,
+  ): Promise<CatchUpModelCallProjectionResult> =>
+    admit(async () => {
+      const result = await run(() => modelCalls.catchUpProjection(input));
+      for (const sessionId of result.changedSessionIds) publishSessionUsageChange(sessionId);
+      return result;
+    });
   const read = <T>(operation: () => T): Promise<T> => {
     assertOpen();
     return run(operation);
@@ -440,17 +447,7 @@ function createWriterFacade(
     },
     modelCalls: {
       modelCallAttempts: (range, sessionId) => read(() => modelCalls.read(range, sessionId)),
-      recordModelCallAttempt: (attempt) =>
-        admitSessionUsageChange(attempt.sessionId, () => modelCalls.record(attempt)),
-      markRunPendingReprojection: (sessionId, runId) =>
-        admitSessionUsageChange(sessionId, () =>
-          modelCalls.markRunPendingReprojection(sessionId, runId),
-        ),
-      pendingReprojections: (sessionId) => read(() => modelCalls.pendingReprojections(sessionId)),
-      clearPendingReprojection: (sessionId, runId) =>
-        admitSessionUsageChange(sessionId, () =>
-          modelCalls.clearPendingReprojection(sessionId, runId),
-        ),
+      catchUpModelCallProjection: admitModelCallProjectionCatchUp,
     },
     pricing: {
       snapshot: () => read(() => pricing.snapshot()),

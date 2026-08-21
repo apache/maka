@@ -3256,9 +3256,11 @@ function backendCreationFixture(input: {
         recordToolInvocation: async () => undefined,
       },
       modelCalls: {
-        markRunPendingReprojection: async () => undefined,
-        recordModelCallAttempt: async () => undefined,
-        clearPendingReprojection: async () => undefined,
+        catchUpModelCallProjection: async () => ({
+          changedSessionIds: [],
+          pendingRuns: 0,
+          unreadableEvents: 0,
+        }),
       },
     },
     requestDrain: () => undefined,

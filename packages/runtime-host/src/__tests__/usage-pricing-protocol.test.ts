@@ -14,6 +14,7 @@ import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
+import { acquireOperationalStateDatabase } from '@maka/storage';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   decodeClientFrame,
@@ -363,15 +364,34 @@ describe('Usage/Pricing protocol', () => {
     assert.ok(owner);
     const stores = await openInteractiveUsageStoresForWrite(owner.lease);
     try {
-      await stores.modelCalls.markRunPendingReprojection('session-b', 'run-b');
+      const lease = acquireOperationalStateDatabase(join(base, 'interactive-root'));
+      try {
+        lease.transaction('write', () => {
+          lease.database
+            .prepare(`
+              INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
+              VALUES ('session-b', 'run-b', 0, '{}')
+            `)
+            .run();
+          lease.database
+            .prepare(`
+              INSERT INTO core_agent_run_events(
+                session_id, run_id, sequence, event_id, event_type, event_ts, record_json
+              ) VALUES (
+                'session-b', 'run-b', 0, 'corrupt-model-call',
+                'model_call_attempt_recorded', 0, '{}'
+              )
+            `)
+            .run();
+        });
+      } finally {
+        lease.close();
+      }
       const coordinator = new HostUsagePricingCoordinator(
         stores,
         () => {},
         new RuntimePolicyActivationGate(),
         () => {},
-        async () => {
-          throw new Error('another Session is not readable');
-        },
       );
 
       const outcome = await coordinator.handlers['usage.query'](
@@ -382,7 +402,9 @@ describe('Usage/Pricing protocol', () => {
       assert.equal(outcome.ok, true);
       if (!outcome.ok || outcome.result.kind !== 'summary') return;
       assert.equal(outcome.result.provenance.pendingRepairs, 0);
-      assert.equal((await stores.modelCalls.pendingReprojections()).length, 1);
+      assert.equal(outcome.result.provenance.unreadableRecords, 0);
+      const global = await stores.modelCalls.catchUpModelCallProjection();
+      assert.equal(global.unreadableEvents, 1);
     } finally {
       await stores.close().catch(() => undefined);
       await owner.close();
