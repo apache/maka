@@ -117,7 +117,6 @@ test('Session retirement atomically removes its Goal authority', async () => {
       ['archive', 'remove'].map((name) =>
         stores.sessionStore.create({
           cwd: capability.canonicalPath,
-          backend: 'fake',
           llmConnectionSlug: 'fake',
           model: 'fake-model',
           permissionMode: 'ask',

@@ -12,6 +12,7 @@ import {
   applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
   renderMakaPiActivityStrip,
+  renderMakaPiStatusLine,
   renderMakaPiTranscript,
   reconcileToolsWithStoredMessages,
   replaceTranscriptWithStoredMessages,
@@ -56,6 +57,65 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(chinese, /陪你把事做完/);
     assert.match(chinese, /输入消息开始对话/);
     assert.match(chinese, /\/session\s+切换或恢复会话/);
+  });
+
+  test('renders goal-origin prompts as autonomous provenance, not as user prompts', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      {
+        type: 'user',
+        id: 'message-1',
+        turnId: 'turn-1',
+        ts: 1,
+        text: '[Goal continuation] The goal is not yet met.',
+        origin: { kind: 'goal', goalId: 'goal-1' },
+      },
+    ]);
+
+    assert.deepEqual(state.entries, [
+      { kind: 'goal_continuation', text: '[Goal continuation] The goal is not yet met.' },
+    ]);
+    assert.match(
+      renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n'),
+      /Goal continuation \(autonomous\).*Goal continuation\] The goal is not yet met/s,
+    );
+  });
+
+  test('status line shows a live goal and hides terminal or absent goals', () => {
+    const base = {
+      goalId: 'goal-1',
+      revision: 1,
+      sessionId: 'session-1',
+      condition: 'Ship it',
+      setAt: Date.now() - 60_000,
+      iterations: 3,
+      maxIterations: 50,
+      consecutiveNoProgress: 0,
+      blockCap: 8,
+      tokenBudget: null,
+      tokensSpent: 0,
+      lastReason: null,
+      achievedAt: null,
+      pausedAt: null,
+    } as const;
+    const active = stripAnsi(
+      renderMakaPiStatusLine({ ...meta(), goal: { ...base, status: 'active' as const } }, 120),
+    );
+    assert.match(active, /goal 3\/50 1m/);
+
+    const paused = stripAnsi(
+      renderMakaPiStatusLine(
+        { ...meta(), goal: { ...base, status: 'paused' as const, pausedAt: Date.now() - 30_000 } },
+        120,
+      ),
+    );
+    assert.match(paused, /goal paused 3\/50/);
+
+    const achieved = stripAnsi(
+      renderMakaPiStatusLine({ ...meta(), goal: { ...base, status: 'achieved' as const } }, 120),
+    );
+    assert.doesNotMatch(achieved, /goal/);
+    assert.doesNotMatch(stripAnsi(renderMakaPiStatusLine({ ...meta(), goal: null }, 120)), /goal/);
   });
 
   test('keeps assistant text after a tool call visible after the tool block', () => {

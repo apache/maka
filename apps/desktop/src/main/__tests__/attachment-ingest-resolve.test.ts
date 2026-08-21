@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { resolveIngestItems } from '../attachment-ingest.js';
+import { resolveAttachmentRefs, resolveIngestItems } from '../attachment-ingest.js';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 
 describe('resolveIngestItems (pre-read validation)', () => {
@@ -209,5 +212,30 @@ describe('resolveIngestItems (pre-read validation)', () => {
         }),
       /无效/,
     );
+  });
+});
+
+describe('resolveAttachmentRefs', () => {
+  test('rejects a path grown beyond the cap before creating a Host artifact', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'att-cap-'));
+    const path = join(dir, 'grew.bin');
+    await writeFile(path, Buffer.alloc(11));
+    let snapshots = 0;
+    try {
+      await assert.rejects(
+        resolveAttachmentRefs({
+          files: [{ path, mimeType: 'application/octet-stream', size: 5 }],
+          maxBytes: 10,
+          snapshot: async () => {
+            snapshots += 1;
+            throw new Error('snapshot must not run');
+          },
+        }),
+        /超出大小限制/,
+      );
+      assert.equal(snapshots, 0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

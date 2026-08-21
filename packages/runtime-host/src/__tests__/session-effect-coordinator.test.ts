@@ -15,7 +15,6 @@ import type { HostSessionEffectModel } from '../server/execution-model-authority
 const connectionContext: ConnectionContext = {
   hostEpoch: 'host-epoch-1',
   connectionId: 'connection-1',
-  surface: 'tui',
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };

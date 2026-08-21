@@ -21,6 +21,12 @@ on:
       - 'scripts/verify-windows-x64.mjs'
       - 'scripts/verify-windows-sandbox-e2e.mjs'
       - 'scripts/verify-windows-installer-lifecycle.mjs'
+      - 'scripts/verify-windows-autoupdate.mjs'
+      - 'scripts/package-windows-autoupdate-next.mjs'
+      # The packaged updater's feed behavior — and the boot wiring that hands
+      # MAKA_UPDATE_TEST_FEED to it — is only observable on this path.
+      - 'apps/desktop/src/main/app-update-service.ts'
+      - 'apps/desktop/src/main/runtime-host-boot.ts'
       - 'scripts/prepare-windows-upgrade-baseline.mjs'
       - 'scripts/windows-upgrade-baseline.json'
       - 'scripts/verify-packaged-app.mjs'
@@ -47,7 +53,7 @@ concurrency:
 jobs:
   package:
     runs-on: windows-2025
-    timeout-minutes: 60
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
@@ -89,3 +95,13 @@ jobs:
           npm run verify:windows-installer -- \
             "apps/desktop/release/Maka-${version}-win-x64.exe" \
             "${{ steps.previous.outputs.exe }}"
+
+      - name: Build the version-bumped autoupdate installer
+        run: npm run package:windows-autoupdate-next
+
+      - name: Verify automatic update end to end
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          npm run verify:windows-autoupdate -- \
+            "apps/desktop/release/Maka-${version}-win-x64.exe" \
+            apps/desktop/release-autoupdate-next

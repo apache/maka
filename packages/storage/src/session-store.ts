@@ -53,6 +53,7 @@ import {
   type SessionHeader,
   type SessionHeaderPatch,
   type SessionConversationCopy,
+  type SessionExternalOrigin,
   type SessionSummary,
   type StoredMessage,
   type TurnRecord,
@@ -112,6 +113,15 @@ export interface SessionCatalogRecord extends SessionHeaderSnapshot {
 export interface SessionCatalogPageCursor {
   readonly activityAt: number;
   readonly sessionId: string;
+}
+
+export const EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS = 256;
+export const EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS = 16;
+
+export interface ExternalSessionImportLookupResult {
+  readonly sourceSessionId: string;
+  readonly livePublishedImportCount: number;
+  readonly recentSessionIds: readonly string[];
 }
 
 export type SessionCatalogPageResult =
@@ -282,7 +292,14 @@ export interface SessionAuthorityStore extends SessionStore {
   createImportedSession(
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
+    externalOrigin: SessionExternalOrigin,
   ): Promise<SessionHeader>;
+  /** Look up live published imports for a bounded page of source Sessions. */
+  lookupExternalSessionImports(
+    adapterId: string,
+    sourceSessionIds: readonly string[],
+    recentSessionIdLimit: number,
+  ): Promise<readonly ExternalSessionImportLookupResult[]>;
   createSubagent(
     input: CreateSessionInput,
     initialBoundary?: ExecutionBoundary,
@@ -403,6 +420,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async createImportedSession(
     input: CreateSessionInput,
     messages: readonly StoredMessage[],
+    externalOrigin: SessionExternalOrigin,
   ): Promise<SessionHeader> {
     await this.ensureReady();
     assertNoConversationCopyMetadata(input);
@@ -414,6 +432,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     );
     const header: SessionHeader = {
       ...buildSessionHeader(this.workspaceRoot, input),
+      externalOrigin,
       transcriptLedgerVersion: 0,
     };
     const outcome = await this.metadata.importSession(
@@ -425,6 +444,51 @@ class SqliteSessionStore implements SessionAuthorityStore {
       throw new Error(`Generated Session id already exists: ${header.id}`);
     }
     return (await this.metadata.read(header.id)).header;
+  }
+
+  async lookupExternalSessionImports(
+    adapterId: string,
+    sourceSessionIds: readonly string[],
+    recentSessionIdLimit: number,
+  ): Promise<readonly ExternalSessionImportLookupResult[]> {
+    await this.ensureReady();
+    if (typeof adapterId !== 'string' || adapterId.trim().length === 0) {
+      throw new Error('External Session import lookup adapter id must not be empty');
+    }
+    if (
+      !Array.isArray(sourceSessionIds) ||
+      sourceSessionIds.length > EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS
+    ) {
+      throw new Error(
+        `External Session import lookup accepts at most ${EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS} source ids`,
+      );
+    }
+    const uniqueSourceSessionIds: string[] = [];
+    const seen = new Set<string>();
+    for (const sourceSessionId of sourceSessionIds) {
+      if (typeof sourceSessionId !== 'string' || sourceSessionId.length === 0) {
+        throw new Error('External Session import lookup source id must not be empty');
+      }
+      if (!seen.has(sourceSessionId)) {
+        seen.add(sourceSessionId);
+        uniqueSourceSessionIds.push(sourceSessionId);
+      }
+    }
+    if (
+      !Number.isSafeInteger(recentSessionIdLimit) ||
+      recentSessionIdLimit < 1 ||
+      recentSessionIdLimit > EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS
+    ) {
+      throw new Error(
+        `External Session import lookup recent id limit must be between 1 and ${EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS}`,
+      );
+    }
+    if (uniqueSourceSessionIds.length === 0) return [];
+    return this.metadata.lookupExternalSessionImports(
+      adapterId,
+      uniqueSourceSessionIds,
+      recentSessionIdLimit,
+    );
   }
 
   async probeStableSessionCreate(
@@ -972,7 +1036,7 @@ function buildSessionHeader(
     ...(input.revisionIndex !== undefined ? { revisionIndex: input.revisionIndex } : {}),
     ...(input.revisionState ? { revisionState: input.revisionState } : {}),
     hasUnread: false,
-    backend: input.backend,
+    backend: 'ai-sdk',
     llmConnectionSlug: input.llmConnectionSlug,
     connectionLocked: false,
     model: input.model ?? 'default',
@@ -1023,9 +1087,10 @@ export function normalizeSessionHeader(
     isValidConversationCopyLineage(header) &&
     isValidRevisionLineage(header) &&
     isValidSubagentSessionLineage(header) &&
+    isValidSessionExternalOrigin(header.externalOrigin) &&
     (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
     typeof header.hasUnread === 'boolean' &&
-    isBackendKind(header.backend) &&
+    isPersistedBackendKind(header.backend) &&
     typeof header.llmConnectionSlug === 'string' &&
     typeof header.connectionLocked === 'boolean' &&
     typeof header.model === 'string' &&
@@ -1046,6 +1111,18 @@ export function normalizeSessionHeader(
     return { ...withoutBlockedReason, name: normalizedName };
   }
   return { ...header, name: normalizedName };
+}
+
+function isValidSessionExternalOrigin(origin: SessionHeader['externalOrigin']): boolean {
+  if (origin === undefined) return true;
+  return (
+    typeof origin === 'object' &&
+    origin !== null &&
+    typeof origin.adapterId === 'string' &&
+    origin.adapterId.length > 0 &&
+    typeof origin.sourceSessionId === 'string' &&
+    origin.sourceSessionId.length > 0
+  );
 }
 
 function isValidRevisionLineage(header: SessionHeader): boolean {
@@ -1143,7 +1220,12 @@ function isValidSubagentSessionLineage(header: SessionHeader): boolean {
   );
 }
 
-function isBackendKind(value: unknown): value is SessionHeader['backend'] {
+/**
+ * Decode guard for a durable session header. `'fake'` stays accepted:
+ * narrowing it here would make every session written by a build that shipped
+ * FakeBackend fail `normalizeSessionHeader` and read back as malformed (#3211).
+ */
+function isPersistedBackendKind(value: unknown): value is SessionHeader['backend'] {
   return value === 'ai-sdk' || value === 'fake';
 }
 

@@ -4,7 +4,9 @@ import type {
   AgentGraphClientOperator,
   AgentGraphClientSnapshot,
 } from '@maka/runtime/stream-graph-read-model';
-import { IconButton } from '@maka/ui';
+import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
+import type { AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
+import { IconButton, Selector, type SelectorOptionType } from '@maka/ui';
 import { ICON_SIZE, ChevronDown, X } from '@maka/ui/icons';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -17,6 +19,17 @@ import {
   shouldShowAgentGraphPanel,
   type AgentGraphPanelDismissals,
 } from './agent-graph-panel-visibility.js';
+import {
+  createAgentGraphRefreshScheduler,
+  type AgentGraphRefreshScheduler,
+} from './agent-graph-refresh.js';
+
+const noopAgentGraphRefreshScheduler: AgentGraphRefreshScheduler = {
+  requestRefresh() {},
+  invalidateAndRefresh() {},
+  isCurrent: () => false,
+  dispose() {},
+};
 
 type GraphPanelCopy = {
   title: string;
@@ -32,6 +45,10 @@ type GraphPanelCopy = {
   openSession: string;
   operators: string;
   selectedResults: string;
+  epoch: string;
+  currentEpoch: string;
+  historicalEpoch: string;
+  cappedEpochs(count: number): string;
   noOperators: string;
   hiddenOperators(count: number): string;
   progress(settled: number, total: number, hasOmitted: boolean): string;
@@ -56,6 +73,10 @@ export function getAgentGraphPanelCopy(locale: UiLocale): GraphPanelCopy {
       openSession: '打开子任务',
       operators: 'Operators',
       selectedResults: '已选择结果',
+      epoch: 'Graph 运行轮次',
+      currentEpoch: '当前',
+      historicalEpoch: '历史记录（只读）',
+      cappedEpochs: (count) => `仅显示最近 ${count} 次运行`,
       noOperators: '等待主 Agent 创建 operator…',
       hiddenOperators: (count) => `另有 ${count} 个 operator`,
       progress: (settled, total, hasOmitted) =>
@@ -99,6 +120,10 @@ export function getAgentGraphPanelCopy(locale: UiLocale): GraphPanelCopy {
     openSession: 'Open child task',
     operators: 'Operators',
     selectedResults: 'Selected results',
+    epoch: 'Graph run',
+    currentEpoch: 'Current',
+    historicalEpoch: 'History (read-only)',
+    cappedEpochs: (count) => `Showing the newest ${count} runs`,
     noOperators: 'Waiting for the main agent to create an operator…',
     hiddenOperators: (count) => `${count} more operator${count === 1 ? '' : 's'}`,
     progress: (settled, total, hasOmitted) =>
@@ -136,62 +161,102 @@ export function AgentGraphPanel(props: {
   onOpenSession(sessionId: string): void;
 }): JSX.Element | null {
   const [snapshot, setSnapshot] = useState<AgentGraphClientSnapshot>();
+  const [epochs, setEpochs] = useState<readonly AgentGraphEpochSummary[]>([]);
+  const [epochsTruncated, setEpochsTruncated] = useState(false);
+  const [selectedGraphId, setSelectedGraphId] = useState<string>();
   const [loading, setLoading] = useState(props.enabled);
   const [error, setError] = useState(false);
-  const [stopPending, setStopPending] = useState(false);
-  const [stopError, setStopError] = useState(false);
+  const [stopState, setStopState] = useState({
+    rootSessionId: props.rootSessionId,
+    graphId: undefined as string | undefined,
+    requestId: 0,
+    pending: false,
+    error: false,
+  });
   const [collapsed, setCollapsed] = useState(false);
   const [dismissedBySession, setDismissedBySession] = useState<AgentGraphPanelDismissals>({});
   const contentId = useId();
-  const refreshRef = useRef<() => void>(() => {});
+  const refreshRef = useRef<AgentGraphRefreshScheduler>(noopAgentGraphRefreshScheduler);
+  const selectedGraphIdRef = useRef<string | undefined>(undefined);
+  const followCurrentRef = useRef(true);
+  const stopRequestIdRef = useRef(0);
   const copy = getAgentGraphPanelCopy(props.locale);
+  const stopFeedbackMatchesSelection =
+    stopState.rootSessionId === props.rootSessionId && stopState.graphId === selectedGraphId;
+  const stopPending = stopFeedbackMatchesSelection && stopState.pending;
+  const stopError = stopFeedbackMatchesSelection && stopState.error;
 
   useEffect(() => {
-    let disposed = false;
-    let queued = false;
-    let task: Promise<void> | undefined;
-
     setSnapshot(undefined);
+    setEpochs([]);
+    setEpochsTruncated(false);
+    setSelectedGraphId(undefined);
+    selectedGraphIdRef.current = undefined;
+    followCurrentRef.current = true;
     setError(false);
-    setStopError(false);
+    setStopState({
+      rootSessionId: props.rootSessionId,
+      graphId: undefined,
+      requestId: ++stopRequestIdRef.current,
+      pending: false,
+      error: false,
+    });
     setCollapsed(false);
     setLoading(props.enabled);
+    let cachedDirectory: AgentGraphEpochDirectory | undefined;
 
-    const refresh = (): void => {
-      if (disposed) return;
-      if (task) {
-        queued = true;
-        return;
+    const scheduler = createAgentGraphRefreshScheduler(async (fence) => {
+      if (!cachedDirectory) setLoading(true);
+      try {
+        let directory: AgentGraphEpochDirectory;
+        if (!cachedDirectory) {
+          directory = await window.maka.graphs.listEpochs(props.rootSessionId);
+        } else {
+          const currentPage = await window.maka.graphs.listCurrentEpochs(props.rootSessionId);
+          directory = sameEpochPage(cachedDirectory, currentPage)
+            ? cachedDirectory
+            : await window.maka.graphs.listEpochs(props.rootSessionId);
+        }
+        if (!scheduler.isCurrent(fence)) return;
+        cachedDirectory = directory;
+        const nextEpochs = directory.epochs;
+        const current = nextEpochs.find((entry) => entry.current) ?? nextEpochs[0];
+        const selected = followCurrentRef.current
+          ? current
+          : nextEpochs.find((entry) => entry.graphId === selectedGraphIdRef.current);
+        // An evicted selection must not pin the panel on the fallback:
+        // resume following the current epoch so later rollovers refresh.
+        if (!selected && !followCurrentRef.current) {
+          followCurrentRef.current = true;
+        }
+        const graphId = (selected ?? current)?.graphId;
+        if (!graphId) throw new Error('Agent graph epoch directory is empty');
+        selectedGraphIdRef.current = graphId;
+        const next = await window.maka.graphs.getSnapshot(props.rootSessionId, { graphId });
+        if (scheduler.isCurrent(fence) && next.graphId === selectedGraphIdRef.current) {
+          setEpochs(nextEpochs);
+          setEpochsTruncated(directory.truncated);
+          setSelectedGraphId(graphId);
+          setSnapshot(next);
+          setError(false);
+        }
+      } catch {
+        if (scheduler.isCurrent(fence)) setError(true);
+      } finally {
+        if (scheduler.isCurrent(fence)) setLoading(false);
       }
-      setLoading(true);
-      task = window.maka.graphs
-        .getSnapshot(props.rootSessionId)
-        .then((next) => {
-          if (!disposed) {
-            setSnapshot(next);
-            setError(false);
-          }
-        })
-        .catch(() => {
-          if (!disposed) setError(true);
-        })
-        .finally(() => {
-          if (disposed) return;
-          setLoading(false);
-          task = undefined;
-          if (queued) {
-            queued = false;
-            refresh();
-          }
-        });
-    };
+    });
 
-    refreshRef.current = refresh;
-    const unsubscribe = window.maka.graphs.subscribe(props.rootSessionId, refresh);
-    refresh();
+    refreshRef.current = scheduler;
+    const unsubscribe = window.maka.graphs.subscribe(props.rootSessionId, () =>
+      scheduler.requestRefresh(),
+    );
+    scheduler.requestRefresh();
     return () => {
-      disposed = true;
-      if (refreshRef.current === refresh) refreshRef.current = () => {};
+      scheduler.dispose();
+      if (refreshRef.current === scheduler) {
+        refreshRef.current = noopAgentGraphRefreshScheduler;
+      }
       unsubscribe();
     };
   }, [props.rootSessionId, props.enabled]);
@@ -218,16 +283,18 @@ export function AgentGraphPanel(props: {
     ).length ?? 0;
     return { settled, total: snapshot?.operators.length ?? 0 };
   }, [snapshot]);
+  const selectedEpoch = epochs.find((entry) => entry.graphId === selectedGraphId);
 
   const hasGraphActivity =
     snapshot !== undefined &&
     (snapshot.scheduleRevision > 0 ||
       snapshot.operators.length > 0 ||
       snapshot.omitted.operators > 0);
+  const hasGraphHistory = epochs.length > 1;
   if (
     !shouldShowAgentGraphPanel({
       enabled: props.enabled,
-      hasGraphActivity,
+      hasGraphActivity: hasGraphActivity || hasGraphHistory,
       error,
       sessionId: props.rootSessionId,
       graphId: snapshot?.graphId,
@@ -238,22 +305,39 @@ export function AgentGraphPanel(props: {
     return null;
   }
 
-  const stopGraph = async (): Promise<void> => {
+  const stopGraph = async (expectedGraphId: string): Promise<void> => {
     if (stopPending) return;
-    setStopPending(true);
-    setStopError(false);
+    const rootSessionId = props.rootSessionId;
+    const requestId = ++stopRequestIdRef.current;
+    setStopState({ rootSessionId, graphId: expectedGraphId, requestId, pending: true, error: false });
     try {
-      await window.maka.graphs.stop(props.rootSessionId);
+      await window.maka.graphs.stop(rootSessionId, expectedGraphId);
     } catch {
-      setStopError(true);
+      setStopState((current) =>
+        current.rootSessionId === rootSessionId && current.requestId === requestId
+          ? { ...current, error: true }
+          : current,
+      );
     } finally {
-      setStopPending(false);
+      setStopState((current) =>
+        current.rootSessionId === rootSessionId && current.requestId === requestId
+          ? { ...current, pending: false }
+          : current,
+      );
     }
   };
   const stopAvailable =
-    snapshot !== undefined && ['active', 'waiting', 'closing'].includes(snapshot.status);
+    selectedEpoch?.current === true &&
+    !loading &&
+    snapshot !== undefined &&
+    snapshot.graphId === selectedGraphId &&
+    ['active', 'waiting', 'closing'].includes(snapshot.status);
   const dismissAvailable =
-    snapshot !== undefined && isAgentGraphPanelDismissible(snapshot.status);
+    selectedEpoch?.current === true &&
+    !loading &&
+    snapshot !== undefined &&
+    snapshot.graphId === selectedGraphId &&
+    isAgentGraphPanelDismissible(snapshot.status);
 
   return (
     <section
@@ -264,6 +348,30 @@ export function AgentGraphPanel(props: {
       <header className="maka-agent-graph-heading">
         <div className="maka-agent-graph-heading-copy">
           <strong>{copy.title}</strong>
+          {epochs.length > 1 && snapshot ? (
+            <Selector
+              className="maka-agent-graph-epoch-selector"
+              size="sm"
+              label={copy.epoch}
+              isLabelHidden
+              value={selectedGraphId ?? snapshot.graphId}
+              options={epochs.map((entry) => ({
+                value: entry.graphId,
+                label: `#${entry.epoch} · ${entry.current ? copy.currentEpoch : copy.historicalEpoch}`,
+              }))}
+              onChange={(graphId: SelectorOptionType) => {
+                if (typeof graphId !== 'string') return;
+                selectedGraphIdRef.current = graphId;
+                setSelectedGraphId(graphId);
+                followCurrentRef.current =
+                  epochs.find((entry) => entry.graphId === graphId)?.current === true;
+                refreshRef.current.invalidateAndRefresh();
+              }}
+            />
+          ) : null}
+          {epochsTruncated ? (
+            <span className="maka-agent-graph-epoch-capped">{copy.cappedEpochs(epochs.length)}</span>
+          ) : null}
           {snapshot ? (
             <span className="maka-agent-graph-progress">
               {copy.status(snapshot.status)} ·{' '}
@@ -282,7 +390,9 @@ export function AgentGraphPanel(props: {
               size="sm"
               label={stopPending ? copy.stopping : copy.stop}
               isDisabled={stopPending}
-              onClick={() => void stopGraph()}
+              onClick={() => {
+                if (snapshot) void stopGraph(snapshot.graphId);
+              }}
             />
           ) : null}
           {dismissAvailable && snapshot ? (
@@ -332,7 +442,7 @@ export function AgentGraphPanel(props: {
                   variant="secondary"
                   size="sm"
                   label={copy.retry}
-                  onClick={() => refreshRef.current()}
+                  onClick={() => refreshRef.current.requestRefresh()}
                 />
               )}
             />
@@ -393,6 +503,21 @@ export function AgentGraphPanel(props: {
       ) : null}
     </section>
   );
+}
+
+function sameEpochPage(
+  cached: AgentGraphEpochDirectory,
+  currentPage: AgentGraphEpochDirectory,
+): boolean {
+  if (!currentPage.truncated && currentPage.epochs.length !== cached.epochs.length) return false;
+  return currentPage.epochs.every((entry, index) => {
+    const previous = cached.epochs[index];
+    return (
+      previous?.epoch === entry.epoch &&
+      previous.graphId === entry.graphId &&
+      previous.current === entry.current
+    );
+  });
 }
 
 function firstWait(operator: AgentGraphClientOperator) {

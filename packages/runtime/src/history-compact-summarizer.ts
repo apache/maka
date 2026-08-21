@@ -1,5 +1,9 @@
 import { rawFinishReasonString, type ModelMessage, type ToolCallPart } from './model-protocol.js';
 import { buildRuntimeEventModelReplayPlan } from './model-history.js';
+import {
+  findCheckpointSummaryDefect,
+  SUMMARY_FORMAT_TEMPLATE,
+} from './history-compact-summary-validation.js';
 import { toolResultOutput } from './tool-result-output.js';
 import type { HistoryCompactSummaryInput } from './ai-sdk-compaction-contract.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
@@ -38,6 +42,8 @@ export interface BuildLlmHistorySummarizerOptions {
 // asks for a checkpoint another LLM can continue from. Tool calls and their
 // results are part of the conversation sent to the summarizer, because the
 // folded events are projected with the same policy the model would see them.
+// The format block is the validation module's template, so the mandated
+// format and the validation can never drift apart.
 const SUMMARIZATION_SYSTEM_PROMPT = [
   'You are a context summarization assistant.',
   'Read the conversation between a user and an AI assistant, then produce a structured summary another LLM will use to continue the same task.',
@@ -45,23 +51,7 @@ const SUMMARIZATION_SYSTEM_PROMPT = [
   '',
   'Use this exact format:',
   '',
-  '## Goal',
-  '[What the user is trying to accomplish]',
-  '',
-  '## Progress',
-  '### Done',
-  '- [Completed work and changes]',
-  '### In Progress',
-  '- [Current work]',
-  '',
-  '## Key Decisions',
-  '- **[Decision]**: [Brief rationale]',
-  '',
-  '## Next Steps',
-  '1. [Ordered list of what should happen next]',
-  '',
-  '## Critical Context',
-  '- [Files, commands/results, errors, anything needed to continue; or "(none)"]',
+  ...SUMMARY_FORMAT_TEMPLATE,
   '',
   'Keep each section concise. Preserve exact file paths, function names, commands, and error messages.',
 ].join('\n');
@@ -122,6 +112,13 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
       if (rawFinishReasonString(result.finishReason) === 'length') {
         throw new HistoryCompactSummarizerError('output_length');
       }
+      const defect = findCheckpointSummaryDefect(result.text, {
+        coveredRuntimeEvents: input.source.foldedRuntimeEvents,
+        ...(input.inputBudget?.charsPerToken !== undefined
+          ? { charsPerToken: input.inputBudget.charsPerToken }
+          : {}),
+      });
+      if (defect) throw new HistoryCompactSummarizerError(defect);
       return result.text;
     } catch (error) {
       if (error instanceof HistoryCompactSummarizerError) throw error;

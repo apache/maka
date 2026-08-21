@@ -10,7 +10,7 @@ import { type AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-
 import { type AgentRunHeader } from '@maka/core/agent-run';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
-import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime/fake-backend';
+import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -121,8 +121,8 @@ async function verifyConcurrentRevisionAuthority(
   graphChildSessionId: string,
   continuationSourceSessionId: string,
 ): Promise<void> {
-  const desktop = await connectClient(root, 'desktop');
-  const tui = await connectClient(root, 'tui');
+  const desktop = await connectClient(root);
+  const tui = await connectClient(root);
   try {
     const source = await querySession(desktop, sourceSessionId);
     const continuationSource = await querySession(desktop, continuationSourceSessionId);
@@ -399,7 +399,7 @@ async function verifyRestartRecoveryAndAdmission(
   root: string,
   sourceSessionId: string,
 ): Promise<void> {
-  const restarted = await connectClient(root, 'desktop');
+  const restarted = await connectClient(root);
   try {
     assert.deepEqual(
       await restarted.request('session.catalog.query', {
@@ -485,7 +485,7 @@ async function verifyRestartRecoveryAndAdmission(
 }
 
 async function verifySecondRestartRetention(root: string, sourceSessionId: string): Promise<void> {
-  const recovered = await connectClient(root, 'desktop');
+  const recovered = await connectClient(root);
   try {
     assert.deepEqual(
       await recovered.request('session.catalog.query', {
@@ -584,7 +584,6 @@ async function seedSource(
     const source = await execution.sessionStore.create({
       cwd: root,
       name: 'Source Session',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -592,7 +591,6 @@ async function seedSource(
     const busy = await execution.sessionStore.create({
       cwd: root,
       name: 'Busy Session',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -600,7 +598,6 @@ async function seedSource(
     const linkedChildSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Linked Child Source Session',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -608,7 +605,6 @@ async function seedSource(
     const metadataLinkedSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Metadata-linked Source Session',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -616,7 +612,6 @@ async function seedSource(
     const archivedOwnedSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Archived-owned Source Session',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -624,7 +619,6 @@ async function seedSource(
     const continuationSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Continuation Source Session',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -894,7 +888,6 @@ async function seedSource(
       {
         cwd: root,
         name: 'Graph Worker',
-        backend: 'fake',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -1132,7 +1125,6 @@ async function seedSource(
     const ordinaryLinkedChild = await execution.sessionStore.createSubagent({
       cwd: root,
       name: 'Metadata-linked Child Session',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1508,13 +1500,9 @@ async function terminateChild(child: ChildProcess): Promise<void> {
   );
 }
 
-async function connectClient(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: CURRENT_PROTOCOL,
   });
   assert.equal(result.kind, 'connected');

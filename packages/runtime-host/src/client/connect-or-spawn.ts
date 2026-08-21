@@ -9,7 +9,6 @@ import {
   requireClientInstanceId,
   requireHostCompositionId,
   validateProtocolRange,
-  type ClientSurface,
   type HostIncompatible,
   type ProtocolRange,
 } from '../protocol/index.js';
@@ -27,7 +26,12 @@ import {
 import {
   isPermanentCandidateStartupFailure,
   type CandidateStartupFailure,
+  type CandidateStartupFailureReport,
 } from '../candidate-startup-failure.js';
+import {
+  clearCandidateStartupDiagnostic,
+  selectCandidateStartupDiagnostic,
+} from '../control/startup-diagnostic.js';
 import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 
 const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
@@ -37,7 +41,6 @@ const MIN_CANDIDATE_INTERVAL_MS = 250;
 
 export interface ConnectOrSpawnRuntimeHostInput {
   rootPath: string;
-  surface: ClientSurface;
   protocol: ProtocolRange;
   compositionId: string;
   generation?: string;
@@ -47,7 +50,6 @@ export interface ConnectOrSpawnRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
-  desktopE2e?: boolean;
   signal?: AbortSignal;
 }
 
@@ -127,11 +129,17 @@ export async function connectOwnedRuntimeHostWithDependencies(
         random: Math.random,
       },
     );
-    const host = await launch?.spawned;
-    if (result.kind !== 'connected' || !host) {
-      if (result.kind === 'connected') await result.connection.close();
-      await host?.settle(1_000);
-      return result.kind === 'connected' ? { kind: 'failed', reason: 'existing_host' } : result;
+    if (result.kind !== 'connected') {
+      releaseOwnedLaunch(launch);
+      return result;
+    }
+    const host = await launch?.spawned.catch(() => undefined);
+    if (!host) {
+      await result.connection.close();
+      return {
+        kind: 'failed',
+        reason: launch ? 'host_unresponsive' : 'existing_host',
+      };
     }
     const ownedConnection = result.connection;
     connection = ownedConnection;
@@ -145,10 +153,20 @@ export async function connectOwnedRuntimeHostWithDependencies(
     return { kind: 'connected', connection: ownedConnection, host };
   } catch {
     await connection?.close().catch(() => undefined);
-    const host = await launch?.spawned.catch(() => undefined);
-    await host?.settle(1_000);
+    releaseOwnedLaunch(launch);
     return { kind: 'failed', reason: 'host_unresponsive' };
   }
+}
+
+function releaseOwnedLaunch(
+  launch: ReturnType<typeof launchOwnedRuntimeHostCandidate> | undefined,
+): void {
+  if (!launch) return;
+  void launch.spawned
+    .then((host) => {
+      host.releaseToEnvironment();
+    })
+    .catch(() => undefined);
 }
 
 export async function connectOrSpawnRuntimeHostWithDependencies(
@@ -181,116 +199,161 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   let nextCandidateAt = startedAt;
   let backoffMs = DEFAULT_BACKOFF_MIN_MS;
   let sawUnresponsiveEndpoint = false;
-  let startupFailure: CandidateStartupFailure | undefined;
+  let startupFailure: CandidateStartupFailureReport | undefined;
   let pendingCandidateReports = 0;
+  let electionSettled = false;
 
-  while (performance.now() < deadline) {
-    input.signal?.throwIfAborted();
-    const result = await connectResolvedRuntimeHost({
-      capability,
-      controlDirectory,
-      surface: input.surface,
-      protocol: input.protocol,
-      compositionId: input.compositionId,
-      ...(input.generation === undefined ? {} : { generation: input.generation }),
-      ...(input.takeoverHostEpoch === undefined
-        ? {}
-        : { takeoverHostEpoch: input.takeoverHostEpoch }),
-      clientInstanceId,
-      connectTimeoutMs: input.connectTimeoutMs,
-      handshakeTimeoutMs: input.handshakeTimeoutMs,
-      electionDeadline: deadline,
-    });
-    if (result.kind === 'election_deadline_elapsed') {
-      if (result.endpointConnected) sawUnresponsiveEndpoint = true;
-      break;
-    }
-    if (result.kind === 'connected') {
-      const remaining = deadline - performance.now();
-      if (remaining <= 0) {
-        await result.connection.close().catch(() => undefined);
+  try {
+    while (performance.now() < deadline) {
+      input.signal?.throwIfAborted();
+      const result = await connectResolvedRuntimeHost({
+        capability,
+        controlDirectory,
+        protocol: input.protocol,
+        compositionId: input.compositionId,
+        ...(input.generation === undefined ? {} : { generation: input.generation }),
+        ...(input.takeoverHostEpoch === undefined
+          ? {}
+          : { takeoverHostEpoch: input.takeoverHostEpoch }),
+        clientInstanceId,
+        connectTimeoutMs: input.connectTimeoutMs,
+        handshakeTimeoutMs: input.handshakeTimeoutMs,
+        electionDeadline: deadline,
+      });
+      if (result.kind === 'election_deadline_elapsed') {
+        if (result.endpointConnected) sawUnresponsiveEndpoint = true;
         break;
       }
-      try {
-        await waitForRuntimeHostReady(
-          result.connection,
-          Math.max(1, Math.ceil(remaining)),
-          input.signal,
-        );
-        return result;
-      } catch {
-        await result.connection.close().catch(() => undefined);
-      }
-      input.signal?.throwIfAborted();
-      sawUnresponsiveEndpoint = true;
-    }
-    if (result.kind === 'upgrade_required') return result;
-    if (result.kind === 'unavailable' && result.reason === 'handshake_failed') {
-      sawUnresponsiveEndpoint = true;
-    }
-    if (isBlockingIncompatibility(result)) {
-      return result;
-    }
-    if (isPermanentCandidateStartupFailure(startupFailure) && pendingCandidateReports === 0) {
-      return { kind: 'failed', reason: startupFailure.reason };
-    }
-
-    const now = performance.now();
-    if (
-      shouldLaunchCandidate(result) &&
-      !isPermanentCandidateStartupFailure(startupFailure) &&
-      now >= nextCandidateAt
-    ) {
-      try {
+      if (result.kind === 'connected') {
         const remaining = deadline - performance.now();
-        if (remaining <= 0) break;
-        const launch = dependencies.launchCandidate({
-          rootPath: capability.canonicalPath,
-          expectedRootId: capability.rootId,
-          entrypoint: input.candidateEntrypoint,
-          initialConnectionTimeoutMs: Math.ceil(remaining),
-          ...(input.generation === undefined ? {} : { generation: input.generation }),
-          ...(input.desktopE2e ? { desktopE2e: true } : {}),
-        });
-        const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
-        if (attempt.startupFailure) {
-          pendingCandidateReports += 1;
-          void attempt.startupFailure
-            .then(
-              (failure) => {
-                if (
-                  failure &&
-                  (!startupFailure ||
-                    (!isPermanentCandidateStartupFailure(startupFailure) &&
-                      isPermanentCandidateStartupFailure(failure)))
-                ) {
-                  startupFailure = failure;
-                }
-              },
-              () => undefined,
-            )
-            .finally(() => {
-              pendingCandidateReports -= 1;
-            });
+        if (remaining <= 0) {
+          await result.connection.close().catch(() => undefined);
+          break;
         }
-      } catch {
-        // A failed Candidate attempt is ordinary election evidence; discovery continues.
+        try {
+          await waitForRuntimeHostReady(
+            result.connection,
+            Math.max(1, Math.ceil(remaining)),
+            input.signal,
+          );
+          electionSettled = true;
+          await retireCandidateStartupDiagnostic(capability.rootId, startupFailure);
+          return result;
+        } catch {
+          await result.connection.close().catch(() => undefined);
+        }
+        input.signal?.throwIfAborted();
+        sawUnresponsiveEndpoint = true;
       }
-      nextCandidateAt = now + MIN_CANDIDATE_INTERVAL_MS;
-    }
+      if (result.kind === 'upgrade_required') return result;
+      if (result.kind === 'unavailable' && result.reason === 'handshake_failed') {
+        sawUnresponsiveEndpoint = true;
+      }
+      if (isBlockingIncompatibility(result)) {
+        return result;
+      }
+      if (isPermanentCandidateStartupFailure(startupFailure) && pendingCandidateReports === 0) {
+        const selectedFailure = startupFailure;
+        electionSettled = true;
+        await selectCandidateStartupDiagnostic(
+          capability.rootId,
+          selectedFailure.startupAttemptId,
+        ).catch(() => undefined);
+        return { kind: 'failed', reason: selectedFailure.reason };
+      }
 
-    const remaining = deadline - performance.now();
-    if (remaining <= 0) break;
-    const random = dependencies.random();
-    const jitter = 0.75 + Math.min(1, Math.max(0, Number.isFinite(random) ? random : 0.5)) * 0.5;
-    await sleep(Math.min(remaining, Math.max(1, Math.round(backoffMs * jitter))), input.signal);
-    backoffMs = Math.min(DEFAULT_BACKOFF_MAX_MS, backoffMs * 2);
+      const now = performance.now();
+      if (
+        shouldLaunchCandidate(result) &&
+        !isPermanentCandidateStartupFailure(startupFailure) &&
+        now >= nextCandidateAt
+      ) {
+        try {
+          const remaining = deadline - performance.now();
+          if (remaining <= 0) break;
+          const launch = dependencies.launchCandidate({
+            rootPath: capability.canonicalPath,
+            expectedRootId: capability.rootId,
+            entrypoint: input.candidateEntrypoint,
+            initialConnectionTimeoutMs: Math.ceil(remaining),
+            ...(input.generation === undefined ? {} : { generation: input.generation }),
+          });
+          const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
+          if (attempt.startupFailure) {
+            pendingCandidateReports += 1;
+            void attempt.startupFailure
+              .then(
+                (failure) => {
+                  if (!failure) return;
+                  if (electionSettled) {
+                    void clearCandidateStartupDiagnostic(
+                      capability.rootId,
+                      failure.startupAttemptId,
+                    ).catch(() => undefined);
+                    return;
+                  }
+                  const replace =
+                    !startupFailure ||
+                    (!isPermanentCandidateStartupFailure(startupFailure) &&
+                      isPermanentCandidateStartupFailure(failure));
+                  const obsolete = replace ? startupFailure : failure;
+                  if (replace) {
+                    startupFailure = failure;
+                  }
+                  if (obsolete) {
+                    void clearCandidateStartupDiagnostic(
+                      capability.rootId,
+                      obsolete.startupAttemptId,
+                    ).catch(() => undefined);
+                  }
+                },
+                () => undefined,
+              )
+              .finally(() => {
+                pendingCandidateReports -= 1;
+              });
+          }
+        } catch {
+          // A failed Candidate attempt is ordinary election evidence; discovery continues.
+        }
+        nextCandidateAt = now + MIN_CANDIDATE_INTERVAL_MS;
+      }
+
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) break;
+      const random = dependencies.random();
+      const jitter = 0.75 + Math.min(1, Math.max(0, Number.isFinite(random) ? random : 0.5)) * 0.5;
+      await sleep(Math.min(remaining, Math.max(1, Math.round(backoffMs * jitter))), input.signal);
+      backoffMs = Math.min(DEFAULT_BACKOFF_MAX_MS, backoffMs * 2);
+    }
+    if (startupFailure) {
+      const selectedFailure = startupFailure;
+      electionSettled = true;
+      await selectCandidateStartupDiagnostic(
+        capability.rootId,
+        selectedFailure.startupAttemptId,
+      ).catch(() => undefined);
+      return { kind: 'failed', reason: selectedFailure.reason };
+    }
+    return {
+      kind: 'failed',
+      reason: sawUnresponsiveEndpoint ? 'host_unresponsive' : 'startup_timeout',
+    };
+  } finally {
+    electionSettled = true;
   }
-  if (startupFailure) return { kind: 'failed', reason: startupFailure.reason };
-  return {
-    kind: 'failed',
-    reason: sawUnresponsiveEndpoint ? 'host_unresponsive' : 'startup_timeout',
-  };
+}
+
+async function retireCandidateStartupDiagnostic(
+  rootId: string,
+  startupFailure: CandidateStartupFailureReport | undefined,
+): Promise<void> {
+  await Promise.all([
+    clearCandidateStartupDiagnostic(rootId),
+    ...(startupFailure
+      ? [clearCandidateStartupDiagnostic(rootId, startupFailure.startupAttemptId)]
+      : []),
+  ]).catch(() => undefined);
 }
 
 function isBlockingIncompatibility(

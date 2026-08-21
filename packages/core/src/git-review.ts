@@ -42,12 +42,3 @@ export type GitReviewReadResult =
         | 'invalid_base_branch'
         | 'git_failed';
     };
-
-export type GitReviewMutationAction = 'stage' | 'unstage' | 'revert';
-
-export type GitReviewMutationResult =
-  | { ok: true; review: GitReviewReadResult }
-  | {
-      ok: false;
-      reason: 'stale_snapshot' | 'path_not_found' | 'git_failed';
-    };

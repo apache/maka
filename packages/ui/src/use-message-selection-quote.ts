@@ -33,6 +33,21 @@ const INTERACTIVE_QUOTE_TARGET = [
   '[role="tab"]',
 ].join(',');
 
+// A Markdown CodeBlock owns a native horizontal-scroll gesture. Capturing a
+// pointer that starts here onto the enclosing Turn prevents Chromium from
+// dragging the scrollbar thumb and from auto-scrolling while text selection
+// crosses the viewport edge. Selection changes still reach this hook and can
+// produce a quote; only the Turn-level pointer capture is skipped.
+const NATIVE_SELECTION_SCROLL_TARGET = '.maka-markdown-code [role="group"]';
+
+export function preservesNativeSelectionScroll(
+  target: Element | null,
+  turnOwner: Element,
+): boolean {
+  const scrollOwner = target?.closest(NATIVE_SELECTION_SCROLL_TARGET) ?? null;
+  return scrollOwner !== null && turnOwner.contains(scrollOwner);
+}
+
 export type SelectionQuoteGestureDisposition = 'commit' | 'cancel';
 
 export interface SelectionQuoteGestureBoundary<Owner> {
@@ -216,6 +231,7 @@ export function useMessageSelectionQuote(
         !turnOwner ||
         !root.contains(turnOwner) ||
         (interactiveOwner !== null && turnOwner.contains(interactiveOwner)) ||
+        preservesNativeSelectionScroll(targetElement, turnOwner) ||
         findEnclosingTurnId(
           targetNode as unknown as QuoteScopeNode,
           root as unknown as QuoteScopeNode,

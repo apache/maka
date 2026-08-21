@@ -39,6 +39,8 @@ maka --help
 
 `maka-agent` is an alias for `maka`. For a one-off invocation, use
 `npx --yes maka-agent@next`; the unrelated `maka` package on npm is not this project.
+`runtime-host service install` uses the persistent global installation above; `runtime-host setup`
+creates its own managed copy from the exact package invoked by `npx`.
 
 ## First run
 
@@ -83,13 +85,32 @@ Do not use a bare `npm update --global maka-agent` for beta upgrades: global npm
 `latest` tag and may select a different release line. After a stable release is available, install it
 with `npm install --global maka-agent@latest`.
 
+## Remote Runtime Host setup
+
+To set up a persistent remote Runtime Host from an exact released package on Linux:
+
+```sh
+npx --yes maka-agent@next runtime-host setup \
+  --principal my-client \
+  --preset terminal-client
+```
+
+Rerunning setup replaces that Client credential. The service no longer depends on the temporary
+`npx` cache after setup succeeds.
+
 ## Uninstall
 
 ```sh
+# Linux only, when a managed Runtime Host service was installed
+npx --yes maka-agent@next runtime-host service uninstall
+
+# If Maka was installed globally
 npm uninstall --global maka-agent
 ```
 
-Uninstalling the package does not delete model connections, credentials, sessions, or artifacts.
+Remove the managed service before removing a global package so systemd does not retain a unit
+pointing to the deleted CLI. Neither command deletes model connections, credentials, sessions, or
+artifacts.
 Those remain in the profile shared by the released CLI and Desktop app:
 
 | Platform | Profile directory |

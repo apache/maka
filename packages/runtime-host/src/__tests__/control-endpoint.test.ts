@@ -1,13 +1,57 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { type ExecFileException, spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
-import { prepareRuntimeHostEndpoint, RuntimeHostEndpointError } from '../control/endpoint.js';
+import {
+  prepareRuntimeHostEndpoint,
+  RuntimeHostEndpointError,
+  windowsPipeAclFailure,
+  windowsPipeAclFailureDiagnostic,
+} from '../control/endpoint.js';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 
 const ROOT_ID = 'ab'.repeat(32);
 const PORTABLE_UNIX_SOCKET_PATH_LIMIT = 100;
+const PIPE_PATH = `\\\\.\\pipe\\maka-runtime-host-${ROOT_ID.slice(0, 16)}-epoch-1`;
+
+function execFileException(overrides: Partial<ExecFileException>): ExecFileException {
+  return Object.assign(new Error('Command failed: powershell.exe -NoLogo'), {
+    cmd: 'powershell.exe -NoLogo',
+    ...overrides,
+  });
+}
+
+test('bounds Windows pipe ACL helper diagnostics without serializing the command', () => {
+  const error = Object.assign(new Error('helper failed'), {
+    code: 1,
+    signal: 'SIGTERM',
+    killed: true,
+    cmd: 'private PowerShell command',
+  });
+  const diagnostic = windowsPipeAclFailureDiagnostic(error, `ACL failure ${'x'.repeat(8_192)}`);
+  const parsed = JSON.parse(diagnostic);
+
+  assert.deepEqual(
+    {
+      schemaVersion: parsed.schemaVersion,
+      helper: parsed.helper,
+      exitCode: parsed.exitCode,
+      signal: parsed.signal,
+      killed: parsed.killed,
+    },
+    {
+      schemaVersion: 1,
+      helper: 'windows_pipe_acl',
+      exitCode: 1,
+      signal: 'SIGTERM',
+      killed: true,
+    },
+  );
+  assert.equal(typeof parsed.stderr, 'string');
+  assert.ok(Buffer.byteLength(parsed.stderr, 'utf8') <= 4 * 1024);
+  assert.equal(diagnostic.includes('private PowerShell command'), false);
+});
 
 function rootTag(): string {
   return Buffer.from(ROOT_ID, 'hex').toString('base64url');
@@ -35,6 +79,52 @@ describe('runtime host Windows named-pipe endpoint', { skip: process.platform !=
       (error: unknown) =>
         error instanceof RuntimeHostEndpointError && error.code === 'insecure_endpoint_directory',
     );
+  });
+});
+
+// The ACL call itself only runs on Windows, so the failure mapping is covered
+// directly: it is the part a CI log has to be read through.
+describe('runtime host Windows named-pipe ACL failures', () => {
+  test('reports the exit code and the PowerShell diagnostic on a failed ACL', () => {
+    const error = windowsPipeAclFailure(
+      PIPE_PATH,
+      execFileException({ code: 1 }),
+      '',
+      'Get-Item : Cannot find path\n  At line:12 char:9\n',
+    );
+    assert.equal(error.code, 'insecure_endpoint_directory');
+    assert.match(error.message, /powershell exited with 1/);
+    assert.match(error.message, /Get-Item : Cannot find path At line:12 char:9$/);
+    assert.ok(error.message.includes(PIPE_PATH));
+    assert.ok(!error.message.includes('\n'));
+  });
+
+  test('reports a timeout kill as unconfirmed rather than as a failed ACL', () => {
+    const error = windowsPipeAclFailure(
+      PIPE_PATH,
+      execFileException({ killed: true, signal: 'SIGTERM' }),
+      '',
+      '',
+    );
+    assert.equal(error.code, 'insecure_endpoint_directory');
+    assert.match(error.message, /could not confirm .* within 30000ms and refused the endpoint/);
+    assert.match(error.message, /powershell killed with SIGTERM/);
+  });
+
+  test('reports a spawn failure by its errno code', () => {
+    const error = windowsPipeAclFailure(PIPE_PATH, execFileException({ code: 'ENOENT' }), '', '');
+    assert.equal(error.code, 'insecure_endpoint_directory');
+    assert.match(error.message, /\(powershell failed to run: ENOENT\)$/);
+  });
+
+  test('falls back to stdout and truncates an oversized diagnostic', () => {
+    const error = windowsPipeAclFailure(
+      PIPE_PATH,
+      execFileException({ code: 1 }),
+      'x'.repeat(2000),
+      '',
+    );
+    assert.match(error.message, /: x{1000} \[truncated\]$/);
   });
 });
 

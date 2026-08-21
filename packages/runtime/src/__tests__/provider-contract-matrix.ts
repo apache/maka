@@ -198,7 +198,7 @@ function usesOpenAiResponsesWire(
   const adapter = def.runtimeAdapter;
   const supportsResponses =
     adapter.kind === 'openai' ||
-    (adapter.kind === 'openai-compatible' && adapter.supportsOpenAiResponses === true);
+    (adapter.kind === 'openai-compatible' && adapter.responses !== undefined);
   return (
     supportsResponses && openAiAdapterApiProtocol(modelId, providerType) === 'openai-responses'
   );
@@ -367,6 +367,15 @@ function reasoningReplayCell(
       dimension: 'reasoning-replay',
       overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
       contract: `${adapter.kind} replays reasoning on its provider-specific per-model wire`,
+    };
+  }
+  if (adapter.kind === 'openai-compatible' && adapter.responses !== undefined) {
+    return {
+      state: 'override',
+      dimension: 'reasoning-replay',
+      overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
+      contract:
+        'The explicitly declared Responses adapter owns its provider-specific continuation representation',
     };
   }
   if (adapter.kind === 'openai-compatible') {

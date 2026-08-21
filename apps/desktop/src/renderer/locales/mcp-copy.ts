@@ -4,7 +4,7 @@ export type McpCopy = {
   errors: {
     load: string; install(name: string): string; cancelInstall(name: string): string; save: string; import: string;
     update: string; test: string; remove: string; unavailableStatus: string; mapLine(line: number): string;
-    importObject: string; importVersion(version: string): string; importServersObject: string;
+    importObject: string; importVersion(version: string): string; importServersObject: string; importProtocolVersion: string;
   };
   toast: {
     templateInstalled(name: string): string; templateInstalledDetail: string; installed(name: string): string;
@@ -24,7 +24,9 @@ export type McpCopy = {
   };
   detail: {
     label: string; enabled: string; transport: string; endpoint: string;
-    toolsLabel: string; statusLabel: string; inspectorOpened(id: string): string;
+    toolsLabel: string; statusLabel: string; protocolLabel: string;
+    negotiatedProtocol(era: 'legacy' | 'modern', revision: string): string;
+    inspectorOpened(id: string): string;
   };
   card: {
     macOnly: string; manage: string; cancellingAria(name: string): string; cancelAria(name: string): string; installAria(name: string): string;
@@ -44,6 +46,8 @@ export type McpCopy = {
     url: string; headers: string; headersHelp: string; saveConnect: string;
     required: string; invalidUrl: string; unbalancedQuote: string;
     transportLabel: string; transportAuto: string; transportStreamableHttp: string; transportLegacySse: string;
+    protocolLabel: string; protocolLegacy: string; protocolAuto: string; protocolModern: string;
+    protocolHelp: string; sseProtocolHelp: string;
   };
 };
 
@@ -53,7 +57,8 @@ const MCP_COPY = {
       load: '载入 MCP 失败', install: (name) => `安装 ${name} 失败`, cancelInstall: (name) => `取消安装 ${name} 失败`, save: '保存 MCP 失败',
       import: '导入 MCP 失败', update: '更新 MCP 失败', test: 'MCP 测试失败', remove: '删除 MCP 失败', unavailableStatus: 'Server 没有返回可用状态。',
       mapLine: (line) => `第 ${line} 行应为 KEY=value`, importObject: 'MCP JSON 必须是 object',
-      importVersion: (version) => `不支持 MCP 配置版本 ${version}，当前仅支持 version 1`, importServersObject: 'mcpServers 必须是 object',
+      importVersion: (version) => `不支持 MCP 配置版本 ${version}，当前支持 version 1 和 2`, importServersObject: 'mcpServers 必须是 object',
+      importProtocolVersion: '含 protocol 的 MCP 配置必须显式使用 version 2',
     },
     toast: {
       templateInstalled: (name) => `${name} 模板已安装`, templateInstalledDetail: '请在「已安装」中完成凭据配置，再启用连接。',
@@ -75,7 +80,9 @@ const MCP_COPY = {
     },
     detail: {
       label: '服务器详情', enabled: '启用', transport: '传输方式', endpoint: '端点',
-      toolsLabel: '工具', statusLabel: '状态', inspectorOpened: (id) => `已打开 ${id} 的详情`,
+      toolsLabel: '工具', statusLabel: '状态', protocolLabel: 'MCP 协议',
+      negotiatedProtocol: (era, revision) => `${era === 'modern' ? '现代' : '传统'} · ${revision}`,
+      inspectorOpened: (id) => `已打开 ${id} 的详情`,
     },
     card: {
       macOnly: '仅 macOS', manage: '管理', cancellingAria: (name) => `正在取消安装 ${name}`, cancelAria: (name) => `取消安装 ${name}`, installAria: (name) => `安装 ${name}`,
@@ -99,6 +106,8 @@ const MCP_COPY = {
       saveConnect: '保存并连接',
       required: '此字段为必填项。', invalidUrl: '请输入有效的 HTTP 或 HTTPS URL。', unbalancedQuote: '引号未闭合。',
       transportLabel: '传输协议', transportAuto: '自动回退', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: '旧版 SSE',
+      protocolLabel: '协议偏好', protocolLegacy: '传统', protocolAuto: '自动协商', protocolModern: '仅 2026-07-28',
+      protocolHelp: '旧配置默认使用传统协议；自动协商会根据 server 能力选择协议。', sseProtocolHelp: '旧版 SSE 仅支持传统协议。',
     },
   },
   en: {
@@ -106,7 +115,8 @@ const MCP_COPY = {
       load: 'Failed to load MCP', install: (name) => `Failed to install ${name}`, cancelInstall: (name) => `Failed to cancel installation of ${name}`, save: 'Failed to save MCP',
       import: 'Failed to import MCP', update: 'Failed to update MCP', test: 'MCP test failed', remove: 'Failed to delete MCP', unavailableStatus: 'The server did not return an available status.',
       mapLine: (line) => `Line ${line} must use KEY=value`, importObject: 'MCP JSON must be an object',
-      importVersion: (version) => `Unsupported MCP config version ${version}; only version 1 is supported`, importServersObject: 'mcpServers must be an object',
+      importVersion: (version) => `Unsupported MCP config version ${version}; versions 1 and 2 are supported`, importServersObject: 'mcpServers must be an object',
+      importProtocolVersion: 'MCP configurations containing protocol must explicitly use version 2',
     },
     toast: {
       templateInstalled: (name) => `${name} template installed`, templateInstalledDetail: 'Finish configuring credentials under Installed before enabling the connection.',
@@ -128,7 +138,9 @@ const MCP_COPY = {
     },
     detail: {
       label: 'Server details', enabled: 'Enabled', transport: 'Transport', endpoint: 'Endpoint',
-      toolsLabel: 'Tools', statusLabel: 'Status', inspectorOpened: (id) => `${id} details opened`,
+      toolsLabel: 'Tools', statusLabel: 'Status', protocolLabel: 'MCP protocol',
+      negotiatedProtocol: (era, revision) => `${era === 'modern' ? 'Modern' : 'Legacy'} · ${revision}`,
+      inspectorOpened: (id) => `${id} details opened`,
     },
     card: {
       macOnly: 'macOS only', manage: 'Manage', cancellingAria: (name) => `Cancelling installation of ${name}`, cancelAria: (name) => `Cancel installation of ${name}`, installAria: (name) => `Install ${name}`,
@@ -152,6 +164,8 @@ const MCP_COPY = {
       saveConnect: 'Save and connect',
       required: 'This field is required.', invalidUrl: 'Enter a valid HTTP or HTTPS URL.', unbalancedQuote: 'Unclosed quote.',
       transportLabel: 'Transport', transportAuto: 'Auto fallback', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: 'Legacy SSE',
+      protocolLabel: 'Protocol preference', protocolLegacy: 'Legacy', protocolAuto: 'Auto-negotiate', protocolModern: '2026-07-28 only',
+      protocolHelp: 'Existing configurations default to legacy; auto-negotiation selects an era from the server response.', sseProtocolHelp: 'Legacy SSE supports only the legacy protocol era.',
     },
   },
 } satisfies UiCatalog<McpCopy>;

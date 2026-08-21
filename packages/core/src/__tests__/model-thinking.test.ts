@@ -9,7 +9,9 @@ import {
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
   thinkingVariantsForModel,
+  supportsRelayFastServiceTier,
 } from '../model-thinking.js';
+import { isRelayProviderType } from '../llm-connections.js';
 
 test('declarable relay levels are every intensity tier but off', () => {
   // `off` is a disable-wire encoding (reasoning_effort 'none'), not an
@@ -23,6 +25,31 @@ test('declarable relay levels are every intensity tier but off', () => {
     relayModelProfiles: { m: { thinkingLevels: ['off', 'low'] } },
   } as const;
   assert.deepEqual([...thinkingVariantsForConnection(declaredOff, 'm')], ['low']);
+});
+
+test('relay profiles preserve the fast service tier declaration', () => {
+  assert.deepEqual(normalizeRelayModelProfiles({ m: { serviceTier: 'fast' } }), {
+    m: { serviceTier: 'fast' },
+  });
+  assert.deepEqual(normalizeRelayModelProfiles({ m: { serviceTier: 'unknown' } }), undefined);
+});
+
+test('Fast visibility mirrors the pinned OpenAI SDK priority-processing families', () => {
+  const cases = [
+    ['gpt-4o', true],
+    ['gpt-4.1', true],
+    ['gpt-5', true],
+    ['gpt-5.1', true],
+    ['gpt-5-nano', false],
+    ['gpt-5-chat-latest', false],
+    ['o3-mini', true],
+    ['o4-mini', true],
+    ['plain-relay-id', false],
+  ] as const;
+  for (const [modelId, expected] of cases) {
+    assert.equal(supportsRelayFastServiceTier('openai-responses-compatible', modelId), expected);
+    assert.equal(supportsRelayFastServiceTier('openai-compatible', modelId), false);
+  }
 });
 
 test('relayModelProfile returns undefined without a usable declaration', () => {
@@ -78,16 +105,30 @@ test('relayModelProfile normalizes order, keeps explicit vision:false, and bound
   }
 });
 
-test('relayModelProfile gates declarations to openai-compatible relays', () => {
+test('relayModelProfile gates declarations to custom OpenAI relays', () => {
   const profiles = { m: { vision: true, contextWindow: 64_000 } };
   assert.deepEqual(
     relayModelProfile({ providerType: 'openai-compatible', relayModelProfiles: profiles }, 'm'),
+    { vision: true, contextWindow: 64_000 },
+  );
+  assert.deepEqual(
+    relayModelProfile(
+      { providerType: 'openai-responses-compatible', relayModelProfiles: profiles },
+      'm',
+    ),
     { vision: true, contextWindow: 64_000 },
   );
   // The same table on a non-relay connection is inert: metadata rules.
   for (const providerType of ['anthropic', 'openai'] as const) {
     assert.equal(relayModelProfile({ providerType, relayModelProfiles: profiles }, 'm'), undefined);
   }
+});
+
+test('isRelayProviderType only accepts the two custom OpenAI relay providers', () => {
+  assert.equal(isRelayProviderType('openai-compatible'), true);
+  assert.equal(isRelayProviderType('openai-responses-compatible'), true);
+  assert.equal(isRelayProviderType('openai'), false);
+  assert.equal(isRelayProviderType('anthropic'), false);
 });
 
 test('normalizeRelayModelProfiles sanitizes write-side tables', () => {

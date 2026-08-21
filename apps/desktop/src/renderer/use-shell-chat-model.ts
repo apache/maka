@@ -119,13 +119,20 @@ export function useShellChatModel(options: {
     catalogDefault: catalogDefaultNewChatModel,
     choices: chatModelChoices,
   });
-  const activeConnectionLabel = activeSession?.backend === 'fake'
+  // A task whose backend was retired has no model to name (#3211). That verdict
+  // comes from the readiness projection, not from reading `activeSession.backend`
+  // here: the projection is the single authority on whether a task is usable,
+  // and it already answers `fake_backend` for these rows.
+  const isRetiredBackend =
+    options.sessionSendOutcome?.kind === 'blocked' &&
+    options.sessionSendOutcome.reason === 'fake_backend';
+  const activeConnectionLabel = isRetiredBackend
     ? conversationCopy.model.fakeBackendLabel
     : activeConnection?.name ?? activeSession?.llmConnectionSlug;
-  const activeModel = activeSession?.backend === 'fake'
+  const activeModel = isRetiredBackend
     ? undefined
     : activeSession?.model || activeConnection?.defaultModel;
-  const activeModelLabel = activeSession?.backend === 'fake'
+  const activeModelLabel = isRetiredBackend
     ? undefined
     : chatModelChoiceLabel(chatModelChoices, activeSession?.llmConnectionSlug, activeModel);
   const activeThinkingLevels = useMemo(

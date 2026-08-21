@@ -39,7 +39,6 @@ export async function runHostedExecutionWithDependencies(
   }
   const initial = await dependencies.connectOwnedRuntimeHost({
     rootPath: input.rootPath,
-    surface: 'run',
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
       max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -81,7 +80,6 @@ export async function runHostedExecutionWithDependencies(
         }
         const reconnected = await dependencies.connectOwnedRuntimeHost({
           rootPath: input.rootPath,
-          surface: 'run',
           protocol: {
             min: RUNTIME_HOST_PROTOCOL_VERSION,
             max: RUNTIME_HOST_PROTOCOL_VERSION,

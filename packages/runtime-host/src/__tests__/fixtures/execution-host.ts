@@ -1,7 +1,9 @@
 import { join } from 'node:path';
 import { inspect } from 'node:util';
+import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { startExecutionRuntimeHostCandidate } from '../../server/execution-candidate.js';
+import { createExecutionRuntimeHostComposition } from '../../server/execution-composition.js';
 import { runRuntimeHostProcessLifecycle } from '../../server/process-lifecycle.js';
 
 const [rootPath, expectedRootId, idleGraceRaw, recoverySessionId, recoveryRunId] =
@@ -19,11 +21,23 @@ if (!Number.isSafeInteger(idleGraceMs) || idleGraceMs < 0) {
   throw new Error('execution-host requires a non-negative idle grace');
 }
 
-const result = await startExecutionRuntimeHostCandidate({
-  rootPath,
-  expectedRootId,
-  idleGraceMs,
-});
+// The production composition registers no test backend. This fixture is a
+// candidate host in its own right, so it supplies the deterministic one through
+// the composition's `primaryBackendFactory` seam — the same path Desktop E2E
+// takes — and its sessions declare the real `ai-sdk` backend kind.
+const result = await startExecutionRuntimeHostCandidate(
+  {
+    rootPath,
+    expectedRootId,
+    idleGraceMs,
+  },
+  {
+    createComposition: (context, compositionOptions) =>
+      createExecutionRuntimeHostComposition(context, compositionOptions, {
+        primaryBackendFactory: (backendContext) => new FakeBackend(backendContext),
+      }),
+  },
+);
 if (result.kind === 'loser') process.exit(2);
 
 let recoveryOutcome: unknown;

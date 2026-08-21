@@ -9,6 +9,7 @@ import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
+import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
 
 export interface MakaSessionMoveResult {
   previousCwd: string;
@@ -110,6 +111,26 @@ export interface MakaSessionDriver {
   startNewSession(): void;
   stop(): Promise<void>;
   getSessionId(): string | null;
+  /**
+   * The current session's goal projection, or null when no goal is set.
+   * Read from the live session projection (push-updated); subscribe to
+   * subscribeGoalChanges for updates. Optional: drivers without a goal
+   * authority leave goal UI hidden.
+   */
+  getGoal?(): GoalProjection | null;
+  /**
+   * Fires when the session's goal projection changes — set, settled, paused,
+   * resumed, cleared, or when the attached session changes.
+   */
+  subscribeGoalChanges?(listener: (goal: GoalProjection | null) => void): () => void;
+  /**
+   * Applies a goal control action (pause/resume/clear) with optimistic
+   * revision retry, mirroring the desktop client. Resolves with the resulting
+   * projection, or null when no goal is armed (or the goal disappeared to a
+   * concurrent control action mid-flight — for clear that is the desired end
+   * state). Optional: drivers without a goal authority reject goal control.
+   */
+  controlGoal?(action: GoalControlAction): Promise<GoalProjection | null>;
   getContextDiagnostics?(): Promise<ContextDiagnostics>;
   getOrchestrationMode?(): OrchestrationMode;
   getPermissionMode?(): PermissionMode;

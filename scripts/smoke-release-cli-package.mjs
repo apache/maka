@@ -17,6 +17,11 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
+import {
+  collectRuntimeHostFailureDiagnostic,
+  renderRuntimeHostFailureDiagnostic,
+  retireCollectedRuntimeHostStartupDiagnostic,
+} from './release-cli-runtime-host-diagnostics.mjs';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -758,6 +763,9 @@ async function runCleanupSteps(steps) {
 }
 
 async function settleRuntimeHost(packageRoot, rootPath, requireNaturalShutdown) {
+  if (!requireNaturalShutdown) {
+    await reportRuntimeHostFailureDiagnostics(packageRoot, rootPath).catch(() => undefined);
+  }
   let naturalShutdownError;
   try {
     await waitForRuntimeHostShutdown(packageRoot, rootPath);
@@ -796,6 +804,14 @@ async function settleRuntimeHost(packageRoot, rootPath, requireNaturalShutdown) 
   }
   if (forcedCleanupError) throw forcedCleanupError;
   if (requireNaturalShutdown) throw naturalShutdownError;
+}
+
+async function reportRuntimeHostFailureDiagnostics(packageRoot, rootPath) {
+  if (process.platform !== 'win32') return;
+  const diagnostic = await collectRuntimeHostFailureDiagnostic(packageRoot, rootPath);
+  const rendered = renderRuntimeHostFailureDiagnostic(diagnostic);
+  writeSync(2, `[release-cli-validation] Runtime Host failure diagnostics: ${rendered}\n`);
+  await retireCollectedRuntimeHostStartupDiagnostic(packageRoot, diagnostic);
 }
 
 async function terminateRegisteredProcess(pid) {

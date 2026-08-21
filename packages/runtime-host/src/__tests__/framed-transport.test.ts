@@ -113,7 +113,6 @@ test('decodes split UTF-8 and coalesced Local IPC frames', async () => {
     const hello = {
       kind: 'hello' as const,
       clientInstanceId: '客户端',
-      surface: 'tui' as const,
       protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
       protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
       compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,

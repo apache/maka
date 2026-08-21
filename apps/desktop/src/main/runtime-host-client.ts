@@ -28,6 +28,7 @@ import {
   type RuntimeHostSessionSubscription,
   RuntimeHostCatalogReadError,
   RuntimeHostOperationError,
+  readRuntimeHostAgentGraphEpochs,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
@@ -233,6 +234,10 @@ export class DesktopRuntimeHostClient {
 
   get lifecycleState(): 'ready' | 'unavailable' {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
+  }
+
+  finalizeAccessCredential(): Promise<OperationOutput<'access.credential.finalize'>> {
+    return this.request('access.credential.finalize', {});
   }
 
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
@@ -1182,6 +1187,16 @@ export class DesktopRuntimeHostClient {
     return this.request("goal.query", { sessionId });
   }
 
+  /**
+   * Arm a Goal the user asked for. No optimistic retry loop like `clearGoal`:
+   * arming names no revision, so there is no stale one to refresh — a Session
+   * that already has an unfinished Goal fails with `operation_conflict`, and
+   * that is an answer for the user, not a race to re-run.
+   */
+  armGoal(input: OperationInput<"goal.arm">): Promise<OperationOutput<"goal.arm">> {
+    return this.request("goal.arm", input);
+  }
+
   controlGoal(
     goal: Pick<GoalProjection, "sessionId" | "goalId" | "revision">,
     action: GoalControlAction,
@@ -1194,14 +1209,15 @@ export class DesktopRuntimeHostClient {
     });
   }
 
-  async clearGoal(sessionId: string): Promise<void> {
+  async controlGoalWithRetry(sessionId: string, action: GoalControlAction): Promise<void> {
     const initial = await this.queryGoal(sessionId);
     if (initial.goal === null) return;
     const goalId = initial.goal.goalId;
     let goal = initial.goal;
+    let conflict: RuntimeHostOperationError | null = null;
     for (let attempt = 0; attempt < MAX_OPTIMISTIC_ATTEMPTS; attempt += 1) {
       try {
-        await this.controlGoal(goal, "clear");
+        await this.controlGoal(goal, action);
         return;
       } catch (error) {
         if (
@@ -1210,12 +1226,25 @@ export class DesktopRuntimeHostClient {
         ) {
           throw error;
         }
+        conflict = error;
+        if (attempt === MAX_OPTIMISTIC_ATTEMPTS - 1) break; // a re-query would have no retry to serve
       }
       const current = await this.queryGoal(sessionId);
       if (current.goal === null || current.goal.goalId !== goalId) return;
+      if (current.goal.revision === goal.revision) {
+        // The host folds invalid transitions into operation_conflict too
+        // ("Goal cannot pause from status paused"). Every accepted transition
+        // bumps the revision, so a conflict at an unchanged revision is a
+        // status refusal, not a race — retrying is futile; surface the reason.
+        throw conflict;
+      }
       goal = current.goal;
     }
-    throw revisionConflict("Goal clear", sessionId);
+    throw revisionConflict(`Goal ${action}`, sessionId);
+  }
+
+  async clearGoal(sessionId: string): Promise<void> {
+    await this.controlGoalWithRetry(sessionId, "clear");
   }
 
   async getPlanState(sessionId: string): Promise<PlanSessionState> {
@@ -1265,6 +1294,15 @@ export class DesktopRuntimeHostClient {
     input: OperationInput<"agent.graph.query">,
   ): Promise<OperationOutput<"agent.graph.query">> {
     return this.request("agent.graph.query", input);
+  }
+
+  listAgentGraphEpochs(rootSessionId: string) {
+    this.#assertOpen();
+    return readRuntimeHostAgentGraphEpochs(this.connection, rootSessionId);
+  }
+
+  listCurrentAgentGraphEpochs(rootSessionId: string) {
+    return this.request("agent.graph.epochs.query", { rootSessionId });
   }
 
   queryAgentGraphOperator(

@@ -161,7 +161,6 @@ export class HostSessionCatalogCoordinator {
       this.#readRuntimePolicy(),
     ]);
     return {
-      backend: 'ai-sdk',
       llmConnectionSlug: model.connectionSlug,
       model: model.model,
       permissionMode: policy.policy.chatDefaults.permissionMode,
@@ -346,7 +345,6 @@ export class HostSessionCatalogCoordinator {
               ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
               name: prepared.name,
               labels: [...prepared.labels],
-              backend: 'ai-sdk',
               llmConnectionSlug: model.connectionSlug,
               model: model.model,
               ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),

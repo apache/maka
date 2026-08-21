@@ -18,6 +18,10 @@ describe('stream graph supervisor tools', () => {
       graphId: 'graph-supervised',
       scheduleStore: store,
       observeGraph: async () => observationWithRecords('graph-supervised', ['verified-result']),
+      listHistoricalSelectedResults: async () => ({
+        results: [{ sourceGraphId: 'graph-previous', resultId: 'selected-result' }],
+        nextBeforeEpoch: null,
+      }),
     });
     try {
       assert.equal(viewTool.name, VIEW_AGENT_GRAPH_TOOL_NAME);
@@ -43,6 +47,9 @@ describe('stream graph supervisor tools', () => {
             agent_id: 'fact-checker',
             instruction: 'Verify the conflicting figures.',
             input_ids: ['result-b', 'result-a'],
+            selected_result_inputs: [
+              { source_graph_id: 'graph-previous', result_id: 'selected-result' },
+            ],
           },
           {
             operator_id: 'writer',
@@ -56,6 +63,13 @@ describe('stream graph supervisor tools', () => {
       assert.deepEqual(retry, first);
       assert.equal((await store.listAgentGraphScheduleUpdates('graph-supervised')).length, 1);
       assert.deepEqual(first.schedule.work[0]?.inputIds, ['result-a', 'result-b']);
+      assert.deepEqual(first.schedule.work[0]?.selectedResultInputs, [
+        { sourceGraphId: 'graph-previous', resultId: 'selected-result' },
+      ]);
+      assert.deepEqual(first.historicalSelectedResults, [
+        { sourceGraphId: 'graph-previous', resultId: 'selected-result' },
+      ]);
+      assert.equal(first.nextHistoricalBeforeEpoch, null);
       assert.equal(first.runtime.operators[0]?.status, 'running');
       assert.equal(first.runtime.operators[0]?.childSessionId, 'session-writer');
       assert.equal(first.runtime.operators[0]?.currentRunId, 'run-writer');

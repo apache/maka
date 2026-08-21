@@ -703,7 +703,8 @@ export function SessionWorkbar(props: {
         const activeTab = panel.tabs.find((tab) => tab.id === panel.activeTabId);
         const showingLauncher = panel.launcherOpen || !activeTab;
         const visible =
-          placement === 'right' ? !props.rightCollapsed : props.bottomOpen;
+          !props.hidden &&
+          (placement === 'right' ? !props.rightCollapsed : props.bottomOpen);
         return (
           <Card
             key={placement}

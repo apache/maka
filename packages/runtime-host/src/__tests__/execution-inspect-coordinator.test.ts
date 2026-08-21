@@ -445,7 +445,6 @@ function connectionContext() {
   return {
     hostEpoch: 'host-1',
     connectionId: 'connection-1',
-    surface: 'inspect' as const,
     principal: 'local_os_user' as const,
     acquireResidency: () => ({ release: () => undefined }),
   };

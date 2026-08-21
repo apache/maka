@@ -301,23 +301,6 @@ class RelayAgent(BaseAgent):
                         "diagnostic": diagnostic,
                     },
                 )
-        elif not execution_reported and not _host_teardown_requested:
-            with contextlib.suppress(Exception):
-                await _send(
-                    writer,
-                    {
-                        "token": self._token,
-                        "kind": "executed",
-                        "termination": "framework_timeout",
-                        "exitCode": 124,
-                        "stdout": "",
-                        "diagnostic": (
-                            _carrier_diagnostic("result-frame-missing", b"")
-                            if request.get("captureStdout", True)
-                            else {"category": "none"}
-                        ),
-                    },
-                )
 
 
 async def _prepare_command(
@@ -637,7 +620,7 @@ async def _stop_subject_for_timeout(
     scope_path: str,
     execution: Any,
     timeout: float,
-) -> Any | None:
+) -> Any:
     # The verifier still scores this trial. Stop only the subject so
     # `environment.exec` can return; do not hunt descendants or delete the
     # environment. Those leftovers are what the task asked the subject to leave.

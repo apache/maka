@@ -10,7 +10,7 @@ function sessionRow(sidebar: Locator, sessionId: string): Locator {
   return sidebar.locator(`[data-session-id*=${JSON.stringify(sessionId)}]`);
 }
 
-test('project navigation and actions remain adjacent keyboard controls', async ({
+test('project navigation and actions follow their visual keyboard order', async ({
   projectSidebarWindow: page,
 }) => {
   await page.keyboard.press('Escape');
@@ -36,20 +36,34 @@ test('project navigation and actions remain adjacent keyboard controls', async (
 
   await expect(navigation).toBeVisible();
   await expect(firstSessionControl).toBeVisible();
-  const [projectNavigationBox, firstSessionBox] = await Promise.all([
+  const projectTitle = navigation.getByText(LONG_SIDEBAR_PROJECT_NAME, { exact: true });
+  const sessionTitle = firstSessionControl.getByText('任务 00', { exact: true });
+  await expect(projectTitle).toBeVisible();
+  await expect(sessionTitle).toBeVisible();
+  const [projectNavigationBox, firstSessionBox, projectTitleBox, sessionTitleBox] = await Promise.all([
     navigation.boundingBox(),
     firstSessionControl.boundingBox(),
+    projectTitle.boundingBox(),
+    sessionTitle.boundingBox(),
   ]);
   expect(projectNavigationBox).not.toBeNull();
   expect(firstSessionBox).not.toBeNull();
-  expect(firstSessionBox!.x - projectNavigationBox!.x).toBeGreaterThanOrEqual(20);
+  expect(projectTitleBox).not.toBeNull();
+  expect(sessionTitleBox).not.toBeNull();
+  // Hierarchy is the session button sitting inside the project button. Title
+  // alignment is the product contract: leading content widths differ, so the
+  // inset is not the same as the title column.
+  const sessionInset = firstSessionBox!.x - projectNavigationBox!.x;
+  expect(sessionInset).toBeGreaterThanOrEqual(6);
+  expect(sessionInset).toBeLessThan(16);
+  expect(Math.abs(projectTitleBox!.x - sessionTitleBox!.x)).toBeLessThanOrEqual(2);
 
   await expect(projectRow.locator('button button')).toHaveCount(0);
   await expect(navigation).toHaveAttribute('aria-expanded', 'true');
 
-  await action.focus();
+  await navigation.focus();
   await page.keyboard.press('Tab');
-  await expect(navigation).toBeFocused();
+  await expect(action).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(firstSessionControl).toBeFocused();
 

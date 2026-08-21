@@ -19,7 +19,7 @@ test('native WebSearch is a provider-executed descriptor, not a local implementa
   assert.throws(() => tool.impl({}, {} as never), /must not execute through ToolRuntime/);
 });
 
-test('turn-start routing keeps native and client-executed search mutually exclusive', () => {
+test('turn-start routing falls back explicitly when native search is unavailable', () => {
   const clientSearch = {
     name: NATIVE_WEB_SEARCH_TOOL_NAME,
     description: 'Tavily',
@@ -46,10 +46,9 @@ test('turn-start routing keeps native and client-executed search mutually exclus
     model: 'deepseek-v4-flash',
     tavilyReady: false,
   });
-  assert.equal(native.filter((tool) => tool.name === NATIVE_WEB_SEARCH_TOOL_NAME).length, 1);
-  assert.equal(
-    native.find((tool) => tool.name === NATIVE_WEB_SEARCH_TOOL_NAME)?.providerTool?.kind,
-    'openai-web-search',
+  assert.deepEqual(
+    native.map((tool) => tool.name),
+    ['Read'],
   );
 
   const external = routeWebSearchTools({
@@ -127,7 +126,7 @@ test('turn-start routing compiles Claude models to the CC-compatible Anthropic t
   });
 });
 
-test('root surfaces may add native search without widening scoped child tools', () => {
+test('root surfaces do not advertise unsupported DeepSeek native search', () => {
   const connection = {
     slug: 'deepseek',
     providerType: 'deepseek' as const,
@@ -141,7 +140,7 @@ test('root surfaces may add native search without widening scoped child tools', 
     tavilyReady: false,
     allowAddNative: true,
   });
-  assert.equal(root[0]?.providerTool?.kind, 'openai-web-search');
+  assert.deepEqual(root, []);
 
   const child = routeWebSearchTools({
     tools: [],

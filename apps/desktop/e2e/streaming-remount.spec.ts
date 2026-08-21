@@ -2,7 +2,7 @@ import {
   FAKE_HOLD_OPEN_PROMPT,
   FAKE_HOLD_OPEN_REWRITE_PROMPT,
   FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
-} from '@maka/runtime/fake-backend';
+} from '@maka/runtime/test-only/fake-backend';
 import type { Locator } from '@playwright/test';
 import { expect, COMPOSER_INPUT, test } from './fixtures';
 

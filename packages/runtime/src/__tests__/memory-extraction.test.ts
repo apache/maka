@@ -186,6 +186,7 @@ describe('bounded Memory Extraction', () => {
       sessionId: 'session-1',
       coveredRuntimeEvents: [compacted],
       summary: 'The old summary remains interpretation context.',
+      summaryFormat: 'legacy_freeform',
     });
     const source = buildMemoryCompactionSourceContext(
       [

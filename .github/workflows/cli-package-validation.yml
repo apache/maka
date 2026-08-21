@@ -1,64 +1,6 @@
 name: CLI package validation
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/cli-package-validation.yml'
-      - '.github/workflows/release-cli-*.yml'
-      - '.gitattributes'
-      - '.npmrc'
-      - 'LICENSE'
-      - 'NOTICE'
-      - 'DISCLAIMER-WIP'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'patches/**'
-      - 'packages/cli/**'
-      - 'packages/code-mode/**'
-      - 'packages/core/**'
-      - 'packages/eval/**'
-      - 'packages/mcp/**'
-      - 'packages/runtime/**'
-      - 'packages/runtime-host/**'
-      - 'packages/storage/**'
-      - 'scripts/apply-dependency-patches.mjs'
-      - 'scripts/clean-paths.mjs'
-      - 'scripts/generate-third-party-notices.mjs'
-      - 'scripts/install-electron-with-retry.mjs'
-      - 'scripts/npm-spawn.mjs'
-      - 'scripts/release-cli-*.mjs'
-      - 'scripts/smoke-release-cli-package.mjs'
-      - 'tsconfig*.json'
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/cli-package-validation.yml'
-      - '.github/workflows/release-cli-*.yml'
-      - '.gitattributes'
-      - '.npmrc'
-      - 'LICENSE'
-      - 'NOTICE'
-      - 'DISCLAIMER-WIP'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'patches/**'
-      - 'packages/cli/**'
-      - 'packages/code-mode/**'
-      - 'packages/core/**'
-      - 'packages/eval/**'
-      - 'packages/mcp/**'
-      - 'packages/runtime/**'
-      - 'packages/runtime-host/**'
-      - 'packages/storage/**'
-      - 'scripts/apply-dependency-patches.mjs'
-      - 'scripts/clean-paths.mjs'
-      - 'scripts/generate-third-party-notices.mjs'
-      - 'scripts/install-electron-with-retry.mjs'
-      - 'scripts/npm-spawn.mjs'
-      - 'scripts/release-cli-*.mjs'
-      - 'scripts/smoke-release-cli-package.mjs'
-      - 'tsconfig*.json'
   workflow_call:
     outputs:
       release_candidate_artifact_id:
@@ -71,7 +13,6 @@ permissions:
 
 concurrency:
   group: cli-package-validation-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -168,7 +109,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Select the release npm toolchain

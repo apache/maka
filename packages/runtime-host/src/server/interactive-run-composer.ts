@@ -57,6 +57,11 @@ import { routeWebFetchTools } from '@maka/runtime/web-fetch-tool';
 import { routeWebSearchTools } from '@maka/runtime/native-web-search-tool';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type ToolAvailabilityConfig, type ToolGroup } from '@maka/runtime/tool-availability';
+import {
+  resolveTurnShellPlan,
+  type TurnShellPlan,
+  turnShellDisplayName,
+} from '@maka/runtime/shell-detect';
 import type {
   ClientCapabilitySnapshot,
   HostClientCapabilityCoordinator,
@@ -97,7 +102,13 @@ export interface InteractiveRunComposerInput {
   readonly toolProfile?: SessionToolProfile;
   readonly skillBudget?: SkillCatalogBudgetOptions;
   readonly platform?: NodeJS.Platform;
-  readonly shell?: string;
+  /**
+   * Turn-scoped shell resolution captured at backend admission. One plan
+   * drives guidance and every Bash execution for the turn; a broken saved
+   * preference rides along as `setupError` so text-only turns still compose
+   * while the Bash/PTY boundary fails closed.
+   */
+  readonly shell?: TurnShellPlan;
   readonly now?: () => Date;
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
@@ -118,6 +129,10 @@ export interface InteractiveRunComposerInput {
 
 /** Composes one Interactive prompt and tool surface from canonical Host authorities. */
 export function createInteractiveRunComposer(input: InteractiveRunComposerInput): HostRunComposer {
+  const builtinTools =
+    input.builtinTools && input.shell
+      ? { ...input.builtinTools, shell: input.shell }
+      : input.builtinTools;
   const inventorySnapshotFor = createTurnSkillInventorySnapshotResolver(input.skills);
   const inventoryFor: SkillInventoryResolver = async (context) =>
     (await inventorySnapshotFor(context)).inventory;
@@ -129,7 +144,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     : buildDefaultHostTools(
         input.taskLedger,
         inventoryFor,
-        input.builtinTools,
+        builtinTools,
         input.hostTools,
         input.scheduledTaskTool,
         input.goalTools,
@@ -269,7 +284,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         cwd: context.cwd,
         projectGit: await resolveProjectGitInfo(context.cwd),
         ...(input.platform ? { platform: input.platform } : {}),
-        ...(input.shell ? { shell: input.shell } : {}),
+        ...(input.shell ? { shell: turnShellDisplayName(input.shell) } : {}),
         ...(input.now ? { now: input.now() } : {}),
       });
       const tasks = filterModelVisibleTaskLedgerTasks(
@@ -323,6 +338,8 @@ export interface InteractiveRunComposerFactoryInput
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly planStore?: PlanStore;
   readonly deepResearchTools?: readonly MakaTool[];
+  /** Internal dependency seam for deterministic Host shell-resolution tests. */
+  readonly resolveTurnShellPlan?: typeof resolveTurnShellPlan;
 }
 
 export interface InteractiveRunToolSurfaceInput {
@@ -384,6 +401,12 @@ export function createInteractiveRunComposerFactory(
   input: InteractiveRunComposerFactoryInput,
 ): HostRunComposerFactory {
   return async ({ backendContext, connection, modelId, runtimePolicy, contextWindow }) => {
+    // Turn admission: resolve the Host-owned plan once per backend. The
+    // captured setupError keeps a moved/uninstalled Git Bash scoped to the
+    // Bash/PTY boundary instead of failing text-only turns here.
+    const shell =
+      (backendContext.tools ? backendContext.turnShellPlan : undefined) ??
+      (input.resolveTurnShellPlan ?? resolveTurnShellPlan)(runtimePolicy.policy.shell);
     const clientCapabilities = backendContext.tools
       ? undefined
       : input.clientCapabilities.snapshotForSession(backendContext.sessionId);
@@ -459,6 +482,7 @@ export function createInteractiveRunComposerFactory(
           ? { deepResearch: { tools: requireDeepResearchTools(input.deepResearchTools) } }
           : {}),
         skillBudget: contextWindow === null ? {} : { contextWindow },
+        shell,
       });
       return Object.freeze({
         ...composer,

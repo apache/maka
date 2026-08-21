@@ -5,12 +5,21 @@ import {
   remoteRuntimeHostUnavailableError,
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
+  RuntimeHostRemoteCompatibilityError,
   RuntimeHostRequestInterruptedError,
   startRuntimeHostReconnectLifecycle,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
 } from '../client/index.js';
-import type { OperationInput, OperationKey, OperationOutput } from '../protocol/index.js';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type HostIncompatible,
+  type OperationInput,
+  type OperationKey,
+  type OperationOutput,
+} from '../protocol/index.js';
 
 test('a reconnecting Client retries an interrupted query on the replacement connection', async () => {
   const first = connectionHarness('first', (operation) => {
@@ -194,6 +203,41 @@ test('a reconnecting Client stops after its remote credential is rejected', asyn
   await connection.close();
 });
 
+test('a reconnecting Client does not retry an incompatible remote Host or replay queued queries', async () => {
+  const first = connectionHarness('first', () => {
+    throw new Error('query must not reach the disconnected connection');
+  });
+  const connecting = deferred();
+  const releaseIncompatible = deferred();
+  let attempts = 0;
+  let fatalError: Error | undefined;
+  const connection = await createRuntimeHostReconnectingConnection({
+    initialConnection: first.connection,
+    connect: async () => {
+      attempts += 1;
+      connecting.resolve();
+      await releaseIncompatible.promise;
+      throw new RuntimeHostRemoteCompatibilityError('office', incompatibleHandshake());
+    },
+    backoff: { minMs: 0, maxMs: 0 },
+    onFatalError: (error) => {
+      fatalError = error;
+    },
+  });
+
+  first.disconnect();
+  await connecting.promise;
+  const query = connection.request('goal.query', { sessionId: 'session-1' });
+  releaseIncompatible.resolve();
+  await assert.rejects(query, (error: unknown) => error === fatalError);
+  await connection.closed;
+
+  assert.equal(attempts, 1);
+  assert.ok(fatalError instanceof RuntimeHostRemoteCompatibilityError);
+  assert.deepEqual(first.operations, []);
+  await connection.close();
+});
+
 test('reconnect lifecycle close waits for a resource returned after cancellation', async () => {
   const first = connectionHarness('first', () => undefined);
   const connectStarted = deferred();
@@ -328,4 +372,18 @@ function deferredValue<T>() {
     resolve = settle;
   });
   return { promise, resolve };
+}
+
+function incompatibleHandshake(): HostIncompatible {
+  return {
+    kind: 'incompatible',
+    hostEpoch: 'host-epoch-secret',
+    protocolMin: RUNTIME_HOST_PROTOCOL_VERSION + 1,
+    protocolMax: RUNTIME_HOST_PROTOCOL_VERSION + 1,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    compositionRevision: 'host-composition-revision',
+    state: 'ready',
+    replacement: 'blocked_by_residency',
+  };
 }

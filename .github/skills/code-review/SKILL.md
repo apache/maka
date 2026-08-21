@@ -78,4 +78,4 @@ not an approval and must not trigger or recommend an automatic approval.
 
 AI review does not count as independent human review. A maintainer makes the
 final merge decision. Do not present automated review or green checks as
-authorization to merge or as a fast-path determination.
+authorization to merge.

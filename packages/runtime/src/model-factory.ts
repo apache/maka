@@ -1,6 +1,7 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createCohere } from '@ai-sdk/cohere';
 import { createGoogle } from '@ai-sdk/google';
+import { createOpenResponses } from '@ai-sdk/open-responses';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible, type MetadataExtractor } from '@ai-sdk/openai-compatible';
 import {
@@ -16,6 +17,7 @@ import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   resolveThinkingLevel,
+  supportsRelayFastServiceTier,
   thinkingOptionsForModel,
   thinkingVariantsForConnection,
   type ThinkingOptions,
@@ -25,9 +27,13 @@ import {
   createOpenAiChatReasoningTransportState,
   type OpenAiChatReasoningTransportState,
 } from './openai-chat-reasoning-transport.js';
-import { createOpenAiResponsesPlaintextReasoningTransport } from './openai-responses-plaintext-reasoning-transport.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
-import { anthropicV1BaseUrl, googleV1BetaBaseUrl } from './provider-urls.js';
+import {
+  anthropicV1BaseUrl,
+  googleV1BetaBaseUrl,
+  openAiResponsesBaseUrl,
+  openResponsesUrl,
+} from './provider-urls.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
@@ -119,7 +125,9 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
     case 'openai': {
       const openai = createOpenAI({
         apiKey,
-        baseURL,
+        // The native adapter appends `/responses`; reduce endpoint-form
+        // overrides back to their base so probe-approved relay URLs work.
+        baseURL: wire === 'openai-responses' && baseURL ? openAiResponsesBaseUrl(baseURL) : baseURL,
         fetch:
           !hasRequestCustomization && openAiResponsesTransportState
             ? openAiResponsesTransportState.wrapFetch(requestFetch)
@@ -145,19 +153,23 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         );
       }
       if (wire === 'openai-responses') {
-        // Measured against the live API rather than inferred from the wire:
-        // DeepSeek streams reasoning as `response.reasoning_text.delta`, which
-        // the SDK never reads, so its reasoning parts arrive empty. Keep this
-        // to the provider we have evidence for — a Responses wire says nothing
-        // about which reasoning shape a provider speaks, and the others
-        // reaching here have not been measured.
-        const speaksPlaintextReasoning = connection.providerType === 'deepseek';
+        if (reasoningReplay.kind !== 'responses') {
+          throw new Error('Responses wire requires a Responses continuation contract');
+        }
+        if (reasoningReplay.contract.adapter === 'open-responses') {
+          return createOpenResponses({
+            name: openAiCompatibleProviderName(adapter, connection),
+            apiKey,
+            url: openResponsesUrl(baseURL),
+            fetch: requestFetch,
+          })(modelId);
+        }
         return createOpenAI({
           apiKey,
-          baseURL,
-          fetch: speaksPlaintextReasoning
-            ? createOpenAiResponsesPlaintextReasoningTransport(requestFetch)
-            : requestFetch,
+          // Endpoint-form overrides (`…/responses`) probe successfully; the
+          // native adapter appends `/responses` itself, so pass the base.
+          baseURL: baseURL ? openAiResponsesBaseUrl(baseURL) : baseURL,
+          fetch: requestFetch,
         }).responses(modelId);
       }
       if (reasoningReplay.kind !== 'openai-chat-plaintext') {
@@ -457,7 +469,7 @@ export function buildProviderOptions(
       return buildFamilyWire(connection, modelId, level, thinkingOptions);
     case 'volcengine-ark':
       return {
-        [connection.providerType]: {
+        [toCamelCase(connection.providerType)]: {
           thinking: { type: level === 'off' ? 'disabled' : 'enabled' },
           ...(level && level !== 'off' ? { reasoningEffort: level } : {}),
         },
@@ -484,7 +496,7 @@ export function buildProviderOptions(
     case 'cloudflare-workers-ai':
       return level
         ? {
-            [connection.providerType]:
+            [toCamelCase(connection.providerType)]:
               level === 'off'
                 ? thinkingOptions?.offBehavior === 'cloudflare-chat-template-thinking-false'
                   ? { chat_template_kwargs: { thinking: false } }
@@ -509,51 +521,66 @@ function buildFamilyWire(
   level: ThinkingLevel | undefined,
   thinkingOptions: ThinkingOptions | undefined,
 ): SharedV4ProviderOptions {
-  const { adapter, wire } = resolveModelRuntime(connection, modelId);
+  const { adapter, wire, reasoningReplay } = resolveModelRuntime(connection, modelId);
   const reasoningEffort = level ? (level === 'off' ? 'none' : level) : undefined;
-  // Whatever the adapter kind, a Responses wire is dialled through the native
-  // OpenAI provider (`getAIModel`), so `openai` is the only provider-options
-  // namespace the SDK will read: an openai-compatible provider's own namespace
-  // is silently dropped there — including the effort, so a model asking for
-  // `max` sent no reasoning parameter at all.
-  //
-  // `store: false` is not a storage preference, it is the switch that makes the
-  // SDK ask for `include: ['reasoning.encrypted_content']` and, on the request
-  // side, drop any reasoning item that came back without one. Both halves are
-  // what we want here: a provider that speaks the encrypted-content contract
-  // gets a replayable chain, and one that does not stops shipping empty husks
-  // it could never replay. Which of the two a given provider is remains its own
-  // business, and this says nothing about how it carries reasoning otherwise —
-  // DeepSeek returns plaintext in `content[].reasoning_text` and consumes it in
-  // the same shape, a dialect the SDK neither reads nor writes. Bridging that
-  // is a transport's job, not this function's. Either way `store` is a property
-  // of the wire rather than of a thinking choice, so it holds whether or not a
-  // level was picked.
-  //
-  // The include is gated on the SDK also believing this is a reasoning model,
-  // and it decides that by parsing the model id for an OpenAI naming scheme —
-  // `deepseek-v4-flash` and `grok-4.5` fail that test however they are served.
-  // Our own declared thinking variants are the authority on that question, so
-  // say so with `forceReasoning` rather than letting a name decide.
+  const serviceTier =
+    wire === 'openai-responses' &&
+    reasoningReplay.kind === 'responses' &&
+    reasoningReplay.contract.adapter === 'openai' &&
+    supportsRelayFastServiceTier(connection.providerType, modelId)
+      ? connection.relayModelProfiles?.[modelId]?.serviceTier
+      : undefined;
+  // Provider selection and reasoning continuation are independent. The OpenAI
+  // provider reads its provider-options namespace; the Open Responses provider
+  // consumes a provider-native reasoningEffort through the same namespace,
+  // keyed by the provider name getAIModel passes to createOpenResponses.
   if (wire === 'openai-responses') {
+    if (reasoningReplay.kind !== 'responses') {
+      throw new Error('Responses wire requires a Responses continuation contract');
+    }
     // Connection-aware: a relay model's declared variants count too.
     const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
+    if (reasoningReplay.contract.adapter === 'open-responses') {
+      // @ai-sdk/open-responses@2.0.28 passes a provider-native reasoningEffort
+      // through verbatim, ahead of the cross-provider top-level `reasoning`
+      // enum that cannot express DeepSeek's `max` (whose documented mapping
+      // sends `xhigh` to high, not max). The SDK resolves providerOptions
+      // under the raw provider `name` — no camelCase alias, unlike
+      // openai-compatible — so key by the same name getAIModel passes.
+      return reasoningEffort || serviceTier
+        ? {
+            [openAiCompatibleProviderName(adapter, connection)]: {
+              ...(reasoningEffort ? { reasoningEffort } : {}),
+              ...(serviceTier ? { serviceTier } : {}),
+            },
+          }
+        : {};
+    }
     return {
       openai: {
         store: false,
-        ...(reasons ? { forceReasoning: true } : {}),
+        ...(reasons || reasoningReplay.contract.reasoningReplay === 'encrypted-content'
+          ? { forceReasoning: true }
+          : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(serviceTier ? { serviceTier } : {}),
       },
     };
   }
-  if (!reasoningEffort) return {};
+  if (!reasoningEffort && !serviceTier) return {};
   switch (adapter.kind) {
     case 'openai-compatible':
       return {
-        [openAiCompatibleProviderOptionsKey(adapter, connection)]: { reasoningEffort },
+        [openAiCompatibleProviderOptionsKey(adapter, connection)]: {
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+        },
       };
     case 'openai':
-      return { openai: { reasoningEffort } };
+      return {
+        openai: {
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+        },
+      };
     case 'anthropic':
       // Anthropic-protocol models declare no `none` effort, so an off
       // choice only exists where an explicit case wires it.
@@ -577,7 +604,7 @@ function buildFamilyWire(
       if (copilotProtocol === 'anthropic-messages') {
         return level !== 'off' ? { anthropic: { effort: level } } : {};
       }
-      return { 'github-copilot': { reasoningEffort } };
+      return { githubCopilot: { reasoningEffort } };
     }
     default:
       return {};
@@ -605,18 +632,21 @@ function toCamelCase(name: string): string {
 }
 
 /**
- * The providerOptions key for an openai-compatible model. The SDK still
- * accepts the raw provider name but flags dashed keys as deprecated (a
- * `type: 'deprecated'` warning on every doGenerate result); its canonical
- * key is the camelCase alias. Only the custom-relay path keys options by
- * the connection slug, so only that path camelCases — built-in adapter
- * namespaces stay as they were.
+ * The providerOptions key for an openai-compatible model: the camelCase
+ * alias of the identity passed to `createOpenAICompatible`. The SDK
+ * resolves both spellings — known options and passthrough fields alike —
+ * but flags dashed keys as deprecated (a `type: 'deprecated'` warning on
+ * every doGenerate result), so the camelCase alias is the canonical key.
+ *
+ * The same alias also selects the SDK's *response* metadata namespace:
+ * once options are keyed `zaiCodingPlan`, provider metadata comes back as
+ * `providerMetadata.zaiCodingPlan`, not `providerMetadata['zai-coding-plan']`.
+ * A metadata reader keyed by the raw `connection.providerType` would
+ * silently read nothing for dashed providers.
  */
 function openAiCompatibleProviderOptionsKey(
   adapter: ProviderRuntimeAdapter,
   connection: RuntimeExecutionConnection,
 ): string {
-  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
-    ? toCamelCase(connection.slug)
-    : connection.providerType;
+  return toCamelCase(openAiCompatibleProviderName(adapter, connection));
 }

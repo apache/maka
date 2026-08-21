@@ -22,7 +22,6 @@ import {
 import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
 import {
   RUNTIME_HOST_PROTOCOL_VERSION,
-  type ClientSurface,
   type EffectivePricingEntry,
   type PricingQueryResult,
 } from '../protocol/index.js';
@@ -40,7 +39,6 @@ const REQUEST_TIMEOUT_MS = 5_000;
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'usage-pricing-test',
   connectionId: 'usage-pricing-test-connection',
-  surface: 'tui',
   principal: 'local_os_user',
   acquireResidency: () => ({ release() {} }),
 };
@@ -451,10 +449,7 @@ describe('production Usage/Pricing UDS', () => {
       preHostUsageStores = undefined;
       endpoint = host.endpoint;
 
-      const [desktop, tui] = await Promise.all([
-        connectClient(root, 'desktop'),
-        connectClient(root, 'tui'),
-      ]);
+      const [desktop, tui] = await Promise.all([connectClient(root), connectClient(root)]);
       clients.push(desktop, tui);
       const [desktopUsage, tuiUsage] = await Promise.all([readUsage(desktop), readUsage(tui)]);
       assert.deepEqual(tuiUsage, desktopUsage);
@@ -644,8 +639,8 @@ describe('production Usage/Pricing UDS', () => {
       });
       successorOwner = undefined;
       const [desktopAfterRestart, tuiAfterRestart] = await Promise.all([
-        connectClient(root, 'desktop'),
-        connectClient(root, 'tui'),
+        connectClient(root),
+        connectClient(root),
       ]);
       clients.push(desktopAfterRestart, tuiAfterRestart);
       const [usageAfterRestart, pricingAfterRestart, pricingFromSecondClient] = await Promise.all([
@@ -694,13 +689,9 @@ describe('production Usage/Pricing UDS', () => {
   });
 });
 
-async function connectClient(
-  rootPath: string,
-  surface: ClientSurface,
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: PROTOCOL,
     connectTimeoutMs: REQUEST_TIMEOUT_MS,
     handshakeTimeoutMs: REQUEST_TIMEOUT_MS,

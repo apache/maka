@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import type { AppSettings } from '@maka/core/settings';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { CredentialKind } from '@maka/storage';
-import { applyConfigImport, gatherConfigExport, type ConfigTransferDeps } from '../config-transfer-service.js';
+import { applyConfigImport, type ConfigTransferDeps } from '../config-transfer-service.js';
 
 function conn(slug: string): LlmConnection {
   return {
@@ -17,15 +17,6 @@ function conn(slug: string): LlmConnection {
   };
 }
 
-function settingsWithSecrets(): AppSettings {
-  return {
-    theme: 'dark',
-    network: { proxy: { host: '127.0.0.1', password: 'proxy-secret' } },
-    botChat: { channels: { telegram: { chatId: '42', token: 'bot-secret', appSecret: 'app-secret' } } },
-    webSearch: { providers: { tavily: { apiKey: 'tavily-secret' } } },
-  } as unknown as AppSettings;
-}
-
 function makeDeps(overrides: Partial<ConfigTransferDeps> = {}): {
   deps: ConfigTransferDeps;
   saved: LlmConnection[];
@@ -37,9 +28,7 @@ function makeDeps(overrides: Partial<ConfigTransferDeps> = {}): {
   const updatedSettings: unknown[] = [];
   const setCreds: Array<{ slug: string; kind: CredentialKind; value: string }> = [];
   const writtenMemory: string[] = [];
-  const secretsBySlugKind = new Map<string, string>([['deepseek-main::api_key', 'sk-real-key']]);
   const deps: ConfigTransferDeps = {
-    appVersion: '0.1.0',
     connectionStore: {
       list: async () => [conn('deepseek-main')],
       save: async (c) => {
@@ -48,19 +37,16 @@ function makeDeps(overrides: Partial<ConfigTransferDeps> = {}): {
       },
     },
     settingsStore: {
-      get: async () => settingsWithSecrets(),
       update: async (patch) => {
         updatedSettings.push(patch);
         return patch as unknown as AppSettings;
       },
     },
     credentialStore: {
-      getSecret: async (slug, kind) => secretsBySlugKind.get(`${slug}::${kind}`) ?? null,
       setSecret: async (slug, kind, value) => {
         setCreds.push({ slug, kind, value });
       },
     },
-    readMemory: async () => '# MEMORY\n- note',
     writeMemory: async (content) => {
       writtenMemory.push(content);
     },
@@ -70,41 +56,6 @@ function makeDeps(overrides: Partial<ConfigTransferDeps> = {}): {
 }
 
 describe('config-transfer-service', () => {
-  it('exports only selected categories', async () => {
-    const { deps } = makeDeps();
-    const bundle = await gatherConfigExport(['connections'], deps);
-    assert.deepEqual(bundle.includedData, ['connections']);
-    assert.equal(bundle.data.settings, undefined);
-    assert.equal(bundle.data.credentials, undefined);
-  });
-
-  it('omits (does not blank) settings secrets when credentials are NOT included', async () => {
-    // Secret keys must be ABSENT, not '' — mergeSettings deep-merges to the
-    // leaf, so an absent key preserves the target machine's existing secret on
-    // import, whereas '' would overwrite and wipe it.
-    const { deps } = makeDeps();
-    const bundle = await gatherConfigExport(['settings'], deps);
-    const s = bundle.data.settings as Record<string, any>;
-    assert.equal('password' in s.network.proxy, false, 'proxy password key omitted');
-    assert.equal('token' in s.botChat.channels.telegram, false, 'bot token key omitted');
-    assert.equal('appSecret' in s.botChat.channels.telegram, false, 'bot appSecret key omitted');
-    assert.equal('apiKey' in s.webSearch.providers.tavily, false, 'tavily apiKey key omitted');
-    // Non-secret fields at every level pass through untouched.
-    assert.equal(s.theme, 'dark');
-    assert.equal(s.network.proxy.host, '127.0.0.1');
-    assert.equal(s.botChat.channels.telegram.chatId, '42');
-  });
-
-  it('keeps settings secrets and enumerates credentials when credentials ARE included', async () => {
-    const { deps } = makeDeps();
-    const bundle = await gatherConfigExport(['settings', 'credentials'], deps);
-    const s = bundle.data.settings as Record<string, any>;
-    assert.equal(s.network.proxy.password, 'proxy-secret', 'secrets retained alongside credentials');
-    assert.deepEqual(bundle.data.credentials, [
-      { slug: 'deepseek-main', kind: 'api_key', value: 'sk-real-key' },
-    ]);
-  });
-
   it('applies an imported bundle to the stores and summarizes', async () => {
     const { deps, saved, updatedSettings, setCreds, writtenMemory } = makeDeps();
     const bundle = {

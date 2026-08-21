@@ -320,6 +320,44 @@
    flow — the compact rhythm above already carries it, and only the document
    mode needs its margins declared here. */
 .maka-markdown-code { min-width: 0; }
+/* Markdown always gives CodeBlock a structural header, keeping its copy button
+   in a real toolbar instead of overlaying the horizontal scroll viewport. */
+.maka-markdown-code .astryx-codeblock-header {
+  min-height: 32px;
+  padding-block: 2px;
+  padding-inline: var(--spacing-2);
+  border-block-end: 1px solid var(--border);
+}
+/* Astryx pulls a headered code body upward by spacing-2. That is useful when
+   the header is only a language caption, but our header is a distinct toolbar:
+   the pull clips the top padding to 4px while leaving 12px below the line. */
+.maka-markdown-code .astryx-codeblock [role="group"] > div {
+  margin-block-start: 0;
+}
+/* A one-line command, key, or token keeps Astryx's native scrolling viewport,
+   selection, keyboard behavior, and platform scrollbar. */
+.maka-markdown-code[data-maka-code-layout="single-line"] .astryx-codeblock [role="group"] {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.maka-markdown-code[data-maka-code-layout="single-line"] .astryx-codeblock [role="group"] > div > code {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  min-block-size: 40px;
+  padding-block: 0;
+}
+/* The CodeBlock scroll viewport is focusable but Astryx leaves it on the UA
+   outline. Give it one clipped-safe Maka ring, then stop the non-interactive
+   prose ListItem's generic focus-within ring from drawing a second outline
+   around the entire numbered-list row. */
+.maka-markdown-code .astryx-codeblock [role="group"]:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}
+[data-maka-contract="markdown"] .astryx-list-item:has(.maka-markdown-code :focus-visible) {
+  outline: none;
+}
 .maka-markdown-code-default { margin-block: var(--space-3) var(--space-4); }
 [role="document"] > .maka-markdown-code:first-child { margin-block-start: 0; }
 [role="document"] > .maka-markdown-code:last-child { margin-block-end: 0; }

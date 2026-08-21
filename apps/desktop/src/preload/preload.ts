@@ -22,6 +22,8 @@ import type {
   DesktopRuntimeHostProfileSnapshot,
   DesktopRuntimeHostSshTerminalEvent,
   DesktopRuntimeHostSshTerminalSnapshot,
+  DesktopRuntimeHostOnboardingInput,
+  DesktopRuntimeHostOnboardingSnapshot,
   DesktopNewTaskCatalog,
   DesktopNewTaskHost,
   DesktopNewTaskHostRef,
@@ -31,6 +33,11 @@ import type {
   DesktopAppInfo,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
+import {
+  projectDesktopExternalSessionCatalogItem,
+  type DesktopExternalSessionCatalogItem,
+  type DesktopHostExternalSessionCatalogItem,
+} from './external-session-catalog.js';
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   assertDesktopTranscriptBatch,
@@ -75,13 +82,13 @@ import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
+
 import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
 import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
-import type { ExternalSessionSummary } from '@maka/core/external-session';
 import type {
   GitReviewReadResult,
   GitReviewSource,
@@ -158,12 +165,14 @@ import {
   type OperationInput,
   type OperationOutput,
 } from '@maka/runtime-host/protocol';
+import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import {
   desktopSessionKey,
   parseDesktopSessionKey,
   requireDesktopTargetScope,
   type DesktopTargetScope,
 } from '../shared/runtime-host-identity.js';
+import type { GoalArmRequest } from '../shared/goal-arm.js';
 import {
   projectDesktopAttachmentRefs,
   projectDesktopDailyReviewSummary,
@@ -1020,6 +1029,9 @@ const makaBridge = {
     setDefault(profileId: string) {
       return ipcRenderer.invoke('runtime-host-profiles:set-default', profileId);
     },
+    resolvePairingRecovery() {
+      return ipcRenderer.invoke('runtime-host-profiles:resolve-pairing-recovery');
+    },
     subscribeChanges(handler: (event: DesktopRuntimeHostProfileChangedEvent) => void) {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -1058,6 +1070,28 @@ const makaBridge = {
       ) => handler(payload);
       ipcRenderer.on('runtime-host-ssh-terminal:event', listener);
       return () => ipcRenderer.off('runtime-host-ssh-terminal:event', listener);
+    },
+  },
+  runtimeHostOnboarding: {
+    getSnapshot(): Promise<DesktopRuntimeHostOnboardingSnapshot> {
+      return ipcRenderer.invoke('runtime-host-onboarding:getSnapshot');
+    },
+    start(input: DesktopRuntimeHostOnboardingInput): Promise<DesktopRuntimeHostOnboardingSnapshot> {
+      return ipcRenderer.invoke('runtime-host-onboarding:start', input);
+    },
+    cancel(): Promise<boolean> {
+      return ipcRenderer.invoke('runtime-host-onboarding:cancel');
+    },
+    reset(): Promise<void> {
+      return ipcRenderer.invoke('runtime-host-onboarding:reset');
+    },
+    subscribe(handler: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void) {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        snapshot: DesktopRuntimeHostOnboardingSnapshot,
+      ) => handler(snapshot);
+      ipcRenderer.on('runtime-host-onboarding:changed', listener);
+      return () => ipcRenderer.off('runtime-host-onboarding:changed', listener);
     },
   },
   newTasks: {
@@ -1202,9 +1236,21 @@ const makaBridge = {
     },
   },
   graphs: {
+    async listEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory> {
+      const session = await runtimeHostSessionRef(rootSessionId);
+      return ipcRenderer.invoke(
+        'graphs:listEpochs', session.scope, session.sessionId,
+      ) as Promise<AgentGraphEpochDirectory>;
+    },
+    async listCurrentEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory> {
+      const session = await runtimeHostSessionRef(rootSessionId);
+      return ipcRenderer.invoke(
+        'graphs:listCurrentEpochs', session.scope, session.sessionId,
+      ) as Promise<AgentGraphEpochDirectory>;
+    },
     async getSnapshot(
       rootSessionId: string,
-      options?: AgentGraphClientSnapshotOptions,
+      options?: AgentGraphClientSnapshotOptions & { graphId?: string },
     ): Promise<AgentGraphClientSnapshot> {
       const session = await runtimeHostSessionRef(rootSessionId);
       const snapshot = await ipcRenderer.invoke(
@@ -1215,15 +1261,20 @@ const makaBridge = {
     async inspectOperator(
       rootSessionId: string,
       operatorId: string,
+      graphId?: string,
     ): Promise<AgentGraphOperatorInspection> {
       const session = await runtimeHostSessionRef(rootSessionId);
       const inspection = await ipcRenderer.invoke(
-        'graphs:inspectOperator', session.scope, session.sessionId, operatorId,
+        'graphs:inspectOperator',
+        session.scope,
+        session.sessionId,
+        operatorId,
+        graphId,
       ) as AgentGraphOperatorInspection;
       return projectProtocolSessionIds(session.scope.hostId, inspection);
     },
-    stop(rootSessionId: string): Promise<void> {
-      return invokeSessionRuntimeHost('graphs:stop', rootSessionId);
+    stop(rootSessionId: string, expectedGraphId: string): Promise<void> {
+      return invokeSessionRuntimeHost('graphs:stop', rootSessionId, expectedGraphId);
     },
     subscribe(
       rootSessionId: string,
@@ -1666,15 +1717,27 @@ const makaBridge = {
     listSources(host?: DesktopRuntimeHostRef): Promise<{ adapterIds: string[] }> {
       return invokeSelectedRuntimeHost(host, 'external-sessions:listSources');
     },
-    list(input: {
+    async list(input: {
       adapterId: string;
       includeArchived?: boolean;
       cursor?: string;
     }, host?: DesktopRuntimeHostRef): Promise<{
-      sessions: ExternalSessionSummary[];
+      sessions: DesktopExternalSessionCatalogItem[];
       nextCursor: string | null;
     }> {
-      return invokeSelectedRuntimeHost(host, 'external-sessions:list', input);
+      const scope = await selectedRuntimeHostScope(host);
+      const result = await ipcRenderer.invoke(
+        'external-sessions:list', scope, input,
+      ) as {
+        sessions: DesktopHostExternalSessionCatalogItem[];
+        nextCursor: string | null;
+      };
+      return {
+        ...result,
+        sessions: result.sessions.map((session) =>
+          projectDesktopExternalSessionCatalogItem(scope, session),
+        ),
+      };
     },
     async import(input: {
       adapterId: string;
@@ -1875,8 +1938,17 @@ const makaBridge = {
     get(sessionId: string): Promise<GoalState | null> {
       return invokeProjectedSessionRuntimeHost('goal:get', sessionId);
     },
+    arm(sessionId: string, goal: GoalArmRequest): Promise<GoalState> {
+      return invokeProjectedSessionRuntimeHost('goal:arm', sessionId, goal);
+    },
     clear(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('goal:clear', sessionId);
+    },
+    pause(sessionId: string): Promise<void> {
+      return invokeSessionRuntimeHost('goal:pause', sessionId);
+    },
+    resume(sessionId: string): Promise<void> {
+      return invokeSessionRuntimeHost('goal:resume', sessionId);
     },
   },
   connections: {

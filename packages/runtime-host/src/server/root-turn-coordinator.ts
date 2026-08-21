@@ -930,15 +930,25 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   async stopAgentGraphSupervisor(
     sessionId: string,
     input: {
+      expectedGraphId?: string;
       source?: 'stop_button' | 'graph_supervisor';
       mode?: BackendStopMode;
     } = {},
   ): Promise<void> {
-    const graphId = await this.resolveCurrentGraphId(sessionId);
     const identity = await this.runCommand(() =>
-      this.sessionAdmission.run(sessionId, () => {
+      this.sessionAdmission.run(sessionId, async () => {
+        const graphId = input.expectedGraphId ?? (await this.resolveCurrentGraphId(sessionId));
         const active = this.#executions.get(sessionId);
-        if (!active || !activeRootOwnsAgentGraph(active, graphId)) return undefined;
+        if (!active?.graphOwnerId) return undefined;
+        if (active.graphOwnerId !== graphId) {
+          if (input.expectedGraphId !== undefined) {
+            throw new RuntimeHostedRootConflictError(
+              sessionId,
+              `Agent graph ${input.expectedGraphId} is no longer current`,
+            );
+          }
+          return undefined;
+        }
         return {
           sessionId,
           turnId: active.turnId,
@@ -2728,10 +2738,6 @@ function isTerminalSnapshot(snapshot: TurnSnapshot): boolean {
     snapshot.status === 'failed' ||
     snapshot.status === 'cancelled'
   );
-}
-
-function activeRootOwnsAgentGraph(active: ActiveRootTurn, graphId: string): boolean {
-  return active.graphOwnerId === graphId;
 }
 
 function isShutdownCancelledBackendStart(error: unknown): boolean {

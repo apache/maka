@@ -39,7 +39,7 @@ import type {
   UserMessage,
   PermissionDecisionMessage,
   SystemNoteMessage,
-  BackendKind,
+  PersistedBackendKind,
 } from '@maka/core/session';
 import type {
   AgentSpec,
@@ -149,6 +149,7 @@ import {
 
 import type { AgentBackend, BackendStopMode } from '@maka/core/backend-types';
 import type { MakaTool } from './tool-runtime.js';
+import type { TurnShellPlan } from './shell-detect.js';
 import type { RunTraceRecorder } from './run-trace.js';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type {
@@ -699,7 +700,7 @@ export interface StrictRecoveryStores {
 }
 
 // ============================================================================
-// BackendRegistry — factory dispatch by BackendKind
+// BackendRegistry — factory dispatch by the session header's durable backend
 // ============================================================================
 
 export interface BackendFactoryContext {
@@ -735,6 +736,8 @@ export interface BackendFactoryContext {
    * silently strip the decoder for placeholders that child will still receive.
    */
   tools?: readonly MakaTool[];
+  /** Turn-scoped shell plan captured with a bound child tool ceiling. */
+  turnShellPlan?: TurnShellPlan;
   recordRunTrace?: RunTraceRecorder;
   /** Durable AgentRun metadata row written after the private capture artifact. */
   recordProviderRequestCapture?: (capture: ProviderRequestCaptureLedgerRecord) => Promise<void>;
@@ -769,19 +772,19 @@ export interface BackendFactoryContext {
 export type BackendFactory = (ctx: BackendFactoryContext) => AgentBackend | Promise<AgentBackend>;
 
 export class BackendRegistry {
-  private readonly factories = new Map<BackendKind, BackendFactory>();
+  private readonly factories = new Map<PersistedBackendKind, BackendFactory>();
 
-  register(kind: BackendKind, factory: BackendFactory): void {
+  register(kind: PersistedBackendKind, factory: BackendFactory): void {
     this.factories.set(kind, factory);
   }
 
-  async build(kind: BackendKind, ctx: BackendFactoryContext): Promise<AgentBackend> {
+  async build(kind: PersistedBackendKind, ctx: BackendFactoryContext): Promise<AgentBackend> {
     const f = this.factories.get(kind);
     if (!f) throw new Error(`No backend factory registered for kind="${kind}"`);
     return await f(ctx);
   }
 
-  has(kind: BackendKind): boolean {
+  has(kind: PersistedBackendKind): boolean {
     return this.factories.has(kind);
   }
 }
@@ -813,7 +816,7 @@ interface SessionManagerBaseDeps {
   newId: () => string;
   now: () => number;
   childTools?: readonly MakaTool[];
-  resolveChildTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
+  resolveChildTools?: (sessionId: string) => Promise<ResolvedChildToolActivation>;
   /** Host-owned user catalog. Runtime receives ids from models, never raw model targets. */
   subagentCatalog?: {
     list(): Promise<SubagentPresetListItem[]>;
@@ -853,6 +856,11 @@ interface SessionManagerBaseDeps {
     sourceText: string;
   }) => Promise<string | undefined>;
   onSessionTitleChanged?: (sessionId: string) => void;
+}
+
+export interface ResolvedChildToolActivation {
+  readonly tools: readonly MakaTool[];
+  readonly shell?: TurnShellPlan;
 }
 
 type SessionManagerInteractionDeps =
@@ -2542,7 +2550,6 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: resolvedPreset?.name ?? definition.name,
-        backend: parentHeader.backend,
         llmConnectionSlug: resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
         model: resolvedPreset?.model ?? parentHeader.model,
         ...(resolvedPreset
@@ -3081,7 +3088,6 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: input.name ?? input.resolvedPreset?.name ?? definition.name,
-        backend: parentHeader.backend,
         llmConnectionSlug: input.resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
         model: input.resolvedPreset?.model ?? parentHeader.model,
         ...(input.resolvedPreset
@@ -4401,9 +4407,8 @@ export class SessionManager {
   }
 
   private async childToolsForSession(sessionId: string): Promise<readonly MakaTool[]> {
-    return this.deps.resolveChildTools
-      ? await this.deps.resolveChildTools(sessionId)
-      : (this.deps.childTools ?? []);
+    if (!this.deps.resolveChildTools) return this.deps.childTools ?? [];
+    return (await this.deps.resolveChildTools(sessionId)).tools;
   }
 
   async readChildAgentOutput(
@@ -4946,7 +4951,6 @@ export class SessionManager {
       {
         cwd: header.cwd,
         ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        backend: header.backend,
         llmConnectionSlug: header.llmConnectionSlug,
         model: header.model,
         thinkingLevel: header.thinkingLevel,
@@ -5009,7 +5013,6 @@ export class SessionManager {
       {
         cwd: header.cwd,
         ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        backend: header.backend,
         llmConnectionSlug: header.llmConnectionSlug,
         model: header.model,
         thinkingLevel: header.thinkingLevel,

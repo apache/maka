@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import { getAIModel } from '@maka/runtime/model-factory';
-import { createOpenAiResponsesPlaintextReasoningTransport } from '../openai-responses-plaintext-reasoning-transport.js';
+import { buildProviderOptions, getAIModel } from '../model-factory.js';
 
 function conn(providerType: LlmConnection['providerType']): LlmConnection {
   return {
@@ -111,6 +110,54 @@ function deepseekReasoningStream(deltas: string[], answer = ANSWER): string {
   return `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`;
 }
 
+function standardFunctionCallStream(): string {
+  const item = {
+    type: 'function_call',
+    id: 'fc_1',
+    call_id: 'call_1',
+    name: 'Read',
+    arguments: '{"path":"package.json"}',
+    status: 'completed',
+  };
+  const events = [
+    { type: 'response.created', sequence_number: 0, response: { id: 'r' } },
+    {
+      type: 'response.output_item.added',
+      sequence_number: 1,
+      output_index: 0,
+      item: { ...item, arguments: '', status: 'in_progress' },
+    },
+    {
+      type: 'response.function_call_arguments.done',
+      sequence_number: 2,
+      output_index: 0,
+      item_id: item.id,
+      call_id: item.call_id,
+      arguments: item.arguments,
+    },
+    {
+      type: 'response.output_item.done',
+      sequence_number: 3,
+      output_index: 0,
+      item,
+    },
+    {
+      type: 'response.completed',
+      sequence_number: 4,
+      response: {
+        id: 'r',
+        object: 'response',
+        created_at: 0,
+        model: 'deepseek-v4-flash',
+        status: 'completed',
+        output: [item],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    },
+  ];
+  return `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`;
+}
+
 /**
  * Chunks are cut from the encoded bytes, not from the string: slicing the
  * string would hand every chunk a whole character and quietly make multi-byte
@@ -133,21 +180,6 @@ function sseFetch(body: string, chunkSize = Number.MAX_SAFE_INTEGER): typeof glo
   }) as unknown as typeof globalThis.fetch;
 }
 
-/** A stream cut short by `missingBytes`, as a dropped connection would leave it. */
-function truncatingFetch(body: string, missingBytes: number): typeof globalThis.fetch {
-  const bytes = new TextEncoder().encode(body);
-  return (async () =>
-    new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(bytes.slice(0, bytes.length - missingBytes));
-          controller.close();
-        },
-      }),
-      { status: 200, headers: { 'content-type': 'text/event-stream' } },
-    )) as unknown as typeof globalThis.fetch;
-}
-
 async function streamParts(
   providerType: LlmConnection['providerType'],
   fetch: typeof globalThis.fetch,
@@ -160,7 +192,10 @@ async function streamParts(
   });
   const { stream } = await model.doStream({
     prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-    providerOptions: { openai: { store: false, forceReasoning: true } },
+    providerOptions:
+      providerType === 'deepseek'
+        ? buildProviderOptions(conn(providerType), 'deepseek-v4-flash', 'high')
+        : { openai: { store: false, forceReasoning: true } },
   });
   let reasoning = '';
   let text = '';
@@ -211,6 +246,46 @@ describe('open responses plaintext reasoning', () => {
     assert.equal(parts.text, ANSWER);
   });
 
+  test('ordinary function calls still finish as tool-calls', async () => {
+    const model = getAIModel({
+      connection: conn('deepseek'),
+      apiKey: 'test-key',
+      modelId: 'deepseek-v4-flash',
+      fetch: sseFetch(standardFunctionCallStream()),
+    });
+    const { stream } = await model.doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'read package.json' }] }],
+      tools: [
+        {
+          type: 'function',
+          name: 'Read',
+          inputSchema: {
+            type: 'object',
+            properties: { path: { type: 'string' } },
+            required: ['path'],
+            additionalProperties: false,
+          },
+        },
+      ],
+      providerOptions: buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'high'),
+    });
+
+    const parts = [];
+    for await (const part of stream) parts.push(part);
+    assert.deepEqual(
+      parts.find((part) => part.type === 'tool-call'),
+      {
+        type: 'tool-call',
+        toolCallId: 'call_1',
+        toolName: 'Read',
+        input: '{\"path\":\"package.json\"}',
+        // 2.0.28 preserves the provider item identity used by ordered replay.
+        providerMetadata: { deepseek: { itemId: 'fc_1' } },
+      },
+    );
+    assert.equal(parts.find((part) => part.type === 'finish')?.finishReason.unified, 'tool-calls');
+  });
+
   test('non-streaming reasoning content is read', async () => {
     let body: string | undefined;
     const fetch = (async () => {
@@ -243,110 +318,10 @@ describe('open responses plaintext reasoning', () => {
     });
     const result = await model.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-      providerOptions: { openai: { store: false, forceReasoning: true } },
+      providerOptions: buildProviderOptions(conn('deepseek'), 'deepseek-v4-flash', 'high'),
     });
     const reasoning = result.content.filter((part) => part.type === 'reasoning');
     assert.equal(reasoning.length, 1);
     assert.equal(reasoning[0].text, REASONING);
-  });
-
-  test('the position of a reasoning part is carried across, not flattened', async () => {
-    // Read at the transport rather than end to end: the SDK opens a second
-    // reasoning part only on `reasoning_summary_part.added`, which no measured
-    // provider sends, so a fixture producing one would describe nobody. What
-    // the transport owns is narrower and testable on its own — `content_index`
-    // names the same position `summary_index` does, and collapsing it to 0
-    // would merge parts the provider kept apart.
-    const source = [
-      `data: ${JSON.stringify({ type: 'response.reasoning_text.delta', content_index: 2, delta: 'x', item_id: ITEM_ID })}`,
-      'data: [DONE]',
-      '',
-    ].join('\n\n');
-    const translated = createOpenAiResponsesPlaintextReasoningTransport(sseFetch(source))(
-      'https://example.invalid',
-    );
-    const body = await (await translated).text();
-    const event = JSON.parse(
-      body
-        .split('\n')
-        .find((line) => line.includes('summary_index'))
-        ?.slice('data: '.length) ?? '',
-    );
-    assert.equal(event.type, 'response.reasoning_summary_text.delta');
-    assert.equal(event.summary_index, 2);
-    assert.equal('content_index' in event, false);
-  });
-
-  test('a truncated body does not swallow the bytes it cut through', async () => {
-    // A character split across a chunk boundary completes when the next chunk
-    // lands, so only a body that ends mid-sequence leaves bytes inside the
-    // decoder. Those bytes belong to the caller either way: released, they
-    // surface as a replacement character; held, they vanish with no trace that
-    // the stream was cut. Read at the transport because the SDK's event parser
-    // discards an unterminated final line whatever it holds.
-    const truncated = truncatingFetch(`data: 合数`, 1);
-    const translated =
-      await createOpenAiResponsesPlaintextReasoningTransport(truncated)('https://example.invalid');
-    assert.equal(await translated.text(), 'data: 合�');
-  });
-
-  test('rewritten bodies do not keep the old body framing headers', async () => {
-    // The body is re-encoded, so a copied `content-length` describes something
-    // that no longer exists.
-    const source = `data: ${JSON.stringify({ type: 'response.reasoning_text.delta', content_index: 0, delta: 'x', item_id: ITEM_ID })}\n\n`;
-    const framed = (async () =>
-      new Response(source, {
-        status: 200,
-        headers: {
-          'content-type': 'text/event-stream',
-          'content-length': String(source.length),
-          'content-encoding': 'gzip',
-        },
-      })) as unknown as typeof globalThis.fetch;
-    const translated =
-      await createOpenAiResponsesPlaintextReasoningTransport(framed)('https://example.invalid');
-    assert.equal(translated.headers.get('content-length'), null);
-    assert.equal(translated.headers.get('content-encoding'), null);
-    assert.equal(translated.headers.get('content-type'), 'text/event-stream');
-  });
-
-  test('a summary the provider populated itself is left alone', async () => {
-    // Filling a gap is safe; overwriting is not. A provider that speaks both
-    // shapes keeps whatever it chose to put in the summary.
-    const fetch = (async () =>
-      new Response(
-        JSON.stringify({
-          id: 'r',
-          object: 'response',
-          created_at: 0,
-          model: 'deepseek-v4-flash',
-          status: 'completed',
-          output: [
-            {
-              type: 'reasoning',
-              id: ITEM_ID,
-              summary: [{ type: 'summary_text', text: 'provider summary' }],
-              content: [{ type: 'reasoning_text', text: REASONING }],
-            },
-          ],
-          usage: { input_tokens: 1, output_tokens: 1 },
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      )) as unknown as typeof globalThis.fetch;
-    const model = getAIModel({
-      connection: conn('deepseek'),
-      apiKey: 'test-key',
-      modelId: 'deepseek-v4-flash',
-      fetch,
-    });
-    const result = await model.doGenerate({
-      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-      providerOptions: { openai: { store: false, forceReasoning: true } },
-    });
-    const reasoning = result.content.filter((part) => part.type === 'reasoning');
-    assert.deepEqual(
-      reasoning.map((part) => part.text),
-      ['provider summary'],
-    );
   });
 });

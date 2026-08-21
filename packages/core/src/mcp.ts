@@ -1,6 +1,8 @@
-export const MCP_CONFIG_VERSION = 1 as const;
+export const MCP_CONFIG_VERSION = 2 as const;
 
 export type McpTransportKind = 'stdio' | 'streamable-http' | 'sse' | 'auto';
+
+export type McpProtocolPreference = 'legacy' | 'auto' | '2026-07-28';
 
 export interface McpStdioServerConfig {
   enabled?: boolean;
@@ -15,6 +17,22 @@ export interface McpRemoteServerConfig {
   url: string;
   transport?: 'streamable-http' | 'sse' | 'auto';
   headers?: Record<string, string>;
+  protocol?: McpProtocolPreference;
+  oauth?: McpOAuthConfig;
+}
+
+/**
+ * Static OAuth client settings for servers whose authorization server does
+ * not support dynamic registration (RFC 7591) or CIMD. All fields are
+ * optional: with none set, the client registers dynamically and listens on
+ * an ephemeral loopback port. A pre-registered client usually pins
+ * `callbackPort`, because its redirect URI was registered with a fixed port.
+ */
+export interface McpOAuthConfig {
+  clientId?: string;
+  clientSecret?: string;
+  scopes?: string[];
+  callbackPort?: number;
 }
 
 export type McpServerConfig = McpStdioServerConfig | McpRemoteServerConfig;
@@ -25,6 +43,11 @@ export interface McpConfigFile {
 }
 
 export type McpConnectionState = 'disabled' | 'disconnected' | 'connecting' | 'connected' | 'error';
+
+export interface McpNegotiatedProtocol {
+  era: 'legacy' | 'modern';
+  revision: string;
+}
 
 export interface McpToolAnnotations {
   title?: string;
@@ -67,6 +90,7 @@ export interface McpServerStatus {
   serverId: string;
   state: McpConnectionState;
   transport?: Exclude<McpTransportKind, 'auto'>;
+  negotiatedProtocol?: McpNegotiatedProtocol;
   toolCount: number;
   tools: McpToolDescriptor[];
   error?: string;
@@ -95,6 +119,12 @@ export interface McpTestResult {
 
 export function isMcpStdioConfig(config: McpServerConfig): config is McpStdioServerConfig {
   return 'command' in config;
+}
+
+export function resolveMcpRemoteProtocolPreference(
+  config: McpRemoteServerConfig,
+): McpProtocolPreference {
+  return config.protocol ?? 'legacy';
 }
 
 export function createDefaultMcpConfig(): McpConfigFile {

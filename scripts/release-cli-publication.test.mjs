@@ -18,6 +18,9 @@ import {
 
 const SOURCE_SHA = 'a'.repeat(40);
 const WORKFLOW_PATH = '.github/workflows/release-cli-stage.yml';
+const CURRENT_CLI_VERSION = JSON.parse(
+  readFileSync(resolve(import.meta.dirname, '../packages/cli/package.json'), 'utf8'),
+).version;
 
 test('release versions map prereleases and stable versions to distinct channels', () => {
   assert.deepEqual(parseCliReleaseVersion('0.1.0-beta.1'), {
@@ -327,7 +330,7 @@ test('GitHub finalization accepts only the exact published metadata and asset di
 });
 
 test('prepare-stage CLI emits only consumed GitHub Actions outputs', () => {
-  const fixture = createCandidate();
+  const fixture = createCandidate(CURRENT_CLI_VERSION);
   const output = join(fixture.root, 'github-output.txt');
   const result = spawnSync(
     process.execPath,
@@ -411,10 +414,9 @@ function createPreparedCandidate() {
   return fixture;
 }
 
-function createCandidate() {
+function createCandidate(version = '0.1.0-beta.1') {
   const root = mkdtempSync(join(tmpdir(), 'maka-cli-publication-'));
   const releaseDirectory = join(root, 'packages/cli/release');
-  const version = '0.1.0-beta.1';
   const tarball = `maka-agent-${version}.tgz`;
   const tarballPath = join(releaseDirectory, tarball);
   const bytes = Buffer.from('immutable cli tarball');

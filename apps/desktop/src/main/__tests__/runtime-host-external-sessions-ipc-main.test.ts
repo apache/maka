@@ -19,7 +19,18 @@ test('forwards bounded external Session requests and publishes imported Sessions
         listExternalSessions: async (input) => {
           requests.push(input);
           return {
-            sessions: [{ id: 'source-1', name: 'Source', hostCwd: '/external' }],
+            sessions: [
+              {
+                id: 'source-1',
+                name: 'Source',
+                hostCwd: '/external',
+                importState: {
+                  importedCount: 0,
+                  importedSessionIds: [],
+                  isImporting: false,
+                },
+              },
+            ],
             nextCursor: '16',
           };
         },
@@ -41,7 +52,18 @@ test('forwards bounded external Session requests and publishes imported Sessions
       cursor: '16',
     }),
     {
-      sessions: [{ id: 'source-1', name: 'Source', cwd: '/external' }],
+      sessions: [
+        {
+          id: 'source-1',
+          name: 'Source',
+          cwd: '/external',
+          importState: {
+            importedCount: 0,
+            importedSessionIds: [],
+            isImporting: false,
+          },
+        },
+      ],
       nextCursor: '16',
     },
   );

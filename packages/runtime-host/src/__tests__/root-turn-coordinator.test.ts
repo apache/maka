@@ -11,7 +11,7 @@ import {
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
 } from '@maka/runtime/terminal-run-commit';
-import { FakeBackend, FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime/fake-backend';
+import { FakeBackend, FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import {
   IMPLEMENTATION_AGENT_DEFINITION,
   LOCAL_READ_AGENT_PROFILE,
@@ -100,7 +100,8 @@ test('prepares a fresh Agent Graph epoch before durable external Turn admission'
   let fixture!: FailureFixture;
   let cutovers = 0;
   fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
     agentGraphEpochs: {
       currentGraphId: async (rootSessionId) => agentGraphIdForRootSession(rootSessionId),
       beginNextGraphEpoch: async (rootSessionId) => {
@@ -137,7 +138,8 @@ test('prepares a fresh Agent Graph epoch before durable external Turn admission'
 test('does not advance a finished graph for an ordinary default Turn', async () => {
   let cutovers = 0;
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
     agentGraphEpochs: {
       currentGraphId: async (rootSessionId) => agentGraphIdForRootSession(rootSessionId),
       beginNextGraphEpoch: async (rootSessionId) => {
@@ -168,7 +170,8 @@ test('does not advance a finished graph for an ordinary default Turn', async () 
 test('startup recovery replays one admitted safe-boundary continuation without a UserMessage', async () => {
   const workspaceIdentity = 'workspace-safe-boundary-recovery';
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
     continuationSafety: { workspaceIdentity, availableToolNames: [] },
   });
   let observer: ReturnType<SessionContinuityCoordinator['attachConnection']> | undefined;
@@ -254,7 +257,8 @@ test('a failed exact Capability retry does not poison the parked continuation bi
         }
       },
     },
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
   });
   const seedConnection = capabilities.attachConnection(
     clientCapabilityConnectionIdentity('provider-seed'),
@@ -395,7 +399,8 @@ test('resume query preserves Session-before-activation lock ordering', async () 
         }
       },
     },
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
   });
   const connection = capabilities.attachConnection(
     clientCapabilityConnectionIdentity('provider-lock-order'),
@@ -455,7 +460,8 @@ test('resume query preserves Session-before-activation lock ordering', async () 
 
 test('turn.start durably applies one exact per-Turn orchestration override', async () => {
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
   });
   const input = {
     sessionId: fixture.sessionId,
@@ -518,7 +524,8 @@ test('turn.start resolves explicit Skills once before durable admission and repl
     { send: async () => {} },
   );
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
     clientCapabilities: capabilities,
     prepareSkillInvocation: async ({ sessionId }): Promise<PreparedSkillInvocationMessage> => {
       preparationCount += 1;
@@ -635,7 +642,8 @@ test('turn.start durably replays an all-failed invocation without creating a Tur
     ],
   };
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
     prepareSkillInvocation: async (): Promise<PreparedSkillInvocationMessage> => {
       preparationCount += 1;
       return { disposition: 'blocked', skillInvocation };
@@ -669,7 +677,8 @@ test('turn.start durably replays an all-failed invocation without creating a Tur
 test('idle turn.message.submit applies hosted Skill preparation before durable admission', async () => {
   let preparationCount = 0;
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
     prepareSkillInvocation: async (): Promise<PreparedSkillInvocationMessage> => {
       preparationCount += 1;
       return {
@@ -734,7 +743,8 @@ test('turn.start rejects oversized preparation before admission and preserves no
   let preparationCount = 0;
   let preparation: 'blocked' | 'oversized_content' | 'oversized_feedback' = 'blocked';
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
     prepareSkillInvocation: async () => {
       preparationCount += 1;
       if (preparation === 'blocked') {
@@ -859,7 +869,8 @@ test('turn.start rejects oversized preparation before admission and preserves no
 
 test('turn.start admits only canonical live Session Artifact attachments', async () => {
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
     withArtifacts: true,
   });
   try {
@@ -989,13 +1000,13 @@ test('safe-boundary continuation safety identity uses the exact canonical tool c
 test('linked child Sessions reject public safe-boundary continuation', async () => {
   let recoveryCoordinator: RootTurnCoordinator | undefined;
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
   });
   try {
     const parent = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
     const { header: child } = await fixture.stores.sessionStore.createSubagent({
       cwd: parent.cwd,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'execute',
@@ -1121,7 +1132,7 @@ test('worktree child Sessions reject roots outside managed child execution', asy
   let recoveryCoordinator: RootTurnCoordinator | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new LinkedChildAuthorityBackend(context.sessionId);
         return backend;
       }),
@@ -1139,7 +1150,6 @@ test('worktree child Sessions reject roots outside managed child execution', asy
   try {
     const { header: child } = await fixture.stores.sessionStore.createSubagent({
       cwd: binding.worktreePath,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'execute',
@@ -1304,7 +1314,7 @@ test('Agent Graph supervisor stop owns only graph-capable root Turns', async () 
   let backend: LinkedChildAuthorityBackend | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new LinkedChildAuthorityBackend(context.sessionId);
         return backend;
       }),
@@ -1362,13 +1372,64 @@ test('Agent Graph supervisor stop owns only graph-capable root Turns', async () 
   }
 });
 
+test('Agent Graph supervisor stop rejects a stale graph identity inside session admission', async () => {
+  let backend: LinkedChildAuthorityBackend | undefined;
+  let currentGraphId = 'graph-before-rollover';
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      }),
+    agentGraphEpochs: {
+      currentGraphId: async () => currentGraphId,
+      beginNextGraphEpoch: async () => currentGraphId,
+    },
+  });
+  try {
+    await fixture.manager.setOrchestrationMode(fixture.sessionId, 'graph');
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-owned-by-graph-before-rollover',
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    await waitUntil(() => backend !== undefined);
+    await backend?.externalHoldStarted.promise;
+
+    currentGraphId = 'graph-after-rollover';
+    await assert.rejects(
+      () =>
+        fixture.coordinator.stopAgentGraphSupervisor(fixture.sessionId, {
+          expectedGraphId: currentGraphId,
+          source: 'stop_button',
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof RuntimeHostedRootConflictError);
+        assert.match(error.message, /graph-after-rollover.*no longer current/);
+        return true;
+      },
+    );
+    assert.equal(backend?.stopCount, 0);
+    assert.equal(fixture.coordinator.readRootState(fixture.sessionId).kind, 'active');
+  } finally {
+    backend?.release();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('Agent Graph supervisor stop owns a graph safe-boundary continuation', async () => {
   const workspaceIdentity = 'workspace-graph-continuation-stop';
   let backend: BlockingRootBackend | undefined;
   const fixture = await createFailureFixture({
     continuationSafety: { workspaceIdentity, availableToolNames: [] },
     registerBackend: (backends) =>
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new BlockingRootBackend(context.sessionId);
         return backend;
       }),
@@ -1406,7 +1467,7 @@ test('Agent Graph supervisor wake waits for root idle and binds one durable exec
   let backend: LinkedChildAuthorityBackend | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new LinkedChildAuthorityBackend(context.sessionId);
         return backend;
       }),
@@ -1500,7 +1561,7 @@ test('Agent Graph supervisor wake waits for root idle and binds one durable exec
 test('Agent Graph supervisor wake preserves structured context-overflow outcomes', async () => {
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>
-      backends.register('fake', (context) => new ContextFailureBackend(context.sessionId)),
+      backends.register('ai-sdk', (context) => new ContextFailureBackend(context.sessionId)),
   });
   const graphId = agentGraphIdForRootSession(fixture.sessionId);
   try {
@@ -1544,7 +1605,7 @@ test('Agent Graph context recovery fences competing root turns while compaction 
   let backend: BlockingContextRecoveryBackend | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new BlockingContextRecoveryBackend(context.sessionId);
         return backend;
       }),
@@ -1603,7 +1664,7 @@ test('manual context compact uses durable root query, stop, and exact retry auth
   let backend: BlockingContextRecoveryBackend | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new BlockingContextRecoveryBackend(context.sessionId);
         return backend;
       }),
@@ -1676,7 +1737,7 @@ test('startup recovery replays an admitted context compact with its exact Run id
   let backend: BlockingContextRecoveryBackend | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new BlockingContextRecoveryBackend(context.sessionId);
         return backend;
       }),
@@ -1734,7 +1795,7 @@ test('Agent Graph context recovery abort stops compaction and releases Host clos
   let backend: BlockingContextRecoveryBackend | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new BlockingContextRecoveryBackend(context.sessionId);
         return backend;
       }),
@@ -1772,7 +1833,7 @@ test('Agent Graph context recovery waits for a confirmed follow-up root', async 
   let backend: GraphFollowupRecoveryBackend | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) =>
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new GraphFollowupRecoveryBackend(context.sessionId);
         return backend;
       }),
@@ -1843,7 +1904,8 @@ test('Agent Graph context recovery waits for a confirmed follow-up root', async 
 
 test('Agent Graph supervisor wake revalidates freshness before durable root admission', async () => {
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
   });
   const graphId = agentGraphIdForRootSession(fixture.sessionId);
   const turnId = 'turn-stale-graph-supervisor-wake';
@@ -1886,7 +1948,8 @@ test('Agent Graph supervisor wake revalidates freshness before durable root admi
 
 test('Agent Graph supervisor recovery closes a durable admission that has no Run', async () => {
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
   });
   const graphId = agentGraphIdForRootSession(fixture.sessionId);
   const wakeId = `${graphId}:snapshot-recovery`;
@@ -1956,7 +2019,8 @@ test('Agent Graph supervisor recovery closes a durable admission that has no Run
 
 test('hosted root target unavailability is retryable without poisoning the Host', async () => {
   const fixture = await createFailureFixture({
-    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
   });
   try {
     await assert.rejects(
@@ -1996,7 +2060,6 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -2096,7 +2159,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     };
     const backends = new BackendRegistry();
     const linkedBackends = new Map<string, LinkedChildAuthorityBackend>();
-    backends.register('fake', (context) => {
+    backends.register('ai-sdk', (context) => {
       if (!context.header.subagentRuntime) {
         return new QuestionWaitingBackend(context.sessionId);
       }
@@ -2602,7 +2665,7 @@ test('pre-bind startup failure fail-stops without orphaning an admitted queued M
   const releaseBackendFactory = deferred<void>();
   const fixture = await createFailureFixture({
     registerBackend: (backends) => {
-      backends.register('fake', async () => {
+      backends.register('ai-sdk', async () => {
         backendFactoryEntered.resolve();
         await releaseBackendFactory.promise;
         throw new Error('injected backend startup failure');
@@ -2700,7 +2763,7 @@ test('successor admission failure retains the terminal transition and its confir
   let backend: LinkedChildAuthorityBackend | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new LinkedChildAuthorityBackend(context.sessionId);
         return backend;
       });
@@ -2827,7 +2890,7 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
         store.listRootTurnAdmissionsForRecovery(sessionId),
     }),
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new LinkedChildAuthorityBackend(context.sessionId);
         return backend;
       });
@@ -2917,7 +2980,7 @@ test('Client Capability ambiguity fails before durable root admission', async ()
   const fixture = await createFailureFixture({
     clientCapabilities,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => new FakeBackend(context));
+      backends.register('ai-sdk', (context) => new FakeBackend(context));
     },
   });
   const first = clientCapabilities.attachConnection(
@@ -2997,7 +3060,7 @@ test('an exact active retry preserves the Client Capability admission binding', 
   const fixture = await createFailureFixture({
     clientCapabilities,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new LinkedChildAuthorityBackend(context.sessionId);
         return backend;
       });
@@ -3092,7 +3155,7 @@ test('mixed-Client queued follow-ups preserve each submitting connection through
   const fixture = await createFailureFixture({
     clientCapabilities,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new LinkedChildAuthorityBackend(context.sessionId);
         return backend;
       });
@@ -3237,7 +3300,7 @@ async function assertFollowupCapabilityRebinding(affinity: 'call' | 'turn'): Pro
   const fixture = await createFailureFixture({
     clientCapabilities,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new LinkedChildAuthorityBackend(context.sessionId);
         return backend;
       });
@@ -3428,7 +3491,7 @@ test('an exact terminal retry does not require a live Client Capability binding'
   const fixture = await createFailureFixture({
     clientCapabilities,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => new FakeBackend(context));
+      backends.register('ai-sdk', (context) => new FakeBackend(context));
     },
   });
   const provider = clientCapabilities.attachConnection(
@@ -3520,7 +3583,7 @@ test('turn.start returns a published fast terminal before backend iterator clean
   let backend: TerminalThenCleanupBackend | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new TerminalThenCleanupBackend(context.sessionId);
         return backend;
       });
@@ -3578,7 +3641,7 @@ test('public turn.stop rejects an admission queued behind its exact-Run closure 
   const fixture = await createFailureFixture({
     withInteractions: true,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new QueuedAdmissionBackend(context.sessionId);
         return backend;
       });
@@ -3653,7 +3716,7 @@ test('public turn.interrupt contains a question admission rejected by its own st
   const fixture = await createFailureFixture({
     withInteractions: true,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new StopReleasedAdmissionBackend(context.sessionId);
         return backend;
       });
@@ -3708,7 +3771,7 @@ test('public turn.interrupt releases the Session lane while a queried Run is sti
   const fixture = await createFailureFixture({
     withInteractions: true,
     registerBackend: (backends) => {
-      backends.register('fake', async (context) => {
+      backends.register('ai-sdk', async (context) => {
         backendFactoryEntered.resolve();
         return await new Promise<never>((_resolve, reject) => {
           const abort = () => {
@@ -3798,7 +3861,7 @@ test('Runtime stop lets a running admission publish before its exact-Run closure
       await releasePreflight.promise;
     },
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new RunningAdmissionBackend(context.sessionId);
         return backend;
       });
@@ -3853,7 +3916,7 @@ test('post-start backend failure closes its owner without draining an unrelated 
   const fixture = await createFailureFixture({
     withInteractions: true,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         if (context.sessionId !== failingSessionId) {
           unrelatedBackend = new LinkedChildAuthorityBackend(context.sessionId);
           return unrelatedBackend;
@@ -3869,7 +3932,6 @@ test('post-start backend failure closes its owner without draining an unrelated 
   try {
     const unrelatedSession = await fixture.stores.sessionStore.create({
       cwd: '/tmp/unrelated-active-root',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -3961,7 +4023,7 @@ test('claimed graph backend failure is contained after its failed terminal trans
   const fixture = await createFailureFixture({
     withInteractions: true,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new AdmissionThenFailureBackend(context.sessionId);
         backendReady.resolve(backend);
         return backend;
@@ -4019,7 +4081,7 @@ test('failed claimed graph Run identity mismatch drains instead of being contain
   const fixture = await createFailureFixture({
     withInteractions: true,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new AdmissionThenFailureBackend(context.sessionId);
         return backend;
       });
@@ -4068,7 +4130,7 @@ test('post-start backend AggregateError is contained after its failed terminal t
   const fixture = await createFailureFixture({
     withInteractions: true,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new AdmissionThenFailureBackend(context.sessionId, aggregateFailure);
         return backend;
       });
@@ -4141,7 +4203,7 @@ test('post-start message owner cleanup failure drains after its failed terminal 
   const cleanupFailure = new Error('message owner release failed');
   const fixture = await createFailureFixture({
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new LinkedChildAuthorityBackend(context.sessionId);
         return backend;
       });
@@ -4206,7 +4268,7 @@ test('public turn.stop wins the Session lane before a wire answer for the same R
   const fixture = await createFailureFixture({
     withInteractions: true,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new PendingQuestionBackend(context.sessionId);
         return backend;
       });
@@ -4286,7 +4348,7 @@ test('public turn.stop takes over an earlier closure claim queued behind its lea
   const fixture = await createFailureFixture({
     withInteractions: true,
     registerBackend: (backends) => {
-      backends.register('fake', (context) => {
+      backends.register('ai-sdk', (context) => {
         backend = new TakeoverClosureBackend(context.sessionId);
         return backend;
       });
@@ -4605,7 +4667,6 @@ async function createFailureFixture(options: {
   await artifacts?.recover();
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
@@ -4856,7 +4917,6 @@ function operationContext(
   return {
     hostEpoch,
     connectionId,
-    surface: 'tui' as const,
     principal: 'local_os_user' as const,
     acquireResidency,
   };
@@ -4906,7 +4966,7 @@ async function waitUntil(
 }
 
 class LinkedChildAuthorityBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly externalHoldStarted = deferred<void>();
   readonly questionStarted = deferred<void>();
   sendCount = 0;
@@ -5001,7 +5061,7 @@ class LinkedChildAuthorityBackend implements AgentBackend {
 }
 
 class BlockingRootBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly started = deferred<void>();
   readonly #released = deferred<void>();
   stopCount = 0;
@@ -5037,7 +5097,7 @@ class BlockingRootBackend implements AgentBackend {
 }
 
 class ContextFailureBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
 
   constructor(readonly sessionId: string) {}
 
@@ -5077,7 +5137,7 @@ class ContextFailureBackend implements AgentBackend {
 }
 
 class BlockingContextRecoveryBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly compactStarted = deferred<void>();
   readonly #compactReleased = deferred<void>();
   compactInput: BackendCompactHistoryInput | undefined;
@@ -5117,7 +5177,7 @@ class BlockingContextRecoveryBackend implements AgentBackend {
 }
 
 class GraphFollowupRecoveryBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly graphTurnStarted = deferred<void>();
   readonly followupStarted = deferred<void>();
   readonly compactStarted = deferred<void>();
@@ -5195,7 +5255,7 @@ class GraphFollowupRecoveryBackend implements AgentBackend {
 }
 
 class QueuedAdmissionBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly readyForAdmission = deferred<void>();
   readonly admissionQueued = deferred<void>();
   readonly admissionFailure = deferred<unknown>();
@@ -5277,7 +5337,7 @@ class QueuedAdmissionBackend implements AgentBackend {
 }
 
 class StopReleasedAdmissionBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly ready = deferred<void>();
   private readonly stopped = deferred<void>();
 
@@ -5332,7 +5392,7 @@ class StopReleasedAdmissionBackend implements AgentBackend {
 }
 
 class RunningAdmissionBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly admitted = deferred<void>();
   readonly stopRequested = deferred<void>();
   readonly closureReasons: string[] = [];
@@ -5405,7 +5465,7 @@ class RunningAdmissionBackend implements AgentBackend {
 }
 
 class AdmissionThenFailureBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly admitted = deferred<void>();
   readonly closureReasons: string[] = [];
   private readonly fail = deferred<void>();
@@ -5461,7 +5521,7 @@ class AdmissionThenFailureBackend implements AgentBackend {
 }
 
 class TerminalThenCleanupBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   cleanupReleased = false;
   private readonly cleanup = deferred<void>();
 
@@ -5493,7 +5553,7 @@ class TerminalThenCleanupBackend implements AgentBackend {
 }
 
 class PendingQuestionBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly pendingRequest = deferred<string>();
   readonly closureReasons: string[] = [];
   answerApplications = 0;
@@ -5564,7 +5624,7 @@ class PendingQuestionBackend implements AgentBackend {
 }
 
 class TakeoverClosureBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly sendStarted = deferred<void>();
   readonly stopStarted = deferred<void>();
   private readonly sendReleased = deferred<void>();
@@ -5614,7 +5674,7 @@ class TakeoverClosureBackend implements AgentBackend {
 }
 
 class QuestionWaitingBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   private stopped = false;
   private resolveAnswer: ((answers: readonly (string | null)[] | null) => void) | undefined;
   private releaseAfterAnswer: (() => void) | undefined;

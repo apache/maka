@@ -67,7 +67,6 @@ test('drives Desktop Session operations through a real Runtime Host connection',
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
-      surface: 'desktop',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -351,7 +350,6 @@ test('drives the renderer Session execution facade through real UDS framing', as
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
-      surface: 'desktop',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -476,7 +474,6 @@ test('drives bounded Session domain projections through real UDS framing', async
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
-      surface: 'desktop',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,

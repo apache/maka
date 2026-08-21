@@ -60,7 +60,6 @@ function acceptedConnection(connectionId: string) {
     hostEpoch: 'host-epoch',
     connectionId,
     clientInstanceId: 'test-client',
-    surface: 'tui' as const,
     authority: LOCAL_OWNER_CONNECTION_AUTHORITY,
   };
 }
@@ -989,11 +988,13 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
   };
 
   try {
+    // Alternate message streams so the queued deltas cannot coalesce: this
+    // exercises eviction for a genuinely undrainable backlog.
     for (let index = 1; index <= 32; index += 1) {
       await coordinator.acceptRuntimeEvent(
         'slow-session',
         'run-slow-session',
-        connectionTextEvent('slow-session', index),
+        connectionTextEvent('slow-session', index, `message-slow-${index % 2}`),
       );
     }
     await withTimeout(writeBlocked.promise, 1_000, 'slow subscription never blocked in-flight');
@@ -1085,7 +1086,6 @@ async function withRuntimeHost(
       connectClient: async () => {
         const result = await connectRuntimeHost({
           rootPath: root,
-          surface: 'tui',
           protocol: CURRENT_PROTOCOL,
         });
         assert.equal(result.kind, 'connected');
@@ -1117,7 +1117,6 @@ async function openAcceptedTransport(
   await writeProtocolFrame(transport, {
     kind: 'hello',
     clientInstanceId,
-    surface: 'tui',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -1422,13 +1421,13 @@ function canonicalProjection(sessionId: string): CanonicalSessionProjection {
   };
 }
 
-function connectionTextEvent(sessionId: string, index: number) {
+function connectionTextEvent(sessionId: string, index: number, messageId?: string) {
   return {
     type: 'text_delta' as const,
     id: `event-${sessionId}-${index}`,
     turnId: `turn-${sessionId}`,
     ts: index,
-    messageId: `message-${sessionId}`,
+    messageId: messageId ?? `message-${sessionId}`,
     text: `chunk-${index}`,
   };
 }

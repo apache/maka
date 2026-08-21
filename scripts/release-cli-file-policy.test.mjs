@@ -38,4 +38,19 @@ describe('CLI release file policy', () => {
     assert.equal(isMakaDevelopmentArtifact('dist/__tests__/fixture.js'), true);
     assert.equal(isMakaDevelopmentArtifact('dist/index.js'), false);
   });
+
+  test('rejects Maka test-only modules so no test backend can ship', () => {
+    for (const path of [
+      'dist/test-only/fake-backend.js',
+      'dist/test-only/execution-candidate-e2e-main.js',
+      String.raw`dist\test-only\desktop-e2e-execution.js`,
+    ]) {
+      assert.equal(isMakaDevelopmentArtifact(path), true, path);
+    }
+    assert.equal(isMakaDevelopmentArtifact('dist/execution-candidate-main.js'), false);
+  });
+
+  test('leaves a third-party test-only directory alone', () => {
+    assert.equal(isThirdPartyDevelopmentArtifact('dist/test-only/index.js'), false);
+  });
 });

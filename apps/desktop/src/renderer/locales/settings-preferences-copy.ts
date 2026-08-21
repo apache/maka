@@ -33,6 +33,8 @@ export type SettingsPreferencesCopy = {
     privacyHelp: string;
     chatDefaults: string;
     chatDefaultsHelp: string;
+    shell: string;
+    shellHelp: string;
     network: string;
     networkHelp: string;
     theme: string;
@@ -116,6 +118,17 @@ export type SettingsPreferencesCopy = {
     followModelDefault: string;
     saveDefaultThinkingFailed: string;
     saveDefaultPermissionFailed: string;
+    shellPreference: string;
+    shellPreferenceHelp: string;
+    shellAuto: string;
+    shellGitBash: string;
+    shellExecutable: string;
+    shellExecutableHelp: string;
+    saveShell: string;
+    savingShell: string;
+    shellSaved: string;
+    saveShellFailed: string;
+    shellExecutableRejected: string;
     proxy: string;
     proxyHelp: string;
     enableProxy: string;
@@ -195,6 +208,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       identity: '身份', identityHelp: 'Maka 如何称呼你，以及界面语言和回答语气。',
       privacy: '隐私与通知', privacyHelp: '本地数据的读写范围，以及桌面通知时机。',
       chatDefaults: '任务默认', chatDefaultsHelp: '新任务的起始模型、权限模式与思考级别。',
+      shell: '命令行环境', shellHelp: '选择 Runtime Host 执行 Bash 工具和终端命令时使用的 shell。',
       network: '网络', networkHelp: 'AI 模型请求走的网络通道。',
       theme: '主题', themeHelp: '界面跟随系统，还是固定浅色或深色。',
       palette: '调色板', paletteHelp: '强调色与画布色调；切换会立即生效并保存在本地。',
@@ -221,6 +235,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     general: {
       incognito: '隐身模式', incognitoHelp: '开启后暂停本地记忆读写、联网搜索和定时任务触发。', enableIncognito: '启用隐身模式', incognitoFailed: '隐身模式切换失败', notifications: '完成时发送系统通知', notificationsHelp: '窗口不在前台时，在回答完成或出错后发送桌面通知。', notificationsFailed: '通知设置切换失败', workspaceInstructions: '遵循项目指令', workspaceInstructionsHelp: '自动读取每个项目中已有的 AGENTS.md、CLAUDE.md 或 GEMINI.md；文件仍由各自项目管理。', workspaceInstructionsFailed: '项目指令设置切换失败', updateFailed: '设置未生效，请稍后重试。',
       defaultModel: '默认模型', defaultModelHelp: '新任务默认使用的模型。', notSet: '未设置', saveDefaultModelFailed: '保存默认模型失败', defaultPermission: '默认权限模式', defaultPermissionHelp: '新任务默认使用的权限模式；可在任务内随时切换。', saveDefaultPermissionFailed: '保存默认权限模式失败', defaultThinking: '默认思考级别', defaultThinkingHelp: '新任务的思考级别；当前模型不支持所选级别时用模型默认。', followModelDefault: '跟随模型默认', saveDefaultThinkingFailed: '保存默认思考级别失败',
+      shellPreference: 'Bash 工具 shell', shellPreferenceHelp: '自动模式保持 Windows 的 PowerShell 优先规则；Git Bash 是仅对当前 Runtime Host 生效的显式覆盖。', shellAuto: '自动（推荐）', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 可执行文件', shellExecutableHelp: '填写 Runtime Host 所在 Windows 机器上 bash.exe 的绝对路径。也支持该机器上的旧版 System32 WSL Bash；保存时会验证 GNU Bash。', saveShell: '保存 shell 设置', savingShell: '正在保存…', shellSaved: '已保存', saveShellFailed: '保存 shell 设置失败', shellExecutableRejected: '当前 Runtime Host 无法把该路径作为 GNU Bash 运行。请检查 Host 是否为 Windows、路径是否存在，并确认文件名为 bash.exe。',
       proxy: '代理服务器', proxyHelp: '为 AI 模型请求配置网络代理', enableProxy: '启用代理服务器', saveNetworkFailed: '保存网络设置失败', proxyProtocol: '代理协议', serverAddress: '服务器地址', port: '端口', proxyAuth: '代理认证', proxyAuthHelp: '需要用户名和密码时开启。', enableProxyAuth: '启用代理认证', username: '用户名', password: '密码', bypassList: '代理白名单', bypassHelp: '这些域名将绕过代理直连，多个用逗号分隔。', autoBypass: (count) => `已自动添加 ${count} 个域名。代理仅作用于 AI 模型请求。`, testing: '测试中…', testCurrent: '测试当前配置', proxyReachable: '代理可达', proxyTestFailed: '代理测试失败', proxyTestError: '代理测试出错',
     },
     about: {
@@ -249,6 +264,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       identity: 'Identity', identityHelp: 'How Maka addresses you, plus interface language and response tone.',
       privacy: 'Privacy and notifications', privacyHelp: 'What Maka may read and write locally, and when it notifies you.',
       chatDefaults: 'Task defaults', chatDefaultsHelp: 'The model, permission mode, and thinking level a new task starts on.',
+      shell: 'Command environment', shellHelp: 'Choose the shell the Runtime Host uses for Bash tools and terminal commands.',
       network: 'Network', networkHelp: 'The network path AI model requests take.',
       theme: 'Theme', themeHelp: 'Follow the system appearance, or stay on light or dark.',
       palette: 'Color palette', paletteHelp: 'Accent and canvas colors. Changes apply immediately and are saved locally.',
@@ -270,6 +286,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     general: {
       incognito: 'Incognito mode', incognitoHelp: 'Pause local memory, web search, and scheduled task triggers.', enableIncognito: 'Enable incognito mode', incognitoFailed: 'Could not change incognito mode', notifications: 'Send a system notification when finished', notificationsHelp: 'Notify when a response finishes or fails while the window is in the background.', notificationsFailed: 'Could not change notification settings', workspaceInstructions: 'Follow project instructions', workspaceInstructionsHelp: 'Automatically read existing AGENTS.md, CLAUDE.md, or GEMINI.md files in each project. Manage the files in their respective projects.', workspaceInstructionsFailed: 'Could not change project instruction settings', updateFailed: 'The setting was not applied. Try again later.', defaultModel: 'Default model', defaultModelHelp: 'Model used by new tasks.', notSet: 'Not set', saveDefaultModelFailed: 'Could not save the default model', defaultPermission: 'Default permission mode', defaultPermissionHelp: 'Initial permission mode for new tasks; it can be changed at any time.', saveDefaultPermissionFailed: 'Could not save the default permission mode', defaultThinking: 'Default thinking level', defaultThinkingHelp: 'Thinking level for new tasks; models that do not offer the chosen level use their own default.', followModelDefault: 'Follow model default', saveDefaultThinkingFailed: 'Could not save the default thinking level', proxy: 'Proxy server', proxyHelp: 'Configure a network proxy for AI model requests', enableProxy: 'Enable proxy server', saveNetworkFailed: 'Could not save network settings', proxyProtocol: 'Proxy protocol', serverAddress: 'Server address', port: 'Port', proxyAuth: 'Proxy authentication', proxyAuthHelp: 'Enable this when a username and password are required.', enableProxyAuth: 'Enable proxy authentication', username: 'Username', password: 'Password', bypassList: 'Proxy bypass list', bypassHelp: 'These domains connect directly. Separate multiple domains with commas.', autoBypass: (count) => `${count} ${count === 1 ? 'domain was' : 'domains were'} added automatically. The proxy applies to AI model requests only.`, testing: 'Testing…', testCurrent: 'Test current configuration', proxyReachable: 'Proxy is reachable', proxyTestFailed: 'Proxy test failed', proxyTestError: 'Could not test proxy',
+      shellPreference: 'Bash tool shell', shellPreferenceHelp: 'Automatic keeps the PowerShell-first Windows default. Git Bash is an explicit override for the current Runtime Host.', shellAuto: 'Automatic (recommended)', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash executable', shellExecutableHelp: 'Enter the absolute path to bash.exe on the Windows machine running the Runtime Host. The legacy System32 WSL Bash shim is also recognized; Maka verifies GNU Bash before saving.', saveShell: 'Save shell setting', savingShell: 'Saving…', shellSaved: 'Saved', saveShellFailed: 'Could not save shell setting', shellExecutableRejected: 'The current Runtime Host could not run that path as GNU Bash. Check that the Host runs Windows, the path exists, and the file is named bash.exe.',
     },
     about: {
       loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Environment info copied', pasteHint: 'Paste it directly into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', packagedBuild: 'Release build', subtitle: 'A local-first AI assistant · Desktop runtime', privacyLabel: 'Privacy and security', privacyTitle: 'Local first · Private by default', privacyPoints: ['Tasks, settings, credentials, and Skill instructions stay in the local workspace.', 'Model keys stay in a local credential file; subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the task.', 'Messages, tool calls, permission decisions, and mode changes are retained locally for each task.'], copying: 'Copying…', copyEnvironment: 'Copy environment info', copyHelp: 'Copy version and platform details to help diagnose an issue. The workspace path is excluded.', keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View', reportIssueLabel: 'Report an issue',

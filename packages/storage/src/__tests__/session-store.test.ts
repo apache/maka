@@ -6,11 +6,158 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
-import { createSessionStore, isSessionNotFoundError } from '../session-store.js';
+import {
+  EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS,
+  EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS,
+  createSessionStore,
+  isSessionNotFoundError,
+} from '../session-store.js';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite SessionStore', () => {
+  test('ordinary Sessions have no external origin and provenance metadata is immutable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-external-origin-'));
+    const store = createSessionStore(root);
+    try {
+      const ordinary = await store.create(makeInput());
+
+      assert.equal(ordinary.externalOrigin, undefined);
+      await assert.rejects(
+        store.updateHeader(ordinary.id, { externalOrigin: undefined }),
+        /external.*origin.*immutable/i,
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('looks up complete published import counts with bounded newest Session ids', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-external-origin-lookup-'));
+    const store = createSessionStore(root);
+    const importSession = async (sourceSessionId: string) =>
+      store.createImportedSession(makeInput(), [], {
+        adapterId: 'fake',
+        sourceSessionId,
+      });
+    try {
+      const duplicates = await Promise.all([
+        importSession('duplicate'),
+        importSession('duplicate'),
+        importSession('duplicate'),
+      ]);
+      await Promise.all(
+        duplicates.map((session, index) =>
+          store.updateHeader(session.id, {
+            createdAt: index === 0 ? 100 : 200,
+            transcriptLedgerVersion: 1,
+          }),
+        ),
+      );
+      const archived = await importSession('archived');
+      await store.updateHeader(archived.id, { transcriptLedgerVersion: 1 });
+      const archivedSnapshot = await store.readHeaderRecordSnapshot(archived.id);
+      await store.setSessionsArchivedVersioned(
+        [{ sessionId: archived.id, expectedVersion: archivedSnapshot.revision }],
+        true,
+      );
+      await importSession('staging');
+      const deleted = await importSession('deleted');
+      await store.updateHeader(deleted.id, { transcriptLedgerVersion: 1 });
+      await store.remove(deleted.id);
+      await store.create(makeInput({ parentSessionId: duplicates[0]!.id }));
+
+      const result = await store.lookupExternalSessionImports(
+        'fake',
+        ['duplicate', 'archived', 'staging', 'deleted', 'ordinary', 'missing'],
+        2,
+      );
+      const newestDuplicateIds = duplicates
+        .slice(1)
+        .map(({ id }) => id)
+        .sort((left, right) => left.localeCompare(right));
+
+      assert.deepEqual(result, [
+        {
+          sourceSessionId: 'duplicate',
+          livePublishedImportCount: 3,
+          recentSessionIds: newestDuplicateIds,
+        },
+        {
+          sourceSessionId: 'archived',
+          livePublishedImportCount: 1,
+          recentSessionIds: [archived.id],
+        },
+      ]);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('bounds external import lookup source and recent-id requests', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-external-origin-bounds-'));
+    const store = createSessionStore(root);
+    try {
+      await assert.rejects(
+        store.lookupExternalSessionImports(
+          'fake',
+          Array.from(
+            { length: EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS + 1 },
+            (_, index) => `source-${index}`,
+          ),
+          1,
+        ),
+        /at most .* source ids/,
+      );
+      await assert.rejects(
+        store.lookupExternalSessionImports(
+          'fake',
+          ['source-1'],
+          EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS + 1,
+        ),
+        /recent id limit must be between/,
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed when persisted external origin metadata is malformed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-external-origin-invalid-'));
+    const store = createSessionStore(root);
+    let sessionId = '';
+    try {
+      const session = await store.create(makeInput());
+      sessionId = session.id;
+    } finally {
+      await store.close?.();
+    }
+
+    const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      database
+        .prepare(
+          `UPDATE session_metadata
+           SET payload_json = json_set(payload_json, '$.externalOrigin', json(?))
+           WHERE session_id = ?`,
+        )
+        .run(JSON.stringify({ adapterId: '', sourceSessionId: 42 }), sessionId);
+    } finally {
+      database.close();
+    }
+
+    const reopened = createSessionStore(root);
+    try {
+      await assert.rejects(reopened.readHeaderSnapshot(sessionId), /malformed fields/);
+    } finally {
+      await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('persists session metadata and messages in one SQLite authority', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-sqlite-'));
     const store = createSessionStore(root);
@@ -51,7 +198,10 @@ describe('SQLite SessionStore', () => {
       const visible = await store.create(makeInput({ name: 'Visible Session' }));
       const staging = await Promise.all(
         Array.from({ length: 32 }, (_, index) =>
-          store.createImportedSession(makeInput({ name: `Staging Session ${index}` }), []),
+          store.createImportedSession(makeInput({ name: `Staging Session ${index}` }), [], {
+            adapterId: 'fake',
+            sourceSessionId: `source-${index}`,
+          }),
         ),
       );
 
@@ -340,6 +490,9 @@ describe('SQLite SessionStore', () => {
       ALTER TABLE session_metadata ADD COLUMN status_updated_at INTEGER;
       CREATE INDEX session_metadata_by_status
         ON session_metadata(status, status_updated_at DESC, session_id);
+      DROP INDEX session_metadata_by_external_origin;
+      ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
+      ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
       UPDATE session_metadata_schema SET version = 22 WHERE scope = 'session_metadata';
     `);
     legacy.close();
@@ -846,6 +999,55 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('reads back a legacy fake-backend session instead of migrating or rejecting it', async () => {
+    // #3211: `'fake'` was retired as a live backend but never migrated out of
+    // storage. Narrowing the header validator would make these rows decode as
+    // malformed and rewriting them to `'ai-sdk'` would make an unrunnable task
+    // look runnable, since `llmConnectionSlug` still points at nothing.
+    //
+    // The legacy row is seeded under the writer, not through `create`: `'fake'`
+    // is a value only an older build could write, so a test that asks today's
+    // creation path for one would be asserting a write that must not exist.
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-legacy-fake-'));
+    const store = createSessionStore(root);
+    let sessionId: string;
+    try {
+      sessionId = (await store.create(makeInput())).id;
+    } finally {
+      await store.close?.();
+    }
+
+    const legacy = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      const row = legacy
+        .prepare(`SELECT payload_json FROM session_metadata WHERE session_id = ?`)
+        .get(sessionId) as { payload_json: string };
+      const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+      payload.backend = 'fake';
+      payload.llmConnectionSlug = 'fake';
+      legacy
+        .prepare(
+          `UPDATE session_metadata
+             SET payload_json = ?, backend = ?, llm_connection_slug = ?
+           WHERE session_id = ?`,
+        )
+        .run(JSON.stringify(payload), 'fake', 'fake', sessionId);
+    } finally {
+      legacy.close();
+    }
+
+    const reopened = createSessionStore(root);
+    try {
+      const [header] = await reopened.listHeaders();
+      assert.equal(header?.backend, 'fake');
+      assert.equal(header?.llmConnectionSlug, 'fake');
+      assert.equal((await reopened.readHeaderSnapshot(sessionId)).backend, 'fake');
+    } finally {
+      await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('deletes metadata and messages through the same transaction boundary', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-delete-'));
     const store = createSessionStore(root);
@@ -877,9 +1079,8 @@ describe('SQLite SessionStore', () => {
 function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {
   return {
     cwd: '/tmp/cwd',
-    backend: 'fake',
-    llmConnectionSlug: 'fake',
-    model: 'fake-model',
+    llmConnectionSlug: 'test-connection',
+    model: 'test-model',
     permissionMode: 'ask',
     name: 'Session',
     labels: [],

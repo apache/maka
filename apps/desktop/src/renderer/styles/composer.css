@@ -158,14 +158,35 @@
 /* Cursor: product-wide native-cursor.css (maka.legacy) owns default vs pointer. */
 
 /* Astryx sm list density: DropdownMenuItem + Selector options use
-   padding-block: var(--spacing-1) (4px) when size=sm. RadioItem only sizes its
-   radio glyph from menuSize and never applies itemSizeStyles, so it stays on
-   Item balanced (8px) and permission rows look taller than + / model. Quiet
-   menus force the sm block pad so all three composer popouts share one ladder.
-   Use product --space-1 (same 4px step as Astryx --spacing-1). Upstream
-   should wire itemSizeStyles into RadioItem; drop this when it does. */
-.maka-composer-quiet-menu [role="menuitemradio"] {
+   padding-block: var(--spacing-1) (4px) when size=sm. The two selectable item
+   types only size their glyph from menuSize and never apply itemSizeStyles, so
+   they stay on Item balanced (8px) and their rows look taller than + / model.
+   Quiet menus force the sm block pad so all three composer popouts share one
+   ladder. Use product --space-1 (same 4px step as Astryx --spacing-1).
+   Upstream should wire itemSizeStyles into both; drop this when it does. */
+.maka-composer-quiet-menu [role="menuitemradio"],
+.maka-composer-quiet-menu [role="menuitemcheckbox"] {
   padding-block: var(--space-1);
+}
+
+/* The ＋ menu's mode rows carry the mark Astryx draws for a chosen option — a
+   check when chosen, nothing when not — which is what its own Selector puts on
+   a selected option, and what a menu of otherwise identical rows needs: no
+   column of empty boxes and circles ahead of the labels, and the mode icons on
+   the same x as the action rows above. Both selectable item types draw their
+   own control at the row's start, so composer.tsx passes the check through
+   `endContent` and the controls are suppressed here.
+
+   `astryx-checkbox-indicator` and `astryx-radio-indicator` are the two
+   indicators' published theme targets (see their themeProps calls), not
+   internal classes. Scoped to the ＋ panel alone: nothing outside this menu is
+   touched.
+
+   Drop these rules and the `endContent` mark together once a selectable item
+   can choose its own indicator upstream. */
+.maka-composer-plus-panel [role="menuitemcheckbox"] .astryx-checkbox-indicator,
+.maka-composer-plus-panel [role="menuitemradio"] .astryx-radio-indicator {
+  display: none;
 }
 
 /* Astryx sizes the popover to its widest row (min-width:anchor-size, no max).

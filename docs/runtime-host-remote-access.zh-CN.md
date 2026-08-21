@@ -4,7 +4,23 @@
 
 Maka Desktop、TUI 和 CLI 可以通过 TLS、SSH 或明确启用的明文 WebSocket 连接 Runtime Host。
 
-## 准备 Host
+## 设置 Linux Host
+
+在具备 Node.js 22.19 或更新版本以及可用 systemd user manager 的 Linux 机器上，发布版 CLI 可以用一个命令安装并验证持久 Runtime Host：
+
+```sh
+npx --yes maka-agent@next runtime-host setup \
+  --principal my-desktop \
+  --preset desktop-client \
+  --root /srv/maka \
+  --project-root projects=/srv/projects
+```
+
+`--principal` 应使用稳定标识；重复执行会替换该 Client 的 credential，不会不断累积 credential。命令会把当前精确版本的 Maka 安装到托管目录，启动仅监听 loopback 的服务，验证新 credential，然后只显示一次连接信息。TUI 或 CLI 使用 `terminal-client`。
+
+在 Host 上运行 `npx --yes maka-agent@next runtime-host service uninstall` 会删除 service 与托管 package，但保留 State Root 和 Project 数据。
+
+## 手动设置 Host
 
 在远程机器构建 Maka，选择持久的 State Root，并注册允许 remote Client 使用的 Project：
 
@@ -36,6 +52,23 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
 ```
 
 TUI 或 CLI 使用 `terminal-client`。命令只显示 credential 一次。
+
+在使用 systemd user manager 的 Linux 上，持久安装的 CLI 可以让 loopback Host 在 SSH 会话结束后
+继续运行：
+
+```sh
+maka runtime-host service install \
+  --root /srv/maka \
+  --project-root projects=/srv/projects
+maka runtime-host service status --json
+```
+
+安装命令会持久保存当前精确的 Node 与 Maka CLI 路径。重复执行会更新同一个 service；未指定
+WebSocket port 时会保留现有端口。卸载 npm 包前，应先执行
+`maka runtime-host service uninstall`。卸载 service 会保留 State Root 与 Project 数据。如果
+systemd user lingering 未启用，安装会给出可操作的错误，不会声称服务能够持久运行。Service
+必须从持久的全局 Maka 安装中安装，不能使用 `npx`。替换操作只会在新的 Runtime Host ready
+之后提交；失败时会恢复之前的 service。
 
 ## 选择连接方式
 
@@ -85,7 +118,9 @@ Client Profile 还必须单独持久化明文风险确认。Maka 不会把 TLS �
 
 ## 连接 Desktop
 
-打开`设置 → 工作区 → Runtime Host`，选择**添加远程 Host**，选定连接方式，再填写对应 endpoint、ready event 中的 `rootId` 和刚签发的 credential，然后选择**保存并启用**。
+打开`设置 → 工作区 → Runtime Host`，选择**添加电脑**并填写 OpenSSH 目标。Desktop 会在交互式 SSH 会话中运行已发布的 setup 命令，保存返回的 credential，验证 tunnel，然后打开远程 Project 选择器。
+
+已有 TLS、SSH 或明确允许的明文 endpoint 可通过**手动配置**添加。
 
 Credential 与 Profile 分开存储。Desktop 会让 Local 与每个已启用的 remote Host 独立保持连接，并允许指定一个默认 Host 来创建新 Session；已有 Session 仍使用自己的 Host。Remote connection 失败时仍会显示，但不会中断其他 Host。连接后从该 Host 已注册的 Project 中选择一个；Client 本地目录操作不可用。
 
@@ -128,10 +163,19 @@ maka run --host office --project '<projectId>' "总结这个项目"
 
 每个 TUI 或 CLI 进程只连接一个 Profile。TUI 的首次 SSH 连接可以交互；非交互命令要求提前配置认证。
 
+## 兼容性排查
+
+`RUNTIME_HOST_REMOTE_INCOMPATIBLE` 表示 Client 与远程 Runtime Host 无法安全通信。先比较 Client 与 Host 的 compatibility epoch；当诊断中提供相关信息时，也应检查 Client 和 Host 的 protocol range、composition ID，以及 Host 的 composition revision。
+
+请使用彼此兼容的 Client 和 Host build。更新 Host 后，由 Host 的 operator 重启远程 Runtime Host service，然后重试连接。
+
+Remote Client 不会自动升级或重启 Host、降级 transport、修改 Profile、默认 Host 或 Session，也不会在此诊断中暴露 credential、endpoint、path 或 State Root。
+
 ## 安全边界
 
 - 不要把 credential 放在命令行或 Profile JSON 中。
 - 明文连接需要持久的 Client 确认和独立的 Host 启动参数。
 - Session response 中的 `hostCwd` 只是 Host metadata，不能通过 Client filesystem 解释。
-- Remote Client 不会升级或终止 service process。
+- Remote Client 不能请求升级、重启或终止 service process。若 durable commit 的结果无法确定，
+  Host 仍会主动 drain；managed service supervisor 会将其重新拉起。
 - 在 Host 上使用 `maka runtime-host access revoke --root /srv/maka --credential <credentialId>` 撤销 credential。

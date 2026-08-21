@@ -98,6 +98,7 @@ export type {
 } from './message-receipt-store.js';
 export type {
   ProbeSessionRemovalResult,
+  ExternalSessionImportLookupResult,
   SessionCatalogPageCursor,
   SessionCatalogPageResult,
   SessionCatalogRecord,
@@ -311,6 +312,7 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
   });
   const run = <T>(operation: () => Promise<T>) =>
     runWithStorageRootLease(lease, kind, 'write', operation);
+  let closeTask: Promise<void> | undefined;
 
   const stores: ExecutionStoresWriterBase<K> & E = {
     ...extension,
@@ -321,8 +323,16 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
     sessionStore: {
       ready: () => run(() => sessionStore.ready()),
       create: (input, initialBoundary) => run(() => sessionStore.create(input, initialBoundary)),
-      createImportedSession: (input, messages) =>
-        run(() => sessionStore.createImportedSession(input, messages)),
+      createImportedSession: (input, messages, externalOrigin) =>
+        run(() => sessionStore.createImportedSession(input, messages, externalOrigin)),
+      lookupExternalSessionImports: (adapterId, sourceSessionIds, recentSessionIdLimit) =>
+        run(() =>
+          sessionStore.lookupExternalSessionImports(
+            adapterId,
+            sourceSessionIds,
+            recentSessionIdLimit,
+          ),
+        ),
       probeStableSessionCreate: (sessionId, requestFingerprint) =>
         run(() => sessionStore.probeStableSessionCreate(sessionId, requestFingerprint)),
       createStableSession: (request, initialBoundary) =>
@@ -412,12 +422,17 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       completeSessionRetirementCleanup: (sessionId) =>
         run(() => sessionStore.completeSessionRetirementCleanup(sessionId)),
       close: () =>
-        closeExecutionStorePersistence(sessionStore, runtimePersistence, {
-          agentRunStore,
-          conversationOperationalStateStore,
-          messageReceiptStore,
-          interactionStore,
-        }),
+        (closeTask ??= (async () => {
+          if (executionStoresWritersByLease.get(lease) === stores) {
+            executionStoresWritersByLease.delete(lease);
+          }
+          await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
+            agentRunStore,
+            conversationOperationalStateStore,
+            messageReceiptStore,
+            interactionStore,
+          });
+        })()),
     },
     agentRunStore: {
       createRun: (header, options) => run(() => agentRunStore.createRun(header, options)),

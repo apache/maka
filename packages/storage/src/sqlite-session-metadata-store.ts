@@ -93,6 +93,7 @@ import {
   assertSafeSessionId,
   normalizeSessionHeader,
   SessionNotFoundError,
+  type ExternalSessionImportLookupResult,
   type SessionTranscriptMessageLookupRequest,
   type SessionTranscriptPageRequest,
   type SessionTranscriptStoragePage,
@@ -1335,6 +1336,67 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  async lookupExternalSessionImports(
+    adapterId: string,
+    sourceSessionIds: readonly string[],
+    recentSessionIdLimit: number,
+  ): Promise<readonly ExternalSessionImportLookupResult[]> {
+    this.assertOpen();
+    if (sourceSessionIds.length === 0) return [];
+    const placeholders = sourceSessionIds.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(
+        `
+        SELECT external_source_session_id, session_id, import_count
+        FROM (
+          SELECT
+            external_source_session_id,
+            session_id,
+            COUNT(*) OVER (
+              PARTITION BY external_source_session_id
+            ) AS import_count,
+            ROW_NUMBER() OVER (
+              PARTITION BY external_source_session_id
+              ORDER BY created_at DESC, session_id
+            ) AS recent_rank
+          FROM session_metadata
+          WHERE external_adapter_id = ?
+            AND external_source_session_id IN (${placeholders})
+            AND COALESCE(
+              json_extract(payload_json, '$.transcriptLedgerVersion'),
+              1
+            ) <> 0
+        )
+        WHERE recent_rank <= ?
+        ORDER BY external_source_session_id, recent_rank
+      `,
+      )
+      .all(adapterId, ...sourceSessionIds, recentSessionIdLimit) as unknown as Array<{
+      readonly external_source_session_id: string;
+      readonly session_id: string;
+      readonly import_count: number;
+    }>;
+    const bySource = new Map<
+      string,
+      { readonly livePublishedImportCount: number; readonly recentSessionIds: string[] }
+    >();
+    for (const row of rows) {
+      const existing = bySource.get(row.external_source_session_id);
+      if (existing) {
+        existing.recentSessionIds.push(row.session_id);
+      } else {
+        bySource.set(row.external_source_session_id, {
+          livePublishedImportCount: row.import_count,
+          recentSessionIds: [row.session_id],
+        });
+      }
+    }
+    return sourceSessionIds.flatMap((sourceSessionId) => {
+      const result = bySource.get(sourceSessionId);
+      return result ? [{ sourceSessionId, ...result }] : [];
+    });
+  }
+
   /**
    * Cheap existence probe used by the legacy importer before reading a
    * transcript: an id already present in SQLite (live or tombstoned) is
@@ -2212,6 +2274,9 @@ export class SqliteSessionMetadataStore {
           ...work,
           target: { ...work.target },
           inputIds: [...work.inputIds],
+          ...(work.selectedResultInputs
+            ? { selectedResultInputs: work.selectedResultInputs.map((input) => ({ ...input })) }
+            : {}),
         })),
         stop: request.stop.map((stopped) => ({ ...stopped })),
         ...(request.finish
@@ -2749,6 +2814,64 @@ export class SqliteSessionMetadataStore {
       )
       .all(rootSessionId) as unknown as AgentGraphEpochRow[];
     return rows.map(decodeAgentGraphEpochBinding);
+  }
+
+  async readAgentGraphEpochByGraphId(graphId: string): Promise<AgentGraphEpochBinding | undefined> {
+    this.assertOpen();
+    assertGraphLookupIdentity(graphId, 'graph id');
+    return this.readAgentGraphEpochByGraphIdSync(graphId);
+  }
+
+  async listAgentGraphEpochPage(request: {
+    rootSessionId: string;
+    beforeEpoch?: number;
+    limit: number;
+  }): Promise<{
+    epochs: AgentGraphEpochBinding[];
+    nextBeforeEpoch: number | null;
+    currentEpoch: number | null;
+  }> {
+    this.assertOpen();
+    assertSafeSessionId(request.rootSessionId);
+    if (
+      !Number.isSafeInteger(request.limit) ||
+      request.limit < 1 ||
+      request.limit > 128 ||
+      (request.beforeEpoch !== undefined &&
+        (!Number.isSafeInteger(request.beforeEpoch) || request.beforeEpoch < 1))
+    ) {
+      throw new Error('Invalid Agent Graph epoch page request');
+    }
+    return this.readTransaction(() => {
+      const current = this.readCurrentAgentGraphEpochSync(request.rootSessionId);
+      const rows = this.db
+        .prepare(
+          `
+          SELECT
+            schema_version AS schemaVersion,
+            root_session_id AS rootSessionId,
+            epoch,
+            graph_id AS graphId,
+            created_at AS createdAt
+          FROM agent_graph_epochs
+          WHERE root_session_id = ? AND epoch < ?
+          ORDER BY epoch DESC
+          LIMIT ?
+        `,
+        )
+        .all(
+          request.rootSessionId,
+          request.beforeEpoch ?? Number.MAX_SAFE_INTEGER,
+          request.limit + 1,
+        ) as unknown as AgentGraphEpochRow[];
+      const hasMore = rows.length > request.limit;
+      const epochs = rows.slice(0, request.limit).map(decodeAgentGraphEpochBinding);
+      return {
+        epochs,
+        nextBeforeEpoch: hasMore ? (epochs.at(-1)?.epoch ?? null) : null,
+        currentEpoch: current?.epoch ?? null,
+      };
+    });
   }
 
   async purgeAgentGraphEpochs(rootSessionId: string): Promise<number> {
@@ -3328,6 +3451,9 @@ export class SqliteSessionMetadataStore {
     if (Object.prototype.hasOwnProperty.call(patch, 'subagentWorkspace')) {
       throw new Error('Subagent session workspace binding is immutable');
     }
+    if (Object.prototype.hasOwnProperty.call(patch, 'externalOrigin')) {
+      throw new Error('External Session origin is immutable');
+    }
     return this.transaction(() =>
       this.updateHeaderSync(sessionId, patch, {
         ...(options.expectedVersion === undefined
@@ -3513,6 +3639,8 @@ export class SqliteSessionMetadataStore {
           subagent_request_fingerprint,
           subagent_initial_turn_id,
           subagent_initial_run_id,
+          external_adapter_id,
+          external_source_session_id,
           revision_root_session_id,
           revision_index,
           has_unread,
@@ -3521,7 +3649,7 @@ export class SqliteSessionMetadataStore {
           model,
           metadata_version,
           committed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       )
       .run(
@@ -3542,6 +3670,8 @@ export class SqliteSessionMetadataStore {
         header.subagentSpawn?.requestFingerprint ?? null,
         header.subagentSpawn?.initialTurnId ?? null,
         header.subagentSpawn?.initialRunId ?? null,
+        header.externalOrigin?.adapterId ?? null,
+        header.externalOrigin?.sourceSessionId ?? null,
         header.revisionRootSessionId ?? null,
         header.revisionIndex ?? null,
         booleanInteger(header.hasUnread),

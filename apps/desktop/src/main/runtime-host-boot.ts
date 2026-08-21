@@ -1,5 +1,6 @@
 import { app, clipboard, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { arch as osArch, homedir, release as osRelease } from "node:os";
 import { basename, join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
@@ -18,6 +19,8 @@ import {
 } from '@maka/runtime/scheduled-task-tools';
 import { buildMcpTools } from '@maka/runtime/mcp-tools';
 import {
+  createClientRuntimeHostCredentialStore,
+  createClientRuntimeHostProfileCatalog,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
 } from "@maka/runtime-host/client";
@@ -114,7 +117,12 @@ import {
   registerDesktopRuntimeHostProfileIpc,
   resolveDesktopRuntimeHostStartup,
 } from "./runtime-host-profile-service.js";
-import { createDesktopRuntimeHostSshTerminal } from "./runtime-host-ssh-terminal.js";
+import {
+  createDesktopRuntimeHostSshTerminal,
+  isExactRuntimeHostSetupPackageSpecifier,
+  type DesktopRuntimeHostSetupPackage,
+} from "./runtime-host-ssh-terminal.js";
+import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -160,7 +168,15 @@ const userDataDir = app.getPath("userData");
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
-const runtimeHostStartup = await resolveDesktopRuntimeHostStartup(userDataDir);
+const runtimeHostCredentialStore = createClientRuntimeHostCredentialStore(userDataDir);
+const runtimeHostProfileCatalog = createClientRuntimeHostProfileCatalog(
+  userDataDir,
+  runtimeHostCredentialStore,
+);
+const runtimeHostStartup = await resolveDesktopRuntimeHostStartup(userDataDir, {
+  catalog: runtimeHostProfileCatalog,
+  credentialStore: runtimeHostCredentialStore,
+});
 let runtimeHostManager: RuntimeHostDesktopManager | undefined;
 function activeRuntimeHostRef(): DesktopTargetScope | undefined {
   const current = runtimeHostManager?.current();
@@ -271,8 +287,10 @@ const oauthPresentation = new RuntimeHostOAuthPresentation((url) => shell.openEx
 const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
   startup: runtimeHostStartup,
+  catalog: runtimeHostProfileCatalog,
+  credentialStore: runtimeHostCredentialStore,
   states: () => runtimeHostManager?.entries() ?? [],
-  enable: async (target) => {
+  enable: async (target, sshInteraction) => {
     if (target.profile.kind !== "remote" || !target.credential) {
       throw new Error("A resolved remote Runtime Host profile is required");
     }
@@ -280,20 +298,54 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
     await runtimeHostManager.enable({
       profile: target.profile,
       credential: target.credential,
-      ...(target.profile.transport.kind === "ssh"
-        ? { sshInteraction: "terminal" as const }
-        : {}),
+      ...(target.profile.transport.kind === "ssh" ? { sshInteraction } : {}),
     });
   },
   disable: async (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     await runtimeHostManager.disable(profileId);
   },
+  finalizePairing: async (profileId) => {
+    if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
+    await runtimeHostManager.finalizePairing(profileId);
+  },
   setDefault: (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     runtimeHostManager.setDefaultProfile(profileId);
   },
 });
+const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
+  ipcMain,
+  clientInstanceId: runtimeHostClientInstanceId,
+  profiles: runtimeHostProfileService,
+  runSetup: runtimeHostSshTerminal.runSetup,
+  resolveSetupPackage: runtimeHostSetupPackage,
+  send: (snapshot) =>
+    mainWindowController.send("runtime-host-onboarding:changed", snapshot),
+});
+
+function runtimeHostSetupPackage(): DesktopRuntimeHostSetupPackage {
+  if (!app.isPackaged && process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE) {
+    return { kind: "development_archive", path: process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE };
+  }
+  const manifestPath = app.isPackaged
+    ? join(app.getAppPath(), "package.json")
+    : join(app.getAppPath(), "..", "..", "packages", "cli", "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    name?: unknown;
+    version?: unknown;
+    runtimeHostSetupPackage?: unknown;
+  };
+  const specifier = app.isPackaged
+    ? manifest.runtimeHostSetupPackage
+    : manifest.name === "maka-agent" && typeof manifest.version === "string"
+      ? `maka-agent@${manifest.version}`
+      : undefined;
+  if (!isExactRuntimeHostSetupPackageSpecifier(specifier)) {
+    throw new Error("Desktop does not declare an exact Runtime Host setup package");
+  }
+  return { kind: "npm", specifier };
+}
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>
     runtimeHostManager?.defaultProfileId() ??
@@ -420,6 +472,7 @@ const updateMockState =
 const updateService = createAppUpdateService({
   currentVersion: app.getVersion(),
   isPackaged: app.isPackaged,
+  testFeedUrl: process.env.MAKA_UPDATE_TEST_FEED,
   mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
   mockState: updateMockState,
   onStatusChange: (status) =>
@@ -456,10 +509,16 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
     generation: runtimeHostGeneration,
+    // The Desktop E2E composition lives behind its own entry module, which
+    // release packaging drops: picking it here is what keeps FakeBackend and
+    // the E2E bootstrap out of the shipped Runtime Host.
     candidateEntrypoint: new URL(
-      import.meta.resolve("@maka/runtime-host/execution-candidate-main"),
+      import.meta.resolve(
+        isE2e
+          ? "@maka/runtime-host/test-only/execution-candidate-e2e-main"
+          : "@maka/runtime-host/execution-candidate-main",
+      ),
     ),
-    ...(isE2e ? { desktopE2e: true } : {}),
     ipcMain,
     workspaceRoot,
     attachmentApprovals,
@@ -666,6 +725,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+void runtimeHostProfileService.startEnabledProfiles();
 const unavailableDefault = runtimeHostStartup.unavailable.get(
   runtimeHostStartup.preferences.defaultProfileId,
 );
@@ -685,24 +745,6 @@ if (unavailableDefault) {
       console.error("[runtime-host] failed to resolve unavailable default Host:", error),
     );
 }
-// Startup may present one interactive SSH prompt without serializing every
-// enabled Host behind it. Other SSH targets fail batch-mode and remain retryable.
-for (const target of runtimeHostStartup.remotes) {
-  if (target.profile.kind !== "remote" || !target.credential) continue;
-  void runtimeHostManager
-    .enable({
-      profile: target.profile,
-      credential: target.credential,
-      ...(target.profile.transport.kind === "ssh" &&
-      target.profile.id === runtimeHostStartup.preferences.defaultProfileId
-        ? { sshInteraction: "terminal" as const }
-        : {}),
-    })
-    .catch((error) =>
-      console.error(`[runtime-host] ${target.profile.name} is unavailable:`, error),
-    );
-}
-
 const stopComputerUseSession = (sessionId: string): void => {
   const ref = parseDesktopSessionResourceKey(sessionId);
   void runtimeHostManager
@@ -1321,6 +1363,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   permissionOverlay.dismiss();
   const results = await Promise.allSettled([
     runtimeHostManager?.close(),
+    runtimeHostOnboarding.close(),
     runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),
     mcpManager.close(),

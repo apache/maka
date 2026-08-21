@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { MCP_CONFIG_VERSION } from '@maka/core/mcp';
 import { McpClientManager } from '@maka/mcp';
 import { buildMcpTools } from '@maka/runtime/mcp-tools';
 
@@ -12,7 +13,7 @@ test('MCP tools stay bound to the connection generation that advertised them', a
   });
   try {
     await manager.sync({
-      version: 1,
+      version: MCP_CONFIG_VERSION,
       mcpServers: {
         fixture: { command: process.execPath, args: [fixturePath] },
       },

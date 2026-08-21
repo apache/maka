@@ -180,6 +180,11 @@ export function isSessionToolProfile(value: unknown): value is SessionToolProfil
   return typeof value === 'string' && (SESSION_TOOL_PROFILES as readonly string[]).includes(value);
 }
 
+export interface SessionExternalOrigin {
+  readonly adapterId: string;
+  readonly sourceSessionId: string;
+}
+
 export interface SessionHeader {
   // Identity
   id: string;
@@ -216,6 +221,8 @@ export interface SessionHeader {
   subagentWorkspace?: SubagentWorkspaceBinding;
   /** Immutable Host publication identity for a cross-Session conversation copy. */
   conversationCopy?: SessionConversationCopy;
+  /** Immutable identity of the external Session imported into this Session. */
+  readonly externalOrigin?: SessionExternalOrigin;
   /** Stable root id for an edit-and-resend version family. */
   revisionRootSessionId?: string;
   /** Immediate previous version in the same conversation slot. */
@@ -232,7 +239,7 @@ export interface SessionHeader {
   hasUnread: boolean;
 
   // Backend / model config
-  backend: BackendKind;
+  backend: PersistedBackendKind;
   llmConnectionSlug: string;
   /** True after first UserMessage is flushed. Storage self-heals (§5.2). */
   connectionLocked: boolean;
@@ -259,7 +266,28 @@ export type SessionHeaderPatch = Partial<Omit<SessionHeader, 'isArchived'>> & {
   readonly isArchived?: never;
 };
 
-export type BackendKind = 'ai-sdk' | 'fake';
+/**
+ * The backend a live build may select.
+ *
+ * `'fake'` was retired with the in-process FakeBackend (#3211): nothing in a
+ * shipped build may choose it, so it is not a member here. Values read back
+ * from durable state use {@link PersistedBackendKind} instead.
+ */
+export type BackendKind = 'ai-sdk';
+
+/**
+ * The backend value a persisted record may carry.
+ *
+ * Sessions, runs and Automations written by builds that still shipped
+ * FakeBackend hold `'fake'` forever. Decode keeps accepting it so those rows
+ * stay readable — rewriting them to `'ai-sdk'` would only make an unrunnable
+ * task look runnable, since their `llmConnectionSlug` still points at nothing.
+ * Activation refuses them with the product's `fake_backend` reason (see the
+ * refusal registered in `execution-composition.ts`).
+ *
+ * Never write this type: writers take {@link BackendKind}.
+ */
+export type PersistedBackendKind = BackendKind | 'fake';
 
 export interface SessionSummary {
   id: string;
@@ -308,13 +336,12 @@ export interface SessionSummary {
   revisionOfTurnId?: string;
   revisionIndex?: number;
   revisionState?: 'preparing' | 'committed';
-  backend: BackendKind;
+  backend: PersistedBackendKind;
   llmConnectionSlug: string;
   /**
    * True once the session has user messages — its connection/model is
-   * sticky and the send path will never silently rebind it. Surfaced so
-   * the renderer can project send outcomes (#1038) without a main
-   * round-trip.
+   * sticky and compatibility projections never select a replacement target.
+   * Surfaced so onboarding can project existing-session health (#1038).
    */
   connectionLocked: boolean;
   /** Sticky session default model id for renderer/header display. */

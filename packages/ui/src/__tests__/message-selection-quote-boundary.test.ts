@@ -1,6 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createSelectionQuoteGestureBoundary } from '../use-message-selection-quote.js';
+import { parseHTML } from 'linkedom';
+import {
+  createSelectionQuoteGestureBoundary,
+  preservesNativeSelectionScroll,
+} from '../use-message-selection-quote.js';
+
+test('Markdown code keeps its native selection and scrollbar pointer gesture', () => {
+  const { document } = parseHTML(`
+    <article data-turn-id="turn-1">
+      <div class="maka-markdown-code">
+        <div role="group"><code><span id="code-text">long code</span></code></div>
+      </div>
+      <p id="prose">ordinary prose</p>
+    </article>
+  `);
+  const turn = document.querySelector('[data-turn-id]');
+  const codeText = document.querySelector('#code-text');
+  const prose = document.querySelector('#prose');
+
+  assert.ok(turn);
+  assert.ok(codeText);
+  assert.ok(prose);
+  assert.equal(preservesNativeSelectionScroll(codeText, turn), true);
+  assert.equal(preservesNativeSelectionScroll(prose, turn), false);
+});
 
 test('drag selection settles only after its owning pointer is released', () => {
   const effects: string[] = [];

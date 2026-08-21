@@ -16,7 +16,7 @@ Windows needs no secrets while the build is unsigned: electron-builder skips sig
 
 ## Create the draft
 
-1. Confirm the intended commit is on `main`, CI is green, and `apps/desktop/package.json` contains a version that has never been released.
+1. Confirm the intended commit is on `main`, CI is green, `apps/desktop/package.json` contains a version that has never been released, and the exact `maka-agent` version in `packages/cli/package.json` is public on npm.
 2. In GitHub Actions, run `Release desktop` against `main`.
 3. Confirm every workflow step passes on both platforms and a draft release named `v<version>` exists.
 4. Confirm the draft records the intended commit SHA and contains the macOS DMG, ZIP, `latest-mac.yml`, the Windows `.exe`, ZIP, `latest.yml`, the bundled Git source-materials archive, and matching `.sha256` files.

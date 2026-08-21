@@ -38,7 +38,6 @@ import {
 import type { ScheduledTaskOperationHandlerMap } from './operation-dispatcher.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type { HostedExecutionAuthority } from './hosted-execution-authority.js';
-import type { HostScheduledTaskChangeService } from './scheduled-task-change-service.js';
 import type { SessionCreateInput } from '../protocol/session-catalog.js';
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -47,6 +46,7 @@ const NATIVE_PROVIDER_RETRY_MS = 5_000;
 type ScheduledTaskSessions = Pick<ExecutionSessionWriter, 'readHeaderSnapshot'>;
 type ScheduledTaskRuntime = Pick<SessionManager, 'sendMessage'>;
 type ScheduledTaskRoot = Pick<HostedExecutionAuthority, 'admit'>;
+type HostScheduledTaskChangeServiceLike = HostScheduledTaskCoordinatorInput['changes'];
 
 interface ScheduledTaskNativeEffects {
   hasWorkspaceService(serviceId: string, version: string): boolean;
@@ -66,7 +66,9 @@ export interface HostScheduledTaskCoordinatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly nativeEffects: ScheduledTaskNativeEffects;
   readonly createSession: (input: SessionCreateInput) => Promise<void>;
-  readonly changes: HostScheduledTaskChangeService;
+  readonly changes: {
+    publish(revision: number, reason: ScheduledTaskChangedReason, taskId: string): void;
+  };
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly now?: () => number;
@@ -99,7 +101,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   readonly #runtimePolicy: RuntimePolicyStoresWriter;
   readonly #nativeEffects: ScheduledTaskNativeEffects;
   readonly #createSession: HostScheduledTaskCoordinatorInput['createSession'];
-  readonly #changes: HostScheduledTaskChangeService;
+  readonly #changes: HostScheduledTaskChangeServiceLike;
   readonly #acquireResidency: () => RuntimeHostResidency;
   readonly #requestDrain: () => void;
   readonly #now: () => number;
@@ -210,7 +212,6 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     this.beginDrain();
     await this.#lane;
     this.#closed = true;
-    this.#store.close();
   }
 
   async create(input: {

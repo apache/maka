@@ -3,8 +3,9 @@
  *
  * Reads the session's goal via the preload bridge and re-fetches whenever the
  * main process emits a `goal-change` session event (goal set / continue /
- * terminal / clear). Only surfaces goals that are still running (active or
- * waiting, or paused); a settled goal returns null so the session context disappears.
+ * pause / resume / terminal / clear). Only surfaces goals that are still
+ * running (active or waiting, or paused); a settled goal returns null so the
+ * session context disappears.
  *
  * Kept as a tiny standalone hook (no app-shell coupling) so an autonomous,
  * token-burning loop always has a visible indicator and a one-click stop,
@@ -13,26 +14,44 @@
 import { useEffect, useState } from 'react';
 import type { GoalState, GoalStatus } from '@maka/runtime/goal-state';
 
-const RUNNING_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set(['active', 'waiting', 'paused']);
+type LiveGoalStatus = Extract<GoalStatus, 'active' | 'waiting'>;
+type LiveGoalState =
+  | (GoalState & { readonly status: LiveGoalStatus })
+  | (GoalState & { readonly status: 'paused'; readonly pausedAt: number });
 
-export function useSessionGoal(sessionId: string | undefined): GoalState | null {
-  const [goal, setGoal] = useState<GoalState | null>(null);
+const LIVE_GOAL_STATUSES: ReadonlySet<GoalStatus> = new Set(['active', 'waiting', 'paused']);
+
+function isLiveGoal(goal: GoalState): goal is LiveGoalState {
+  return (
+    LIVE_GOAL_STATUSES.has(goal.status) &&
+    (goal.status !== 'paused' ||
+      (typeof goal.pausedAt === 'number' && Number.isFinite(goal.pausedAt)))
+  );
+}
+
+export function useSessionGoal(sessionId: string | undefined): LiveGoalState | null {
+  const [goal, setGoal] = useState<LiveGoalState | null>(null);
 
   useEffect(() => {
     if (!sessionId) {
       setGoal(null);
       return;
     }
+    // The previous Session's Goal is not an answer for this one, so it goes
+    // before the first fetch resolves rather than after.
+    setGoal(null);
     let cancelled = false;
+    let refreshSequence = 0;
     const refresh = (): void => {
+      const sequence = ++refreshSequence;
       void window.maka.goal
         .get(sessionId)
         .then((g) => {
-          if (cancelled) return;
-          setGoal(g && RUNNING_GOAL_STATUSES.has(g.status) ? g : null);
+          if (cancelled || sequence !== refreshSequence) return;
+          setGoal(g && isLiveGoal(g) ? g : null);
         })
         .catch(() => {
-          if (!cancelled) setGoal(null);
+          if (!cancelled && sequence === refreshSequence) setGoal(null);
         });
     };
     refresh();
@@ -45,6 +64,7 @@ export function useSessionGoal(sessionId: string | undefined): GoalState | null 
     });
     return () => {
       cancelled = true;
+      refreshSequence += 1;
       unsubscribe();
     };
   }, [sessionId]);

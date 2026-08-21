@@ -107,6 +107,7 @@ export {
   PanelRightClose,
   PanelRightOpen,
   Paperclip,
+  Pause,
   Pencil,
   Pin,
   PinOff,

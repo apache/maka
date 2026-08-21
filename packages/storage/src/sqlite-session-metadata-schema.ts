@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 27;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 28;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1017,6 +1017,23 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     DROP INDEX session_metadata_by_status;
     ALTER TABLE session_metadata DROP COLUMN status;
     ALTER TABLE session_metadata DROP COLUMN status_updated_at;
+  `,
+  ],
+  [
+    28,
+    `
+    ALTER TABLE session_metadata ADD COLUMN external_adapter_id TEXT;
+    ALTER TABLE session_metadata ADD COLUMN external_source_session_id TEXT;
+
+    CREATE INDEX session_metadata_by_external_origin
+      ON session_metadata(
+        external_adapter_id,
+        external_source_session_id,
+        created_at DESC,
+        session_id
+      )
+      WHERE external_adapter_id IS NOT NULL
+        AND external_source_session_id IS NOT NULL;
   `,
   ],
 ]);

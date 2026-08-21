@@ -6,6 +6,7 @@ import {
   decodeResponseFrame,
   decodeSessionContinuitySnapshot,
   HOST_OPERATION_SPECS,
+  REMOTE_OWNER_OPERATION_GRANTS,
   SESSION_CONTINUITY_SCHEMA_VERSION,
 } from '../protocol/index.js';
 
@@ -119,4 +120,80 @@ test('Goal projection rejects unknown fields and text beyond the shared UTF-8 bo
   assert.throws(() => decodeGoalProjection({ ...goal, extra: true }));
   assert.throws(() => decodeGoalProjection({ ...goal, condition: '界'.repeat(501) }));
   assert.throws(() => decodeGoalProjection({ ...goal, lastReason: '界'.repeat(501) }));
+});
+
+test('goal.arm carries an exact frame and refuses budgets outside the shared bounds', () => {
+  const input = {
+    sessionId: 'session-1',
+    condition: 'All tests pass',
+    maxIterations: 20,
+    tokenBudget: 50_000,
+  };
+  assert.deepEqual(decodeRequestFrame({ requestId: 'request-arm', operation: 'goal.arm', input }), {
+    requestId: 'request-arm',
+    operation: 'goal.arm',
+    input,
+  });
+  // "Not chosen" travels as null, so the key set stays exact either way.
+  assert.deepEqual(
+    decodeRequestFrame({
+      requestId: 'request-arm-defaults',
+      operation: 'goal.arm',
+      input: { ...input, maxIterations: null, tokenBudget: null },
+    }).input,
+    { ...input, maxIterations: null, tokenBudget: null },
+  );
+  const decode = (patch: Record<string, unknown>): unknown =>
+    decodeRequestFrame({
+      requestId: 'request-arm',
+      operation: 'goal.arm',
+      input: { ...input, ...patch },
+    });
+  assert.throws(() => decode({ condition: '   ' }));
+  assert.throws(() => decode({ condition: '界'.repeat(501) }));
+  assert.throws(() => decode({ maxIterations: 201 }));
+  assert.throws(() => decode({ maxIterations: 0 }));
+  assert.throws(() => decode({ tokenBudget: 999 }));
+  assert.throws(() => decode({ blockCap: 8 }), 'goal.arm takes no unknown field');
+});
+
+test('goal.arm answers with a Goal from the Session it was asked about', () => {
+  const result = { sessionId: 'session-1', goal };
+  assert.deepEqual(
+    decodeResponseFrame({
+      requestId: 'request-arm',
+      operation: 'goal.arm',
+      ok: true,
+      result,
+    }),
+    { requestId: 'request-arm', operation: 'goal.arm', ok: true, result },
+  );
+  assert.throws(() =>
+    decodeResponseFrame({
+      requestId: 'request-arm',
+      operation: 'goal.arm',
+      ok: true,
+      result: { sessionId: 'session-2', goal },
+    }),
+  );
+  assert.throws(() =>
+    HOST_OPERATION_SPECS['goal.arm'].assertOutputForInput?.(
+      {
+        sessionId: 'session-2',
+        condition: 'All tests pass',
+        maxIterations: null,
+        tokenBudget: null,
+      },
+      result,
+    ),
+  );
+});
+
+test('a remote owner may arm a Goal, because it can already cause one', () => {
+  // Withholding goal.arm would withhold nothing: a remote owner sends Turns,
+  // and the model arms its own Goal with the GoalSet tool inside one. The only
+  // thing a refusal here removes is the explicit path the user can see and
+  // stop, so the grant sits at the same tier as goal.control.
+  assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('goal.arm'), true);
+  assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('goal.control'), true);
 });

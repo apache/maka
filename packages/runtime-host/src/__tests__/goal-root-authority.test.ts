@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
-import { FakeBackend } from '@maka/runtime/fake-backend';
+import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import { GOAL_SET_TOOL_NAME } from '@maka/runtime/goal-tools';
 import { goalCheckpoint } from '@maka/runtime/goal-state';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
@@ -521,7 +521,6 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
@@ -599,7 +598,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     onSandboxBoundarySettled: async () => {},
   });
   const backends = new BackendRegistry();
-  backends.register('fake', (context) => new FakeBackend(context));
+  backends.register('ai-sdk', (context) => new FakeBackend(context));
   const authority: RuntimeHostedRootAuthority = {
     bindRun: (identity) => messages.bindRun(identity),
     executeRoot: (input) =>
@@ -761,7 +760,6 @@ function operationContext() {
   return {
     hostEpoch: 'goal-root-epoch',
     connectionId: 'connection-1',
-    surface: 'tui' as const,
     principal: 'local_os_user' as const,
     acquireResidency: () => ({ release() {} }),
   };

@@ -975,6 +975,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
       summary: 'The source turn called one opaque tool.',
+      summaryFormat: 'legacy_freeform',
       highWaterSeq: 3,
     });
     const providerCheckpoint = buildHistoryCompactCheckpoint({
@@ -1379,6 +1380,7 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
       summary: 'Both retained turns are complete.',
+      summaryFormat: 'legacy_freeform',
       highWaterSeq: 5,
     });
     await runStore.appendEvent('session-source', 'run-2', {
@@ -1557,6 +1559,7 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
       sessionId: 'session-source',
       coveredRuntimeEvents: childSourceEvents,
       summary: 'The resumed child retained both child turns.',
+      summaryFormat: 'legacy_freeform',
       highWaterSeq: 8,
     });
     await runStore.appendEvent('session-source', 'run-child-2', {

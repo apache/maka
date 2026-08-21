@@ -5,6 +5,7 @@ import { isSessionStartMode, type SessionStartMode } from '@maka/core/explore-ag
 import {
   isSessionBlockedReason,
   isSessionToolProfile,
+  type PersistedBackendKind,
   type SessionBlockedReason,
   type SessionStatus,
   type SessionSubagentProjection,
@@ -213,7 +214,7 @@ export interface SessionCatalogProjection {
   readonly revisionOfTurnId?: string;
   readonly revisionIndex?: number;
   readonly revisionState?: 'preparing' | 'committed';
-  readonly backend: 'ai-sdk' | 'fake';
+  readonly backend: PersistedBackendKind;
   readonly llmConnectionSlug: string;
   readonly connectionLocked: boolean;
   readonly model: string;
@@ -866,6 +867,9 @@ function optionalThinkingLevel(
   return { thinkingLevel: thinkingLevel(record.thinkingLevel) };
 }
 
+// `'fake'` stays accepted on decode: the projection carries the session
+// header's durable backend, and rows written by builds that shipped
+// FakeBackend still hold it (#3211).
 function backend(value: unknown): SessionCatalogProjection['backend'] {
   if (value !== 'ai-sdk' && value !== 'fake') {
     throw invalidProtocolFrame('Invalid Session backend');

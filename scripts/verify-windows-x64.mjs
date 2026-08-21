@@ -89,6 +89,16 @@ export async function verifyPackagedWindowsApp(
     smokeRenderer = smokePackagedRenderer,
     workingDirectory = appDirectory,
     expectedVersion,
+    // An expectedVersion historically marks a previously released baseline,
+    // which cannot be required to carry resources added after it shipped. A
+    // caller verifying a *current* build under a different version (the
+    // auto-update gate's upgraded install) overrides these to true so the
+    // sandbox and disclaimer checks are not silently skipped. `== null`
+    // matches the `expectedVersion ?? desktopManifest.version` fallback below,
+    // so a `null` cannot disable these checks while also meaning "no expected
+    // version".
+    requireWindowsSandbox = expectedVersion == null,
+    requireDisclaimer = expectedVersion == null,
   } = {},
 ) {
   const desktopManifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
@@ -96,10 +106,6 @@ export async function verifyPackagedWindowsApp(
   const executable = join(appDirectory, executableName);
   const appAsar = join(resources, 'app.asar');
   const sandboxExecutable = join(resources, 'windows-sandbox', 'maka-windows-sandbox.exe');
-  const requireWindowsSandbox = expectedVersion === undefined;
-  // Same reason as the sandbox above: a packaged resource added after the
-  // baseline release cannot be required of that baseline.
-  const requireDisclaimer = expectedVersion === undefined;
 
   step('checking packaged resources');
   await requirePath(executable);

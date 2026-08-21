@@ -35,6 +35,10 @@ export class ExternalSessionImporter {
         name: request.target.name ?? external.metadata.name,
       },
       external.messages,
+      {
+        adapterId: request.adapterId,
+        sourceSessionId: request.sourceSessionId,
+      },
     );
   }
 }

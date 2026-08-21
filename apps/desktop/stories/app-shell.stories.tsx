@@ -1,5 +1,4 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { userEvent } from 'storybook/test';
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
@@ -7,10 +6,8 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   ChatSurfaceLayout,
   ChatView,
-  clearGlobalInputHistory,
   Composer,
   deriveTitlebarProjectName,
-  saveGlobalInputHistoryEntry,
   SessionListPanel,
   TitlebarSessionIdentity,
 } from '@maka/ui';
@@ -22,6 +19,7 @@ import { deriveBranchBanner } from '../src/renderer/branch-banner';
 import { deriveSessionRevisionNavigation } from '../src/renderer/session-revisions';
 import { deriveSessionRail } from '../src/renderer/session-rail';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
+import { GoalDialog } from '../src/renderer/goal-dialog';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
@@ -225,15 +223,16 @@ const baseComposerProps: ComposerProps = {
   onPermissionModeChange: noop,
   // Fidelity: production app-shell always wires these (app-shell.tsx
   // ~1851-1960), so the daily composer renders the upload button, the
-  // modes menu (Plan / Swarm), and the Skills picker. Omitting them here
-  // understated the persistent element count in every shell story.
+  // mode controls (Plan / orchestration), and the Skills picker. Omitting them
+  // here understated the persistent element count in every shell story.
   onPickAttachments: noop,
   planModeActive: false,
   onPlanModeChange: noop,
-  swarmModeActive: false,
-  onSwarmModeChange: noop,
-  graphModeActive: false,
-  onGraphModeChange: noop,
+  orchestrationMode: 'default',
+  onOrchestrationModeChange: noop,
+  // Production wires this for every Session it can interact with locally
+  // (app-shell.tsx), so the ＋ menu always carries the Goal entry.
+  onSetGoal: noop,
   // Thinking is a separate right-footer Selector when levels are offered.
   activeThinkingLevels: ['off', 'low', 'medium', 'high', 'xhigh'],
   activeThinkingLevel: 'medium',
@@ -871,18 +870,8 @@ const LINEAGE_SESSIONS: SessionSummary[] = [
   }),
 ];
 
-// Real path: open a derived revision that is running an autonomous goal with
-// local memory and Deep Research enabled. Session metadata stays in one context
-// layer above the transcript instead of splitting across header pills and
-// standalone branch/revision rows. The long session name is the point: it is
-// what forces that layer to collapse rather than wrap.
-//
-// The banner reads 分自 without 从中断前: deriveBranchBanner only adds that hint
-// when the caller supplies it, and the renderer deliberately does not until
-// parent-message preloading lands (app-shell.tsx). A story that showed it would
-// be showing a screen the app cannot currently produce.
-export const SessionContextLayer: Story = {
-  render: () => (
+function GoalContextStory(props: { goal: NonNullable<ChatViewProps['goalIndicator']> }) {
+  return (
     <ComposedShell
       relatedSessions={LINEAGE_SESSIONS}
       session={{
@@ -899,18 +888,80 @@ export const SessionContextLayer: Story = {
       chat={{
         memoryActive: true,
         onOpenMemorySettings: noop,
-        goalIndicator: {
-          condition: '把 Session Context Layer 收敛到可 review 状态',
-          status: 'active',
-          iterations: 4,
-          maxIterations: 12,
-          onClear: noop,
-        },
+        goalIndicator: props.goal,
         onBranchBannerClick: noop,
         onRevisionNavigate: noop,
       }}
     />
+  );
+}
+
+// Real path: open a derived revision that is running an autonomous goal with
+// local memory and Deep Research enabled. Session metadata stays in one context
+// layer above the transcript instead of splitting across header pills and
+// standalone branch/revision rows. The long session name is the point: it is
+// what forces that layer to collapse rather than wrap.
+//
+// The banner reads 分自 without 从中断前: deriveBranchBanner only adds that hint
+// when the caller supplies it, and the renderer deliberately does not until
+// parent-message preloading lands (app-shell.tsx). A story that showed it would
+// be showing a screen the app cannot currently produce.
+export const SessionContextLayer: Story = {
+  render: () => (
+    <GoalContextStory
+      goal={{
+        condition: '把 Session Context Layer 收敛到可 review 状态',
+        status: 'active',
+        iterations: 4,
+        maxIterations: 12,
+        setAt: Date.now() - 12 * 60_000,
+        tokensSpent: 72_000,
+        tokenBudget: 200_000,
+        onPause: noop,
+        onClear: noop,
+      }}
+    />
   ),
+};
+
+export const SessionContextLayerWaiting: Story = {
+  render: () => (
+    <GoalContextStory
+      goal={{
+        condition: '等待 CI 状态变化后继续处理 review',
+        status: 'waiting',
+        iterations: 4,
+        maxIterations: 12,
+        setAt: Date.now() - 12 * 60_000,
+        tokensSpent: 72_000,
+        tokenBudget: 200_000,
+        onPause: noop,
+        onClear: noop,
+      }}
+    />
+  ),
+};
+
+export const SessionContextLayerPaused: Story = {
+  render: () => {
+    const pausedAt = Date.now() - 4 * 60_000;
+    return (
+      <GoalContextStory
+        goal={{
+          condition: '把 Session Context Layer 收敛到可 review 状态',
+          status: 'paused',
+          iterations: 4,
+          maxIterations: 12,
+          setAt: pausedAt - 8 * 60_000,
+          pausedAt,
+          tokensSpent: 72_000,
+          tokenBudget: 200_000,
+          onResume: noop,
+          onClear: noop,
+        }}
+      />
+    );
+  },
 };
 
 // The titlebar states the session's identity in every session view, so the
@@ -951,15 +1002,16 @@ export const PlanModeOn: Story = {
 // product accent, so the icon is what has to keep the modes distinguishable —
 // this story is where that carries its own weight.
 export const SwarmModeOn: Story = {
-  render: () => <ComposedShell composer={{ swarmModeActive: true }} />,
+  render: () => <ComposedShell composer={{ orchestrationMode: 'swarm' }} />,
 };
 
-// Real path: Plan and Swarm are independent switches (collaborationMode vs
-// orchestrationMode), so both can be on at once. This is the widest the mode
-// tail ever gets next to a real model name.
+// Real path: Plan and orchestration are separate Session fields with separate
+// lifetimes, so both can be on at once — Plan is a temporary excursion, Swarm
+// is the standing default the execution afterwards runs under. This is the
+// widest the mode tail ever gets next to a real model name.
 export const PlanAndSwarmModeOn: Story = {
   render: () => (
-    <ComposedShell composer={{ planModeActive: true, swarmModeActive: true }} />
+    <ComposedShell composer={{ planModeActive: true, orchestrationMode: 'swarm' }} />
   ),
 };
 
@@ -981,38 +1033,22 @@ export const ModeOnWithPendingAttachments: Story = {
   ),
 };
 
-const RECALLED_PROMPT = '帮我把 composer 的样式再收紧一点';
+// Real path: this Session already has a running Goal, which the composer shows
+// above the input. Arming refuses a second one, so the ＋ menu's Goal entry
+// says why instead of opening a dialog that would fail on submit.
+export const GoalAlreadySet: Story = {
+  render: () => <ComposedShell composer={{ goalActive: true }} />,
+};
 
-// Real path: the user has sent this prompt before and starts retyping it, so
-// the editor offers the rest inside the field.
-//
-// A review driver, not coverage: the render smoke opens stories in embedded
-// mode, which disables autoplay (FIDELITY.md), so nothing below is executed by
-// CI. The active-offer lifecycle — Tab, caret, focus, composition, trigger-menu
-// priority, streaming Escape — is pinned in
-// `apps/desktop/e2e/composer-inline-completion.spec.ts`, which does run.
-export const ComposerInlineSuggestion: Story = {
-  // Seeded through the module's own write path, before the story mounts:
-  // `useComposerHistory` reads storage once at mount and thereafter follows
-  // that module's writes, so poking the key from `play` would seed a list
-  // nobody holds.
-  loaders: [
-    async () => {
-      clearGlobalInputHistory();
-      saveGlobalInputHistoryEntry(RECALLED_PROMPT);
-      return {};
-    },
-  ],
-  render: () => <ComposedShell chat={{ messages: [] }} />,
-  play: async ({ canvasElement }) => {
-    // Scoped to this canvas, not the document: Storybook can have other
-    // stories mounted, and a document-wide lookup would drive whichever
-    // composer happened to be first.
-    const editable = canvasElement.querySelector<HTMLElement>(
-      '.maka-composer-editor [contenteditable="true"]',
-    );
-    if (!editable) return;
-    await userEvent.click(editable);
-    await userEvent.keyboard(RECALLED_PROMPT.slice(0, 3));
-  },
+// Real path: composer ＋ → 设定 Goal…, on a Session with no Goal running and no
+// Turn in flight — app-shell mounts this dialog at the top level, over the
+// shell, exactly as composed here. It is the only place the two budgets that
+// stop a Goal are visible before one starts.
+export const GoalDialogOpen: Story = {
+  render: () => (
+    <>
+      <ComposedShell />
+      <GoalDialog sessionId="session-1" onClose={noop} />
+    </>
+  ),
 };

@@ -33,6 +33,74 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  test('migrates v27 metadata to v28 without backfilling external origin', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-v27-'));
+    const path = join(root, 'state.sqlite');
+    const legacyHeader = fullHeader({
+      parentSessionId: undefined,
+      branchOfTurnId: undefined,
+      revisionRootSessionId: undefined,
+      revisionParentSessionId: undefined,
+      revisionOfTurnId: undefined,
+      revisionIndex: undefined,
+      revisionState: undefined,
+    });
+    const setup = createSqliteSessionMetadataStore(path);
+    try {
+      await setup.create(legacyHeader);
+    } finally {
+      setup.close();
+    }
+    const legacy = new DatabaseSync(path);
+    try {
+      legacy.exec(`
+        DROP INDEX session_metadata_by_external_origin;
+        ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
+        ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
+        UPDATE session_metadata_schema SET version = 27 WHERE scope = 'session_metadata';
+      `);
+    } finally {
+      legacy.close();
+    }
+
+    const migrated = createSqliteSessionMetadataStore(path);
+    try {
+      assert.equal(migrated.schemaVersion(), 28);
+      assert.equal((await migrated.read(legacyHeader.id)).header.externalOrigin, undefined);
+    } finally {
+      migrated.close();
+    }
+    const schema = new DatabaseSync(path);
+    try {
+      const columns = schema
+        .prepare('PRAGMA table_info(session_metadata)')
+        .all() as unknown as Array<{
+        readonly name: string;
+      }>;
+      assert.equal(
+        columns.some(({ name }) => name === 'external_adapter_id'),
+        true,
+      );
+      assert.equal(
+        columns.some(({ name }) => name === 'external_source_session_id'),
+        true,
+      );
+      const externalOriginIndex = schema
+        .prepare(
+          `SELECT sql FROM sqlite_master
+           WHERE type = 'index' AND name = 'session_metadata_by_external_origin'`,
+        )
+        .get() as { readonly sql: string } | undefined;
+      assert.match(
+        externalOriginIndex?.sql ?? '',
+        /WHERE\s+external_adapter_id IS NOT NULL\s+AND external_source_session_id IS NOT NULL/i,
+      );
+    } finally {
+      schema.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('identifies an incompatible persisted message without exposing its content', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-message-incompatible-'));
     const path = join(root, 'state.sqlite');
@@ -188,6 +256,9 @@ describe('SqliteSessionMetadataStore', () => {
             status_updated_at = json_extract(payload_json, '$.statusUpdatedAt');
           CREATE INDEX session_metadata_by_status
             ON session_metadata(status, status_updated_at DESC, session_id);
+          DROP INDEX session_metadata_by_external_origin;
+          ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
+          ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
         `);
         legacy
           .prepare(
@@ -445,6 +516,9 @@ describe('SqliteSessionMetadataStore', () => {
             status_updated_at = json_extract(payload_json, '$.statusUpdatedAt');
           CREATE INDEX session_metadata_by_status
             ON session_metadata(status, status_updated_at DESC, session_id);
+          DROP INDEX session_metadata_by_external_origin;
+          ALTER TABLE session_metadata DROP COLUMN external_adapter_id;
+          ALTER TABLE session_metadata DROP COLUMN external_source_session_id;
           UPDATE session_metadata_schema SET version = 26 WHERE scope = 'session_metadata';
         `);
         legacy

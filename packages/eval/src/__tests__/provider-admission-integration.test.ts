@@ -314,14 +314,32 @@ test('a request arriving while the proxy drains is refused, not counted', async 
   assert.ok(address && typeof address !== 'string');
   const child = join(root, 'child.mjs');
   const straggler = join(root, 'straggler.mjs');
-  // Outlives its parent, holds one request open across the subject's exit, then
-  // starts another -- the shape of a background service the agent left running.
+  const childExited = join(root, 'logs/agent/opencode.wrapper-state.json');
+  // Outlives its parent and holds the child's stdout pipe open, keeping the
+  // wrapper inside runChild until the exit callback publishes its barrier.
+  // The second request therefore cannot race ahead of that callback, while a
+  // report-time-only admission cut deadlocks instead of satisfying the test.
   await writeFile(
     straggler,
-    `import { writeFileSync } from 'node:fs';
-const [, , baseUrl, outcomePath] = process.argv;
+    `import { readFileSync, writeFileSync } from 'node:fs';
+const [, , baseUrl, outcomePath, childExitedPath] = process.argv;
 const held = fetch(\`\${baseUrl}/responses\`, { method: 'POST', body: '{}' }).catch(() => undefined);
-await new Promise((resolve) => setTimeout(resolve, 300));
+const deadline = Date.now() + 5_000;
+let sawChildExit = false;
+while (Date.now() < deadline) {
+  try {
+    if (JSON.parse(readFileSync(childExitedPath, 'utf8')).phase === 'child_exited') {
+      sawChildExit = true;
+      break;
+    }
+  } catch {}
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (!sawChildExit) {
+  await held;
+  writeFileSync(outcomePath, JSON.stringify({ status: -2 }));
+  process.exit(2);
+}
 let status = 0;
 try {
   status = (await fetch(\`\${baseUrl}/responses\`, { method: 'POST', body: '{}' })).status;
@@ -336,9 +354,9 @@ await held;
     child,
     `import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-spawn(process.execPath, [${JSON.stringify(straggler)}, process.env.DEEPSEEK_BASE_URL, ${JSON.stringify(outcome)}], {
+spawn(process.execPath, [${JSON.stringify(straggler)}, process.env.DEEPSEEK_BASE_URL, ${JSON.stringify(outcome)}, ${JSON.stringify(childExited)}], {
   detached: true,
-  stdio: 'ignore',
+  stdio: ['ignore', 'inherit', 'ignore'],
 }).unref();
 // Exits only once the proxy has a request to drain, so what follows is the
 // drain window rather than a race against it.

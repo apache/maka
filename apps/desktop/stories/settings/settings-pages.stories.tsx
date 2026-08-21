@@ -18,7 +18,7 @@ import type {
   PermissionSnapshot,
 } from '@maka/core/capabilities';
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
-import type { ExternalSessionSummary } from '@maka/core/external-session';
+import type { DesktopExternalSessionCatalogItem } from '../../src/preload/external-session-catalog';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
@@ -721,7 +721,7 @@ const makaBridge = {
         nextCursor: end < visible.length ? EXTERNAL_SECOND_PAGE : null,
       };
     },
-    import: async () => ({ ok: false as const }),
+    import: async () => ({ ok: false as const, reason: 'commit_outcome_unknown' as const }),
   },
   // Appearance mounts CustomPetSettingsSection, which reads and subscribes on
   // window.maka.pets. Without this fixture the catalog story throws on mount
@@ -814,24 +814,31 @@ const archivedTaskSessions: SessionSummary[] = [
 const EXTERNAL_PAGE_SIZE = 2;
 const EXTERNAL_SECOND_PAGE = 'page-2';
 
-const externalConversations: ExternalSessionSummary[] = [
+const externalConversations: DesktopExternalSessionCatalogItem[] = [
   {
     id: 'codex-01930f',
     name: 'Trace the flaky worktree teardown in CI',
     cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
     updatedAt: Date.now() - 42 * 60 * 1000,
+    importState: {
+      importedCount: 2,
+      importedSessionIds: ['imported-task-newest', 'imported-task-older'],
+      isImporting: false,
+    },
   },
   {
     id: 'codex-01930e',
     name: '把 provider catalog 的分页改成游标',
     cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
     updatedAt: Date.now() - 3 * 60 * 60 * 1000,
+    importState: { importedCount: 1, importedSessionIds: ['imported-task-1'], isImporting: true },
   },
   {
     id: 'codex-01930a',
     name: 'Reproduce the SQLite lock contention under parallel evals',
     cwd: '/Users/storybook-fixture-user/workspace/maka-agent',
     updatedAt: Date.now() - 2 * 24 * 60 * 60 * 1000,
+    importState: { importedCount: 0, importedSessionIds: [], isImporting: false },
   },
   {
     id: 'codex-01929c',
@@ -839,6 +846,7 @@ const externalConversations: ExternalSessionSummary[] = [
     cwd: '/Users/storybook-fixture-user/workspace/docs',
     updatedAt: Date.now() - 6 * 24 * 60 * 60 * 1000,
     archived: true,
+    importState: { importedCount: 1, importedSessionIds: ['imported-archived'], isImporting: false },
   },
 ];
 
@@ -910,6 +918,24 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
     },
   };
 }
+const gitBashSettings = mergeSettings(createDefaultSettings(), {
+  shell: {
+    preference: 'git_bash',
+    executable: 'C:\\Program Files\\Git\\bin\\bash.exe',
+  },
+});
+const withGitBashSettingsBridge = withScopedMakaBridge({
+  ...makaBridge,
+  settings: {
+    ...makaBridge.settings,
+    get: async () => gitBashSettings,
+    update: async (
+      patch: Parameters<typeof window.maka.settings.update>[0],
+    ): Promise<UpdateAppSettingsResult> => ({
+      settings: mergeSettings(gitBashSettings, patch),
+    }),
+  },
+} satisfies Record<string, unknown>);
 
 // #1364: list-page variants — empty vs populated vs long-content, per the
 // tracking issue's expected deliverables.
@@ -1159,6 +1185,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           onOpenSession={noop}
           archivedTasks={archivedTasks}
           onTaskImported={noop}
+          onRemoteHostAdded={noop}
         />
       </div>
     </>
@@ -1233,6 +1260,11 @@ export const SubagentEditor: Story = {
 // Real path: 设置 → 通用.
 export const General: Story = {
   decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="general" />,
+};
+// Real path: 设置 → 通用, after selecting Git Bash for the current Runtime Host.
+export const GeneralGitBash: Story = {
+  decorators: [withGitBashSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
 // Real path: 设置 → 外观.
@@ -1369,6 +1401,56 @@ export const ArchivedTasks: Story = {
 export const ImportTasks: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="import-tasks" />,
+};
+
+function importOutcomeRecoveryBridge(): Record<string, unknown> {
+  let importAttempted = false;
+  const source = externalConversations[2];
+  return {
+    ...makaBridge,
+    externalSessions: {
+      ...makaBridge.externalSessions,
+      list: async () => ({
+        sessions: [
+          importAttempted
+            ? {
+                ...source,
+                importState: {
+                  importedCount: 1,
+                  importedSessionIds: ['outcome-recovered-task'],
+                  isImporting: false,
+                },
+              }
+            : source,
+        ],
+        nextCursor: null,
+      }),
+      import: async () => {
+        importAttempted = true;
+        return { ok: false as const, reason: 'commit_outcome_unknown' as const };
+      },
+    },
+  };
+}
+
+// The import response is deliberately unknown; the next authoritative catalog
+// read proves that the task landed and turns the banner into a usable entry.
+// Real path: 设置 → 导入任务 → 导入, when Main reports an unknown commit outcome that catalog recovery confirms.
+export const ImportTasksOutcomeUnknownRecovered: Story = {
+  decorators: [withScopedMakaBridge(importOutcomeRecoveryBridge())],
+  render: () => <SettingsStory section="import-tasks" />,
+  play: async ({ canvasElement }) => {
+    const importButton = await waitForStoryButton(canvasElement, (candidate) =>
+      ['导入', 'Import'].includes(candidate.textContent?.trim() ?? ''),
+    );
+    await userEvent.click(importButton);
+    await waitForStoryCondition(
+      () =>
+        canvasElement.textContent?.includes('已确认导入') === true ||
+        canvasElement.textContent?.includes('Import confirmed') === true,
+      'Unknown-outcome recovery did not expose the imported task',
+    );
+  },
 };
 
 // Real path: the same page on a machine with no supported agent — the common

@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { DailyReviewArchive, DailyReviewSummary } from '@maka/core/daily-review';
 import type { ScheduledTask, ScheduledTaskRun } from '@maka/core/scheduled-task';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
+import { MCP_CONFIG_VERSION } from '@maka/core/mcp';
 import {
   ScheduledTasksPage,
   DailyReviewPage,
@@ -420,7 +421,7 @@ const DAILY_REVIEW_ARCHIVE: DailyReviewArchive = {
 type DailyReviewBridge = NonNullable<ComponentProps<typeof DailyReviewPage>['bridge']>;
 
 const configuredMcpConfig: McpConfigFile = {
-  version: 1,
+  version: MCP_CONFIG_VERSION,
   mcpServers: {
     filesystem: {
       enabled: true,
@@ -436,7 +437,7 @@ const configuredMcpConfig: McpConfigFile = {
 };
 
 const editorMcpConfig: McpConfigFile = {
-  version: 1,
+  version: MCP_CONFIG_VERSION,
   mcpServers: {
     slack: {
       enabled: false,
@@ -479,7 +480,7 @@ const configuredMcpStatuses: McpServerStatus[] = [
 ];
 
 const failedMcpConfig: McpConfigFile = {
-  version: 1,
+  version: MCP_CONFIG_VERSION,
   mcpServers: {
     'team-tools': {
       enabled: true,
@@ -532,13 +533,13 @@ const withEditorMcpBridge = withScopedMakaBridge({
 
 const withEmptyMcpBridge = withScopedMakaBridge({
   mcp: {
-    getConfig: async () => ({ version: 1, mcpServers: {} }),
+    getConfig: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
     listStatuses: async () => [],
-    setConfig: async () => ({ version: 1, mcpServers: {} }),
-    upsert: async () => ({ version: 1, mcpServers: {} }),
-    install: async () => ({ version: 1, mcpServers: {} }),
-    remove: async () => ({ version: 1, mcpServers: {} }),
-    cancelInstall: async () => ({ version: 1, mcpServers: {} }),
+    setConfig: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
+    upsert: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
+    install: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
+    remove: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
+    cancelInstall: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
     test: async () => ({ ok: true, status: configuredMcpStatuses[0], latencyMs: 42 }),
     subscribeChanges: () => () => {},
   },

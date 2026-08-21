@@ -18,6 +18,37 @@ type ResearchItem = Readonly<{ title: string; body: string }>;
 type ResearchOption = Readonly<{ label: string; body: string }>;
 type ResearchStarter = Readonly<{ label: string; prompt: string }>;
 
+/** Compact token count for chip labels: 45,200 → "45k". */
+function formatCompactTokenCount(count: number): string {
+  if (count < 1_000) return `${count}`;
+  const thousands = count / 1_000;
+  return `${thousands >= 100 ? Math.round(thousands) : Math.round(thousands * 10) / 10}k`;
+}
+
+/** Wall-clock units for the goal chip's elapsed label, per locale (zh uses spaced words, en letters). */
+interface GoalElapsedUnits {
+  second: string;
+  minute: string;
+  hour: string;
+  day: string;
+}
+
+/** One shared elapsed ladder so the zh/en goalElapsed entries cannot drift. */
+function formatGoalElapsedUnits(elapsedMs: number, units: GoalElapsedUnits): string {
+  const seconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  if (seconds < 60) return `${seconds}${units.second}`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}${units.minute}`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  if (hours < 24) {
+    return restMinutes === 0
+      ? `${hours}${units.hour}`
+      : `${hours}${units.hour} ${restMinutes}${units.minute}`;
+  }
+  return `${Math.floor(hours / 24)}${units.day} ${hours % 24}${units.hour}`;
+}
+
 export interface ConversationCopy {
   empty: {
     ariaLabel: string;
@@ -51,8 +82,6 @@ export interface ConversationCopy {
   composer: {
     placeholder: string;
     textareaAriaLabel: string;
-    /** Instruction announced after an inline completion, for screen readers. */
-    inlineCompletionHint: string;
     pastedQuoteLabel: string;
     selectedSkillsAriaLabel: string;
     removeSkillAriaLabel(name: string): string;
@@ -82,6 +111,10 @@ export interface ConversationCopy {
     chooseSkill: string;
     /** Why that entry is unavailable: the catalog is empty. */
     noSkillsAvailable: string;
+    /** The ＋ menu entry that opens the Goal dialog. */
+    setGoal: string;
+    /** Why that entry is unavailable: this Session already has an unfinished Goal. */
+    goalAlreadySet: string;
     switchDisabledStreaming: string;
     switchDisabledRunning: string;
     switchDisabledPermission: string;
@@ -89,17 +122,14 @@ export interface ConversationCopy {
     thinkingDisabledStreaming: string;
     thinkingDisabledRunning: string;
     thinkingDisabledPermission: string;
+    orchestrationModeAriaLabel: string;
     planModeLabel: string;
     enablePlanMode: string;
     disablePlanMode: string;
     planModeOnTitle: string;
     swarmModeLabel: string;
-    enableSwarmMode: string;
-    disableSwarmMode: string;
     swarmModeOnTitle: string;
     graphModeLabel: string;
-    enableGraphMode: string;
-    disableGraphMode: string;
     graphModeOnTitle: string;
     /** Inline hint shown above the composer when no model connection exists yet. */
     noModelHint: string;
@@ -252,6 +282,16 @@ export interface ConversationCopy {
     clearGoalAriaLabel: (iteration: number, max: number) => string;
     goalProgress: (iteration: number, max: number) => string;
     goalRunningAriaLabel: string;
+    goalWaitingAriaLabel: string;
+    goalPausedAriaLabel: string;
+    pauseGoalAriaLabel: (iteration: number, max: number) => string;
+    resumeGoalAriaLabel: (iteration: number, max: number) => string;
+    pauseGoal: (condition: string, iteration: number, max: number, status: string) => string;
+    resumeGoal: (condition: string, iteration: number, max: number) => string;
+    /** Wall-clock elapsed label for the goal chip, e.g. "12m". */
+    goalElapsed: (elapsedMs: number) => string;
+    /** Token usage label for the goal chip when a budget exists, e.g. "12k / 100k". */
+    goalTokens: (spent: number, budget: number) => string;
     loadFailed: string;
     loading: string;
     retryLoad: string;
@@ -343,20 +383,20 @@ const CONVERSATION_COPY = {
       startersAriaLabel: '深度研究起手式', starters: DEEP_RESEARCH_STARTER_PROMPTS,
     },
     composer: {
-      placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', inlineCompletionHint: '按 Tab 键补全，按 Esc 键忽略', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
+      placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', steerLabel: '插入消息', stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',
       chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
+      setGoal: '设定 Goal…', goalAlreadySet: '当前会话已有进行中的 Goal',
       switchDisabledStreaming: '当前任务正在流式输出，等结束后再切换模型。', switchDisabledRunning: '当前任务正在运行，等结束后再切换模型。', switchDisabledPermission: '当前有工具调用正在等待确认，处理后再切换模型。',
       thinkingDisabledStreaming: '当前任务正在流式输出，等结束后再切换思考级别。', thinkingDisabledRunning: '当前任务正在运行，等结束后再切换思考级别。', thinkingDisabledPermission: '当前有工具调用正在等待确认，处理后再切换思考级别。',
+      orchestrationModeAriaLabel: '编排模式',
       planModeLabel: 'Plan', enablePlanMode: '开启 Plan Mode', disablePlanMode: '退出 Plan Mode',
       planModeOnTitle: 'Plan 模式已启用，点击关闭',
-      swarmModeLabel: 'Swarm', enableSwarmMode: '开启 Swarm Mode', disableSwarmMode: '退出 Swarm Mode',
-      swarmModeOnTitle: 'Swarm 模式已启用，点击关闭',
-      graphModeLabel: 'Graph', enableGraphMode: '开启 Graph Mode', disableGraphMode: '退出 Graph Mode',
-      graphModeOnTitle: 'Graph 模式已启用，点击关闭',
+      swarmModeLabel: 'Swarm', swarmModeOnTitle: 'Swarm 模式已启用，点击关闭',
+      graphModeLabel: 'Graph', graphModeOnTitle: 'Graph 模式已启用，点击关闭',
       noModelHint: '还没有可用的模型连接，无法发送。', noModelAction: '前往模型设置', noModelSendTitle: '先添加一个模型连接才能发送。',
     },
     model: {
@@ -424,7 +464,8 @@ const CONVERSATION_COPY = {
           verification: '验证',
         },
       },
-      clearGoal: (condition, iteration, max, status) => `自主执行目标进行中：「${condition}」（第 ${iteration}/${max} 轮，${status}）。系统每轮后自动续行；点击可清除目标、停止续行。`, clearGoalAriaLabel: (iteration, max) => `清除自主执行目标（已进行 ${iteration}/${max} 轮）`, goalProgress: (iteration, max) => `目标 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目标正在运行',
+      clearGoal: (condition, iteration, max, status) => `自主执行目标进行中：「${condition}」（第 ${iteration}/${max} 轮，${status}）。系统每轮后自动续行；点击可清除目标、停止续行。`, clearGoalAriaLabel: (iteration, max) => `清除自主执行目标（已进行 ${iteration}/${max} 轮）`, goalProgress: (iteration, max) => `目标 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目标正在运行', goalWaitingAriaLabel: '自主目标正在等待条件变化',
+      goalPausedAriaLabel: '自主目标已暂停', pauseGoalAriaLabel: (iteration, max) => `暂停自主执行目标（已进行 ${iteration}/${max} 轮）`, resumeGoalAriaLabel: (iteration, max) => `恢复自主执行目标（已进行 ${iteration}/${max} 轮）`, pauseGoal: (condition, iteration, max, status) => `暂停自主执行目标：「${condition}」（第 ${iteration}/${max} 轮，${status}）。暂停后立即停止自动续行，不再消耗令牌；可随时恢复。`, resumeGoal: (condition, iteration, max) => `恢复自主执行目标：「${condition}」（第 ${iteration}/${max} 轮）。恢复后立即继续自动续行。`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: ' 秒', minute: ' 分钟', hour: ' 小时', day: ' 天' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
       loadFailed: '任务载入失败', loading: '载入中…', retryLoad: '重试载入', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
       branchBeforeInterrupt: '从中断前分支', sessionContextAriaLabel: '任务上下文', sessionLineageAriaLabel: '任务来源', sessionContextMore: (count) => `更多任务上下文（${count}）`,
       titlebarIdentityAriaLabel: '当前任务', openProjectFolder: (name) => `在文件管理器中打开「${name}」`, openProjectFolderAction: '打开项目文件夹',
@@ -483,20 +524,20 @@ const CONVERSATION_COPY = {
       ],
     },
     composer: {
-      placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', inlineCompletionHint: 'Press Tab to complete, Esc to dismiss', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
+      placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', steerLabel: 'Steer', stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add file or directory',
       chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
+      setGoal: 'Set a goal…', goalAlreadySet: 'This session already has a goal in progress',
       switchDisabledStreaming: 'Wait for the current response to finish before switching models.', switchDisabledRunning: 'Wait for the current run to finish before switching models.', switchDisabledPermission: 'Resolve the pending tool permission before switching models.',
       thinkingDisabledStreaming: 'Wait for the current response to finish before changing the thinking level.', thinkingDisabledRunning: 'Wait for the current run to finish before changing the thinking level.', thinkingDisabledPermission: 'Resolve the pending tool permission before changing the thinking level.',
+      orchestrationModeAriaLabel: 'Orchestration mode',
       planModeLabel: 'Plan', enablePlanMode: 'Enable Plan Mode', disablePlanMode: 'Disable Plan Mode',
       planModeOnTitle: 'Plan mode is on — click to turn off',
-      swarmModeLabel: 'Swarm', enableSwarmMode: 'Enable Swarm Mode', disableSwarmMode: 'Disable Swarm Mode',
-      swarmModeOnTitle: 'Swarm mode is on — click to turn off',
-      graphModeLabel: 'Graph', enableGraphMode: 'Enable Graph Mode', disableGraphMode: 'Disable Graph Mode',
-      graphModeOnTitle: 'Graph mode is on — click to turn off',
+      swarmModeLabel: 'Swarm', swarmModeOnTitle: 'Swarm mode is on — click to turn off',
+      graphModeLabel: 'Graph', graphModeOnTitle: 'Graph mode is on — click to turn off',
       noModelHint: 'No model connection yet, so sending is unavailable.', noModelAction: 'Go to model settings', noModelSendTitle: 'Add a model connection before sending.',
     },
     model: {
@@ -562,7 +603,8 @@ const CONVERSATION_COPY = {
           verification: 'Verification',
         },
       },
-      clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalProgress: (iteration, max) => `Goal ${iteration} of ${max}`, goalRunningAriaLabel: 'Autonomous goal running',
+      clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalProgress: (iteration, max) => `Goal ${iteration} of ${max}`, goalRunningAriaLabel: 'Autonomous goal running', goalWaitingAriaLabel: 'Autonomous goal waiting for conditions to change',
+      goalPausedAriaLabel: 'Autonomous goal paused', pauseGoalAriaLabel: (iteration, max) => `Pause autonomous goal after ${iteration}/${max} iterations`, resumeGoalAriaLabel: (iteration, max) => `Resume autonomous goal after ${iteration}/${max} iterations`, pauseGoal: (condition, iteration, max, status) => `Pause autonomous goal: “${condition}” (iteration ${iteration}/${max}, ${status}). Pausing stops autonomous continuation immediately — no more tokens burn; resume any time.`, resumeGoal: (condition, iteration, max) => `Resume autonomous goal: “${condition}” (iteration ${iteration}/${max}). Resuming continues autonomous iteration immediately.`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: 's', minute: 'm', hour: 'h', day: 'd' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
       loadFailed: 'Task failed to load', loading: 'Loading…', retryLoad: 'Retry', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
       branchBeforeInterrupt: 'Branched before interruption', sessionContextAriaLabel: 'Task context', sessionLineageAriaLabel: 'Task origin', sessionContextMore: (count) => `More task context (${count})`,
       titlebarIdentityAriaLabel: 'Current task', openProjectFolder: (name) => `Open “${name}” in the file manager`, openProjectFolderAction: 'Open project folder',

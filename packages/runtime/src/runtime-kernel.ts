@@ -59,9 +59,11 @@ import type {
   BackendFactoryContext,
   BackendRegistry,
   CompactSessionInput,
+  ResolvedChildToolActivation,
   SessionStore,
   StopSessionInput,
 } from './session-manager.js';
+import type { TurnShellPlan } from './shell-detect.js';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
 import {
   buildStatusPatch,
@@ -273,6 +275,18 @@ interface SessionSteeringState {
 
 export type BackendActivationBoundary = <T>(operation: () => Promise<T> | T) => Promise<T>;
 
+interface ChildToolActivation {
+  readonly tools: readonly MakaTool[];
+  readonly shell?: TurnShellPlan;
+}
+
+function requireChildToolActivation(
+  activation: ChildToolActivation | undefined,
+): ChildToolActivation {
+  if (!activation) throw new Error('Child tool activation was not prepared');
+  return activation;
+}
+
 export interface RuntimeKernelDeps {
   store: SessionStore;
   runStore?: AgentRunStore;
@@ -283,6 +297,7 @@ export interface RuntimeKernelDeps {
   newId: () => string;
   now: () => number;
   childTools?: readonly MakaTool[];
+  resolveChildTools?: (sessionId: string) => Promise<ResolvedChildToolActivation>;
   runtimeSource?: InvocationSource;
   runtimeInvocationObserver?: (result: InvocationResult) => void | Promise<void>;
   repairRunRuntimeLedger?: (sessionId: string, runId: string) => Promise<boolean>;
@@ -677,8 +692,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
         store: this.deps.store,
         runStore: this.deps.runStore,
         runtimeEventStore: this.deps.runtimeEventStore,
-        ...(runtimeToolBoundaryProtocol(this.deps, header)
-          ? { toolBoundaryProtocol: runtimeToolBoundaryProtocol(this.deps, header) }
+        ...(this.deps.toolBoundaryProtocol
+          ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
           : {}),
         repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
         newId: this.deps.newId,
@@ -707,15 +722,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
         throw new Error('Turn start was cancelled before runtime admission');
       }
       this.attachExecutionClaim(execution, run);
-      yield* this.runAgentTurn(
-        sessionId,
-        input,
-        run,
-        execution,
-        true,
-        options.onRunStarted,
-        header,
-      );
+      yield* this.runAgentTurn(sessionId, input, run, execution, {
+        steering: true,
+        onRunStarted: options.onRunStarted,
+        initialHeader: header,
+      });
     } finally {
       this.releaseExecutionClaim(execution);
     }
@@ -824,7 +835,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       );
     }
 
-    const continuationToolBoundaryProtocol = runtimeToolBoundaryProtocol(this.deps, header);
+    const continuationToolBoundaryProtocol = this.deps.toolBoundaryProtocol;
     const run = new AgentRun({
       sessionId: continuation.sessionId,
       header,
@@ -992,8 +1003,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       store: this.deps.store,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
-      ...(runtimeToolBoundaryProtocol(this.deps, header)
-        ? { toolBoundaryProtocol: runtimeToolBoundaryProtocol(this.deps, header) }
+      ...(this.deps.toolBoundaryProtocol
+        ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
         : {}),
       repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
       newId: this.deps.newId,
@@ -1149,12 +1160,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     await this.enterExecutionClaim(execution);
     const parentHeader = await this.deps.store.readHeader(sessionId);
     const definition = requireBuiltinAgentDefinition(input.spec.id);
-    const availableChildTools = this.deps.childTools ?? [];
-    assertAgentDefinitionRunnable({
-      definition,
-      tools: availableChildTools,
-    });
-    const childTools = buildToolsForAgentDefinition(availableChildTools, definition);
+    let childActivation: ChildToolActivation | undefined;
     const childHeader: SessionHeader = {
       ...parentHeader,
       permissionMode: definition.permissionMode,
@@ -1176,8 +1182,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       store: this.deps.store,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
-      ...(runtimeToolBoundaryProtocol(this.deps, childHeader)
-        ? { toolBoundaryProtocol: runtimeToolBoundaryProtocol(this.deps, childHeader) }
+      ...(this.deps.toolBoundaryProtocol
+        ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
         : {}),
       repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
       newId: this.deps.newId,
@@ -1186,12 +1192,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
       recordSessionMessages: false,
       hooks: {
         reserveRun: async (targetSessionId, nextHeader, activeRun) => {
+          const activation = requireChildToolActivation(childActivation);
           const active = await this.reserveChildRun(
             activeKey,
             targetSessionId,
             nextHeader,
             definition.systemPrompt,
-            childTools,
+            activation.tools,
+            activation.shell,
             activeRun,
             execution,
           );
@@ -1206,7 +1214,16 @@ export class RuntimeKernel implements RuntimeKernelLike {
     });
 
     this.attachExecutionClaim(execution, run);
-    yield* this.runAgentTurn(sessionId, userInput, run, execution);
+    yield* this.runAgentTurn(sessionId, userInput, run, execution, {
+      prepareBackendActivation: async () => {
+        const available = await this.childToolActivationForSession(sessionId);
+        assertAgentDefinitionRunnable({ definition, tools: available.tools });
+        childActivation = {
+          tools: buildToolsForAgentDefinition(available.tools, definition),
+          ...(available.shell ? { shell: available.shell } : {}),
+        };
+      },
+    });
   }
 
   async *startChildRetry(
@@ -1251,15 +1268,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
           tools: linkedSnapshot.toolNames,
         }
       : requireBuiltinAgentDefinition(input.spec.id);
-    const availableChildTools = this.deps.childTools ?? [];
+    const preflightActivation = await this.childToolActivationForSession(sessionId);
     if (!linkedSnapshot) {
       assertAgentDefinitionRunnable({
         definition: requireBuiltinAgentDefinition(input.spec.id),
-        tools: availableChildTools,
+        tools: preflightActivation.tools,
       });
     }
-    const childTools = buildToolsForAgentDefinition(availableChildTools, definition);
-    if (linkedSnapshot && childTools.length !== linkedSnapshot.toolNames.length) {
+    const preflightChildTools = buildToolsForAgentDefinition(preflightActivation.tools, definition);
+    if (linkedSnapshot && preflightChildTools.length !== linkedSnapshot.toolNames.length) {
       throw new Error('Linked child retry durable runtime tool snapshot is unavailable');
     }
     const childHeader: SessionHeader = linkedSnapshot
@@ -1288,7 +1305,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     assertContinuationSourceUnchanged(continuation, sourceRun, sourceEvents);
     await this.revalidateContinuationSafety(
       continuation,
-      childTools.map((tool) => tool.name),
+      preflightChildTools.map((tool) => tool.name),
     );
 
     const claimedAt = this.deps.now();
@@ -1312,7 +1329,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       );
     }
     await this.deps.continuationFailpoint?.('after_continuation_claim_committed');
-    const continuationToolBoundaryProtocol = runtimeToolBoundaryProtocol(this.deps, childHeader);
+    const continuationToolBoundaryProtocol = this.deps.toolBoundaryProtocol;
     const durableAdmission: {
       claimedRunHeader: AgentRunHeader;
       commitContinuationStart: (
@@ -1369,6 +1386,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       },
     };
     const activeKey = childActiveKey(sessionId, continuation.turnId);
+    let childActivation: ChildToolActivation | undefined;
     const run = new AgentRun({
       sessionId,
       header: childHeader,
@@ -1391,17 +1409,22 @@ export class RuntimeKernel implements RuntimeKernelLike {
       recordSessionMessages: false,
       hooks: {
         reserveRun: async (targetSessionId, nextHeader, activeRun) => {
-          const active = linkedSnapshot
-            ? await this.reserveParentRun(targetSessionId, nextHeader, activeRun, execution)
-            : await this.reserveChildRun(
-                activeKey,
-                targetSessionId,
-                nextHeader,
-                definition.systemPrompt,
-                childTools,
-                activeRun,
-                execution,
-              );
+          let active: BackendGeneration;
+          if (linkedSnapshot) {
+            active = await this.reserveParentRun(targetSessionId, nextHeader, activeRun, execution);
+          } else {
+            const activation = requireChildToolActivation(childActivation);
+            active = await this.reserveChildRun(
+              activeKey,
+              targetSessionId,
+              nextHeader,
+              definition.systemPrompt,
+              activation.tools,
+              activation.shell,
+              activeRun,
+              execution,
+            );
+          }
           this.reserveExecutionClaim(execution, active, activeRun);
           return active;
         },
@@ -1439,11 +1462,27 @@ export class RuntimeKernel implements RuntimeKernelLike {
           }
         : undefined,
       input.onRunStarted,
-      () =>
-        this.revalidateContinuationSafety(
+      async () => {
+        const available = await this.childToolActivationForSession(sessionId);
+        if (!linkedSnapshot) {
+          assertAgentDefinitionRunnable({
+            definition: requireBuiltinAgentDefinition(input.spec.id),
+            tools: available.tools,
+          });
+        }
+        const tools = buildToolsForAgentDefinition(available.tools, definition);
+        if (linkedSnapshot && tools.length !== linkedSnapshot.toolNames.length) {
+          throw new Error('Linked child retry durable runtime tool snapshot is unavailable');
+        }
+        childActivation = {
+          tools,
+          ...(available.shell ? { shell: available.shell } : {}),
+        };
+        await this.revalidateContinuationSafety(
           continuation,
-          childTools.map((tool) => tool.name),
-        ),
+          tools.map((tool) => tool.name),
+        );
+      },
     );
   }
 
@@ -1452,10 +1491,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
     input: UserMessageInput,
     run: AgentRun,
     execution: PendingExecutionClaim,
-    steering = false,
-    onRunStarted?: (runId: string, initialHeader: SessionHeader) => void | Promise<void>,
-    initialHeader?: SessionHeader,
+    options: {
+      steering?: boolean;
+      onRunStarted?: (runId: string, initialHeader: SessionHeader) => void | Promise<void>;
+      initialHeader?: SessionHeader;
+      prepareBackendActivation?: () => Promise<void>;
+    } = {},
   ): AsyncIterable<SessionEvent> {
+    const { steering = false, onRunStarted, initialHeader, prepareBackendActivation } = options;
     const sessionEvents = new DeliveryAckQueue<SessionEvent>();
     const { abortController, release: releaseExecutionAbort } =
       this.inheritExecutionAbort(execution);
@@ -1471,6 +1514,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         });
       }
       begin = await this.runBackendActivation(async () => {
+        await prepareBackendActivation?.();
         const started = await run.begin();
         await owners.bindInteraction(this.deps.interactionAuthority, {
           sessionId,
@@ -2819,7 +2863,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const entry = await this.shareBackendActivation(`parent:${sessionId}`, async () => {
       const current = this.active.get(sessionId);
       if (current) return current;
-      const subagent = this.resolveSubagentActivation(header);
+      const subagent = await this.resolveSubagentActivation(header);
       const backend = await this.deps.backends.build(header.backend, {
         sessionId,
         workspaceRoot: header.workspaceRoot,
@@ -2830,6 +2874,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           ? {
               systemPrompt: subagent.systemPrompt,
               tools: subagent.tools,
+              ...(subagent.shell ? { turnShellPlan: subagent.shell } : {}),
             }
           : {}),
         ...this.buildBackendRecorderHooks({
@@ -2869,9 +2914,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
   }
 
-  private resolveSubagentActivation(
+  private async resolveSubagentActivation(
     header: SessionHeader,
-  ): { systemPrompt: string; tools: MakaTool[] } | undefined {
+  ): Promise<{ systemPrompt: string; tools: MakaTool[]; shell?: TurnShellPlan } | undefined> {
     const snapshot = header.subagentRuntime;
     if (!snapshot) {
       if (header.subagentParent) {
@@ -2887,12 +2932,21 @@ export class RuntimeKernel implements RuntimeKernelLike {
       permissionMode: header.permissionMode,
       tools: snapshot.toolNames,
     };
-    const availableTools = this.deps.childTools ?? [];
-    const tools = buildToolsForAgentDefinition(availableTools, snapshotDefinition);
+    const available = await this.childToolActivationForSession(header.id);
+    const tools = buildToolsForAgentDefinition(available.tools, snapshotDefinition);
     if (tools.length !== snapshot.toolNames.length) {
       throw new Error('Subagent runtime tool snapshot is unavailable');
     }
-    return { systemPrompt: snapshot.systemPrompt, tools };
+    return {
+      systemPrompt: snapshot.systemPrompt,
+      tools,
+      ...(available.shell ? { shell: available.shell } : {}),
+    };
+  }
+
+  private async childToolActivationForSession(sessionId: string): Promise<ChildToolActivation> {
+    if (!this.deps.resolveChildTools) return { tools: this.deps.childTools ?? [] };
+    return await this.deps.resolveChildTools(sessionId);
   }
 
   private async ensureChildActive(
@@ -2901,6 +2955,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     header: SessionHeader,
     systemPrompt: string,
     tools: readonly MakaTool[],
+    turnShellPlan: TurnShellPlan | undefined,
     execution: PendingExecutionClaim,
   ): Promise<BackendGeneration> {
     await this.clearBackendQuarantineForActivation(sessionId, execution);
@@ -2927,6 +2982,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         appendMessage: async () => {},
         systemPrompt,
         tools,
+        ...(turnShellPlan ? { turnShellPlan } : {}),
         ...this.buildBackendRecorderHooks({
           resolveActive: () => this.childActive.get(activeKey),
           sessionId,
@@ -2968,6 +3024,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     header: SessionHeader,
     systemPrompt: string,
     tools: readonly MakaTool[],
+    turnShellPlan: TurnShellPlan | undefined,
     run: AgentRun,
     execution: PendingExecutionClaim,
   ): Promise<BackendGeneration> {
@@ -2977,6 +3034,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       header,
       systemPrompt,
       tools,
+      turnShellPlan,
       execution,
     );
     this.reserveGenerationRun(active, run);
@@ -3692,13 +3750,6 @@ class RuntimeRunOwnerScope {
 
 function childActiveKey(sessionId: string, turnId: string): string {
   return `${sessionId}:${turnId}`;
-}
-
-function runtimeToolBoundaryProtocol(
-  deps: Pick<RuntimeKernelDeps, 'toolBoundaryProtocol'>,
-  header: Pick<SessionHeader, 'backend'>,
-): ToolBoundaryProtocol | undefined {
-  return header.backend === 'ai-sdk' ? deps.toolBoundaryProtocol : undefined;
 }
 
 function effectiveOrchestrationForRun(

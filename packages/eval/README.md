@@ -152,15 +152,11 @@ What the verifier scores is the environment the task was left in, so a subject t
 keeps whatever it started, whatever it reported. The relay does not tear the subject's process group
 down at that point: nothing is waiting on those processes — the execution call has already returned —
 so the teardown would not unblock anything, and it would edit the thing about to be measured for the
-subjects Eval classifies as failed and not for the others. Framework timeout is the same
-measurement: the verifier still runs, the status is `subject_failed`, and leftover processes stay.
-The relay stops only the subject so the execution call can return; it does not signal the process
-group or delete the environment. Host abort is one exception, because that trial is abandoned
-rather than scored. The other is an unconfirmed timeout: if the leader never acknowledges TERM or
-KILL inside the reserved budget, the relay destroys the environment and raises instead of
-publishing a scoreable `framework_timeout` over a cell the subject may still be mutating. The same rule binds the agent frameworks: the DeepSeek Harness owns a persistent
-PTY tree and kills every descendant on shutdown, so the Eval-patched DSH subprocess skips that kill
-under `DSH_PRESERVE_BACKGROUND_PROCESSES`, which Eval always sets.
+subjects Eval classifies as failed and not for the others. Cancellation and framework timeout still
+quiesce, because there the subject has not stopped and the trial is being abandoned rather than
+scored. The same rule binds the agent frameworks: the DeepSeek Harness owns a persistent PTY tree and
+kills every descendant on shutdown, so the Eval-patched DSH subprocess skips that kill under
+`DSH_PRESERVE_BACKGROUND_PROCESSES`, which Eval always sets.
 
 A process group is not a reliable handle on a subject's processes in any case. `forkpty` makes the
 shell a session leader, and an interactive shell puts each background job in a group of its own, so a

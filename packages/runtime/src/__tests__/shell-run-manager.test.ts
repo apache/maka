@@ -29,6 +29,7 @@ import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
 
 const NO_ABORT = new AbortController().signal;
 const TEMPORARY_WORKSPACES = new Set<string>();
+const REAL_WINDOWS_GIT_BASH = windowsGitBashPlan();
 
 after(async () => {
   await Promise.all(
@@ -115,6 +116,58 @@ describe('ShellRunProcessManager', () => {
     if (result.output.mode !== 'pipes') throw new Error('expected pipes output');
     assert.match(result.output.stdout, /中文文件名\.txt/u);
     assert.doesNotMatch(result.output.stdout, /\uFFFD/u);
+  });
+
+  test('preserves the requested cwd through a real Git Bash login PTY', {
+    skip:
+      process.platform !== 'win32'
+        ? 'Git Bash PTY regression'
+        : REAL_WINDOWS_GIT_BASH
+          ? false
+          : 'Git Bash is not installed on this Windows runner',
+  }, async () => {
+    const shell = REAL_WINDOWS_GIT_BASH;
+    assert.ok(shell, 'the test skip requires a discovered Git Bash plan');
+    const cwd = await workspace();
+    await writeFile(join(cwd, 'maka-cwd-marker'), 'expected workspace', 'utf8');
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd,
+        command: 'exec "$SHELL" -l',
+        env: {
+          ...process.env,
+          SHELL: shell.exe,
+          CHERE_INVOKING: '1',
+          DISABLE_AUTO_UPDATE: 'true',
+          DISABLE_UPDATE_PROMPT: 'true',
+        },
+        shell,
+        pty: true,
+        timeoutMs: 10_000,
+      }),
+    );
+    assert.equal(initial.kind, 'shell_run');
+
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      input: "test -f maka-cwd-marker && printf 'MAKA_CWD_OK\\n'\r",
+      abortSignal: NO_ABORT,
+    });
+    const observed = await waitForPtyText(manager, initial.ref, /MAKA_CWD_OK/u, 10_000);
+    assert.equal(observed.output?.mode, 'pty');
+    if (observed.output?.mode !== 'pty') throw new Error('expected pty output');
+    assert.match(terminalText(observed.output), /MAKA_CWD_OK/u);
+
+    await manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      input: 'exit\r',
+      abortSignal: NO_ABORT,
+    });
+    const completed = await waitForTerminalShellRun(manager, initial.ref, 10_000);
+    assert.equal(completed.status, 'completed');
   });
 
   test('uses the shared explicit PowerShell pipe plan', async () => {
@@ -2274,28 +2327,44 @@ describe('ShellRunProcessManager', () => {
   });
 
   test('fails closed before terminal protocol replies can form an unbounded native write queue', async () => {
-    const manager = await createTestManager();
-    const queries = Math.floor(PTY_PROTOCOL_REPLY_MAX_BYTES / 4) + 1;
-    const initial = await manager.runBackgroundBash(
-      shellInput({
-        cwd: await workspace(),
-        command: nodeCommand(`
-        process.stdin.setRawMode?.(true);
-        process.stdin.pause();
-        const query = '\\u001b[5n'.repeat(${queries});
-        process.stdout.write(query);
-        setInterval(() => {}, 1000);
-      `),
-        pty: true,
-        timeoutMs: 10_000,
-      }),
-    );
-    const result = await waitForTerminalShellRun(manager, initial.ref, 10_000);
-    assertShellRunSnapshot(result);
-    assert.equal(result.status, 'failed');
-    assert.match(result.failureMessage ?? '', /protocol replies exceeded/);
-    assert.equal(manager.liveCount(), 0);
-    assert.equal(manager.livePtyCount(), 0);
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      const error = args[1] as NodeJS.ErrnoException | undefined;
+      if (
+        args[0] === 'Unhandled pty write error' &&
+        (error?.code === 'EBADF' || error?.code === 'EIO')
+      ) {
+        return;
+      }
+      originalConsoleError(...args);
+    };
+    try {
+      const manager = await createTestManager();
+      const queries = Math.floor(PTY_PROTOCOL_REPLY_MAX_BYTES / 4) + 1;
+      const initial = await manager.runBackgroundBash(
+        shellInput({
+          cwd: await workspace(),
+          command: nodeCommand(`
+          process.stdin.setRawMode?.(true);
+          process.stdin.pause();
+          const query = '\\u001b[5n'.repeat(${queries});
+          process.stdout.write(query);
+          setInterval(() => {}, 1000);
+        `),
+          pty: true,
+          timeoutMs: 10_000,
+        }),
+      );
+      const result = await waitForTerminalShellRun(manager, initial.ref, 10_000);
+      assertShellRunSnapshot(result);
+      assert.equal(result.status, 'failed');
+      assert.match(result.failureMessage ?? '', /protocol replies exceeded/);
+      assert.equal(manager.liveCount(), 0);
+      assert.equal(manager.livePtyCount(), 0);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      console.error = originalConsoleError;
+    }
   });
 
   test('redacts a secret across a soft wrap and the scrollback/screen boundary', async () => {
@@ -2768,6 +2837,18 @@ function windowsPowerShellPlan(): ShellPlan | undefined {
   );
   if (!existsSync(executable)) return undefined;
   return { kind: 'powershell', displayName: 'Windows PowerShell 5.1', exe: executable };
+}
+
+function windowsGitBashPlan(): ShellPlan | undefined {
+  if (process.platform !== 'win32') return undefined;
+  const executable = join(
+    process.env.ProgramFiles ?? 'C:\\Program Files',
+    'Git',
+    'bin',
+    'bash.exe',
+  );
+  if (!existsSync(executable)) return undefined;
+  return { kind: 'git-bash', displayName: 'Git Bash', exe: executable };
 }
 
 function record(input: { shellRunId: string; status: ShellRunRecord['status'] }): ShellRunRecord {

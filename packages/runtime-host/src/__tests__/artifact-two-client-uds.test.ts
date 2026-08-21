@@ -50,8 +50,8 @@ test('production Host recovers Artifact publication and preserves deletes across
     await assert.rejects(() => stat(residue.stagingPath), { code: 'ENOENT' });
     await assert.rejects(() => stat(residue.targetPath), { code: 'ENOENT' });
 
-    const desktop = await connectClient(root, 'desktop');
-    const tui = await connectClient(root, 'tui');
+    const desktop = await connectClient(root);
+    const tui = await connectClient(root);
     const deleteA = MAX_ARTIFACT_ID;
     const deleteB = 'artifact-003';
     try {
@@ -204,7 +204,7 @@ test('production Host recovers Artifact publication and preserves deletes across
     }
 
     successor = await startHost(root, capability.rootId);
-    const observer = await connectClient(root, 'run');
+    const observer = await connectClient(root);
     try {
       for (const artifactId of [deleteA, deleteB]) {
         const getResult = await getArtifact(observer, sessionId, artifactId);
@@ -273,14 +273,12 @@ async function seedExecutionRoot(
     stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
     });
     const otherSession = await stores.sessionStore.create({
       cwd: root,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -443,13 +441,9 @@ async function terminateChild(child: ChildProcess): Promise<void> {
   );
 }
 
-async function connectClient(
-  rootPath: string,
-  surface: 'desktop' | 'tui' | 'run',
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: CURRENT_PROTOCOL,
   });
   assert.equal(result.kind, 'connected');

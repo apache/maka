@@ -18,6 +18,7 @@ import {
   type PermissionProfileManaged,
   type PermissionProfileMatchContext,
 } from './permission-profile.js';
+import { serializedByteLength } from './serialized-byte-length.js';
 
 export const SANDBOX_BOUNDARY_ACCESS_MODES = ['read', 'write'] as const;
 export type SandboxBoundaryAccess = (typeof SANDBOX_BOUNDARY_ACCESS_MODES)[number];
@@ -750,12 +751,6 @@ function compareEntries(
 
 function trimTrailingSlashes(value: string): string {
   return trimTrailingPathSeparators(value);
-}
-
-function serializedByteLength(value: unknown): number {
-  const json = JSON.stringify(value);
-  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(json).byteLength;
-  return json.length;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

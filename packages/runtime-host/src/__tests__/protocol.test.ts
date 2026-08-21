@@ -40,6 +40,34 @@ import {
 } from '../protocol/turn.js';
 
 describe('Runtime Host bootstrap protocol', () => {
+  test('decodes a Client hello without a surface identity', () => {
+    const hello = {
+      kind: 'hello',
+      clientInstanceId: 'client-without-surface',
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+    } as const;
+
+    assert.deepEqual(decodeClientFrame(hello), hello);
+  });
+
+  test('ignores a legacy surface identity while decoding a Client hello', () => {
+    const hello = {
+      kind: 'hello',
+      clientInstanceId: 'legacy-surface-client',
+      surface: 'tui',
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+    } as const;
+
+    const { surface: _legacySurface, ...expected } = hello;
+    assert.deepEqual(decodeClientFrame(hello), expected);
+  });
+
   test('publishes a new compatibility epoch for Session catalog live-run state', () => {
     // Epoch 22 predates the live-run projection and rejects its added catalog
     // field, so mixed-version peers must fail during the handshake instead.
@@ -66,6 +94,14 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+  });
+
+  test('publishes a new compatibility epoch for external Session import state', () => {
+    // Epoch 25 added authoritative live run state. Requiring importState on
+    // external catalog items is another closed wire-schema change, so Clients
+    // and Hosts from epoch 25 must fail the handshake instead of decoding each
+    // other's catalog responses asymmetrically.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 25);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {

@@ -21,7 +21,6 @@ import { HostSessionRetirementCoordinator } from '../server/session-retirement-c
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'retirement-test',
   connectionId: 'retirement-test-connection',
-  surface: 'tui',
   principal: 'local_os_user',
   acquireResidency: () => ({ release() {} }),
 };
@@ -1237,7 +1236,6 @@ function sessionInput(
 ): CreateSessionInput {
   return {
     cwd: '/workspace',
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
