@@ -62,26 +62,23 @@
   font: var(--maka-text-body);
 }
 
-/* Padding and max-width belong to ChatMessageBubble; re-declaring those here
-   only forks the primitive. What stays is the product tint, the verbatim-text
-   rule (Maka renders user input as typed, which the primitive has no opinion
-   about) — and, since Visual System 2.0 (T3), the radius TIER.
+/* Padding, max-width and radius belong to ChatMessageBubble; re-declaring any
+   of them here only forks the primitive. What stays is the product tint and the
+   verbatim-text rule (Maka renders user input as typed, which the primitive has
+   no opinion about).
 
-   The primitive resolves `--radius-container` (12px). DESIGN.md §6 assigns
-   radius by box height, and container is scoped to "modals, panels, portal
-   surfaces" — a message bubble is none of those. Measured in the chat fixture
-   the filled user bubble is 44px tall, which lands it in the card tier (10px,
-   "cards, rows-as-cards, list containers"). Astryx publishes no radius prop on
-   this component (only `variant`), so the tier is expressed on Maka's own
-   class rather than by reaching into the primitive's internals.
+   Radius is absent on purpose. The primitive resolves `--radius-chat` (28px),
+   the same token `ChatComposer` reads through `--_chat-composer-radius`, so the
+   bubble and the dock round together as one conversation surface — DESIGN.md §6
+   records that as the chat rung. Astryx publishes no radius prop on this
+   component (only `variant`), so a product radius could only fight the
+   primitive, never configure it.
 
    Scoped to the filled bubble on purpose: the assistant bubble is `ghost` (no
-   fill, measured transparent), so it has no corner to round and inherits
-   nothing it needs to override. */
+   fill, measured transparent), so it carries no tint to override. */
 .maka-chat-message-bubble-user {
   background: var(--chat-user-bg);
   color: var(--chat-user-foreground, var(--foreground));
-  border-radius: var(--radius-surface);
   white-space: pre-wrap;
 }
 
