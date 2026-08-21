@@ -505,7 +505,8 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
   }
   return {
     consumerId: requiredId(value.consumerId, 'Transcript consumer'),
-    generation: requiredId(value.generation, 'Transcript generation'),
+    sessionId: requiredId(value.sessionId, 'Session'),
+    hostEpoch: requiredId(value.hostEpoch, 'Host epoch'),
     anchorSequence: anchorSequence as number | null,
     maxBytes: maxBytes as number,
   };

@@ -8,6 +8,7 @@ import {
   LOCAL_RUNTIME_HOST_PROFILE,
   sameResolvedRuntimeHostProfileTarget,
   startRuntimeHostReconnectLifecycle,
+  type CandidateExitDetails,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostReconnectBackoff,
   type RuntimeHostReconnectLifecycle,
@@ -514,6 +515,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             signal,
             starting ? target.input.remote?.sshInteraction : 'batch',
           ),
+        onReconnectError: (error) => {
+          console.warn('[runtime-host] reconnect attempt failed:', error);
+        },
         onFatalError: (error) => {
           if (!starting && target.valid) {
             target.valid = false;
@@ -542,10 +546,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     sshInteraction: RuntimeHostSshInteraction | undefined,
   ): Promise<DesktopRuntimeHostCandidate> {
     let takeoverHostEpoch: string | undefined;
+    const inheritedExit = target.input.onExit;
     while (true) {
       const result = await this.startCandidate(
         {
           ...target.input,
+          onExit: (details) => this.#reportCandidateExit(inheritedExit, details),
           ...(target.input.remote
             ? {
                 remote: {
@@ -616,6 +622,19 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   ): RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate> {
     if (!target.lifecycle) throw new Error('Desktop Runtime Host target has not started');
     return target.lifecycle;
+  }
+
+  /** Desktop-owned candidate-exit diagnostics; honors an embedder-supplied sink. */
+  #reportCandidateExit(
+    inherited: ((details: CandidateExitDetails) => void) | undefined,
+    details: CandidateExitDetails,
+  ): void {
+    inherited?.(details);
+    if (details.code === 0 && details.signal === null) {
+      console.info('[runtime-host] candidate exited cleanly', details);
+      return;
+    }
+    console.error('[runtime-host] candidate exited unexpectedly', details);
   }
 
   async #waitForReadyCandidate(

@@ -71,6 +71,7 @@ export {
 } from './catalog-reader.js';
 export {
   connectOrSpawnRuntimeHost,
+  type CandidateExitDetails,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
 } from './connect-or-spawn.js';
