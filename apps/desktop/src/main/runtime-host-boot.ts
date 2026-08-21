@@ -30,9 +30,7 @@ import {
   createSettingsStore,
   createMcpConfigStore,
 } from "@maka/storage";
-import {
-  resolveStorageRoot,
-} from "@maka/storage/root-authority";
+import { resolveStorageRoot } from "@maka/storage/root-authority";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
