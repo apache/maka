@@ -226,12 +226,12 @@ Astryx
 
 Source: https://github.com/facebook/astryx
 ChatReasoning revision: c9fe4379e9959b9ba5eeff56def34c752223450e
-Theme revision: 82d4dab3d05b9314a76ab0bda296491a65f69c88
+Theme revision: 110987b4505dc44119b94bed53d92b9840088a61
 Copyright (c) 2026 Meta Platforms, Inc.
 License: MIT
 
 Maka includes an ejected adaptation of Astryx ChatReasoning v0.1.9 and generated
-theme artifacts based on Astryx theme-neutral v0.3.0. The following MIT License
+theme artifacts based on Astryx theme-neutral v0.4.0. The following MIT License
 applies to that material:
 
 MIT License

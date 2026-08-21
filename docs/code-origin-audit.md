@@ -118,7 +118,7 @@ The file now carries the Apache-2.0 §4(b) modification notice that this lineage
 The top-level `LICENSE` now accounts for source material that is directly included or adapted in Maka:
 
 - Apache-2.0 [`@ai-sdk/provider-utils@5.0.11`](https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.11) and [`@ai-sdk/provider@4.0.3`](https://www.npmjs.com/package/@ai-sdk/provider/v/4.0.3), from which `packages/runtime/src/model-protocol.ts` adapts provider-boundary shapes;
-- MIT Astryx at `c9fe4379e9959b9ba5eeff56def34c752223450e` for the ejected `ChatReasoning` source and `82d4dab3d05b9314a76ab0bda296491a65f69c88` for theme-neutral v0.3.0 and its generated theme material;
+- MIT Astryx at `c9fe4379e9959b9ba5eeff56def34c752223450e` for the ejected `ChatReasoning` source and `110987b4505dc44119b94bed53d92b9840088a61` for theme-neutral v0.4.0 and its generated theme material;
 - MIT `trycua/cua` at `8c921b2b3bf13494724ead4f0a814d80c56a7e8b`, already recorded by pull request #2676.
 
 The desktop binary distribution also carries generated production npm notices at `apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt`, and the build checks that artifact byte-for-byte.
