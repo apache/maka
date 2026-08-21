@@ -5,8 +5,6 @@ import { fileURLToPath } from 'node:url';
 import { parseAsfSourceReferenceTag } from './product-release-identity.mjs';
 import { parseProductReleaseVersion } from './release-version.mjs';
 
-export { parseAsfSourceReferenceTag };
-
 const PACKAGE_NAME = 'maka-agent';
 const ASF_REPOSITORY = 'apache/maka';
 const WORKFLOW_PATH = '.github/workflows/asf-npm-candidate.yml';
@@ -30,20 +28,18 @@ export function asfNpmCandidateIdentity(version) {
 export function createAsfNpmCandidateRecord({
   repoRoot = defaultRepoRoot,
   releaseDirectory = join(repoRoot, 'packages/cli/release'),
-  version,
   sourceReferenceTag,
   sourceCommit,
   repository,
   runId,
   runAttempt,
 }) {
-  const identity = asfNpmCandidateIdentity(version);
-  validateRepositoryVersion(repoRoot, version);
-  const sourceReference = validateSourceReference({
+  const { version, ...sourceReference } = resolveSourceReference({
     sourceReferenceTag,
     sourceCommit,
-    version,
   });
+  const identity = asfNpmCandidateIdentity(version);
+  validateRepositoryVersion(repoRoot, version);
   const workflow = validateWorkflowIdentity({
     repository,
     path: WORKFLOW_PATH,
@@ -106,11 +102,15 @@ export function verifyAsfNpmCandidateRecord({ recordPath }) {
   }
   exactKeys(record.digests, ['sha256', 'sha512'], 'ASF npm candidate digests');
   exactKeys(record.sourceReference, ['candidateTag', 'commit'], 'ASF source reference');
-  validateSourceReference({
+  const { version: sourceVersion } = resolveSourceReference({
     sourceReferenceTag: record.sourceReference.candidateTag,
     sourceCommit: record.sourceReference.commit,
-    version: record.version,
   });
+  if (sourceVersion !== record.version) {
+    throw new Error(
+      `Source candidate tag version ${sourceVersion} does not match ${record.version}`,
+    );
+  }
   exactKeys(record.workflow, ['repository', 'path', 'runId', 'runAttempt'], 'workflow identity');
   validateWorkflowIdentity(record.workflow);
   const releaseDirectory = dirname(resolve(recordPath));
@@ -137,15 +137,16 @@ function validateRepositoryVersion(repoRoot, version) {
   }
 }
 
-function validateSourceReference({ sourceReferenceTag, sourceCommit, version }) {
+function resolveSourceReference({ sourceReferenceTag, sourceCommit }) {
   const parsedTag = parseAsfSourceReferenceTag(sourceReferenceTag);
-  if (parsedTag.version !== version) {
-    throw new Error(`Source candidate tag version ${parsedTag.version} does not match ${version}`);
-  }
   if (typeof sourceCommit !== 'string' || !/^[0-9a-f]{40}$/u.test(sourceCommit)) {
     throw new Error('ASF source candidate commit must be a full lowercase Git SHA');
   }
-  return { candidateTag: parsedTag.tag, commit: sourceCommit };
+  return {
+    version: parsedTag.version,
+    candidateTag: parsedTag.tag,
+    commit: sourceCommit,
+  };
 }
 
 function validateWorkflowIdentity({ repository, path, runId, runAttempt }) {
@@ -231,19 +232,11 @@ function main() {
     return;
   }
   if (command === 'record') {
-    const [
-      releaseDirectory,
-      version,
-      sourceReferenceTag,
-      sourceCommit,
-      repository,
-      runId,
-      runAttempt,
-    ] = arguments_;
+    const [releaseDirectory, sourceReferenceTag, sourceCommit, repository, runId, runAttempt] =
+      arguments_;
     if (
-      arguments_.length !== 7 ||
+      arguments_.length !== 6 ||
       !releaseDirectory ||
-      !version ||
       !sourceReferenceTag ||
       !sourceCommit ||
       !repository ||
@@ -251,12 +244,11 @@ function main() {
       !runAttempt
     ) {
       throw new Error(
-        'Usage: asf-npm-candidate.mjs record <release-directory> <version> <source-reference-tag> <source-commit> <repository> <run-id> <run-attempt>',
+        'Usage: asf-npm-candidate.mjs record <release-directory> <source-reference-tag> <source-commit> <repository> <run-id> <run-attempt>',
       );
     }
     const result = createAsfNpmCandidateRecord({
       releaseDirectory: resolve(releaseDirectory),
-      version,
       sourceReferenceTag,
       sourceCommit,
       repository,

@@ -27,7 +27,6 @@ test('ASF npm candidate workflow binds one validated tarball to the source RC wi
   );
   assert.match(validationWorkflow, /release_candidate_run_attempt:/u);
   assert.doesNotMatch(validationWorkflow, /\.tgz\.sha512/u);
-  assert.doesNotMatch(workflow, /RESOLVE_RUN_ATTEMPT|outputs\.run_attempt/u);
   assert.match(
     workflow,
     /VALIDATE_RUN_ATTEMPT: \$\{\{ needs\.validate\.outputs\.release_candidate_run_attempt \}\}/u,

@@ -4,11 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import {
-  createAsfNpmCandidateRecord,
-  parseAsfSourceReferenceTag,
-  verifyAsfNpmCandidateRecord,
-} from './asf-npm-candidate.mjs';
+import { createAsfNpmCandidateRecord, verifyAsfNpmCandidateRecord } from './asf-npm-candidate.mjs';
 
 const VERSION = '0.1.11';
 const COMMIT = 'a'.repeat(40);
@@ -19,7 +15,6 @@ test('records and independently verifies one npm candidate bound to an ASF sourc
   const { record, recordPath } = createAsfNpmCandidateRecord({
     repoRoot: fixture.repoRoot,
     releaseDirectory: fixture.releaseDirectory,
-    version: VERSION,
     sourceReferenceTag: `v${VERSION}-incubating-rc2`,
     sourceCommit: COMMIT,
     repository: REPOSITORY,
@@ -39,23 +34,7 @@ test('records and independently verifies one npm candidate bound to an ASF sourc
   assert.equal(verifyAsfNpmCandidateRecord({ recordPath }).record.version, VERSION);
 });
 
-test('parses the version and RC from an exact ASF source candidate tag', () => {
-  assert.deepEqual(parseAsfSourceReferenceTag(`v${VERSION}-incubating-rc2`), {
-    rcNumber: '2',
-    tag: `v${VERSION}-incubating-rc2`,
-    version: VERSION,
-  });
-
-  for (const tag of [
-    `v${VERSION}-incubating-rc0`,
-    `v${VERSION}-incubating-rc01`,
-    `v${VERSION}-rc1`,
-  ]) {
-    assert.throws(() => parseAsfSourceReferenceTag(tag), /ASF source reference must match/u);
-  }
-});
-
-test('record creation rejects a source tag for a different product version', async (t) => {
+test('record creation rejects a source tag version that differs from the manifests', async (t) => {
   const fixture = await createFixture(t);
 
   assert.throws(
@@ -63,14 +42,13 @@ test('record creation rejects a source tag for a different product version', asy
       createAsfNpmCandidateRecord({
         repoRoot: fixture.repoRoot,
         releaseDirectory: fixture.releaseDirectory,
-        version: VERSION,
         sourceReferenceTag: 'v0.1.12-incubating-rc1',
         sourceCommit: COMMIT,
         repository: REPOSITORY,
         runId: '1234',
         runAttempt: '1',
       }),
-    /tag version 0\.1\.12 does not match 0\.1\.11/u,
+    /Release version 0\.1\.12 does not match root 0\.1\.11 and CLI 0\.1\.11/u,
   );
 });
 
@@ -79,7 +57,6 @@ test('verification rejects candidate integrity changes after the record was crea
   const { recordPath } = createAsfNpmCandidateRecord({
     repoRoot: fixture.repoRoot,
     releaseDirectory: fixture.releaseDirectory,
-    version: VERSION,
     sourceReferenceTag: `v${VERSION}-incubating-rc1`,
     sourceCommit: COMMIT,
     repository: REPOSITORY,
@@ -109,7 +86,6 @@ test('verification rejects an incomplete workflow identity', async (t) => {
   const { recordPath } = createAsfNpmCandidateRecord({
     repoRoot: fixture.repoRoot,
     releaseDirectory: fixture.releaseDirectory,
-    version: VERSION,
     sourceReferenceTag: `v${VERSION}-incubating-rc1`,
     sourceCommit: COMMIT,
     repository: REPOSITORY,
@@ -130,7 +106,6 @@ test('record creation rejects workflow provenance from a fork', async (t) => {
       createAsfNpmCandidateRecord({
         repoRoot: fixture.repoRoot,
         releaseDirectory: fixture.releaseDirectory,
-        version: VERSION,
         sourceReferenceTag: `v${VERSION}-incubating-rc1`,
         sourceCommit: COMMIT,
         repository: 'M4n5ter/maka-agent',

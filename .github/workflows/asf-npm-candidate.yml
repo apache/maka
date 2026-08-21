@@ -22,7 +22,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       source_commit: ${{ steps.source.outputs.source_commit }}
-      source_reference_tag: ${{ steps.source.outputs.source_reference_tag }}
       version: ${{ steps.source.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,7 +53,6 @@ jobs:
           git fetch --no-tags origin main:refs/remotes/origin/main
           git merge-base --is-ancestor "$source_commit" origin/main
           echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
-          echo "source_reference_tag=$SOURCE_REFERENCE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$release_version" >> "$GITHUB_OUTPUT"
 
   validate:
@@ -98,7 +96,7 @@ jobs:
       - name: Bind the npm candidate to the source reference
         env:
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
-          SOURCE_REFERENCE_TAG: ${{ needs.resolve.outputs.source_reference_tag }}
+          SOURCE_REFERENCE_TAG: ${{ inputs.source_reference_tag }}
           SOURCE_COMMIT: ${{ needs.resolve.outputs.source_commit }}
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_RUN_ID: ${{ github.run_id }}
@@ -106,7 +104,6 @@ jobs:
         run: |
           npm run release:asf:npm:record -- \
             packages/cli/release \
-            "$RELEASE_VERSION" \
             "$SOURCE_REFERENCE_TAG" \
             "$SOURCE_COMMIT" \
             "$RELEASE_REPOSITORY" \
@@ -116,7 +113,7 @@ jobs:
             "packages/cli/release/maka-agent-${RELEASE_VERSION}.tgz.asf-candidate.json"
       - name: Revalidate the live source reference
         env:
-          SOURCE_REFERENCE_TAG: ${{ needs.resolve.outputs.source_reference_tag }}
+          SOURCE_REFERENCE_TAG: ${{ inputs.source_reference_tag }}
           SOURCE_COMMIT: ${{ needs.resolve.outputs.source_commit }}
         run: |
           git fetch --force --no-tags origin \
@@ -128,7 +125,7 @@ jobs:
       - name: Upload the unsigned ASF npm candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: apache-maka-npm-${{ needs.resolve.outputs.source_reference_tag }}-${{ needs.resolve.outputs.source_commit }}-unsigned
+          name: apache-maka-npm-${{ inputs.source_reference_tag }}-${{ needs.resolve.outputs.source_commit }}-unsigned
           path: |
             packages/cli/release/*.tgz
             packages/cli/release/*.tgz.sha256
@@ -140,7 +137,7 @@ jobs:
       - name: Record Release Manager handoff
         env:
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
-          SOURCE_REFERENCE_TAG: ${{ needs.resolve.outputs.source_reference_tag }}
+          SOURCE_REFERENCE_TAG: ${{ inputs.source_reference_tag }}
           SOURCE_COMMIT: ${{ needs.resolve.outputs.source_commit }}
           RUNBOOK_URL: https://github.com/${{ github.repository }}/blob/${{ needs.resolve.outputs.source_commit }}/.github/ASF_NPM_RELEASE.md
         run: |
