@@ -388,6 +388,7 @@ describe('managed Runtime Host service', () => {
     });
     assert.equal(first.service.config?.websocket.port, 41_001);
 
+    const updateCallsStart = systemd.calls.length;
     await assert.rejects(
       manageRuntimeHostService({ ...input, websocketPort: 41_002 }, backend(), {
         waitForReady: async () => {
@@ -399,6 +400,10 @@ describe('managed Runtime Host service', () => {
       }),
       /candidate failed readiness/u,
     );
+    assert.deepEqual(systemd.calls.slice(updateCallsStart).slice(-2), [
+      ['reset-failed', basename(unitPath)],
+      ['restart', basename(unitPath)],
+    ]);
     const status = await manageRuntimeHostService({ ...input, action: 'status' }, backend());
     assert.equal(status.service.config?.websocket.port, 41_001);
     assert.match(await readFile(unitPath, 'utf8'), /--websocket-port" "41001"/u);

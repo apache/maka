@@ -261,7 +261,6 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       () => timeout.abort(new RuntimeHostPairingFinalizationInterruptedError()),
       this.pairingFinalizationTimeoutMs,
     );
-    timer.unref();
     const signal = AbortSignal.any([
       this.#pairingFinalizationShutdown.signal,
       timeout.signal,

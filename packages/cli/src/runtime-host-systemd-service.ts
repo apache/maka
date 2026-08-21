@@ -286,6 +286,9 @@ async function restoreSystemdDeployment(
     [snapshot.status.enabled ? 'enable' : 'disable', context.unitName],
     'Restoring the Runtime Host service enablement failed',
   );
+  if (snapshot.status.active) {
+    await context.runSystemctl(['reset-failed', context.unitName]);
+  }
   await requireSystemctl(
     context.runSystemctl,
     [snapshot.status.active ? 'restart' : 'stop', context.unitName],
