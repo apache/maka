@@ -52,13 +52,11 @@ jobs:
 
       # Runs on the PR merge result: after a sibling protocol change lands on
       # main with the same epoch text, the silently merged tree still carries
-      # the base's epoch and this fails instead of shipping two incompatible
-      # protocols under one number (#3313).
+      # the current base parent's epoch and this fails instead of shipping two
+      # incompatible protocols under one number (#3313).
       - name: Guard the protocol compatibility epoch
         if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: node scripts/protocol-epoch-check.mjs --base "$BASE_SHA"
+        run: node scripts/protocol-epoch-check.mjs --base 'HEAD^1'
 
       - name: Test the epoch guard
         run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs

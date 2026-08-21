@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
-// Merge-base guard for the Runtime Host compatibility epoch (#3313).
+// Merge-result guard for the Runtime Host compatibility epoch (#3313).
 //
 // Two branches that each bump the epoch write the same text to the same line,
 // so git's three-way merge resolves them without a conflict and two
 // incompatible protocols end up advertising one epoch. This check runs on the
-// PR merge result and fails when anything under the protocol directory changed
-// while the epoch still equals the merge base's — which is exactly the state a
-// silent same-number merge produces.
+// PR merge result and compares it with the synthetic merge's first parent: the
+// current base branch. It fails when anything under the protocol directory
+// changed while the epoch still equals that parent — exactly the state a silent
+// same-number merge produces.
 
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
@@ -46,9 +47,9 @@ export function evaluateEpochCheck({ baseEpoch, headEpoch, changedProtocolFiles 
       ok: false,
       reason:
         `Protocol files changed but RUNTIME_HOST_COMPATIBILITY_EPOCH is still ${baseEpoch}, ` +
-        `the merge base's value. Same-number bumps on sibling branches merge without a git ` +
-        `conflict (#3313), so every protocol change must land with an epoch the merge base ` +
-        `has not seen: rebase onto current main and set the epoch past ${baseEpoch}. ` +
+        `the current base parent's value. Same-number bumps on sibling branches merge without ` +
+        `a git conflict (#3313), so every protocol change must land with an epoch the current ` +
+        `base has not seen: rebase onto current main and set the epoch past ${baseEpoch}. ` +
         `Changed files:\n${changedProtocolFiles.map((file) => `  ${file}`).join('\n')}`,
     };
   }
@@ -57,7 +58,7 @@ export function evaluateEpochCheck({ baseEpoch, headEpoch, changedProtocolFiles 
     reason:
       changedProtocolFiles.length > 0
         ? `Protocol changed and the epoch moved: ${baseEpoch} -> ${headEpoch}.`
-        : `No protocol changes against the merge base (epoch ${headEpoch}).`,
+        : `No protocol changes against the current base parent (epoch ${headEpoch}).`,
   };
 }
 
