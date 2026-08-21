@@ -15,7 +15,12 @@ type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Reco
 
 type ToastApi = {
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
   confirm(input: {
     title: string;
     description?: string;
@@ -130,7 +135,12 @@ export function createAppShellSessionSettingsActions(deps: {
       );
       if (sessionId) await refreshSessions();
     } catch (error) {
-      toastApi.error(copy.permissionFailedTitle, localizedShellErrorMessage(error, copy.permissionFallback, uiLocale));
+      toastApi.error(
+        copy.permissionFailedTitle,
+        localizedShellErrorMessage(error, copy.permissionFallback, uiLocale),
+        undefined,
+        sessionId ? { sessionId } : undefined,
+      );
     } finally {
       pendingPermissionModeChangesRef.current.delete(pendingKey);
       if (sessionId) setPendingPermissionModeBySession((current) => omitSessionKey(current, sessionId));
@@ -173,7 +183,12 @@ export function createAppShellSessionSettingsActions(deps: {
       await refreshSessions();
     } catch (error) {
       if (activeIdRef.current === sessionId) {
-        toastApi.error(copy.modelFailedTitle, localizedShellErrorMessage(error, copy.modelFallback, uiLocale));
+        toastApi.error(
+          copy.modelFailedTitle,
+          localizedShellErrorMessage(error, copy.modelFallback, uiLocale),
+          undefined,
+          { sessionId },
+        );
       }
     } finally {
       pendingSessionModelChangesRef.current.delete(sessionId);
@@ -201,7 +216,12 @@ export function createAppShellSessionSettingsActions(deps: {
       await refreshSessions();
     } catch (error) {
       if (activeIdRef.current === sessionId) {
-        toastApi.error(copy.thinkingFailedTitle, localizedShellErrorMessage(error, copy.thinkingFallback, uiLocale));
+        toastApi.error(
+          copy.thinkingFailedTitle,
+          localizedShellErrorMessage(error, copy.thinkingFallback, uiLocale),
+          undefined,
+          { sessionId },
+        );
       }
     } finally {
       pendingSessionModelChangesRef.current.delete(sessionId);

@@ -53,7 +53,12 @@ type SessionEventHealthUpdater = (
 ) => void;
 
 type ToastApi = {
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
   info(title: string, description?: string): void;
   toast(options: {
     title: string;
@@ -478,7 +483,12 @@ export function useActiveSessionEvents(options: {
         [sessionId]: message,
       }));
       options.setMessageLoadPending(false);
-      options.toastApi.error(getDesktopConversationCopy(options.uiLocale).actions.messageReadFailedTitle, message);
+      options.toastApi.error(
+        getDesktopConversationCopy(options.uiLocale).actions.messageReadFailedTitle,
+        message,
+        undefined,
+        { sessionId },
+      );
     }
   });
   const handleSessionEvent = useEffectEvent((sessionId: string, event: SessionEvent) => {

@@ -66,7 +66,11 @@ export function createAppShellSessionEventHandlers(options: {
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
-  showModelSetupToast: (description: string, reason?: string) => void;
+  showModelSetupToast: (
+    description: string,
+    reason?: string,
+    diagnosticTarget?: { sessionId: string },
+  ) => void;
   toastApi: ToastApi;
   notifyRunEnded?: (payload: { kind: 'completed' | 'errored'; sessionId: string; body?: string }) => void;
   scheduleFrame?: (callback: () => void) => void;
@@ -288,7 +292,11 @@ export function createAppShellSessionEventHandlers(options: {
         if (activeIdRef.current === sessionId) {
           if (isNoRealConnectionEvent(event)) {
             const reason = noRealConnectionReasonFromEvent(event);
-            showModelSetupToast(noRealConnectionSetupDescription(reason, uiLocale), reason);
+            showModelSetupToast(
+              noRealConnectionSetupDescription(reason, uiLocale),
+              reason,
+              { sessionId },
+            );
           } else {
             const copy = getDesktopConversationCopy(uiLocale).actions;
             toastApi.error(

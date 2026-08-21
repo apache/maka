@@ -2685,14 +2685,15 @@ const makaBridge = {
         );
         return;
       }
-      const { execution, ...errorInput } = input;
+      const { execution, target, ...errorInput } = input;
       if (!execution) {
+        const resolution = await resolveManualDiagnosticRuntimeHost(target);
         const wireInput: DesktopErrorDiagnosticWireInput = {
           ...errorInput,
-          hostTarget: 'default',
+          hostTarget: resolution.hostTarget,
           ...rendererContext,
         };
-        await ipcRenderer.invoke('diagnostics:copyReport', undefined, wireInput);
+        await ipcRenderer.invoke('diagnostics:copyReport', resolution.scope, wireInput);
         return;
       }
       const session = parseDesktopSessionKey(execution.sessionId);

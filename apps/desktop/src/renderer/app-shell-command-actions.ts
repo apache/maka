@@ -26,7 +26,12 @@ import { settingsTestResultMessage } from "./locales/settings-test-result-copy.j
 type ToastApi = {
   success(title: string, description?: string): void;
   info(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string } | { profileId: string },
+  ): void;
 };
 
 type ComposerImportOwner = {
@@ -391,6 +396,11 @@ export function buildAppShellCommandList(
         });
         toastApi.success(copy.diagnosticsCopiedTitle, copy.diagnosticsCopiedDescription);
       } catch (err) {
+        const diagnosticTarget = target?.kind === 'session'
+          ? { sessionId: target.sessionId }
+          : target?.kind === 'profile'
+            ? { profileId: target.profileId }
+            : undefined;
         toastApi.error(
           copy.copyFailedTitle,
           commandPaletteActionErrorMessage(
@@ -398,6 +408,8 @@ export function buildAppShellCommandList(
             copy.clipboardDenied,
             options.uiLocale,
           ),
+          undefined,
+          diagnosticTarget,
         );
       }
     },

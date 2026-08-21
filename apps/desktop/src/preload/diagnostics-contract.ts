@@ -29,6 +29,7 @@ export interface DesktopErrorDiagnosticInput {
   readonly title: string;
   readonly description?: string;
   readonly details?: string;
+  readonly target?: DesktopManualDiagnosticTarget;
   readonly execution?: DesktopExecutionDiagnosticTarget;
 }
 
@@ -41,7 +42,7 @@ export type DesktopManualDiagnosticWireInput = Omit<DesktopManualDiagnosticInput
     readonly hostTarget: DesktopDiagnosticHostTarget;
   };
 
-export type DesktopErrorDiagnosticWireInput = DesktopErrorDiagnosticInput &
+export type DesktopErrorDiagnosticWireInput = Omit<DesktopErrorDiagnosticInput, 'target'> &
   DesktopDiagnosticRendererContext & {
     readonly hostTarget: DesktopDiagnosticHostTarget;
   };

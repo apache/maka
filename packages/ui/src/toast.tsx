@@ -49,11 +49,10 @@ export interface ToastErrorAction {
   ): Promise<void>;
 }
 
-export interface ToastDiagnosticTarget {
-  sessionId: string;
-  turnId: string;
-  eventId: string;
-}
+export type ToastDiagnosticTarget =
+  | { sessionId: string }
+  | { sessionId: string; turnId: string; eventId: string }
+  | { profileId: string };
 
 export interface ToastInput {
   title: string;

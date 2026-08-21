@@ -6,7 +6,12 @@ type RefBox<T> = { current: T };
 type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void;
 
 type ToastApi = {
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
 };
 
 export function createAppShellStopAction(deps: {
@@ -50,7 +55,12 @@ export function createAppShellStopAction(deps: {
       // actually interrupted and can retry.
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
-        toastApi.error(copy.stopFailedTitle, localizedShellErrorMessage(error, copy.stopFailedFallback, uiLocale));
+        toastApi.error(
+          copy.stopFailedTitle,
+          localizedShellErrorMessage(error, copy.stopFailedFallback, uiLocale),
+          undefined,
+          { sessionId },
+        );
       }
     } finally {
       clearPendingSessionAction(sessionId, stopPendingRef, setStopPendingBySession);

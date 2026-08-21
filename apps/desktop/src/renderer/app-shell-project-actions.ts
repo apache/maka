@@ -21,7 +21,12 @@ type RefBox<T> = { current: T };
 
 type ToastApi = {
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
 };
 
 export interface AppShellProjectActions {
@@ -69,6 +74,10 @@ export function createAppShellProjectActions(deps: {
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).projectActions;
+  const diagnosticTarget = sessionId ? { sessionId } : undefined;
+  const showProjectError = (title: string, description?: string) => {
+    toastApi.error(title, description, undefined, diagnosticTarget);
+  };
 
   async function refreshProjects(): Promise<ProjectRecord[]> {
     return refreshDefaultProjectState();
@@ -115,7 +124,7 @@ export function createAppShellProjectActions(deps: {
       return result.project;
     } catch (error) {
       if (isCurrentProjectPickerRequest()) {
-        toastApi.error(
+        showProjectError(
           copy.selectDirectoryFailedTitle,
           localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
         );
@@ -135,7 +144,7 @@ export function createAppShellProjectActions(deps: {
       if (!project) return false;
       return await selectProjectRecord(project, true);
     } catch (error) {
-      toastApi.error(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
+      showProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
       return false;
     }
   }
@@ -147,7 +156,7 @@ export function createAppShellProjectActions(deps: {
       await refreshProjects();
       onProjectSelected(sessionId);
     } catch (error) {
-      toastApi.error(
+      showProjectError(
         copy.selectDirectoryFailedTitle,
         localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
       );
@@ -159,7 +168,7 @@ export function createAppShellProjectActions(deps: {
       const project = projects.find((candidate) => candidate.id === projectId);
       return project ? await selectProjectRecord(project, false) : false;
     } catch (error) {
-      toastApi.error(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
+      showProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
       return false;
     }
   }
@@ -178,7 +187,7 @@ export function createAppShellProjectActions(deps: {
       }
       return await selectProjectRecord(project, false);
     } catch (error) {
-      toastApi.error(
+      showProjectError(
         copy.selectDirectoryFailedTitle,
         localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
       );
@@ -195,7 +204,7 @@ export function createAppShellProjectActions(deps: {
       else await refreshProjects();
       return result.project;
     } catch (error) {
-      toastApi.error(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
+      showProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
       return null;
     }
   }
@@ -205,7 +214,7 @@ export function createAppShellProjectActions(deps: {
       await window.maka.projects.rename(projectId, name);
       await refreshProjects();
     } catch (error) {
-      toastApi.error(
+      showProjectError(
         copy.projectUpdateFailedTitle,
         localizedShellErrorMessage(error, copy.projectUpdateFailedFallback, uiLocale),
       );
@@ -217,7 +226,7 @@ export function createAppShellProjectActions(deps: {
       await window.maka.projects.archive(projectId);
       await refreshProjects();
     } catch (error) {
-      toastApi.error(
+      showProjectError(
         copy.projectUpdateFailedTitle,
         localizedShellErrorMessage(error, copy.projectUpdateFailedFallback, uiLocale),
       );
@@ -229,7 +238,7 @@ export function createAppShellProjectActions(deps: {
       await window.maka.projects.restore(projectId);
       await refreshProjects();
     } catch (error) {
-      toastApi.error(
+      showProjectError(
         copy.projectUpdateFailedTitle,
         localizedShellErrorMessage(error, copy.projectUpdateFailedFallback, uiLocale),
       );
@@ -240,13 +249,13 @@ export function createAppShellProjectActions(deps: {
     try {
       const result = await window.maka.app.openPath('skills');
       if (!result.ok) {
-        toastApi.error(
+        showProjectError(
           copy.openFailedTitle(openPathActionLabel('skills', uiLocale)),
           openPathFailureCopy(result.reason, uiLocale),
         );
       }
     } catch (error) {
-      toastApi.error(
+      showProjectError(
         copy.openFailedTitle(openPathActionLabel('skills', uiLocale)),
         openPathActionErrorMessage(error, 'skills', uiLocale),
       );
@@ -257,16 +266,16 @@ export function createAppShellProjectActions(deps: {
     try {
       const result = await window.maka.app.openPath('project', sessionId);
       if (!result.ok) {
-        toastApi.error(
+        showProjectError(
           copy.openFailedTitle(openPathActionLabel('project', uiLocale)),
           openPathFailureCopy(result.reason, uiLocale),
         );
       }
     } catch (error) {
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, diagnosticTarget);
       } else {
-        toastApi.error(
+        showProjectError(
           copy.openFailedTitle(openPathActionLabel('project', uiLocale)),
           openPathActionErrorMessage(error, 'project', uiLocale),
         );
@@ -278,13 +287,13 @@ export function createAppShellProjectActions(deps: {
     try {
       const result = await window.maka.app.openPath('workspace');
       if (!result.ok) {
-        toastApi.error(
+        showProjectError(
           copy.openFailedTitle(openPathActionLabel('workspace', uiLocale)),
           openPathFailureCopy(result.reason, uiLocale),
         );
       }
     } catch (error) {
-      toastApi.error(
+      showProjectError(
         copy.openFailedTitle(openPathActionLabel('workspace', uiLocale)),
         openPathActionErrorMessage(error, 'workspace', uiLocale),
       );

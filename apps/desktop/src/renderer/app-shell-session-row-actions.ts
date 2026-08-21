@@ -10,7 +10,12 @@ type SessionRemoveDisposition = 'removed' | 'restored';
 
 type ToastApi = {
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
   confirm(options: {
     title: string;
     description: string;
@@ -85,7 +90,12 @@ export function createAppShellSessionRowActions(deps: {
     try {
       await action();
     } catch (error) {
-      toastApi.error(errorTitle, localizedShellErrorMessage(error, copy.actionFallback, uiLocale));
+      toastApi.error(
+        errorTitle,
+        localizedShellErrorMessage(error, copy.actionFallback, uiLocale),
+        undefined,
+        { sessionId },
+      );
     } finally {
       pendingSessionRowActionsRef.current.delete(key);
     }
