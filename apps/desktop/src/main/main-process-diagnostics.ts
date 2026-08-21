@@ -4,7 +4,7 @@ import { redactSecrets } from '@maka/core/redaction';
 import type { TurnTrace } from '@maka/core/session-trace';
 import type { HostDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type {
-  DesktopErrorDiagnosticInput,
+  DesktopDiagnosticInput,
   DesktopExecutionDiagnosticTarget,
 } from '../preload/diagnostics-contract.js';
 
@@ -51,19 +51,28 @@ export function installMainProcessLogCapture(buffer: DiagnosticLogBuffer = mainP
   installConsoleDiagnosticLogCapture(buffer);
 }
 
-export function parseDesktopErrorDiagnosticInput(input: unknown): DesktopErrorDiagnosticInput {
+export function parseDesktopDiagnosticInput(input: unknown): DesktopDiagnosticInput {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new TypeError('Invalid Desktop diagnostic input');
   }
   const record = input as Record<string, unknown>;
+  const rendererKeys = new Set(['surface', 'rendererUserAgent', 'rendererLocale']);
+  if (record.surface === 'manual') {
+    if (Object.keys(record).some((key) => !rendererKeys.has(key))) {
+      throw new TypeError('Invalid Desktop diagnostic input');
+    }
+    return {
+      surface: 'manual',
+      ...optionalBoundedString(record, 'rendererUserAgent', INPUT_LIMITS.rendererUserAgent),
+      ...optionalBoundedString(record, 'rendererLocale', INPUT_LIMITS.rendererLocale),
+    };
+  }
   const allowedKeys = new Set([
-    'surface',
+    ...rendererKeys,
     'title',
     'description',
     'details',
     'execution',
-    'rendererUserAgent',
-    'rendererLocale',
   ]);
   if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
     throw new TypeError('Invalid Desktop diagnostic input');
@@ -85,24 +94,22 @@ export function parseDesktopErrorDiagnosticInput(input: unknown): DesktopErrorDi
   };
 }
 
-export function formatDesktopErrorDiagnosticReport(
-  input: DesktopErrorDiagnosticInput,
+export function formatDesktopDiagnosticReport(
+  input: DesktopDiagnosticInput,
   environment: DesktopDiagnosticEnvironment,
   mainLogs: readonly string[],
   runtimeHost: RuntimeHostDiagnosticRead,
   runtimeExecution: RuntimeHostExecutionDiagnosticRead | undefined = undefined,
   capturedAt = new Date(),
 ): string {
-  const lines = [
-    'Maka Desktop diagnostic report',
-    `Captured at: ${capturedAt.toISOString()}`,
-    '',
-    'Error',
-    `Surface: ${input.surface}`,
-    `Title: ${input.title}`,
-  ];
-  if (input.description) lines.push(`Description: ${input.description}`);
-  if (input.details) lines.push('', 'Details:', input.details);
+  const lines = ['Maka Desktop diagnostic report', `Captured at: ${capturedAt.toISOString()}`];
+  if (input.surface === 'manual') {
+    lines.push('', 'Capture', 'Surface: manual');
+  } else {
+    lines.push('', 'Error', `Surface: ${input.surface}`, `Title: ${input.title}`);
+    if (input.description) lines.push(`Description: ${input.description}`);
+    if (input.details) lines.push('', 'Details:', input.details);
+  }
 
   lines.push(
     '',
@@ -140,12 +147,13 @@ export function formatDesktopErrorDiagnosticReport(
     lines.push(`Diagnostics unavailable: ${runtimeHost.error}`);
   }
 
-  if (input.execution) {
+  const execution = input.surface === 'manual' ? undefined : input.execution;
+  if (execution) {
     lines.push('', 'Runtime Host execution');
     if (!runtimeExecution?.ok) {
       lines.push(`Execution evidence unavailable: ${runtimeExecution?.error ?? 'not queried'}`);
     } else {
-      appendTurnTrace(lines, input.execution, runtimeExecution.value);
+      appendTurnTrace(lines, execution, runtimeExecution.value);
     }
   }
 

@@ -49,7 +49,7 @@ import {
 } from './transcript-contract.js';
 import type {
   DesktopDiagnosticCopyResult,
-  DesktopErrorDiagnosticInput,
+  DesktopDiagnosticInput,
 } from './diagnostics-contract.js';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type {
@@ -2602,12 +2602,15 @@ const makaBridge = {
     },
   },
   diagnostics: {
-    async copyErrorReport(input: DesktopErrorDiagnosticInput): Promise<DesktopDiagnosticCopyResult> {
+    async copyReport(input: DesktopDiagnosticInput): Promise<DesktopDiagnosticCopyResult> {
+      if (input.surface === 'manual') {
+        return ipcRenderer.invoke('diagnostics:copyReport', undefined, input);
+      }
       if (!input.execution) {
-        return invokeActiveRuntimeHost('diagnostics:copyErrorReport', input);
+        return invokeActiveRuntimeHost('diagnostics:copyReport', input);
       }
       const session = await runtimeHostSessionRef(input.execution.sessionId);
-      return ipcRenderer.invoke('diagnostics:copyErrorReport', session.scope, {
+      return ipcRenderer.invoke('diagnostics:copyReport', session.scope, {
         ...input,
         execution: { ...input.execution, sessionId: session.sessionId },
       });

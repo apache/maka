@@ -279,7 +279,7 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
     () => ({
       label: getShellCopy(uiLocale).errorBoundary.copyReport,
       onClick: (input) => {
-        void window.maka.diagnostics.copyErrorReport({
+        void window.maka.diagnostics.copyReport({
             surface: 'toast',
             title: input.title,
             ...(input.description ? { description: input.description } : {}),

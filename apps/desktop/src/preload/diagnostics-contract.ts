@@ -4,15 +4,24 @@ export interface DesktopExecutionDiagnosticTarget {
   readonly eventId: string;
 }
 
-export interface DesktopErrorDiagnosticInput {
+interface DesktopDiagnosticRendererContext {
+  readonly rendererUserAgent?: string;
+  readonly rendererLocale?: string;
+}
+
+export interface DesktopManualDiagnosticInput extends DesktopDiagnosticRendererContext {
+  readonly surface: 'manual';
+}
+
+export interface DesktopErrorDiagnosticInput extends DesktopDiagnosticRendererContext {
   readonly surface: 'toast' | 'renderer_crash';
   readonly title: string;
   readonly description?: string;
   readonly details?: string;
   readonly execution?: DesktopExecutionDiagnosticTarget;
-  readonly rendererUserAgent?: string;
-  readonly rendererLocale?: string;
 }
+
+export type DesktopDiagnosticInput = DesktopManualDiagnosticInput | DesktopErrorDiagnosticInput;
 
 export type DesktopDiagnosticCopyResult =
   | { readonly ok: true }

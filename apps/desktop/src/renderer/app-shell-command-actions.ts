@@ -363,37 +363,16 @@ export function buildAppShellCommandList(
         );
       }
     },
-    onCopyEnvSummary: async () => {
+    onCopyDiagnostics: async () => {
       const { toastApi } = optionsRef.current;
       try {
-        const info = await window.maka.app.info();
-        const platformPretty =
-          info.platform === "darwin"
-            ? "macOS"
-            : info.platform === "win32"
-              ? "Windows"
-              : info.platform === "linux"
-                ? "Linux"
-                : info.platform;
-        const buildLine =
-          info.buildMode === "dev"
-            ? `- Build: dev${info.buildCommit ? ` @ ${info.buildCommit}` : ""}`
-            : "- Build: packaged";
-        const summary = [
-          `**Maka** v${info.appVersion}`,
-          ``,
-          `- Electron: ${info.electronVersion}`,
-          `- Node: ${info.nodeVersion}`,
-          `- Chrome: ${info.chromeVersion}`,
-          `- Platform: ${platformPretty} ${info.osRelease}`,
-          `- Arch: ${info.arch}`,
-          buildLine,
-        ].join("\n");
-        await navigator.clipboard.writeText(summary);
-        toastApi.success(
-          copy.environmentCopiedTitle,
-          `Maka v${info.appVersion} · ${platformPretty} · ${info.arch}`,
-        );
+        const result = await window.maka.diagnostics.copyReport({
+          surface: "manual",
+          rendererUserAgent: navigator.userAgent,
+          rendererLocale: navigator.language,
+        });
+        if (!result.ok) throw new Error(copy.clipboardDenied);
+        toastApi.success(copy.diagnosticsCopiedTitle, copy.diagnosticsCopiedDescription);
       } catch (err) {
         toastApi.error(
           copy.copyFailedTitle,

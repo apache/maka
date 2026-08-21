@@ -1235,6 +1235,10 @@ function registerPersistentClientIpc(): void {
       processUptimeSeconds: process.uptime(),
     }),
     mainLogs: () => mainProcessLogBuffer.snapshot(),
+    resolveActiveRuntimeHost: () => {
+      const scope = activeRuntimeHostRef();
+      return scope ? resolveRuntimeHostDiagnostics(scope) : undefined;
+    },
     resolveRuntimeHost: resolveRuntimeHostDiagnostics,
     writeClipboard: (report) => clipboard.writeText(report),
   });

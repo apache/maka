@@ -6,8 +6,8 @@ import {
   type DesktopDiagnosticsIpcDeps,
 } from '../desktop-diagnostics-ipc-main.js';
 import {
-  formatDesktopErrorDiagnosticReport,
-  parseDesktopErrorDiagnosticInput,
+  formatDesktopDiagnosticReport,
+  parseDesktopDiagnosticInput,
 } from '../main-process-diagnostics.js';
 
 const environment = {
@@ -48,7 +48,7 @@ const runtimeHostDiagnostics = {
 };
 
 test('formats one redacted Desktop and Runtime Host diagnostic report', () => {
-  const report = formatDesktopErrorDiagnosticReport(
+  const report = formatDesktopDiagnosticReport(
     {
       surface: 'toast',
       title: 'Connection failed',
@@ -71,19 +71,46 @@ test('formats one redacted Desktop and Runtime Host diagnostic report', () => {
 });
 
 test('bounds renderer diagnostic text and rejects unknown fields', () => {
-  const input = parseDesktopErrorDiagnosticInput({
+  const input = parseDesktopDiagnosticInput({
     surface: 'toast',
     title: '🚀'.repeat(513),
     description: 'x'.repeat(30 * 1024),
   });
 
+  assert.equal(input.surface, 'toast');
   assert.ok(Buffer.byteLength(input.title) <= 512);
   assert.ok(Buffer.byteLength(input.description ?? '') <= 24 * 1024);
   assert.match(input.title, /<diagnostic input truncated>$/);
   assert.throws(
-    () => parseDesktopErrorDiagnosticInput({ surface: 'toast', title: 'error', extra: true }),
+    () => parseDesktopDiagnosticInput({ surface: 'toast', title: 'error', extra: true }),
     /Invalid Desktop diagnostic input/,
   );
+});
+
+test('accepts only renderer context for a manual diagnostic capture', () => {
+  assert.deepEqual(
+    parseDesktopDiagnosticInput({ surface: 'manual', rendererLocale: 'en-US' }),
+    { surface: 'manual', rendererLocale: 'en-US' },
+  );
+  assert.throws(
+    () => parseDesktopDiagnosticInput({ surface: 'manual', title: 'Not an error' }),
+    /Invalid Desktop diagnostic input/,
+  );
+});
+
+test('formats a manual capture without inventing an error', () => {
+  const report = formatDesktopDiagnosticReport(
+    { surface: 'manual', rendererLocale: 'en-US' },
+    environment,
+    ['main log'],
+    { ok: true, value: runtimeHostDiagnostics },
+    undefined,
+    new Date('2026-08-09T00:00:00Z'),
+  );
+
+  assert.match(report, /Capture\nSurface: manual/);
+  assert.doesNotMatch(report, /\nError\n|\nTitle:/);
+  assert.match(report, /Recent Runtime Host logs \(1\)\nhost log/);
 });
 
 test('copies Desktop diagnostics while Runtime Host is unavailable', async () => {
@@ -98,6 +125,7 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
     },
     environment: () => environment,
     mainLogs: () => ['main remained available'],
+    resolveActiveRuntimeHost: () => undefined,
     resolveRuntimeHost: () => ({
       getDiagnostics: async () => {
         throw new Error('Runtime Host disconnected');
@@ -109,7 +137,7 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
     },
   });
 
-  const handler = handlers.get('diagnostics:copyErrorReport');
+  const handler = handlers.get('diagnostics:copyReport');
   assert.ok(handler);
   const result = await handler(
     {} as never,
@@ -134,13 +162,14 @@ test('copies Desktop diagnostics while the scoped Host is reconnecting', async (
     },
     environment: () => environment,
     mainLogs: () => ['main remained available'],
+    resolveActiveRuntimeHost: () => undefined,
     resolveRuntimeHost: () => undefined,
     writeClipboard: (value) => {
       clipboard = value;
     },
   });
 
-  const handler = handlers.get('diagnostics:copyErrorReport');
+  const handler = handlers.get('diagnostics:copyReport');
   assert.ok(handler);
   assert.deepEqual(
     await handler(
@@ -222,13 +251,14 @@ test('copies bounded evidence for the exact failed Turn', async () => {
     },
     environment: () => environment,
     mainLogs: () => [],
+    resolveActiveRuntimeHost: () => undefined,
     resolveRuntimeHost: () => runtime,
     writeClipboard: (value) => {
       clipboard = value;
     },
   });
 
-  const handler = handlers.get('diagnostics:copyErrorReport');
+  const handler = handlers.get('diagnostics:copyReport');
   assert.ok(handler);
   const result = await handler(
     {} as never,
@@ -262,6 +292,7 @@ test('keeps every diagnostic read bound to the scoped Host during a switch', asy
     },
     environment: () => environment,
     mainLogs: () => [],
+    resolveActiveRuntimeHost: () => undefined,
     resolveRuntimeHost: (scope) => {
       assert.equal(scope.hostId, activeHostId);
       assert.equal(scope.targetEpoch, 'target-a');
@@ -280,7 +311,7 @@ test('keeps every diagnostic read bound to the scoped Host during a switch', asy
     writeClipboard() {},
   });
 
-  const handler = handlers.get('diagnostics:copyErrorReport');
+  const handler = handlers.get('diagnostics:copyReport');
   assert.ok(handler);
   const copying = handler(
     {} as never,
@@ -300,4 +331,40 @@ test('keeps every diagnostic read bound to the scoped Host during a switch', asy
 
   assert.deepEqual(await copying, { ok: true });
   assert.deepEqual(traceReads, ['host-a']);
+});
+
+test('copies manual Desktop diagnostics without an active Runtime Host', async () => {
+  type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+  const handlers = new Map<string, IpcHandler>();
+  let clipboard = '';
+  registerDesktopDiagnosticsIpc({
+    ipcMain: {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    environment: () => environment,
+    mainLogs: () => ['main remained available'],
+    resolveActiveRuntimeHost: () => undefined,
+    resolveRuntimeHost: () => {
+      throw new Error('Manual capture must not require a renderer-provided Host scope');
+    },
+    writeClipboard: (value) => {
+      clipboard = value;
+    },
+  });
+
+  const handler = handlers.get('diagnostics:copyReport');
+  assert.ok(handler);
+  assert.deepEqual(
+    await handler(
+      {} as never,
+      undefined,
+      { surface: 'manual', rendererLocale: 'en-US' },
+    ),
+    { ok: true },
+  );
+  assert.match(clipboard, /Capture\nSurface: manual/);
+  assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
+  assert.match(clipboard, /Diagnostics unavailable: Runtime Host is unavailable/);
 });

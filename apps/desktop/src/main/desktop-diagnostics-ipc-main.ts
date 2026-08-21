@@ -9,39 +9,46 @@ import {
   type DesktopTargetScope,
 } from '../shared/runtime-host-identity.js';
 import {
-  formatDesktopErrorDiagnosticReport,
-  parseDesktopErrorDiagnosticInput,
+  formatDesktopDiagnosticReport,
+  parseDesktopDiagnosticInput,
   type DesktopDiagnosticEnvironment,
   type RuntimeHostDiagnosticRead,
   type RuntimeHostExecutionDiagnosticRead,
 } from './main-process-diagnostics.js';
 
+type RuntimeHostDiagnosticsClient = {
+  readonly getDiagnostics: () => Promise<HostDiagnosticsResult>;
+  readonly getTurnTrace: (
+    sessionId: string,
+    turnId: string,
+  ) => Promise<TurnTrace | undefined>;
+};
+
 export interface DesktopDiagnosticsIpcDeps {
   readonly ipcMain: Pick<IpcMain, 'handle'>;
   readonly environment: () => DesktopDiagnosticEnvironment;
   readonly mainLogs: () => readonly string[];
-  readonly resolveRuntimeHost: (scope: DesktopTargetScope) =>
-    | {
-        readonly getDiagnostics: () => Promise<HostDiagnosticsResult>;
-        readonly getTurnTrace: (
-          sessionId: string,
-          turnId: string,
-        ) => Promise<TurnTrace | undefined>;
-      }
-    | undefined;
+  readonly resolveActiveRuntimeHost: () => RuntimeHostDiagnosticsClient | undefined;
+  readonly resolveRuntimeHost: (scope: DesktopTargetScope) => RuntimeHostDiagnosticsClient | undefined;
   readonly writeClipboard: (value: string) => void;
 }
 
 export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): void {
   deps.ipcMain.handle(
-    'diagnostics:copyErrorReport',
+    'diagnostics:copyReport',
     async (_event, scope: unknown, rawInput: unknown): Promise<DesktopDiagnosticCopyResult> => {
-      const host = requireDesktopTargetScope(scope);
-      const runtime = deps.resolveRuntimeHost(host);
-      const input = parseDesktopErrorDiagnosticInput(rawInput);
+      const input = parseDesktopDiagnosticInput(rawInput);
+      const runtime = input.surface === 'manual'
+        ? deps.resolveActiveRuntimeHost()
+        : deps.resolveRuntimeHost(requireDesktopTargetScope(scope));
       let runtimeHost: RuntimeHostDiagnosticRead;
       if (!runtime) {
-        runtimeHost = { ok: false, error: 'Runtime Host is reconnecting' };
+        runtimeHost = {
+          ok: false,
+          error: input.surface === 'manual'
+            ? 'Runtime Host is unavailable'
+            : 'Runtime Host is reconnecting',
+        };
       } else {
         try {
           runtimeHost = { ok: true, value: await runtime.getDiagnostics() };
@@ -56,11 +63,12 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
         }
       }
       let runtimeExecution: RuntimeHostExecutionDiagnosticRead | undefined;
-      if (input.execution && runtime) {
+      const execution = input.surface === 'manual' ? undefined : input.execution;
+      if (execution && runtime) {
         try {
           const turn = await runtime.getTurnTrace(
-            input.execution.sessionId,
-            input.execution.turnId,
+            execution.sessionId,
+            execution.turnId,
           );
           runtimeExecution = turn
             ? { ok: true, value: turn }
@@ -75,7 +83,7 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
           };
         }
       }
-      const report = formatDesktopErrorDiagnosticReport(
+      const report = formatDesktopDiagnosticReport(
         input,
         deps.environment(),
         deps.mainLogs(),

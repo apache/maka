@@ -82,7 +82,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
     try {
       const diagnostics = window.maka?.diagnostics;
       if (diagnostics) {
-        const result = await diagnostics.copyErrorReport({
+        const result = await diagnostics.copyReport({
           surface: 'renderer_crash',
           title: `${error.name}: ${error.message}`,
           details: formatRendererErrorDetails(error, errorInfo),

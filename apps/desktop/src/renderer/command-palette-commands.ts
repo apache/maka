@@ -8,7 +8,7 @@ import {
   Blocks,
   CalendarDays,
   Clock,
-  Database,
+  Clipboard,
   Download,
   FolderOpen,
   Keyboard,
@@ -109,13 +109,8 @@ export function buildCommandList(args: {
    * round-tripping the clipboard.
    */
   onSaveTodayDailyReviewToFile?(): Promise<void> | void;
-  /**
-   * PR-CMD-PALETTE-COPY-ENV-SUMMARY-0: copy the Settings → 关于
-   * environment summary (Maka version + Electron / Node / Chrome
-   * versions + platform + arch + build mode/sha) as Markdown,
-   * without having to open Settings. Useful for bug reports.
-   */
-  onCopyEnvSummary?(): Promise<void> | void;
+  /** Copy redacted Desktop and active Runtime Host diagnostics for issue reports. */
+  onCopyDiagnostics?(): Promise<void> | void;
   /**
    * PR-CMD-PALETTE-NETWORK-PROXY-TEST-0: ⌘K → 测试当前网络代理. Fires
    * `window.maka.settings.testNetworkProxy()` and surfaces the result
@@ -369,14 +364,14 @@ export function buildCommandList(args: {
       run: () => args.onSaveTodayDailyReviewToFile!(),
     });
   }
-  if (args.onCopyEnvSummary) {
+  if (args.onCopyDiagnostics) {
     cmds.push({
-      id: 'diag:copy-env-summary',
+      id: 'diag:copy-diagnostics',
       kind: 'action',
-      ...staticCopy('diag:copy-env-summary'),
-      Icon: Database,
-      keywords: [...copy.staticKeywords['diag:copy-env-summary']],
-      run: () => args.onCopyEnvSummary!(),
+      ...staticCopy('diag:copy-diagnostics'),
+      Icon: Clipboard,
+      keywords: [...copy.staticKeywords['diag:copy-diagnostics']],
+      run: () => args.onCopyDiagnostics!(),
     });
   }
   if (args.onTestNetworkProxy) {
