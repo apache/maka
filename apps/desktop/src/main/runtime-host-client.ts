@@ -255,8 +255,10 @@ export class DesktopRuntimeHostClient {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
   }
 
-  finalizeAccessCredential(): Promise<OperationOutput<'access.credential.finalize'>> {
-    return this.request('access.credential.finalize', {});
+  finalizeAccessCredential(
+    timeoutMs?: number,
+  ): Promise<OperationOutput<'access.credential.finalize'>> {
+    return this.request('access.credential.finalize', {}, timeoutMs);
   }
 
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {

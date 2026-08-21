@@ -283,7 +283,6 @@ export async function runRuntimeHostAccessRevokeCli(
         ? {
             credentialId: target.credentialId,
             protectedCredentialId: current.credentialId,
-            expectedStatus: target.status,
           }
         : undefined,
     );

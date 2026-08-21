@@ -270,12 +270,6 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       const index = this.#file.credentials.findIndex(
         (credential) => credential.credentialId === input.credentialId,
       );
-      if (
-        'expectedStatus' in input &&
-        (index === -1 || this.#file.credentials[index]?.status !== input.expectedStatus)
-      ) {
-        throw new RuntimeHostAccessInputError('The credential changed before it could be revoked');
-      }
       if (index === -1 || this.#file.credentials[index]?.status === 'revoked') {
         return { credentialId: input.credentialId, revoked: false };
       }

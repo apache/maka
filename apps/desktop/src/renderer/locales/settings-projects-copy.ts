@@ -110,6 +110,9 @@ export type SettingsProjectsCopy = {
     accessPending: string;
     accessCreated(date: string): string;
     rotateCredential: string;
+    rotateCredentialConfirmTitle: string;
+    rotateCredentialConfirmBody: string;
+    rotateCredentialConfirm: string;
     enableBeforeRotate: string;
     revokeCredential: string;
     revokeCredentialConfirm(name: string): string;
@@ -269,6 +272,9 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       accessPending: '等待确认',
       accessCreated: (date: string) => `创建于 ${date}`,
       rotateCredential: '轮换凭据',
+      rotateCredentialConfirmTitle: '轮换当前 Desktop 的凭据？',
+      rotateCredentialConfirmBody: '轮换会重新连接这个 Runtime Host，并可能中断正在进行的工作。请先完成或暂停活跃任务。',
+      rotateCredentialConfirm: '继续轮换',
       enableBeforeRotate: '请先启用这个 Runtime Host，再轮换当前 Desktop 的凭据。',
       revokeCredential: '撤销',
       revokeCredentialConfirm: (name: string) => `撤销 ${name} 的访问权限？`,
@@ -426,6 +432,9 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       accessPending: 'Pending confirmation',
       accessCreated: (date: string) => `Created ${date}`,
       rotateCredential: 'Rotate credential',
+      rotateCredentialConfirmTitle: 'Rotate this Desktop credential?',
+      rotateCredentialConfirmBody: 'Rotation reconnects this Runtime Host and may interrupt active work. Finish or pause active tasks before continuing.',
+      rotateCredentialConfirm: 'Continue rotation',
       enableBeforeRotate: 'Enable this Runtime Host before rotating this Desktop credential.',
       revokeCredential: 'Revoke',
       revokeCredentialConfirm: (name: string) => `Revoke access for ${name}?`,

@@ -33,6 +33,14 @@ import type {
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 
+type RuntimeHostManagementConfirmation =
+  | { readonly kind: 'uninstall' }
+  | { readonly kind: 'rotate' }
+  | {
+      readonly kind: 'revoke';
+      readonly credential: DesktopRuntimeHostAccessCredential;
+    };
+
 export function RuntimeHostManagementDialog(props: {
   readonly profile: RemoteRuntimeHostProfile | undefined;
   readonly onClose: () => void;
@@ -44,9 +52,8 @@ export function RuntimeHostManagementDialog(props: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [uninstalledRoot, setUninstalledRoot] = useState<string>();
-  const [confirmingUninstall, setConfirmingUninstall] = useState(false);
   const [access, setAccess] = useState<DesktopRuntimeHostAccessSnapshot>();
-  const [revokeTarget, setRevokeTarget] = useState<DesktopRuntimeHostAccessCredential>();
+  const [confirmation, setConfirmation] = useState<RuntimeHostManagementConfirmation>();
   const logsRef = useRef<HTMLPreElement>(null);
 
   const profile = props.profile;
@@ -56,9 +63,8 @@ export function RuntimeHostManagementDialog(props: {
     setResult(undefined);
     setError(undefined);
     setUninstalledRoot(undefined);
-    setConfirmingUninstall(false);
     setAccess(undefined);
-    setRevokeTarget(undefined);
+    setConfirmation(undefined);
     setLoading(true);
     void window.maka.runtimeHostManagement.run(profile.id, 'status').then(
       (response) => {
@@ -141,6 +147,9 @@ export function RuntimeHostManagementDialog(props: {
   }
 
   async function revokeCredential(): Promise<void> {
+    const revokeTarget = confirmation?.kind === 'revoke'
+      ? confirmation.credential
+      : undefined;
     if (!profile || !revokeTarget) return;
     setLoading(true);
     setError(undefined);
@@ -151,7 +160,7 @@ export function RuntimeHostManagementDialog(props: {
           revokeTarget.credentialId,
         ),
       );
-      setRevokeTarget(undefined);
+      setConfirmation(undefined);
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
       setError(message);
@@ -194,11 +203,18 @@ export function RuntimeHostManagementDialog(props: {
                 </div>
               ) : null}
               {error ? <Banner status="error" title={error} /> : null}
-              {confirmingUninstall ? (
+              {confirmation?.kind === 'uninstall' ? (
                 <Banner
                   status="warning"
                   title={copy.uninstallConfirmTitle}
                   description={copy.uninstallConfirmBody}
+                />
+              ) : null}
+              {confirmation?.kind === 'rotate' ? (
+                <Banner
+                  status="warning"
+                  title={copy.rotateCredentialConfirmTitle}
+                  description={copy.rotateCredentialConfirmBody}
                 />
               ) : null}
               {uninstalledRoot ? (
@@ -255,10 +271,12 @@ export function RuntimeHostManagementDialog(props: {
                       {copy.enableBeforeRotate}
                     </Text>
                   ) : null}
-                  {revokeTarget ? (
+                  {confirmation?.kind === 'revoke' ? (
                     <Banner
                       status="warning"
-                      title={copy.revokeCredentialConfirm(revokeTarget.principalId)}
+                      title={copy.revokeCredentialConfirm(
+                        confirmation.credential.principalId,
+                      )}
                     />
                   ) : null}
                   {access.credentials.length === 0 ? (
@@ -295,17 +313,20 @@ export function RuntimeHostManagementDialog(props: {
                                 size="sm"
                                 label={copy.rotateCredential}
                                 isDisabled={
-                                  loading || credential.status === 'pending' || !access.canRotate
+                                  loading ||
+                                  confirmation !== undefined ||
+                                  credential.status === 'pending' ||
+                                  !access.canRotate
                                 }
-                                clickAction={rotateCredential}
+                                onClick={() => setConfirmation({ kind: 'rotate' })}
                               />
                             ) : (
                               <Button
                                 variant="secondary"
                                 size="sm"
                                 label={copy.revokeCredential}
-                                isDisabled={loading}
-                                onClick={() => setRevokeTarget(credential)}
+                                isDisabled={loading || confirmation !== undefined}
+                                onClick={() => setConfirmation({ kind: 'revoke', credential })}
                               />
                             )}
                           </div>
@@ -321,13 +342,13 @@ export function RuntimeHostManagementDialog(props: {
         footer={(
           <LayoutFooter hasDivider>
             <div className="settingsRuntimeHostManagementActions">
-              {revokeTarget ? (
+              {confirmation?.kind === 'revoke' ? (
                 <>
                   <Button
                     variant="secondary"
                     label={copy.cancel}
                     isDisabled={loading}
-                    onClick={() => setRevokeTarget(undefined)}
+                    onClick={() => setConfirmation(undefined)}
                   />
                   <Button
                     variant="destructive"
@@ -336,13 +357,13 @@ export function RuntimeHostManagementDialog(props: {
                     clickAction={revokeCredential}
                   />
                 </>
-              ) : confirmingUninstall ? (
+              ) : confirmation?.kind === 'uninstall' ? (
                 <>
                   <Button
                     variant="secondary"
                     label={copy.cancel}
                     isDisabled={loading}
-                    onClick={() => setConfirmingUninstall(false)}
+                    onClick={() => setConfirmation(undefined)}
                   />
                   <Button
                     variant="destructive"
@@ -350,7 +371,25 @@ export function RuntimeHostManagementDialog(props: {
                     isDisabled={loading}
                     clickAction={async () => {
                       await run('uninstall');
-                      setConfirmingUninstall(false);
+                      setConfirmation(undefined);
+                    }}
+                  />
+                </>
+              ) : confirmation?.kind === 'rotate' ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    label={copy.cancel}
+                    isDisabled={loading}
+                    onClick={() => setConfirmation(undefined)}
+                  />
+                  <Button
+                    variant="primary"
+                    label={copy.rotateCredentialConfirm}
+                    isDisabled={loading}
+                    clickAction={async () => {
+                      await rotateCredential();
+                      setConfirmation(undefined);
                     }}
                   />
                 </>
@@ -362,7 +401,7 @@ export function RuntimeHostManagementDialog(props: {
                     isDisabled={loading}
                     onClick={() => {
                       setAccess(undefined);
-                      setRevokeTarget(undefined);
+                      setConfirmation(undefined);
                       setError(undefined);
                     }}
                   />
@@ -435,7 +474,7 @@ export function RuntimeHostManagementDialog(props: {
                       variant="secondary"
                       label={copy.uninstallService}
                       isDisabled={loading}
-                      onClick={() => setConfirmingUninstall(true)}
+                      onClick={() => setConfirmation({ kind: 'uninstall' })}
                     />
                   ) : null}
                 </>
