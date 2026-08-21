@@ -1084,16 +1084,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         }
         return;
       }
-      // Known slash commands typed mid-turn must not steer into the model as
-      // prompt text (review finding on turnRunning routing). `/goal` and
-      // `/recap` answer locally: both are independent of the running turn —
-      // `/goal` is read-only status, and `/recap` uses the separate
-      // session.recap.generate call behind its own in-flight lock. Every other
-      // known command either mutates session state behind the turn's back or
-      // opens a picker the turn would race (and would silently no-op on the
-      // runControl busy gate even if it ran), so refuse it with a clear
-      // message. Unknown slash-prefixed text still steers: it may be intended
-      // prompt text (a skill invocation such as `/skill:<name>`, or a path).
+      // Known slash commands typed mid-turn follow the disposition declared on
+      // the command itself (`midTurn`, review finding on turnRunning routing):
+      // 'local' commands answer immediately because their handler is
+      // independent of the running turn; every other known command is refused
+      // with a clear message, since it would either mutate session state
+      // behind the turn's back, open a picker the turn would race, or silently
+      // no-op on the runControl busy gate. ('intercepted' commands — /exit,
+      // /swarm, /graph — were claimed by their dedicated checks above and
+      // reaching the refusal here only means an unrecognized form.) Unknown
+      // slash-prefixed text still steers: it may be intended prompt text (a
+      // skill invocation such as `/skill:<name>`, or a path).
       const commandToken = prompt.trim().split(/\s+/, 1)[0] ?? '';
       const knownCommand = slashCommands.find(
         (candidate) =>
@@ -1102,7 +1103,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       );
       if (knownCommand) {
         editor.addToHistory(prompt);
-        if (knownCommand.name === 'goal' || knownCommand.name === 'recap') {
+        if (knownCommand.midTurn === 'local') {
           handleSlashCommand(prompt, 0);
         } else {
           state.entries.push({
@@ -2641,6 +2642,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const slashCommandHandlers = {
     context: {
       description: primaryGuidance.commands.context,
+      // Read-only diagnostics, but runControl-gated: mid-turn it would
+      // silently no-op on the busy gate, so refuse loudly instead.
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2666,6 +2670,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     compact: {
       description: primaryGuidance.commands.compact,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2681,12 +2686,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     exit: {
       description: primaryGuidance.commands.exit,
+      // isExitPrompt (which also matches bare "quit"/"exit" without a slash)
+      // closes the TUI ahead of generic slash routing.
+      midTurn: 'intercepted',
       run: () => {
         beginGracefulClose();
       },
     },
     goal: {
       description: primaryGuidance.commands.goal,
+      // Read-only status answers locally; control actions carry their own
+      // busy notice inside the handler, so neither path no-ops silently.
+      midTurn: 'local',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           // Read-only, so no runControl busy gate: an autonomous loop keeps
@@ -2725,18 +2736,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     help: {
       description: primaryGuidance.commands.help,
+      midTurn: 'refuse',
       run: () => {
         void runControl(async () => showHelp());
       },
     },
     new: {
       description: primaryGuidance.commands.new,
+      midTurn: 'refuse',
       run: () => {
         void runControl(async () => newSession());
       },
     },
     skill: {
       description: primaryGuidance.commands.skill,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2752,6 +2766,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     setup: {
       description: primaryGuidance.commands.setup,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2767,6 +2782,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     model: {
       description: primaryGuidance.commands.model,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           showModelList();
@@ -2787,6 +2803,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     move: {
       description: primaryGuidance.commands.move,
+      midTurn: 'refuse',
       run: (parts: string[], rawTail?: string) => {
         const targetCwd = (rawTail ?? parts.slice(1).join(' ')).trim();
         if (targetCwd) {
@@ -2798,6 +2815,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     thinking: {
       description: primaryGuidance.commands.thinking,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           if (thinkingLevels.length === 0) {
@@ -2836,6 +2854,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     permissions: {
       description: primaryGuidance.commands.permissions,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           showPermissionModeList();
@@ -2856,12 +2875,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     recap: {
       description: primaryGuidance.commands.recap,
+      // Independent of the running turn: runRecap goes straight to the
+      // separate session.recap.generate call behind its own in-flight lock
+      // and never enters runControl.
+      midTurn: 'local',
       run: () => {
         void runRecap('manual');
       },
     },
     rename: {
       description: primaryGuidance.commands.rename,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         const name = parts.slice(1).join(' ').trim();
         if (!name) {
@@ -2887,6 +2911,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     resume: {
       description: primaryGuidance.commands.resume,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2902,12 +2927,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     rewind: {
       description: primaryGuidance.commands.rewind,
+      midTurn: 'refuse',
       run: () => {
         void runControl(showRewindPicker);
       },
     },
     session: {
       description: primaryGuidance.commands.session,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           void runControl(showSessionList);
@@ -2928,6 +2955,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     graph: {
       description: primaryGuidance.commands.graph,
+      // parseGraphCommand answers status and refuses changes ahead of generic
+      // slash routing.
+      midTurn: 'intercepted',
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseGraphCommand(`/graph${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runGraphCommand(parsed, context.idleMs);
@@ -2935,6 +2965,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     swarm: {
       description: primaryGuidance.commands.swarm,
+      // parseSwarmCommand answers status and refuses changes ahead of generic
+      // slash routing.
+      midTurn: 'intercepted',
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseSwarmCommand(`/swarm${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runSwarmCommand(parsed, context.idleMs);

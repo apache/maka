@@ -250,7 +250,26 @@ export interface MakaSlashCommandMetadata {
   description: string;
 }
 
+/**
+ * How the TUI treats a slash command submitted while a turn is running:
+ * 'local' answers it immediately, 'refuse' rejects it with a notice, and
+ * 'intercepted' commands are claimed by dedicated checks ahead of generic
+ * slash routing (/exit, /swarm, /graph). Only an unrecognized form — e.g.
+ * /exit with arguments, which isExitPrompt does not match — can still reach
+ * the disposition, where it falls through to 'refuse'.
+ */
+export type SlashCommandMidTurnDisposition = 'local' | 'refuse' | 'intercepted';
+
 export interface MakaSlashCommand extends MakaSlashCommandMetadata {
+  /**
+   * Mid-turn disposition. 'local' requires the handler to be independent of
+   * the running turn — it must not enter runControl, whose busy gate would
+   * silently no-op. 'refuse' is the safe default for anything that mutates
+   * session state or opens a picker the turn would race. Declared on every
+   * handler so a newly added command must state its answer instead of
+   * inheriting one from the routing call site.
+   */
+  midTurn: SlashCommandMidTurnDisposition;
   run(parts: string[], rawTail: string | undefined, context: { idleMs: number }): void;
   /** Alternate names that dispatch to this command without appearing in
    *  completion or the /help menu (e.g. /quit as an alias of /exit). */
