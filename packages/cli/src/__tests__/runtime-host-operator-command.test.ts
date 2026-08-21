@@ -147,6 +147,55 @@ describe('Runtime Host operator commands', () => {
       'error',
     );
     assert.deepEqual(
+      parseRuntimeHostCommand([
+        'access',
+        'prepare',
+        '--principal',
+        'desktop:stable-client',
+        '--preset',
+        'desktop-client',
+        '--root',
+        '/srv/maka',
+        '--expected-root',
+        'a'.repeat(64),
+        '--framed',
+      ]),
+      {
+        kind: 'runtime-host-access-issue',
+        mode: 'prepare',
+        rootPath: '/srv/maka',
+        expectedRootId: 'a'.repeat(64),
+        framed: true,
+        principalKind: 'remote_owner',
+        principalId: 'desktop:stable-client',
+        operationGrants: [],
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+        preset: 'desktop-client',
+      },
+    );
+    assert.deepEqual(parseRuntimeHostCommand(['access', 'list', '--framed']), {
+      kind: 'runtime-host-access-list',
+      framed: true,
+    });
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'access',
+        'revoke',
+        '--credential',
+        'credential-1',
+        '--protect-fingerprint',
+        'a'.repeat(32),
+        '--framed',
+      ]),
+      {
+        kind: 'runtime-host-access-revoke',
+        credentialId: 'credential-1',
+        protectedCredentialFingerprint: 'a'.repeat(32),
+        framed: true,
+      },
+    );
+    assert.deepEqual(
       Object.keys(HOST_OPERATION_SPECS)
         .filter(
           (operation) =>

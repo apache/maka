@@ -18,6 +18,17 @@
  */
 
 export {
+  RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_CODE_MAX_BYTES,
+  RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_MESSAGE_MAX_BYTES,
+  RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
+  decodeRuntimeHostAccessManagementFrame,
+  encodeRuntimeHostAccessManagementFrame,
+  runtimeHostAccessCredentialFingerprint,
+  type RuntimeHostAccessCredentialMetadata,
+  type RuntimeHostAccessManagementAction,
+  type RuntimeHostAccessManagementFrame,
+} from './access-management-frame.js';
+export {
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_LOG_MAX_BYTES,

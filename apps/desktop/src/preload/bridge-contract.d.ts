@@ -403,6 +403,20 @@ export type DesktopRuntimeHostManagementResponse =
       readonly retainedStateRoot: string;
     };
 
+export interface DesktopRuntimeHostAccessCredential {
+  readonly credentialId: string;
+  readonly principalKind: 'remote_owner' | 'capability_provider';
+  readonly principalId: string;
+  readonly status: 'active' | 'pending';
+  readonly createdAt: string;
+  readonly expiresAt?: string;
+  readonly isCurrentDesktop: boolean;
+}
+
+export interface DesktopRuntimeHostAccessSnapshot {
+  readonly credentials: readonly DesktopRuntimeHostAccessCredential[];
+}
+
 export interface DesktopProjectCapabilities {
   readonly chooseClientDirectory: boolean;
   readonly chooseHostDirectory: boolean;
@@ -515,6 +529,12 @@ export interface MakaBridge {
       profileId: string,
       action: DesktopRuntimeHostManagementAction,
     ): Promise<DesktopRuntimeHostManagementResponse>;
+    listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
+    rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
+    revokeCredential(
+      profileId: string,
+      credentialId: string,
+    ): Promise<DesktopRuntimeHostAccessSnapshot>;
   };
 
   newTasks: {

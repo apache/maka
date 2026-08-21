@@ -21,11 +21,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Text } from '@astryxdesign/core/Text';
-import { Banner, Button, Spinner, useToast, useUiLocale } from '@maka/ui';
+import { Badge, Banner, Button, Spinner, useToast, useUiLocale } from '@maka/ui';
+import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
 import type { RemoteRuntimeHostProfile } from '@maka/runtime-host/client';
 import type {
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostManagementResult,
+  DesktopRuntimeHostAccessCredential,
+  DesktopRuntimeHostAccessSnapshot,
 } from '../../preload/bridge-contract.js';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
@@ -42,6 +45,9 @@ export function RuntimeHostManagementDialog(props: {
   const [error, setError] = useState<string>();
   const [uninstalledRoot, setUninstalledRoot] = useState<string>();
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
+  const [view, setView] = useState<'service' | 'access'>('service');
+  const [access, setAccess] = useState<DesktopRuntimeHostAccessSnapshot>();
+  const [revokeTarget, setRevokeTarget] = useState<DesktopRuntimeHostAccessCredential>();
   const logsRef = useRef<HTMLPreElement>(null);
 
   const profile = props.profile;
@@ -52,6 +58,9 @@ export function RuntimeHostManagementDialog(props: {
     setError(undefined);
     setUninstalledRoot(undefined);
     setConfirmingUninstall(false);
+    setView('service');
+    setAccess(undefined);
+    setRevokeTarget(undefined);
     setLoading(true);
     void window.maka.runtimeHostManagement.run(profile.id, 'status').then(
       (response) => {
@@ -103,6 +112,58 @@ export function RuntimeHostManagementDialog(props: {
     }
   }
 
+  async function loadAccess(): Promise<void> {
+    if (!profile) return;
+    setLoading(true);
+    setError(undefined);
+    try {
+      setAccess(await window.maka.runtimeHostManagement.listCredentials(profile.id));
+      setView('access');
+    } catch (failure) {
+      const message = settingsActionErrorMessage(failure, locale);
+      setError(message);
+      toast.error(copy.accessActionFailed, message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function rotateCredential(): Promise<void> {
+    if (!profile) return;
+    setLoading(true);
+    setError(undefined);
+    try {
+      setAccess(await window.maka.runtimeHostManagement.rotateCredential(profile.id));
+    } catch (failure) {
+      const message = settingsActionErrorMessage(failure, locale);
+      setError(message);
+      toast.error(copy.accessActionFailed, message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function revokeCredential(): Promise<void> {
+    if (!profile || !revokeTarget) return;
+    setLoading(true);
+    setError(undefined);
+    try {
+      setAccess(
+        await window.maka.runtimeHostManagement.revokeCredential(
+          profile.id,
+          revokeTarget.credentialId,
+        ),
+      );
+      setRevokeTarget(undefined);
+    } catch (failure) {
+      const message = settingsActionErrorMessage(failure, locale);
+      setError(message);
+      toast.error(copy.accessActionFailed, message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const service = result?.service;
   const uninstalled = uninstalledRoot !== undefined;
   const serviceInstalled = service !== undefined && service.state !== 'not_installed';
@@ -149,7 +210,7 @@ export function RuntimeHostManagementDialog(props: {
                   title={copy.uninstallRetained(uninstalledRoot)}
                 />
               ) : null}
-              {service ? (
+              {view === 'service' && service ? (
                 <>
                   <dl className="settingsRuntimeHostManagementFacts">
                     <Fact label={copy.serviceStatus} value={copy.serviceState[service.state]} />
@@ -189,13 +250,89 @@ export function RuntimeHostManagementDialog(props: {
                   ) : null}
                 </>
               ) : null}
+              {view === 'access' && access ? (
+                <div className="settingsRuntimeHostAccess">
+                  <Text type="body" weight="semibold">{copy.accessTitle}</Text>
+                  {revokeTarget ? (
+                    <Banner
+                      status="warning"
+                      title={copy.revokeCredentialConfirm(revokeTarget.principalId)}
+                    />
+                  ) : null}
+                  {access.credentials.length === 0 ? (
+                    <Text type="supporting" color="secondary">
+                      {copy.noAccessCredentials}
+                    </Text>
+                  ) : (
+                    <ul className="settingsRuntimeHostAccessList">
+                      {access.credentials.map((credential) => (
+                        <li key={credential.credentialId}>
+                          <div className="settingsRuntimeHostAccessIdentity">
+                            <div>
+                              <strong>{credential.principalId}</strong>
+                              <span>
+                                {credential.principalKind === 'capability_provider'
+                                  ? copy.accessKind.capabilityProvider
+                                  : copy.accessKind.owner}
+                              </span>
+                            </div>
+                            <div className="settingsRuntimeHostAccessBadges">
+                              {credential.isCurrentDesktop ? (
+                                <Badge variant="neutral" label={copy.currentDesktop} />
+                              ) : null}
+                              {credential.status === 'pending' ? (
+                                <Badge variant="warning" label={copy.accessPending} />
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="settingsRuntimeHostAccessMeta">
+                            <span>{copy.accessCreated(formatCredentialDate(credential.createdAt, locale))}</span>
+                            {credential.isCurrentDesktop ? (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                label={copy.rotateCredential}
+                                isDisabled={loading || credential.status === 'pending'}
+                                clickAction={rotateCredential}
+                              />
+                            ) : (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                label={copy.revokeCredential}
+                                isDisabled={loading}
+                                onClick={() => setRevokeTarget(credential)}
+                              />
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
             </div>
           </LayoutContent>
         )}
         footer={(
           <LayoutFooter hasDivider>
             <div className="settingsRuntimeHostManagementActions">
-              {confirmingUninstall ? (
+              {revokeTarget ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    label={copy.cancel}
+                    isDisabled={loading}
+                    onClick={() => setRevokeTarget(undefined)}
+                  />
+                  <Button
+                    variant="destructive"
+                    label={copy.revokeCredential}
+                    isDisabled={loading}
+                    clickAction={revokeCredential}
+                  />
+                </>
+              ) : confirmingUninstall ? (
                 <>
                   <Button
                     variant="secondary"
@@ -213,6 +350,24 @@ export function RuntimeHostManagementDialog(props: {
                     }}
                   />
                 </>
+              ) : view === 'access' ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    label={copy.back}
+                    isDisabled={loading}
+                    onClick={() => {
+                      setView('service');
+                      setError(undefined);
+                    }}
+                  />
+                  <Button
+                    variant="primary"
+                    label={copy.refresh}
+                    isDisabled={loading}
+                    clickAction={loadAccess}
+                  />
+                </>
               ) : (
                 <>
                   <Button
@@ -227,6 +382,14 @@ export function RuntimeHostManagementDialog(props: {
                       label={copy.repairService}
                       isDisabled={loading}
                       clickAction={() => run('install')}
+                    />
+                  ) : null}
+                  {profile && serviceInstalled && !uninstalled ? (
+                    <Button
+                      variant="secondary"
+                      label={copy.manageAccess}
+                      isDisabled={loading}
+                      clickAction={loadAccess}
                     />
                   ) : null}
                   {result && profile && !uninstalled ? (
@@ -291,4 +454,12 @@ function Fact(props: {
       <dd>{props.value}</dd>
     </div>
   );
+}
+
+function formatCredentialDate(value: string, locale: UiLocale): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Intl.DateTimeFormat(uiLocaleToIntlLocale(locale), {
+    dateStyle: 'medium',
+  }).format(timestamp);
 }

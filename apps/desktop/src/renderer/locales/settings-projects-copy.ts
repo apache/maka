@@ -99,6 +99,21 @@ export type SettingsProjectsCopy = {
     uninstallConfirm: string;
     uninstallRetained(path: string): string;
     managementActionFailed: string;
+    manageAccess: string;
+    accessTitle: string;
+    noAccessCredentials: string;
+    currentDesktop: string;
+    accessKind: {
+      owner: string;
+      capabilityProvider: string;
+    };
+    accessPending: string;
+    accessCreated(date: string): string;
+    rotateCredential: string;
+    revokeCredential: string;
+    revokeCredentialConfirm(name: string): string;
+    accessActionFailed: string;
+    back: string;
     remove: string;
     empty: string;
     loadFailed: string;
@@ -242,6 +257,21 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       uninstallConfirm: '卸载服务',
       uninstallRetained: (path: string) => `服务已卸载，数据保留在 ${path}`,
       managementActionFailed: '无法管理 Runtime Host 服务',
+      manageAccess: '管理访问权限',
+      accessTitle: '访问权限',
+      noAccessCredentials: '没有访问凭据',
+      currentDesktop: '当前 Desktop',
+      accessKind: {
+        owner: '客户端访问',
+        capabilityProvider: 'Capability Provider',
+      },
+      accessPending: '等待确认',
+      accessCreated: (date: string) => `创建于 ${date}`,
+      rotateCredential: '轮换凭据',
+      revokeCredential: '撤销',
+      revokeCredentialConfirm: (name: string) => `撤销 ${name} 的访问权限？`,
+      accessActionFailed: '无法管理访问权限',
+      back: '返回',
       remove: '移除',
       empty: '还没有远程 Host',
       loadFailed: '无法读取 Runtime Host profiles',
@@ -383,6 +413,21 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       uninstallConfirm: 'Uninstall service',
       uninstallRetained: (path: string) => `Service uninstalled. Data was retained at ${path}`,
       managementActionFailed: 'Unable to manage the Runtime Host service',
+      manageAccess: 'Manage access',
+      accessTitle: 'Access',
+      noAccessCredentials: 'No active access credentials',
+      currentDesktop: 'This Desktop',
+      accessKind: {
+        owner: 'Client access',
+        capabilityProvider: 'Capability provider',
+      },
+      accessPending: 'Pending confirmation',
+      accessCreated: (date: string) => `Created ${date}`,
+      rotateCredential: 'Rotate credential',
+      revokeCredential: 'Revoke',
+      revokeCredentialConfirm: (name: string) => `Revoke access for ${name}?`,
+      accessActionFailed: 'Unable to manage access',
+      back: 'Back',
       remove: 'Remove',
       empty: 'No remote Hosts yet',
       loadFailed: 'Could not load Runtime Host profiles',

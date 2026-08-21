@@ -70,7 +70,10 @@ export type RuntimeHostCliCommand =
     }
   | {
       kind: 'runtime-host-access-issue';
+      mode: 'issue' | 'prepare';
       rootPath?: string;
+      expectedRootId?: string;
+      framed: boolean;
       principalKind: 'remote_owner' | 'capability_provider';
       principalId: string;
       operationGrants: string[];
@@ -78,7 +81,20 @@ export type RuntimeHostCliCommand =
       canUseHostPaths: boolean;
       preset?: 'desktop-client' | 'terminal-client';
     }
-  | { kind: 'runtime-host-access-revoke'; rootPath?: string; credentialId: string }
+  | {
+      kind: 'runtime-host-access-list';
+      rootPath?: string;
+      expectedRootId?: string;
+      framed: boolean;
+    }
+  | {
+      kind: 'runtime-host-access-revoke';
+      rootPath?: string;
+      expectedRootId?: string;
+      credentialId: string;
+      protectedCredentialFingerprint?: string;
+      framed: boolean;
+    }
   | { kind: 'runtime-host-project-list'; rootPath?: string }
   | { kind: 'runtime-host-project-add'; rootPath?: string; path: string }
   | {
@@ -719,24 +735,32 @@ function parseProjectRoot(value: string): { label: string; path: string } | Runt
 
 function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   const action = argv[0];
-  if (action !== 'issue' && action !== 'revoke') {
+  if (action !== 'list' && action !== 'issue' && action !== 'prepare' && action !== 'revoke') {
     return error(
       action
         ? `Unexpected runtime-host access command: ${action}`
-        : 'runtime-host access requires the issue or revoke command',
+        : 'runtime-host access requires list, issue, prepare, or revoke',
     );
   }
   let rootPath: string | undefined;
+  let expectedRootId: string | undefined;
+  let framed = false;
   let principalId: string | undefined;
   let principalKind: 'remote_owner' | 'capability_provider' = 'remote_owner';
   let principalKindSpecified = false;
   let credentialId: string | undefined;
+  let protectedCredentialFingerprint: string | undefined;
   const operationGrants: string[] = [];
   let canPublishClientCapabilities = false;
   let canUseHostPaths = false;
   let preset: 'desktop-client' | 'terminal-client' | undefined;
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === '--framed') {
+      if (framed) return error('Duplicate --framed');
+      framed = true;
+      continue;
+    }
     if (argument === '--publish-client-capabilities') {
       canPublishClientCapabilities = true;
       continue;
@@ -747,15 +771,18 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     }
     if (
       argument === '--root' ||
+      argument === '--expected-root' ||
       argument === '--kind' ||
       argument === '--preset' ||
       argument === '--principal' ||
       argument === '--grant' ||
-      argument === '--credential'
+      argument === '--credential' ||
+      argument === '--protect-fingerprint'
     ) {
       const parsed = optionValue(argv, index, argument);
       if (typeof parsed !== 'string') return parsed;
       if (argument === '--root') rootPath = parsed;
+      if (argument === '--expected-root') expectedRootId = parsed;
       if (argument === '--kind') {
         if (parsed !== 'remote-owner' && parsed !== 'capability-provider') {
           return error('--kind must be remote-owner or capability-provider');
@@ -772,14 +799,41 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       if (argument === '--principal') principalId = parsed;
       if (argument === '--grant') operationGrants.push(parsed);
       if (argument === '--credential') credentialId = parsed;
+      if (argument === '--protect-fingerprint') protectedCredentialFingerprint = parsed;
       index += 1;
       continue;
     }
     return error(`Unexpected argument: ${argument ?? ''}`);
   }
-  if (action === 'issue') {
+  if (expectedRootId && !/^[a-f0-9]{64}$/u.test(expectedRootId)) {
+    return error('--expected-root must be a Runtime Host root identity');
+  }
+  if (action === 'list') {
+    if (
+      principalId ||
+      principalKindSpecified ||
+      operationGrants.length > 0 ||
+      canPublishClientCapabilities ||
+      canUseHostPaths ||
+      preset ||
+      credentialId ||
+      protectedCredentialFingerprint
+    ) {
+      return error('Credential mutation options are not valid for access list');
+    }
+    return {
+      kind: 'runtime-host-access-list',
+      ...(rootPath ? { rootPath } : {}),
+      ...(expectedRootId ? { expectedRootId } : {}),
+      framed,
+    };
+  }
+  if (action === 'issue' || action === 'prepare') {
+    if (action === 'issue' && framed) return error('--framed is only valid for access management');
     if (!principalId) return error('--principal is required');
-    if (credentialId) return error('--credential is only valid for access revoke');
+    if (credentialId || protectedCredentialFingerprint) {
+      return error('Credential target options are only valid for access revoke');
+    }
     if (
       preset &&
       (principalKindSpecified ||
@@ -792,7 +846,10 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     if (preset) {
       return {
         kind: 'runtime-host-access-issue',
+        mode: action,
         ...(rootPath ? { rootPath } : {}),
+        ...(expectedRootId ? { expectedRootId } : {}),
+        framed,
         principalKind: 'remote_owner',
         principalId,
         operationGrants,
@@ -817,7 +874,10 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     }
     return {
       kind: 'runtime-host-access-issue',
+      mode: action,
       ...(rootPath ? { rootPath } : {}),
+      ...(expectedRootId ? { expectedRootId } : {}),
+      framed,
       principalKind,
       principalId,
       operationGrants,
@@ -826,6 +886,9 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     };
   }
   if (!credentialId) return error('--credential is required');
+  if (protectedCredentialFingerprint && !/^[a-f0-9]{32}$/u.test(protectedCredentialFingerprint)) {
+    return error('--protect-fingerprint must be a Runtime Host credential fingerprint');
+  }
   if (
     principalId ||
     principalKindSpecified ||
@@ -839,7 +902,10 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   return {
     kind: 'runtime-host-access-revoke',
     ...(rootPath ? { rootPath } : {}),
+    ...(expectedRootId ? { expectedRootId } : {}),
     credentialId,
+    ...(protectedCredentialFingerprint ? { protectedCredentialFingerprint } : {}),
+    framed,
   };
 }
 
