@@ -237,6 +237,106 @@ test('backend creation does not treat aliased provider metadata as inventory', a
   );
 });
 
+test('Host composition carries verified native PDF input through the provider wire', async () => {
+  const modelId = 'gpt-4o';
+  const provider = await startProvider();
+  let attachmentReads = 0;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        modelId,
+        resolveExecutionConnection: async () => ({
+          kind: 'ready',
+          connection: {
+            slug: 'backend-creation-connection',
+            providerType: 'openai',
+            baseUrl: provider.baseUrl,
+            enabledModelIds: [modelId],
+            models: [
+              {
+                id: modelId,
+                capabilities: { chat: true, functionCalling: true },
+                modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+                contextWindow: 8_192,
+                maxOutputTokens: 1_024,
+              },
+            ],
+          },
+          networkProxy: { enabled: false },
+          secretMaterial: { connection: { secret: API_KEY } },
+        }),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        artifacts: {
+          readDurableAttachmentBinary: async ({
+            artifactId,
+            sessionId,
+          }: {
+            artifactId: string;
+            sessionId: string;
+          }) => {
+            attachmentReads += 1;
+            assert.equal(artifactId, 'brief');
+            assert.equal(sessionId, 'backend-creation-session');
+            return { ok: true, base64: 'JVBERi0=', mimeType: 'application/pdf' };
+          },
+        } as unknown as HostAiSdkBackendInput['artifacts'],
+      }),
+    );
+
+    const events = [];
+    for await (const event of backend.send({
+      invocationId: 'pdf-composition-invocation',
+      runId: 'pdf-composition-run',
+      turnId: 'pdf-composition-turn',
+      text: 'Read the attached PDF.',
+      attachments: [
+        {
+          kind: 'pdf',
+          name: 'brief.pdf',
+          mimeType: 'application/pdf',
+          bytes: 8,
+          ref: {
+            kind: 'session_file',
+            sessionId: 'backend-creation-session',
+            relativePath: 'brief',
+          },
+        },
+      ],
+      context: [],
+      runtimeContext: [],
+    })) {
+      events.push(event);
+    }
+
+    assert.equal(
+      events.find((event) => event.type === 'complete')?.stopReason,
+      'end_turn',
+      JSON.stringify({ events, providerRequests: provider.requests }),
+    );
+    assert.equal(attachmentReads, 1);
+    assert.equal(provider.requests.length, 1);
+    const messages = provider.requests[0]?.body.messages;
+    assert.ok(Array.isArray(messages));
+    const filePart = messages
+      .flatMap((message: { content?: unknown }) =>
+        Array.isArray(message.content) ? message.content : [],
+      )
+      .find((part: { type?: unknown }) => part.type === 'file');
+    assert.deepEqual(filePart, {
+      type: 'file',
+      file: {
+        filename: 'brief.pdf',
+        file_data: 'data:application/pdf;base64,JVBERi0=',
+      },
+    });
+  } finally {
+    await backend?.dispose();
+    await provider.close();
+  }
+});
+
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {
   const provider = await startProvider();
   let commits = 0;
@@ -3167,6 +3267,7 @@ function backendCreationFixture(input: {
   recordModelCallAttempt?: BackendFactoryContext['recordModelCallAttempt'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
   createRunComposer?: HostAiSdkBackendInput['createRunComposer'];
+  artifacts?: HostAiSdkBackendInput['artifacts'];
 }): HostAiSdkBackendInput {
   const runtimePolicy =
     input.runtimePolicy ??
@@ -3239,7 +3340,7 @@ function backendCreationFixture(input: {
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
     ...(input.claudeDeviceId ? { claudeDeviceId: input.claudeDeviceId } : {}),
     createRunComposer,
-    artifacts: {},
+    artifacts: input.artifacts ?? {},
     executionArtifacts: {
       recordToolArtifacts: async () => undefined,
       toolResultArchive: createToolResultArchiveCapability({

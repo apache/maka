@@ -14,6 +14,7 @@ import { buildLlmHistorySummarizer } from '@maka/runtime/history-compact-summari
 import { buildOpenAiCodexHistoryCompactor } from '@maka/runtime/openai-codex-history-compactor';
 import { buildPricingLookup, recordToolInvocation } from '@maka/runtime/telemetry';
 import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import { resolveModelPdfInputContract } from '@maka/runtime/model-runtime';
 import { createProviderRequestCaptureRecorder } from '@maka/runtime/provider-request-telemetry';
 import {
   createProxiedFetchTransport,
@@ -132,6 +133,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     input.context.header.thinkingLevel,
   );
   const contextWindow = resolveSelectedModelContextWindow(target.connection, target.model);
+  const pdfInputContract = resolveModelPdfInputContract(target.connection, target.model);
   let modelComposition: HostRunComposer;
   try {
     modelComposition = await readDuringBackendCreation(
@@ -362,6 +364,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           target.model,
           relayModelProfile(target.connection, target.model)?.vision,
         ),
+        ...(pdfInputContract ? { pdfInputContract } : {}),
         readAttachmentBytes: createAttachmentByteReader({
           artifactStore: input.artifacts,
           sessionId: input.context.sessionId,
