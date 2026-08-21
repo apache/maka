@@ -1,4 +1,4 @@
-# Maka
+# Apache Maka (Incubating)
 
 [![CI](https://github.com/apache/maka/actions/workflows/ci.yml/badge.svg)](https://github.com/apache/maka/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
@@ -9,6 +9,9 @@
 **一个为真实工作而生的本地优先 Agent 工作台。**
 
 Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具、生成产物，并把模型消息和工具调用保存为可恢复的运行事实。桌面应用、终端 TUI、非交互 CLI 和 Maka 评测 subject 都通过 Runtime Host 执行。
+
+> [!NOTE]
+> Apache Maka (Incubating) 是一个正在 Apache 软件基金会（ASF）孵化的项目，由 Apache Incubator PMC 提供 sponsor。所有新接受的项目都必须经过孵化，直到进一步审查表明其基础设施、沟通方式和决策流程已经稳定到与其他成功的 ASF 项目一致的程度。孵化状态并不必然反映代码的完成度或稳定性，但它确实表明该项目尚未得到 ASF 的完全认可。项目当前已知的问题记录在 [DISCLAIMER-WIP](./DISCLAIMER-WIP)（以英文原文为准）。
 
 > [!IMPORTANT]
 > Maka 仍在活跃开发中。macOS Apple Silicon 桌面版是首个早期公开版本，数据格式、CLI 和实验能力仍可能变化。
@@ -54,6 +57,12 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 - Maka subject 只通过 Runtime Host 执行，外部竞品使用 generic external subject adapter。
 
 ## 快速开始
+
+### Release 与下载
+
+Apache Maka 目前还没有发布过 Apache release。当前从本仓库或包管理器分发的一切内容，都是在进入孵化器之前或孵化期间产生的，不是 Apache 软件基金会的 release，也没有经过 Incubator PMC 审查和投票。
+
+在 Apache release 出现之后，官方 release 指的是由 ASF 发布、并经 podling PPMC 和 Incubator PMC 批准的源码 release。由该源码构建并通过其他渠道分发的包，例如包管理器中的包或 Desktop 安装程序，属于 convenience artifact，本身不是 release，并且只有在由获批源码 release 构建时才有效。候选契约、签名路径和验包步骤见 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
 ### 下载 macOS 桌面版
 
@@ -281,3 +290,5 @@ npm --workspace @maka/desktop run smoke:real-window
 
 Maka 使用 [Apache License 2.0](./LICENSE) 开源，归属信息见
 [NOTICE](./NOTICE)。第三方组件仍分别适用其自身的许可证与声明。
+
+Apache Maka、Maka、Apache、Apache 羽毛标志和 Apache Maka 项目标志是 Apache 软件基金会的注册商标或商标。

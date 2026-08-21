@@ -1,4 +1,4 @@
-# Maka
+# Apache Maka (Incubating)
 
 [![CI](https://github.com/apache/maka/actions/workflows/ci.yml/badge.svg)](https://github.com/apache/maka/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
@@ -9,6 +9,9 @@
 **A local-first Agent workspace built for real work.**
 
 Maka does more than answer questions. With controlled permissions, it can inspect projects, execute tools, produce artifacts, and preserve model messages and tool calls as recoverable execution facts. Desktop, the terminal TUI, the non-interactive CLI, and Maka evaluation subjects all execute through Runtime Host.
+
+> [!NOTE]
+> Apache Maka (Incubating) is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF. [DISCLAIMER-WIP](./DISCLAIMER-WIP) records the issues the project is currently aware of.
 
 > [!IMPORTANT]
 > Maka is under active development. The macOS Apple Silicon desktop build is an early public release; data formats, CLI commands, and experimental capabilities may still change.
@@ -54,6 +57,12 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 - Maka subjects execute only through Runtime Host; external competitors use generic external subject adapters.
 
 ## Quick start
+
+### Releases and downloads
+
+Apache Maka has not made an Apache release yet. Everything currently published from this repository or from a package registry was produced before or during incubation, is not an Apache Software Foundation release, and has not been reviewed or voted on by the Incubator PMC.
+
+Once Apache releases exist, the official release is the source release published by the ASF and approved by the podling PPMC and the Incubator PMC. A package built from that source and distributed elsewhere, for example through a package registry or as a Desktop installer, is a convenience artifact rather than the release itself, and it is valid only when it is built from an approved source release. [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) holds the candidate contract, signing path, and verification steps.
 
 ### Download Desktop for macOS
 
@@ -288,3 +297,5 @@ Before submitting code, run typecheck, build, and focused tests proportionate to
 Maka is licensed under the [Apache License 2.0](./LICENSE). See
 [NOTICE](./NOTICE) for attribution information. Third-party components remain
 subject to their respective licenses and notices.
+
+Apache Maka, Maka, Apache, the Apache feather, and the Apache Maka project logo are either registered trademarks or trademarks of The Apache Software Foundation.
