@@ -74,6 +74,10 @@ export {
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
 } from './connect-or-spawn.js';
+export {
+  createRuntimeHostCandidateLaunchBarrier,
+  type RuntimeHostCandidateLaunchBarrier,
+} from './candidate-launch-barrier.js';
 export { runHostedExecution } from './hosted-execution.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
 export {

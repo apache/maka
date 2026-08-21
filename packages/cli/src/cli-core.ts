@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { formatMakaResumeHint } from './cli-invocation.js';
 import { resolveMakaDataRoots } from './workspace-root.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
 import { resolveCliUiLocale } from './cli-ui-locale.js';
@@ -170,13 +169,6 @@ function helpText(cliCommand: string): string {
     '  --credential-env <name>       Read the access credential from this environment variable',
     '  --client-identity <path>      Persist the provider Client instance identity here',
   ].join('\n');
-}
-
-export function formatResumeHint(
-  sessionId: string | null,
-  cliCommand: string = RELEASE_MAKA_CLI_LAUNCH_OPTIONS.cliCommand,
-): string | null {
-  return formatMakaResumeHint(cliCommand, sessionId);
 }
 
 export async function runMakaCli(

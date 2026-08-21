@@ -13,6 +13,7 @@ import {
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostConnection,
+  type RuntimeHostCandidateLaunchBarrier,
   type RemoteRuntimeHostProfile,
 } from "@maka/runtime-host/client";
 import {
@@ -138,6 +139,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   readonly generation?: string;
   readonly takeoverHostEpoch?: string;
   readonly signal?: AbortSignal;
+  readonly candidateLaunchBarrier?: RuntimeHostCandidateLaunchBarrier;
   readonly remote?: {
     readonly profile: RemoteRuntimeHostProfile;
     readonly credential: string;
@@ -259,7 +261,9 @@ export async function startDesktopRuntimeHostCandidate(
       ipcMain,
     );
   }
-  const connection = await connectOrSpawnRuntimeHost(connectInput(input));
+  const connection = input.candidateLaunchBarrier
+    ? await input.candidateLaunchBarrier.connect(connectInput(input))
+    : await connectOrSpawnRuntimeHost(connectInput(input));
   if (connection.kind !== "connected") return connection;
   try {
     return {

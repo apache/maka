@@ -310,26 +310,48 @@ export class RuntimeHostSessionObserver {
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
-    const { state, replica, consumer } = this.#requireTranscriptConsumer(request, targetId);
-    await replica.loadBefore(request.anchorSequence, requireTranscriptRangeBytes(request.maxBytes));
-    await consumer.deliveryTask;
-    this.#touchReplica(state);
+    await this.#runTranscriptRangeOperation(request, targetId, (replica) =>
+      replica.loadBefore(
+        request.anchorSequence,
+        requireTranscriptRangeBytes(request.maxBytes),
+      ),
+    );
   }
 
   async loadTranscriptAround(
     request: DesktopTranscriptRangeRequest,
     targetId?: number,
   ): Promise<void> {
+    await this.#runTranscriptRangeOperation(request, targetId, (replica) => {
+      if (request.anchorSequence === null) {
+        throw new Error('Desktop transcript around request requires an anchor');
+      }
+      return replica.loadAround(
+        request.anchorSequence,
+        requireTranscriptRangeBytes(request.maxBytes),
+      );
+    });
+  }
+
+  async #runTranscriptRangeOperation(
+    request: DesktopTranscriptRangeRequest,
+    targetId: number | undefined,
+    operation: (replica: DesktopTranscriptReplica) => Promise<void>,
+  ): Promise<void> {
     const { state, replica, consumer } = this.#requireTranscriptConsumer(request, targetId);
-    if (request.anchorSequence === null) {
-      throw new Error('Desktop transcript around request requires an anchor');
+    const isCurrent = () =>
+      state.replica === replica &&
+      state.transcriptConsumers.get(request.consumerId) === consumer &&
+      consumer.generation === request.generation;
+    const task = operation(replica);
+    try {
+      await task;
+      await consumer.deliveryTask;
+    } catch (error) {
+      if (!isCurrent()) return;
+      throw error;
     }
-    await replica.loadAround(
-      request.anchorSequence,
-      requireTranscriptRangeBytes(request.maxBytes),
-    );
-    await consumer.deliveryTask;
-    this.#touchReplica(state);
+    if (isCurrent()) this.#touchReplica(state);
   }
 
   async closeTranscript(consumerId: string, targetId?: number): Promise<void> {

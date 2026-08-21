@@ -2823,6 +2823,12 @@ function AppShellContent({
         await controller.loadLatest();
       }
     } catch (error) {
+      if (
+        activeIdRef.current !== sessionId ||
+        transcriptRangeRef.current !== controller
+      ) {
+        return;
+      }
       toastApi.error(
         desktopConversationCopy.actions.messageReadFailedTitle,
         localizedShellErrorMessage(

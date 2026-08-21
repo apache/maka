@@ -98,6 +98,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 25);
   });
 
+  test('publishes a new compatibility epoch for sandbox failure results', () => {
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 33);
+  });
+
   test('selects the highest mutually supported protocol and rejects a gap', () => {
     assert.equal(negotiateProtocol({ min: 0, max: 0 }, { min: 0, max: 0 }), 0);
     assert.equal(negotiateProtocol({ min: 1, max: 3 }, { min: 2, max: 4 }), 3);
@@ -255,6 +259,12 @@ describe('Runtime Host bootstrap protocol', () => {
       { ...identity, type: 'tool_result', status: 'completed', durationMs: 3 },
       {
         ...identity,
+        type: 'tool_result',
+        status: 'errored',
+        sandboxFailureReason: 'sandbox_boundary_required',
+      },
+      {
+        ...identity,
         type: 'tool_result_preview',
         isError: false,
         content: {
@@ -287,6 +297,18 @@ describe('Runtime Host bootstrap protocol', () => {
         type: 'tool_result',
         status: 'errored',
         error: 'raw provider error',
+      },
+      {
+        ...identity,
+        type: 'tool_result',
+        status: 'errored',
+        sandboxFailureReason: 'raw provider error',
+      },
+      {
+        ...identity,
+        type: 'tool_result',
+        status: 'completed',
+        sandboxFailureReason: 'requires_bypass',
       },
       {
         ...identity,
