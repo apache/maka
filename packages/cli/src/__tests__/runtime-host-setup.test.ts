@@ -163,6 +163,7 @@ test('managed setup converges on one exact package and verified Client pairing',
   const operator = await readFile(operatorPath!, 'utf8');
   assert.match(operator, /versions\/0\.2\.0\/dist\/cli\.js/u);
   assert.match(operator, /--client-data-root/u);
+  assert.match(operator, /--operator-capability 'access-management-v1'/u);
   assert.equal(operator.includes(clientDataRoot), true);
 
   assert.deepEqual(await readdir(join(canonicalDeploymentRoot, 'versions')), ['0.2.0']);
@@ -376,6 +377,8 @@ test('managed operator binds its Client Data Root and survives package cleanup i
     'status',
     '--client-data-root',
     clientDataRoot,
+    '--operator-capability',
+    'access-management-v1',
   ]);
 
   await rm(join(deployment.root, 'versions'), { recursive: true });

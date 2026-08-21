@@ -285,7 +285,8 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   harness.pty.emitData(
     encodeRuntimeHostAccessManagementFrame({
       schemaVersion: 1,
-      kind: 'prepared',
+      kind: 'result',
+      action: 'prepare',
       credential,
       credentials: [{
         credentialId: 'credential-2',
@@ -304,8 +305,8 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   harness.pty.exit(0);
 
   const result = await management;
-  assert.equal(result.kind, 'prepared');
-  assert.equal(result.kind === 'prepared' ? result.credential : undefined, credential);
+  assert.equal(result.kind, 'result');
+  assert.equal(result.kind === 'result' && result.action === 'prepare' ? result.credential : undefined, credential);
   assert.doesNotMatch(JSON.stringify(harness.events), /secret-replacement|MAKA_RUNTIME/u);
   const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(command, /access.*prepare/u);
@@ -323,12 +324,14 @@ test('accepts the revoked result for an access revoke action', async () => {
     expectedRootId: 'a'.repeat(64),
     action: 'revoke',
     credentialId: 'credential-1',
+    protectedCredentialFingerprint: 'b'.repeat(32),
   });
   await waitFor(() => harness.pty.hasDataListener());
   harness.pty.emitData(
     encodeRuntimeHostAccessManagementFrame({
       schemaVersion: 1,
-      kind: 'revoked',
+      kind: 'result',
+      action: 'revoke',
       credentialId: 'credential-1',
       revoked: true,
       credentials: [],
@@ -336,7 +339,7 @@ test('accepts the revoked result for an access revoke action', async () => {
   );
   harness.pty.exit(0);
 
-  assert.equal((await management).kind, 'revoked');
+  assert.deepEqual((await management).action, 'revoke');
   await harness.terminal.close();
 });
 

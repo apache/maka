@@ -78,7 +78,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
     runServiceManagement: async () => assert.fail('service management is not expected'),
     runAccessManagement: async (input: DesktopRuntimeHostSshAccessInput) => {
       if (input.action === 'list') {
-        return { schemaVersion: 1, kind: 'list', credentials };
+        return { schemaVersion: 1, kind: 'result', action: 'list', credentials };
       }
       if (input.action === 'prepare') {
         const pending = {
@@ -92,7 +92,8 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
         };
         return {
           schemaVersion: 1,
-          kind: 'prepared',
+          kind: 'result',
+          action: 'prepare',
           credential: replacement,
           credentials: [...credentials, pending],
         };
@@ -117,7 +118,8 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
       );
       return {
         schemaVersion: 1,
-        kind: 'revoked',
+        kind: 'result',
+        action: 'revoke',
         credentialId: input.credentialId!,
         revoked: true,
         credentials,
@@ -165,6 +167,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
   const managementInputs: DesktopRuntimeHostSshManagementInput[] = [];
   const cleanupInputs: DesktopRuntimeHostSshCleanupInput[] = [];
   const uninstallOrder: string[] = [];
+  let operatorAccess = false;
   let cleared = 0;
   const managedProfile = {
     id: 'office',
@@ -210,7 +213,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
       if (input.action === 'uninstall') {
         uninstallOrder.push('uninstall-service');
       }
-      return serviceResult(input.action);
+      return serviceResult(input.action, operatorAccess);
     },
     runAccessManagement: async () => assert.fail('access management is not expected'),
     cleanupManagedDeployment: async (input) => {
@@ -225,7 +228,17 @@ test('manages only the service identity bound by Desktop onboarding', async () =
     run({}, 'manual', 'uninstall') as Promise<unknown>,
     /not bound to a managed service/u,
   );
-  await run({}, 'office', 'status');
+  const legacyStatus = await run({}, 'office', 'status');
+  assert.equal(
+    (legacyStatus as { accessManagementAvailable: boolean }).accessManagementAvailable,
+    false,
+  );
+  operatorAccess = true;
+  const currentStatus = await run({}, 'office', 'status');
+  assert.equal(
+    (currentStatus as { accessManagementAvailable: boolean }).accessManagementAvailable,
+    true,
+  );
   const managementInput = managementInputs.at(-1);
   assert.deepEqual(managementInput && {
     destination: managementInput.destination,
@@ -397,11 +410,17 @@ test('does not commit uninstall until the remote service confirms it is removed'
   assert.equal(marked, false);
 });
 
-function serviceResult(action: DesktopRuntimeHostSshManagementInput['action']) {
+function serviceResult(
+  action: DesktopRuntimeHostSshManagementInput['action'],
+  operatorAccess = false,
+) {
   return {
     schemaVersion: 1 as const,
     kind: 'result' as const,
     action,
+    ...(operatorAccess
+      ? { operatorCapabilities: ['access-management-v1' as const] }
+      : {}),
     service: {
       platform: 'linux',
       arch: 'x64',

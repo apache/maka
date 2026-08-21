@@ -39,7 +39,6 @@ import {
   RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
-  type RuntimeHostAccessManagementAction,
   type RuntimeHostAccessManagementFrame,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
@@ -102,18 +101,25 @@ export interface DesktopRuntimeHostSshCleanupInput {
   readonly signal?: AbortSignal;
 }
 
-export interface DesktopRuntimeHostSshAccessInput {
+interface DesktopRuntimeHostSshAccessTarget {
   readonly destination: string;
   readonly sshPort?: number;
   readonly operatorPath: string;
   readonly rootPath: string;
   readonly expectedRootId: string;
-  readonly action: RuntimeHostAccessManagementAction;
-  readonly principalId?: string;
-  readonly credentialId?: string;
-  readonly protectedCredentialFingerprint?: string;
   readonly signal?: AbortSignal;
 }
+
+export type DesktopRuntimeHostSshAccessInput = DesktopRuntimeHostSshAccessTarget &
+  (
+    | { readonly action: 'list' }
+    | { readonly action: 'prepare'; readonly principalId: string }
+    | {
+        readonly action: 'revoke';
+        readonly credentialId: string;
+        readonly protectedCredentialFingerprint: string;
+      }
+  );
 
 export type DesktopRuntimeHostSetupPackage =
   | { readonly kind: 'npm'; readonly specifier: string }
@@ -517,7 +523,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         pendingMaxBytes: ACCESS_MANAGEMENT_FRAME_PENDING_MAX,
         decode: decodeRuntimeHostAccessManagementFrame,
         action: accessInput.action,
-        frameAction: accessManagementFrameAction,
+        frameAction: (frame) => frame.action,
         label: 'Remote Runtime Host access management',
       }),
     cleanupManagedDeployment: async (cleanupInput) => {
@@ -844,6 +850,14 @@ function runtimeHostServiceManagementRemoteCommand(
 function runtimeHostAccessManagementRemoteCommand(
   input: DesktopRuntimeHostSshAccessInput,
 ): string {
+  const actionArgs = input.action === 'prepare'
+    ? ['--principal', input.principalId, '--preset', 'desktop-client']
+    : input.action === 'revoke'
+      ? [
+          '--credential', input.credentialId,
+          '--protect-fingerprint', input.protectedCredentialFingerprint,
+        ]
+      : [];
   const command = [
     input.operatorPath,
     'access',
@@ -853,24 +867,9 @@ function runtimeHostAccessManagementRemoteCommand(
     input.rootPath,
     '--expected-root',
     input.expectedRootId,
-    ...(input.principalId
-      ? ['--principal', input.principalId, '--preset', 'desktop-client']
-      : []),
-    ...(input.credentialId ? ['--credential', input.credentialId] : []),
-    ...(input.protectedCredentialFingerprint
-      ? ['--protect-fingerprint', input.protectedCredentialFingerprint]
-      : []),
+    ...actionArgs,
   ].map(quotePosix).join(' ');
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
-}
-
-function accessManagementFrameAction(
-  frame: RuntimeHostAccessManagementFrame,
-): RuntimeHostAccessManagementAction {
-  if (frame.kind === 'error') return frame.action;
-  if (frame.kind === 'prepared') return 'prepare';
-  if (frame.kind === 'revoked') return 'revoke';
-  return 'list';
 }
 
 function runtimeHostManagedDeploymentCleanupRemoteCommand(operatorPath: string): string {

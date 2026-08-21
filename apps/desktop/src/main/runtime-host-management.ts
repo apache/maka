@@ -19,6 +19,7 @@
 
 import type { IpcMain } from 'electron';
 import {
+  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   runtimeHostAccessCredentialFingerprint,
   type RuntimeHostAccessManagementFrame,
   type RuntimeHostServiceManagementFrame,
@@ -112,7 +113,16 @@ export function createDesktopRuntimeHostManagement(input: {
         : {}),
     };
     if (managementAction !== 'uninstall') {
-      return input.runServiceManagement(managementInput);
+      const response = await input.runServiceManagement(managementInput);
+      return response.kind === 'result'
+        ? {
+            ...response,
+            accessManagementAvailable:
+              response.operatorCapabilities?.includes(
+                RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+              ) ?? false,
+          }
+        : response;
     }
 
     let pending = managed;
@@ -137,15 +147,11 @@ export function createDesktopRuntimeHostManagement(input: {
   };
 
   const principalId = `desktop:${input.clientInstanceId}`;
-  const accessInput = async (
+  const accessTarget = async (
     profileId: unknown,
-    action: DesktopRuntimeHostSshAccessInput['action'],
-    detail: {
-      readonly credentialId?: string;
-      readonly principalId?: string;
-      readonly protectedCredentialFingerprint?: string;
-    } = {},
-  ): Promise<DesktopRuntimeHostSshAccessInput> => {
+  ): Promise<
+    Omit<Extract<DesktopRuntimeHostSshAccessInput, { action: 'list' }>, 'action'>
+  > => {
     const managed = await resolveManagedService(profileId);
     if (managed.state === 'uninstalling') {
       throw new Error('Finish uninstalling this Runtime Host service before managing access');
@@ -161,13 +167,14 @@ export function createDesktopRuntimeHostManagement(input: {
       operatorPath: managed.service.operatorPath,
       rootPath: managed.service.rootPath,
       expectedRootId: managed.profile.rootId,
-      action,
-      ...detail,
     };
   };
 
   const accessSnapshot = (
-    credentials: Extract<RuntimeHostAccessManagementFrame, { kind: 'list' }>['credentials'],
+    credentials: Extract<
+      RuntimeHostAccessManagementFrame,
+      { kind: 'result'; action: 'list' }
+    >['credentials'],
     currentFingerprint: string | undefined,
   ): DesktopRuntimeHostAccessSnapshot => ({
     credentials: credentials.map((credential) => ({
@@ -185,11 +192,12 @@ export function createDesktopRuntimeHostManagement(input: {
     profileId: unknown,
   ): Promise<DesktopRuntimeHostAccessSnapshot> => {
     const resolvedProfileId = requireProfileId(profileId);
-    const response = await input.runAccessManagement(
-      await accessInput(resolvedProfileId, 'list'),
-    );
+    const response = await input.runAccessManagement({
+      ...(await accessTarget(resolvedProfileId)),
+      action: 'list',
+    });
     if (response.kind === 'error') throw new Error(response.error.message);
-    if (response.kind !== 'list') {
+    if (response.action !== 'list') {
       throw new Error('Remote Runtime Host did not return its access credentials');
     }
     const currentFingerprint = await input.profiles.resolveManagedCredentialFingerprint(
@@ -202,11 +210,13 @@ export function createDesktopRuntimeHostManagement(input: {
     profileId: unknown,
   ): Promise<DesktopRuntimeHostAccessSnapshot> => {
     const managed = await resolveManagedService(profileId);
-    const response = await input.runAccessManagement(
-      await accessInput(profileId, 'prepare', { principalId }),
-    );
+    const response = await input.runAccessManagement({
+      ...(await accessTarget(profileId)),
+      action: 'prepare',
+      principalId,
+    });
     if (response.kind === 'error') throw new Error(response.error.message);
-    if (response.kind !== 'prepared') {
+    if (response.action !== 'prepare') {
       throw new Error('Remote Runtime Host did not prepare a replacement credential');
     }
     const replacementFingerprint = runtimeHostAccessCredentialFingerprint(response.credential);
@@ -250,14 +260,14 @@ export function createDesktopRuntimeHostManagement(input: {
       resolvedProfileId,
     );
     if (!currentFingerprint) throw new Error('The current Desktop credential is unavailable');
-    const response = await input.runAccessManagement(
-      await accessInput(resolvedProfileId, 'revoke', {
-        credentialId,
-        protectedCredentialFingerprint: currentFingerprint,
-      }),
-    );
+    const response = await input.runAccessManagement({
+      ...(await accessTarget(resolvedProfileId)),
+      action: 'revoke',
+      credentialId,
+      protectedCredentialFingerprint: currentFingerprint,
+    });
     if (response.kind === 'error') throw new Error(response.error.message);
-    if (response.kind !== 'revoked') {
+    if (response.action !== 'revoke') {
       throw new Error('Remote Runtime Host did not confirm credential revocation');
     }
     return accessSnapshot(response.credentials, currentFingerprint);

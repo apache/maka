@@ -23,6 +23,10 @@ import {
   PROJECT_DIRECTORY_MAX_ROOTS,
   PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
 } from '@maka/runtime-host/protocol';
+import {
+  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  type RuntimeHostOperatorCapability,
+} from '@maka/runtime-host/operator';
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
 
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };
@@ -60,6 +64,7 @@ export type RuntimeHostCliCommand =
       action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'logs' | 'uninstall';
       json: boolean;
       framed?: true;
+      operatorCapabilities?: RuntimeHostOperatorCapability[];
       clientDataRoot?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
@@ -204,6 +209,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
 
   let retainManagedDeployment = false;
   let clientDataRoot: string | undefined;
+  const operatorCapabilities: RuntimeHostOperatorCapability[] = [];
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: action === 'install',
     allowFramed: true,
@@ -212,6 +218,15 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
         if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
         if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
         clientDataRoot = value;
+      },
+      '--operator-capability': (value) => {
+        if (value !== RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY) {
+          return error('Unknown Runtime Host operator capability');
+        }
+        if (operatorCapabilities.includes(value)) {
+          return error(`Duplicate Runtime Host operator capability: ${value}`);
+        }
+        operatorCapabilities.push(value);
       },
     },
     ...(action === 'uninstall'
@@ -231,6 +246,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     action,
     ...options,
     ...(clientDataRoot ? { clientDataRoot } : {}),
+    ...(operatorCapabilities.length > 0 ? { operatorCapabilities } : {}),
     ...(retainManagedDeployment ? { retainManagedDeployment: true } : {}),
   };
 }
@@ -739,7 +755,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     return error(
       action
         ? `Unexpected runtime-host access command: ${action}`
-        : 'runtime-host access requires list, issue, prepare, or revoke',
+        : 'runtime-host access requires list, issue, or revoke',
     );
   }
   let rootPath: string | undefined;
@@ -830,6 +846,9 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (action === 'issue' || action === 'prepare') {
     if (action === 'issue' && framed) return error('--framed is only valid for access management');
+    if (action === 'prepare' && !framed) {
+      return error('access prepare is reserved for framed operator management');
+    }
     if (!principalId) return error('--principal is required');
     if (credentialId || protectedCredentialFingerprint) {
       return error('Credential target options are only valid for access revoke');
