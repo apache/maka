@@ -70,6 +70,7 @@ function SessionWorkbarFallback() {
 export interface WorkbarHostModel {
   activeId?: string;
   projectId?: string | null;
+  projectAliases?: readonly string[];
   rightCollapsed: boolean;
   bottomOpen: boolean;
   hidden: boolean;

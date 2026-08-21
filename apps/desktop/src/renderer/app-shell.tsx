@@ -3287,7 +3287,12 @@ function AppShellContent({
             </div>
             {/* Collapse hides the Workbar surface without unmounting its tools;
                 dynamic resources therefore keep their existing lifecycle. */}
-            <WorkbarHost model={workbar.host} />
+            <WorkbarHost
+              model={{
+                ...workbar.host,
+                projectAliases: currentProject?.aliases ?? [],
+              }}
+            />
           </div>
           </MakaUriContext.Provider>
         </AppShellDetailPanel>

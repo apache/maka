@@ -298,5 +298,29 @@ describe('Work Board contract', () => {
       assert.equal(bounded.value.limit, 25);
       assert.equal(bounded.value.includeArchived, true);
     }
+
+    const aliases = normalizeWorkBoardListQuery({
+      scope: { kind: 'project', projectId: 'canonical' },
+      projectIds: ['absorbed', 'canonical'],
+    });
+    assert.ok(aliases.ok);
+    if (aliases.ok) {
+      assert.deepEqual(aliases.value.projectIds, ['absorbed', 'canonical']);
+    }
+    assert.equal(normalizeWorkBoardListQuery({ projectIds: ['orphan'] }).ok, false);
+    assert.equal(
+      normalizeWorkBoardListQuery({
+        scope: { kind: 'inbox' },
+        projectIds: ['project'],
+      }).ok,
+      false,
+    );
+    assert.equal(
+      normalizeWorkBoardListQuery({
+        scope: { kind: 'project', projectId: 'canonical' },
+        projectIds: ['canonical', 'canonical'],
+      }).ok,
+      false,
+    );
   });
 });
