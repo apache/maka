@@ -252,19 +252,17 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
 
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult> {
     return this.#mutate(async () => {
-      if ('protectedCredentialId' in input) {
-        const protectedCredential = this.#file.credentials.find(
-          (credential) => credential.credentialId === input.protectedCredentialId,
+      if ('requiredActiveCredentialId' in input) {
+        const requiredActiveCredential = this.#file.credentials.find(
+          (credential) => credential.credentialId === input.requiredActiveCredentialId,
         );
-        if (!protectedCredential || !isActiveDesktopCredential(protectedCredential)) {
+        if (!requiredActiveCredential || requiredActiveCredential.status !== 'active') {
           throw new RuntimeHostAccessInputError(
-            'The current Desktop credential is no longer active on this Runtime Host',
+            'The required credential is no longer active on this Runtime Host',
           );
         }
-        if (input.credentialId === input.protectedCredentialId) {
-          throw new RuntimeHostAccessInputError(
-            'Rotate this Desktop credential instead of revoking it',
-          );
+        if (input.credentialId === input.requiredActiveCredentialId) {
+          throw new RuntimeHostAccessInputError('A credential cannot revoke itself');
         }
       }
       const index = this.#file.credentials.findIndex(
@@ -443,15 +441,6 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
 function activatePendingCredential(credential: StoredAccessCredential): StoredAccessCredential {
   const { expiresAt: _expiresAt, ...retained } = credential;
   return { ...retained, status: 'active' };
-}
-
-function isActiveDesktopCredential(credential: StoredAccessCredential): boolean {
-  return (
-    credential.status === 'active' &&
-    credential.principalKind === 'remote_owner' &&
-    credential.canPublishClientCapabilities &&
-    !credential.canUseHostPaths
-  );
 }
 
 function assertCredentialAuthority(
