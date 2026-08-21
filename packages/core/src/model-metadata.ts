@@ -16,6 +16,12 @@ export interface ModelMetadata {
   knowledgeCutoff?: string;
   structuredOutput?: boolean;
   lastUpdated?: string;
+  /**
+   * models.dev prices the model at zero input cost. Marks free-tier
+   * candidates (e.g. opencode-free); display names are not a contract for
+   * this, several free models carry no "Free" suffix.
+   */
+  isFree?: boolean;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
   /**

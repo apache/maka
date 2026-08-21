@@ -7,6 +7,7 @@ import {
 } from '../model-metadata.js';
 import { curatedCatalogFallbackModelsForProvider } from '../model-metadata.js';
 import {
+  authorizeConnectionModel,
   backendKindOf,
   effectiveBaseUrl,
   normalizeConnectionBaseUrl,
@@ -267,4 +268,16 @@ test('provider recognition does not resolve inherited object members', () => {
       inherited,
     );
   }
+});
+
+test('a quarantined model id is vetoed even when enabled and present in the inventory', () => {
+  const connection = {
+    providerType: 'opencode-free' as ProviderType,
+    enabledModelIds: ['nemotron-3-ultra-free', 'muse-spark-1.2-contributor-free'],
+    models: [{ id: 'nemotron-3-ultra-free' }, { id: 'muse-spark-1.2-contributor-free' }],
+  };
+  assert.equal(authorizeConnectionModel(connection, 'muse-spark-1.2-contributor-free'), undefined);
+  assert.deepEqual(authorizeConnectionModel(connection, 'nemotron-3-ultra-free'), {
+    id: 'nemotron-3-ultra-free',
+  });
 });

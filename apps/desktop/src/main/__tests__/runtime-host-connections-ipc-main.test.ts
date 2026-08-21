@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { OPENCODE_FREE_DEFAULT_ENABLED_MODELS } from '@maka/core/llm-connections';
 import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
   projectHostConnections,
@@ -261,11 +262,8 @@ test('preserves the provider default inventory beside the recommended model', as
     defaultModel: 'nemotron-3-ultra-free',
   });
 
-  assert.deepEqual(createdModels, [
-    'nemotron-3-ultra-free',
-    'mimo-v2.5-free',
-    'deepseek-v4-flash-free',
-  ]);
+  // Snapshot-derived set; assert the contract, not today's ids.
+  assert.deepEqual(createdModels, [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS]);
 });
 
 test('projects the Host default target without inventing a second Connection authority', () => {

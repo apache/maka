@@ -232,12 +232,18 @@ export function buildConnectionModelCatalogEntries(
   if (!defaults) return [];
   const supportsModelDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const catalogFallbackModels = curatedCatalogFallbackModelsForProvider(connection.providerType);
-  const fallbackModels = [...(catalogFallbackModels ?? defaults.fallbackModels)];
+  // Quarantined ids never surface as offerable entries — from any source,
+  // including inventories stored or selections made before the quarantine —
+  // mirroring the `authorizeConnectionModel` veto.
+  const broken = new Set(defaults.brokenModelIds ?? []);
+  const fallbackModels = [...(catalogFallbackModels ?? defaults.fallbackModels)].filter(
+    (id) => !broken.has(id),
+  );
   return buildModelCatalogEntries({
     providerType: connection.providerType,
     connectionSlug: connection.slug,
     defaultModel: connection.defaultModel,
-    models: connection.models,
+    models: connection.models?.filter(({ id }) => !broken.has(id)),
     modelSource: connection.modelSource,
     modelsFetchedAt: connection.modelsFetchedAt,
     fallbackModels: supportsModelDiscovery
@@ -260,7 +266,9 @@ export function buildConnectionModelCatalogEntries(
     // (#1584), and fixing it at one call site left the others broken. The raw
     // array, not `connectionEnabledModelIds`: that one folds in `defaultModel`,
     // which `provenanceSources` already reports as `connection_default`.
-    savedModelIds: [...(connection.enabledModelIds ?? []), ...(input.savedModelIds ?? [])],
+    savedModelIds: [...(connection.enabledModelIds ?? []), ...(input.savedModelIds ?? [])].filter(
+      (choice) => !broken.has(typeof choice === 'string' ? choice : (choice?.id ?? '')),
+    ),
   });
 }
 

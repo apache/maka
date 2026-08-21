@@ -249,6 +249,12 @@ export function authorizeConnectionModel(
 ): ModelInfo | undefined {
   const model = modelId.trim();
   if (!model || !connectionEnabledModelIds(connection).includes(model)) return undefined;
+  // The one veto: quarantined ids fail in a shape the send cannot surface
+  // (e.g. a billed 200 with an empty completion), so the request settling it
+  // is not available as the arbiter. See ProviderDefaults.brokenModelIds.
+  if (PROVIDER_DEFAULTS[connection.providerType]?.brokenModelIds?.includes(model)) {
+    return undefined;
+  }
   // The observed row wins wherever it exists: it carries wire metadata such as
   // `apiProtocol`, and capabilities, which a synthesized entry cannot. Absent
   // capabilities already mean "unknown", not "unsupported".

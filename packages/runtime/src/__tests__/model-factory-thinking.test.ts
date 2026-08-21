@@ -372,16 +372,16 @@ describe('buildProviderOptions: thinking level', () => {
 
   test('Vercel Gateway sends reasoning effort under its stable namespace and exact model id', () => {
     assert.deepEqual(
-      [...thinkingVariantsForModel('vercel', 'xai/grok-4.3')],
+      [...thinkingVariantsForModel('vercel', 'openai/gpt-5.1-thinking')],
       ['off', 'low', 'medium', 'high'],
     );
-    assert.deepEqual(buildProviderOptions(conn('vercel'), 'xai/grok-4.3', 'high'), {
+    assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', 'high'), {
       vercel: { reasoningEffort: 'high' },
     });
-    assert.deepEqual(buildProviderOptions(conn('vercel'), 'xai/grok-4.3', 'off'), {
+    assert.deepEqual(buildProviderOptions(conn('vercel'), 'openai/gpt-5.1-thinking', 'off'), {
       vercel: { reasoningEffort: 'none' },
     });
-    assert.deepEqual(buildProviderOptions(conn('vercel'), 'grok-4.3', 'high'), {});
+    assert.deepEqual(buildProviderOptions(conn('vercel'), 'gpt-5.1-thinking', 'high'), {});
   });
 
   test('Ollama Cloud sends reasoning effort under its namespace; standard models expose off, GPT-OSS does not', () => {
