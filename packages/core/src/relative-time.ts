@@ -25,11 +25,11 @@
  * sidebar / settings panels.
  *
  * The formatter is pure (takes an optional `now` so tests do not have
- * to monkey-patch `Date.now`). Buckets are intentionally narrow at the
- * short end (second / minute / hour) so users see "刚刚" become
- * "1 分钟前" promptly, then widen to days. Anything older than ~7 days
- * falls back to an absolute date so we do not produce misleadingly
- * round numbers like "5 个月前".
+ * to monkey-patch `Date.now`). The first minute stays on a single
+ * just-now label so scan-level rows do not tick through "1秒钟前",
+ * "2秒钟前", …. After that the buckets widen from minute to hour to
+ * day. Anything older than ~7 days falls back to an absolute date so
+ * we do not produce misleadingly round numbers like "5 个月前".
  *
  * The threshold is a deliberate divergence from the previous
  * implementation, which used `.format(-Math.round(diffHours / 24), 'day')`
@@ -38,10 +38,18 @@
  * the locale date string.
  */
 
-import { uiLocaleToIntlLocale, type UiLocale } from './ui-locale.js';
+import { uiLocaleToIntlLocale, type UiCatalog, type UiLocale } from './ui-locale.js';
 
 /** Maximum age (ms) that still gets a relative bucket. Older → absolute. */
 const RELATIVE_HORIZON_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Age below this stays on one just-now label instead of counting seconds. */
+const JUST_NOW_MS = 60_000;
+
+const JUST_NOW: UiCatalog<string> = {
+  zh: '刚刚',
+  en: 'just now',
+};
 
 let cachedRelativeFormat: Intl.RelativeTimeFormat | null = null;
 let cachedAbsoluteFormat: Intl.DateTimeFormat | null = null;
@@ -71,13 +79,12 @@ function getAbsoluteFormat(uiLocale: UiLocale): Intl.DateTimeFormat {
 }
 
 /**
- * Returns a localized relative label for `ts` (e.g. "1 分钟前", "1 hour ago")
+ * Returns a localized relative label for `ts` (e.g. "刚刚", "1 分钟前")
  * when within `RELATIVE_HORIZON_MS`, otherwise the absolute date string.
  *
- * `now` is injectable so tests can pin a deterministic clock. Future
- * timestamps (`ts > now`) are clamped to the smallest "刚刚" bucket — we
- * don't want sidebar rows showing "in 2 minutes" when a tab's clock
- * drifts.
+ * `now` is injectable so tests can pin a deterministic clock. The first
+ * minute — and future timestamps from clock skew — stay on one just-now
+ * label so rows do not count seconds or show "in 2 minutes".
  */
 export function formatRelativeTimestamp(
   ts: number,
@@ -85,18 +92,13 @@ export function formatRelativeTimestamp(
   locale: UiLocale = 'zh',
 ): string {
   const diffMs = now - ts;
-  if (diffMs < 0) {
-    // Clock skew or future-dated record. Snap to "刚刚".
-    return getRelativeFormat(locale).format(-1, 'second');
+  if (diffMs < JUST_NOW_MS) {
+    return JUST_NOW[locale];
   }
   if (diffMs > RELATIVE_HORIZON_MS) {
     return getAbsoluteFormat(locale).format(new Date(ts));
   }
   const diffSeconds = Math.round(diffMs / 1000);
-  if (diffSeconds < 60) {
-    // Clamp to >=1 so we never produce "0 seconds ago".
-    return getRelativeFormat(locale).format(-Math.max(1, diffSeconds), 'second');
-  }
   const diffMinutes = Math.round(diffSeconds / 60);
   if (diffMinutes < 60) return getRelativeFormat(locale).format(-diffMinutes, 'minute');
   const diffHours = Math.round(diffMinutes / 60);
@@ -176,13 +178,14 @@ export function resetRelativeTimeFormatters(): void {
 /**
  * Picks the next refresh delay (ms) for a relative timestamp. Used by
  * the React `<RelativeTime>` ticker so we re-render at the right
- * cadence: every second for sub-minute, every minute for sub-hour,
- * every 10 minutes after that. Past the horizon we never re-render.
+ * cadence: once when the just-now window ends, every minute for
+ * sub-hour, every 10 minutes after that. Past the horizon we never
+ * re-render.
  */
 export function nextRelativeRefreshDelay(ts: number, now: number = Date.now()): number | null {
   const diffMs = now - ts;
   if (diffMs > RELATIVE_HORIZON_MS) return null;
-  if (diffMs < 60_000) return 1_000;
+  if (diffMs < JUST_NOW_MS) return JUST_NOW_MS - diffMs;
   if (diffMs < 60 * 60_000) return 60_000;
   return 10 * 60_000;
 }
