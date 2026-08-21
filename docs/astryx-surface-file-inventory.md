@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 206 files — blocker 0, polish 0, aligned 206.
+**Totals:** 207 files — blocker 0, polish 0, aligned 207.
 
 ## Exclusions (explicit)
 
@@ -94,6 +94,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/provider-oauth-section.tsx` | settings-module | Banner, Button, HStack, Text, VStack | aligned — uses Astryx (Banner, Button, HStack, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/providers-panel.tsx` | settings-module | Badge, Banner, Button, EmptyState, HStack, Heading, List, ListItem, Text, VStack | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, Heading, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/request-customization-editor.tsx` | settings-module | Button, HStack, IconButton, Text, VStack | aligned — uses Astryx (Button, HStack, IconButton, Text, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/runtime-host-interaction-boundary.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx` | settings-module | Badge, Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner, Text | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx` | settings-module | Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner, Text | aligned — uses Astryx (Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner, Text) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx` | settings-module | Badge, Banner, Button, HStack, List, ListItem, SegmentedControl, SegmentedControlItem, Selector, Switch | aligned — uses Astryx (Badge, Banner, Button, HStack, List, ListItem, SegmentedControl, SegmentedControlItem) | aligned |
