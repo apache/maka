@@ -32,7 +32,6 @@ describe('AiSdkBackend Computer Use model loop', () => {
     for (const providerType of [
       'openai',
       'anthropic',
-      'claude-subscription',
       'kimi-coding-plan',
       'MiniMax',
       'MiniMax-cn',

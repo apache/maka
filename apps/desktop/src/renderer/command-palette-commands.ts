@@ -28,6 +28,7 @@ import {
 } from '@maka/ui/icons';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -418,7 +419,9 @@ export function buildCommandList(args: {
   }
   if (args.onTestConnection && args.defaultSlug) {
     const defaultConnection = args.connections.find((c) => c.slug === args.defaultSlug);
-    if (defaultConnection) {
+    // Loading the catalog releases a default that points at a retired
+    // connection, so this is belt-and-braces for a stale in-memory default.
+    if (defaultConnection && !isRetiredProvider(defaultConnection.providerType)) {
       cmds.push({
         id: 'diag:test-default',
         kind: 'action',
@@ -437,7 +440,11 @@ export function buildCommandList(args: {
   // 账号 just to swap.
   if (args.onSetDefaultConnection || args.onTestConnection) {
     for (const connection of args.connections) {
-      if (!connection.enabled) continue;
+      // A retained retired connection can still be enabled — the row exists so
+      // the credential stays visible and deletable — but both commands below
+      // are refused downstream (the storage default-target gate, the hidden
+      // auth actions), so offering them is a dead entry point.
+      if (!connection.enabled || isRetiredProvider(connection.providerType)) continue;
       const isDefault = connection.slug === args.defaultSlug;
       // The workspace default is the pair {connection, model}. A connection
       // with no default model cannot supply half of it, so offering the command

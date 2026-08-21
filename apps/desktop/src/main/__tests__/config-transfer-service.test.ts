@@ -141,4 +141,55 @@ describe('config-transfer-service', () => {
     assert.deepEqual(setCreds, [{ slug: 'deepseek-main', kind: 'api_key', value: 'sk-new' }]);
     assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
   });
+  it('restores the whole bundle when it carries a retained retired connection', async () => {
+    // A backup taken before the retirement still lists the connection, and the
+    // catalog refuses to create one. Before this was planned as skipped, the
+    // refusal threw mid-import: a fresh profile got whichever connections
+    // happened to be saved first and no settings, credentials, or memory at
+    // all. The live connection is ordered first here on purpose, so a restored
+    // abort would look like a partial success rather than a clean failure.
+    const { deps, saved, setCreds, writtenMemory, updatedSettings } = makeDeps({
+      connectionStore: {
+        list: async () => [],
+        save: async (c) => {
+          if (c.providerType === 'claude-subscription') {
+            throw new Error('"claude-subscription" is retired and cannot be added');
+          }
+          saved.push(c);
+          return c;
+        },
+      },
+    });
+    const bundle = {
+      schemaVersion: 1,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections', 'settings', 'credentials', 'memory'] as const,
+      data: {
+        connections: [
+          conn('deepseek-main'),
+          { ...conn('claude-subscription'), providerType: 'claude-subscription' },
+        ],
+        settings: { theme: 'light' },
+        credentials: [
+          { slug: 'deepseek-main', kind: 'api_key', value: 'sk-live' },
+          { slug: 'claude-subscription', kind: 'oauth_token', value: 'retired-secret' },
+        ],
+        memory: '# imported memory',
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(result.connections, { created: 1, overwritten: 0, skipped: 1 });
+    assert.deepEqual(saved.map((c) => c.slug), ['deepseek-main']);
+    // The rest of the bundle still lands — the point of the whole fix.
+    assert.equal(result.settings?.applied, true);
+    assert.equal(updatedSettings.length, 1);
+    assert.deepEqual(writtenMemory, ['# imported memory']);
+    // The retired connection's secret is skipped with it: only a created or
+    // overwritten slug gets one written.
+    assert.deepEqual(setCreds, [{ slug: 'deepseek-main', kind: 'api_key', value: 'sk-live' }]);
+    assert.deepEqual(result.credentials, { applied: 1, skipped: 1 });
+  });
 });

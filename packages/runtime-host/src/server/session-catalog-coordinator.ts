@@ -668,6 +668,16 @@ export class HostSessionCatalogCoordinator {
         'Session model connection is not ready',
       );
     }
+    // Refused before the Session is committed, not when a backend is later
+    // built for it: an upgraded installation keeps the credential, so nothing
+    // downstream of here would notice on its own. Covers the default target and
+    // an explicit one alike, which is what reaches Bot, CLI and scheduled runs.
+    if (readiness.kind === 'provider_retired') {
+      throw new SessionOperationFailure(
+        'invalid_request',
+        'Session model connection uses a sign-in that was removed from Maka',
+      );
+    }
     if (
       selected.connectionId !== undefined &&
       readiness.connection.connectionId !== selected.connectionId

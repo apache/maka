@@ -1,4 +1,5 @@
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 
 /**
  * Config import / export — Alma-style selective bundle.
@@ -134,7 +135,7 @@ export type ConnectionConflictStrategy = 'skip' | 'overwrite';
 export interface ConnectionMergePlan {
   create: LlmConnection[];
   overwrite: LlmConnection[];
-  skipped: Array<{ slug: string; reason: 'exists' }>;
+  skipped: Array<{ slug: string; reason: 'exists' | 'provider_retired' }>;
 }
 
 export function planConnectionMerge(
@@ -148,6 +149,16 @@ export function planConnectionMerge(
   for (const conn of incoming) {
     if (seen.has(conn.slug)) continue; // de-dupe within the imported set
     seen.add(conn.slug);
+    // A backup taken before a provider was retired still carries its
+    // connection, and the catalog refuses to create one — rightly, since it
+    // could never execute. Planning it as skipped is what keeps that refusal
+    // from aborting the restore partway and leaving the rest of the bundle
+    // (settings, credentials, memory) unapplied. Its credential is skipped
+    // with it: only a created or overwritten slug gets its secret written.
+    if (isRetiredProvider(conn.providerType)) {
+      plan.skipped.push({ slug: conn.slug, reason: 'provider_retired' });
+      continue;
+    }
     if (existingSlugs.has(conn.slug)) {
       if (strategy === 'overwrite') plan.overwrite.push(cloneJson(conn));
       else plan.skipped.push({ slug: conn.slug, reason: 'exists' });

@@ -1956,6 +1956,9 @@ function projectToolEvent(
         ...identity,
         ...(event.operationId === undefined ? {} : { operationId: event.operationId }),
         status: event.isError ? 'errored' : 'completed',
+        ...(event.isError && event.content.kind === 'text' && event.content.sandboxFailure
+          ? { sandboxFailureReason: event.content.sandboxFailure.reason }
+          : {}),
         ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
       };
     case 'tool_result_preview':

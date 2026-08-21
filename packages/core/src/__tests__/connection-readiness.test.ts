@@ -143,3 +143,34 @@ describe('isConnectionReady — model capability gate', () => {
     );
   });
 });
+
+describe('isConnectionReady — retired provider gate', () => {
+  // A connection stored before its provider was retired still looks complete:
+  // enabled, credential on disk, models listed, default among them. Without
+  // this gate the send is admitted and only fails when the Runtime cannot name
+  // an adapter for it.
+  const retired = connection({
+    slug: 'claude-subscription',
+    name: 'Claude Subscription',
+    providerType: 'claude-subscription',
+    defaultModel: 'claude-opus-5',
+    enabledModelIds: ['claude-opus-5'],
+    models: [{ id: 'claude-opus-5', capabilities: { chat: true } }],
+  });
+
+  it('refuses to send on a retired provider', () => {
+    assert.deepEqual(isConnectionReady({ connection: retired, hasSecret: true }), {
+      ready: false,
+      reason: 'provider_retired',
+    });
+  });
+
+  it('reports retirement rather than a repairable reason', () => {
+    // `missing_api_key` would tell the user to sign in again, and the sign-in
+    // no longer exists.
+    assert.deepEqual(isConnectionReady({ connection: retired, hasSecret: false }), {
+      ready: false,
+      reason: 'provider_retired',
+    });
+  });
+});

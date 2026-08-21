@@ -19,12 +19,7 @@ function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmCo
 
 describe('buildProviderOptions: thinking level', () => {
   test('Anthropic-compatible providers do not inherit automatic prompt caching', () => {
-    for (const providerType of [
-      'claude-subscription',
-      'MiniMax',
-      'MiniMax-cn',
-      'kimi-coding-plan',
-    ] as const) {
+    for (const providerType of ['MiniMax', 'MiniMax-cn', 'kimi-coding-plan'] as const) {
       const anthropic = buildProviderOptions(conn(providerType), 'claude-opus-4-8').anthropic;
       assert.equal(
         (anthropic as { cacheControl?: unknown } | undefined)?.cacheControl,

@@ -107,8 +107,10 @@ describe('deriveOnboardingState', () => {
   it('accepts OAuth providers and ignores validation telemetry', () => {
     for (const connection of [
       realConnection({
-        slug: 'claude-subscription',
-        providerType: 'claude-subscription',
+        slug: 'xai-oauth',
+        providerType: 'xai-oauth',
+        defaultModel: 'grok-4',
+        models: [{ id: 'grok-4' }],
         lastTestStatus: 'error',
       }),
       realConnection({
@@ -170,5 +172,23 @@ describe('onboarding milestone persistence', () => {
     for (const [milestones, expected] of cases) {
       assert.equal(hasSettledInitialOnboarding(milestones), expected);
     }
+  });
+
+  it('reports retirement rather than an unhealthy connection', () => {
+    // The generic blocked copy tells the user to re-check credentials and
+    // sign-in; for a retired provider both lead nowhere.
+    const state = derive({
+      connections: [
+        realConnection({
+          slug: 'claude-subscription',
+          providerType: 'claude-subscription',
+          defaultModel: 'claude-opus-5',
+          models: [{ id: 'claude-opus-5' }],
+        }),
+      ],
+      secrets: { 'claude-subscription': true },
+    });
+
+    assert.deepEqual(state, { kind: 'blocked', reason: 'all_connections_retired' });
   });
 });

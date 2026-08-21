@@ -223,7 +223,11 @@ export function buildConnectionModelCatalogEntries(
       : fallbackModels,
     now: input.now,
     staleAfterMs: input.staleAfterMs,
-    providerAvailable: input.providerAvailable,
+    // A retired provider's models stay listed so an existing connection still
+    // renders, but they resolve to `provider_removed` and stop being selectable.
+    // Without this the pickers would keep offering models that can no longer
+    // send — `runtimeAdapter: 'unavailable'` blocks the send, not the choice.
+    providerAvailable: defaults.retired === true ? false : input.providerAvailable,
     authOk: input.authOk,
     pricing: input.pricing,
     pricingSource: input.pricingSource,

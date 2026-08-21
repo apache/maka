@@ -35,7 +35,7 @@ import {
   openResponsesUrl,
 } from './provider-urls.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
-import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
+import { openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 
 export interface ModelFactoryInput {
@@ -84,13 +84,11 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         headers: { 'anthropic-beta': ANTHROPIC_BETA },
       }).chat(modelId);
 
-    case 'claude-subscription':
-      return createAnthropic({
-        authToken: apiKey,
-        baseURL: anthropicV1BaseUrl(baseURL),
-        fetch: requestFetch,
-        headers: claudeSubscriptionHeaders(),
-      }).chat(modelId);
+    case 'unavailable':
+      // A retired provider must never reach model construction. The pickers
+      // filter it out and `resolveModelRuntime` refuses earlier; this is the
+      // backstop that keeps a stored connection from silently sending.
+      throw new Error('This provider is retired and can no longer be used to send.');
 
     case 'openai-codex':
       return createOpenAI({
@@ -412,8 +410,7 @@ export function buildProviderOptions(
     // provider's native effort values pass through unchanged.
     case 'anthropic':
     case 'MiniMax':
-    case 'MiniMax-cn':
-    case 'claude-subscription': {
+    case 'MiniMax-cn': {
       let reasoning = {};
       if (level === 'off' && thinkingOptions?.offBehavior === 'anthropic-thinking-disabled') {
         reasoning = { thinking: { type: 'disabled' as const } };

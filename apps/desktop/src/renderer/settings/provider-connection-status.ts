@@ -4,6 +4,7 @@
 // in `provider-connection-status.test.ts`.
 
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
@@ -22,6 +23,8 @@ export interface ConnectionChipStatus {
  * destructive tone).
  *
  * Branches, in priority order:
+ * - retired: the provider was removed from Maka. Outranks everything below,
+ *   which all describe states that can still be repaired.
  * - needs_reauth: a lapsed OAuth subscription login arrives as
  *   enabled:false + needs_reauth (main.ts subscription sync keeps the
  *   connection but flags it). That is a "please log back in" signal, not a
@@ -42,6 +45,14 @@ export interface ConnectionChipStatus {
  */
 export function connectionChipStatus(connection: LlmConnection, locale: UiLocale = 'zh'): ConnectionChipStatus | null {
   const copy = getProviderSettingsCopy(locale).shared.connectionStatuses;
+  // Ahead of every other branch, including needs_reauth: a retired provider
+  // has no sign-in left to return to, so any repair-shaped status here would
+  // send the user somewhere that no longer exists. `error` rather than
+  // `attention` because this is not "look at it when you can" — the row can
+  // never work again, and deleting it is the only move.
+  if (isRetiredProvider(connection.providerType)) {
+    return { label: copy.retired, tone: 'error' };
+  }
   // Waiting on the user, not on the system: an expired credential is a
   // to-do, and it used to render as the live accent dot — reporting progress
   // where nothing is progressing.

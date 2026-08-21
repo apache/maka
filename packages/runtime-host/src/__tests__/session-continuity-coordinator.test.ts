@@ -1808,6 +1808,49 @@ test('tool_result clears retained tool_result_preview so a later open does not s
   coordinator.close();
 });
 
+test('publishes only the minimal sandbox failure reason from a tool result', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_result',
+    id: 'result-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    isError: true,
+    content: {
+      kind: 'text',
+      text: 'sensitive tool output',
+      sandboxFailure: { reason: 'sandbox_boundary_required' },
+    },
+  });
+  await waitFor(() => sink.frames.length === 1);
+
+  const [frame] = sink.frames;
+  assert.equal(frame?.kind, 'subscription.session_event');
+  if (frame?.kind !== 'subscription.session_event') return;
+  assert.deepEqual(frame.event, {
+    type: 'tool_result',
+    id: 'result-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    status: 'errored',
+    sandboxFailureReason: 'sandbox_boundary_required',
+  });
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
 class RecordingSink implements SessionContinuityFrameSink {
   readonly frames: SubscriptionFrame[] = [];
 

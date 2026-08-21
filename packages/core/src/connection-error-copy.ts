@@ -37,6 +37,8 @@ const REASON_FIX_COPY: Record<ChatConfigurationReason, string> = {
   model_not_chat_capable:
     '当前任务选择的模型不能用于聊天。请到 设置 · 模型 重新选择支持聊天的模型后再发送。',
   fake_backend: '当前任务来自旧的本地模拟连接。请到 设置 · 模型 添加真实模型后新建任务。',
+  provider_retired:
+    '当前模型连接的登录方式已从 Maka 移除，无法用于发送。请到 设置 · 模型 改用其他连接后再发送。',
 };
 
 /**

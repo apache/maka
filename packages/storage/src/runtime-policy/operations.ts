@@ -122,7 +122,7 @@ export interface InteractiveOAuthLoginTicket {
 
 export type InteractiveOAuthLoginProvider = Extract<
   ConnectionCatalogEntry['providerType'],
-  'claude-subscription' | 'openai-codex' | 'xai-oauth'
+  'openai-codex' | 'xai-oauth'
 >;
 
 export type BeginInteractiveOAuthLoginResult =
@@ -212,6 +212,12 @@ export type CommitConnectionOnboardingResult =
 export type ResolveExecutionConnectionResult =
   | { readonly kind: 'not_found' }
   | { readonly kind: 'disabled' }
+  /**
+   * The provider was retired. Distinct from `disabled`, which the user chose
+   * and can undo, and from `credential_not_configured`, which a sign-in would
+   * fix — this connection keeps a usable credential and still cannot execute.
+   */
+  | { readonly kind: 'provider_retired' }
   | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   | {
       readonly kind: 'ready';

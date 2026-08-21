@@ -16,7 +16,7 @@ export type OnboardingState =
   | { kind: 'needs_model'; connectionSlug: string }
   | { kind: 'ready_empty'; connectionSlug: string; model: string }
   | { kind: 'ready_with_history'; connectionSlug: string; model: string }
-  | { kind: 'blocked'; reason: 'all_connections_unhealthy' };
+  | { kind: 'blocked'; reason: 'all_connections_unhealthy' | 'all_connections_retired' };
 
 export interface DeriveOnboardingStateInput {
   /** All persisted LlmConnection rows the workspace knows about. */
@@ -69,6 +69,7 @@ export function deriveOnboardingState(input: DeriveOnboardingStateInput): Onboar
 
   // No candidate can start a session. Route to the first connection with an
   // actionable repair, using the connection store's stable persisted order.
+  let everyConnectionRetired = true;
   for (const connection of candidates) {
     const requestedModel = connectionEnabledModelIds(connection)[0];
     const verdict = isConnectionReady({
@@ -85,17 +86,24 @@ export function deriveOnboardingState(input: DeriveOnboardingStateInput): Onboar
       case 'model_not_enabled':
       case 'model_not_chat_capable':
         return { kind: 'needs_model', connectionSlug: connection.slug };
+      case 'provider_retired':
+        // Not routed to the connection: there is no repair to make there.
+        break;
       case 'connection_disabled':
       case 'fake_backend':
       case 'connection_missing':
       case 'missing_default_connection':
+        everyConnectionRetired = false;
         break;
     }
   }
 
   // Real connections exist but none can be made ready by a
-  // per-connection fix.
-  return { kind: 'blocked', reason: 'all_connections_unhealthy' };
+  // per-connection fix. Retirement is called out separately: telling these
+  // users to re-check credentials would send them to a sign-in Maka removed.
+  return everyConnectionRetired
+    ? { kind: 'blocked', reason: 'all_connections_retired' }
+    : { kind: 'blocked', reason: 'all_connections_unhealthy' };
 }
 
 function hasHistory(sessions: ReadonlyArray<SessionSummary>): boolean {
