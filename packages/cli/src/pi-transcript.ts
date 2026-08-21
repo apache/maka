@@ -1359,22 +1359,29 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
     );
   }
   const usage = metadata.usage;
+  // ctx segment: only show "used" when contextRemaining is available, since
+  // token_usage.input is a billing-cumulative sum across tool-loop steps,
+  // not the last request's context size. Using it as a proxy for "used"
+  // would produce misleading percentages (potentially >100%).
+  const contextRemaining = usage?.contextRemaining;
+  if (metadata.modelContextWindow !== undefined && contextRemaining !== undefined) {
+    const used = Math.max(0, metadata.modelContextWindow - contextRemaining);
+    const pct = Math.round((used / metadata.modelContextWindow) * 100);
+    // #1064: color warning — yellow >80%, red >95%, dim otherwise.
+    const ctxColor = pct > 95 ? ansi.red : pct > 80 ? ansi.yellow : ansi.dim;
+    parts.push(
+      ctxColor(
+        `ctx ${formatTokenCount(used)}/${formatTokenCount(metadata.modelContextWindow)} ${pct}%`,
+      ),
+    );
+  } else if (metadata.modelContextWindow !== undefined) {
+    // #3371: the window is known but no usage has arrived yet (fresh session,
+    // or the provider doesn't report per-step input tokens). Degrade
+    // explicitly, pi-style, instead of hiding the segment silently — the user
+    // can then tell "not measured yet" apart from "window unknown".
+    parts.push(ansi.dim(`ctx ?/${formatTokenCount(metadata.modelContextWindow)}`));
+  }
   if (usage) {
-    // ctx segment: only show when contextRemaining is available, since
-    // token_usage.input is a billing-cumulative sum across tool-loop steps,
-    // not the last request's context size. Using it as a proxy for "used"
-    // would produce misleading percentages (potentially >100%).
-    if (metadata.modelContextWindow !== undefined && usage.contextRemaining !== undefined) {
-      const used = Math.max(0, metadata.modelContextWindow - usage.contextRemaining);
-      const pct = Math.round((used / metadata.modelContextWindow) * 100);
-      // #1064: color warning — yellow >80%, red >95%, dim otherwise.
-      const ctxColor = pct > 95 ? ansi.red : pct > 80 ? ansi.yellow : ansi.dim;
-      parts.push(
-        ctxColor(
-          `ctx ${formatTokenCount(used)}/${formatTokenCount(metadata.modelContextWindow)} ${pct}%`,
-        ),
-      );
-    }
     if (usage.costUsd > 0) {
       parts.push(ansi.dim(`$${formatCost(usage.costUsd)}`));
     }

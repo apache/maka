@@ -118,6 +118,55 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(stripAnsi(renderMakaPiStatusLine({ ...meta(), goal: null }, 120)), /goal/);
   });
 
+  test('status line degrades to ctx ?/window when the window is known but usage is not (#3371)', () => {
+    // No usage object at all: the window is known, so degrade explicitly.
+    assert.match(
+      stripAnsi(renderMakaPiStatusLine({ ...meta(), modelContextWindow: 500_000 }, 120)),
+      /ctx \?\/500k/,
+    );
+
+    // Usage exists but contextRemaining has not been reported yet.
+    assert.match(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          {
+            ...meta(),
+            modelContextWindow: 500_000,
+            usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0 },
+          },
+          120,
+        ),
+      ),
+      /ctx \?\/500k/,
+    );
+
+    // Window unknown: the segment stays hidden, even with usage present.
+    assert.doesNotMatch(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          { ...meta(), usage: { costUsd: 0.01, cacheHitInput: 0, cacheMissInput: 0 } },
+          120,
+        ),
+      ),
+      /ctx/,
+    );
+
+    // contextRemaining present: the measured segment is unchanged.
+    assert.match(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          {
+            ...meta(),
+            modelContextWindow: 500_000,
+            usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0, contextRemaining: 480_000 },
+          },
+          120,
+        ),
+      ),
+      /ctx 20k\/500k 4%/,
+    );
+  });
+
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');
