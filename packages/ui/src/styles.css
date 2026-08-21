@@ -193,9 +193,26 @@
    by owning every compact prose gap in one place:
 
      4px  list items   (same level)
-     8px  blocks       (paragraph, list, quote, table, code)
+     12px blocks       (paragraph, list, quote, table, code)
      16px section      (h3-h6, and either side of an `hr`)
      24px chapter      (h1, h2)
+
+   Why the block rung is 12px and not the 8px this table first shipped: 8px
+   restored the ORDER the table exists to fix, but never argued its value.
+   Body leading here is 20px, so 8px put two paragraphs 0.4 of a line apart —
+   a paragraph break narrower than the line break inside a paragraph, which is
+   the one distance a reader already knows. 12px is Astryx's own paragraph
+   rhythm at document density (spacingParagraphDefault, `--spacing-3`), so this
+   is the block step returning to the design system rather than a Maka number:
+   the transcript keeps its own HEADING scale and its own list rung, and only
+   stops being denser than the design system between two paragraphs. Measured
+   in Storybook (Product/Markdown → TranscriptTurn) rather than estimated.
+
+   It costs contrast at the top of the ladder — the section step falls from 2x
+   the block gap to 1.33x, so a heading now separates mainly on weight, size
+   and colour rather than on space. That is the price of leaving the heading
+   rungs alone, which is deliberate: heading spacing is what #1857 and this
+   table already decided, and this change is about paragraphs only.
 
    Three deliberate choices:
 
@@ -211,11 +228,11 @@
      old ancestor-scoped rules could not.
    - Top level only. `>` keeps every gap on the document's own children, so
      blocks nested inside a list item or a blockquote keep Astryx's own compact
-     4px instead of the 8px block gap. That tier difference is the point, not
-     an oversight: a list item should read as one unit, so two paragraphs
-     inside it belong closer together than two paragraphs in the transcript.
-     The ladder extends downward (4px nested < 8px block) rather than
-     inverting, which is the invariant that matters.
+     4px instead of the block gap. That tier difference is the point, not an
+     oversight: a list item should read as one unit, so two paragraphs inside
+     it belong closer together than two paragraphs in the transcript. The
+     ladder extends downward (4px nested < 12px block) rather than inverting,
+     which is the invariant that matters.
 
    A gap is a relation BETWEEN two blocks, so every gap rule is an adjacent
    sibling rule. Two consequences, both load-bearing:
@@ -232,7 +249,7 @@
      two blocks is the value declared here. */
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] {
   --md-gap-list: var(--space-1);
-  --md-gap-block: var(--space-2);
+  --md-gap-block: var(--space-3);
   --md-gap-section: var(--space-4);
   --md-gap-chapter: var(--space-6);
 }
