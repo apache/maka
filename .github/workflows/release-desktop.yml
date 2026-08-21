@@ -63,6 +63,9 @@ jobs:
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=moderate
 
+      - name: Audit shipped desktop closure
+        run: node scripts/audit-shipped-dependencies.mjs
+
       - name: Write App Store Connect API key
         if: matrix.platform == 'macos'
         env:

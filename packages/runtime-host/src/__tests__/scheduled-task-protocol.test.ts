@@ -12,7 +12,7 @@ import {
   authorizeRuntimeHostOperation,
   createRuntimeHostConnectionAuthority,
 } from '../server/connection-authority.js';
-import { decodeScheduledTask, decodeScheduledTaskMutateInput } from '../protocol/scheduled-task.js';
+import { decodeScheduledTaskMutateInput } from '../protocol/scheduled-task.js';
 
 describe('ScheduledTask protocol', () => {
   test('requires Host-path authority only when a mutation submits a Host path', () => {
@@ -35,37 +35,47 @@ describe('ScheduledTask protocol', () => {
     }
   });
 
-  test('a retired backend decodes on the way out but not on the way in', () => {
-    // #3211: the same execution decoder serves both directions, and they carry
-    // different backend invariants. A stored Automation frozen by a build that
-    // shipped FakeBackend must stay readable; a live create/update may not
-    // introduce the retired value.
-    const retired = (effect: ScheduledTaskEffect): ScheduledTaskEffect =>
+  test('a backend key from an older build is tolerated and dropped, both directions', () => {
+    // #3306: `backend` left the template, but Automations frozen by older
+    // builds still carry it — including the retired `'fake'` (#3211). The
+    // execution decoder is a closed shape, so the key must stay tolerated on
+    // the way in while never landing on the decoded value.
+    const withRetiredBackend = (effect: ScheduledTaskEffect): unknown =>
       effect.kind === 'agent_run'
         ? { ...effect, execution: { ...effect.execution, backend: 'fake' } }
         : effect;
+    const template = agentRunEffect('project-1');
+    const expectedExecution = template.kind === 'agent_run' ? template.execution : assert.fail();
+    const assertDropped = (effect: ScheduledTaskEffect | undefined) => {
+      assert.equal(effect?.kind, 'agent_run');
+      if (effect?.kind !== 'agent_run') return;
+      assert.deepEqual(effect.execution, expectedExecution);
+    };
 
-    const stored = { ...scheduledTask('task-1'), effect: retired(agentRunEffect('project-1')) };
-    assert.equal(decodeScheduledTask(stored).effect.kind, 'agent_run');
+    // Stored direction, through the full query-result frame.
+    const fetched = decodeScheduledTaskQueryResult({
+      kind: 'task',
+      task: { ...scheduledTask('task-1'), effect: withRetiredBackend(template) },
+    });
+    assertDropped(fetched.kind === 'task' ? fetched.task?.effect : undefined);
 
-    for (const input of [
-      {
-        kind: 'create' as const,
-        input: {
-          title: 'Inspect workspace',
-          intentBody: 'Summarize the workspace.',
-          schedule: { kind: 'once' as const, runAt: 1 },
-          effect: retired(agentRunEffect('project-1')),
-        },
+    const created = decodeScheduledTaskMutateInput({
+      kind: 'create',
+      input: {
+        title: 'Inspect workspace',
+        intentBody: 'Summarize the workspace.',
+        schedule: { kind: 'once', runAt: 1 },
+        effect: withRetiredBackend(template),
       },
-      {
-        kind: 'update' as const,
-        taskId: 'task-1',
-        patch: { effect: retired(agentRunEffect('project-1')) },
-      },
-    ]) {
-      assert.throws(() => decodeScheduledTaskMutateInput(input), /Invalid ScheduledTask backend/);
-    }
+    });
+    assertDropped(created.kind === 'create' ? created.input.effect : undefined);
+
+    const updated = decodeScheduledTaskMutateInput({
+      kind: 'update',
+      taskId: 'task-1',
+      patch: { effect: withRetiredBackend(template) },
+    });
+    assertDropped(updated.kind === 'update' ? updated.patch.effect : undefined);
   });
 
   test('accepts signal-only catalog changes', () => {
@@ -140,7 +150,6 @@ function agentRunEffect(projectId: string | null | undefined): ScheduledTaskEffe
     execution: {
       cwd: '/workspace',
       ...(projectId === undefined ? {} : { projectId }),
-      backend: 'ai-sdk',
       llmConnectionSlug: 'openai',
       model: 'gpt-5',
       permissionMode: 'ask',

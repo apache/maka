@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
 import {
   assertMissing,
+  assertPackagedDependencyClosure,
   assertPackagedResources,
   isolatedUserEnv,
   makePtyProbe,
@@ -125,6 +126,7 @@ export async function verifyPackagedMacApp(
 
   await requirePath(executable);
   await assertPackagedResources(resources, { requirePath, forbidPath });
+  await assertPackagedDependencyClosure(resources);
   await requirePath(join(resources, 'git', 'bin', 'git'));
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);

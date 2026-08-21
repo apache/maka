@@ -8,6 +8,8 @@ on:
   pull_request:
     paths:
       - .github/workflows/dependency-audit.yml
+      - scripts/audit-shipped-dependencies.mjs
+      - scripts/third-party-closure.mjs
       - package.json
       - package-lock.json
       - 'apps/*/package.json'
@@ -15,6 +17,8 @@ on:
   push:
     branches: [main]
     paths:
+      - scripts/audit-shipped-dependencies.mjs
+      - scripts/third-party-closure.mjs
       - package.json
       - package-lock.json
       - 'apps/*/package.json'
@@ -44,10 +48,20 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts --omit=dev
+        # The full tree, not --omit=dev: the shipped-closure audit below walks
+        # the renderer roots, which npm labels dev even though they ship.
+        run: npm ci --ignore-scripts
 
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=moderate
 
+      - name: Audit shipped desktop closure
+        run: node scripts/audit-shipped-dependencies.mjs
+
       - name: Verify registry signatures
-        run: npm audit signatures --omit=dev
+        # The full tree, not `--omit=dev`. Two reasons it has to be both:
+        # the renderer roots live in devDependencies while their code ships
+        # inside `dist-renderer`, and signature verification also protects
+        # everything that *executes* during the build — a tampered vite or
+        # biome can pollute the artifact without ever being packaged.
+        run: npm audit signatures

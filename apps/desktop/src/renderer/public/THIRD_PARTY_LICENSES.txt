@@ -175,12 +175,18 @@ SOFTWARE.
 ## Simple Icons brand marks
 
 - Repository: https://github.com/simple-icons/simple-icons
-- Package: `simple-icons` version `15.22.0`
 - License: CC0-1.0
-- Covered source assets:
-  - `packages/ui/src/bot-brand-logo.tsx`: Telegram, Discord, WeChat, QQ and Slack paths
-  - `apps/desktop/src/renderer/mcp-brand-marks.tsx`: Slack, LINE, Google Calendar, Figma, Vercel, Supabase, Notion and Apple paths
-  - `apps/desktop/src/renderer/settings/provider-brand-marks.tsx`: MiniMax path
+- Covered source assets, by how the path data reaches the build:
+  - Vendored from `simple-icons` version `15.22.0` as pinned path constants
+    (upstream later removed some of these marks, so the pins stay at the
+    version they were copied from):
+    - `packages/ui/src/bot-brand-logo.tsx`: Telegram, Discord, WeChat, QQ and Slack paths
+    - `apps/desktop/src/renderer/mcp-brand-marks.tsx`: Slack paths
+  - Imported at build time from the installed `simple-icons` package, so the
+    bundled version is the one package-lock.json pins; that copy is licensed
+    through the generated `licenses/npm/THIRD_PARTY_NOTICES.txt`:
+    - `apps/desktop/src/renderer/mcp-brand-marks.tsx`: LINE, Google Calendar, Figma, Vercel, Supabase, Notion and Apple paths
+    - `apps/desktop/src/renderer/settings/provider-brand-marks.tsx`: MiniMax path
 - Full license text: packaged as `licenses/renderer/SIMPLE_ICONS_LICENSE.md`.
 - Trademark boundary: CC0 does not grant trademark rights. The marks are used only to identify the corresponding services.
 

@@ -105,8 +105,14 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH >= 33);
   });
 
+  test('publishes a new compatibility epoch for backend-free ScheduledTask templates', () => {
+    // Epoch 33 Clients require the `backend` field Automation templates no
+    // longer emit, so a newer Host must refuse them at the handshake.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH >= 34);
+  });
+
   test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 34);
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 35);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {

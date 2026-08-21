@@ -1,7 +1,11 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { npmSpawnOptions } from './npm-spawn.mjs';
+import {
+  ASSET_LICENSED_RENDERER_PACKAGES,
+  bareCssImportSpecifiers,
+  collectWorkspaceClosure,
+  WORKSPACE_PREFIX,
+} from './third-party-closure.mjs';
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const checkOnly = process.argv.includes('--check');
@@ -19,6 +23,10 @@ const TARGETS = {
     underline: '====================================================',
     outputPath: join(repoRoot, 'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt'),
     validateAssets: true,
+    // Only this target bundles a renderer, so only this one unions the vite
+    // module graph into its notices. The CLI ships its production closure and
+    // nothing else, and must not be asked for renderer roots it has none of.
+    manifestPath: join(repoRoot, 'apps/desktop/package.json'),
   },
   cli: {
     workspaceName: 'maka-agent',
@@ -54,7 +62,6 @@ const REQUIRED_ASSET_LICENSE_FILES = [
   'apps/desktop/resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
 ];
 
-const WORKSPACE_PREFIX = '@maka/';
 const ALLOWED_LICENSES = new Set([
   '0BSD',
   'Apache-2.0',
@@ -121,6 +128,9 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
       'Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/)',
     ].join('\n'),
   ],
+  // The published tarball ships no license file; the repository LICENSE is
+  // vendored at apps/desktop/resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt.
+  ['@ant-design/icons-svg@4.5.0', 'Copyright (c) 2018-present Ant UED, https://xtech.antfin.com/'],
   ['agent-base@6.0.2', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['https-proxy-agent@5.0.1', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   // Published from TooTallNate/proxy-agents, which keeps its LICENSE at the
@@ -162,41 +172,6 @@ function normalizeText(text) {
     .map((line) => line.trimEnd())
     .join('\n')
     .trim();
-}
-
-function collectWorkspaceClosure(workspaceName) {
-  const tree = JSON.parse(
-    execFileSync(
-      'npm',
-      ['ls', '--workspace', workspaceName, '--omit=dev', '--all', '--json'],
-      npmSpawnOptions({
-        cwd: repoRoot,
-        encoding: 'utf8',
-        maxBuffer: 16 * 1024 * 1024,
-      }),
-    ),
-  );
-  const workspace = tree.dependencies?.[workspaceName];
-  if (!workspace) throw new Error(`npm ls did not return the ${workspaceName} workspace`);
-
-  const packages = new Map();
-  const visit = (dependencies) => {
-    for (const [name, dependency] of Object.entries(dependencies ?? {})) {
-      if (!dependency || typeof dependency !== 'object') continue;
-      if (!name.startsWith(WORKSPACE_PREFIX) && typeof dependency.version === 'string') {
-        packages.set(`${name}@${dependency.version}`, {
-          name,
-          version: dependency.version,
-        });
-      }
-      visit(dependency.dependencies);
-    }
-  };
-  visit(workspace.dependencies);
-  return [...packages.values()].sort(
-    (left, right) =>
-      left.name.localeCompare(right.name) || left.version.localeCompare(right.version),
-  );
 }
 
 function packageNameFromLockPath(lockPath) {
@@ -260,10 +235,101 @@ function overrideLicenseText(packageKey, selectedLicense) {
   return undefined;
 }
 
+/**
+ * The declared closure is only trustworthy if it contains what the renderer
+ * build actually bundled. The vite build records that set — every module plus
+ * every emitted asset's source package — into `bundled-npm-packages.json`, so
+ * a package that enters the bundle through any path (a direct import, a deep
+ * import, a CSS `@import`, a font url()) fails here until it is declared.
+ */
+/**
+ * First-party stylesheets that ship inside the renderer bundle.
+ *
+ * Vite inlines a CSS `@import` at transform time — the imported file never
+ * becomes a module — so the bundle recorder cannot see a package reached only
+ * that way unless its CSS also emits an asset. A pure-rules stylesheet
+ * (`normalize.css`, an icon font using `data:` URIs) would therefore ship its
+ * rules inside `dist-renderer/assets/*.css` with no notice and nothing failing.
+ * Reading the sources closes that: whatever a first-party stylesheet imports by
+ * package name has to be in the shipped closure, which is what puts it in the
+ * notices. A third-party stylesheet importing another package needs no scan —
+ * that package is its dependency, so the closure already reaches it.
+ */
+const FIRST_PARTY_STYLE_ROOTS = ['apps/desktop/src/renderer', 'packages/ui/src'];
+
+function firstPartyStylesheets(directory) {
+  if (!existsSync(directory)) return [];
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return firstPartyStylesheets(path);
+    return entry.isFile() && entry.name.endsWith('.css') ? [path] : [];
+  });
+}
+
+function validateFirstPartyCssImports(closureNames) {
+  const undeclared = new Map();
+  for (const root of FIRST_PARTY_STYLE_ROOTS) {
+    for (const path of firstPartyStylesheets(join(repoRoot, root))) {
+      for (const name of bareCssImportSpecifiers(readFileSync(path, 'utf8'))) {
+        if (name.startsWith(WORKSPACE_PREFIX) || closureNames.has(name)) continue;
+        undeclared.set(name, path);
+      }
+    }
+  }
+  if (undeclared.size > 0) {
+    const detail = [...undeclared]
+      .map(([name, path]) => `${name} (${path.slice(repoRoot.length + 1)})`)
+      .join(', ');
+    throw new Error(
+      `stylesheets import packages outside the shipped closure: ${detail} — ` +
+        'add the package to maka.rendererBundledDependencies so its notice ships with its rules',
+    );
+  }
+}
+
+function validateBundledPackageRecord(closureNames) {
+  const rendererDist = join(repoRoot, 'apps/desktop/dist-renderer');
+  if (!existsSync(rendererDist)) return;
+  const recordPath = join(rendererDist, 'bundled-npm-packages.json');
+  if (!existsSync(recordPath)) {
+    throw new Error(
+      'dist-renderer exists but bundled-npm-packages.json is missing — rebuild the renderer',
+    );
+  }
+  const bundled = readJson(recordPath);
+  const undeclared = bundled.filter((name) => !closureNames.has(name));
+  if (undeclared.length > 0) {
+    throw new Error(
+      `renderer bundles packages outside the declared closure: ${undeclared.join(', ')} — ` +
+        'add the entry root to maka.rendererBundledDependencies',
+    );
+  }
+}
+
 function renderNotice() {
   const lockIndex = buildLockIndex();
   const sections = [];
-  const dependencies = collectWorkspaceClosure(target.workspaceName);
+  const closure = collectWorkspaceClosure({
+    workspaceName: target.workspaceName,
+    manifestPath: target.manifestPath,
+  });
+  if (target.manifestPath) {
+    const closureNames = new Set(closure.map(({ name }) => name));
+    validateBundledPackageRecord(closureNames);
+    validateFirstPartyCssImports(closureNames);
+  }
+  // Asset-licensed renderer packages (the OFL Geist fonts) ship their license
+  // as a vendored file in the artifact rather than an npm-notice entry, so
+  // they are audited as part of the closure but not rendered here. The source
+  // file electron-builder copies from must exist for that channel to work.
+  const dependencies = closure.filter(({ name }) => {
+    if (!ASSET_LICENSED_RENDERER_PACKAGES.has(name)) return true;
+    const licenseSource = join(repoRoot, 'node_modules', name, 'LICENSE');
+    if (!existsSync(licenseSource)) {
+      throw new Error(`${name}: asset-licensed package has no LICENSE file to package`);
+    }
+    return false;
+  });
   for (const dependency of dependencies) {
     const packageKey = `${dependency.name}@${dependency.version}`;
     const candidates = lockIndex.get(packageKey);
@@ -334,7 +400,11 @@ function renderNotice() {
 ${target.underline}
 
 Generated by scripts/generate-third-party-notices.mjs from the exact
-${target.workspaceName} production dependency closure and package-lock.json.
+${target.workspaceName} ${
+    target.manifestPath
+      ? 'shipped dependency closure (Node production plus the\nbundled renderer)'
+      : 'production dependency closure'
+  } and package-lock.json.
 Do not edit this file by hand.
 
 Policy: every package must resolve to an ASF-compatible SPDX license. Compound

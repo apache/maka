@@ -322,7 +322,8 @@ function ZAI(): ReactElement {
   return <ProviderAssetMask src={zaiMarkUrl} />;
 }
 
-// MiniMax mark from simple-icons@15.22.0 (CC0-1.0).
+// MiniMax mark from the simple-icons package (CC0-1.0); the bundled version
+// is whatever package-lock.json pins, so no version is repeated here.
 function MiniMaxMark(): ReactElement {
   return (
     <svg viewBox="0 0 24 24" role="img" aria-hidden="true">

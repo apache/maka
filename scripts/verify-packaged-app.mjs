@@ -1,8 +1,15 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { access, mkdir, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { createReadStream, readFileSync } from 'node:fs';
+import { access, mkdir, readFile, readdir } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { createServer } from 'node:net';
+import { join, resolve, sep } from 'node:path';
+import {
+  ASSET_LICENSED_RENDERER_PACKAGES,
+  collectProductionClosure,
+  collectWorkspaceClosure,
+} from './third-party-closure.mjs';
 
 // `timeoutMs` is opt-in, for the commands that have actually hung: node-pty
 // under conpty keeps a handle open after its child exits. Everything else runs
@@ -423,6 +430,258 @@ export async function smokePackagedRenderer(executable, { workingDirectory } = {
     throw new Error(`${error.message}${stderr.trim() ? `\n${stderr.trim()}` : ''}`);
   } finally {
     await stopChild(child);
+  }
+}
+
+/**
+ * What `app.asar` actually carries under `node_modules`, read from the archive
+ * header rather than inferred from a manifest.
+ */
+const desktopRoot = resolve(import.meta.dirname, '..', 'apps', 'desktop');
+
+/** Every file path under `prefix` inside the archive, depth first. */
+// Archive paths are stored `/`-joined, but `@electron/asar` resolves a lookup
+// by splitting it on `path.sep`. On Windows that turns `dist/main/x.js` into a
+// single name and the file is reported missing, so the lookup — and only the
+// lookup — is localized before it crosses the API.
+export function asarLookupPath(archivePath, separator = sep) {
+  return separator === '/' ? archivePath : archivePath.split('/').join(separator);
+}
+
+function asarFilesUnder(header, prefix) {
+  const root = prefix.split('/').reduce((node, part) => node?.files?.[part], header);
+  const paths = [];
+  const walk = (node, path) => {
+    for (const [name, child] of Object.entries(node?.files ?? {})) {
+      const next = `${path}/${name}`;
+      if (child.files) walk(child, next);
+      else paths.push(next);
+    }
+  };
+  walk(root, prefix);
+  return paths;
+}
+
+// Line-bounded on purpose: a lazy cross-line match reads the word `from`
+// inside a comment as an import and reports the prose that follows it. A
+// multi-line `import {` list is covered by its closing line.
+const BARE_IMPORT_PATTERNS = [
+  /^[ \t]*(?:import|export)[ \t]+(?:[^'"\n]*?[ \t]+from[ \t]+)?['"]([^'"\n]+)['"]/gm,
+  /^[ \t]*\}[ \t]+from[ \t]+['"]([^'"\n]+)['"]/gm,
+  /\b(?:import|require)\([ \t]*['"]([^'"\n]+)['"][ \t]*\)/g,
+];
+
+/** Package names the given module text imports by name, ignoring builtins. */
+export function bareImportedPackages(source) {
+  const names = new Set();
+  for (const pattern of BARE_IMPORT_PATTERNS) {
+    for (const [, specifier] of source.matchAll(pattern)) {
+      if (/^[./]|^node:/.test(specifier)) continue;
+      const segments = specifier.split('/');
+      names.add(specifier.startsWith('@') ? segments.slice(0, 2).join('/') : segments[0]);
+    }
+  }
+  return names;
+}
+
+// Provided by the Electron runtime rather than the archive's node_modules, so
+// they are resolvable without appearing in the packaged closure.
+const RUNTIME_PROVIDED_PACKAGES = new Set(['electron']);
+
+// Loaded on first use, not at module load. `verify-windows-harness.test.mjs`
+// imports this module in the CI step that deliberately runs before `npm ci`
+// ("on Node alone"), so a top-level import of a declared dependency would
+// fail there even though the dependency is correctly declared.
+const requirePeer = createRequire(import.meta.url);
+let asarApi;
+function asar() {
+  asarApi ??= requirePeer('@electron/asar');
+  return asarApi;
+}
+
+/**
+ * Every package in the archive as `name` -> set of versions, read from each
+ * package's own shipped `package.json`.
+ *
+ * Names alone were not enough: the closure declares exact versions, so an
+ * archive carrying `react@18` against a closure that declares `react@19`
+ * matched by name and passed. A version that does not appear in the closure
+ * is a leak whatever it is called.
+ */
+function asarNodeModules(asarPath) {
+  const { header } = asar().getRawHeader(asarPath);
+  const names = new Map();
+  const unpackedRoot = `${asarPath}.unpacked`;
+  const versionOf = (node, packagePath) => {
+    const manifestNode = node?.files?.['package.json'];
+    if (!manifestNode) return undefined;
+    try {
+      // Native modules are packaged with `unpacked: true`: the header still
+      // lists them, but the bytes live beside the archive in
+      // `app.asar.unpacked`, where `extractFile` cannot reach them. Reading
+      // the header alone would report every native module as version-less
+      // and fail the identity comparison for packages that are perfectly
+      // correct.
+      const source = manifestNode.unpacked
+        ? readFileSync(join(unpackedRoot, ...packagePath.split('/'), 'package.json'), 'utf8')
+        : asar()
+            .extractFile(asarPath, asarLookupPath(`${packagePath}/package.json`))
+            .toString('utf8');
+      const manifest = JSON.parse(source);
+      return typeof manifest.version === 'string' ? manifest.version : undefined;
+    } catch {
+      // A package whose manifest cannot be read is reported by name with no
+      // version, which fails the identity comparison rather than skipping it.
+      return undefined;
+    }
+  };
+  // Recursive: npm nests a second copy under a package when versions
+  // conflict (node_modules/foo/node_modules/bar), and a walk that stops at
+  // the top level would certify an archive it has not fully inspected.
+  const record = (name, node, packagePath) => {
+    if (!names.has(name)) names.set(name, new Set());
+    names.get(name).add(versionOf(node, packagePath));
+  };
+  const collect = (modules, prefix) => {
+    for (const [name, node] of Object.entries(modules ?? {})) {
+      if (name.startsWith('.')) continue; // .bin, .package-lock.json
+      if (name.startsWith('@')) {
+        for (const [scoped, scopedNode] of Object.entries(node.files ?? {})) {
+          const path = `${prefix}/${name}/${scoped}`;
+          record(`${name}/${scoped}`, scopedNode, path);
+          collect(scopedNode.files?.node_modules?.files, `${path}/node_modules`);
+        }
+      } else {
+        const path = `${prefix}/${name}`;
+        record(name, node, path);
+        collect(node.files?.node_modules?.files, `${path}/node_modules`);
+      }
+    }
+  };
+  collect(header.files?.node_modules?.files, 'node_modules');
+  return names;
+}
+
+/**
+ * The packaged archive is the only thing that can answer this. A manifest
+ * assertion would still pass if electron-builder changed how it walks the
+ * closure, if a transitive package leaked back in, or if the renderer stopped
+ * bundling one of these — none of which are visible from `package.json`.
+ */
+export async function assertPackagedDependencyClosure(
+  resourcesPath,
+  { collectClosure, collectPackagedAllowlist } = {},
+) {
+  const asarPath = join(resourcesPath, 'app.asar');
+  const packaged = asarNodeModules(asarPath);
+
+  // The archive may carry exactly the Node production closure — that is the
+  // graph electron-builder walks. Comparing against it catches any leak, a
+  // renderer-only transitive package included, not just the declared roots.
+  const allowed = collectPackagedAllowlist
+    ? await collectPackagedAllowlist()
+    : collectProductionClosure('@maka/desktop');
+  const leaked = [];
+  for (const [name, versions] of packaged) {
+    const permitted = allowed.get(name);
+    for (const version of versions) {
+      if (permitted?.has(version)) continue;
+      leaked.push(version === undefined ? name : `${name}@${version}`);
+    }
+  }
+  if (leaked.length > 0) {
+    throw new Error(
+      `app.asar carries packages outside the production closure: ${leaked.join(', ')}`,
+    );
+  }
+  // The PTY stack reaches these from the main process, so their absence would
+  // mean the opposite failure — a closure trimmed past what actually runs.
+  for (const required of ['@xterm/headless', '@xterm/addon-unicode11']) {
+    if (!packaged.has(required)) {
+      throw new Error(`app.asar is missing ${required}, which the PTY stack loads`);
+    }
+  }
+
+  // Validate what ships using what ships: the notice inside the artifact, not
+  // the checkout copy — a package whose shipped notice is stale or empty must
+  // fail here even while the source tree's copy is complete.
+  const notices = await readFile(
+    join(resourcesPath, 'licenses', 'npm', 'THIRD_PARTY_NOTICES.txt'),
+    'utf8',
+  );
+  // The same closure the generator wrote the notices from — the Node
+  // production closure plus everything reachable from the renderer roots —
+  // so coverage is the complete shipped set, not only the declared roots.
+  const closure = collectClosure
+    ? await collectClosure()
+    : collectWorkspaceClosure({
+        workspaceName: '@maka/desktop',
+        manifestPath: join(desktopRoot, 'package.json'),
+      });
+  const uncovered = closure
+    .filter(({ name }) => !ASSET_LICENSED_RENDERER_PACKAGES.has(name))
+    .filter(({ name, version }) => !notices.includes(`\nPackage: ${name}@${version}\n`))
+    .map(({ name, version }) => `${name}@${version}`);
+  if (uncovered.length > 0) {
+    throw new Error(
+      `shipped THIRD_PARTY_NOTICES.txt is missing packages the artifact ships: ${uncovered.join(', ')}`,
+    );
+  }
+  // Asset-licensed packages (the OFL Geist fonts) carry their license as a
+  // vendored file instead of an npm-notice entry; that file must ship too.
+  const closureNames = new Set(closure.map(({ name }) => name));
+  for (const [name, licensePath] of ASSET_LICENSED_RENDERER_PACKAGES) {
+    if (!closureNames.has(name)) continue;
+    await access(join(resourcesPath, licensePath)).catch(() => {
+      throw new Error(`shipped license file for ${name} is missing: ${licensePath}`);
+    });
+  }
+
+  // Matching node_modules against the closure proves no package leaked in or
+  // was trimmed out; it says nothing about whether the shipped code can
+  // resolve what it imports. A module that imports a package the archive no
+  // longer carries throws ERR_MODULE_NOT_FOUND only in the packaged app, and
+  // only when something loads it — a lazily loaded main module would reach a
+  // user rather than a build.
+  const unresolvable = new Map();
+  for (const path of asarFilesUnder(asar().getRawHeader(asarPath).header, 'dist')) {
+    if (!/\.(?:js|cjs|mjs)$/.test(path)) continue;
+    for (const name of bareImportedPackages(
+      asar().extractFile(asarPath, asarLookupPath(path)).toString('utf8'),
+    )) {
+      // Being in the closure is not enough — the code has to resolve at
+      // runtime, and only the archive can answer that. A package that is
+      // allowed but absent is exactly the ERR_MODULE_NOT_FOUND this check
+      // exists to catch.
+      if (packaged.has(name) || RUNTIME_PROVIDED_PACKAGES.has(name)) continue;
+      if (!unresolvable.has(name)) unresolvable.set(name, path);
+    }
+  }
+  if (unresolvable.size > 0) {
+    const detail = [...unresolvable].map(([name, path]) => `${name} (${path})`).join(', ');
+    throw new Error(`app.asar ships code importing packages it does not carry: ${detail}`);
+  }
+
+  // The artifact's own record of what the renderer bundle contains — written
+  // by the vite build from the rollup module graph plus emitted-asset origins.
+  // Every recorded package must be inside the declared closure, so a package
+  // that reaches the bundle through any path fails release verification even
+  // if it never appears under node_modules in the archive.
+  let recordBuffer;
+  try {
+    recordBuffer = asar().extractFile(
+      asarPath,
+      asarLookupPath('dist-renderer/bundled-npm-packages.json'),
+    );
+  } catch {
+    throw new Error('app.asar does not carry dist-renderer/bundled-npm-packages.json');
+  }
+  const bundled = JSON.parse(recordBuffer.toString('utf8'));
+  const undeclared = bundled.filter((name) => !closureNames.has(name));
+  if (undeclared.length > 0) {
+    throw new Error(
+      `renderer bundle carries packages outside the declared closure: ${undeclared.join(', ')}`,
+    );
   }
 }
 

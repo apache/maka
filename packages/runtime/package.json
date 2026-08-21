@@ -133,7 +133,6 @@
     "@ai-sdk/openai-compatible": "3.0.30",
     "@larksuiteoapi/node-sdk": "1.72.0",
     "@maka/core": "0.1.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
     "@mozilla/readability": "^0.6.0",
     "@openai/agents-core": "0.14.3",
     "@slack/socket-mode": "^3.0.0",

@@ -72,9 +72,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 34 as const;
-// 34: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`. An older Host rejects a
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 35 as const;
+// 35: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`. An older Host rejects a
 // login start for it, so the pair must be refused rather than fail mid-flow.
+// 34: ScheduledTask execution templates no longer emit `backend`. Epoch-33
+// Clients require that closed-shape response field, so a newer Host must reject
+// them during the handshake instead of failing on the first Automation read.
 // 33: Live tool results may carry the bounded sandbox failure reason. Older
 // Clients reject that closed-frame addition, so mixed peers must not connect.
 // 32: `request_authorization_code` leaves the OAuth presentation wire. An older

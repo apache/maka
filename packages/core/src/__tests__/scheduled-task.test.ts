@@ -147,11 +147,10 @@ describe('scheduled-task catalog', () => {
     assert.deepEqual(result, { ok: false, message: 'Schedule must fire before expiresAt' });
   });
 
-  it('refuses to create an Automation on the retired backend', () => {
-    // #3211: this is create/update input, not a decoder — stored Automations
-    // are read back with JSON.parse and never reach here. Accepting `'fake'`
-    // would let a brand new Automation be written that can only fail later at
-    // activation.
+  it('drops a backend key from Automation create input', () => {
+    // #3306: `backend` left the template. A caller still sending one — any
+    // value, including the retired `'fake'` (#3211) — must not get it frozen
+    // into a new record.
     const now = Date.UTC(2026, 0, 5, 8, 0, 0);
     const execution = {
       cwd: '/tmp/project',
@@ -161,20 +160,29 @@ describe('scheduled-task catalog', () => {
       collaborationMode: 'agent',
       orchestrationMode: 'default',
     };
-    const create = (backend: string) =>
+    const create = (backend?: string) =>
       normalizeCreateScheduledTaskInput(
         {
           title: 'Nightly run',
           intentBody: 'do the thing',
           schedule: { kind: 'once', runAt: now + 60_000 },
-          effect: { kind: 'agent_run', execution: { ...execution, backend } },
+          effect: {
+            kind: 'agent_run',
+            execution: backend === undefined ? execution : { ...execution, backend },
+          },
           createdBy: { kind: 'user' },
         },
         now,
       );
 
-    assert.deepEqual(create('fake'), { ok: false, message: 'execution.backend is invalid' });
-    assert.equal(create('ai-sdk').ok, true);
+    for (const backend of [undefined, 'ai-sdk', 'fake']) {
+      const result = create(backend);
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+      assert.equal(result.value.effect.kind, 'agent_run');
+      if (result.value.effect.kind !== 'agent_run') return;
+      assert.equal('backend' in result.value.effect.execution, false);
+    }
   });
 
   it('rejects future recurrence anchors outside the scheduling horizon', () => {

@@ -50,7 +50,7 @@
     "check:asf-source": "node --test scripts/asf-source-release.test.mjs scripts/asf-source-workflow-policy.test.mjs",
     "generate:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs",
     "check:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs --check",
-    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && node --test scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/release-cli-workflow-policy.test.mjs",
+    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && node --test scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/third-party-closure.test.mjs",
     "package:macos-arm64": "node scripts/package-macos-arm64.mjs",
     "verify:macos-arm64": "node scripts/verify-macos-arm64-dmg.mjs",
     "package:windows-x64": "node scripts/package-windows-x64.mjs",
@@ -73,6 +73,7 @@
   },
   "devDependencies": {
     "@ai-sdk/provider-utils": "5.0.27",
+    "@electron/asar": "3.4.1",
     "@astryxdesign/cli": "0.4.0",
     "@astryxdesign/core": "0.4.0",
     "@biomejs/biome": "2.5.6",

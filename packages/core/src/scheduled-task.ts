@@ -11,7 +11,6 @@ import { isOrchestrationMode, type OrchestrationMode } from './orchestration.js'
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 import { isPermissionMode, type PermissionMode } from './permission.js';
 import { isBotDeliveryProvider, type BotProvider } from './bot-chat-settings.js';
-import type { PersistedBackendKind } from './session.js';
 
 export const SCHEDULED_TASK_TITLE_MAX_CHARS = 120;
 export const SCHEDULED_TASK_INTENT_MAX_CHARS = 8_000;
@@ -52,7 +51,6 @@ export type ScheduledTaskEffect =
 export interface ScheduledTaskExecutionTemplate {
   readonly cwd: string;
   readonly projectId?: string | null;
-  readonly backend: PersistedBackendKind;
   readonly llmConnectionSlug: string;
   readonly model: string;
   readonly thinkingLevel?: ThinkingLevel;
@@ -488,14 +486,6 @@ function normalizeExecution(
 ): ScheduledTaskNormalizeResult<ScheduledTaskExecutionTemplate> {
   if (!isObject(value)) return fail('agent_run requires execution template');
   if (typeof value.cwd !== 'string' || !value.cwd.trim()) return fail('execution.cwd is required');
-  if (typeof value.backend !== 'string') return fail('execution.backend is required');
-  // Create/update input, not a decoder: stored Automations are read back with
-  // `JSON.parse` in scheduled-task-store.ts and never pass through here. So the
-  // retired `'fake'` is refused (#3211) — accepting it would let a brand new
-  // Automation be written that can only fail later at activation.
-  if (value.backend !== 'ai-sdk') {
-    return fail('execution.backend is invalid');
-  }
   if (typeof value.llmConnectionSlug !== 'string' || !value.llmConnectionSlug.trim()) {
     return fail('execution.llmConnectionSlug is required');
   }
@@ -527,7 +517,6 @@ function normalizeExecution(
     value: {
       cwd: value.cwd.trim(),
       ...(projectId === undefined ? {} : { projectId }),
-      backend: value.backend,
       llmConnectionSlug: value.llmConnectionSlug.trim(),
       model: value.model.trim(),
       ...(value.thinkingLevel === undefined ? {} : { thinkingLevel: value.thinkingLevel }),
