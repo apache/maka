@@ -580,6 +580,7 @@ test('goal.arm creates one Goal per Session and refuses a second while it is unf
     if (!armed.ok) return;
     assert.equal(armed.result.goal.goalId, 'goal-armed');
     assert.equal(armed.result.goal.status, 'active');
+    assert.equal(armed.result.goal.armedAt, 10);
     assert.equal(armed.result.goal.maxIterations, 20);
     assert.equal(armed.result.goal.tokenBudget, 50_000);
     assert.deepEqual(
@@ -732,6 +733,7 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
     const goal = restarted.readProjection(session.id);
     assert.equal(goal?.status, 'active', 'the armed Goal survives the restart untouched');
     assert.equal(goal?.iterations, 0, 'and no Turn ran for it');
+    assert.ok(goal?.armedAt !== null, 'the projection keeps its armed state');
     await restarted.close();
   } finally {
     await goalStore.close();

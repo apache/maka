@@ -35,8 +35,10 @@ interface SessionContextGoalBase {
   condition: string;
   iterations: number;
   maxIterations: number;
-  /** Epoch ms when the goal was armed; the chip derives wall-clock elapsed. */
+  /** Epoch ms when the goal was set; the chip derives wall-clock elapsed. */
   setAt: number;
+  /** Present while a user-armed Goal waits for its first Turn. */
+  armedAt?: number;
   tokensSpent?: number;
   /** When present (a budget exists), the chip shows spent / budget. */
   tokenBudget?: number;
@@ -97,6 +99,7 @@ export function SessionContextLayer(props: {
     // attention tone.
     const paused = goal.status === 'paused';
     const waiting = goal.status === 'waiting';
+    const armed = goal.armedAt !== undefined;
     const elapsedMs = paused
       ? Math.max(0, goal.pausedAt - goal.setAt)
       : Math.max(0, Date.now() - goal.setAt);
@@ -138,11 +141,13 @@ export function SessionContextLayer(props: {
             label={
               paused
                 ? copy.goalPausedAriaLabel
+                : armed
+                  ? copy.goalArmedAriaLabel
                 : waiting
                   ? copy.goalWaitingAriaLabel
                   : copy.goalRunningAriaLabel
             }
-            isPulsing={!paused && !waiting}
+            isPulsing={!paused && !armed && !waiting}
           />
           <Text type="supporting" hasTabularNumbers>
             {goalText}

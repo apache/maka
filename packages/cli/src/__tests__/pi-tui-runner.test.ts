@@ -5100,6 +5100,7 @@ describe('Maka Pi TUI runner', () => {
       lastReason: 'tests still failing',
       achievedAt: null,
       pausedAt: null,
+      armedAt: null,
     };
 
     test('/goal prints the live goal summary and the status line carries the indicator', async () => {

@@ -368,6 +368,7 @@ function toDesktopGoal(goal: GoalProjection): GoalState {
     ...(goal.lastReason === null ? {} : { lastReason: goal.lastReason }),
     ...(goal.achievedAt === null ? {} : { achievedAt: goal.achievedAt }),
     ...(goal.pausedAt === null ? {} : { pausedAt: goal.pausedAt }),
+    ...(goal.armedAt === null ? {} : { armedAt: goal.armedAt }),
   };
 }
 

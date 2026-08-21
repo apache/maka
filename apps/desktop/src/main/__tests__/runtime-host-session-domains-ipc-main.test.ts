@@ -114,6 +114,7 @@ test('adapts Host Goal, Task, Deep Research, and Resource projections', async ()
     tokensAtStart: 0,
     tokensNow: 120,
     tokensBaselinePending: false,
+    armedAt: 7,
   });
   await ipc.invoke('goal:clear', 'session-1');
   assert.deepEqual(controls, ['session-1']);
@@ -819,6 +820,7 @@ function goalProjection() {
     lastReason: null,
     achievedAt: null,
     pausedAt: null,
+    armedAt: 7,
   };
 }
 
