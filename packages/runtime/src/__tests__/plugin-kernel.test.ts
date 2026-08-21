@@ -67,6 +67,38 @@ test('Services provided by a plugin activate dependent plugins after the provide
   await root.fiber.dispose();
 });
 
+test('Service health-check failures move consumers to failed and allow recovery', async () => {
+  const root = new Context();
+  let healthy = true;
+  let activations = 0;
+  root.provide('checkedService', { value: 1 }, () => {
+    if (!healthy) throw new Error('Service health check failed');
+    return true;
+  });
+  const consumer = root.plugin(
+    Object.assign(
+      () => {
+        activations += 1;
+      },
+      { inject: ['checkedService'] },
+    ),
+  );
+  await consumer.await();
+  assert.equal(consumer.state, FiberState.ACTIVE);
+
+  healthy = false;
+  root.set('checkedService', { value: 2 });
+  await assert.rejects(consumer.await(), /Service health check failed/u);
+  assert.equal(consumer.state, FiberState.FAILED);
+
+  healthy = true;
+  root.set('checkedService', { value: 3 });
+  await consumer.await();
+  assert.equal(consumer.state, FiberState.ACTIVE);
+  assert.equal(activations, 2);
+  await root.fiber.dispose();
+});
+
 test('a provider with multiple Services activates each dependent Fiber once', async () => {
   const root = new Context();
   let activations = 0;
@@ -469,6 +501,17 @@ test('child accessors cannot shadow metadata inherited from parent Contexts', as
     /Context property already exists: inheritedMeta/u,
   );
   assert.equal(Reflect.get(child, 'inheritedMeta'), 'visible');
+  await root.fiber.dispose();
+});
+
+test('Services cannot shadow metadata inherited from parent Contexts', async () => {
+  const root = new Context();
+  root.provide('entryMetadata', { value: 'service' });
+  const metadata = { value: 'metadata' };
+  const child = root.extend({ entryMetadata: metadata }).extend();
+
+  assert.equal(Reflect.get(child, 'entryMetadata'), metadata);
+  assert.deepEqual(child.get('entryMetadata'), { value: 'service' });
   await root.fiber.dispose();
 });
 

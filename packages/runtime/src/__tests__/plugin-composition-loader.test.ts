@@ -58,6 +58,24 @@ test('missing injected service enters pending and activates when provided', asyn
   await loader.close();
 });
 
+test('composition metadata wins over same-named root Services', async () => {
+  const root = new Context();
+  root.provide('maka', { hijacked: true });
+  let seenEntryId: string | undefined;
+  const loader = new MakaCompositionLoader({ root });
+  await loader.install(
+    pkg('metadata-owner', (ctx: Context) => {
+      seenEntryId = ctx.maka?.entryId;
+    }),
+  );
+
+  await loader.create('profile', entry('metadata-entry', 'metadata-owner'));
+
+  assert.equal(seenEntryId, 'metadata-entry');
+  assert.deepEqual(root.get('maka'), { hijacked: true });
+  await loader.close();
+});
+
 test('config update uses the existing Fiber and preserves entry identity', async () => {
   const values: number[] = [];
   const plugin = (_ctx: Context, config: { value: number }) => {
@@ -77,74 +95,23 @@ test('config update uses the existing Fiber and preserves entry identity', async
   await loader.close();
 });
 
-test('package reload is atomic when the candidate Fiber fails', async () => {
+test('duplicate package install is rejected without replacing live code', async () => {
   const live = new Set<string>();
   const current = (ctx: Context) => {
     live.add(ctx.maka!.entryId);
     return () => live.delete(ctx.maka!.entryId);
   };
-  const failed = () => {
-    throw new Error('candidate exploded');
-  };
+  const replacement = () => undefined;
   const loader = new MakaCompositionLoader();
   await loader.install(pkg('atomic', current));
   await loader.create('profile', entry('atomic-one', 'atomic'));
-  await assert.rejects(() => loader.install(pkg('atomic', failed)), /candidate exploded/u);
+  await assert.rejects(
+    () => loader.install(pkg('atomic', replacement)),
+    /Plugin package is already installed: atomic/u,
+  );
   assert.equal(loader.inspect('atomic-one').status, 'active');
+  assert.equal(loader.package('atomic').host, current);
   assert.deepEqual([...live], ['atomic-one']);
-  await loader.close();
-});
-
-test('package reload replaces only affected Entry subtrees', async () => {
-  const activations: string[] = [];
-  const loader = new MakaCompositionLoader();
-  await loader.install(
-    pkg('changing', (ctx: Context) => {
-      activations.push(`changing:${ctx.maka!.generation}`);
-    }),
-  );
-  await loader.install(
-    pkg('stable', (ctx: Context) => {
-      activations.push(`stable:${ctx.maka!.generation}`);
-    }),
-  );
-  await loader.create('profile', entry('changing-entry', 'changing'));
-  await loader.create('profile', entry('stable-entry', 'stable'));
-  const stableGeneration = loader.inspect('stable-entry').generation;
-
-  await loader.install(
-    pkg('changing', (ctx: Context) => {
-      activations.push(`changed:${ctx.maka!.generation}`);
-    }),
-  );
-
-  assert.notEqual(loader.inspect('changing-entry').generation, undefined);
-  assert.equal(loader.inspect('stable-entry').generation, stableGeneration);
-  assert.equal(activations.filter((item) => item.startsWith('stable:')).length, 1);
-  await loader.close();
-});
-
-test('package reload keeps the published generation when retirement cleanup fails', async (t) => {
-  t.mock.method(console, 'warn', () => undefined);
-  const activations: string[] = [];
-  const current = () => {
-    activations.push('current');
-    return () => {
-      throw new Error('current cleanup failed');
-    };
-  };
-  const replacement = () => {
-    activations.push('replacement');
-  };
-  const loader = new MakaCompositionLoader();
-  await loader.install(pkg('cleanup-reload', current));
-  await loader.create('profile', entry('cleanup-reload-entry', 'cleanup-reload'));
-
-  await loader.install(pkg('cleanup-reload', replacement));
-
-  assert.deepEqual(activations, ['current', 'replacement']);
-  assert.equal(loader.inspect('cleanup-reload-entry').status, 'active');
-  assert.equal(loader.package('cleanup-reload').host, replacement);
   await loader.close();
 });
 
@@ -185,7 +152,7 @@ test('remove and close exhaust subtree cleanup across retirement failures', asyn
   assert.deepEqual(closed, ['second', 'first']);
 });
 
-test('disabled ancestors suppress insert, move, update, and package reload activation', async () => {
+test('disabled ancestors suppress insert, move, update, and subtree replacement activation', async () => {
   const activations: string[] = [];
   const loader = new MakaCompositionLoader();
   await loader.install(
@@ -213,11 +180,6 @@ test('disabled ancestors suppress insert, move, update, and package reload activ
     entry('inserted-child', 'disabled-child', { value: 'replaced' }),
   );
   await loader.update('inserted-child', { config: { value: 'updated' } });
-  await loader.install(
-    pkg('disabled-child', (ctx: Context, config: { readonly value: string }) => {
-      activations.push(`${ctx.maka!.entryId}:reloaded:${config.value}`);
-    }),
-  );
 
   assert.deepEqual(activations, ['moved-child:before-move']);
   assert.equal(loader.inspect('inserted-child').status, 'disabled');
@@ -378,12 +340,35 @@ test('snapshot replacement restores ordered roots and descendants', async () => 
       sessions: { s1: [entry('session-entry', 'snapshot')] },
     },
   });
-  assert.equal(loader.snapshot().generation >= 41, true);
+  assert.equal(loader.snapshot().generation, 41);
   assert.deepEqual(
     loader.inspectTree().map(({ id }) => id),
     ['profile-entry', 'ui-group', 'session-entry'],
   );
   assert.equal(loader.inspect('ui-entry').parentId, 'ui-group');
+  await loader.close();
+});
+
+test('live snapshot and subtree replacement publish a fresh composition generation', async () => {
+  const loader = new MakaCompositionLoader();
+  await loader.create('profile', { id: 'before' });
+  const staleGeneration = loader.snapshot().generation;
+
+  await loader.replaceSnapshot({
+    schemaVersion: 1,
+    generation: staleGeneration,
+    roots: { profile: [{ id: 'after' }], desktopUi: [], sessions: {} },
+  });
+
+  assert.equal(loader.snapshot().generation, staleGeneration + 1);
+  await assert.rejects(
+    () => loader.apply({ baseGeneration: staleGeneration, operations: [] }),
+    /Composition generation changed/u,
+  );
+
+  const beforeSubtreeReplacement = loader.snapshot().generation;
+  await loader.replaceSubtree('after', { id: 'after', children: [{ id: 'child' }] });
+  assert.equal(loader.snapshot().generation, beforeSubtreeReplacement + 1);
   await loader.close();
 });
 
@@ -642,6 +627,27 @@ test('composition apply batches EntryTree operations under one generation check'
     () => loader.apply({ baseGeneration: initial, operations: [] }),
     /Composition generation changed/u,
   );
+  await loader.close();
+});
+
+test('failed composition batches restore the prior generation exactly', async () => {
+  const loader = new MakaCompositionLoader();
+  await loader.create('profile', { id: 'stable-entry' });
+  const before = loader.snapshot();
+
+  await assert.rejects(
+    () =>
+      loader.apply({
+        baseGeneration: before.generation,
+        operations: [
+          { type: 'insert', entry: { id: 'temporary-entry' } },
+          { type: 'update', entryId: 'missing-entry', patch: { disabled: true } },
+        ],
+      }),
+    /Composition entry not found: missing-entry/u,
+  );
+
+  assert.deepEqual(loader.snapshot(), before);
   await loader.close();
 });
 

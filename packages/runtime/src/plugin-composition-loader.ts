@@ -60,13 +60,13 @@ export class MakaCompositionLoader {
   install(pkg: MakaPluginPackage): Promise<void> {
     return this.#mutate(async () => {
       validatePluginPackage(pkg);
-      const previous = this.#packages.get(pkg.packageId);
+      if (this.#packages.has(pkg.packageId)) {
+        throw new MakaPluginRuntimeError(
+          'package_exists',
+          `Plugin package is already installed: ${pkg.packageId}`,
+        );
+      }
       this.#packages.set(pkg.packageId, freezePackage(pkg));
-      if (!previous) return;
-      // A package reload is a runtime projection change, not a persistent
-      // version change. Replace only the affected Entry subtrees so unrelated
-      // Fibers retain their identity and effects.
-      await this.#reloadPackage(pkg.packageId, previous);
     });
   }
 
@@ -180,7 +180,7 @@ export class MakaCompositionLoader {
         // A candidate can fail before changing the live tree. Rebuilding in
         // that case would unnecessarily dispose the current Fiber and lose
         // its registered contributions.
-        if (appliedOperations > 0) await this.#replaceSnapshot(before);
+        if (appliedOperations > 0) await this.#replaceSnapshot(before, 'rollback');
         throw error;
       }
       if (input.operations.length > 0) this.#compositionGeneration += 1;
@@ -218,7 +218,9 @@ export class MakaCompositionLoader {
           );
         }
       }
-      return this.#replace(current, freezeEntry(entry));
+      const inspection = await this.#replace(current, freezeEntry(entry));
+      this.#compositionGeneration += 1;
+      return inspection;
     });
   }
 
@@ -290,12 +292,17 @@ export class MakaCompositionLoader {
   }
 
   replaceSnapshot(snapshot: MakaCompositionSnapshot): Promise<void> {
-    return this.#mutate(() => this.#replaceSnapshot(snapshot));
+    return this.#mutate(() => this.#replaceSnapshot(snapshot, 'publish'));
   }
 
-  async #replaceSnapshot(snapshot: MakaCompositionSnapshot): Promise<void> {
+  async #replaceSnapshot(
+    snapshot: MakaCompositionSnapshot,
+    generationMode: 'publish' | 'rollback',
+  ): Promise<void> {
     if (snapshot.schemaVersion !== 1)
       throw new MakaPluginRuntimeError('invalid_entry', 'Unsupported composition snapshot');
+    const previousGeneration = this.#compositionGeneration;
+    const pristine = previousGeneration === 0 && this.#entries.size === 0 && this.#roots.size === 0;
     const specs = new Map<MakaPluginRootId, readonly MakaCompositionEntry[]>([
       ['profile', snapshot.roots.profile],
       ['desktop-ui', snapshot.roots.desktopUi],
@@ -346,7 +353,12 @@ export class MakaCompositionLoader {
       this.#roots.set(rootId, root);
       for (const entry of root.entries) this.#index(entry);
     }
-    this.#compositionGeneration = Math.max(this.#compositionGeneration, snapshot.generation);
+    this.#compositionGeneration =
+      generationMode === 'rollback'
+        ? snapshot.generation
+        : pristine
+          ? snapshot.generation
+          : Math.max(previousGeneration, snapshot.generation) + 1;
     await this.#retire(
       settleAll(
         previous.flatMap((root) =>
@@ -413,54 +425,6 @@ export class MakaCompositionLoader {
       `Entry ${current.spec.id} cleanup failed after publishing its replacement`,
     );
     return this.#inspect(candidate);
-  }
-
-  async #reloadPackage(packageId: string, previousPackage: MakaPluginPackage): Promise<void> {
-    const affected = [...this.#entries.values()].filter(
-      (entry) =>
-        entry.spec.packageId === packageId &&
-        !ancestors(entry).some((ancestor) => ancestor.spec.packageId === packageId),
-    );
-    if (!affected.length) return;
-    const candidates: { readonly current: LiveEntry; readonly replacement: LiveEntry }[] = [];
-    try {
-      for (const current of affected) {
-        const replacement = await this.#stage(
-          serialize(current),
-          current.rootId,
-          current.parent,
-          current.parent?.context ?? this.#root(current.rootId).context,
-          current.parent ? isDisabled(current.parent) : false,
-        );
-        candidates.push({ current, replacement });
-      }
-      for (const { replacement } of candidates) await this.#commitSubtree(replacement);
-    } catch (error) {
-      this.#packages.set(packageId, previousPackage);
-      return rethrowAfterCleanup(
-        error,
-        () =>
-          settleAll(
-            candidates.map(({ replacement }) => this.#dispose(replacement)),
-            `Plugin package ${packageId} candidate cleanup failed`,
-          ),
-        `Plugin package ${packageId} reload and cleanup failed`,
-      );
-    }
-    for (const { current, replacement } of candidates) {
-      const siblings = current.parent?.children ?? this.#root(current.rootId).entries;
-      const index = siblings.indexOf(current);
-      this.#unindex(current);
-      siblings[index] = replacement;
-      this.#index(replacement);
-    }
-    await this.#retire(
-      settleAll(
-        candidates.map(({ current }) => this.#dispose(current)),
-        `Plugin package ${packageId} previous generation cleanup failed`,
-      ),
-      `Plugin package ${packageId} cleanup failed after publishing the new generation`,
-    );
   }
 
   async #rebind(entry: LiveEntry, parent: LiveEntry | undefined, position: number): Promise<void> {
@@ -824,12 +788,6 @@ function entryPlugin(plugin: Plugin, inject: MakaCompositionEntry['inject']): Pl
 
 function isConstructor(value: Function): boolean {
   return /^class\s/u.test(Function.prototype.toString.call(value));
-}
-
-function ancestors(entry: LiveEntry): LiveEntry[] {
-  const result: LiveEntry[] = [];
-  for (let current = entry.parent; current; current = current.parent) result.push(current);
-  return result;
 }
 
 function mergeInject(

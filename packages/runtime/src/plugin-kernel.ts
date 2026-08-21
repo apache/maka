@@ -549,14 +549,14 @@ const contextProxy: ProxyHandler<Context> = {
         ? value.bind(target)
         : value;
     }
+    for (let ancestor = target.parent; ancestor; ancestor = ancestor.parent) {
+      if (Object.hasOwn(ancestor, property)) return Reflect.get(ancestor, property);
+    }
     const accessor = target._kernel().accessors.get(property);
     if (accessor) return accessor.get.call(receiver as Context, receiver);
     if (typeof property === 'string') {
       const service = target.get(property);
       if (service !== undefined) return service;
-    }
-    for (let ancestor = target.parent; ancestor; ancestor = ancestor.parent) {
-      if (Object.hasOwn(ancestor, property)) return Reflect.get(ancestor, property);
     }
   },
   set(target, property, value, receiver) {
@@ -662,7 +662,26 @@ export class Fiber {
     if (this.#disposed || !this.plugin) return;
     const next = new Map<string, unknown>();
     for (const name of Object.keys(this.inject)) {
-      const implementation = this.ctx.get(name);
+      let implementation: unknown;
+      try {
+        implementation = this.ctx.get(name);
+      } catch (error) {
+        const errors = [error];
+        this.#services.clear();
+        if (this.state === FiberState.ACTIVE || this.state === FiberState.FAILED) {
+          try {
+            await this.#unload(FiberState.PENDING);
+          } catch (cleanupError) {
+            errors.push(cleanupError);
+          }
+        }
+        this.error =
+          errors.length === 1
+            ? error
+            : new AggregateError(errors, `Fiber ${this.name} dependency check and cleanup failed`);
+        this.#setState(FiberState.FAILED);
+        return;
+      }
       if (implementation === undefined) {
         this.#services.clear();
         if (this.state === FiberState.ACTIVE || this.state === FiberState.FAILED) {
