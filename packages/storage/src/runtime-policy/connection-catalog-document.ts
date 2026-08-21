@@ -33,6 +33,7 @@ import {
   reconcileConnectionAfterModelFetch,
 } from '@maka/core/llm-connections';
 import { modelIdAliasesForProvider } from '@maka/core/model-metadata';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
 import { deepFreeze, nextRevision, record, revision, unique } from './codec.js';
 import {
@@ -124,7 +125,17 @@ export class ConnectionCatalogDocumentOwner {
       `${FILE} connection ids`,
       'invalid_document',
     );
-    const retiredConnectionIds = new Set(retiredConnections.map((item) => item.connectionId));
+    const retiredConnectionIds = new Set([
+      ...retiredConnections.map((item) => item.connectionId),
+      // A retired provider whose connection is *kept* — kept so the user can
+      // still see it and delete it to clear the credential. Keeping the row
+      // must not also keep it as the target new Sessions default to: it cannot
+      // execute, and the settings row has no control to move the default off a
+      // connection that can no longer be one.
+      ...connections
+        .filter((item) => isRetiredProvider(item.providerType))
+        .map((item) => item.connectionId),
+    ]);
     const decodedDefaultTarget =
       raw.defaultTarget === null
         ? null
@@ -149,6 +160,16 @@ export class ConnectionCatalogDocumentOwner {
     rawInput: CreateCatalogConnectionInput,
   ): Promise<ConnectionCatalogMutationResult> {
     const input = decodeConnectionInput(() => normalizeCreateCatalogConnectionInput(rawInput));
+    // A retired provider stays a valid `ProviderType` so existing rows keep
+    // decoding, but nothing may author a new one: it could never execute, and
+    // reading the catalog back would immediately release it as a default.
+    // Decoding and deleting are the deliberate exceptions to that.
+    if (isRetiredProvider(input.connection.providerType)) {
+      throw codecError(
+        'invalid_connection_input',
+        `"${input.connection.providerType}" is retired and cannot be added`,
+      );
+    }
     const current = await this.read(root);
     if (current.revision !== input.expectedCatalogRevision) {
       return revisionConflict(input.expectedCatalogRevision, current.revision);
@@ -193,6 +214,18 @@ export class ConnectionCatalogDocumentOwner {
     const changes = decodeConnectionInput(() =>
       normalizeConnectionCatalogEntryUpdateForProvider(input.changes, previous.providerType),
     );
+    // A retired row may be read and deleted, and it may stay exactly as it is
+    // — but it may not be edited back toward usable. Re-enabling is the one
+    // that matters (a disabled retired connection would become a default
+    // candidate again), and refusing the whole update rather than that single
+    // field keeps this a boundary rather than a field-by-field allow list: a
+    // retired connection has no edit worth committing.
+    if (isRetiredProvider(previous.providerType)) {
+      throw codecError(
+        'invalid_connection_input',
+        `"${previous.providerType}" is retired and its connections cannot be edited`,
+      );
+    }
     const endpointChanged = previous.baseUrl !== changes.baseUrl;
     const testBasisChanged =
       endpointChanged ||
@@ -289,6 +322,18 @@ export class ConnectionCatalogDocumentOwner {
     // The one call that states a target, so the one place an unusable one is
     // the caller's error rather than a consequence to release.
     if (input.target && !isValidTarget(input.target, current.connections)) {
+      return deepFreeze({ kind: 'invalid_default_target', target: input.target });
+    }
+    // Refused rather than accepted-then-released: committing it would succeed
+    // and the next read would silently rewrite it to null, which reads to the
+    // caller as the write having been lost.
+    if (
+      input.target &&
+      current.connections.some(
+        (item) =>
+          item.connectionId === input.target?.connectionId && isRetiredProvider(item.providerType),
+      )
+    ) {
       return deepFreeze({ kind: 'invalid_default_target', target: input.target });
     }
     const next = this.nextDocument(current, current.connections, input.target);
@@ -534,9 +579,17 @@ export class ConnectionCatalogDocumentOwner {
     root: string,
     current: ConnectionCatalogDocument,
   ): Promise<boolean> {
-    if (current.connections.every((connection) => connection.lastTest === undefined)) return false;
+    // A retired row is a tombstone: byte-stable until it is deleted. Global
+    // invalidation is the indirect way back in — a user editing the network
+    // proxy would otherwise bump its revision, which is enough to make a
+    // deletion they started elsewhere fail as stale. Its `lastTest` describes
+    // a provider that can no longer be tested anyway, so there is nothing to
+    // invalidate.
+    const invalidates = (connection: ConnectionCatalogEntry): boolean =>
+      connection.lastTest !== undefined && !isRetiredProvider(connection.providerType);
+    if (!current.connections.some(invalidates)) return false;
     const connections = current.connections.map((connection) => {
-      if (connection.lastTest === undefined) return connection;
+      if (!invalidates(connection)) return connection;
       const { lastTest: _lastTest, ...withoutLastTest } = connection;
       return {
         ...withoutLastTest,

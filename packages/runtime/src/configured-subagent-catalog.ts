@@ -1,4 +1,5 @@
-import { connectionEnabledModelIds } from '@maka/core/llm-connections';
+import { connectionEnabledModelIds, type ProviderType } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import { type SubagentPreset } from '@maka/core/subagent-settings';
 import type { SubagentPresetListItem } from './agent-catalog.js';
 
@@ -10,6 +11,7 @@ export interface ConfiguredSubagentCatalog {
 export function createConfiguredSubagentCatalog(deps: {
   getPresets(): Promise<readonly SubagentPreset[]>;
   getConnection(slug: string): Promise<{
+    readonly providerType: ProviderType;
     readonly enabled: boolean;
     readonly defaultModel?: string;
     readonly enabledModelIds?: readonly string[];
@@ -26,6 +28,16 @@ export function createConfiguredSubagentCatalog(deps: {
       return {
         ...preset,
         availability: { status: 'unavailable', reason: 'missing_connection' },
+      };
+    }
+    // Before `enabled`: a retained retired connection stays enabled — the row
+    // exists so the credential is visible and deletable — but a preset routed
+    // through it can never execute, so spawning or provisioning a graph with
+    // it would persist a child that is unexecutable from birth.
+    if (isRetiredProvider(connection.providerType)) {
+      return {
+        ...preset,
+        availability: { status: 'unavailable', reason: 'provider_retired' },
       };
     }
     if (!connection.enabled) {

@@ -98,7 +98,12 @@ export type SubagentPresetAvailability =
   | { status: 'available' }
   | {
       status: 'unavailable';
-      reason: 'disabled' | 'missing_connection' | 'connection_disabled' | 'model_disabled';
+      reason:
+        | 'disabled'
+        | 'missing_connection'
+        | 'provider_retired'
+        | 'connection_disabled'
+        | 'model_disabled';
     };
 
 export interface SubagentPresetListItem extends SubagentPreset {

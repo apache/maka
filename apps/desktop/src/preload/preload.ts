@@ -104,7 +104,6 @@ import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/cor
 import type { LocalMemoryState } from '@maka/core/local-memory';
 import type {
   AuthorizationUrlPayload,
-  SubscriptionAccountState,
   SubscriptionActionResult,
 } from '@maka/core/oauth-subscription';
 import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
@@ -2174,53 +2173,12 @@ const makaBridge = {
       );
     },
   },
-  // PR-OAUTH-SUBSCRIPTION-0: Claude subscription OAuth bridge.
-  // NEVER returns raw OAuth credentials; renderer only sees account
-  // state + quota + action results (xuan G-X3 + the
-  // claude-subscription-ipc-boundary contract test enforces this).
+  // Browser-assisted Codex account bridge. NEVER returns raw OAuth
+  // credentials; the renderer only sees account state and action results.
   //
-  // kenji `1da909d5`/`45b31e16` hardening: `openAuthUrl` takes
-  // ONLY an `authRequestId`; the URL is held by main from the
-  // earlier `getAuthUrl` call. Renderer can never hand
-  // `shell.openExternal` an arbitrary URL.
-  //
-  // Whole feature is gated behind `MAKA_CLAUDE_SUBSCRIPTION_EXPERIMENTAL=1`
-  // until product/legal sign-off. `isExperimentalEnabled()` lets the
-  // Settings UI hide the card; even without that hide, all auth-flow
-  // handlers re-check the flag main-side (fail-closed via the
-  // `experimental_disabled` reason).
-  claudeSubscription: {
-    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean> {
-      return invokeSelectedRuntimeHost(host, 'claude-subscription:is-experimental-enabled');
-    },
-    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'claude-subscription:get-auth-url');
-    },
-    openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'claude-subscription:open-auth-url', authRequestId);
-    },
-    completeAuthorization(authRequestId: string, pasted: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'claude-subscription:complete-authorization', authRequestId, pasted);
-    },
-    cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }> {
-      return invokeSelectedRuntimeHost(host, 'claude-subscription:cancel-authorization', authRequestId);
-    },
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<SubscriptionAccountState> {
-      return invokeSelectedRuntimeHost(host, 'claude-subscription:get-account-state');
-    },
-    refreshQuota(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'claude-subscription:refresh-quota');
-    },
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'claude-subscription:refresh-tokens');
-    },
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'claude-subscription:logout');
-    },
-  },
-  // Browser-assisted Codex account bridge. Same shape as
-  // `claudeSubscription`: no token-shaped fields cross preload, the
-  // authorization attempt stays opaque, and actions return envelopes.
+  // kenji `1da909d5`/`45b31e16` hardening: `openAuthUrl` takes ONLY an
+  // `authRequestId`; the URL is held by main from the earlier `getAuthUrl`
+  // call. Renderer can never hand `shell.openExternal` an arbitrary URL.
   openAiCodex: {
     isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:is-experimental-enabled');

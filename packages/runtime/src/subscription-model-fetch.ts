@@ -13,20 +13,11 @@ export interface SubscriptionModelFetchInput {
   fetchFn?: typeof fetch;
   /** Force-refreshes a remotely invalidated OAuth token for one safe 401 replay. */
   refreshOAuthAccessToken?: () => Promise<string | null>;
-  claude?: {
-    cloakEnabled?: boolean;
-    deviceId: string;
-    accountUuid: string;
-  };
 }
 
 export function buildSubscriptionModelFetch(
   input: SubscriptionModelFetchInput,
 ): typeof fetch | undefined {
-  if (input.connection.providerType === 'claude-subscription') {
-    if (input.claude?.cloakEnabled === false) return undefined;
-    return buildClaudeSubscriptionCloakedFetch(input, requireClaudeCloakMetadata(input.claude));
-  }
   if (input.connection.providerType === 'openai-codex') {
     return buildOpenAiCodexFetch(
       input.sessionId,
@@ -102,19 +93,6 @@ function containsGitHubCopilotImage(value: unknown): boolean {
   if (record.type === 'image' || record.type === 'image_url' || record.type === 'input_image')
     return true;
   return Object.values(record).some(containsGitHubCopilotImage);
-}
-
-function requireClaudeCloakMetadata(
-  claude: SubscriptionModelFetchInput['claude'],
-): NonNullable<SubscriptionModelFetchInput['claude']> {
-  if (!claude || !isNonEmptyString(claude.deviceId) || !isNonEmptyString(claude.accountUuid)) {
-    throw new Error('Claude subscription cloaking requires deviceId and accountUuid metadata.');
-  }
-  return claude;
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function buildOpenAiCodexFetch(
@@ -364,53 +342,4 @@ function openAiCodexProviderCode(detail: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-function buildClaudeSubscriptionCloakedFetch(
-  input: SubscriptionModelFetchInput,
-  claude: NonNullable<SubscriptionModelFetchInput['claude']>,
-): typeof fetch {
-  const fetchFn = input.fetchFn ?? fetch;
-  return async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-    const rawBody = init?.body;
-    if (typeof rawBody !== 'string') {
-      return fetchFn(url, init);
-    }
-
-    let parsedBody: Record<string, unknown>;
-    try {
-      const parsed = JSON.parse(rawBody) as unknown;
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return fetchFn(url, init);
-      }
-      parsedBody = parsed as Record<string, unknown>;
-    } catch {
-      return fetchFn(url, init);
-    }
-
-    const { buildCloakedRequest } = await import('./subscription-cloaked-request.js');
-    const upstream = await buildCloakedRequest({
-      body: parsedBody,
-      model: input.modelId,
-      sessionKey: input.sessionId,
-      streaming: parsedBody.stream === true,
-      timeoutMs: 600_000,
-      deviceId: claude.deviceId,
-      accountUuid: claude.accountUuid,
-      sessionId: input.sessionId,
-    });
-
-    const headers = new Headers(init?.headers);
-    for (const [key, value] of Object.entries(upstream.headers)) {
-      headers.set(key, value);
-    }
-    headers.set('content-type', 'application/json');
-    headers.delete('x-api-key');
-
-    return fetchFn(url, {
-      ...init,
-      headers,
-      body: JSON.stringify(upstream.body),
-    });
-  };
 }

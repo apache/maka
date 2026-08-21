@@ -517,7 +517,6 @@ export async function createExecutionRuntimeHostComposition(
       model: createHostDailyReviewModel({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
-        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
@@ -594,7 +593,6 @@ export async function createExecutionRuntimeHostComposition(
       model: createHostMemoryExtractionModel({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
-        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
@@ -609,7 +607,6 @@ export async function createExecutionRuntimeHostComposition(
             context: backendContext,
             runtimePolicy: runtimePolicyStores,
             oauthCredentials,
-            claudeDeviceId: context.owner.capability.rootId,
             createRunComposer: createInteractiveRunComposerFactory({
               skills,
               memory: requireMemory(memory),
@@ -830,7 +827,6 @@ export async function createExecutionRuntimeHostComposition(
       model: createHostSessionEffectModel({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
-        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
       }),
@@ -1160,7 +1156,6 @@ export async function createExecutionRuntimeHostComposition(
       evaluator: createHostGoalEvaluator({
         runtimePolicy: runtimePolicyStores,
         oauthCredentials,
-        claudeDeviceId: context.owner.capability.rootId,
         usage: openedUsageStores,
         requestDrain: context.requestDrain,
         readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),

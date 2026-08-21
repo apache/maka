@@ -223,19 +223,6 @@ function installSubscriptionFixtures() {
   };
   target.maka = {
     ...(target.maka ?? {}),
-    claudeSubscription: {
-      getAccountState: async () => ({
-        runtimeState: 'authenticated',
-        profile: { email: 'claude@example.com' },
-      }),
-      isExperimentalEnabled: async () => true,
-      getAuthUrl: async () => ({ authRequestId: 'storybook-claude', stateHint: 'storybook' }),
-      openAuthUrl: async () => ({ ok: true }),
-      completeAuthorization: async () => ({ ok: true }),
-      cancelAuthorization: async () => ({ ok: true }),
-      logout: async () => ({ ok: true }),
-      refreshQuota: async () => ({ ok: true }),
-    },
     openAiCodex: browserSubscriptionFixture({
       runtimeState: 'authenticated',
       email: 'codex@example.com',

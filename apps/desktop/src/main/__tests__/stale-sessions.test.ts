@@ -38,6 +38,26 @@ test('derives stale rows from each Session Host readiness projection', () => {
   );
 });
 
+test('a task bound to a retired provider is stale rather than quietly unusable', () => {
+  // Nothing else about the row looks wrong: the connection still exists and is
+  // still enabled, so without this the task reads as healthy until it is
+  // opened. `connection_disabled` stays out because the switch that repairs it
+  // is one the user can find; a retirement has no such switch.
+  assert.deepEqual(
+    [
+      ...deriveStaleSessionIds({
+        sessions: [{ id: 'retired' }, { id: 'disabled' }, { id: 'healthy' }],
+        sendOutcomes: {
+          retired: { kind: 'blocked', reason: 'provider_retired', connectionLocked: false },
+          disabled: { kind: 'blocked', reason: 'connection_disabled', connectionLocked: false },
+          healthy: { kind: 'ready' },
+        },
+      }),
+    ],
+    ['retired'],
+  );
+});
+
 test('a row whose readiness has not arrived yet is not called stale', () => {
   assert.deepEqual([...deriveStaleSessionIds({ sessions: [{ id: 'unknown' }], sendOutcomes: {} })], []);
 });

@@ -38,7 +38,6 @@ apps/desktop/src/renderer/settings/bot-chat-settings-page.tsx
 apps/desktop/src/renderer/settings/bot-chat-shared.tsx
 apps/desktop/src/renderer/settings/bot-onboarding-modal.tsx
 apps/desktop/src/renderer/settings/bot-wechat-login.tsx
-apps/desktop/src/renderer/settings/claude-subscription-card.tsx
 apps/desktop/src/renderer/settings/custom-pet-settings-section.tsx
 apps/desktop/src/renderer/settings/daily-review-settings-page.tsx
 apps/desktop/src/renderer/settings/data-settings-page.tsx

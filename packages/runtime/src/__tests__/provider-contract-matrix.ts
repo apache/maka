@@ -54,7 +54,7 @@ export type ProviderContractWire =
 /** Runtime-adapter kinds whose request wire is provider-specific (auth, headers,
  * per-model protocol) and therefore cannot be generated from the declaration. */
 export const SUBSCRIPTION_WIRE_ADAPTER_KINDS: ReadonlySet<ProviderRuntimeAdapter['kind']> = new Set(
-  ['claude-subscription', 'openai-codex', 'github-copilot'],
+  ['openai-codex', 'github-copilot'],
 );
 
 /** Derived expectation for a generated `discovery` cell. */
@@ -333,6 +333,16 @@ function wireDimensionCell(
   providerType: ProviderType,
   def: ProviderDefaults,
 ): ProviderContractCell {
+  // Ahead of every generated branch: an unavailable adapter has no wire, so
+  // falling through would state an `anthropic-messages` contract for a provider
+  // that cannot send at all.
+  if (def.runtimeAdapter.kind === 'unavailable') {
+    return {
+      state: 'not-applicable',
+      dimension,
+      reason: `${providerType} has no Runtime adapter and cannot send`,
+    };
+  }
   if (SUBSCRIPTION_WIRE_ADAPTER_KINDS.has(def.runtimeAdapter.kind)) {
     return {
       state: 'override',
@@ -361,6 +371,13 @@ function reasoningReplayCell(
   def: ProviderDefaults,
 ): ProviderContractCell {
   const adapter = def.runtimeAdapter;
+  if (adapter.kind === 'unavailable') {
+    return {
+      state: 'not-applicable',
+      dimension: 'reasoning-replay',
+      reason: `${providerType} has no Runtime adapter and cannot send`,
+    };
+  }
   if (SUBSCRIPTION_WIRE_ADAPTER_KINDS.has(adapter.kind)) {
     return {
       state: 'override',
