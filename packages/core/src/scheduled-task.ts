@@ -28,7 +28,11 @@ import { compileCronExpression } from './cron-expression.js';
 import { isCollaborationMode, type CollaborationMode } from './collaboration.js';
 import { isOrchestrationMode, type OrchestrationMode } from './orchestration.js';
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
-import { isPermissionMode, type PermissionMode } from './permission.js';
+import {
+  decodePersistedPermissionMode,
+  isPermissionMode,
+  type PermissionMode,
+} from './permission.js';
 import { isBotDeliveryProvider, type BotProvider } from './bot-chat-settings.js';
 
 export const SCHEDULED_TASK_TITLE_MAX_CHARS = 120;
@@ -651,4 +655,28 @@ function addMonthsClamped(anchor: Date, base: Date, offset: number): number {
 
 function fail(message: string): { ok: false; message: string } {
   return { ok: false, message };
+}
+
+/**
+ * Fold retired representations in a stored ScheduledTask to their live
+ * equivalents.
+ *
+ * Stored tasks are read back with `JSON.parse` and never pass through
+ * `normalizeCreateScheduledTaskInput`, which validates *new* input and is
+ * deliberately strict. Without this fold a task written before a value was
+ * retired would carry that value straight into execution, where nothing
+ * recognizes it any more. This is not a schema validator: a record that is
+ * malformed in any other way stays as stored.
+ */
+export function decodePersistedScheduledTask(task: ScheduledTask): ScheduledTask {
+  const { effect } = task;
+  if (effect.kind !== 'agent_run') return task;
+  const permissionMode = decodePersistedPermissionMode(effect.execution.permissionMode);
+  if (permissionMode === undefined || permissionMode === effect.execution.permissionMode) {
+    return task;
+  }
+  return {
+    ...task,
+    effect: { ...effect, execution: { ...effect.execution, permissionMode } },
+  };
 }

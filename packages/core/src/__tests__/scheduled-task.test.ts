@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   computeNextFireAt,
+  decodePersistedScheduledTask,
   isScheduledTaskDue,
   nextScheduledTaskStateAfterFire,
   normalizeCreateScheduledTaskInput,
@@ -225,5 +226,56 @@ describe('scheduled-task catalog', () => {
         message: 'Schedule has no fire within one year from now',
       });
     }
+  });
+});
+
+describe('decodePersistedScheduledTask', () => {
+  const base: ScheduledTask = {
+    id: 't1',
+    title: 'Nightly',
+    intent: { kind: 'text', body: 'run it' },
+    schedule: { kind: 'once', runAt: 1000 },
+    effect: {
+      kind: 'agent_run',
+      execution: {
+        cwd: '/repo',
+        llmConnectionSlug: 'anthropic',
+        model: 'claude',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+      },
+    },
+    status: 'active',
+    nextFireAt: 1000,
+    lastFireAt: null,
+    fireCount: 0,
+    maxFires: null,
+    expiresAt: null,
+    createdBy: { kind: 'user' },
+    createdAt: 0,
+    updatedAt: 0,
+    runs: [],
+    lastError: null,
+  };
+
+  it('folds a retired permission mode to its live equivalent', () => {
+    const stored = JSON.parse(
+      JSON.stringify(base).replace('"permissionMode":"ask"', '"permissionMode":"execute"'),
+    ) as ScheduledTask;
+    const decoded = decodePersistedScheduledTask(stored);
+    assert.equal(
+      decoded.effect.kind === 'agent_run' ? decoded.effect.execution.permissionMode : undefined,
+      'ask',
+    );
+  });
+
+  it('returns the same task when nothing needs folding', () => {
+    assert.equal(decodePersistedScheduledTask(base), base);
+  });
+
+  it('leaves effects without an execution template alone', () => {
+    const notify: ScheduledTask = { ...base, effect: { kind: 'notify', channel: 'local' } };
+    assert.equal(decodePersistedScheduledTask(notify), notify);
   });
 });
