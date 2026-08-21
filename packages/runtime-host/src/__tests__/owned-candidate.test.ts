@@ -12,7 +12,11 @@ import {
   connectOwnedRuntimeHostWithDependencies,
 } from '../client/connect-or-spawn.js';
 import { runHostedExecution } from '../client/hosted-execution.js';
-import { launchOwnedRuntimeHostCandidate, type CandidateExitDetails, type OwnedCandidateAttempt } from '../client/launcher.js';
+import {
+  launchOwnedRuntimeHostCandidate,
+  type CandidateExitDetails,
+  type OwnedCandidateAttempt,
+} from '../client/launcher.js';
 
 test('owned connection keeps a fresh Host alive for its full election window', async () => {
   const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-first-connection-'));
