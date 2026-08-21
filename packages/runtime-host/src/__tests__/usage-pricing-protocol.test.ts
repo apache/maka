@@ -375,6 +375,12 @@ describe('Usage/Pricing protocol', () => {
             .run();
           lease.database
             .prepare(`
+              UPDATE core_agent_runs SET latest_model_call_sequence = 0
+              WHERE session_id = 'session-b' AND run_id = 'run-b'
+            `)
+            .run();
+          lease.database
+            .prepare(`
               INSERT INTO core_agent_run_events(
                 session_id, run_id, sequence, event_id, event_type, event_ts, record_json
               ) VALUES (

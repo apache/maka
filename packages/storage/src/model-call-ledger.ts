@@ -228,10 +228,9 @@ function catchUpModelCallProjection(
   const lagging = db
     .prepare(`
       WITH source AS (
-        SELECT session_id, run_id, MAX(sequence) AS high_water
-        FROM core_agent_run_events
-        WHERE event_type = ?${scope.sourceWhere}
-        GROUP BY session_id, run_id
+        SELECT session_id, run_id, latest_model_call_sequence AS high_water
+        FROM core_agent_runs
+        WHERE latest_model_call_sequence IS NOT NULL${scope.sourceWhere}
       )
       SELECT source.session_id, source.run_id, source.high_water,
              COALESCE(checkpoint.applied_through_sequence, -1) AS applied_through
@@ -243,7 +242,7 @@ function catchUpModelCallProjection(
       ORDER BY source.session_id, source.run_id
       LIMIT ?
     `)
-    .all(MODEL_CALL_ATTEMPT_EVENT_TYPE, ...scope.parameters, limit) as unknown as LaggingRunRow[];
+    .all(...scope.parameters, limit) as unknown as LaggingRunRow[];
 
   const changedSessionIds = new Set<string>();
   for (const run of lagging) {
@@ -302,10 +301,9 @@ function catchUpModelCallProjection(
     db
       .prepare(`
         WITH source AS (
-          SELECT session_id, run_id, MAX(sequence) AS high_water
-          FROM core_agent_run_events
-          WHERE event_type = ?${scope.sourceWhere}
-          GROUP BY session_id, run_id
+          SELECT session_id, run_id, latest_model_call_sequence AS high_water
+          FROM core_agent_runs
+          WHERE latest_model_call_sequence IS NOT NULL${scope.sourceWhere}
         )
         SELECT COUNT(*) AS count
         FROM source
@@ -314,7 +312,7 @@ function catchUpModelCallProjection(
          AND checkpoint.run_id = source.run_id
         WHERE source.high_water > COALESCE(checkpoint.applied_through_sequence, -1)
       `)
-      .get(MODEL_CALL_ATTEMPT_EVENT_TYPE, ...scope.parameters)?.count ?? 0,
+      .get(...scope.parameters)?.count ?? 0,
   );
   const unreadableEvents = Number(
     db

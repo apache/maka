@@ -35,6 +35,7 @@ import {
 import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import { isTerminalRuntimeEvent, type RuntimeEvent } from '@maka/core/runtime-event';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
 import {
   LATEST_CONTEXT_PROJECTION_TYPE,
   supersedesLatestContext,
@@ -1012,6 +1013,17 @@ function insertAgentRunEvent(db: DatabaseSync, event: AgentRunEvent): void {
     event.ts,
     JSON.stringify(event, sanitizeJson),
   );
+  if (event.type === MODEL_CALL_ATTEMPT_EVENT_TYPE) {
+    const updated = db
+      .prepare(`
+        UPDATE core_agent_runs
+        SET latest_model_call_sequence = ?
+        WHERE session_id = ? AND run_id = ?
+          AND (latest_model_call_sequence IS NULL OR latest_model_call_sequence < ?)
+      `)
+      .run(row.sequence, event.sessionId, event.runId, row.sequence).changes;
+    if (updated !== 1) throw new Error('Failed to advance model-call authority high-water');
+  }
 }
 
 function readSqliteAgentRunProjection(

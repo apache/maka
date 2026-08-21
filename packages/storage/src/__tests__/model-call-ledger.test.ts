@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import {
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
@@ -16,6 +17,7 @@ import {
   type ModelCallLedger,
 } from '../model-call-ledger.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
+import { createSqliteAgentRunStore } from '../agent-run-store.js';
 
 const NOW = 1_750_000_000_000;
 
@@ -96,6 +98,13 @@ function appendAuthorityEvent(
             data: value,
           }),
         );
+      lease.database
+        .prepare(`
+          UPDATE core_agent_runs
+          SET latest_model_call_sequence = ?
+          WHERE session_id = ? AND run_id = ?
+        `)
+        .run(sequence, sessionId, runId);
     });
   } finally {
     lease.close();
@@ -326,6 +335,43 @@ describe('canonical model call ledger', () => {
 });
 
 describe('catching the read model up from the AgentRun authority', () => {
+  test('consumes the high-water published by the real AgentRun append path', async () => {
+    await withLedger(async (ledger, root) => {
+      const runStore = createSqliteAgentRunStore(root);
+      const header: AgentRunHeader = {
+        runId: 'run-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        status: 'created',
+        backendKind: 'fake',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+        cwd: '/tmp/cwd',
+        permissionMode: 'ask',
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      await runStore.createRun(header);
+      await runStore.appendEvent('session-1', 'run-1', {
+        id: 'attempt-real-append',
+        type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
+        ts: NOW,
+        sessionId: 'session-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        data: { ...attempt({ attemptId: 'real-append' }) },
+      });
+      runStore.close?.();
+
+      await ledger.catchUpProjection({ sessionId: 'session-1' });
+
+      assert.deepEqual(
+        ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
+        ['real-append'],
+      );
+    });
+  });
+
   test('recovers an authority append even when no repair marker was written', async () => {
     await withLedger(async (ledger, root) => {
       appendAuthorityEvent(root, 0, attempt({ attemptId: 'missed' }));

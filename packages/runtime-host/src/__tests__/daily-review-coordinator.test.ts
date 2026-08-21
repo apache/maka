@@ -308,6 +308,12 @@ function appendCorruptAuthorityEvent(root: string, sessionId: string, runId: str
         .run(sessionId, runId);
       lease.database
         .prepare(`
+          UPDATE core_agent_runs SET latest_model_call_sequence = 0
+          WHERE session_id = ? AND run_id = ?
+        `)
+        .run(sessionId, runId);
+      lease.database
+        .prepare(`
           INSERT INTO core_agent_run_events(
             session_id, run_id, sequence, event_id, event_type, event_ts, record_json
           ) VALUES (?, ?, 0, 'corrupt-model-call', 'model_call_attempt_recorded', 0, '{}')

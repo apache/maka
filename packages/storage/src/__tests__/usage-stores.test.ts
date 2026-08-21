@@ -554,6 +554,12 @@ function appendModelCallAuthorityEvent(
             data: value,
           }),
         );
+      lease.database
+        .prepare(`
+          UPDATE core_agent_runs SET latest_model_call_sequence = 0
+          WHERE session_id = ? AND run_id = ?
+        `)
+        .run(value.sessionId, value.runId);
     });
   } finally {
     lease.close();

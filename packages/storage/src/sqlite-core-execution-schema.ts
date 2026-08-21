@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 3;
+export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 4;
 
 export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -9,6 +9,7 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
       run_id TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       record_json TEXT NOT NULL,
+      latest_model_call_sequence INTEGER CHECK (latest_model_call_sequence >= 0),
       PRIMARY KEY (session_id, run_id)
     );
 
@@ -123,4 +124,38 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS core_shell_runs_session_order
       ON core_shell_runs(session_id, started_at, shell_run_id);
   `);
+  ensureColumn(
+    db,
+    'core_agent_runs',
+    'latest_model_call_sequence',
+    'INTEGER CHECK (latest_model_call_sequence >= 0)',
+  );
+  db.exec(`
+    UPDATE core_agent_runs
+    SET latest_model_call_sequence = (
+      SELECT MAX(sequence)
+      FROM core_agent_run_events
+      WHERE core_agent_run_events.session_id = core_agent_runs.session_id
+        AND core_agent_run_events.run_id = core_agent_runs.run_id
+        AND event_type = 'model_call_attempt_recorded'
+    )
+    WHERE latest_model_call_sequence IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM core_agent_run_events
+        WHERE core_agent_run_events.session_id = core_agent_runs.session_id
+          AND core_agent_run_events.run_id = core_agent_runs.run_id
+          AND event_type = 'model_call_attempt_recorded'
+      );
+
+    CREATE INDEX IF NOT EXISTS core_agent_runs_model_call_high_water
+      ON core_agent_runs(session_id, latest_model_call_sequence, run_id)
+      WHERE latest_model_call_sequence IS NOT NULL;
+  `);
+}
+
+function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>;
+  if (columns.some((candidate) => candidate.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
