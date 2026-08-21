@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Text } from '@astryxdesign/core/Text';
@@ -23,6 +23,7 @@ export function RuntimeHostManagementDialog(props: {
   const [error, setError] = useState<string>();
   const [uninstalledRoot, setUninstalledRoot] = useState<string>();
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
+  const logsRef = useRef<HTMLPreElement>(null);
 
   const profile = props.profile;
   useEffect(() => {
@@ -50,6 +51,12 @@ export function RuntimeHostManagementDialog(props: {
       disposed = true;
     };
   }, [locale, profile]);
+
+  useLayoutEffect(() => {
+    if (result?.action !== 'logs') return;
+    const logs = logsRef.current;
+    if (logs) logs.scrollTop = logs.scrollHeight;
+  }, [result]);
 
   async function run(action: DesktopRuntimeHostManagementAction): Promise<void> {
     if (!profile) return;
@@ -157,7 +164,7 @@ export function RuntimeHostManagementDialog(props: {
                     )}
                   </div>
                   {result.action === 'logs' ? (
-                    <pre className="settingsRuntimeHostManagementLogs">
+                    <pre ref={logsRef} className="settingsRuntimeHostManagementLogs">
                       {result.logs || copy.noLogs}
                     </pre>
                   ) : null}
