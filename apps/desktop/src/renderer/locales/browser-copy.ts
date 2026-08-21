@@ -7,6 +7,8 @@ export type BrowserCopy = {
   navigationFailed: string;
   navigationFailedDetail: string;
   panelAria: string;
+  panelAriaWithTitle: (title: string) => string;
+  insecure: string;
   backAria: string;
   back: string;
   forwardAria: string;
@@ -31,6 +33,8 @@ const BROWSER_COPY = {
     navigationFailed: '浏览器导航失败',
     navigationFailedDetail: '页面暂时无法打开，请稍后重试。',
     panelAria: '嵌入式浏览器',
+    panelAriaWithTitle: (title) => `嵌入式浏览器：${title}`,
+    insecure: '这个站点用 HTTP 传输，连接未加密。',
     backAria: '浏览器后退',
     back: '后退',
     forwardAria: '浏览器前进',
@@ -53,6 +57,8 @@ const BROWSER_COPY = {
     navigationFailed: 'Browser navigation failed',
     navigationFailedDetail: 'The page could not be opened. Try again later.',
     panelAria: 'Embedded browser',
+    panelAriaWithTitle: (title) => `Embedded browser: ${title}`,
+    insecure: 'This site is served over HTTP, so the connection is not encrypted.',
     backAria: 'Go back in browser',
     back: 'Back',
     forwardAria: 'Go forward in browser',

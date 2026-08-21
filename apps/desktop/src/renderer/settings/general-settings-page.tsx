@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PersonalizationSettingsSection } from "./personalization-settings-section";
 import {
   SettingsActions,
@@ -10,6 +10,7 @@ import {
 import type {
   AppSettings,
   ChatDefaultPermissionMode,
+  ShellPreference,
   NetworkProxySettings,
   UpdateAppSettingsResult,
 } from '@maka/core/settings';
@@ -173,6 +174,7 @@ export function GeneralSettingsPage(props: {
             thinkingLevel={props.settings.chatDefaults.thinkingLevel}
             onUpdate={props.onUpdate}
           />
+          <ShellSettingsSection settings={props.settings} onUpdate={props.onUpdate} />
           <SettingsSection
             title={sections.network}
             description={sections.networkHelp}
@@ -186,6 +188,118 @@ export function GeneralSettingsPage(props: {
         </>
       ) : null}
     </SettingsPage>
+  );
+}
+
+const DEFAULT_GIT_BASH_EXECUTABLE = "C:\\Program Files\\Git\\bin\\bash.exe";
+
+function ShellSettingsSection(props: {
+  settings: AppSettings;
+  onUpdate(
+    patch: Parameters<typeof window.maka.settings.update>[0],
+  ): Promise<UpdateAppSettingsResult>;
+}) {
+  const locale = useUiLocale();
+  const copy = getSettingsPreferencesCopy(locale).general;
+  const sections = getSettingsPreferencesCopy(locale).sections;
+  const toast = useToast();
+  const mountedRef = useMountedRef();
+  const saveGuard = useActionGuard<"save-shell">();
+  const [preference, setPreference] = useState<ShellPreference>(
+    props.settings.shell.preference,
+  );
+  const [executable, setExecutable] = useState(props.settings.shell.executable);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setPreference(props.settings.shell.preference);
+    setExecutable(props.settings.shell.executable);
+  }, [props.settings.shell.executable, props.settings.shell.preference]);
+
+  const normalizedExecutable = executable.trim();
+  const dirty =
+    preference !== props.settings.shell.preference ||
+    normalizedExecutable !== props.settings.shell.executable;
+  const canSave =
+    dirty && !saving && (preference === "auto" || normalizedExecutable.length > 0);
+
+  async function save(): Promise<void> {
+    if (!saveGuard.begin("save-shell")) return;
+    setSaving(true);
+    try {
+      await props.onUpdate({
+        shell: { preference, executable: normalizedExecutable },
+      });
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(
+          copy.saveShellFailed,
+          isRejectedShellPreference(error)
+            ? copy.shellExecutableRejected
+            : settingsActionErrorMessage(error, locale),
+        );
+      }
+    } finally {
+      saveGuard.finish();
+      if (mountedRef.current) setSaving(false);
+    }
+  }
+
+  return (
+    <SettingsSection title={sections.shell} description={sections.shellHelp}>
+      <SettingsRow
+        label={copy.shellPreference}
+        description={copy.shellPreferenceHelp}
+        end={
+          <Selector
+            label={copy.shellPreference}
+            isLabelHidden
+            value={preference}
+            options={[
+              { value: "auto", label: copy.shellAuto },
+              { value: "git_bash", label: copy.shellGitBash },
+            ]}
+            isDisabled={saving}
+            onChange={(value) => {
+              const next = value as ShellPreference;
+              setPreference(next);
+              if (next === "git_bash" && executable.trim().length === 0) {
+                setExecutable(DEFAULT_GIT_BASH_EXECUTABLE);
+              }
+            }}
+          />
+        }
+      />
+      {preference === "git_bash" ? (
+        <SettingsField>
+          <TextInput
+            value={executable}
+            onChange={setExecutable}
+            label={copy.shellExecutable}
+            description={copy.shellExecutableHelp}
+            placeholder={DEFAULT_GIT_BASH_EXECUTABLE}
+            width="100%"
+            isDisabled={saving}
+          />
+        </SettingsField>
+      ) : null}
+      <SettingsActions>
+        <Button
+          variant="primary"
+          isDisabled={!canSave}
+          isLoading={saving}
+          onClick={() => void save()}
+          label={saving ? copy.savingShell : dirty ? copy.saveShell : copy.shellSaved}
+        />
+      </SettingsActions>
+    </SettingsSection>
+  );
+}
+
+function isRejectedShellPreference(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes("Runtime policy mutation is invalid for the current state")
   );
 }
 

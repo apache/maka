@@ -22,6 +22,8 @@ mod protocol;
 mod protocol_tests;
 mod windows_launcher;
 #[cfg(test)]
+mod windows_launcher_desktop_tests;
+#[cfg(test)]
 mod windows_launcher_tests;
 
 use std::env;
@@ -58,6 +60,12 @@ fn run() -> Result<u8, String> {
             return Err("--self-probe does not accept arguments".to_owned());
         }
         return windows_launcher::self_probe();
+    }
+    if first == "--readiness-probe" {
+        if args.next().is_some() {
+            return Err("--readiness-probe does not accept arguments".to_owned());
+        }
+        return windows_launcher::readiness_probe();
     }
     if first == "--stdio-probe" {
         let sleep_seconds = match args.next() {
@@ -262,13 +270,95 @@ fn boundary_probe(
     let allowed_write = fs::write(allowed_write_path, b"allowed-write").is_ok();
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let network_denied = TcpStream::connect_timeout(&address, Duration::from_secs(2)).is_err();
+    // Self-attest the desktop the confined child was *initially placed* on
+    // (RFC §6.3): the per-launch private desktop, never the interactive
+    // `Default`. Querying its own desktop name is allowed because the desktop
+    // DACL grants this AppContainer SID DESKTOP_READOBJECTS. This proves initial
+    // `STARTUPINFOW.lpDesktop` placement only — it is NOT proof of escape-proof
+    // confinement: absent a no-Win32k mitigation or a window-station/token
+    // boundary, in-process code could still `OpenDesktopW("Default")` +
+    // `SetThreadDesktop`. The escape-proof boundary is a deferred gate (§6.5).
+    let desktop = current_desktop_name()?;
+    let desktop_private_placement = desktop_is_private_placement(&desktop);
     println!(
-        "{{\"fileDenied\":{file_denied},\"allowedRead\":{allowed_read},\"allowedWrite\":{allowed_write},\"networkDenied\":{network_denied}}}"
+        "{{\"fileDenied\":{file_denied},\"allowedRead\":{allowed_read},\"allowedWrite\":{allowed_write},\"networkDenied\":{network_denied},\"desktop\":{desktop_json},\"desktopPrivatePlacement\":{desktop_private_placement}}}",
+        desktop_json = json_string(&desktop)
     );
     if !file_denied || !allowed_read || !allowed_write || !network_denied {
         return Err("AppContainer boundary did not enforce the requested resources".to_owned());
     }
+    if !desktop_private_placement {
+        return Err(format!(
+            "confined child was placed on the interactive desktop {desktop:?} instead of a private one"
+        ));
+    }
     Ok(0)
+}
+
+/// Prefix every launcher-created private desktop name carries
+/// (`maka-sandbox-desktop.<pid>.<nonce>`). Attesting against the prefix rather
+/// than merely "not Default" means a child that somehow started on *any other*
+/// pre-existing desktop (`Winlogon`, a screensaver desktop, another product's
+/// alternate desktop) still fails the placement check.
+const PRIVATE_DESKTOP_PREFIX: &str = "maka-sandbox-desktop.";
+
+/// A confined worker must be *initially placed* on the per-launch private
+/// desktop this launcher created — never the shared interactive `Default`
+/// desktop, never an empty/unnamed one, and never some other desktop that
+/// merely isn't `Default`. This is a placement check, not an escape-proof
+/// confinement check: it only attests the initial `lpDesktop` name
+/// (RFC §6.3, §6.5).
+fn desktop_is_private_placement(name: &str) -> bool {
+    name.len() > PRIVATE_DESKTOP_PREFIX.len()
+        && name
+            .get(..PRIVATE_DESKTOP_PREFIX.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(PRIVATE_DESKTOP_PREFIX))
+}
+
+/// JSON string encoding for names embedded in probe output. Delegates to
+/// `serde_json` (already a dependency) instead of hand-rolled escaping; string
+/// serialization is infallible.
+fn json_string(value: &str) -> String {
+    serde_json::to_string(value).expect("JSON string encoding cannot fail")
+}
+
+/// Name of the desktop the current thread is attached to. Fails closed: a
+/// worker that cannot even confirm its desktop is treated as unconfined.
+fn current_desktop_name() -> Result<String, String> {
+    use std::ffi::c_void;
+
+    use windows_sys::Win32::System::StationsAndDesktops::{
+        GetThreadDesktop, GetUserObjectInformationW, UOI_NAME,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+
+    unsafe {
+        let desktop = GetThreadDesktop(GetCurrentThreadId());
+        if desktop.is_null() {
+            return Err("GetThreadDesktop returned null".to_owned());
+        }
+        let mut needed = 0u32;
+        // First call sizes the name buffer (bytes needed, including the
+        // terminating wide NUL).
+        GetUserObjectInformationW(desktop, UOI_NAME, std::ptr::null_mut(), 0, &mut needed);
+        if needed == 0 {
+            return Err("GetUserObjectInformationW(UOI_NAME size) returned zero".to_owned());
+        }
+        let words = (needed as usize).div_ceil(std::mem::size_of::<u16>());
+        let mut buffer = vec![0u16; words];
+        if GetUserObjectInformationW(
+            desktop,
+            UOI_NAME,
+            buffer.as_mut_ptr() as *mut c_void,
+            needed,
+            &mut needed,
+        ) == 0
+        {
+            return Err("GetUserObjectInformationW(UOI_NAME) failed".to_owned());
+        }
+        let length = buffer.iter().position(|&code| code == 0).unwrap_or(words);
+        Ok(String::from_utf16_lossy(&buffer[..length]))
+    }
 }
 
 fn validate_broker_request(source: &str) -> Result<u8, String> {

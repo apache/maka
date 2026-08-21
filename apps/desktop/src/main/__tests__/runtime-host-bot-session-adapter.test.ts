@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
-import type {
-  SessionCatalogProjection,
-  SessionContinuitySnapshot,
-  SubscriptionFrame,
-  TurnSnapshot,
+import {
+  SESSION_CONTINUITY_SCHEMA_VERSION,
+  type SessionCatalogProjection,
+  type SessionContinuitySnapshot,
+  type SubscriptionFrame,
+  type TurnSnapshot,
 } from '@maka/runtime-host/protocol';
 import { BotSessionUnavailableError } from '../bot-session-adapter.js';
 import {
@@ -83,6 +84,39 @@ test('prepares a bound Session without exposing Host configuration revisions to 
   });
   await assert.rejects(
     unavailable.prepareSession('removed-session'),
+    BotSessionUnavailableError,
+  );
+});
+
+test('rejects archived Sessions before and after a permission transition', async () => {
+  const initiallyArchived = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      getSession: async () =>
+        session('bot-session-1', { isArchived: true, status: 'active' }),
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+  await assert.rejects(
+    initiallyArchived.prepareSession('bot-session-1'),
+    BotSessionUnavailableError,
+  );
+
+  const archivedDuringUpdate = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      getSession: async () => session('bot-session-1', { permissionMode: 'ask' }),
+      updateSessionConfiguration: async (sessionId) =>
+        session(sessionId, {
+          permissionMode: 'explore',
+          isArchived: true,
+          status: 'active',
+        }),
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+  });
+  await assert.rejects(
+    archivedDuringUpdate.prepareSession('bot-session-1'),
     BotSessionUnavailableError,
   );
 });
@@ -401,7 +435,7 @@ function startedTurn(turn: TurnSnapshot) {
 
 function continuitySnapshot(rootTurn: TurnSnapshot | null): SessionContinuitySnapshot {
   return {
-    schemaVersion: 3,
+    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session: {
       sessionId: 'bot-session-1',
       metadataRevision: 1,

@@ -1,9 +1,9 @@
-/** Resolved locales supported by the desktop renderer. */
+/** Resolved locales supported by human-facing Maka clients. */
 export const UI_LOCALES = ['zh', 'en'] as const;
 
 export type UiLocale = (typeof UI_LOCALES)[number];
 
-/** The only persisted locale preference. The resolved locale is never stored. */
+/** Shared UI preference vocabulary. A resolved locale is never persisted. */
 export type UiLocalePreference = 'auto' | UiLocale;
 
 export const UI_LOCALE_PREFERENCES = ['auto', ...UI_LOCALES] as const;
@@ -30,11 +30,11 @@ export function resolveSystemUiLocale(languages: readonly string[] | null | unde
 }
 
 /**
- * Derive the single renderer locale.
+ * Derive one resolved UI locale.
  *
- * Visual/test overrides are deliberately highest priority. Explicit persisted
- * preferences beat the system locale; `auto` follows the supported system
- * locale without persisting the derived value.
+ * Call-site overrides are deliberately highest priority. Explicit preferences
+ * beat the system locale; `auto` follows the supported system locale without
+ * persisting the derived value.
  */
 export function resolveUiLocale(
   preference: UiLocalePreference,

@@ -204,24 +204,29 @@ test('the pointer is always on a tick while it travels down the rail', async ({
         hit: describe(found),
       };
     };
-    // A shown macOS window paints the hiddenInset titlebar over the top of
-    // the scrollport. Ticks there report a negative top, and the first ~36px
-    // of the column hit `astryx-layout-content` — that is chrome, not a gap
-    // between ticks. Walk only the column that is actually over the rail.
-    let startY = Math.max(0, Math.round(first.top));
-    let endY = Math.min(window.innerHeight, Math.round(last.bottom));
-    while (startY < endY && !probe(startY).rail) startY += 1;
-    while (endY > startY && !probe(endY - 1).rail) endY -= 1;
+    // The whole painted column must be user-reachable. Trimming a titlebar-
+    // covered prefix here would make this test certify only the surviving
+    // middle of a broken rail.
+    const startY = Math.round(first.top + first.height / 2);
+    const endY = Math.round(last.top + last.height / 2);
     const misses: Array<{ y: number; hit: string }> = [];
-    for (let y = startY; y < endY; y += 1) {
+    for (let y = startY; y <= endY; y += 1) {
       const found = probe(y);
       if (!found.tick) misses.push({ y, hit: found.hit });
     }
-    return { misses: misses.length, span: endY - startY, sample: misses.slice(0, 3) };
+    return {
+      insideViewport: startY >= 0 && endY < window.innerHeight,
+      misses: misses.length,
+      span: endY - startY,
+      sample: misses.slice(0, 3),
+    };
   });
 
   expect(travel.span).toBeGreaterThan(0);
-  expect(travel, `rail travel hits ${JSON.stringify(travel.sample)}`).toMatchObject({ misses: 0 });
+  expect(travel, `rail travel hits ${JSON.stringify(travel.sample)}`).toMatchObject({
+    insideViewport: true,
+    misses: 0,
+  });
 });
 
 test('the first click of a session lands on its prompt and holds', async ({
@@ -248,14 +253,9 @@ test('the first click of a session lands on its prompt and holds', async ({
   // opening scroll position its top is already above the scrollport, which
   // passes an upper-bound-only check without the jump doing anything at all.
   const targetTurnId = 'turn-prompt-rail-1';
-  // The first tick sits under the macOS titlebar overlay on a shown window,
-  // so a pointer click lands on `astryx-layout-content` and the jump never
-  // runs. This test is the jump vs auto-follow lock, not hit-testing — fire
-  // the tick's own click. Overlay reachability lives in the tests around it.
-  await page.locator('.maka-prompt-rail-tick').first().evaluate((tick) => {
-    if (!(tick instanceof HTMLElement)) throw new Error('the first prompt-rail tick is missing');
-    tick.click();
-  });
+  // A normal Playwright click goes through Electron's native pointer path, so
+  // this assertion covers both titlebar reachability and the jump contract.
+  await page.locator('.maka-prompt-rail-tick').first().click();
 
   const landing = async () =>
     page.evaluate((turnId) => {
@@ -306,10 +306,7 @@ test('long transcripts keep a bounded mounted turn window', async ({
   })).toEqual({ list: 16, turn: 16 });
   expect(await count()).toBeGreaterThan(0);
   expect(await count()).toBeLessThanOrEqual(100);
-  await page.locator('.maka-prompt-rail-tick').first().evaluate((tick) => {
-    if (!(tick instanceof HTMLElement)) throw new Error('the first prompt-rail tick is missing');
-    tick.click();
-  });
+  await page.locator('.maka-prompt-rail-tick').first().click();
   await expect(page.locator('[data-turn-id="turn-prompt-rail-1"]')).toHaveCount(1);
   expect(await count()).toBeGreaterThan(0);
   expect(await count()).toBeLessThanOrEqual(100);

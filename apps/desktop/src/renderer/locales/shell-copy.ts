@@ -168,6 +168,16 @@ type ShellCopy = {
     projectUpdateFailedFallback: string;
     catalogUnavailable: string;
     retryCatalog: string;
+    remoteDirectoryTitle(host: string): string;
+    remoteDirectoryBreadcrumbs: string;
+    remoteDirectoryHome: string;
+    remoteDirectoryEmpty: string;
+    remoteDirectorySelect: string;
+    remoteDirectoryCancel: string;
+    remoteDirectoryRetry: string;
+    remoteDirectoryLoading: string;
+    remoteDirectoryShowHidden: string;
+    remoteDirectoryHideHidden: string;
     runtimeHostReadiness: Record<'connecting' | 'reconnecting' | 'unavailable', string>;
     openFailedTitle(path: string): string;
     openPathLabels: Record<'workspace' | 'skills' | 'memory' | 'project', string>;
@@ -309,6 +319,27 @@ type ShellCopy = {
     thinkingFailedTitle: string;
     thinkingFallback: string;
   };
+  /**
+   * The Goal dialog. A Goal spends tokens without further prompting, so the
+   * wording states what it does and names the two budgets that stop it —
+   * silence here reads as "nothing happens until I press something else".
+   */
+  goalDialog: {
+    title: string;
+    description: string;
+    conditionLabel: string;
+    conditionDescription: string;
+    conditionPlaceholder: string;
+    maxIterationsLabel: string;
+    maxIterationsDescription: string;
+    maxIterationsInvalid(max: number): string;
+    tokenBudgetLabel: string;
+    tokenBudgetDescription: string;
+    tokenBudgetInvalid(min: number): string;
+    cancel: string;
+    submit: string;
+    failedFallback: string;
+  };
   errorBoundary: {
     copyPending: string;
     copied: string;
@@ -392,6 +423,10 @@ type ShellCopy = {
     resumeFailedFallback: string;
     goalClearFailedTitle: string;
     goalClearFailedFallback: string;
+    goalPauseFailedTitle: string;
+    goalPauseFailedFallback: string;
+    goalResumeFailedTitle: string;
+    goalResumeFailedFallback: string;
     appearanceLoadErrorTitle: string;
     appearanceLoadErrorFallback: string;
     memoryRefreshErrorTitle: string;
@@ -422,36 +457,37 @@ type ShellCopy = {
     permissionModeStreaming: string;
     permissionModeRunning: string;
     permissionModeWaiting: string;
-    planModeChanging: string;
-    planModeStreaming: string;
-    planModeRunning: string;
-    planModeWaiting: string;
+    /** The one mode control locks for the same four reasons, worded once. */
+    /** The Session summary has not arrived, so its mode is not known yet. */
+    modeChangeLoading: string;
+    modeChanging: string;
+    modeChangeStreaming: string;
+    modeChangeRunning: string;
+    modeChangeWaiting: string;
+    /**
+     * Why the ＋ menu's Goal entry is unavailable right now. A Goal takes hold
+     * on the next Turn, so arming one mid-Turn would look like it did nothing;
+     * saying so is better than letting the user find that out afterwards.
+     */
+    goalTurnActive: string;
     planModeFailedTitle: string;
     planModeFallback: string;
+    orchestrationModeFailedTitle: string;
+    orchestrationModeFallback: string;
     planModeExitPendingTitle: string;
     planModeExitPendingDescription(title: string): string;
     planModeExitConfirm: string;
     planModeExitCancel: string;
     planModeExecutionActiveTitle: string;
     planModeExecutionActiveDescription: string;
-    swarmModeChanging: string;
-    swarmModeStreaming: string;
-    swarmModeRunning: string;
-    swarmModeWaiting: string;
-    swarmModeFailedTitle: string;
-    swarmModeFallback: string;
     swarmModeEnabledTitle: string;
     swarmModeDisabledTitle: string;
     swarmModeStatusDescription: string;
-    graphModeChanging: string;
-    graphModeStreaming: string;
-    graphModeRunning: string;
-    graphModeWaiting: string;
-    graphModeFailedTitle: string;
-    graphModeFallback: string;
     graphModeEnabledTitle: string;
     graphModeDisabledTitle: string;
     graphModeStatusDescription: string;
+    graphHistoryTitle: string;
+    graphHistoryDescription: string;
     resizeWorkbar: string;
   };
 };
@@ -723,6 +759,16 @@ const SHELL_COPY_BY_LOCALE = {
       projectUpdateFailedFallback: '暂时无法更新项目，请稍后重试。',
       catalogUnavailable: 'Runtime Host 暂时不可用',
       retryCatalog: '重试加载',
+      remoteDirectoryTitle: (host: string) => `在 ${host} 上添加项目`,
+      remoteDirectoryBreadcrumbs: '当前文件夹',
+      remoteDirectoryHome: '主目录',
+      remoteDirectoryEmpty: '此文件夹中没有子文件夹',
+      remoteDirectorySelect: '添加此文件夹',
+      remoteDirectoryCancel: '取消',
+      remoteDirectoryRetry: '重试',
+      remoteDirectoryLoading: '正在读取文件夹…',
+      remoteDirectoryShowHidden: '显示隐藏目录',
+      remoteDirectoryHideHidden: '不显示隐藏目录',
       runtimeHostReadiness: {
         connecting: '连接中',
         reconnecting: '正在重连',
@@ -933,6 +979,22 @@ const SHELL_COPY_BY_LOCALE = {
       thinkingFailedTitle: '切换思考级别失败',
       thinkingFallback: '思考级别暂时无法切换，请稍后重试。',
     },
+    goalDialog: {
+      title: '设定 Goal',
+      description: 'Goal 会在每轮结束后自动续行，直到达成、判定不可行，或触及下面的预算。随时可在输入框上方停止。',
+      conditionLabel: '达成条件',
+      conditionDescription: '用一句话说明什么算做完；Maka 每轮都据此判断。',
+      conditionPlaceholder: '例如：所有测试通过，且 lint 无告警',
+      maxIterationsLabel: '最多轮数',
+      maxIterationsDescription: '留空使用默认值。',
+      maxIterationsInvalid: (max) => `请填 1 到 ${max} 之间的整数，或留空。`,
+      tokenBudgetLabel: 'Token 预算',
+      tokenBudgetDescription: '留空表示不设 token 上限。',
+      tokenBudgetInvalid: (min) => `请填不小于 ${min} 的整数，或留空。`,
+      cancel: '取消',
+      submit: '开始',
+      failedFallback: '无法设定 Goal，请稍后重试。',
+    },
     errorBoundary: {
       copyPending: '复制中…',
       copied: '已复制',
@@ -1084,6 +1146,10 @@ const SHELL_COPY_BY_LOCALE = {
       resumeFailedFallback: '无法启动安全恢复，请检查任务状态后重试。',
       goalClearFailedTitle: '停止目标失败',
       goalClearFailedFallback: '目标仍可能继续运行，请立即重试。',
+      goalPauseFailedTitle: '暂停目标失败',
+      goalPauseFailedFallback: '目标可能仍在自动续行，请立即重试。',
+      goalResumeFailedTitle: '恢复目标失败',
+      goalResumeFailedFallback: '目标仍处于暂停状态，请重试。',
       appearanceLoadErrorTitle: '载入外观设置失败',
       appearanceLoadErrorFallback: '外观设置暂时无法载入，请稍后重试。',
       memoryRefreshErrorTitle: '刷新本地记忆状态失败',
@@ -1115,12 +1181,16 @@ const SHELL_COPY_BY_LOCALE = {
       permissionModeStreaming: '当前任务正在流式输出，等结束后再切换权限模式。',
       permissionModeRunning: '当前任务正在运行，等结束后再切换权限模式。',
       permissionModeWaiting: '当前有工具调用正在等待确认，处理后再切换权限模式。',
-      planModeChanging: 'Plan Mode 正在切换，完成后再继续操作。',
-      planModeStreaming: '当前任务正在流式输出，等结束后再切换 Plan Mode。',
-      planModeRunning: '当前任务正在运行，等结束后再切换 Plan Mode。',
-      planModeWaiting: '当前有工具调用正在等待确认，处理后再切换 Plan Mode。',
-      planModeFailedTitle: '切换 Plan Mode 失败',
-      planModeFallback: 'Plan Mode 暂时无法切换，请稍后重试。',
+      modeChangeLoading: '会话还在载入，稍候即可切换模式。',
+      modeChanging: '模式正在切换，完成后再继续操作。',
+      modeChangeStreaming: '当前任务正在流式输出，等结束后再切换模式。',
+      modeChangeRunning: '当前任务正在运行，等结束后再切换模式。',
+      modeChangeWaiting: '当前有工具调用正在等待确认，处理后再切换模式。',
+      goalTurnActive: 'Goal 从下一轮开始生效。等当前这一轮结束后再设定。',
+      planModeFailedTitle: '切换 Plan 模式失败',
+      planModeFallback: 'Plan 模式暂时无法切换，请稍后重试。',
+      orchestrationModeFailedTitle: '切换编排模式失败',
+      orchestrationModeFallback: '编排模式暂时无法切换，请稍后重试。',
       planModeExitPendingTitle: '放弃当前方案？',
       planModeExitPendingDescription: (title: string) =>
         `「${title}」尚未审批。退出 Plan Mode 后，该方案会标记为已放弃，但历史记录仍会保留。`,
@@ -1128,24 +1198,14 @@ const SHELL_COPY_BY_LOCALE = {
       planModeExitCancel: '继续规划',
       planModeExecutionActiveTitle: '计划仍在执行',
       planModeExecutionActiveDescription: '请先中断当前执行，再进入 Plan Mode 调整方案。',
-      swarmModeChanging: 'Swarm Mode 正在切换，完成后再继续操作。',
-      swarmModeStreaming: '当前任务正在流式输出，等结束后再切换 Swarm Mode。',
-      swarmModeRunning: '当前任务正在运行，等结束后再切换 Swarm Mode。',
-      swarmModeWaiting: '当前有工具调用正在等待确认，处理后再切换 Swarm Mode。',
-      swarmModeFailedTitle: '切换 Swarm Mode 失败',
-      swarmModeFallback: 'Swarm Mode 暂时无法切换，请稍后重试。',
       swarmModeEnabledTitle: 'Swarm Mode 已开启',
       swarmModeDisabledTitle: 'Swarm Mode 未开启',
       swarmModeStatusDescription: '使用 /swarm on、/swarm off，或 /swarm <任务> 单次运行。',
-      graphModeChanging: 'Graph Mode 正在切换，完成后再继续操作。',
-      graphModeStreaming: '当前任务正在流式输出，等结束后再切换 Graph Mode。',
-      graphModeRunning: '当前任务正在运行，等结束后再切换 Graph Mode。',
-      graphModeWaiting: '当前有工具调用正在等待确认，处理后再切换 Graph Mode。',
-      graphModeFailedTitle: '切换 Graph Mode 失败',
-      graphModeFallback: 'Graph Mode 暂时无法切换，请稍后重试。',
       graphModeEnabledTitle: 'Graph Mode 已开启',
       graphModeDisabledTitle: 'Graph Mode 未开启',
       graphModeStatusDescription: '使用 /graph on、/graph off，或 /graph <任务> 单次运行。',
+      graphHistoryTitle: 'Graph 历史',
+      graphHistoryDescription: '请在 Agent Graph 面板的运行轮次菜单中查看历史记录。',
       resizeWorkbar: '调整任务工作栏宽度',
     },
   },
@@ -1199,6 +1259,16 @@ const SHELL_COPY_BY_LOCALE = {
       projectUpdateFailedFallback: 'The project could not be updated. Try again later.',
       catalogUnavailable: 'Runtime Hosts unavailable',
       retryCatalog: 'Retry loading',
+      remoteDirectoryTitle: (host: string) => `Add a project on ${host}`,
+      remoteDirectoryBreadcrumbs: 'Current folder',
+      remoteDirectoryHome: 'Home',
+      remoteDirectoryEmpty: 'No folders here',
+      remoteDirectorySelect: 'Add this folder',
+      remoteDirectoryCancel: 'Cancel',
+      remoteDirectoryRetry: 'Retry',
+      remoteDirectoryLoading: 'Loading folders…',
+      remoteDirectoryShowHidden: 'Show hidden folders',
+      remoteDirectoryHideHidden: 'Hide hidden folders',
       runtimeHostReadiness: {
         connecting: 'Connecting',
         reconnecting: 'Reconnecting',
@@ -1411,6 +1481,22 @@ const SHELL_COPY_BY_LOCALE = {
       thinkingFailedTitle: 'Could not change thinking level',
       thinkingFallback: 'The thinking level could not be changed. Try again later.',
     },
+    goalDialog: {
+      title: 'Set a goal',
+      description: 'Maka continues on its own after each turn until the goal is met, judged impossible, or a budget below is reached. You can stop it any time from above the composer.',
+      conditionLabel: 'Completion condition',
+      conditionDescription: 'One sentence for what counts as done; Maka checks it after every turn.',
+      conditionPlaceholder: 'e.g. all tests pass and lint reports no warnings',
+      maxIterationsLabel: 'Maximum turns',
+      maxIterationsDescription: 'Leave empty to use the default.',
+      maxIterationsInvalid: (max) => `Enter a whole number from 1 to ${max}, or leave it empty.`,
+      tokenBudgetLabel: 'Token budget',
+      tokenBudgetDescription: 'Leave empty for no token ceiling.',
+      tokenBudgetInvalid: (min) => `Enter a whole number of at least ${min}, or leave it empty.`,
+      cancel: 'Cancel',
+      submit: 'Start',
+      failedFallback: 'The goal could not be set. Try again.',
+    },
     errorBoundary: {
       copyPending: 'Copying…',
       copied: 'Copied',
@@ -1602,6 +1688,10 @@ const SHELL_COPY_BY_LOCALE = {
       resumeFailedFallback: 'Safe recovery could not start. Check the task state and try again.',
       goalClearFailedTitle: 'Could not stop the goal',
       goalClearFailedFallback: 'The goal may still be running. Try again now.',
+      goalPauseFailedTitle: 'Could not pause the goal',
+      goalPauseFailedFallback: 'The goal may still be continuing. Try again now.',
+      goalResumeFailedTitle: 'Could not resume the goal',
+      goalResumeFailedFallback: 'The goal is still paused. Try again.',
       appearanceLoadErrorTitle: 'Could not load appearance settings',
       appearanceLoadErrorFallback: 'Appearance settings are temporarily unavailable. Try again later.',
       memoryRefreshErrorTitle: 'Could not refresh local memory status',
@@ -1635,12 +1725,17 @@ const SHELL_COPY_BY_LOCALE = {
         'This task is streaming. Wait for it to finish before changing the permission mode.',
       permissionModeRunning: 'This task is running. Wait for it to finish before changing the permission mode.',
       permissionModeWaiting: 'A tool call is waiting for confirmation. Respond before changing the permission mode.',
-      planModeChanging: 'Plan Mode is changing. Wait for it to finish before continuing.',
-      planModeStreaming: 'This task is streaming. Wait for it to finish before changing Plan Mode.',
-      planModeRunning: 'This task is running. Wait for it to finish before changing Plan Mode.',
-      planModeWaiting: 'A tool call is waiting for confirmation. Respond before changing Plan Mode.',
-      planModeFailedTitle: 'Could not change Plan Mode',
-      planModeFallback: 'Plan Mode could not be changed. Try again later.',
+      modeChangeLoading: 'This session is still loading. Its mode can be changed in a moment.',
+      modeChanging: 'The mode is changing. Wait for it to finish before continuing.',
+      modeChangeStreaming: 'This task is streaming. Wait for it to finish before changing the mode.',
+      modeChangeRunning: 'This task is running. Wait for it to finish before changing the mode.',
+      modeChangeWaiting: 'A tool call is waiting for confirmation. Respond before changing the mode.',
+      goalTurnActive:
+        'A goal takes hold on the next turn. Wait for this one to finish before setting one.',
+      planModeFailedTitle: 'Could not change Plan mode',
+      planModeFallback: 'Plan mode could not be changed. Try again later.',
+      orchestrationModeFailedTitle: 'Could not change the orchestration mode',
+      orchestrationModeFallback: 'The orchestration mode could not be changed. Try again later.',
       planModeExitPendingTitle: 'Abandon the current plan?',
       planModeExitPendingDescription: (title: string) =>
         `“${title}” has not been approved. Leaving Plan Mode will mark it as abandoned while preserving its history.`,
@@ -1648,24 +1743,14 @@ const SHELL_COPY_BY_LOCALE = {
       planModeExitCancel: 'Keep planning',
       planModeExecutionActiveTitle: 'The plan is still running',
       planModeExecutionActiveDescription: 'Interrupt the active execution before entering Plan Mode to revise it.',
-      swarmModeChanging: 'Swarm Mode is changing. Wait for it to finish before continuing.',
-      swarmModeStreaming: 'This task is streaming. Wait for it to finish before changing Swarm Mode.',
-      swarmModeRunning: 'This task is running. Wait for it to finish before changing Swarm Mode.',
-      swarmModeWaiting: 'A tool call is waiting for confirmation. Respond before changing Swarm Mode.',
-      swarmModeFailedTitle: 'Could not change Swarm Mode',
-      swarmModeFallback: 'Swarm Mode could not be changed. Try again later.',
       swarmModeEnabledTitle: 'Swarm Mode is on',
       swarmModeDisabledTitle: 'Swarm Mode is off',
       swarmModeStatusDescription: 'Use /swarm on, /swarm off, or /swarm <task> for one turn.',
-      graphModeChanging: 'Graph Mode is changing. Wait for it to finish before continuing.',
-      graphModeStreaming: 'This task is streaming. Wait for it to finish before changing Graph Mode.',
-      graphModeRunning: 'This task is running. Wait for it to finish before changing Graph Mode.',
-      graphModeWaiting: 'A tool call is waiting for confirmation. Respond before changing Graph Mode.',
-      graphModeFailedTitle: 'Could not change Graph Mode',
-      graphModeFallback: 'Graph Mode could not be changed. Try again later.',
       graphModeEnabledTitle: 'Graph Mode is on',
       graphModeDisabledTitle: 'Graph Mode is off',
       graphModeStatusDescription: 'Use /graph on, /graph off, or /graph <task> for one turn.',
+      graphHistoryTitle: 'Graph history',
+      graphHistoryDescription: 'Use the run menu in the Agent Graph panel to inspect history.',
       resizeWorkbar: 'Resize task workbar',
     },
   },

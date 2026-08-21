@@ -49,7 +49,7 @@ type RetirementStores = Pick<
   | 'listPendingSessionRetirementCleanupIds'
   | 'completeSessionRetirementCleanup'
   | 'removeSessionsVersioned'
-  | 'setSessionsLifecycleVersioned'
+  | 'setSessionsArchivedVersioned'
 >;
 
 type RetirementRoot = Pick<RootTurnCoordinator, 'readRootState'>;
@@ -115,6 +115,11 @@ interface StableFamily {
   readonly admission: SessionAdmissionLease;
 }
 
+interface StableRemovalPlan {
+  readonly remove: StableFamily;
+  readonly archive: StableFamily;
+}
+
 interface RetirementHandles {
   readonly goal: HostGoalSessionRetirement;
   readonly scheduledTasks: HostScheduledTaskSessionRetirement;
@@ -125,6 +130,18 @@ class RetryFamilyResolution extends Error {
 
   constructor(readonly sessionIds: readonly string[]) {
     super('Session revision family changed before retirement admission');
+  }
+}
+
+class RetryRemovalPlanResolution extends Error {
+  readonly name = 'RetryRemovalPlanResolution';
+
+  constructor(
+    readonly removeSessionIds: readonly string[],
+    readonly archiveSessionIds: readonly string[],
+    readonly archiveGuardSessionIds: readonly string[],
+  ) {
+    super('Session removal plan changed before retirement admission');
   }
 }
 
@@ -191,6 +208,7 @@ export class HostSessionRetirementCoordinator {
 
   async recover(): Promise<void> {
     await this.#stores.reconcileOrphanedAgentGraphRetirements();
+    await this.#reconcileOrphanedSubagentArchives();
     this.#scheduleCleanup(await this.#stores.listPendingSessionRetirementCleanupIds());
   }
 
@@ -206,12 +224,7 @@ export class HostSessionRetirementCoordinator {
       return await this.#withStableFamily(input.sessionId, async (family) => {
         const target = requireFamilyRecord(family, input.sessionId);
         const archived = input.state === 'archived';
-        if (
-          [...family.records.values()].every(
-            ({ header }) =>
-              header.isArchived === archived && (header.status === 'archived') === archived,
-          )
-        ) {
+        if ([...family.records.values()].every(({ header }) => header.isArchived === archived)) {
           return lifecycleSuccess(
             projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
           );
@@ -220,7 +233,7 @@ export class HostSessionRetirementCoordinator {
         if (!archived) {
           let committed = false;
           try {
-            await this.#stores.setSessionsLifecycleVersioned(versionedFamily(family), 'active');
+            await this.#stores.setSessionsArchivedVersioned(versionedFamily(family), false);
             committed = true;
             this.#goals.unarchiveSessions(family.sessionIds);
             await this.#refreshFamily(family);
@@ -240,10 +253,7 @@ export class HostSessionRetirementCoordinator {
           await this.#finalizeWorkspacePatches(family.sessionIds);
           await this.#disposeBackends(family.sessionIds);
           const committable = await this.#refreshFamilyRecords(family);
-          await this.#stores.setSessionsLifecycleVersioned(
-            versionedFamily(committable),
-            'archived',
-          );
+          await this.#stores.setSessionsArchivedVersioned(versionedFamily(committable), true);
           committed = true;
           handles.goal.commit();
           handles.scheduledTasks.commit();
@@ -286,8 +296,8 @@ export class HostSessionRetirementCoordinator {
     if (probe.kind === 'absent') return removeFailure('not_found', 'Session does not exist');
 
     try {
-      return await this.#withStableFamily(input.sessionId, async (family) => {
-        const target = requireFamilyRecord(family, input.sessionId);
+      return await this.#withStableRemovalPlan(input.sessionId, async (plan) => {
+        const target = requireFamilyRecord(plan.remove, input.sessionId);
         if (target.revision !== input.expectedRevision) {
           return removeOutcome({
             kind: 'revision_conflict',
@@ -296,36 +306,100 @@ export class HostSessionRetirementCoordinator {
           });
         }
 
-        let handles: RetirementHandles | undefined;
+        let removeHandles: RetirementHandles | undefined;
+        let archiveHandles: RetirementHandles | undefined;
         let committed = false;
         try {
-          handles = await this.#prepareRetirement(family, 'remove');
-          await this.#finalizeWorkspacePatches(family.sessionIds);
-          await this.#disposeBackends(family.sessionIds);
-          const committable = await this.#refreshFamilyRecords(family);
+          removeHandles = await this.#prepareRetirement(plan.remove, 'remove');
+          if (plan.archive.sessionIds.length > 0) {
+            archiveHandles = await this.#prepareRetirement(plan.archive, 'archive');
+          }
+          const allSessionIds = [...plan.remove.sessionIds, ...plan.archive.sessionIds];
+          await this.#finalizeWorkspacePatches(allSessionIds);
+          await this.#disposeBackends(allSessionIds);
+          const committableRemove = await this.#refreshFamilyRecords(plan.remove);
+          const committableArchive = await this.#refreshFamilyRecords(plan.archive);
           const removedSessionIds = await this.#stores.removeSessionsVersioned(
-            versionedFamily(committable),
+            versionedFamily(committableRemove),
+            versionedFamily(committableArchive),
           );
           committed = true;
-          handles.goal.commit();
-          handles.scheduledTasks.commit();
-          await this.#graphWake.retireSessions(family.sessionIds);
-          this.#rememberRetiredWorktrees(committable, removedSessionIds);
+          removeHandles.goal.commit();
+          removeHandles.scheduledTasks.commit();
+          archiveHandles?.goal.commit();
+          archiveHandles?.scheduledTasks.commit();
+          await this.#graphWake.retireSessions(allSessionIds);
+          this.#rememberRetiredWorktrees(committableRemove, removedSessionIds);
           this.#scheduleCleanup(removedSessionIds);
-          this.#capabilities.retireSessions(family.sessionIds);
-          this.#messages.retireSessions(family.sessionIds);
-          await this.#continuity.retireSessions(family.sessionIds, family.admission);
+          this.#capabilities.retireSessions(allSessionIds);
+          this.#messages.retireSessions(allSessionIds);
+          await this.#continuity.retireSessions(plan.remove.sessionIds, plan.remove.admission);
+          await this.#refreshFamily(plan.archive);
           return removeSuccess(input.sessionId);
         } catch (error) {
           if (committed) return this.#uncertainRemove();
-          handles?.goal.rollback();
-          handles?.scheduledTasks.rollback();
+          archiveHandles?.goal.rollback();
+          archiveHandles?.scheduledTasks.rollback();
+          removeHandles?.goal.rollback();
+          removeHandles?.scheduledTasks.rollback();
           throw error;
         }
       });
     } catch (error) {
       return this.#removeFailure(error, input);
     }
+  }
+
+  async #withStableRemovalPlan<T>(
+    sessionId: string,
+    operation: (plan: StableRemovalPlan) => Promise<T>,
+  ): Promise<T> {
+    let planIds = await this.#readRemovalPlanSessionIds(sessionId);
+    for (let attempt = 0; attempt < FAMILY_STABILIZATION_ATTEMPTS; attempt += 1) {
+      const allSessionIds = [
+        ...planIds.removeSessionIds,
+        ...planIds.archiveSessionIds,
+        ...planIds.archiveGuardSessionIds,
+      ].sort();
+      try {
+        return await this.#memoryExtractionLane.runMany(allSessionIds, () =>
+          this.#admission.runMany(allSessionIds, async (admission) => {
+            const stableIds = await this.#readRemovalPlanSessionIds(sessionId);
+            if (
+              !sameIds(planIds.removeSessionIds, stableIds.removeSessionIds) ||
+              !sameIds(planIds.archiveSessionIds, stableIds.archiveSessionIds) ||
+              !sameIds(planIds.archiveGuardSessionIds, stableIds.archiveGuardSessionIds)
+            ) {
+              throw new RetryRemovalPlanResolution(
+                stableIds.removeSessionIds,
+                stableIds.archiveSessionIds,
+                stableIds.archiveGuardSessionIds,
+              );
+            }
+            const snapshots = await Promise.all(
+              allSessionIds.map((id) => this.#stores.readHeaderRecordSnapshot(id)),
+            );
+            const records = new Map(
+              allSessionIds.map((id, index) => [id, snapshots[index]!] as const),
+            );
+            return operation({
+              remove: stableFamily(planIds.removeSessionIds, records, admission),
+              archive: stableFamily(planIds.archiveSessionIds, records, admission),
+            });
+          }),
+        );
+      } catch (error) {
+        if (!(error instanceof RetryRemovalPlanResolution)) throw error;
+        planIds = {
+          removeSessionIds: [...error.removeSessionIds],
+          archiveSessionIds: [...error.archiveSessionIds],
+          archiveGuardSessionIds: [...error.archiveGuardSessionIds],
+        };
+      }
+    }
+    throw new SessionMetadataConflictError(
+      'Session removal plan kept changing during retirement admission',
+    );
   }
 
   async #withStableFamily<T>(
@@ -399,35 +473,119 @@ export class HostSessionRetirementCoordinator {
     return [...new Set(members)].sort();
   }
 
+  async #readRemovalPlanSessionIds(sessionId: string): Promise<{
+    removeSessionIds: readonly string[];
+    archiveSessionIds: readonly string[];
+    archiveGuardSessionIds: readonly string[];
+  }> {
+    const removeSessionIds = await this.#readFamilySessionIds(sessionId);
+    const removeIds = new Set(removeSessionIds);
+    const headers = await this.#stores.listHeaders();
+    const ordinaryParentIds = new Set(
+      headers
+        .filter((header) => removeIds.has(header.id) && !header.subagentParent?.graph)
+        .map((header) => header.id),
+    );
+    const childFamilyIds = new Set(
+      headers
+        .filter(
+          (header) =>
+            header.conversationCopy?.state !== 'preparing' &&
+            header.subagentParent !== undefined &&
+            header.subagentParent.graph === undefined &&
+            ordinaryParentIds.has(header.subagentParent.parentSessionId),
+        )
+        .map(sessionRevisionFamilyId),
+    );
+    const childSessionHeaders = headers.filter(
+      (header) =>
+        header.conversationCopy?.state !== 'preparing' &&
+        !removeIds.has(header.id) &&
+        childFamilyIds.has(sessionRevisionFamilyId(header)),
+    );
+    const archiveSessionIds = childSessionHeaders
+      .filter((header) => !header.isArchived)
+      .map((header) => header.id);
+    const archiveGuardSessionIds = childSessionHeaders
+      .filter((header) => header.isArchived)
+      .map((header) => header.id);
+    return {
+      removeSessionIds: [...removeIds].sort(),
+      archiveSessionIds: [...new Set(archiveSessionIds)].sort(),
+      archiveGuardSessionIds: [...new Set(archiveGuardSessionIds)].sort(),
+    };
+  }
+
+  async #reconcileOrphanedSubagentArchives(): Promise<void> {
+    const headers = await this.#stores.listHeaders();
+    const liveSessionIds = new Set(headers.map((header) => header.id));
+    const orphanFamilyIds = new Set(
+      headers
+        .filter(
+          (header) =>
+            !header.isArchived &&
+            header.subagentParent !== undefined &&
+            header.subagentParent.graph === undefined &&
+            !liveSessionIds.has(header.subagentParent.parentSessionId),
+        )
+        .map(sessionRevisionFamilyId),
+    );
+    const orphanSessionIds = headers
+      .filter(
+        (header) =>
+          header.conversationCopy?.state !== 'preparing' &&
+          orphanFamilyIds.has(sessionRevisionFamilyId(header)),
+      )
+      .map((header) => header.id)
+      .sort();
+    if (orphanSessionIds.length === 0) return;
+    const records = await Promise.all(
+      orphanSessionIds.map((sessionId) => this.#stores.readHeaderRecordSnapshot(sessionId)),
+    );
+    await this.#stores.setSessionsArchivedVersioned(
+      records.map((record) => ({
+        sessionId: record.header.id,
+        expectedVersion: record.revision,
+      })),
+      true,
+    );
+  }
+
   async #prepareRetirement(
     family: StableFamily,
     kind: 'archive' | 'remove',
   ): Promise<RetirementHandles> {
     for (const sessionId of family.sessionIds) {
       if (this.#root.readRootState(sessionId).kind !== 'idle') {
-        throw new SessionRetirementBusyError('Session has an active or reserved root Turn');
+        throw new SessionRetirementBusyError(
+          `Session ${sessionId} has an active or reserved root Turn`,
+        );
       }
       if (this.#messages.hasLiveSessionState(sessionId)) {
-        throw new SessionRetirementBusyError('Session has queued or in-flight Messages');
+        throw new SessionRetirementBusyError(
+          `Session ${sessionId} has queued or in-flight Messages`,
+        );
       }
       if (await this.#interactions.hasPendingSession(sessionId)) {
-        throw new SessionRetirementBusyError('Session has a pending Interaction');
+        throw new SessionRetirementBusyError(`Session ${sessionId} has a pending Interaction`);
       }
       if (this.#goals.hasLiveGoal(sessionId)) {
-        throw new SessionRetirementBusyError('Session has a live Goal');
+        throw new SessionRetirementBusyError(`Session ${sessionId} has a live Goal`);
       }
       if (await this.#resources.hasLiveSessionResources(sessionId)) {
-        throw new SessionRetirementBusyError('Session has a live Runtime Resource');
+        throw new SessionRetirementBusyError(`Session ${sessionId} has a live Runtime Resource`);
       }
       if (this.#sessionEffects.hasLiveSessionState(sessionId)) {
-        throw new SessionRetirementBusyError('Session has a live derived effect');
+        throw new SessionRetirementBusyError(`Session ${sessionId} has a live derived effect`);
       }
       const header = requireFamilyRecord(family, sessionId).header;
       if (!header.subagentParent && (await this.#graph.hasLiveSessionState(sessionId))) {
-        throw new SessionRetirementBusyError('Session has a live Agent Graph');
+        throw new SessionRetirementBusyError(`Session ${sessionId} has a live Agent Graph`);
       }
       if (!header.subagentParent && this.#graphWake.hasLiveSessionState(sessionId)) {
-        throw new SessionRetirementBusyError('Session has an active Agent Graph supervisor wake');
+        throw new SessionRetirementBusyError(
+          `Session ${sessionId} has an active Agent Graph supervisor wake`,
+        );
       }
     }
 
@@ -615,6 +773,18 @@ function requireFamilyRecord(family: StableFamily, sessionId: string): SessionHe
   const record = family.records.get(sessionId);
   if (!record) throw new SessionMetadataConflictError('Session left its revision family');
   return record;
+}
+
+function stableFamily(
+  sessionIds: readonly string[],
+  records: ReadonlyMap<string, SessionHeaderSnapshot>,
+  admission: SessionAdmissionLease,
+): StableFamily {
+  return {
+    sessionIds,
+    records: new Map(sessionIds.map((sessionId) => [sessionId, records.get(sessionId)!] as const)),
+    admission,
+  };
 }
 
 function versionedFamily(family: StableFamily) {

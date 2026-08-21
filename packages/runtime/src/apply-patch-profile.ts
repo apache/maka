@@ -1,15 +1,11 @@
 import type { ApplyPatchProtocol } from '@maka/core/llm-connections';
-import { deepSeekModelSupportsResponses } from '@maka/core/model-metadata';
-import { z } from 'zod';
-import { parseCodexV4aPatch, serializeCodexV4aOperation } from './codex-v4a-patch.js';
+import { parseCodexV4aPatch } from './codex-v4a-patch.js';
 import type { ApplyPatchOperation } from './filesystem-executor.js';
 import type { ModelRuntimeWire } from './model-runtime.js';
 import { openAiModelSupportsApplyPatch } from './openai-apply-patch.js';
 import type { MakaTool } from './tool-runtime.js';
 
-export type ApplyPatchProfile =
-  | { readonly kind: 'openai-structured' }
-  | { readonly kind: 'codex-v4a-freeform' };
+export type ApplyPatchProfile = { readonly kind: 'openai-structured' };
 
 export interface ApplyPatchProfileRuntime {
   readonly wire: ModelRuntimeWire;
@@ -26,9 +22,6 @@ export function resolveApplyPatchProfile(
   if (runtime.applyPatchProtocol === 'openai-structured' && openAiModelSupportsApplyPatch(id)) {
     return { kind: 'openai-structured' };
   }
-  if (runtime.applyPatchProtocol === 'codex-v4a-freeform' && deepSeekModelSupportsResponses(id)) {
-    return { kind: 'codex-v4a-freeform' };
-  }
   return null;
 }
 
@@ -41,44 +34,19 @@ export function routeApplyPatchTools(
   if (!applyPatchTool) return [...tools];
   if (!profile) return tools.filter((tool) => tool !== applyPatchTool);
 
-  return tools
-    .filter((tool) => tool.name !== 'Write' && tool.name !== 'Edit')
-    .map((tool) => {
-      if (tool !== applyPatchTool || profile.kind !== 'codex-v4a-freeform') return tool;
-      return {
-        ...tool,
-        parameters: z.string(),
-        providerTool: { kind: 'openai-custom-apply-patch' as const },
-        toModelOutput: ({ output }) => ({
-          type: 'text' as const,
-          value: freeformApplyPatchResultText(output),
-        }),
-      };
-    });
+  return tools.filter((tool) => tool.name !== 'Write' && tool.name !== 'Edit');
 }
 
-export function freeformApplyPatchResultText(output: unknown): string {
-  if (typeof output === 'string') return output;
-  if (output && typeof output === 'object') {
-    const record = output as { output?: unknown; error?: unknown };
-    if (typeof record.output === 'string') return record.output;
-    if (typeof record.error === 'string') return record.error;
-  }
-  return 'ApplyPatch completed.';
-}
-
-/** Convert historical calls when a session switches between the two patch contracts. */
+/** Convert historical freeform calls for a structured target, or reject an undeclared target. */
 export function normalizeApplyPatchReplayInput(
   profile: ApplyPatchProfile | null,
   toolCallId: string,
   input: unknown,
 ): unknown | null {
-  if (!profile) return input;
-  if (profile.kind === 'codex-v4a-freeform') {
-    if (typeof input === 'string') return input;
-    const operation = structuredApplyPatchOperation(input);
-    return operation ? serializeCodexV4aOperation(operation) : null;
-  }
+  // A missing profile means the target request does not advertise ApplyPatch.
+  // Returning the historical input would serialize a call to an undeclared
+  // tool; route it through the durable-fact downgrade instead.
+  if (!profile) return null;
   if (typeof input !== 'string') return input;
   try {
     const operations = parseCodexV4aPatch(input);
@@ -94,12 +62,17 @@ export function applyPatchReplayFactText(
   output: unknown,
   isError: boolean,
 ): string | null {
-  if (typeof input !== 'string') return null;
   let operations: ApplyPatchOperation[];
-  try {
-    operations = parseCodexV4aPatch(input);
-  } catch {
-    return null;
+  if (typeof input === 'string') {
+    try {
+      operations = parseCodexV4aPatch(input);
+    } catch {
+      return null;
+    }
+  } else {
+    const operation = structuredApplyPatchOperation(input);
+    if (!operation) return null;
+    operations = [operation];
   }
   const recorded = recordedAppliedOperations(output);
   const applied = recorded ?? (isError ? [] : operations.map(operationFact));

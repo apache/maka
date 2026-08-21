@@ -4,6 +4,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   DesktopNewTaskCatalog,
   DesktopNewTaskHost,
+  DesktopRuntimeHostRef,
 } from '../preload/bridge-contract.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
@@ -32,6 +33,7 @@ export function useNewTaskTarget(options: {
   const [pending, setPending] = useState(false);
   const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState<string>();
+  const [directoryHost, setDirectoryHost] = useState<ReadyHost>();
   const refreshSequence = useRef(0);
 
   async function refresh(): Promise<DesktopNewTaskCatalog> {
@@ -113,7 +115,12 @@ export function useNewTaskTarget(options: {
   };
 
   async function addProject(host: ReadyHost): Promise<void> {
-    if (!host.capabilities.chooseClientDirectory || pending) return;
+    if (pending) return;
+    if (host.capabilities.chooseHostDirectory) {
+      setDirectoryHost(host);
+      return;
+    }
+    if (!host.capabilities.chooseClientDirectory) return;
     setPending(true);
     try {
       const result = await window.maka.newTasks.addProject({
@@ -134,6 +141,38 @@ export function useNewTaskTarget(options: {
     } finally {
       setPending(false);
     }
+  }
+
+  async function chooseProjectForProfile(profileId: string): Promise<void> {
+    const next = await refresh();
+    const host = next.hosts.find(
+      (candidate): candidate is ReadyHost =>
+        candidate.profile.id === profileId &&
+        candidate.readiness === 'ready' &&
+        candidate.state === 'available',
+    );
+    if (!host) {
+      options.toastApi.error(copy.catalogUnavailable);
+      return;
+    }
+    setSelectedProfileId(profileId);
+    if (host.capabilities.chooseHostDirectory) setDirectoryHost(host);
+  }
+
+  async function acceptRegisteredProject(
+    project: ProjectRecord,
+    registeredHost: DesktopRuntimeHostRef,
+  ): Promise<void> {
+    const host = directoryHost;
+    if (
+      !host ||
+      host.profile.id !== registeredHost.profileId ||
+      host.hostId !== registeredHost.hostId
+    ) return;
+    setDirectoryHost(undefined);
+    setSelectedProfileId(host.profile.id);
+    setProjectSelections((current) => new Map(current).set(host.profile.id, project.id));
+    await refresh();
   }
 
   async function relinkProject(host: ReadyHost, projectId: string): Promise<void> {
@@ -172,10 +211,14 @@ export function useNewTaskTarget(options: {
     pending,
     refreshing,
     error,
+    directoryHost,
     refresh,
     selectProject,
     selectNoProject,
     addProject,
+    chooseProjectForProfile,
+    closeDirectoryPicker: () => setDirectoryHost(undefined),
+    acceptRegisteredProject,
     relinkProject,
   };
 }

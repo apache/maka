@@ -5,23 +5,14 @@ import {
 } from '@maka/core/llm-connections';
 import {
   type ConfigBundle,
-  type ConfigCategory,
-  type ConfigData,
   type ConnectionConflictStrategy,
   type CredentialKind,
-  buildConfigBundle,
   planConnectionMerge,
 } from '@maka/storage';
-import { stripSettingsSecretsForExport } from './settings-ipc-helpers.js';
 
 /**
- * Desktop-side orchestration for config import/export. Kept store-injected and
- * Electron-free so it is unit-testable; the IPC handlers in main.ts are thin
- * wrappers that supply the real stores + file dialogs.
- *
- * The credential category (opt-in, plaintext) is gathered by walking the
- * connection list and reading each slug's connection credentials — the
- * credential store exposes no bulk-list, so enumeration is the only path.
+ * Electron-free config import orchestration. Runtime Host owns export because
+ * it is the authority for connection, credential, and memory state.
  */
 
 export interface ExportedCredential {
@@ -30,11 +21,6 @@ export interface ExportedCredential {
   value: string;
 }
 
-const CONNECTION_CREDENTIAL_KINDS: readonly CredentialKind[] = [
-  'api_key',
-  'oauth_token',
-  'request_headers',
-];
 const VALID_CREDENTIAL_KINDS: ReadonlySet<string> = new Set<CredentialKind>([
   'api_key',
   'oauth_token',
@@ -47,55 +33,11 @@ const VALID_CREDENTIAL_KINDS: ReadonlySet<string> = new Set<CredentialKind>([
 
 export interface ConfigTransferDeps {
   connectionStore: { list(): Promise<LlmConnection[]>; save(c: LlmConnection): Promise<LlmConnection> };
-  settingsStore: { get(): Promise<AppSettings>; update(patch: UpdateAppSettingsInput): Promise<AppSettings> };
+  settingsStore: { update(patch: UpdateAppSettingsInput): Promise<AppSettings> };
   credentialStore: {
-    getSecret(slug: string, kind: CredentialKind): Promise<string | null>;
     setSecret(slug: string, kind: CredentialKind, value: string): Promise<void>;
   };
-  readMemory(): Promise<string | null>;
   writeMemory(content: string): Promise<void>;
-  appVersion: string;
-}
-
-export async function gatherConfigExport(
-  categories: readonly ConfigCategory[],
-  deps: ConfigTransferDeps,
-): Promise<ConfigBundle> {
-  const selected = new Set(categories);
-  const data: ConfigData = {};
-
-  const connections = selected.has('connections') || selected.has('credentials')
-    ? await deps.connectionStore.list()
-    : [];
-
-  if (selected.has('connections')) {
-    data.connections = connections;
-  }
-
-  if (selected.has('settings')) {
-    const settings = await deps.settingsStore.get();
-    // When credentials are included, settings keeps its embedded secrets
-    // (proxy password, bot tokens, Tavily key); otherwise strip.
-    data.settings = selected.has('credentials') ? settings : stripSettingsSecretsForExport(settings);
-  }
-
-  if (selected.has('credentials')) {
-    const creds: ExportedCredential[] = [];
-    for (const connection of connections) {
-      for (const kind of CONNECTION_CREDENTIAL_KINDS) {
-        const value = await deps.credentialStore.getSecret(connection.slug, kind);
-        if (value) creds.push({ slug: connection.slug, kind, value });
-      }
-    }
-    data.credentials = creds;
-  }
-
-  if (selected.has('memory')) {
-    const memory = await deps.readMemory();
-    if (memory !== null) data.memory = memory;
-  }
-
-  return buildConfigBundle({ appVersion: deps.appVersion, data });
 }
 
 export interface ConfigImportResult {

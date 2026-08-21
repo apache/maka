@@ -6,6 +6,8 @@ import {
   AGENT_GRAPH_OPERATION_SPECS,
   AGENT_GRAPH_RESULT_MAX_BYTES,
   decodeAgentGraphClientSnapshot,
+  decodeAgentGraphEpochListInput,
+  decodeAgentGraphEpochListResult,
   decodeAgentGraphOperatorInspection,
   decodeAgentGraphOperatorQueryInput,
   decodeAgentGraphQueryInput,
@@ -20,20 +22,50 @@ const fingerprint = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Agent Graph Client protocol', () => {
   test('round-trips canonical inputs and bounded projections', () => {
+    assert.deepEqual(decodeAgentGraphEpochListInput({ rootSessionId: 'root-1', beforeEpoch: 2 }), {
+      rootSessionId: 'root-1',
+      beforeEpoch: 2,
+    });
+    assert.deepEqual(
+      decodeAgentGraphEpochListResult({
+        rootSessionId: 'root-1',
+        epochs: [
+          { epoch: 2, graphId: 'agent_graph_2', createdAt: 10, current: true },
+          { epoch: 1, graphId: 'agent_graph_1', createdAt: 0, current: false },
+        ],
+        nextBeforeEpoch: null,
+      }).epochs.map(({ epoch, graphId, current }) => ({ epoch, graphId, current })),
+      [
+        { epoch: 2, graphId: 'agent_graph_2', current: true },
+        { epoch: 1, graphId: 'agent_graph_1', current: false },
+      ],
+    );
     assert.deepEqual(decodeAgentGraphQueryInput({ rootSessionId: 'root-1' }), {
       rootSessionId: 'root-1',
     });
     assert.deepEqual(
-      decodeAgentGraphQueryInput({ rootSessionId: 'root-1', terminalCursor: 'Y3Vyc29y' }),
-      { rootSessionId: 'root-1', terminalCursor: 'Y3Vyc29y' },
+      decodeAgentGraphQueryInput({
+        rootSessionId: 'root-1',
+        graphId: 'agent_graph_1',
+        terminalCursor: 'Y3Vyc29y',
+      }),
+      { rootSessionId: 'root-1', graphId: 'agent_graph_1', terminalCursor: 'Y3Vyc29y' },
     );
     assert.deepEqual(
-      decodeAgentGraphOperatorQueryInput({ rootSessionId: 'root-1', operatorId: 'operator:1' }),
-      { rootSessionId: 'root-1', operatorId: 'operator:1' },
+      decodeAgentGraphOperatorQueryInput({
+        rootSessionId: 'root-1',
+        graphId: 'agent_graph_1',
+        operatorId: 'operator:1',
+      }),
+      { rootSessionId: 'root-1', graphId: 'agent_graph_1', operatorId: 'operator:1' },
     );
-    assert.deepEqual(decodeAgentGraphStopInput({ rootSessionId: 'root-1' }), {
-      rootSessionId: 'root-1',
-    });
+    assert.deepEqual(
+      decodeAgentGraphStopInput({
+        rootSessionId: 'root-1',
+        expectedGraphId: 'agent_graph_1',
+      }),
+      { rootSessionId: 'root-1', expectedGraphId: 'agent_graph_1' },
+    );
     assert.deepEqual(
       decodeAgentGraphStopResult({ rootSessionId: 'root-1', graphId: 'agent_graph_1' }),
       { rootSessionId: 'root-1', graphId: 'agent_graph_1' },
@@ -55,6 +87,26 @@ describe('Agent Graph Client protocol', () => {
 
   test('rejects unknown nested fields, invalid correlation, and unbounded pages', () => {
     const snapshot = graphSnapshot();
+    assertInvalid(() =>
+      decodeAgentGraphEpochListResult({
+        rootSessionId: 'root-1',
+        epochs: [{ epoch: 2, graphId: 'agent_graph_2', createdAt: 10, current: true }],
+        nextBeforeEpoch: 1,
+      }),
+    );
+    assertInvalid(() =>
+      decodeAgentGraphEpochListInput({ rootSessionId: 'root-1', beforeEpoch: 0 }),
+    );
+    assertInvalid(() =>
+      AGENT_GRAPH_OPERATION_SPECS['agent.graph.epochs.query'].assertOutputForInput?.(
+        { rootSessionId: 'root-1', beforeEpoch: 2 },
+        {
+          rootSessionId: 'root-1',
+          epochs: [{ epoch: 2, graphId: 'agent_graph_2', createdAt: 10, current: true }],
+          nextBeforeEpoch: null,
+        },
+      ),
+    );
     assertInvalid(() =>
       decodeAgentGraphClientSnapshot({
         ...snapshot,
@@ -87,6 +139,12 @@ describe('Agent Graph Client protocol', () => {
     assertInvalid(() =>
       AGENT_GRAPH_OPERATION_SPECS['agent.graph.query'].assertOutputForInput?.(
         { rootSessionId: 'another-root' },
+        snapshot,
+      ),
+    );
+    assertInvalid(() =>
+      AGENT_GRAPH_OPERATION_SPECS['agent.graph.query'].assertOutputForInput?.(
+        { rootSessionId: 'root-1', graphId: 'another-graph' },
         snapshot,
       ),
     );

@@ -4,6 +4,7 @@ import {
   candidateStartupFailureExitCode,
   candidateStartupFailureForExitCode,
   classifyCandidateStartupFailure,
+  isPermanentCandidateStartupFailure,
 } from '../candidate-startup-failure.js';
 
 test('preserves the primary startup classification through cleanup aggregation', () => {
@@ -61,6 +62,25 @@ test('does not infer workspace ownership from a generic filesystem error', () =>
   assert.deepEqual(classifyCandidateStartupFailure(resourceError), {
     reason: 'internal_startup_failure',
   });
+});
+
+test('preserves a retryable Local IPC security failure across the Candidate boundary', () => {
+  const endpointError = Object.assign(new Error('private Windows ACL detail'), {
+    code: 'insecure_endpoint_directory',
+  });
+  const failure = classifyCandidateStartupFailure(
+    new AggregateError([endpointError, new Error('cleanup failed')], 'startup failed', {
+      cause: endpointError,
+    }),
+  );
+
+  assert.deepEqual(failure, { reason: 'local_ipc_security_failed' });
+  assert.deepEqual(
+    candidateStartupFailureForExitCode(candidateStartupFailureExitCode(failure)),
+    failure,
+  );
+  assert.equal(isPermanentCandidateStartupFailure(failure), false);
+  assert.equal(JSON.stringify(failure).includes('private'), false);
 });
 
 test('classifies unknown startup failures without serializing their message', () => {

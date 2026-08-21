@@ -142,7 +142,6 @@ export class HostDailyReviewCoordinator {
     this.#closeTask ??= (async () => {
       this.beginDrain();
       await Promise.allSettled([...this.#inFlight.values()].map((entry) => entry.promise));
-      this.#store.close();
     })();
     return this.#closeTask;
   }

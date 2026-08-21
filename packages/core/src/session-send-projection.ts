@@ -1,24 +1,22 @@
 /**
- * Session send projection — pure, sync answer to "will the next send on
- * this session succeed, silently rebind, or fail?". #1038.
+ * Session send projection — pure, sync compatibility answer for an existing
+ * session's stored model target. #1038.
  *
- * This is the single decision source shared by:
- *   - the main-process send gate (`ensureSessionCanSendOrRebind` in
- *     apps/desktop/src/main/chat-readiness.ts), which resolves the async
- *     facts (connections, secrets), calls this projection, then performs
- *     the actual rebind mutation / throws the canonical error copy;
- *   - the renderer session health notice above the composer, which maps
- *     a `blocked` outcome to actionable copy.
+ * This is the shared compatibility projection used by Desktop onboarding and
+ * the renderer session-health notice above the composer. Runtime Host owns the
+ * authoritative submission and execution path; this projection only explains
+ * whether that target looks usable or whether an empty legacy session has a
+ * compatible fallback for presentation and readiness checks.
  *
- * The logic mirrors the send path exactly:
+ * The compatibility rules are:
  *   1. The session's own connection must pass `isConnectionReady` with
  *      the sticky session model.
- *   2. A locked session (has user messages) can never rebind — any
- *      failure of its own connection blocks the send.
- *   3. An unlocked session may silently rebind only for reasons in
+ *   2. A locked session (has user messages) can never select a fallback — any
+ *      failure of its own connection projects as blocked.
+ *   3. An unlocked session may select a fallback only for reasons in
  *      `shouldRebindSessionToDefault`; the walk tries the default
  *      connection first, then every other persisted connection.
- *   4. Otherwise the send is blocked.
+ *   4. Otherwise the compatibility projection is blocked.
  *
  * `lastTestStatus` deliberately plays no part here (E4): telemetry about
  * a past credential test must not gate send, so it must not gate the
@@ -34,9 +32,9 @@ import type { LlmConnection } from './llm-connections.js';
 
 export interface SessionSendProjectionSession {
   /**
-   * Session backend kind. `string` (not `BackendKind`) so legacy on-disk
-   * values like `'claude'` are surfaced exactly as the JSONL stored them;
-   * only `'fake'` is special-cased, everything else goes through the
+   * Session backend kind. `string` (not `PersistedBackendKind`) so legacy
+   * on-disk values like `'claude'` are surfaced exactly as the JSONL stored
+   * them; only `'fake'` is special-cased, everything else goes through the
    * normal connection readiness gate.
    */
   backend: string;
@@ -53,9 +51,8 @@ export interface SessionSendProjectionInput {
   connections: readonly LlmConnection[];
   defaultSlug: string | null;
   /**
-   * Secret presence per connection slug, resolved by the caller
-   * (credential store in main, `connections:hasSecret` IPC probe in the
-   * renderer). Only consulted for connections that exist.
+   * Secret presence per connection slug, resolved by the caller. Only
+   * consulted for connections that exist.
    */
   hasSecret(slug: string): boolean;
 }
@@ -83,7 +80,7 @@ export function projectSessionSendOutcome(
   }
 
   for (const slug of new Set([defaultSlug, ...connections.map((connection) => connection.slug)])) {
-    if (!slug || slug === 'fake') continue;
+    if (!slug) continue;
     const connection = connections.find((entry) => entry.slug === slug);
     if (!connection) continue;
     const normalized = normalizeOpenAiCodexConnection(connection);
@@ -99,25 +96,22 @@ export function projectSessionSendOutcome(
 }
 
 /**
- * Why the session's own connection cannot send, or `undefined` when it
- * can. Mirrors `assertSessionCanSend` + `requireReadyConnection` in the
- * desktop main process — keep the reason order in sync with the throwing
- * path so both surfaces report identical causes.
- *
- * Exported for the send gate's staged fact resolution (#1038 review):
- * main resolves only the session's OWN connection in phase 1 and calls
- * this directly, so a healthy session never waits on — nor is failed
- * by — unrelated connections. The full projection reuses the same
- * helper, keeping one implementation of the own-connection judgment.
+ * Why the session's own connection cannot satisfy the compatibility
+ * projection, or `undefined` when it can. Kept private so Runtime Host
+ * admission cannot accidentally grow a second dependency on this UI-facing
+ * legacy-session policy.
  */
-export function sessionOwnConnectionBlockReason(
+function sessionOwnConnectionBlockReason(
   session: SessionSendProjectionSession,
   ownConnection: LlmConnection | null,
   hasSecret: (slug: string) => boolean,
 ): ChatConfigurationReason | undefined {
+  // Sessions written by builds that shipped FakeBackend keep `'fake'` on disk
+  // forever (#3211). They are refused here — and at activation — rather than
+  // rewritten, because their `llmConnectionSlug` still points at nothing.
   if (session.backend === 'fake') return 'fake_backend';
   const slug = session.llmConnectionSlug;
-  if (!slug || slug === 'fake') return 'missing_default_connection';
+  if (!slug) return 'missing_default_connection';
   if (!ownConnection) return 'connection_missing';
   const normalized = normalizeOpenAiCodexConnection(ownConnection);
   const verdict = isConnectionReady({
@@ -133,23 +127,28 @@ function ownConnectionBlockReason(
   connections: readonly LlmConnection[],
   hasSecret: (slug: string) => boolean,
 ): ChatConfigurationReason | undefined {
-  const own =
-    session.backend === 'fake'
-      ? null
-      : (connections.find((entry) => entry.slug === session.llmConnectionSlug) ?? null);
+  const own = connections.find((entry) => entry.slug === session.llmConnectionSlug) ?? null;
   return sessionOwnConnectionBlockReason(session, own, hasSecret);
 }
 
 /**
- * Whether an unlocked session whose own connection failed with `reason`
- * may silently rebind to another ready connection on send. Failures not
- * listed here (e.g. `missing_api_key`, `connection_disabled`) block the
- * send even when unlocked — silently moving a session off a connection
- * the user explicitly configured would be surprising.
+ * Whether an unlocked session whose own connection failed with `reason` may
+ * project another ready connection as a compatibility target. Failures not
+ * listed here (e.g. `missing_api_key`, `connection_disabled`) stay blocked
+ * even when unlocked because masking an explicitly configured connection
+ * would make the health/readiness UI misleading.
+ *
+ * `fake_backend` is deliberately absent (#3211). Every reason listed here
+ * names a broken *connection*, which another connection can stand in for. A
+ * retired backend is not: activation dispatches off the session header's own
+ * `backend`, so pointing the session at a healthy connection still leaves
+ * `'fake'` in the header and still gets refused. Claiming a rebind for these
+ * rows made the projection promise a recovery nothing performs — and the
+ * surfaces that must answer "is this task usable?" had to bypass the
+ * projection and read `backend` themselves to work around it.
  */
-export function shouldRebindSessionToDefault(reason: string | undefined): boolean {
+function shouldRebindSessionToDefault(reason: string | undefined): boolean {
   return (
-    reason === 'fake_backend' ||
     reason === 'connection_missing' ||
     reason === 'missing_model' ||
     reason === 'empty_model_list' ||

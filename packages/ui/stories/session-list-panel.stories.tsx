@@ -36,12 +36,11 @@ function makeSession(input: {
   llmConnectionSlug?: string;
 }): SessionSummary {
   const status = input.status ?? 'active';
-  const isArchived = input.isArchived ?? status === 'archived';
   return {
     id: input.id,
     name: input.name,
     isFlagged: input.isFlagged ?? false,
-    isArchived,
+    isArchived: input.isArchived ?? false,
     labels: [],
     hasUnread: input.hasUnread ?? false,
     status,
@@ -184,28 +183,6 @@ const statusSessions = [
     blockedReason: 'auth',
     lastMessageAt: NOW - 20 * 60 * 1000,
   }),
-  // `review` and `done` have no writer in current source, but stored rows can
-  // still carry them (see SESSION_STATUSES) and the rail has to draw them. They
-  // are also the two colours this change decided on purpose — attention and
-  // success — so the story that shows every status has to show them.
-  makeSession({
-    id: 'status-review',
-    name: '待审核的文件 diff',
-    status: 'review',
-    lastMessageAt: NOW - 37 * 60 * 1000,
-  }),
-  makeSession({
-    id: 'status-done',
-    name: '已完成的 smoke run',
-    status: 'done',
-    lastMessageAt: NOW - 2 * 60 * 60 * 1000,
-  }),
-  makeSession({
-    id: 'status-archived',
-    name: '归档的旧实验',
-    status: 'archived',
-    lastMessageAt: NOW - 8 * 24 * 60 * 60 * 1000,
-  }),
   makeSession({
     id: 'status-aborted',
     name: '中止的临时尝试',
@@ -235,6 +212,42 @@ const longTitleSessions = [
   }),
 ];
 
+const liveRunAuthoritySessions: SessionSummary[] = [
+  {
+    ...makeSession({
+      id: 'live-unknown',
+      name: 'Unknown：兼容旧 Host 的 persisted fallback',
+      status: 'running',
+      lastMessageAt: NOW - 4 * 60 * 1000,
+    }),
+  },
+  {
+    ...makeSession({
+      id: 'live-known-empty',
+      name: 'Known empty：忽略崩溃遗留的 running',
+      status: 'running',
+      lastMessageAt: NOW - 3 * 60 * 1000,
+    }),
+    runningTurnIds: [],
+  },
+  {
+    ...makeSession({
+      id: 'live-remote-running',
+      name: 'Remote running：来自机器人或第二窗口',
+      lastMessageAt: NOW - 2 * 60 * 1000,
+    }),
+    runningTurnIds: ['turn-remote'],
+  },
+  {
+    ...makeSession({
+      id: 'live-local-race',
+      name: 'Local streaming：catalog 刷新前仍显示运行',
+      lastMessageAt: NOW - 1 * 60 * 1000,
+    }),
+    runningTurnIds: [],
+  },
+];
+
 // Real path: a fresh workspace with no tasks yet — the rail's list before
 // anything is created.
 export const Empty: Story = {
@@ -255,6 +268,21 @@ export const ConversationStates: Story = {
         activeId: 'status-waiting',
         streamingSessionIds: new Set(['status-running']),
         staleSessionIds: new Set(['status-blocked']),
+      })} />
+    </StoryFrame>
+  ),
+};
+
+// Real path: Runtime Host catalog refreshes distinguish an older Host (unknown),
+// an authoritative empty run set, a run started by another Client, and the
+// renderer-local synchronization window immediately after send.
+export const LiveRunAuthorityStates: Story = {
+  render: () => (
+    <StoryFrame>
+      <SessionListPanel {...panelProps({
+        sessions: liveRunAuthoritySessions,
+        activeId: 'live-remote-running',
+        streamingSessionIds: new Set(['live-local-race']),
       })} />
     </StoryFrame>
   ),
@@ -315,8 +343,8 @@ export const PinnedAndRecentSections: Story = {
   ),
 };
 
-// Real path: group-by-project — collapsible project rows, sessions flush under
-// the project (zero nest padding), worktree mark + count badge.
+// Real path: group-by-project — collapsible project rows, sessions nested 8px
+// under the project so titles share one x, worktree mark + count badge.
 export const ProjectGroups: Story = {
   render: () => {
     const maka = makeProject({

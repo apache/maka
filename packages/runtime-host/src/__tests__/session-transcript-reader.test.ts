@@ -25,7 +25,6 @@ test('keeps durable history separate from the canonical active overlay', async (
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',

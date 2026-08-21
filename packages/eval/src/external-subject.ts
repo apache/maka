@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { meteringCheckpointMacMatches, readBoundedRegularFile } from './metering-checkpoint.js';
 import type { JsonObject } from './experiment.js';
 import type { NormalizedUsage } from './result.js';
 import type { SubjectAdapter } from './runner.js';
@@ -234,8 +234,9 @@ export async function recoverExternalMetering(
   | undefined
 > {
   if (!profile || typeof metadata.trialPath !== 'string') return undefined;
+  if (typeof metadata.meteringSecret !== 'string') return undefined;
   const path = join(metadata.trialPath, 'agent', `${profile}.provider-usage.json`);
-  const bytes = await readFile(path).catch(() => undefined);
+  const bytes = await readBoundedRegularFile(path);
   if (!bytes) return undefined;
   let value: unknown;
   try {
@@ -262,12 +263,14 @@ export async function recoverExternalMetering(
         'removedWebTools',
         'models',
         'toolNames',
+        'mac',
       ],
       'external metering checkpoint',
     );
     if (
       checkpoint.schemaVersion !== 'maka.external_provider_usage.v2' ||
-      checkpoint.profile !== profile
+      checkpoint.profile !== profile ||
+      !meteringCheckpointMacMatches(checkpoint, metadata.meteringSecret)
     ) {
       return undefined;
     }

@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { MCP_CONFIG_VERSION } from '@maka/core/mcp';
 import { writeJson } from './seed-helpers.js';
 
 /**
@@ -13,7 +14,7 @@ import { writeJson } from './seed-helpers.js';
  */
 export async function seedMcpFixture(workspaceRoot: string): Promise<void> {
   const config = {
-    version: 1,
+    version: MCP_CONFIG_VERSION,
     mcpServers: {
       filesystem: {
         enabled: false,

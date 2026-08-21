@@ -64,10 +64,7 @@ import {
   OPENAI_RESPONSES_LANE_HEADER,
   type OpenAiResponsesTransportState,
 } from './openai-responses-websocket.js';
-import {
-  codexV4aApplyPatchProviderTool,
-  openAiApplyPatchProviderTool,
-} from './openai-apply-patch.js';
+import { openAiApplyPatchProviderTool } from './openai-apply-patch.js';
 
 /**
  * Build an ai-sdk LanguageModel from a single input object.
@@ -179,14 +176,24 @@ export class ModelAdapter {
     return {
       toolCalls: true,
       toolResults: true,
+      // Verified against @ai-sdk/open-responses@2.0.28: replay now preserves
+      // item order and IDs, but a provider-executed result embedded in the
+      // assistant message (Maka's provider-tool chronology) is still dropped,
+      // leaving a dangling function_call on the wire. Fail closed until the
+      // upstream extension seam (vercel/ai#18899) can round-trip the pair.
+      providerExecutedTools:
+        this.runtime.reasoningReplay.kind !== 'responses' ||
+        this.runtime.reasoningReplay.contract.adapter !== 'open-responses',
       signedThinking: this.runtime.reasoningReplay.kind === 'anthropic-signed',
       // openai-compatible transports replay stored reasoning unconditionally:
       // DeepSeek-style endpoints 400 tool calls whose history lacks it, and
       // relays that don't need the field ignore it. Reasoning is still
       // recorded to the event log and rendered regardless.
       unsignedThinking: this.runtime.reasoningReplay.kind === 'openai-chat-plaintext',
-      openAiResponsesEncryptedThinking:
-        this.runtime.reasoningReplay.kind === 'openai-responses-encrypted',
+      responsesReasoning:
+        this.runtime.reasoningReplay.kind === 'responses'
+          ? this.runtime.reasoningReplay.contract.reasoningReplay
+          : 'none',
     };
   }
 
@@ -633,9 +640,10 @@ function fixedAnthropicThinkingBudget(
 export interface ModelAdapterRuntimeEventReplaySupport {
   toolCalls: boolean;
   toolResults: boolean;
+  providerExecutedTools: boolean;
   signedThinking: boolean;
   unsignedThinking: boolean;
-  openAiResponsesEncryptedThinking: boolean;
+  responsesReasoning: 'none' | 'encrypted-content' | 'plaintext-content';
 }
 
 /**
@@ -909,8 +917,6 @@ function compileProviderTool(
   switch (tool.kind) {
     case 'openai-apply-patch':
       return openAiApplyPatchProviderTool;
-    case 'openai-custom-apply-patch':
-      return codexV4aApplyPatchProviderTool;
     case 'openai-web-search':
       return openai.tools.webSearch({
         ...(tool.searchContextSize ? { searchContextSize: tool.searchContextSize } : {}),

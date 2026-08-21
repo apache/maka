@@ -15,7 +15,6 @@ import type { HostSessionEffectModel } from '../server/execution-model-authority
 const connectionContext: ConnectionContext = {
   hostEpoch: 'host-epoch-1',
   connectionId: 'connection-1',
-  surface: 'tui',
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
@@ -55,7 +54,7 @@ test('Session recap publishes one protected result and exact retries never repea
       },
       {
         readSessionHeader: async () =>
-          ({ isArchived: true, status: 'archived' }) as unknown as SessionHeader,
+          ({ isArchived: true, status: 'active' }) as unknown as SessionHeader,
       },
     );
     assert.deepEqual(
@@ -122,7 +121,7 @@ test('Session effect leaves Turn admission free and drain aborts accepted recap 
         },
         {
           readSessionHeader: async () =>
-            ({ isArchived: true, status: 'archived' }) as unknown as SessionHeader,
+            ({ isArchived: true, status: 'active' }) as unknown as SessionHeader,
         },
       );
       assert.deepEqual(

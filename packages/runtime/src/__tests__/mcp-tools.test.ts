@@ -9,6 +9,7 @@ import type {
   McpToolDescriptor,
 } from '@maka/core/mcp';
 import { buildMcpTools, mcpProxyToolName, type McpToolProvider } from '../mcp-tools.js';
+import { selectCollaborationTools } from '../plan-mode.js';
 
 test('buildMcpTools projects discovery, abort, and rich model output', async () => {
   const readBinding = binding('internal-read-binding');
@@ -166,6 +167,21 @@ test('MCP annotations cannot lower permissions and model output has aggregate bo
   assert.ok(text.length <= 200_000);
   assert.equal(images.length, 4);
   assert.doesNotMatch(text, /secretBlob/u);
+});
+
+test('MCP tools stay network sends and are excluded from Plan mode', () => {
+  const tools = buildMcpTools(
+    fakeProvider(
+      [boundTool(descriptor('untrusted', 'claims-read-only', true), binding('plan-binding'))],
+      async () => ({ content: [{ type: 'text', text: 'unused' }] }),
+    ),
+  );
+
+  assert.equal(tools[0]?.categoryHint, 'network_send');
+  assert.deepEqual(
+    selectCollaborationTools({ mode: 'plan', tools, hasActiveExecution: false }),
+    [],
+  );
 });
 
 test('a trusted composition can apply the Client Capability permission floor and context', async () => {

@@ -2,7 +2,29 @@
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::windows_launcher::{appcontainer_profile_name, environment_block};
+    use crate::acl_ledger::readiness_mutex_name;
+    use crate::protocol::{LaunchRequest, NetworkMode, RESERVED_READINESS_REQUEST_ID};
+    use crate::windows_launcher::{
+        appcontainer_profile_name, appcontainer_readiness_profile_name, environment_block,
+        readiness_probe_command_line,
+    };
+
+    fn valid_launch_request(request_id: &str) -> LaunchRequest {
+        LaunchRequest {
+            version: 1,
+            request_id: request_id.to_owned(),
+            executable: "C:\\Windows\\System32\\cmd.exe".to_owned(),
+            arguments: Vec::new(),
+            cwd: "C:\\Windows\\System32".to_owned(),
+            read_roots: Vec::new(),
+            write_roots: Vec::new(),
+            exact_read_roots: Vec::new(),
+            exact_write_roots: Vec::new(),
+            network: NetworkMode::Restricted,
+            environment: BTreeMap::new(),
+            timeout_ms: None,
+        }
+    }
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().collect()
@@ -95,5 +117,79 @@ mod tests {
         let rendered = String::from_utf16(&first[..first.len() - 1]).expect("profile name");
         assert!(rendered.starts_with("maka.sandbox."));
         assert_eq!(rendered.len(), "maka.sandbox.".len() + 32);
+    }
+
+    #[test]
+    fn readiness_profile_name_is_fixed_and_self_reconciling() {
+        // The readiness profile uses one stable name so a profile leaked by an
+        // externally-killed probe is reclaimed by the next probe rather than
+        // accumulating under a unique per-invocation name.
+        let first = appcontainer_readiness_profile_name();
+        let second = appcontainer_readiness_profile_name();
+        assert_eq!(first, second);
+        let rendered = String::from_utf16(&first[..first.len() - 1]).expect("readiness name");
+        assert!(rendered.starts_with("maka.readiness."));
+        assert_eq!(rendered.len(), "maka.readiness.".len() + 32);
+    }
+
+    #[test]
+    fn readiness_namespace_is_disjoint_from_production() {
+        // Structural separation, not just a different hash input: the readiness
+        // profile lives under `maka.readiness.` while every production profile
+        // lives under `maka.sandbox.`, so the two lifecycles can never resolve to
+        // the same registration even if `validate` were bypassed. Feeding the
+        // reserved id through the production deriver must still land in the
+        // production namespace, disjoint from the readiness one.
+        let readiness = appcontainer_readiness_profile_name();
+        let production_reserved = appcontainer_profile_name(RESERVED_READINESS_REQUEST_ID);
+        assert_ne!(readiness, production_reserved);
+        let readiness_str = String::from_utf16(&readiness[..readiness.len() - 1]).expect("name");
+        let production_str =
+            String::from_utf16(&production_reserved[..production_reserved.len() - 1])
+                .expect("name");
+        assert!(readiness_str.starts_with("maka.readiness."));
+        assert!(production_str.starts_with("maka.sandbox."));
+    }
+
+    #[test]
+    fn validate_rejects_reserved_readiness_request_id() {
+        // A production launch may never carry the readiness identity: otherwise
+        // it would resolve to a profile the readiness probe deletes and recreates.
+        let reserved = valid_launch_request(RESERVED_READINESS_REQUEST_ID);
+        let error = reserved
+            .validate()
+            .expect_err("reserved id must be rejected");
+        assert!(
+            error.contains(RESERVED_READINESS_REQUEST_ID) && error.contains("reserved"),
+            "unexpected error: {error}"
+        );
+        // The same request with an ordinary id is otherwise valid, proving the id
+        // is the sole reason for rejection.
+        assert!(valid_launch_request("request-one").validate().is_ok());
+    }
+
+    #[test]
+    fn readiness_lease_name_is_scoped_and_distinct() {
+        // The readiness lease is a machine-wide (`Global\`) named mutex scoped by
+        // the owning user's SID, and carries a distinct object name from the ACL
+        // ledger mutex so the two never contend.
+        let sid = "S-1-5-21-1111111111-2222222222-3333333333-1001";
+        let name = readiness_mutex_name(sid);
+        assert!(name.starts_with(r"Global\Maka.WindowsSandbox.ReadinessProfile."));
+        assert!(name.ends_with(sid));
+        assert!(!name.contains("AclLedger"));
+    }
+
+    #[test]
+    fn readiness_command_line_disables_autorun_before_exit() {
+        // `/d` must precede `/c` so cmd.exe skips the machine-constant
+        // `Command Processor\AutoRun` value. Without it, a host whose AutoRun
+        // exits non-zero (or blocks) would make the readiness probe fail closed
+        // on every startup, disabling the sandbox regardless of the boundary.
+        let line = readiness_probe_command_line("C:\\Windows\\System32\\cmd.exe");
+        assert_eq!(line, "\"C:\\Windows\\System32\\cmd.exe\" /d /c exit 0");
+        let d = line.find("/d").expect("/d present");
+        let c = line.find("/c").expect("/c present");
+        assert!(d < c, "/d must come before /c: {line}");
     }
 }

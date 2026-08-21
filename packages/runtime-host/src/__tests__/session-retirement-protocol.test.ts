@@ -32,7 +32,7 @@ describe('Session retirement protocol', () => {
       () =>
         HOST_OPERATION_SPECS['session.lifecycle.set'].assertOutputForInput?.(
           { sessionId: 'session-1', state: 'archived' },
-          projection({ id: 'session-2', isArchived: true, status: 'archived' }),
+          projection({ id: 'session-2', isArchived: true }),
         ),
       isInvalidFrame,
     );
@@ -47,7 +47,11 @@ describe('Session retirement protocol', () => {
   });
 
   test('preserves removal conflicts and archived lifecycle state on the wire', () => {
-    const archived = projection({ isArchived: true, status: 'archived' });
+    const archived = projection({
+      isArchived: true,
+      status: 'blocked',
+      blockedReason: 'tool_failed',
+    });
     assert.deepEqual(
       decodeHostFrame({
         requestId: 'request-archive',

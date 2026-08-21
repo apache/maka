@@ -9,6 +9,7 @@ import {
   MAX_AUTOMATIC_MERMAID_SOURCE_LENGTH,
   MAX_AUTOMATIC_MERMAID_TOTAL_SOURCE_LENGTH,
 } from '../markdown-body.js';
+import { AstryxLocaleProvider } from '../astryx-i18n.js';
 import { MakaUriContext, Markdown } from '../markdown.js';
 import { LocaleProvider } from '../locale-context.js';
 import {
@@ -24,6 +25,67 @@ it('keeps raw HTML inert instead of expanding the Markdown trust surface', () =>
 
   assert.match(markup, /&lt;details open&gt;/);
   assert.doesNotMatch(markup, /<details/);
+});
+
+it('keeps the copy control in a toolbar above a one-line code scroll viewport', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: ['```', `ssh-ed25519 ${'A'.repeat(200)}`, '```'].join('\n'),
+    }),
+  }));
+
+  const toolbarIndex = markup.indexOf('astryx-codeblock-header');
+  const copyButtonIndex = markup.indexOf('astryx-codeblock-copy-button');
+  const scrollViewportIndex = markup.indexOf('role="group"');
+
+  assert.match(markup, /data-maka-code-layout="single-line"/);
+  assert.ok(toolbarIndex >= 0);
+  assert.ok(copyButtonIndex > toolbarIndex);
+  assert.ok(scrollViewportIndex > copyButtonIndex);
+});
+
+it('does not force the single-line scrollbar layout on multiline code', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: ['```ts', 'const first = 1;', 'const second = 2;', '```'].join('\n'),
+    }),
+  }));
+
+  assert.match(markup, /data-maka-code-layout="multi-line"/);
+  assert.match(markup, /astryx-codeblock-header/);
+  assert.match(markup, /astryx-codeblock-copy-button/);
+});
+
+it('gives collapsible plaintext code a localized accessible name', () => {
+  const code = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`);
+
+  for (const [locale, label] of [['en', 'Code'], ['zh', '代码']] as const) {
+    const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+      locale,
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(MarkdownBody, {
+          text: ['```', ...code, '```'].join('\n'),
+        }),
+      }),
+    }));
+
+    assert.match(markup, /role="button"/);
+    assert.match(markup, /aria-expanded="true"/);
+    assert.match(markup, new RegExp(`>${label}</span>`));
+  }
+});
+
+it('keeps standalone MarkdownBody compatible for collapsible plaintext code', () => {
+  const code = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`);
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: ['```', ...code, '```'].join('\n'),
+  }));
+
+  assert.match(markup, /role="button"/);
+  assert.match(markup, /aria-expanded="true"/);
+  assert.match(markup, />Code<\/span>/);
 });
 
 it('keeps a lazy live stream behind the display cursor', () => {

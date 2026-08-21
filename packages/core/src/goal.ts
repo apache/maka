@@ -41,6 +41,33 @@ export interface GoalState {
   readonly lastReason?: string;
   readonly achievedAt?: number;
   readonly pausedAt?: number;
+  /**
+   * When `goal.arm` created this Goal, and absent once the Goal drives itself.
+   *
+   * A Goal the model sets drives from the moment it exists: the Turn that set
+   * it is already bound to it and settles into its first continuation. Arming
+   * happens outside every Turn and deliberately starts nothing, so an armed
+   * Goal waits — for a Turn to carry it into a continuation, or for the user
+   * to resume it — and this records that wait. Both events clear it, so its
+   * absence is the whole fact `isDrivingGoal` reads. Absence is also what
+   * every Goal written before arming existed carries, which is what those
+   * Goals mean.
+   */
+  readonly armedAt?: number;
+}
+
+/**
+ * Whether this Goal admits its own continuation Turns, which a restart or a
+ * resume has to put back.
+ *
+ * `status` cannot answer this: `active` covers both a Goal between
+ * continuations and an armed one still waiting for its first Turn. Neither
+ * can `iterations`, which only rises once a carried Turn settles into an
+ * evaluation — leaving the whole first Turn, and any pause taken during it,
+ * indistinguishable from a Goal nothing ever took hold of.
+ */
+export function isDrivingGoal(goal: Pick<GoalState, 'armedAt'>): boolean {
+  return goal.armedAt === undefined;
 }
 
 export interface GoalCheckpoint {
@@ -96,7 +123,7 @@ const GOAL_STATE_SHAPE = defineObjectShape<GoalState>()(
     'tokensNow',
     'tokensBaselinePending',
   ],
-  ['tokenBudget', 'lastReason', 'achievedAt', 'pausedAt'],
+  ['tokenBudget', 'lastReason', 'achievedAt', 'pausedAt', 'armedAt'],
 );
 const GOAL_CONTROL_LEASE_SHAPE = defineObjectShape<GoalControlLease>()(
   ['goalId', 'generation'],
@@ -162,7 +189,8 @@ function decodeGoalState(value: unknown): GoalState {
     typeof value.tokensBaselinePending !== 'boolean' ||
     !isOptionalBoundedReason(value.lastReason) ||
     !isOptionalNonnegativeInteger(value.achievedAt) ||
-    !isOptionalNonnegativeInteger(value.pausedAt)
+    !isOptionalNonnegativeInteger(value.pausedAt) ||
+    !isOptionalNonnegativeInteger(value.armedAt)
   ) {
     throw new TypeError('Invalid Goal state');
   }
@@ -265,6 +293,18 @@ export const GOAL_CONDITION_TEXT_LIMIT: GoalTextLimit = Object.freeze({
   codeUnits: 500,
   utf8Bytes: 1_500,
 });
+
+/**
+ * Shared ceilings for the two Goal budgets a caller may choose.
+ *
+ * They were literals inside the GoalSet tool's schema until the Host grew an
+ * operation that arms a Goal too — two callers validating the same field
+ * against two copies of a number is how the copies drift apart.
+ */
+export const GOAL_MAX_ITERATIONS_LIMIT = 200;
+export const GOAL_BLOCK_CAP_LIMIT = 50;
+/** Below this a budget stops the Goal before it can do anything with it. */
+export const GOAL_TOKEN_BUDGET_MINIMUM = 1_000;
 
 /** Shared boundary for evaluator and lifecycle diagnostics. */
 export const GOAL_REASON_TEXT_LIMIT: GoalTextLimit = Object.freeze({

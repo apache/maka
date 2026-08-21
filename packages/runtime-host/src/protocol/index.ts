@@ -66,12 +66,21 @@ export * from './session-transcript.js';
 export * from './session-turns.js';
 export * from './task-ledger.js';
 export * from './workspace.js';
+export * from './websocket-path.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 22 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 30 as const;
+// 30: Access credential pairing adds prepare/finalize operations. Older Hosts
+// cannot complete the staged credential handoff used by managed onboarding.
+// 29: `goal.arm` is a new wire operation. An older Host decodes it as unknown
+// and tears the connection down, so the pair must be refused up front.
+// 28: Relay model profiles carry the Fast service-tier declaration. Older
+// peers cannot safely preserve that Runtime Policy field.
+// 27: Runtime Policy carries the Host-owned shell preference used by tool,
+// PTY, and prompt composition. Older peers cannot safely preserve that field.
 // Transcript pages amortize storage and network round trips with a 512 KiB raw
 // payload. Base64 expansion plus the bounded fragment envelope must still fit in
 // one transport message; narrower domains retain their own encoded limits.
@@ -85,15 +94,6 @@ export type EncodedProtocolMessage = Buffer & {
   readonly [encodedProtocolMessageBrand]: true;
 };
 
-export type ClientSurface =
-  | 'desktop'
-  | 'tui'
-  | 'run'
-  | 'activation'
-  | 'bot'
-  | 'inspect'
-  | 'capability-provider';
-
 export interface ProtocolRange {
   min: number;
   max: number;
@@ -102,7 +102,6 @@ export interface ProtocolRange {
 export interface ClientHello {
   kind: 'hello';
   clientInstanceId: string;
-  surface: ClientSurface;
   protocolMin: number;
   protocolMax: number;
   compatibilityEpoch: number;
@@ -216,7 +215,6 @@ export function decodeClientFrame(value: unknown): ClientFrame {
     return {
       kind: 'hello',
       clientInstanceId: requireClientInstanceId(frame.clientInstanceId),
-      surface: requireSurface(frame.surface),
       protocolMin,
       protocolMax,
       compatibilityEpoch: decodeCompatibilityEpoch(frame.compatibilityEpoch),
@@ -397,20 +395,6 @@ function decodeCompositionRevision(value: unknown): string {
 function decodeCompatibilityEpoch(value: unknown): number {
   // Epoch 0 represents peers and registrations that do not publish this field.
   return value === undefined ? 0 : requireCompatibilityEpoch(value);
-}
-
-function requireSurface(value: unknown): ClientSurface {
-  if (
-    value === 'desktop' ||
-    value === 'tui' ||
-    value === 'run' ||
-    value === 'activation' ||
-    value === 'bot' ||
-    value === 'inspect' ||
-    value === 'capability-provider'
-  )
-    return value;
-  throw invalidProtocolFrame('Invalid surface');
 }
 
 function requireAcceptedState(value: unknown): Exclude<HostLifecycleState, 'draining'> {

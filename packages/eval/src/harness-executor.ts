@@ -4,10 +4,18 @@ import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
 import { chmod, lstat, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
-import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
 import { decodeJsonObject, type ExperimentCell, type JsonObject } from './experiment.js';
+import {
+  BUNDLED_HARNESS_RELAY_ROOT,
+  createHarnessPreparationEnvironment,
+  resolveRealPathWithinRoot,
+} from './harness-environment.js';
+import {
+  preflightHarnessInstallation,
+  type HarnessPreflightDependencies,
+} from './install-preflight.js';
 import {
   MAKA_RUNTIME_ARTIFACT_PATH,
   MAKA_SUBJECT_STDERR_PATH,
@@ -22,8 +30,14 @@ import {
 } from './runner.js';
 import type { EvalResult } from './result.js';
 
-type Framework = 'harbor' | 'pier';
+export type HarnessFramework = 'harbor' | 'pier';
 type RelayTransportStage = 'ready' | 'execute' | 'receive' | 'decision';
+
+const PIER_FRAMEWORK_LOG_MOUNTS = Object.freeze([
+  { directory: 'agent', target: '/logs/agent' },
+  { directory: 'verifier', target: '/logs/verifier' },
+  { directory: 'artifacts', target: '/logs/artifacts' },
+]);
 
 interface RelayTransportFailure {
   readonly stage: RelayTransportStage;
@@ -62,22 +76,43 @@ type SubjectProcessDiagnostic = NonNullable<
   Awaited<ReturnType<SubjectExecutionContext['execute']>>['diagnostic']
 >;
 
-export function createHarborExecutor(config: JsonObject, specPath: string): ExperimentExecutor {
+export interface HarnessExecutor extends ExperimentExecutor {
+  preflight(
+    input: {
+      readonly subjectCredentialNames: readonly string[];
+      readonly signal?: AbortSignal;
+    },
+    dependencies?: Partial<HarnessPreflightDependencies>,
+  ): Promise<void>;
+}
+
+export function createHarborExecutor(config: JsonObject, specPath: string): HarnessExecutor {
   return createHarnessExecutor('harbor', config, specPath);
 }
 
-export function createPierExecutor(config: JsonObject, specPath: string): ExperimentExecutor {
+export function createPierExecutor(config: JsonObject, specPath: string): HarnessExecutor {
   return createHarnessExecutor('pier', config, specPath);
 }
 
 function createHarnessExecutor(
-  framework: Framework,
+  framework: HarnessFramework,
   config: JsonObject,
   specPath: string,
-): ExperimentExecutor {
-  const options = decodeOptions(config, framework);
-  const executor: ExperimentExecutor = {
+): HarnessExecutor {
+  const options = decodeHarnessOptions(config, framework);
+  const executor: HarnessExecutor = {
     kind: framework,
+    preflight: (input, dependencies) =>
+      preflightHarnessInstallation(
+        {
+          framework,
+          options,
+          specPath,
+          subjectCredentialNames: input.subjectCredentialNames,
+          ...(input.signal ? { signal: input.signal } : {}),
+        },
+        dependencies,
+      ),
     validate: (cell) => {
       decodeTask(framework, options, cell);
     },
@@ -88,7 +123,7 @@ function createHarnessExecutor(
 }
 
 async function runHarnessAttempt(
-  framework: Framework,
+  framework: HarnessFramework,
   options: HarnessOptions,
   specPath: string,
   {
@@ -166,7 +201,12 @@ async function runHarnessAttempt(
           : await waitForTrial(state.child, { phase: 'completion' });
         finalizationEvidence = completed;
         if (!finalizationConfirmed(completed)) throw new Error('Trial did not finalize cleanly');
-        const verification = await readVerification(state, cell, Boolean(options.egressProxy));
+        const verification = await readVerification(
+          state,
+          cell,
+          framework,
+          Boolean(options.egressProxy),
+        );
         verificationConfirmedBeforeCancellation = !hostCancellationObserved;
         return verification;
       },
@@ -224,10 +264,16 @@ async function runHarnessAttempt(
 }
 
 function relayContext(state: RelayState, signal?: AbortSignal): SubjectExecutionContext {
+  const resultToken = randomBytes(16).toString('hex');
+  const metadata: JsonObject = {
+    trialName: state.trialName,
+    trialPath: state.trialPath,
+    meteringSecret: resultToken,
+  };
   return {
     cwd: state.cwd,
     taskInput: state.taskInput,
-    metadata: { trialName: state.trialName, trialPath: state.trialPath },
+    metadata,
     ...(signal ? { signal } : {}),
     execute: async (input) => {
       signal?.throwIfAborted();
@@ -240,7 +286,6 @@ function relayContext(state: RelayState, signal?: AbortSignal): SubjectExecution
           return [target, value];
         }),
       );
-      const resultToken = randomBytes(16).toString('hex');
       if (
         !sendRelayMessage(state.transport, 'execute', {
           token: state.token,
@@ -331,7 +376,7 @@ function validProcessDiagnostic(value: unknown): value is {
 }
 
 async function startTrial(
-  framework: Framework,
+  framework: HarnessFramework,
   options: HarnessOptions,
   specPath: string,
   cell: ExperimentCell,
@@ -351,20 +396,25 @@ async function startTrial(
   const trialPath = join(trialsRoot, trialName);
   const task = decodeTask(framework, options, cell);
   const timeoutMultiplier = positive(cell.budget.timeoutMultiplier, 'budget.timeoutMultiplier');
-  const environmentConfig = resolveEnvironmentConfig(options);
-  const networkPolicyPath = resolveNetworkPolicyPath(options);
-  const relayPath = resolve(dirname(fileURLToPath(import.meta.url)), '../harbor');
+  const egressPaths = await resolveEgressPaths(options);
+  const environmentConfig = resolveEnvironmentConfig(options, egressPaths, framework, trialPath);
+  const networkPolicyPath = egressPaths?.networkPolicyPath;
   const executionEnvironment = {
     ...UNATTENDED_EXECUTION_ENVIRONMENT,
     ...egressExecutionEnvironment(options.egressProxy),
   };
-  const environment = preparationEnvironment(
-    relayPath,
-    [...subjectCredentialNames, ...cell.subject.credentials],
-    options.preparationEnvironment,
-    options.egressProxy?.allowedHost,
-    networkPolicyPath,
-  );
+  const environment = createHarnessPreparationEnvironment({
+    subjectCredentialNames: [...subjectCredentialNames, ...cell.subject.credentials],
+    declared: options.preparationEnvironment,
+    ...(options.egressProxy && networkPolicyPath
+      ? {
+          egress: {
+            allowedHost: options.egressProxy.allowedHost,
+            networkPolicyPath,
+          },
+        }
+      : {}),
+  });
   const server = createServer();
   const connections = new Set<Socket>();
   server.on('connection', (socket) => {
@@ -420,7 +470,12 @@ async function startTrial(
     );
     child = spawn(
       process.env[options.pythonPathEnv]!,
-      [join(relayPath, 'run_trial.py'), framework, options.frameworkVersion, configPath],
+      [
+        join(BUNDLED_HARNESS_RELAY_ROOT, 'run_trial.py'),
+        framework,
+        options.frameworkVersion,
+        configPath,
+      ],
       { cwd: dirname(specPath), env: environment, stdio: 'ignore' },
     );
     await once(child, 'spawn', signal ? { signal } : undefined);
@@ -589,48 +644,6 @@ function preparationCode(
   return 'exit-before-ready';
 }
 
-function preparationEnvironment(
-  relayPath: string,
-  subjectCredentialNames: readonly string[],
-  declared: readonly string[],
-  egressAllowedHost?: string,
-  networkPolicyPath?: string,
-): NodeJS.ProcessEnv {
-  const allowed = new Set([
-    'HOME',
-    'PATH',
-    'TMPDIR',
-    'TMP',
-    'TEMP',
-    'LANG',
-    'LC_ALL',
-    'SSL_CERT_FILE',
-    'SSL_CERT_DIR',
-    'REQUESTS_CA_BUNDLE',
-    'CURL_CA_BUNDLE',
-    'XDG_CACHE_HOME',
-    ...declared,
-  ]);
-  const credentials = new Set(subjectCredentialNames);
-  const inherited = Object.fromEntries(
-    [...allowed].flatMap((name) => {
-      const value = process.env[name];
-      return value === undefined || credentials.has(name) ? [] : [[name, value]];
-    }),
-  );
-  return {
-    ...inherited,
-    PYTHONPATH: [relayPath, inherited.PYTHONPATH].filter(Boolean).join(delimiter),
-    ...(egressAllowedHost
-      ? {
-          MAKA_EVAL_EGRESS_REQUIRED: '1',
-          MAKA_EVAL_EGRESS_ALLOWED_HOST: egressAllowedHost,
-        }
-      : {}),
-    ...(networkPolicyPath ? { MAKA_EVAL_NETWORK_POLICY_PATH: networkPolicyPath } : {}),
-  };
-}
-
 function mergeExecutionEnvironment(
   required: Readonly<Record<string, string>>,
   subject: Readonly<Record<string, string>>,
@@ -754,6 +767,7 @@ function inspectEgressAudit(audit: Buffer): {
 async function readVerification(
   state: RelayState,
   cell: ExperimentCell,
+  framework: HarnessFramework,
   expectEgressAudit: boolean,
 ): Promise<ExecutorVerification> {
   const result = JSON.parse(await readFile(join(state.trialPath, 'result.json'), 'utf8')) as {
@@ -780,7 +794,7 @@ async function readVerification(
         failureReason: `failed to read egress audit log ${egressAuditPath}${code ? ` (${code})` : ''}`,
         artifacts: [
           { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
-          ...(await collectedArtifactInventory(state.trialPath)),
+          ...(await collectedArtifactInventory(state.trialPath, framework)),
           { kind: 'egress-audit-unreadable', path: EGRESS_AUDIT_ARTIFACT_PATH },
         ],
       };
@@ -799,14 +813,20 @@ async function readVerification(
     failureReason: audit.failureReason ?? (score === null ? 'verifier produced no reward' : null),
     artifacts: [
       { kind: 'trial', framework: cell.executor.kind, trialName: state.trialName },
-      ...(await collectedArtifactInventory(state.trialPath)),
+      ...(await collectedArtifactInventory(state.trialPath, framework)),
       ...audit.artifacts,
     ],
   };
 }
 
-async function collectedArtifactInventory(trialPath: string): Promise<JsonObject[]> {
-  const root = join(trialPath, 'artifacts', 'logs', 'artifacts');
+async function collectedArtifactInventory(
+  trialPath: string,
+  framework: HarnessFramework,
+): Promise<JsonObject[]> {
+  const root =
+    framework === 'pier'
+      ? join(trialPath, 'artifacts')
+      : join(trialPath, 'artifacts', 'logs', 'artifacts');
   const files: JsonObject[] = [];
   const targets = [
     join(root, basename(MAKA_RUNTIME_ARTIFACT_PATH)),
@@ -847,7 +867,7 @@ async function walkCollectedArtifacts(
   }
 }
 
-interface HarnessOptions {
+export interface HarnessOptions {
   readonly frameworkVersion: string;
   readonly pythonPathEnv: string;
   readonly trialsRootEnv: string;
@@ -869,7 +889,7 @@ interface HarnessOptions {
   }[];
 }
 
-function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions {
+function decodeHarnessOptions(value: JsonObject, framework: HarnessFramework): HarnessOptions {
   if (!Object.hasOwn(value, 'preparationEnvironment')) {
     throw new Error('executor.config.preparationEnvironment is required');
   }
@@ -913,6 +933,18 @@ function decodeOptions(value: JsonObject, framework: Framework): HarnessOptions 
       ? { tasksRootEnv: machinePathEnv(options.tasksRootEnv, 'tasksRootEnv') }
       : {}),
   };
+  if (framework === 'pier') {
+    const reservedTargets = PIER_FRAMEWORK_LOG_MOUNTS.map((mount) => mount.target);
+    const collision = decoded.mounts.find((mount) => {
+      const target = posix.normalize(mount.target);
+      return reservedTargets.some(
+        (reserved) => target === reserved || target.startsWith(`${reserved}/`),
+      );
+    });
+    if (collision) {
+      throw new Error(`Pier mount target ${collision.target} is reserved for framework logs`);
+    }
+  }
   for (const name of [
     decoded.pythonPathEnv,
     decoded.trialsRootEnv,
@@ -975,28 +1007,56 @@ function resolveMounts(mounts: HarnessOptions['mounts']) {
   }));
 }
 
-function resolveEnvironmentConfig(options: HarnessOptions): JsonObject {
-  const base = { ...options.environment, mounts: resolveMounts(options.mounts) };
-  if (!options.egressProxy) return base;
-  const source = resolve(process.env[options.egressProxy.composeSourceEnv]!);
-  const composePath = resolve(source, options.egressProxy.composeRelativePath);
-  if (relative(source, composePath).startsWith(`..${sep}`)) {
-    throw new Error('egress proxy compose path escapes its source root');
-  }
-  return { ...base, extra_docker_compose: [composePath] };
+interface ResolvedEgressPaths {
+  readonly composePath: string;
+  readonly networkPolicyPath: string;
 }
 
-function resolveNetworkPolicyPath(options: HarnessOptions): string | undefined {
+function resolveEnvironmentConfig(
+  options: HarnessOptions,
+  egressPaths: ResolvedEgressPaths | undefined,
+  framework: HarnessFramework,
+  trialPath: string,
+): JsonObject {
+  const configuredMounts = resolveMounts(options.mounts);
+  const mounts =
+    framework === 'pier'
+      ? [
+          ...configuredMounts,
+          ...PIER_FRAMEWORK_LOG_MOUNTS.map(({ directory, target }) => ({
+            type: 'bind',
+            source: join(trialPath, directory),
+            target,
+          })),
+        ]
+      : configuredMounts;
+  const base = { ...options.environment, mounts };
+  if (!options.egressProxy) return base;
+  if (!egressPaths) throw new Error('egress proxy paths are unavailable');
+  return { ...base, extra_docker_compose: [egressPaths.composePath] };
+}
+
+async function resolveEgressPaths(
+  options: HarnessOptions,
+): Promise<ResolvedEgressPaths | undefined> {
   if (!options.egressProxy) return undefined;
   const source = resolve(process.env[options.egressProxy.composeSourceEnv]!);
-  const policyPath = resolve(source, options.egressProxy.networkPolicyRelativePath);
-  if (relative(source, policyPath).startsWith(`..${sep}`)) {
-    throw new Error('egress network policy path escapes its source root');
-  }
-  return policyPath;
+  const [composePath, networkPolicyPath] = await Promise.all([
+    resolveRealPathWithinRoot(
+      source,
+      options.egressProxy.composeRelativePath,
+      'egress proxy compose path',
+    ),
+    resolveRealPathWithinRoot(
+      source,
+      options.egressProxy.networkPolicyRelativePath,
+      'egress network policy path',
+    ),
+  ]);
+  return { composePath, networkPolicyPath };
 }
 
-function decodeTask(framework: Framework, options: HarnessOptions, cell: ExperimentCell) {
+function decodeTask(framework: HarnessFramework, options: HarnessOptions, cell: ExperimentCell) {
   if (framework === 'harbor') {
     const benchmark = exact(cell.benchmark.config, ['repository'], 'benchmark.config');
     const task = exact(cell.task.config, ['harbor'], 'task.config');

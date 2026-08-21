@@ -3,6 +3,7 @@ import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isCanonicalRuntimeHostWebSocketPath } from '../protocol/index.js';
 import type { RuntimeHostConnectionResource } from './connection.js';
 
 const SSH_BATCH_START_TIMEOUT_MS = 15_000;
@@ -57,7 +58,7 @@ export async function openRuntimeHostSshTunnel(
   } = {},
 ): Promise<RuntimeHostSshTunnel> {
   input.signal?.throwIfAborted();
-  const destination = requireSshDestination(input.destination);
+  const destination = normalizeRuntimeHostSshDestination(input.destination);
   const sshPort = input.sshPort === undefined ? undefined : requirePort(input.sshPort, 'SSH port');
   const remotePort = requirePort(input.remotePort, 'Runtime Host remote port');
   const websocketPath = requireWebSocketPath(input.websocketPath);
@@ -411,7 +412,7 @@ async function terminateWindowsProcessTree(pid: number): Promise<void> {
   });
 }
 
-function requireSshDestination(value: string): string {
+export function normalizeRuntimeHostSshDestination(value: string): string {
   const destination = value.trim();
   if (
     destination.length === 0 ||
@@ -432,8 +433,8 @@ function requirePort(value: number, label: string): number {
 }
 
 function requireWebSocketPath(value: string): string {
-  if (!value.startsWith('/') || value.includes('?') || value.includes('#')) {
-    throw new Error('Runtime Host SSH WebSocket path must be an absolute URL path');
+  if (!isCanonicalRuntimeHostWebSocketPath(value)) {
+    throw new Error('Runtime Host SSH WebSocket path must be a canonical absolute URL path');
   }
   return value;
 }

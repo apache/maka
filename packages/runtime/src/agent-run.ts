@@ -27,6 +27,7 @@ import {
 import type {
   SessionBlockedReason,
   SessionHeader,
+  SessionHeaderPatch,
   SessionStatus,
   StoredMessage,
   SystemNoteMessage,
@@ -88,7 +89,7 @@ export interface AgentRunHooks {
     run: AgentRun,
   ): Promise<AgentRunActiveSession>;
   unregisterRun(active: AgentRunActiveSession, run: AgentRun): void | Promise<void>;
-  updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader>;
+  updateHeader(sessionId: string, patch: SessionHeaderPatch): Promise<SessionHeader>;
   updateStatus(
     sessionId: string,
     status: SessionStatus,

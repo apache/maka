@@ -255,7 +255,7 @@ describe('builtin Bash projection and shell execution', () => {
     // executor's spawn, stdout echoes the PowerShell flags and wrapper instead
     // of a bare 'wired-marker' from the default POSIX shell.
     const tools = buildBuiltinTools({
-      shell: { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: '/bin/echo' },
+      shell: { plan: { kind: 'pwsh', displayName: 'PowerShell 7 (pwsh)', exe: '/bin/echo' } },
     });
     const bash = tools.find((tool) => tool.name === 'Bash')!;
     const result = (await bash.impl(

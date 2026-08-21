@@ -16,6 +16,7 @@ test('applies each client settings snapshot once across local writes and file wa
     applyBotSettings: async () => {
       botApplications += 1;
     },
+    observeLocale: () => undefined,
     emitExternalChanged: () => {
       rendererEvents += 1;
     },

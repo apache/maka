@@ -14,7 +14,6 @@ import { ARTIFACT_READ_CHUNK_MAX_BYTES } from '../protocol/index.js';
 const connectionContext: ConnectionContext = {
   hostEpoch: 'host-epoch-1',
   connectionId: 'connection-1',
-  surface: 'desktop',
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };

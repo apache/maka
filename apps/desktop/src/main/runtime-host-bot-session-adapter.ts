@@ -82,7 +82,7 @@ export function createRuntimeHostBotSessionAdapter(
         throwUnavailable(error, sessionId);
         throw error;
       }
-      if (!session || session.isArchived || session.status === 'archived') {
+      if (!session || session.isArchived) {
         throw unavailableSession(sessionId);
       }
       if (session.permissionMode === 'explore') return 'ready';
@@ -96,7 +96,7 @@ export function createRuntimeHostBotSessionAdapter(
         if (isPermissionUpdateRefusal(error)) return 'permission_refused';
         throw error;
       }
-      if (session.isArchived || session.status === 'archived') {
+      if (session.isArchived) {
         throw unavailableSession(sessionId);
       }
       if (session.permissionMode !== 'explore') return 'permission_refused';

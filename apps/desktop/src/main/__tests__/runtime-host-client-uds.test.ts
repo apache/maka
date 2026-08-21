@@ -67,7 +67,6 @@ test('drives Desktop Session operations through a real Runtime Host connection',
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
-      surface: 'desktop',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -176,7 +175,6 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
               ...projected,
               revision: projected.revision + 1,
               isArchived: archived,
-              status: archived ? 'archived' : 'active',
             });
             return { ok: true, result: projected };
           },
@@ -254,6 +252,16 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
 
     const created = await ipc.invoke('sessions:create', undefined);
     assert.deepEqual((await ipc.invoke('sessions:list')) as unknown[], [created]);
+    for (const staleFilter of [
+      { isArchived: false },
+      { isFlagged: true },
+      { labelSlug: 'paged' },
+    ]) {
+      await assert.rejects(
+        ipc.invoke('sessions:list', staleFilter),
+        /Invalid Session list filter/,
+      );
+    }
     assert.equal(
       (await ipc.invoke('sessions:setPermissionMode', 'session-ipc', 'execute') as {
         permissionMode: string;
@@ -342,7 +350,6 @@ test('drives the renderer Session execution facade through real UDS framing', as
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
-      surface: 'desktop',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -467,7 +474,6 @@ test('drives bounded Session domain projections through real UDS framing', async
     });
     const connected = await connectRuntimeHost({
       rootPath: base,
-      surface: 'desktop',
       protocol: {
         min: RUNTIME_HOST_PROTOCOL_VERSION,
         max: RUNTIME_HOST_PROTOCOL_VERSION,

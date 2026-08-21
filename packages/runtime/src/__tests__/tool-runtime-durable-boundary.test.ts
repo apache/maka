@@ -278,6 +278,27 @@ describe('ToolRuntime durable boundary', () => {
     assert.equal(JSON.stringify(harness.events).includes('NON_JSON_RESULT'), false);
   });
 
+  it('admits a nested tool that returned nothing under the result limit', async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+
+    const result = await harness.executeNested(
+      tool(() => undefined),
+      32,
+    );
+
+    // An absent result is published as empty text, so it must not be rejected
+    // as though the result were too large.
+    assert.equal(result, undefined);
+    assert.equal(JSON.stringify(outcomes).includes('byte limit exceeded'), false);
+  });
+
   it('persists nested CodeMode identity across durable and legacy tool activity', async () => {
     const prepared: ToolPreparedCommit[] = [];
     const outcomes: ToolOutcomeCommit[] = [];

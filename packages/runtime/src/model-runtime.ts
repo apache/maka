@@ -2,6 +2,7 @@ import {
   PROVIDER_DEFAULTS,
   effectiveBaseUrl,
   type ModelInfo,
+  type ProviderResponsesContract,
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/llm-connections';
@@ -19,7 +20,7 @@ export type ReasoningReplayContract =
   | { kind: 'none' }
   | { kind: 'anthropic-signed' }
   | { kind: 'openai-chat-plaintext'; requestField: 'observed' | 'reasoning' }
-  | { kind: 'openai-responses-encrypted' };
+  | { kind: 'responses'; contract: ProviderResponsesContract };
 
 export interface ResolvedModelRuntime {
   adapter: ProviderRuntimeAdapter;
@@ -48,7 +49,7 @@ export function resolveModelRuntime(
   const defaults = PROVIDER_DEFAULTS[connection.providerType];
   // Unknown providerType with no per-model override → can't resolve an adapter.
   // Throw a clear error rather than crashing on `.runtimeAdapter`. Mirrors
-  // `isFakeBackend` in @maka/core/connection-readiness.ts.
+  // `isRealConnection` in @maka/core/connection-readiness.ts.
   if (!override && !defaults) {
     throw new Error(
       `Unknown provider type "${connection.providerType}"; cannot resolve model runtime.`,
@@ -90,7 +91,10 @@ export function resolveModelRuntime(
     wire,
     reasoningReplay: reasoningReplayContract(adapter, wire),
     applyPatchProfile: resolveApplyPatchProfile(
-      { wire, applyPatchProtocol: adapter.applyPatchProtocol },
+      {
+        wire,
+        applyPatchProtocol: adapter.applyPatchProtocol,
+      },
       modelId,
     ),
   };
@@ -139,7 +143,7 @@ function resolveModelRuntimeWire(
         ? 'openai-responses'
         : 'openai-chat';
     case 'openai-compatible':
-      return adapter.supportsOpenAiResponses === true &&
+      return adapter.responses !== undefined &&
         (apiProtocol ?? openAiAdapterApiProtocol(modelId, providerType)) === 'openai-responses'
         ? 'openai-responses'
         : 'openai-chat';
@@ -158,11 +162,7 @@ function reasoningReplayContract(
     case 'anthropic-messages':
       return { kind: 'anthropic-signed' };
     case 'openai-responses':
-      // The native OpenAI serializer can replay only provider-issued encrypted
-      // reasoning when store=false. Open Responses plaintext reasoning is read
-      // by a separate response transport, but has no request codec here yet;
-      // @ai-sdk/open-responses unlocks an open-responses-plaintext sibling.
-      return { kind: 'openai-responses-encrypted' };
+      return { kind: 'responses', contract: responsesContract(adapter) };
     case 'openai-chat':
       return adapter.kind === 'openai-compatible'
         ? {
@@ -175,6 +175,11 @@ function reasoningReplayContract(
     case 'cohere-v2':
       return { kind: 'none' };
   }
+}
+
+function responsesContract(adapter: ProviderRuntimeAdapter): ProviderResponsesContract {
+  if (adapter.kind === 'openai-compatible' && adapter.responses) return adapter.responses;
+  return { adapter: 'openai', reasoningReplay: 'encrypted-content' };
 }
 
 function kimiOpenAiBaseUrl(baseUrl: string): string {

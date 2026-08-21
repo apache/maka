@@ -18,6 +18,7 @@ type ToastApi = {
 
 const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
   chooseClientDirectory: false,
+  chooseHostDirectory: false,
   selectNoProject: false,
   setLocalDefault: false,
   viewClientPath: false,

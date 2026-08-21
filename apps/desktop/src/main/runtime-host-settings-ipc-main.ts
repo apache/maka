@@ -180,6 +180,7 @@ export async function loadRuntimeHostSettings(
     workspaceInstructions: policy.workspaceInstructions,
     privacy: policy.privacy,
     chatDefaults: policy.chatDefaults,
+    shell: policy.shell,
     webSearch: {
       ...local.webSearch,
       ...policy.webSearch,
@@ -273,6 +274,9 @@ async function applyHostPatch(
       "set_chat_defaults",
     );
   }
+  if (patch.shell) {
+    await mergePolicy(client, "shell", patch.shell, "set_shell");
+  }
   if (patch.webSearch) {
     const webSearch = patch.webSearch;
     await client.updateRuntimePolicy((policy) => ({
@@ -303,7 +307,7 @@ async function applyHostPatch(
 }
 
 async function mergePolicy<
-  K extends "memory" | "workspaceInstructions" | "privacy" | "chatDefaults",
+  K extends "memory" | "workspaceInstructions" | "privacy" | "chatDefaults" | "shell",
 >(
   client: RuntimeHostSettingsClient,
   key: K,
@@ -312,7 +316,8 @@ async function mergePolicy<
     | "set_memory"
     | "set_workspace_instructions"
     | "set_privacy"
-    | "set_chat_defaults",
+    | "set_chat_defaults"
+    | "set_shell",
 ): Promise<void> {
   await client.updateRuntimePolicy(
     ((policy) => ({

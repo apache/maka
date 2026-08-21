@@ -17,6 +17,16 @@ export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregator
 
 export type ApplyPatchProtocol = 'openai-structured' | 'codex-v4a-freeform';
 
+export type ProviderResponsesContract =
+  | {
+      readonly adapter: 'openai';
+      readonly reasoningReplay: 'encrypted-content';
+    }
+  | {
+      readonly adapter: 'open-responses';
+      readonly reasoningReplay: 'plaintext-content';
+    };
+
 type ProviderRuntimeAdapterDefinition =
   | { kind: 'anthropic'; auth: 'api-key' | 'bearer'; normalizeBaseUrl: boolean }
   | { kind: 'claude-subscription' }
@@ -30,7 +40,8 @@ type ProviderRuntimeAdapterDefinition =
       name: 'provider' | 'connection';
       includeUsage?: boolean;
       requireBaseUrl?: boolean;
-      supportsOpenAiResponses?: true;
+      /** Presence enables Responses and fixes the only supported SDK/replay pairing. */
+      responses?: ProviderResponsesContract;
       replayAssistantReasoningAs?: 'reasoning';
       replayAssistantReasoningDetails?: true;
     };
@@ -72,6 +83,8 @@ export interface ProviderDefaults {
   status: 'ready' | 'phase3-experimental';
   protocol: 'anthropic' | 'openai' | 'google' | 'cohere';
   runtimeAdapter: ProviderRuntimeAdapter;
+  /** User-declared per-model capabilities are authoritative for this provider. */
+  relayModelProfiles?: boolean;
   modelDiscovery: ProviderModelDiscovery;
   category: ProviderCategory;
   catalogGroup?: ProviderCatalogGroup;
@@ -225,7 +238,7 @@ const zenmuxOpenAICompatibleMetadata = Object.fromEntries(
 );
 const zenmuxModelIds = toolCallingModelIds('ZenMux', zenmuxOpenAICompatibleMetadata, [
   'moonshotai/kimi-k2.5',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.zenmux[id]?.lifecycle !== 'deprecated');
 const fireworks = GENERATED_MODELS_DEV_PROVIDER_FACTS['fireworks-ai'];
 if (fireworks.id !== 'fireworks-ai') {
   throw new Error('models.dev Fireworks AI provider facts are missing stable id fireworks-ai');
@@ -279,6 +292,7 @@ const volcengineCodingPlanModelIds = [
 ] as const;
 const volcengineAgentPlanModelIds = [
   'ark-code-latest',
+  'glm-5.3',
   'doubao-seed-2.0-mini',
   'doubao-seed-2.0-lite',
   'deepseek-v4-flash',
@@ -499,6 +513,9 @@ if (!alibabaTokenPlanGlobal.api) {
 // the plan's image models (qwen-image / wan) are not tool-callable, so only the
 // tool-calling text models are pinned here. China and global share one model list.
 const alibabaTokenPlanModelIds = [
+  // qwen3.8-max-preview is a retired compatibility alias which the service
+  // routes to this formal id. New selections must use the billed model id.
+  'qwen3.8-max',
   'qwen3.7-max',
   'qwen3.7-plus',
   'qwen3.6-plus',
@@ -589,8 +606,6 @@ const opencodeFreeModelIds = [
   'mimo-v2.5-free',
   'big-pickle',
   'deepseek-v4-flash-free',
-  'north-mini-code-free',
-  'laguna-s-2.1-free',
 ] as const;
 for (const id of opencodeFreeModelIds) {
   const model = GENERATED_MODELS_DEV_METADATA.opencode[id];
@@ -807,7 +822,7 @@ const providerRegistry = {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
-    fallbackModels: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+    fallbackModels: ['gemini-2.5-flash'],
     status: 'ready',
     protocol: 'google',
     runtimeAdapter: { kind: 'google' },
@@ -833,8 +848,8 @@ const providerRegistry = {
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      supportsOpenAiResponses: true,
       applyPatchProtocol: 'codex-v4a-freeform',
+      responses: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
@@ -972,7 +987,7 @@ const providerRegistry = {
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      supportsOpenAiResponses: true,
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
@@ -995,7 +1010,7 @@ const providerRegistry = {
     runtimeAdapter: {
       kind: 'openai-compatible',
       name: 'provider',
-      supportsOpenAiResponses: true,
+      responses: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     },
     modelDiscovery: {
       kind: 'protocol',
@@ -1713,6 +1728,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'connection', requireBaseUrl: true },
+    relayModelProfiles: true,
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',
@@ -1731,6 +1747,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
+    relayModelProfiles: true,
     modelDiscovery: { kind: 'protocol' },
     category: 'custom',
     catalogGroup: 'aggregators',

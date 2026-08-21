@@ -34,6 +34,7 @@ import {
 } from './sqlite-legacy-scheduling.js';
 import {
   assertCurrentOperationalTargetSchema,
+  assertReleasedLegacyRetirementShape,
   ensureOperationalSchemaRegistry,
   isCurrentOperationalTargetSchema,
 } from './operational-target-schema.js';
@@ -57,6 +58,64 @@ const OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
 ] as const);
 const REMOVED_OPERATIONAL_SCHEMA_VERSIONS: ReadonlyMap<string, number> = new Map([
   ['automation', 2],
+]);
+/**
+ * Exact validation-evidence contract emitted into `cutover_journal` by the
+ * released cutover writers (commit 1caea265c^, removed in #1994). Each entry
+ * maps a released `store_name` to the precise key set its `importAndValidate`
+ * returned as `validation_json`: `session_metadata` reports one row count per
+ * copied session-metadata table, and every other store reports its own fixed
+ * evidence keys. A completed row whose store name is absent here, or whose
+ * validation keys are not *exactly* this set, is
+ * evidence this build never wrote — retirement fails closed and preserves it
+ * rather than dropping unrecognized migration state.
+ *
+ * The contract is pinned to the final writer generation (1caea265c^); a
+ * workspace whose cutover ran under an earlier writer whose key set differed
+ * fails closed here (preserved, startup still blocked) — non-regressive versus
+ * today and deliberately safer than dropping evidence we do not recognize.
+ */
+const RELEASED_CUTOVER_STORE_VALIDATION_KEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  [
+    'agent_runs',
+    new Set([
+      'agent_runs',
+      'agent_run_events',
+      'agent_run_projections',
+      'root_turn_admissions',
+      'root_source_message_proofs',
+    ]),
+  ],
+  ['artifact_metadata', new Set(['records'])],
+  ['automations', new Set(['automations'])],
+  ['interactions', new Set(['interaction_requests', 'interaction_outcomes'])],
+  ['message_receipts', new Set(['host_epochs', 'message_receipts'])],
+  [
+    'session_metadata',
+    new Set([
+      'session_metadata',
+      'session_metadata_labels',
+      'session_metadata_import_sources',
+      'session_metadata_tombstones',
+      'subagent_spawns',
+      'agent_graph_intent_claims',
+      'agent_graph_schedule_updates',
+      'agent_graph_operator_provisions',
+      'agent_graph_client_projections',
+      'agent_graph_client_operator_projections',
+      'agent_graph_client_terminal_activity',
+      'agent_graph_client_applied_records',
+      'agent_graph_supervisor_wakes',
+      'agent_graph_supervisor_wake_attempts',
+      'sandbox_boundary_log',
+    ]),
+  ],
+  ['shell_runs', new Set(['shell_runs'])],
+  ['usage_pricing', new Set(['llm', 'tools', 'pricing'])],
+  ['workflow_deep_research', new Set(['sessions', 'events'])],
+  ['workflow_plan', new Set(['sessions', 'events'])],
+  ['workflow_plan_reminders', new Set(['reminders'])],
+  ['workflow_task_ledger', new Set(['sessions', 'events'])],
 ]);
 
 const require = createRequire(import.meta.url);
@@ -365,6 +424,7 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
       DROP TABLE IF EXISTS automation_authority_state;
       DELETE FROM operational_schema_migrations WHERE scope = 'automation';
     `);
+    retireCompletedLegacyMigrationMetadata(db);
     assertCurrentOperationalTargetSchema(db);
     for (const [scope, version] of OPERATIONAL_SCHEMA_VERSIONS) {
       registerSchema(db, scope, version, appliedAt);
@@ -374,6 +434,138 @@ export function migrateOperationalStateDatabaseInternal(db: DatabaseSync, now: (
     rollback(db);
     throw error;
   }
+}
+
+/**
+ * Retire import and cutover evidence written before SQLite became the sole
+ * operational authority. A table is only removed when its full released schema
+ * signature is recognized (columns *and* CHECK/FK constraints, with no extra
+ * index/trigger — see {@link assertReleasedLegacyRetirementShape}), it names only
+ * a released store contract, and every row is internally valid and completed. Any
+ * interrupted, malformed, unrecognized-shape, or unknown-store state stays
+ * fail-closed and the surrounding migration transaction rolls back unchanged.
+ */
+function retireCompletedLegacyMigrationMetadata(db: DatabaseSync): void {
+  if (hasTable(db, 'cutover_journal')) {
+    assertReleasedLegacyRetirementShape(db, 'cutover_journal');
+    const rows = db
+      .prepare(`
+        SELECT
+          store_name,
+          source_path,
+          source_fingerprint,
+          state,
+          started_at,
+          completed_at,
+          validation_json
+        FROM cutover_journal
+        ORDER BY store_name
+      `)
+      .all() as Array<Record<string, unknown>>;
+    for (const row of rows) assertCompletedLegacyCutoverJournalRow(row);
+  }
+  if (hasTable(db, 'runtime_import_sources')) {
+    assertReleasedLegacyRetirementShape(db, 'runtime_import_sources');
+    const rows = db
+      .prepare(`
+        SELECT source_path, fingerprint, imported_at
+        FROM runtime_import_sources
+        ORDER BY source_path
+      `)
+      .all() as Array<Record<string, unknown>>;
+    for (const row of rows) assertLegacyImportSourceRow(row);
+  }
+  if (hasTable(db, 'session_metadata_import_sources')) {
+    assertReleasedLegacyRetirementShape(db, 'session_metadata_import_sources');
+    const rows = db
+      .prepare(`
+        SELECT source_path, fingerprint, session_id, imported_at
+        FROM session_metadata_import_sources
+        ORDER BY source_path
+      `)
+      .all() as Array<Record<string, unknown>>;
+    const sessionExists = db.prepare('SELECT 1 FROM session_metadata WHERE session_id = ?');
+    for (const row of rows) {
+      assertLegacyImportSourceRow(row);
+      if (
+        typeof row.session_id !== 'string' ||
+        row.session_id.length === 0 ||
+        !sessionExists.get(row.session_id)
+      ) {
+        throw new Error('Legacy session import source is incomplete or invalid');
+      }
+    }
+  }
+
+  db.exec(`
+    DROP TABLE IF EXISTS session_metadata_import_sources;
+    DROP TABLE IF EXISTS runtime_import_sources;
+    DROP TABLE IF EXISTS cutover_journal;
+  `);
+}
+
+function assertCompletedLegacyCutoverJournalRow(row: Record<string, unknown>): void {
+  // A store name absent from the released contract yields `undefined` here,
+  // which fails closed below — an empty or non-string name lands the same way.
+  const expectedValidationKeys =
+    typeof row.store_name === 'string'
+      ? RELEASED_CUTOVER_STORE_VALIDATION_KEYS.get(row.store_name)
+      : undefined;
+  if (
+    expectedValidationKeys === undefined ||
+    typeof row.source_path !== 'string' ||
+    row.source_path.length === 0 ||
+    typeof row.source_fingerprint !== 'string' ||
+    row.source_fingerprint.length === 0 ||
+    row.state !== 'completed' ||
+    !isNonnegativeInteger(row.started_at) ||
+    !isNonnegativeInteger(row.completed_at) ||
+    typeof row.validation_json !== 'string'
+  ) {
+    throw new Error('Legacy operational cutover journal is incomplete or invalid');
+  }
+  let validation: unknown;
+  try {
+    validation = JSON.parse(row.validation_json);
+  } catch {
+    throw new Error('Legacy operational cutover journal has invalid validation evidence');
+  }
+  if (
+    typeof validation !== 'object' ||
+    validation === null ||
+    Array.isArray(validation) ||
+    !Object.values(validation).every(isNonnegativeInteger) ||
+    // The evidence keys must be exactly the set the released writer emitted for
+    // this store: a missing, extra, or renamed key is a contract this build
+    // never produced, so the journal is preserved rather than retired.
+    !hasExactValidationKeys(validation as Record<string, unknown>, expectedValidationKeys)
+  ) {
+    throw new Error('Legacy operational cutover journal has invalid validation evidence');
+  }
+}
+
+function hasExactValidationKeys(
+  validation: Record<string, unknown>,
+  expected: ReadonlySet<string>,
+): boolean {
+  const keys = Object.keys(validation);
+  return keys.length === expected.size && keys.every((key) => expected.has(key));
+}
+
+function assertLegacyImportSourceRow(row: Record<string, unknown>): void {
+  if (
+    typeof row.source_path !== 'string' ||
+    row.source_path.length === 0 ||
+    typeof row.fingerprint !== 'string' ||
+    row.fingerprint.length === 0 ||
+    !isNonnegativeInteger(row.imported_at)
+  ) {
+    throw new Error('Legacy operational import source is incomplete or invalid');
+  }
+}
+
+function isNonnegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function registerSchema(db: DatabaseSync, scope: string, version: number, appliedAt: number): void {

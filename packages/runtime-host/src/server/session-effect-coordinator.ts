@@ -192,7 +192,7 @@ export class HostSessionEffectCoordinator {
       }
 
       const header = await this.#readSessionHeader(input.sessionId);
-      if (header.isArchived || header.status === 'archived') {
+      if (header.isArchived) {
         return settledRecap(
           recapFailure('session_archived', 'Archived Session cannot generate a recap'),
         );

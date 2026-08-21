@@ -66,7 +66,7 @@ export function deriveProviderAuthContract(input: ProviderAuthContractInput): Pr
   // Unknown providerType (legacy seed, or a connection persisted on a branch
   // that registers a provider this build doesn't know) → surface a non-real,
   // non-actionable contract so the settings row renders instead of crashing.
-  // Mirrors `isFakeBackend` in connection-readiness.ts.
+  // Mirrors `isRealConnection` in connection-readiness.ts.
   if (!defaults) {
     return {
       providerType: input.providerType,

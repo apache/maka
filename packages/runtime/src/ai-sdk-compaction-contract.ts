@@ -129,6 +129,17 @@ export interface HistoryCompactSummaryInput {
    */
   providerRequestTracker?: ProviderRequestTracker;
 }
+/**
+ * Produces the checkpoint summary that REPLACES the folded history. A string
+ * result must satisfy the mandated checkpoint format — the sections, fence,
+ * truncation, and size-floor rules owned by
+ * `history-compact-summary-validation.ts` (its `SUMMARY_FORMAT_TEMPLATE` is
+ * the shape to emit) — because every checkpoint write gate rejects a
+ * defective summary and fails the compaction open (#3029). A free-form
+ * plain-text summary is no longer persistable. Provider-native state objects
+ * bypass text validation; `undefined`/empty falls to the `empty_summary`
+ * gate.
+ */
 export type HistoryCompactSummarizer = (
   input: HistoryCompactSummaryInput,
 ) =>

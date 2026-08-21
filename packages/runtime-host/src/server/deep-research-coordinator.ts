@@ -107,7 +107,7 @@ export class HostDeepResearchCoordinator {
   > {
     try {
       const header = await this.#sessions.readHeaderSnapshot(sessionId);
-      if (header.isArchived || header.status === 'archived') {
+      if (header.isArchived) {
         return { code: 'session_archived', message: 'Session is archived' };
       }
       if (!isDeepResearchSession(header.labels)) {

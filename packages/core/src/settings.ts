@@ -232,6 +232,16 @@ export interface SystemSettings {
   keepSystemAwake: boolean;
 }
 
+/** Host-machine shell preference used by Bash tools and interactive PTYs. */
+export type ShellPreference = 'auto' | 'git_bash';
+
+export interface ShellSettings {
+  /** `auto` preserves the platform default; `git_bash` is an explicit Windows override. */
+  preference: ShellPreference;
+  /** Absolute executable selected by the user. Retained while `auto` is active for easy reuse. */
+  executable: string;
+}
+
 export interface AppSettings {
   schemaVersion: 1;
   network: AppNetworkSettings;
@@ -248,6 +258,7 @@ export interface AppSettings {
   projects: ProjectPreferencesSettings;
   notifications: NotificationSettings;
   system: SystemSettings;
+  shell: ShellSettings;
   subagents: SubagentSettings;
 }
 
@@ -350,6 +361,7 @@ export type UpdateAppSettingsInput = Partial<{
   projects: Partial<ProjectPreferencesSettings>;
   notifications: Partial<NotificationSettings>;
   system: Partial<SystemSettings>;
+  shell: Partial<ShellSettings>;
   webSearch: WebSearchSettingsPatch;
   subagents: SubagentSettings;
 }>;
@@ -430,6 +442,10 @@ export function createDefaultSettings(): AppSettings {
       // battery-affecting opt-in, not a silent default.
       keepSystemAwake: false,
     },
+    shell: {
+      preference: 'auto',
+      executable: '',
+    },
     subagents: { presets: [] },
   };
 }
@@ -501,6 +517,10 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ...current.system,
       ...(patch.system ?? {}),
     },
+    shell: {
+      ...current.shell,
+      ...(patch.shell ?? {}),
+    },
     webSearch: mergeWebSearchSettings(current.webSearch, patch.webSearch),
     subagents:
       patch.subagents === undefined
@@ -527,6 +547,7 @@ export function normalizeSettings(input: unknown): AppSettings {
     projects: value.projects,
     notifications: value.notifications,
     system: value.system,
+    shell: value.shell,
     subagents: value.subagents,
   });
   // PR110b: milestones bypass the generic patch surface so we can
@@ -605,12 +626,23 @@ export function normalizeSettings(input: unknown): AppSettings {
       keepSystemAwake:
         typeof base.system.keepSystemAwake === 'boolean' ? base.system.keepSystemAwake : false,
     },
+    shell: normalizeShellSettings(base.shell),
     subagents: normalizeSubagentSettings(base.subagents),
   };
 }
 
 function normalizeSelectedPetId(value: unknown): string | null {
   return isPetPackId(value) ? value : null;
+}
+
+function normalizeShellSettings(settings: ShellSettings): ShellSettings {
+  return {
+    preference: settings.preference === 'git_bash' ? 'git_bash' : 'auto',
+    executable:
+      typeof settings.executable === 'string'
+        ? settings.executable.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim()
+        : '',
+  };
 }
 
 function normalizeWorkspaceInstructionsSettings(

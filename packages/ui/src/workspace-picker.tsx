@@ -32,7 +32,6 @@ export function WorkspacePicker({ workspacePicker: picker }: {
 }) {
   const copy = getConversationCopy(useUiLocale()).workspace;
   const locked = picker.pending === true;
-  const selectedGroup = picker.groups.find((group) => group.id === picker.selectedGroupId);
 
   return (
     <DropdownMenu
@@ -67,8 +66,6 @@ export function WorkspacePicker({ workspacePicker: picker }: {
           const projects = group.projects.filter(
             (project) => project.archivedAt === undefined,
           );
-          const emptyUnselectedGroup =
-            group.id !== picker.selectedGroupId && projects.length === 0;
           return (
             <div
               key={group.id}
@@ -112,7 +109,7 @@ export function WorkspacePicker({ workspacePicker: picker }: {
                 />
               );
               })}
-              {emptyUnselectedGroup && group.onAdd ? (
+              {group.onAdd ? (
                 <DropdownMenuItem
                   icon={<Plus size={ICON_SIZE.meta} aria-hidden="true" />}
                   label={copy.addProject}
@@ -120,10 +117,14 @@ export function WorkspacePicker({ workspacePicker: picker }: {
                   onClick={group.onAdd}
                 />
               ) : null}
-              {emptyUnselectedGroup && group.onSelectNoProject ? (
+              {group.onSelectNoProject ? (
                 <DropdownMenuItem
                   icon={<X size={ICON_SIZE.meta} aria-hidden="true" />}
                   label={copy.noProject}
+                  endContent={picker.selectedGroupId === group.id &&
+                      group.selectedProjectId === null
+                    ? <Check size={ICON_SIZE.control} aria-hidden="true" />
+                    : undefined}
                   isDisabled={locked || group.disabled}
                   onClick={group.onSelectNoProject}
                 />
@@ -132,35 +133,14 @@ export function WorkspacePicker({ workspacePicker: picker }: {
           );
         })}
       </div> : null}
-      {selectedGroup?.onAdd || selectedGroup?.onSelectNoProject || picker.retry ? (
+      {picker.retry ? (
         <div role="group" className="maka-workspace-picker-actions">
-          {selectedGroup?.onAdd ? (
-            <DropdownMenuItem
-              icon={<Plus size={ICON_SIZE.meta} aria-hidden="true" />}
-              label={copy.addProject}
-              isDisabled={locked || selectedGroup.disabled}
-              onClick={selectedGroup.onAdd}
-            />
-          ) : null}
-          {selectedGroup?.onSelectNoProject ? (
-            <DropdownMenuItem
-              icon={<X size={ICON_SIZE.meta} aria-hidden="true" />}
-              label={copy.noProject}
-              endContent={selectedGroup.selectedProjectId === null
-                ? <Check size={ICON_SIZE.control} aria-hidden="true" />
-                : undefined}
-              isDisabled={locked || selectedGroup.disabled}
-              onClick={selectedGroup.onSelectNoProject}
-            />
-          ) : null}
-          {picker.retry ? (
-            <DropdownMenuItem
-              icon={<RefreshCcw size={ICON_SIZE.meta} aria-hidden="true" />}
-              label={picker.retry.label}
-              isDisabled={locked}
-              onClick={picker.retry.onClick}
-            />
-          ) : null}
+          <DropdownMenuItem
+            icon={<RefreshCcw size={ICON_SIZE.meta} aria-hidden="true" />}
+            label={picker.retry.label}
+            isDisabled={locked}
+            onClick={picker.retry.onClick}
+          />
         </div>
       ) : null}
     </DropdownMenu>

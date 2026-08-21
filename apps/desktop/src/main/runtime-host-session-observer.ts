@@ -445,6 +445,11 @@ export class RuntimeHostSessionObserver {
     void this.#closeIfIdle(state);
   }
 
+  observedRunningTurnIds(sessionId: string): string[] {
+    const root = this.#states.get(sessionId)?.snapshot?.rootTurn;
+    return root && !isTerminalTurn(root) ? [root.turnId] : [];
+  }
+
   activeInteraction(
     sessionId: string,
     interactionId: string,

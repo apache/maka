@@ -1120,7 +1120,6 @@ async function withProtocolPeer(
     });
     const connected = await connectRuntimeHost({
       rootPath: join(base, 'root'),
-      surface: 'tui',
       protocol: PROTOCOL,
     });
     assert.equal(connected.kind, 'connected');

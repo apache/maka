@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   candidateStartupFailureForExitCode,
-  type CandidateStartupFailure,
+  type CandidateStartupFailureReport,
 } from '../candidate-startup-failure.js';
 
 export interface DetachedCandidateInput {
@@ -13,7 +14,6 @@ export interface DetachedCandidateInput {
   initialConnectionTimeoutMs?: number;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
-  desktopE2e?: boolean;
   executable?: string;
   entrypoint: string | URL;
   env?: NodeJS.ProcessEnv;
@@ -21,7 +21,7 @@ export interface DetachedCandidateInput {
 
 export interface DetachedCandidateAttempt {
   pid: number;
-  startupFailure?: Promise<CandidateStartupFailure | undefined>;
+  startupFailure?: Promise<CandidateStartupFailureReport | undefined>;
 }
 
 export interface OwnedCandidateAttempt extends DetachedCandidateAttempt {
@@ -38,8 +38,9 @@ export type CandidateLauncher = (input: DetachedCandidateInput) => DetachedCandi
 export function launchDetachedRuntimeHostCandidate(
   input: DetachedCandidateInput,
 ): DetachedCandidateLaunch {
-  const child = spawnCandidate(input, true);
-  const startupFailure = readStartupFailure(child);
+  const startupAttemptId = randomUUID();
+  const child = spawnCandidate(input, true, startupAttemptId);
+  const startupFailure = readStartupFailure(child, startupAttemptId);
   const spawned = spawnedPid(child).then(({ pid }) => {
     child.unref();
     return { pid, startupFailure };
@@ -50,8 +51,9 @@ export function launchDetachedRuntimeHostCandidate(
 export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): {
   readonly spawned: Promise<OwnedCandidateAttempt>;
 } {
-  const child = spawnCandidate(input, false);
-  const startupFailure = readStartupFailure(child);
+  const startupAttemptId = randomUUID();
+  const child = spawnCandidate(input, false, startupAttemptId);
+  const startupFailure = readStartupFailure(child, startupAttemptId);
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
@@ -73,7 +75,11 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
   };
 }
 
-function spawnCandidate(input: DetachedCandidateInput, detached: boolean) {
+function spawnCandidate(
+  input: DetachedCandidateInput,
+  detached: boolean,
+  startupAttemptId: string,
+) {
   const executable = input.executable ?? process.execPath;
   const args = [
     typeof input.entrypoint === 'string' ? input.entrypoint : fileURLToPath(input.entrypoint),
@@ -81,12 +87,13 @@ function spawnCandidate(input: DetachedCandidateInput, detached: boolean) {
     input.rootPath,
     '--expected-root-id',
     input.expectedRootId,
+    '--startup-attempt-id',
+    startupAttemptId,
   ];
   appendArgument(args, '--initial-connection-timeout-ms', input.initialConnectionTimeoutMs);
   appendArgument(args, '--idle-grace-ms', input.idleGraceMs);
   appendArgument(args, '--handshake-timeout-ms', input.handshakeTimeoutMs);
   appendArgument(args, '--generation', input.generation);
-  if (input.desktopE2e) args.push('--desktop-e2e', '1');
 
   // spawn() commits the side effect synchronously; spawned only reports that commit's outcome.
   const child = spawn(executable, args, {
@@ -125,9 +132,13 @@ function spawnedPid(child: ReturnType<typeof spawn>): Promise<{ pid: number }> {
 
 function readStartupFailure(
   child: ReturnType<typeof spawn>,
-): Promise<CandidateStartupFailure | undefined> {
+  startupAttemptId: string,
+): Promise<CandidateStartupFailureReport | undefined> {
   return new Promise((resolve) => {
-    child.once('exit', (code) => resolve(candidateStartupFailureForExitCode(code)));
+    child.once('exit', (code) => {
+      const failure = candidateStartupFailureForExitCode(code);
+      resolve(failure ? { ...failure, startupAttemptId } : undefined);
+    });
     child.once('error', () => resolve(undefined));
   });
 }

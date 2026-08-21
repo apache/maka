@@ -19,6 +19,7 @@ import {
 } from '@maka/storage/execution-stores';
 import {
   SESSION_CATALOG_RESULT_MAX_BYTES,
+  SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS,
   SESSION_TURN_QUERY_RESULT_MAX_BYTES,
   type SessionConfigurationUpdateInput,
   type SessionTurnContribution,
@@ -40,7 +41,6 @@ type SessionContinuity = HostSessionCatalogCoordinatorOptions['continuity'];
 const context: ConnectionContext = {
   hostEpoch: 'session-catalog-test-epoch',
   connectionId: 'session-catalog-test-client',
-  surface: 'desktop',
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
@@ -124,6 +124,9 @@ test('reduces turn pages to their encoded wire budget without skipping contribut
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
   const fixture = createFixture({
     labels: ['old-user-label', DEEP_RESEARCH_SESSION_LABEL],
+    manager: {
+      runningTurnIds: () => ['turn-live'],
+    },
   });
 
   const outcome = await fixture.coordinator.handlers['session.metadata.update'](
@@ -145,7 +148,103 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
     assert.fail('Metadata replacement returned an unsupported Session projection');
   }
   assert.deepEqual(outcome.result.session.labels, ['new-user-label', DEEP_RESEARCH_SESSION_LABEL]);
+  assert.equal(Object.hasOwn(outcome.result.session, 'liveRunState'), false);
   assert.equal(fixture.drainRequests(), 0);
+});
+
+test('catalog queries project known-empty and running state from Runtime authority', async () => {
+  let runningTurnIds: readonly string[] = [];
+  const fixture = createFixture({
+    manager: {
+      runningTurnIds: () => [...runningTurnIds],
+    },
+  });
+
+  const emptyOutcome = await fixture.coordinator.handlers['session.catalog.query'](
+    { kind: 'get', sessionId: fixture.sessionId },
+    context,
+  );
+  assert.equal(emptyOutcome.ok, true);
+  if (!emptyOutcome.ok || emptyOutcome.result.kind !== 'session' || !emptyOutcome.result.session) {
+    assert.fail('Catalog get did not return a Session');
+  }
+  if ('kind' in emptyOutcome.result.session) {
+    assert.fail('Catalog get returned an unsupported Session projection');
+  }
+  assert.deepEqual(emptyOutcome.result.session.liveRunState, {
+    schemaVersion: 1,
+    runningTurnIds: [],
+  });
+
+  runningTurnIds = ['turn-live'];
+  const runningOutcome = await fixture.coordinator.handlers['session.catalog.query'](
+    { kind: 'list_start' },
+    context,
+  );
+  assert.equal(runningOutcome.ok, true);
+  if (!runningOutcome.ok || runningOutcome.result.kind !== 'page') {
+    assert.fail('Catalog list did not return a page');
+  }
+  const session = runningOutcome.result.sessions[0];
+  if (!session || 'kind' in session) {
+    assert.fail('Catalog list returned an unsupported Session projection');
+  }
+  assert.deepEqual(session.liveRunState, {
+    schemaVersion: 1,
+    runningTurnIds: ['turn-live'],
+  });
+});
+
+test('catalog queries de-duplicate Runtime live turn ids in stable order', async () => {
+  const fixture = createFixture({
+    manager: {
+      runningTurnIds: () =>
+        Array.from({ length: SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS + 1 }, (_, index) =>
+          index % 2 === 0 ? 'turn-a' : 'turn-b',
+        ),
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.catalog.query'](
+    { kind: 'get', sessionId: fixture.sessionId },
+    context,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok || outcome.result.kind !== 'session' || !outcome.result.session) {
+    assert.fail('Catalog get did not return a Session');
+  }
+  if ('kind' in outcome.result.session) {
+    assert.fail('Catalog get returned an unsupported Session projection');
+  }
+  assert.deepEqual(outcome.result.session.liveRunState, {
+    schemaVersion: 1,
+    runningTurnIds: ['turn-a', 'turn-b'],
+  });
+});
+
+test('catalog queries leave live run state unknown when unique turns exceed the wire limit', async () => {
+  const fixture = createFixture({
+    manager: {
+      runningTurnIds: () =>
+        Array.from(
+          { length: SESSION_CATALOG_RUNNING_TURN_MAX_ITEMS + 1 },
+          (_, index) => `turn-${index}`,
+        ),
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.catalog.query'](
+    { kind: 'get', sessionId: fixture.sessionId },
+    context,
+  );
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok || outcome.result.kind !== 'session' || !outcome.result.session) {
+    assert.fail('Catalog get did not return a Session');
+  }
+  if ('kind' in outcome.result.session) {
+    assert.fail('Catalog get returned an unsupported Session projection');
+  }
+  assert.equal(Object.hasOwn(outcome.result.session, 'liveRunState'), false);
 });
 
 test('metadata commit uncertainty requests Host drain, while a typed conflict does not', async () => {
@@ -862,6 +961,32 @@ test('catalog paging stops before the encoded 48 KiB result boundary', async () 
   );
 });
 
+test('rejects a legacy cursor that carries a Session catalog filter', async () => {
+  const fixture = createFixture();
+  const cursor = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      activityAt: 1,
+      sessionId: 'session-1',
+      filter: { isArchived: false },
+    }),
+    'utf8',
+  ).toString('base64url');
+
+  const outcome = await fixture.coordinator.handlers['session.catalog.query'](
+    {
+      kind: 'list_continue',
+      revision: 'sha256:test',
+      cursor,
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, false);
+  if (outcome.ok) assert.fail('Legacy filtered cursor must be rejected');
+  assert.equal(outcome.error.code, 'invalid_request');
+});
+
 function createFixture(
   options: {
     readonly labels?: readonly string[];
@@ -914,6 +1039,7 @@ function createFixture(
   };
   const runtimePolicy = runtimePolicyFixture(options.connection ?? {});
   const manager: ConfigurationAuthority = {
+    runningTurnIds: () => [],
     transitionSessionConfiguration: async (_sessionId, input) => {
       header = {
         ...header,

@@ -15,6 +15,13 @@ export const PROJECT_CATALOG_PAGE_MAX_BYTES = 48 * 1024;
 export const PROJECT_CATALOG_CURSOR_MAX_BYTES = 128;
 export const PROJECT_CATALOG_NAME_MAX_BYTES = 16 * 1024;
 export const PROJECT_CATALOG_PATH_MAX_BYTES = 4 * 1024;
+export const PROJECT_DIRECTORY_PAGE_MAX_ITEMS = 128;
+export const PROJECT_DIRECTORY_PAGE_MAX_BYTES = 32 * 1024;
+export const PROJECT_DIRECTORY_MAX_ENTRIES = 4_096;
+export const PROJECT_DIRECTORY_MAX_ROOTS = 8;
+export const PROJECT_DIRECTORY_MAX_SEGMENTS = 64;
+export const PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES = 128;
+export const PROJECT_DIRECTORY_SEGMENT_MAX_BYTES = 255;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -84,7 +91,7 @@ export type ProjectCatalogPageItem =
       readonly location: ProjectCatalogLocation;
     };
 
-export type ProjectCatalogQueryInput =
+type ProjectCatalogListQueryInput =
   | { readonly kind: 'list_start'; readonly view: ProjectCatalogView }
   | {
       readonly kind: 'list_continue';
@@ -93,7 +100,7 @@ export type ProjectCatalogQueryInput =
       readonly cursor: string;
     };
 
-export type ProjectCatalogQueryResult =
+type ProjectCatalogListQueryResult =
   | {
       readonly kind: 'page';
       readonly view: ProjectCatalogView;
@@ -111,6 +118,7 @@ export type ProjectCatalogQueryResult =
 
 export type ProjectCatalogMutateInput =
   | { readonly kind: 'register'; readonly path: string }
+  | ({ readonly kind: 'register_directory' } & ProjectDirectoryRegisterInput)
   | { readonly kind: 'relink'; readonly projectId: string; readonly path: string }
   | { readonly kind: 'rename'; readonly projectId: string; readonly name: string }
   | { readonly kind: 'archive'; readonly projectId: string }
@@ -120,6 +128,47 @@ export type ProjectCatalogMutateResult = {
   readonly kind: 'project';
   readonly project: ProjectCatalogProject;
 };
+
+export interface ProjectDirectoryRoot {
+  readonly id: string;
+  readonly label: string;
+}
+
+export interface ProjectDirectoryEntry {
+  readonly name: string;
+}
+
+export type ProjectDirectoryQueryInput =
+  | { readonly kind: 'directory_roots' }
+  | {
+      readonly kind: 'directory_list_start';
+      readonly rootId: string;
+      readonly segments: readonly string[];
+    }
+  | {
+      readonly kind: 'directory_list_continue';
+      readonly rootId: string;
+      readonly segments: readonly string[];
+      readonly cursor: string;
+    };
+
+export type ProjectDirectoryQueryResult =
+  | { readonly kind: 'directory_roots'; readonly roots: readonly ProjectDirectoryRoot[] }
+  | {
+      readonly kind: 'directory_page';
+      readonly rootId: string;
+      readonly segments: readonly string[];
+      readonly entries: readonly ProjectDirectoryEntry[];
+      readonly nextCursor: string | null;
+    };
+
+export interface ProjectDirectoryRegisterInput {
+  readonly rootId: string;
+  readonly segments: readonly string[];
+}
+
+export type ProjectCatalogQueryInput = ProjectCatalogListQueryInput | ProjectDirectoryQueryInput;
+export type ProjectCatalogQueryResult = ProjectCatalogListQueryResult | ProjectDirectoryQueryResult;
 
 export const PROJECT_CATALOG_OPERATION_SPECS = {
   'project.catalog.query': defineHostPathOperation<
@@ -134,12 +183,15 @@ export const PROJECT_CATALOG_OPERATION_SPECS = {
       decodeInput: decodeProjectCatalogQueryInput,
       decodeOutput: decodeProjectCatalogQueryResult,
       assertOutputForInput: (input, output) => {
-        if (input.view !== output.view) {
+        if ('view' in input && (!('view' in output) || input.view !== output.view)) {
           throw invalidProtocolFrame('Project catalog view changed');
+        }
+        if ('rootId' in input && (!('rootId' in output) || input.rootId !== output.rootId)) {
+          throw invalidProtocolFrame('Project directory root changed');
         }
       },
     },
-    (input) => input.view === 'locations',
+    (input) => 'view' in input && input.view === 'locations',
   ),
   'project.catalog.mutate': defineHostPathOperation<
     ProjectCatalogMutateInput,
@@ -157,8 +209,121 @@ export const PROJECT_CATALOG_OPERATION_SPECS = {
   ),
 } as const;
 
+export function decodeProjectDirectoryQueryInput(value: unknown): ProjectDirectoryQueryInput {
+  const record = requireRecord(value, 'project directory query input');
+  if (record.kind === 'directory_roots') {
+    requireExactRecord(record, 'project directory roots input', ['kind']);
+    return { kind: 'directory_roots' };
+  }
+  if (record.kind === 'directory_list_start') {
+    const input = requireExactRecord(record, 'project directory list input', [
+      'kind',
+      'rootId',
+      'segments',
+    ]);
+    return {
+      kind: 'directory_list_start',
+      rootId: projectDirectoryRootId(input.rootId),
+      segments: projectDirectorySegments(input.segments),
+    };
+  }
+  if (record.kind === 'directory_list_continue') {
+    const input = requireExactRecord(record, 'project directory continuation input', [
+      'kind',
+      'rootId',
+      'segments',
+      'cursor',
+    ]);
+    return {
+      kind: 'directory_list_continue',
+      rootId: projectDirectoryRootId(input.rootId),
+      segments: projectDirectorySegments(input.segments),
+      cursor: projectDirectorySegment(input.cursor, 'project directory cursor'),
+    };
+  }
+  throw invalidProtocolFrame('Invalid project directory query kind');
+}
+
+export function decodeProjectDirectoryQueryResult(value: unknown): ProjectDirectoryQueryResult {
+  const record = requireRecord(value, 'project directory query result');
+  if (record.kind === 'directory_roots') {
+    const result = requireExactRecord(record, 'project directory roots result', ['kind', 'roots']);
+    if (!Array.isArray(result.roots) || result.roots.length > PROJECT_DIRECTORY_MAX_ROOTS) {
+      throw invalidProtocolFrame('Invalid project directory roots');
+    }
+    return {
+      kind: 'directory_roots',
+      roots: result.roots.map((value) => {
+        const root = requireExactRecord(value, 'project directory root', ['id', 'label']);
+        return {
+          id: projectDirectoryRootId(root.id),
+          label: projectDirectoryRootLabel(root.label),
+        };
+      }),
+    };
+  }
+  if (record.kind !== 'directory_page') {
+    throw invalidProtocolFrame('Invalid project directory result kind');
+  }
+  const result = requireExactRecord(record, 'project directory page', [
+    'kind',
+    'rootId',
+    'segments',
+    'entries',
+    'nextCursor',
+  ]);
+  if (!Array.isArray(result.entries) || result.entries.length > PROJECT_DIRECTORY_PAGE_MAX_ITEMS) {
+    throw invalidProtocolFrame('Invalid project directory entries');
+  }
+  const decoded: ProjectDirectoryQueryResult = {
+    kind: 'directory_page',
+    rootId: projectDirectoryRootId(result.rootId),
+    segments: projectDirectorySegments(result.segments),
+    entries: result.entries.map((value) => {
+      const entry = requireExactRecord(value, 'project directory entry', ['name']);
+      return { name: projectDirectorySegment(entry.name, 'project directory entry name') };
+    }),
+    nextCursor:
+      result.nextCursor === null
+        ? null
+        : projectDirectorySegment(result.nextCursor, 'project directory cursor'),
+  };
+  requireEncodedByteLimit(decoded, 'project directory page', PROJECT_DIRECTORY_PAGE_MAX_BYTES);
+  return decoded;
+}
+
+function projectDirectoryRootLabel(value: unknown): string {
+  const label = requireUtf8String(
+    value,
+    'project directory root label',
+    PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
+  );
+  if (label !== label.trim() || /[\u0000-\u001f\u007f]/u.test(label)) {
+    throw invalidProtocolFrame('Invalid project directory root label');
+  }
+  return label;
+}
+
+export function decodeProjectDirectoryRegisterInput(value: unknown): ProjectDirectoryRegisterInput {
+  const input = requireExactRecord(value, 'project directory register input', [
+    'kind',
+    'rootId',
+    'segments',
+  ]);
+  if (input.kind !== 'register_directory') {
+    throw invalidProtocolFrame('Invalid project directory register kind');
+  }
+  return {
+    rootId: projectDirectoryRootId(input.rootId),
+    segments: projectDirectorySegments(input.segments),
+  };
+}
+
 export function decodeProjectCatalogQueryInput(value: unknown): ProjectCatalogQueryInput {
   const record = requireRecord(value, 'project catalog query input');
+  if (typeof record.kind === 'string' && record.kind.startsWith('directory_')) {
+    return decodeProjectDirectoryQueryInput(record);
+  }
   if (record.kind === 'list_start') {
     const input = requireExactRecord(record, 'project catalog list start input', ['kind', 'view']);
     return { kind: 'list_start', view: projectCatalogView(input.view) };
@@ -186,6 +351,9 @@ export function decodeProjectCatalogQueryInput(value: unknown): ProjectCatalogQu
 
 export function decodeProjectCatalogQueryResult(value: unknown): ProjectCatalogQueryResult {
   const record = requireRecord(value, 'project catalog query result');
+  if (typeof record.kind === 'string' && record.kind.startsWith('directory_')) {
+    return decodeProjectDirectoryQueryResult(record);
+  }
   if (record.kind === 'revision_changed') {
     const result = requireExactRecord(record, 'project catalog revision changed result', [
       'kind',
@@ -238,6 +406,12 @@ export function decodeProjectCatalogMutateInput(value: unknown): ProjectCatalogM
     case 'register': {
       const input = requireExactRecord(record, 'project register input', ['kind', 'path']);
       return { kind: 'register', path: absolutePath(input.path, 'project path') };
+    }
+    case 'register_directory': {
+      return {
+        kind: 'register_directory',
+        ...decodeProjectDirectoryRegisterInput(record),
+      };
     }
     case 'archive':
     case 'restore': {
@@ -419,6 +593,25 @@ export function decodeProjectCatalogProjectDetails(value: unknown): ProjectCatal
 
 function projectId(value: unknown): string {
   return requireEntityId(value, 'projectId');
+}
+
+function projectDirectoryRootId(value: unknown): string {
+  return requireEntityId(value, 'project directory root id');
+}
+
+function projectDirectorySegments(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length > PROJECT_DIRECTORY_MAX_SEGMENTS) {
+    throw invalidProtocolFrame('Invalid project directory segments');
+  }
+  return value.map((segment) => projectDirectorySegment(segment, 'project directory segment'));
+}
+
+function projectDirectorySegment(value: unknown, label: string): string {
+  const segment = requireUtf8String(value, label, PROJECT_DIRECTORY_SEGMENT_MAX_BYTES);
+  if (segment === '.' || segment === '..' || segment.includes('/') || segment.includes('\\')) {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
+  return segment;
 }
 
 function absolutePath(value: unknown, label: string): string {

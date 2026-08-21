@@ -5,12 +5,14 @@ import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/co
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import {
+  readRuntimeHostAgentGraphEpochs,
   readRuntimeHostInvocableSkills,
   readRuntimeHostProjects,
+  type AgentGraphEpochDirectory,
   type RuntimeHostConnection,
   type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
-import type { WorkspaceTarget } from '@maka/runtime-host/protocol';
+import type { AgentGraphClientSnapshot, WorkspaceTarget } from '@maka/runtime-host/protocol';
 import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
 import type {
   MakaPiTuiTurnActivitySurface,
@@ -38,6 +40,10 @@ export interface RuntimeHostTuiContext {
   readonly modelChoices: readonly ModelChoice[];
   readonly turnActivity: MakaPiTuiTurnActivitySurface;
   readonly listSkills: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
+  readonly agentGraphHistory: {
+    listEpochs(rootSessionId: string): Promise<AgentGraphEpochDirectory>;
+    getSnapshot(rootSessionId: string, graphId: string): Promise<AgentGraphClientSnapshot>;
+  };
   readonly recap: SessionRecapGenerator;
   readonly onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface>;
   readonly profile: RuntimeHostProfile;
@@ -59,7 +65,7 @@ export async function createRuntimeHostTuiContext(
   const connected = await connectRuntimeHostCli({
     clientDataRoot: input.clientDataRoot,
     rootPath: input.rootPath,
-    surface: 'tui',
+    interactiveSsh: true,
     ...(input.hostProfileId ? { profileId: input.hostProfileId } : {}),
   });
   const connection = connected.connection;
@@ -101,6 +107,7 @@ export async function createRuntimeHostTuiContext(
             (connected.profile.kind === 'local' ? { kind: 'host_path', path: cwd } : undefined),
           driver.getPermissionMode?.() ?? 'ask',
         ),
+      agentGraphHistory: createRuntimeHostAgentGraphHistory(connection),
       recap: createRuntimeHostRecapGenerator(connection),
       onboarding: createRuntimeHostOnboardingSurface(connection),
       profile: connected.profile,
@@ -110,6 +117,16 @@ export async function createRuntimeHostTuiContext(
     await connection.close().catch(() => undefined);
     throw error;
   }
+}
+
+function createRuntimeHostAgentGraphHistory(
+  connection: RuntimeHostConnection,
+): RuntimeHostTuiContext['agentGraphHistory'] {
+  return {
+    listEpochs: (rootSessionId) => readRuntimeHostAgentGraphEpochs(connection, rootSessionId),
+    getSnapshot: (rootSessionId, graphId) =>
+      connection.request('agent.graph.query', { rootSessionId, graphId }),
+  };
 }
 
 function createRuntimeHostRecapGenerator(connection: RuntimeHostConnection): SessionRecapGenerator {

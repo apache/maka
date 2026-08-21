@@ -36,6 +36,26 @@ export function googleApiUrl(baseUrl: string, path: string, apiKey: string): str
   return `${googleV1BetaBaseUrl(baseUrl)}${cleanPath}?key=${encodeURIComponent(apiKey)}`;
 }
 
+/** Normalize an Open Responses endpoint without assuming a `/v1` prefix. */
+export function openResponsesUrl(baseUrl: string): string {
+  const url = new URL(baseUrl);
+  const basePath = url.pathname.replace(/\/+$/, '').replace(/\/responses$/i, '');
+  url.pathname = `${basePath}/responses`;
+  return url.toString();
+}
+
+/**
+ * Inverse of {@link openResponsesUrl} for the native OpenAI adapter: it
+ * appends `/responses` internally, so an endpoint-form override
+ * (`…/v1/responses`, which the probe accepts) must be reduced back to its
+ * base or the model request lands on `/responses/responses` (#2972).
+ */
+export function openAiResponsesBaseUrl(baseUrl: string): string {
+  const url = new URL(baseUrl);
+  url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/responses$/i, '');
+  return url.toString();
+}
+
 function stripTrailing(u: string): string {
   return u.replace(/\/+$/, '');
 }

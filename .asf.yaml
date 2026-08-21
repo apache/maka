@@ -1,0 +1,85 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Reference: https://github.com/apache/infrastructure-asfyaml
+
+github:
+  description: >-
+    Apache Maka (Incubating) is a local-first AI agent workspace.
+    Model messages, tool calls, tool results, permission decisions,
+    and termination events are recorded as an append-only log.
+  labels:
+    - ai
+    - ai-agent
+    - agent-runtime
+    - local-first
+    - llm
+    - tool-use
+    - event-sourcing
+    - desktop
+    - electron
+    - typescript
+    - cli
+    - apache
+    - maka
+  features:
+    issues: true
+    wiki: false
+    projects: false
+    discussions: true
+  enabled_merge_buttons:
+    squash: true
+    merge: false
+    rebase: false
+  pull_requests:
+    del_branch_on_merge: true
+  dependabot_alerts: true
+  protected_branches:
+    main:
+      required_pull_request_reviews:
+        dismiss_stale_reviews: true
+        required_approving_review_count: 1
+      required_status_checks:
+        strict: false
+        # test is the single job in .github/workflows/ci.yml, covering lint,
+        # format, build, tsc, knip, the selected workspace suites, e2e and
+        # Storybook. Renaming it there, or adding a paths filter that stops
+        # ci.yml from running, freezes every pull request: the check never
+        # reports and no committer can override it.
+        contexts:
+          - test
+
+  environments:
+    # release holds the Apple notarization and code signing credentials used by
+    # .github/workflows/release-desktop.yml. That workflow's own branch guard
+    # sits inside the file it is meant to protect, so this policy is the only
+    # boundary GitHub enforces from outside the workflow.
+    #
+    # Naming an environment here replaces its settings wholesale, so restate
+    # its full configuration when adding one. npm-release carries a required
+    # reviewer and a branch policy that live only on GitHub.
+    release:
+      deployment_branch_policy:
+        policies:
+          - name: main
+            type: branch
+
+notifications:
+  commits:      commits@maka.apache.org
+  discussions:  dev@maka.apache.org 
+  issues:       commits@maka.apache.org
+  pullrequests: commits@maka.apache.org

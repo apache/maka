@@ -43,6 +43,7 @@ test('remote Project capabilities do not dispatch Client-local actions', async (
       projects: [],
       projectCapabilities: {
         chooseClientDirectory: false,
+        chooseHostDirectory: false,
         selectNoProject: false,
         setLocalDefault: false,
         viewClientPath: false,

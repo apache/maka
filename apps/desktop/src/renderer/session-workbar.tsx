@@ -53,7 +53,6 @@ import { Kbd } from '@astryxdesign/core/Kbd';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { Section } from '@astryxdesign/core/Section';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { Toolbar } from '@astryxdesign/core/Toolbar';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import type { SessionSummary } from '@maka/core/session';
 import { QuoteCompanionPanel } from './quote-companion-panel';
@@ -68,6 +67,7 @@ import {
   terminalRefFromWorkbarTab,
 } from './session-workbar-tabs';
 import { useSessionTasks } from './use-session-tasks';
+import { WorkbarToggle } from './app-shell-chrome-actions';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import type {
   CompanionQuoteTarget,
@@ -226,6 +226,7 @@ function WorkbarTabStrip(props: {
   onMoveToPanel: (tabId: string, target: SessionWorkbarPlacement) => void;
   onPin: (tabId: string) => void;
   onOpenLauncher: () => void;
+  onCollapseRightPanel?: () => void;
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
   const tabListRef = useRef<HTMLDivElement>(null);
@@ -370,6 +371,13 @@ function WorkbarTabStrip(props: {
           onClick={props.onOpenLauncher}
         />
       </Tooltip>
+      {props.placement === 'right' && props.onCollapseRightPanel ? (
+        <WorkbarToggle
+          collapsed={false}
+          className="maka-workbar-panel-toggle"
+          onToggle={props.onCollapseRightPanel}
+        />
+      ) : null}
     </div>
   );
 }
@@ -606,27 +614,29 @@ function WorkbarLauncher(props: {
   ];
   return (
     <div className="maka-workbar-launcher">
-      <List
-        className="maka-workbar-launcher-list"
-        density="compact"
-        header={<Heading level={4}>{copy.openTools}</Heading>}
-      >
-        {actions.map((action) => (
-          <ListItem
-            key={action.kind}
-            startContent={<Icon icon={action.icon} size="sm" color="secondary" />}
-            label={action.label}
-            description={action.description}
-            endContent={
-              action.shortcut ? (
-                <Kbd keys={action.shortcut} />
-              ) : undefined
-            }
-            isDisabled={action.disabled}
-            onClick={() => props.onOpen(action.kind)}
-          />
-        ))}
-      </List>
+      <div className="maka-workbar-launcher-frame">
+        <List
+          className="maka-workbar-launcher-list"
+          density="compact"
+          header={<Heading level={4}>{copy.openTools}</Heading>}
+        >
+          {actions.map((action) => (
+            <ListItem
+              key={action.kind}
+              startContent={<Icon icon={action.icon} size="sm" color="secondary" />}
+              label={action.label}
+              description={action.description}
+              endContent={
+                action.shortcut ? (
+                  <Kbd keys={action.shortcut} />
+                ) : undefined
+              }
+              isDisabled={action.disabled}
+              onClick={() => props.onOpen(action.kind)}
+            />
+          ))}
+        </List>
+      </div>
     </div>
   );
 }
@@ -693,7 +703,8 @@ export function SessionWorkbar(props: {
         const activeTab = panel.tabs.find((tab) => tab.id === panel.activeTabId);
         const showingLauncher = panel.launcherOpen || !activeTab;
         const visible =
-          placement === 'right' ? !props.rightCollapsed : props.bottomOpen;
+          !props.hidden &&
+          (placement === 'right' ? !props.rightCollapsed : props.bottomOpen);
         return (
           <Card
             key={placement}
@@ -707,34 +718,38 @@ export function SessionWorkbar(props: {
             role="complementary"
             aria-label={copy.ariaLabel}
           >
-            <Toolbar
+            <div
               className="maka-session-workbar-toolbar"
-              label={copy.sectionsAriaLabel}
-              size="sm"
-              startContent={
-                <WorkbarTabStrip
-                  tabs={panel.tabs}
-                  activeTabId={showingLauncher ? null : panel.activeTabId}
-                  preparingSideChatPanelIds={props.preparingSideChatPanelIds}
-                  activeSideChatPanelIds={props.activeSideChatPanelIds}
-                  taskCount={taskCount}
-                  artifactCount={artifactCount}
-                  onActivate={(tabId) => props.onActivateTab(placement, tabId)}
-                  onClose={(tab) => props.onCloseTab(placement, tab)}
-                  onCloseTabs={(tabs) => props.onCloseTabs(placement, tabs)}
-                  onReorder={(tabId, targetTabId) =>
-                    props.onReorderTab(placement, tabId, targetTabId)
-                  }
-                  onMove={(tabId, direction) =>
-                    props.onMoveTab(placement, tabId, direction)
-                  }
-                  onMoveToPanel={props.onMoveTabToPanel}
-                  onPin={props.onPinTab}
-                  placement={placement}
-                  onOpenLauncher={() => props.onOpenLauncher(placement)}
-                />
-              }
-            />
+              role="toolbar"
+              aria-label={copy.sectionsAriaLabel}
+            >
+              <WorkbarTabStrip
+                tabs={panel.tabs}
+                activeTabId={showingLauncher ? null : panel.activeTabId}
+                preparingSideChatPanelIds={props.preparingSideChatPanelIds}
+                activeSideChatPanelIds={props.activeSideChatPanelIds}
+                taskCount={taskCount}
+                artifactCount={artifactCount}
+                onActivate={(tabId) => props.onActivateTab(placement, tabId)}
+                onClose={(tab) => props.onCloseTab(placement, tab)}
+                onCloseTabs={(tabs) => props.onCloseTabs(placement, tabs)}
+                onReorder={(tabId, targetTabId) =>
+                  props.onReorderTab(placement, tabId, targetTabId)
+                }
+                onMove={(tabId, direction) =>
+                  props.onMoveTab(placement, tabId, direction)
+                }
+                onMoveToPanel={props.onMoveTabToPanel}
+                onPin={props.onPinTab}
+                placement={placement}
+                onOpenLauncher={() => props.onOpenLauncher(placement)}
+                onCollapseRightPanel={
+                  placement === 'right'
+                    ? () => props.onDismissPanel('right')
+                    : undefined
+                }
+              />
+            </div>
             <WorkbarPanel active={visible && showingLauncher} placement={placement}>
               <WorkbarLauncher
                 onOpen={(kind) => props.onRequestOpenTab(placement, kind)}

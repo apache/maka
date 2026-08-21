@@ -1,3 +1,5 @@
+import type { UiLocale } from '@maka/core/ui-locale';
+
 /**
  * Pure decision + copy helpers for desktop run-completion notifications.
  *
@@ -56,7 +58,15 @@ export interface RunNotificationCopy {
  * could not supply a session name / reply preview (e.g. an untitled
  * session or a tool-only turn with no assistant text).
  */
-function runNotificationCopy(kind: RunNotificationKind): RunNotificationCopy {
+export function runNotificationCopy(
+  kind: RunNotificationKind,
+  locale: UiLocale,
+): RunNotificationCopy {
+  if (locale === 'en') {
+    return kind === 'errored'
+      ? { title: 'Conversation error', body: 'This response did not finish. Click to view details.' }
+      : { title: 'Response ready', body: 'Maka finished this response. Click to view it.' };
+  }
   if (kind === 'errored') {
     return { title: '任务出错', body: '本轮回答未能完成，点击查看详情。' };
   }
@@ -96,8 +106,11 @@ function sanitizeLine(value: unknown, max: number): string {
  * missing or blank. Sanitization + capping live here so the IPC handler
  * stays a thin shell and the logic is unit-testable without Electron.
  */
-export function resolveNotificationContent(input: RunNotificationInput): RunNotificationCopy {
-  const fallback = runNotificationCopy(input.kind);
+export function resolveNotificationContent(
+  input: RunNotificationInput,
+  locale: UiLocale,
+): RunNotificationCopy {
+  const fallback = runNotificationCopy(input.kind, locale);
   return {
     title: sanitizeLine(input.title, MAX_TITLE_CHARS) || fallback.title,
     body: sanitizeLine(input.body, MAX_BODY_CHARS) || fallback.body,

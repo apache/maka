@@ -703,7 +703,6 @@ async function withCoordinator(
   const context: ConnectionContext = {
     hostEpoch: 'memory-test-epoch',
     connectionId: 'connection-1',
-    surface: 'desktop',
     principal: 'local_os_user',
     acquireResidency: () => ({ release: () => undefined }),
   };

@@ -164,7 +164,7 @@ async function fetchProviderModelsStrict(
   const definition = PROVIDER_DEFAULTS[connection.providerType];
   // Unknown providerType → no discovery path. Throw a clear error (caught and
   // generalized by the caller) rather than crashing on `.modelDiscovery`.
-  // Mirrors `isFakeBackend` in @maka/core/connection-readiness.ts.
+  // Mirrors `isRealConnection` in @maka/core/connection-readiness.ts.
   if (!definition) {
     throw new Error(`Unknown provider type "${connection.providerType}"`);
   }

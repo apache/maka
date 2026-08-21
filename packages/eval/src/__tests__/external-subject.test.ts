@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createExternalSubjectAdapter, recoverExternalMetering } from '../external-subject.js';
+import { signMeteringCheckpoint } from '../metering-checkpoint.js';
 import type { ExperimentCell, ExperimentSpec } from '../experiment.js';
 import { DEEPSEEK_V4_FLASH_COST, deepSeekCostUsd } from '../provider-metering.js';
 import type { CellAttempt } from '../result.js';
@@ -13,6 +14,15 @@ import {
   TOOLCHAIN_IDENTITY_ENV,
   verifyToolchainDirectory,
 } from '../toolchain-verification.js';
+
+const METERING_SECRET = '0123456789abcdef0123456789abcdef';
+
+function writeSignedCheckpoint(path: string, checkpoint: Record<string, unknown>) {
+  return writeFile(
+    path,
+    `${JSON.stringify(signMeteringCheckpoint(checkpoint, METERING_SECRET))}\n`,
+  );
+}
 
 test('recovers lower-bound metering when external settlement is interrupted', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-eval-metering-recovery-'));
@@ -27,12 +37,12 @@ test('recovers lower-bound metering when external settlement is interrupted', as
   };
   try {
     await mkdir(join(trialPath, 'agent'), { recursive: true });
-    await writeFile(
+    await writeSignedCheckpoint(
       join(trialPath, 'agent/codex.provider-usage.json'),
       // Two requests admitted, one of them still in flight, and usage seen for
       // only one of them: a killed wrapper's usage is a lower bound, and the
       // counts are what establish that. Nothing derivable is stored.
-      `${JSON.stringify({
+      {
         schemaVersion: 'maka.external_provider_usage.v2',
         profile: 'codex',
         usage,
@@ -44,9 +54,12 @@ test('recovers lower-bound metering when external settlement is interrupted', as
         removedWebTools: 0,
         models: ['deepseek-v4-flash'],
         toolNames: ['shell'],
-      })}\n`,
+      },
     );
-    const recovered = await recoverExternalMetering({ trialPath }, 'codex');
+    const recovered = await recoverExternalMetering(
+      { trialPath, meteringSecret: METERING_SECRET },
+      'codex',
+    );
 
     // Admitted model work survives the wrapper, which is what lets the caller
     // record a failed subject instead of retrying the cell.
@@ -96,13 +109,16 @@ test('a checkpoint the proxy never settled is a lower bound however complete it 
   try {
     await mkdir(join(trialPath, 'agent'), { recursive: true });
     const write = (settled: boolean) =>
-      writeFile(
-        join(trialPath, 'agent/codex.provider-usage.json'),
-        `${JSON.stringify({ ...checkpoint, settled })}\n`,
-      );
+      writeSignedCheckpoint(join(trialPath, 'agent/codex.provider-usage.json'), {
+        ...checkpoint,
+        settled,
+      });
 
     await write(false);
-    const unsettled = await recoverExternalMetering({ trialPath }, 'codex');
+    const unsettled = await recoverExternalMetering(
+      { trialPath, meteringSecret: METERING_SECRET },
+      'codex',
+    );
     assert.deepEqual(unsettled?.usage, usage);
     assert.equal(unsettled?.costUsd, null);
     assert.equal(unsettled?.artifact.usageComplete, false);
@@ -110,7 +126,10 @@ test('a checkpoint the proxy never settled is a lower bound however complete it 
 
     // The same counts, from a proxy that reported them as its last word.
     await write(true);
-    const settled = await recoverExternalMetering({ trialPath }, 'codex');
+    const settled = await recoverExternalMetering(
+      { trialPath, meteringSecret: METERING_SECRET },
+      'codex',
+    );
     assert.equal(settled?.artifact.usageComplete, true);
     assert.equal(settled?.artifact.tokenBasis, 'complete');
     assert.ok((settled?.costUsd ?? 0) > 0);
@@ -144,42 +163,41 @@ test('refuses a metering checkpoint whose counts cannot describe one run', async
   try {
     await mkdir(join(trialPath, 'agent'), { recursive: true });
     const write = (checkpoint: Record<string, unknown>) =>
-      writeFile(
-        join(trialPath, 'agent/codex.provider-usage.json'),
-        `${JSON.stringify({
-          schemaVersion: 'maka.external_provider_usage.v2',
-          profile: 'codex',
-          usage: null,
-          settled: false,
-          requests: 1,
-          inFlightRequests: 0,
-          admittedRequests: 0,
-          usageRequests: 0,
-          removedWebTools: 0,
-          models: [],
-          toolNames: [],
-          ...checkpoint,
-        })}\n`,
-      );
+      writeSignedCheckpoint(join(trialPath, 'agent/codex.provider-usage.json'), {
+        schemaVersion: 'maka.external_provider_usage.v2',
+        profile: 'codex',
+        usage: null,
+        settled: false,
+        requests: 1,
+        inFlightRequests: 0,
+        admittedRequests: 0,
+        usageRequests: 0,
+        removedWebTools: 0,
+        models: [],
+        toolNames: [],
+        ...checkpoint,
+      });
+    const recover = () =>
+      recoverExternalMetering({ trialPath, meteringSecret: METERING_SECRET }, 'codex');
 
     await write({ admittedRequests: 2 });
-    assert.equal(await recoverExternalMetering({ trialPath }, 'codex'), undefined);
+    assert.equal(await recover(), undefined);
 
     await write({ usageRequests: 1, admittedRequests: 0 });
-    assert.equal(await recoverExternalMetering({ trialPath }, 'codex'), undefined);
+    assert.equal(await recover(), undefined);
 
     // Usage counted but no usage recorded.
     await write({ admittedRequests: 1, usageRequests: 1 });
-    assert.equal(await recoverExternalMetering({ trialPath }, 'codex'), undefined);
+    assert.equal(await recover(), undefined);
 
     // Nothing is in flight once the proxy has stopped.
     await write({ settled: true, requests: 1, inFlightRequests: 1, admittedRequests: 1 });
-    assert.equal(await recoverExternalMetering({ trialPath }, 'codex'), undefined);
+    assert.equal(await recover(), undefined);
 
     // A request admitted while still in flight is the state the checkpoint
     // exists to capture, so it has to survive validation.
     await write({ requests: 1, inFlightRequests: 1, admittedRequests: 1 });
-    assert.equal((await recoverExternalMetering({ trialPath }, 'codex'))?.admittedRequests, 1);
+    assert.equal((await recover())?.admittedRequests, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

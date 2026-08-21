@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 24;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 28;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -895,6 +895,145 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 
     CREATE INDEX agent_graph_epochs_current
       ON agent_graph_epochs(root_session_id, epoch DESC);
+  `,
+  ],
+  [
+    25,
+    `
+    UPDATE session_metadata
+    SET
+      status = 'active',
+      payload_json = json_set(payload_json, '$.status', 'active'),
+      metadata_version = metadata_version + 1,
+      committed_at = MAX(
+        committed_at,
+        CAST(unixepoch('now', 'subsec') * 1000 AS INTEGER)
+      )
+    WHERE
+      status IN ('review', 'done')
+      OR json_extract(payload_json, '$.status') IN ('review', 'done');
+  `,
+  ],
+  [
+    26,
+    `
+    DROP TRIGGER IF EXISTS session_catalog_label_after_insert;
+    DROP TRIGGER IF EXISTS session_catalog_label_after_delete;
+    DROP TRIGGER IF EXISTS session_catalog_after_update;
+    DROP INDEX IF EXISTS session_catalog_labels_by_label_activity;
+    DROP TABLE IF EXISTS session_catalog_label_projection;
+    DROP INDEX IF EXISTS session_catalog_by_archived_activity;
+    DROP INDEX IF EXISTS session_catalog_by_flagged_activity;
+    DROP INDEX IF EXISTS session_catalog_by_archived_flagged_activity;
+    DROP INDEX IF EXISTS session_metadata_by_flag;
+
+    CREATE TRIGGER session_catalog_after_update
+    AFTER UPDATE ON session_metadata
+    BEGIN
+      UPDATE session_catalog_projection
+      SET
+        activity_at = COALESCE(NEW.last_message_at, NEW.last_used_at, NEW.created_at),
+        last_message_at = NEW.last_message_at,
+        is_archived = NEW.is_archived,
+        is_flagged = NEW.is_flagged,
+        subagent_parent_session_id = NEW.subagent_parent_session_id
+      WHERE session_id = NEW.session_id;
+
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
+
+    DROP INDEX IF EXISTS session_metadata_labels_by_label;
+    DROP TABLE IF EXISTS session_metadata_labels;
+  `,
+  ],
+  [
+    27,
+    `
+    UPDATE session_metadata
+    SET
+      payload_json = json_set(
+        CASE
+          WHEN json_extract(payload_json, '$.status') = 'archived'
+            THEN json_remove(
+              json_set(payload_json, '$.status', 'active'),
+              '$.archivedAt',
+              '$.blockedReason',
+              '$.statusUpdatedAt'
+            )
+          ELSE json_remove(payload_json, '$.archivedAt')
+        END,
+        '$.isArchived',
+        CASE
+          WHEN
+            json_type(payload_json, '$.isArchived') = 'true'
+            OR json_extract(payload_json, '$.status') = 'archived'
+            OR is_archived = 1
+            OR status = 'archived'
+            OR json_type(payload_json, '$.archivedAt') IS NOT NULL
+          THEN json('true')
+          ELSE json('false')
+        END
+      ),
+      is_archived = CASE
+        WHEN
+          json_type(payload_json, '$.isArchived') = 'true'
+          OR json_extract(payload_json, '$.status') = 'archived'
+          OR is_archived = 1
+          OR status = 'archived'
+          OR json_type(payload_json, '$.archivedAt') IS NOT NULL
+        THEN 1
+        ELSE 0
+      END,
+      metadata_version = metadata_version + 1,
+      committed_at = MAX(
+        committed_at,
+        CAST(unixepoch('now', 'subsec') * 1000 AS INTEGER)
+      )
+    WHERE
+      json_extract(payload_json, '$.status') = 'archived'
+      OR status = 'archived'
+      OR json_type(payload_json, '$.archivedAt') IS NOT NULL
+      OR (
+        (
+          json_type(payload_json, '$.isArchived') = 'true'
+          OR is_archived = 1
+        )
+        AND (
+          json_type(payload_json, '$.isArchived') IS NOT 'true'
+          OR is_archived != 1
+        )
+      )
+      OR (
+        json_type(payload_json, '$.isArchived') IS NOT 'true'
+        AND is_archived != 1
+        AND (
+          json_type(payload_json, '$.isArchived') IS NOT 'false'
+          OR is_archived != 0
+        )
+      );
+
+    DROP INDEX session_metadata_by_status;
+    ALTER TABLE session_metadata DROP COLUMN status;
+    ALTER TABLE session_metadata DROP COLUMN status_updated_at;
+  `,
+  ],
+  [
+    28,
+    `
+    ALTER TABLE session_metadata ADD COLUMN external_adapter_id TEXT;
+    ALTER TABLE session_metadata ADD COLUMN external_source_session_id TEXT;
+
+    CREATE INDEX session_metadata_by_external_origin
+      ON session_metadata(
+        external_adapter_id,
+        external_source_session_id,
+        created_at DESC,
+        session_id
+      )
+      WHERE external_adapter_id IS NOT NULL
+        AND external_source_session_id IS NOT NULL;
   `,
   ],
 ]);

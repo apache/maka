@@ -43,6 +43,7 @@ function ChromeColumnToggle(props: {
   collapseLabel: string;
   expandIcon: typeof Search;
   collapseIcon: typeof Search;
+  className?: string;
   onToggle(): void;
 }) {
   const label = props.collapsed ? props.expandLabel : props.collapseLabel;
@@ -53,7 +54,11 @@ function ChromeColumnToggle(props: {
         icon={<ChromeIcon icon={props.collapsed ? props.expandIcon : props.collapseIcon} />}
         variant="ghost"
         size="md"
-        className="maka-titlebar-action"
+        className={
+          props.className
+            ? `maka-titlebar-action ${props.className}`
+            : 'maka-titlebar-action'
+        }
         onClick={props.onToggle}
         aria-expanded={!props.collapsed}
       />
@@ -96,6 +101,26 @@ export function AppShellTopbarActions(props: {
   );
 }
 
+export function WorkbarToggle(props: {
+  collapsed: boolean;
+  className?: string;
+  onToggle(): void;
+}) {
+  const locale = useUiLocale();
+  const copy = getShellCopy(locale).chrome;
+  return (
+    <ChromeColumnToggle
+      collapsed={props.collapsed}
+      expandLabel={copy.expandWorkbar}
+      collapseLabel={copy.collapseWorkbar}
+      expandIcon={PanelRightOpen}
+      collapseIcon={PanelRightClose}
+      className={props.className}
+      onToggle={props.onToggle}
+    />
+  );
+}
+
 /**
  * The titlebar's right edge.
  *
@@ -105,11 +130,11 @@ export function AppShellTopbarActions(props: {
  * Settings → 关于, and the other two now have real homes: the keyboard sheet is
  * a row on 关于, and the palette keeps ⌘K, which that sheet documents.
  *
- * What is left is the workbar toggle — the right-hand mirror of the sidebar
- * toggle above, down to the component: one control that stays put across its
- * own state change. It used to hand itself off to a second button inside the
- * workbar's tab row while the workbar was open, so the single control a user
- * clicks twice moved ~30px down and left between those two clicks.
+ * What is left is the collapsed workbar's restore affordance. While the
+ * workbar is open, the matching toggle belongs to the workbar's tab toolbar:
+ * tabs, new-tab and panel visibility are one local control group. That toolbar
+ * occupies this same titlebar band, so the control keeps its screen position
+ * across the hand-off instead of moving down into a second row.
  *
  * The titlebar is also the only row in the app that already knows where the
  * platform's native window controls are: `.maka-window-titlebar` reserves
@@ -124,20 +149,14 @@ export function AppShellWorkspaceTopActions(props: {
 }) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
-  // Nothing to toggle outside a session; an empty no-drag rectangle in the
-  // titlebar would only subtract from the window's drag surface.
-  if (!props.workbarAvailable) return null;
+  // Nothing to toggle outside a session or while the panel-local control is
+  // mounted; an empty no-drag rectangle would only subtract from the window's
+  // drag surface.
+  if (!props.workbarAvailable || !props.workbarCollapsed) return null;
 
   return (
     <div className="maka-workspace-top-actions" role="toolbar" aria-label={copy.workspaceActions}>
-      <ChromeColumnToggle
-        collapsed={props.workbarCollapsed}
-        expandLabel={copy.expandWorkbar}
-        collapseLabel={copy.collapseWorkbar}
-        expandIcon={PanelRightOpen}
-        collapseIcon={PanelRightClose}
-        onToggle={props.onToggleWorkbar}
-      />
+      <WorkbarToggle collapsed onToggle={props.onToggleWorkbar} />
     </div>
   );
 }

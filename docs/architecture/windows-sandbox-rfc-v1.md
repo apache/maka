@@ -1,8 +1,8 @@
 # Windows sandbox backend RFC v1
 
-- Status: implementation baseline selected; product integration under release validation
+- Status: implementation baseline selected; first preview slice ([#2961](https://github.com/maka-agent/maka-agent/pull/2961)) merged 2026-08-17; product integration continuing under release validation (preview scope in §6.5)
 - Tracking: Windows Phase 4 in [issue #2142](https://github.com/maka-agent/maka-agent/issues/2142)
-- Updated: 2026-08-14
+- Updated: 2026-08-18
 - Owners: `@maka/runtime` sandbox boundary and Runtime Host execution composition
 - Chinese version: [windows-sandbox-rfc-v1.zh-CN.md](./windows-sandbox-rfc-v1.zh-CN.md)
 
@@ -147,8 +147,30 @@ Lexical prefix checks are never authorization evidence.
   there is no runnable pre-assignment window.
 - The Job kills all descendants when its owner closes and does not permit breakaway.
 - Only declared stdio/protocol handles are inherited through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`.
-- Non-interactive workers use a private desktop and cannot read the clipboard, broadcast window
-  messages, install global hooks, or interact with the user's desktop.
+- Non-interactive workers start on a launcher-created private (alternate) desktop, never the
+  interactive `Default` desktop; keeping a worker *unable* to enumerate, message, or hook the user's
+  interactive windows even after in-process escape attempts additionally requires the deferred
+  no-Win32k/window-station gates (§6.5). _(Enforced as initial-desktop **placement**, not
+  escape-proof confinement: each launch and the readiness probe
+  create a per-launch alternate desktop whose DACL grants only the launching user, Local System, and
+  that launch's AppContainer SID — granting the AppContainer SID only the minimal non-interactive
+  rights, and leading with a deny ACE that strips `DESKTOP_SWITCHDESKTOP`, `DESKTOP_HOOKCONTROL`, and
+  the journal-record/playback rights from the launching-user SID, because the AppContainer child's
+  token still carries that SID as an effective SID and would otherwise be named a grantee of those
+  rights by the owner's full-control ACE.
+  The child is started with `STARTUPINFOW.lpDesktop` set to it, and fails closed if the desktop cannot
+  be created or the SID cannot be granted. `lpDesktop` selects only the child's *initial* desktop, so
+  this places the worker off the interactive `Default` desktop and DACL-protects the private one — it
+  does **not** structurally prevent in-process code from calling `OpenDesktopW("Default")` +
+  `SetThreadDesktop` to re-attach, because no no-Win32k mitigation, dedicated window station, or token
+  boundary is enforced yet. It also does **not** isolate the clipboard, which belongs to the window
+  station both desktops still share. The desktop carries an explicit Low no-write-up mandatory label
+  (`S:(ML;;NW;;;LW)`) so the DACL's create-window/write grants pass Mandatory Integrity Control for
+  the Low-IL AppContainer child, and its heap is bounded per launch via `CreateDesktopExW` so the
+  supported ten-way concurrency stays an order of magnitude under the system desktop-heap limit. An
+  escape-proof boundary (a no-Win32k process mitigation, a dedicated window station isolating the
+  clipboard, and an in-child window-creation check proving the granted rights end to end) remains a
+  later hardening gate — see §6.5.)_
 - The token removes privileges and uses restricting SIDs; low integrity is defense in depth, not the
   filesystem policy by itself.
 - The child receives an allowlisted environment. Credentials, tokens, proxy variables, shell startup
@@ -162,12 +184,145 @@ Lexical prefix checks are never authorization evidence.
 
 - Readiness launches a real probe under the production identity, token, Job, desktop, handles,
   filesystem policy, and offline network policy. OS version checks alone are insufficient.
-- Launcher signature, version, and digest are verified against packaged metadata.
+  _(Implemented: the preview's `--readiness-probe` stands up the real AppContainer identity and
+  token, a kill-on-close Job, and a per-launch private desktop, then launches a throwaway confined
+  child on that desktop, failing closed if the host cannot create or enforce the boundary rather
+  than trusting file presence alone. The full per-profile filesystem policy and offline-network
+  policy are not yet exercised at readiness — see §6.5.)_
+- The readiness probe's throwaway profile lifecycle is isolated and fail-closed. _(Implemented: the
+  probe profile lives under a dedicated `maka.readiness.` namespace that is structurally disjoint
+  from the production `maka.sandbox.` namespace, and its reserved `requestId` is rejected by launch
+  validation, so no production launch can ever resolve to the profile the probe deletes and
+  recreates. The whole delete→create→probe→settle→drop cycle is serialized across processes by a
+  DACL-hardened per-user named mutex — the same primitive the ACL ledger uses — so concurrent probes
+  cannot delete each other's live registration. When the probe cannot prove its Job drained it fails
+  closed (reports unavailable) for that cycle; the fixed readiness identity is not durably
+  quarantined — cleanup relies on the kill-on-close Job's tree termination, and because the probe
+  grants zero filesystem roots a surviving child inherits no ACE authority. On the consumer side a
+  negative availability result is cached only for a bounded TTL, which bounds how long one transient
+  failure poisons the module cache: the *next composition build* re-probes. It is not a running-host
+  retry — the filesystem worker is published once when a composition is built, so a host that already
+  resolved availability negative recovers only on a new composition or a Runtime Host restart; a
+  positive result is cached for the process lifetime. Durable quarantine of an unsettled identity and
+  active running-host readiness recovery are deferred gates — see §6.5.)_
+- Launcher signature, version, and digest are verified against packaged metadata. _(Later gate: the
+  per-launch request digest is recomputed and enforced in-broker today; verifying the launcher
+  binary's signature and version against packaged metadata is deferred with Phase 3 signing — see
+  §6.5.)_
 - Missing setup, identity drift, ACL-state corruption, ineffective network policy, unsupported
-  filesystem, helper mismatch, or a failed probe returns a stable typed unavailable reason.
+  filesystem, helper mismatch, or a failed probe returns a stable typed unavailable reason. _(Later
+  gate: the readiness probe today collapses every failure to a single fail-closed boolean surfaced as
+  `backend_not_available`; the structured typed reasons are deferred — see §6.5.)_
 - `auto` and `require` never fall back to host execution for a restricted managed profile.
 - Diagnostics expose the backend, setup version, and failure stage without paths, SIDs, credentials,
-  environment values, or firewall details.
+  environment values, or firewall details. _(Later gate: the probe runs with `stdio: 'ignore'` and
+  retains only the exit result, so setup version and failure stage are not yet propagated — deferred
+  with the structured unavailable reasons, see §6.5.)_
+
+### 6.5 Preview implementation status (2026-08-17)
+
+The first product slice — the packaged Windows 11 x64 AppContainer backend in
+[#2961](https://github.com/maka-agent/maka-agent/pull/2961), merged 2026-08-17 — enforces a subset
+of the guarantees above. This subsection aligns the documented guarantees with what the code
+actually ships so the RFC does not overclaim. Bullets tagged with a follow-up PR number
+(`(#3161)` readiness probe, `(#3174)` private-desktop placement) land in that PR rather than the
+merged #2961 slice; the untagged bullets are enforced by #2961 today. The remaining guarantees are
+designed but explicitly deferred as later gates, tracked by Phase 4 in
+[#2142](https://github.com/maka-agent/maka-agent/issues/2142).
+
+Enforced (merged in #2961 unless tagged with a follow-up PR):
+
+- default-deny filesystem with distinct read/write roots compiled from the exact profile (§6.1);
+- recursive reparse-point rejection and multi-hard-link rejection before ACL mutation (§5, §6.1);
+- a fresh request-derived AppContainer SID, per-launch ACL grants in a versioned recovery ledger,
+  and stale-ledger reconciliation at startup (§6.1, §7.1);
+- an AppContainer token with no network capabilities (§6.2);
+- atomic kill-on-close Job membership through `PROC_THREAD_ATTRIBUTE_JOB_LIST` (§6.3);
+- inheritance limited to declared stdio/protocol handles through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
+  (§6.3);
+- a closed, sorted, allowlisted environment (§6.3);
+- per-launch private-desktop **placement** (§6.3) **(#3174)**: each production launch and the readiness probe
+  create an alternate desktop on the current window station whose DACL grants only the launching user,
+  Local System, and that launch's AppContainer SID — the SID getting only minimal non-interactive
+  rights, and a leading deny ACE stripping `DESKTOP_SWITCHDESKTOP`, `DESKTOP_HOOKCONTROL`, and journal
+  record/playback from the launching-user SID the AppContainer child effectively carries — and start
+  the child with `STARTUPINFOW.lpDesktop` pointing at it, failing closed if it cannot be created or
+  granted. The desktop is pinned at Low integrity (`S:(ML;;NW;;;LW)`) so the granted rights pass MIC
+  for the Low-IL child, and its heap is bounded per launch (`CreateDesktopExW`, 512 KiB) so supported
+  concurrency cannot exhaust the system desktop heap. Because `lpDesktop` selects only the *initial*
+  desktop, this places the worker off the interactive `Default` desktop and DACL-protects the private
+  one; it is placement plus DACL protection, **not** an escape-proof boundary — nothing structurally
+  stops in-process code from `OpenDesktopW("Default")` + `SetThreadDesktop`, and the clipboard is
+  window-station-scoped and remains shared (a no-Win32k mitigation, a dedicated window station, and a
+  token boundary are deferred gates below);
+- a production-identity readiness probe (§6.4) **(#3161)**: `--readiness-probe` stands up the real
+  AppContainer identity and token, a kill-on-close Job, and the private desktop, then launches a
+  throwaway confined child on that desktop (`cmd.exe /d /c exit 0`, with AutoRun disabled so a host's
+  shell customization cannot skew the result), so availability fails closed on hosts where the OS
+  cannot create the boundary rather than on the packaged binary's presence alone; on success it emits
+  a machine-readable attestation of the verified facts (exact-SID match, specific-Job membership,
+  settlement, private-desktop placement) that the release smoke asserts field by field, so the gate
+  cannot silently degrade into a hollow exit-0 check;
+- a dedicated, cross-process-serialized readiness profile lifecycle (§6.4) **(#3161)**: the probe profile lives
+  in a namespace disjoint from production, its reserved `requestId` is rejected by validation, a
+  DACL-hardened per-user named mutex serializes its delete→create→probe→drop cycle, an unsettled
+  probe fails closed rather than claiming a clean boundary (relying on the kill-on-close Job and a
+  zero-authority identity for cleanup, not durable quarantine), and negative availability is cached
+  with a bounded TTL so one transient failure does not poison the module cache past that window — the
+  next composition build re-probes, rather than the running host recovering in place;
+- fail-closed capability outcomes with no unsandboxed fallback for `auto`/`require` (§6.4).
+
+Designed but deferred as later gates (not enforced in the preview slice):
+
+- Full window-station separation and clipboard isolation (§6.3). The worker runs on a private
+  alternate desktop, but that desktop still lives on the launcher's window station rather than a
+  dedicated one. Because the clipboard is window-station-scoped, it is not isolated by the alternate
+  desktop; moving to a dedicated window station (and thereby isolating the clipboard) is a later
+  hardening gate.
+- Escape-proof desktop confinement: no-Win32k mitigation, token boundary, and end-to-end Low-IL
+  desktop rights (§6.3). `STARTUPINFOW.lpDesktop` selects only the initial desktop, so absent a
+  no-Win32k process mitigation (or a separate window-station/token boundary) in-process code can
+  `OpenDesktopW("Default")` + `SetThreadDesktop` to re-attach to the interactive desktop; the shipped
+  contract is initial-desktop placement plus DACL protection, not structural confinement. Separately,
+  the desktop now carries an explicit Low no-write-up mandatory label so the AppContainer SID's
+  create-window/write grants pass MIC, but no probe creates a window in-child, so those rights are
+  labeled-usable rather than proven end to end. Enforcing a no-Win32k mitigation, plus a child-side
+  window-creation test, is deferred.
+- Full-policy readiness coverage (§6.4). The readiness probe already stands up the production
+  AppContainer identity, token, kill-on-close Job, and private desktop and launches a confined child
+  on it, but it does not yet compile and exercise the exact per-profile filesystem roots or the
+  offline-network policy at readiness; those are enforced per launch rather than re-proven at
+  readiness.
+- Launcher signature/version verification at readiness (§6.4). The per-launch request digest is
+  recomputed and enforced in-broker on every launch; verifying the launcher binary's Authenticode
+  signature and version against packaged metadata is deferred together with Phase 3 signing.
+- Structured unavailable reasons and diagnostics (§6.4). The readiness probe fails closed as a single
+  boolean surfaced as `backend_not_available`; the stable typed unavailable reasons and the
+  setup-version/failure-stage diagnostics are designed but not yet implemented or propagated.
+- Concurrent real-machine readiness race coverage (§6.4). The readiness profile lifecycle is
+  serialized by a named mutex and covered by unit tests over the mutex-name, namespace, and
+  validation primitives; a multi-process race test that spawns real concurrent probes on a live
+  Windows host is deferred as disproportionate for a throwaway diagnostic probe and inherently flaky
+  in CI. The serialization primitive itself, not an end-to-end race harness, is the enforced contract.
+- Durable quarantine of an unsettled readiness identity (§6.4). When a probe cannot prove its Job
+  drained it fails closed for that cycle, and the next probe deletes and recreates the fixed
+  identity under the lease. Residual risk is bounded — the readiness child is `cmd.exe /c exit 0`
+  granted zero filesystem roots, so a hypothetically-surviving child spawns nothing and inherits no
+  ACE authority, and the kill-on-close Job terminates the tree — but the identity is not durably
+  quarantined. Durable quarantine (or unique per-probe identities plus an orphan/reconciliation
+  ledger) is deferred.
+- Active running-host readiness recovery (§6.4). A negative availability result is bounded by a TTL
+  so it does not poison the module cache past that window, and the *next composition build* re-probes.
+  A running Runtime Host does not actively re-probe or hot-publish the filesystem worker — the worker
+  is composed once when a candidate is built — so recovery from a transient negative in an
+  already-running host is scoped to a new composition build or a restart. An active readiness
+  retry with dynamic worker publication is deferred.
+
+Deferral narrows readiness richness and desktop-layer defense-in-depth, not the enforcement
+boundary: an unavailable, drifted, or failed backend still fails closed, and a restricted managed
+profile never falls back to host execution. The lifecycle evidence for cancellation, parent-death,
+concurrency, process-drain, and residual ACL/state release tracked by W1 (§9) and Phase 4 (#2142)
+remains release evidence, not an assumption.
 
 ## 7. Selected architecture
 

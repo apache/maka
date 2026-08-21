@@ -10,9 +10,8 @@
  *      and OAuth-subscription connections (Claude/Codex), and MUST be
  *      read-only — it must never refresh an OAuth token or otherwise
  *      mutate credential state just because onboarding status was
- *      read. See `hasConnectionSecret` in main.ts for the production
- *      wiring and why it deliberately does NOT reuse the send-path's
- *      refreshing `resolveConnectionSecret`.
+ *      read. Production wiring queries the Runtime Host credential
+ *      projection without resolving or refreshing credential material.
  *   3. SessionStore.list() (the runtime layer's listSessions handles
  *      this for us; we pass it in as a callback)
  *   4. SettingsStore.get() for milestones (already sanitized by

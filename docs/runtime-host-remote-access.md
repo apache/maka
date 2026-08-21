@@ -4,7 +4,28 @@
 
 Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or explicitly enabled plaintext WebSocket.
 
-## Prepare the Host
+## Set up a Linux Host
+
+On a Linux machine with Node.js 22.19 or newer and a working systemd user manager, the released CLI
+can install and verify a persistent Runtime Host in one command:
+
+```sh
+npx --yes maka-agent@next runtime-host setup \
+  --principal my-desktop \
+  --preset desktop-client \
+  --root /srv/maka \
+  --project-root projects=/srv/projects
+```
+
+Use a stable identifier for `--principal`; rerunning the command replaces that Client's credential
+instead of accumulating credentials. The command installs its exact Maka package into a managed
+directory, starts a loopback-only service, verifies the new credential, and then prints the connection
+details once. Use `terminal-client` for TUI or CLI.
+
+Run `npx --yes maka-agent@next runtime-host service uninstall` on the Host to remove the service and
+managed package. The State Root and Project data are retained.
+
+## Manual Host setup
 
 Build Maka on the remote machine, choose a persistent State Root, and register each Project remote Clients may use:
 
@@ -13,6 +34,18 @@ npm run build
 npm --workspace maka-agent exec -- maka runtime-host project add /srv/projects/example --root /srv/maka
 npm --workspace maka-agent exec -- maka runtime-host project list --root /srv/maka
 ```
+
+The Desktop directory picker publishes the service user's home directory by default. To publish a different allowlist, pass one or more named roots when starting the service:
+
+```sh
+npm --workspace maka-agent exec -- maka runtime-host serve \
+  --root /srv/maka \
+  --project-root projects=/srv/projects \
+  --project-root data=/mnt/data \
+  --websocket-port 7443
+```
+
+When any `--project-root <label>=<absolute-path>` option is present, only those roots are available to remote directory browsing. The option is repeatable up to eight times. Maka resolves every root at startup and keeps browsing and registration contained within the selected root.
 
 Project paths stay on the Host. Issue a credential for each Client:
 
@@ -24,6 +57,25 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
 ```
 
 Use `terminal-client` for TUI or CLI. The command prints the credential once.
+
+On Linux with a systemd user manager, a persistent CLI installation can keep the loopback Host running after the
+SSH session ends:
+
+```sh
+maka runtime-host service install \
+  --root /srv/maka \
+  --project-root projects=/srv/projects
+maka runtime-host service status --json
+```
+
+The install command persists the current exact Node and Maka CLI paths. Re-running it updates the
+same systemd-supervised service; repeated startup failures stop automatic restarts and remain visible
+in `maka runtime-host service status`. An omitted WebSocket port preserves the existing port. Before uninstalling the npm
+package, remove the service with `maka runtime-host service uninstall`. Service uninstall keeps the
+State Root and Project data. Installation reports an actionable error instead of claiming persistence
+when systemd user lingering is disabled. Run service installation from a persistent global Maka
+installation, not `npx`. A replacement is committed only after the new Runtime Host is ready; failure
+restores the previous service.
 
 ## Choose a connection method
 
@@ -73,9 +125,13 @@ The Client Profile must separately persist the plaintext acknowledgement. Maka n
 
 ## Connect Desktop
 
-Open `Settings → Workspace → Runtime Host`, choose **Add remote Host**, select the connection method, and enter the method-specific endpoint, the ready event's `rootId`, and the issued credential. Choose **Save and enable**.
+Open `Settings → Workspace → Runtime Host` and choose **Add computer**. Enter an OpenSSH destination; Desktop runs the released setup command in an interactive SSH session, stores the resulting credential, verifies the tunnel, and then opens the remote Project picker.
+
+Use **Configure manually** for an existing TLS, SSH, or explicitly acknowledged plaintext endpoint.
 
 The credential is stored separately from the Profile. Desktop keeps Local and every enabled remote Host connected independently. Choose one as the default for new Sessions; existing Sessions continue to use their owning Host. A failed remote connection remains visible without interrupting the other Hosts. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
+
+During guided pairing, the delivered credential has the selected Client grants and expires after 15 minutes unless Desktop explicitly finalizes it after saving the local binding.
 
 ## Connect TUI or CLI
 
@@ -116,10 +172,19 @@ maka run --host office --project '<projectId>' "Summarize this project"
 
 Each TUI or CLI process connects to one Profile. TUI may interact with SSH during its initial connection; non-interactive commands require preconfigured authentication.
 
+## Compatibility troubleshooting
+
+`RUNTIME_HOST_REMOTE_INCOMPATIBLE` means the Client and remote Runtime Host cannot safely communicate. Compare the Client and Host compatibility epochs first. When the diagnostic reports them, also inspect the Client and Host protocol ranges and composition IDs (including the Host composition revision).
+
+Use compatible Client and Host builds. After updating the Host, the operator must restart its remote Runtime Host service, then retry the connection.
+
+Remote Clients never auto-upgrade or restart the Host, downgrade the transport, mutate the Profile, change the default Host or Session, or expose credentials, endpoints, paths, or State Roots in this diagnostic.
+
 ## Security boundaries
 
 - Do not put credentials on the command line or in Profile JSON.
 - Plaintext requires durable Client acknowledgement and an independent Host startup flag.
 - Session responses may include a resolved `hostCwd`. Treat it as Host metadata, never as a Client filesystem path.
-- A remote Client neither upgrades nor terminates the service process.
+- A remote Client cannot request a service upgrade, restart, or shutdown. The Host may still drain
+  itself after an indeterminate durable commit; a managed service supervisor restarts it.
 - Revoke a credential on the Host with `maka runtime-host access revoke --root /srv/maka --credential <credentialId>`.
