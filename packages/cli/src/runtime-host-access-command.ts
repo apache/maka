@@ -28,6 +28,15 @@ import {
   type AccessCredentialPrincipalKind,
   type OperationKey,
 } from '@maka/runtime-host/protocol';
+import {
+  readRuntimeHostAccessCredentialMetadata,
+  type RuntimeHostAccessCredentialMetadata,
+} from '@maka/runtime-host/server';
+import {
+  encodeRuntimeHostAccessManagementFrame,
+  RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_MESSAGE_MAX_BYTES,
+  type RuntimeHostAccessManagementAction,
+} from '@maka/runtime-host/operator';
 
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -36,6 +45,7 @@ const PROTOCOL = {
 
 export interface RuntimeHostAccessIssueOptions {
   readonly rootPath: string;
+  readonly expectedRootId?: string;
   readonly principalKind: AccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly string[];
@@ -58,9 +68,14 @@ const CLIENT_CAPABILITY_PUBLICATION_OPERATIONS = new Set<OperationKey>([
   'client.capability.unregister',
 ]);
 
-export interface RuntimeHostAccessRevokeOptions {
+export interface RuntimeHostAccessListOptions {
   readonly rootPath: string;
+  readonly expectedRootId?: string;
+}
+
+export interface RuntimeHostAccessRevokeOptions extends RuntimeHostAccessListOptions {
   readonly credentialId: string;
+  readonly protectedCredentialFingerprint?: string;
 }
 
 export interface IssuedRuntimeHostAccessCredential {
@@ -83,6 +98,62 @@ export async function runRuntimeHostAccessIssueCli(
   return 0;
 }
 
+export async function runRuntimeHostAccessListCli(
+  options: RuntimeHostAccessListOptions,
+  framed = false,
+): Promise<number> {
+  try {
+    const result = await listRuntimeHostAccessCredentials(options);
+    process.stdout.write(
+      framed
+        ? encodeRuntimeHostAccessManagementFrame({
+            schemaVersion: 1,
+            kind: 'list',
+            credentials: mutableCredentialMetadata(result.credentials),
+          })
+        : `${JSON.stringify(result, null, 2)}\n`,
+    );
+    return 0;
+  } catch (error) {
+    if (!framed) throw error;
+    writeAccessManagementError('list', error);
+    return 1;
+  }
+}
+
+export async function runRuntimeHostAccessPrepareCli(
+  options: RuntimeHostAccessIssueOptions,
+  framed = false,
+): Promise<number> {
+  try {
+    const prepared = await prepareRuntimeHostAccessCredential(options);
+    const listed = await listRuntimeHostAccessCredentials(options);
+    if (
+      !listed.credentials.some((credential) => credential.credentialId === prepared.credentialId)
+    ) {
+      throw new Error('Prepared Runtime Host credential metadata is unavailable');
+    }
+    if (framed) {
+      process.stdout.write(
+        encodeRuntimeHostAccessManagementFrame({
+          schemaVersion: 1,
+          kind: 'prepared',
+          credential: prepared.credential,
+          credentials: mutableCredentialMetadata(listed.credentials),
+        }),
+      );
+    } else {
+      const { rootId: _rootId, ...output } = prepared;
+      process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    }
+    return 0;
+  } catch (error) {
+    if (!framed) throw error;
+    writeAccessManagementError('prepare', error);
+    return 1;
+  }
+}
+
 export function issueRuntimeHostAccessCredential(
   options: RuntimeHostAccessIssueOptions,
 ): Promise<IssuedRuntimeHostAccessCredential> {
@@ -95,7 +166,7 @@ export function prepareRuntimeHostAccessCredential(
   return mutateRuntimeHostAccessCredential(options, 'access.credential.prepare');
 }
 
-export async function replaceRuntimeHostAccessCredential(
+export function replaceRuntimeHostAccessCredential(
   options: RuntimeHostAccessIssueOptions,
 ): Promise<ReplacedRuntimeHostAccessCredential> {
   return mutateRuntimeHostAccessCredential(options, 'access.credential.replace');
@@ -108,16 +179,15 @@ async function mutateRuntimeHostAccessCredential(
   operation: 'access.credential.issue' | 'access.credential.prepare' | 'access.credential.replace',
 ): Promise<IssuedRuntimeHostAccessCredential> {
   const resolved = resolveRuntimeHostAccessIssue(options);
-  const connection = await connectLocalOwner(options.rootPath);
+  const connection = await connectLocalOwner(options.rootPath, options.expectedRootId);
   try {
-    const credentialInput = {
+    const result = await connection.request(operation, {
       principalKind: resolved.principalKind,
       principalId: options.principalId,
       operationGrants: resolved.operationGrants,
       canPublishClientCapabilities: resolved.canPublishClientCapabilities,
       canUseHostPaths: resolved.canUseHostPaths,
-    };
-    const result = await connection.request(operation, credentialInput);
+    });
     const credential = await consumeAccessCredentialDelivery(
       options.rootPath,
       result.deliveryId,
@@ -128,6 +198,12 @@ async function mutateRuntimeHostAccessCredential(
   } finally {
     await connection.close();
   }
+}
+
+export async function listRuntimeHostAccessCredentials(
+  options: RuntimeHostAccessListOptions,
+): Promise<{ readonly credentials: readonly RuntimeHostAccessCredentialMetadata[] }> {
+  return readRuntimeHostAccessCredentialMetadata(options.rootPath, options.expectedRootId);
 }
 
 export function resolveRuntimeHostAccessIssue(
@@ -156,14 +232,49 @@ export function resolveRuntimeHostAccessIssue(
 
 export async function runRuntimeHostAccessRevokeCli(
   options: RuntimeHostAccessRevokeOptions,
+  framed = false,
 ): Promise<number> {
-  const result = await revokeRuntimeHostAccessCredential(options);
-  process.stdout.write(`${JSON.stringify(result)}\n`);
-  return result.revoked ? 0 : 1;
+  try {
+    const before = await listRuntimeHostAccessCredentials(options);
+    const target = before.credentials.find(
+      (credential) => credential.credentialId === options.credentialId,
+    );
+    if (
+      target &&
+      options.protectedCredentialFingerprint &&
+      target.credentialFingerprint === options.protectedCredentialFingerprint
+    ) {
+      throw new Error('Rotate this Desktop credential instead of revoking it');
+    }
+    const result = await revokeRuntimeHostAccessCredential(options);
+    const listed = await listRuntimeHostAccessCredentials(options);
+    process.stdout.write(
+      framed
+        ? encodeRuntimeHostAccessManagementFrame({
+            schemaVersion: 1,
+            kind: 'revoked',
+            ...result,
+            credentials: mutableCredentialMetadata(listed.credentials),
+          })
+        : `${JSON.stringify(result)}\n`,
+    );
+    return result.revoked ? 0 : 1;
+  } catch (error) {
+    if (!framed) throw error;
+    writeAccessManagementError('revoke', error);
+    return 1;
+  }
+}
+
+function mutableCredentialMetadata(credentials: readonly RuntimeHostAccessCredentialMetadata[]) {
+  return credentials.map((credential) => ({
+    ...credential,
+    operationGrants: [...credential.operationGrants],
+  }));
 }
 
 export async function revokeRuntimeHostAccessCredential(options: RuntimeHostAccessRevokeOptions) {
-  const connection = await connectLocalOwner(options.rootPath);
+  const connection = await connectLocalOwner(options.rootPath, options.expectedRootId);
   try {
     return await connection.request('access.credential.revoke', {
       credentialId: options.credentialId,
@@ -173,7 +284,7 @@ export async function revokeRuntimeHostAccessCredential(options: RuntimeHostAcce
   }
 }
 
-async function connectLocalOwner(rootPath: string) {
+async function connectLocalOwner(rootPath: string, expectedRootId?: string) {
   const result = await connectExistingRuntimeHost({
     rootPath,
     protocol: PROTOCOL,
@@ -181,7 +292,40 @@ async function connectLocalOwner(rootPath: string) {
   if (result.kind !== 'connected') {
     throw new Error(`Runtime Host service is not available (${result.kind})`);
   }
+  if (expectedRootId && result.connection.rootId !== expectedRootId) {
+    await result.connection.close();
+    throw new Error('Runtime Host service is bound to a different State Root');
+  }
   return result.connection;
+}
+
+function writeAccessManagementError(
+  action: RuntimeHostAccessManagementAction,
+  error: unknown,
+): void {
+  process.stdout.write(
+    encodeRuntimeHostAccessManagementFrame({
+      schemaVersion: 1,
+      kind: 'error',
+      action,
+      error: {
+        code: 'access_management_failed',
+        message: bounded(
+          error instanceof Error ? error.message : String(error),
+          RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_MESSAGE_MAX_BYTES,
+        ),
+      },
+    }),
+  );
+}
+
+function bounded(value: string, maxBytes: number): string {
+  const fallback = 'Runtime Host access management failed';
+  if (value.length === 0) return fallback;
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  let end = Math.min(value.length, maxBytes);
+  while (end > 0 && Buffer.byteLength(value.slice(0, end), 'utf8') > maxBytes) end -= 1;
+  return value.slice(0, end) || fallback;
 }
 
 function requireOperationGrants(values: readonly string[]): readonly OperationKey[] {

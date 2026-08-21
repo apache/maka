@@ -45,6 +45,7 @@ import type {
   DesktopRuntimeHostOnboardingSnapshot,
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostManagementResponse,
+  DesktopRuntimeHostAccessSnapshot,
   DesktopNewTaskCatalog,
   DesktopNewTaskHost,
   DesktopNewTaskHostRef,
@@ -1208,6 +1209,22 @@ const makaBridge = {
       action: DesktopRuntimeHostManagementAction,
     ): Promise<DesktopRuntimeHostManagementResponse> {
       return ipcRenderer.invoke('runtime-host-management:run', profileId, action);
+    },
+    listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot> {
+      return ipcRenderer.invoke('runtime-host-management:list-credentials', profileId);
+    },
+    rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot> {
+      return ipcRenderer.invoke('runtime-host-management:rotate-credential', profileId);
+    },
+    revokeCredential(
+      profileId: string,
+      credentialId: string,
+    ): Promise<DesktopRuntimeHostAccessSnapshot> {
+      return ipcRenderer.invoke(
+        'runtime-host-management:revoke-credential',
+        profileId,
+        credentialId,
+      );
     },
   },
   newTasks: {

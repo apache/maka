@@ -33,6 +33,7 @@ import {
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfileCatalog,
 } from "@maka/runtime-host/client";
+import { runtimeHostAccessCredentialFingerprint } from "@maka/runtime-host/operator";
 import type { CredentialStore } from "@maka/storage/credential-store";
 import { withFileUpdateLock } from "@maka/storage/file-update-lock";
 import type {
@@ -94,10 +95,12 @@ export interface DesktopRuntimeHostProfileService {
   resolveManagedService(
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedServiceBinding | undefined>;
+  resolveManagedCredentialFingerprint(profileId: string): Promise<string | undefined>;
   clearManagedServiceBinding(expected: DesktopRuntimeHostManagedServiceBinding): Promise<void>;
   markManagedServiceUninstalling(
     expected: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<DesktopRuntimeHostManagedServiceBinding>;
+  rotateManagedCredential(profileId: string, credential: string): Promise<void>;
   startEnabledProfiles(): Promise<void>;
   resolvePairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
   setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
@@ -598,6 +601,39 @@ export function createDesktopRuntimeHostProfileService(input: {
         }
       });
     },
+    rotateManagedCredential(profileId, credential) {
+      return mutateProfiles(async () => {
+        if (!preferences.enabledRemoteProfileIds.includes(profileId)) {
+          throw new Error('Enable this Runtime Host before rotating its access credential');
+        }
+        const previous = await catalog.resolve(profileId);
+        if (previous.profile.kind !== 'remote') {
+          throw new Error('Only a remote Runtime Host credential can be rotated');
+        }
+        const target = { profile: previous.profile, credential } as const;
+        const intent = createDesktopRuntimeHostPairingIntent({
+          target,
+          previous,
+          wasEnabled: true,
+        });
+        await beginPairingIntent(intent);
+        try {
+          const rebound = await catalog.rebindIfCurrent(
+            previous,
+            previous.profile,
+            credential,
+          );
+          if (!rebound.rebound) {
+            throw new Error('Runtime Host profile changed before its credential could be rotated');
+          }
+          await finishPairingIntent(intent);
+        } catch (failure) {
+          if (failure instanceof RuntimeHostPairingFinalizationInterruptedError) throw failure;
+          await rollbackPairingIntent(intent, failure);
+          throw failure;
+        }
+      });
+    },
     resolveManagedService(profileId) {
       return mutate(async () => {
         const profile = (await catalog.read()).profiles.find(
@@ -609,6 +645,19 @@ export function createDesktopRuntimeHostProfileService(input: {
           profile,
         );
         return binding;
+      });
+    },
+    resolveManagedCredentialFingerprint(profileId) {
+      return mutate(async () => {
+        const resolved = await catalog.resolve(profileId).catch(() => undefined);
+        if (!resolved?.credential || resolved.profile.kind !== "remote") return undefined;
+        const binding = findDesktopRuntimeHostManagedServiceBinding(
+          await managedServices.read(),
+          resolved.profile,
+        );
+        return binding
+          ? runtimeHostAccessCredentialFingerprint(resolved.credential)
+          : undefined;
       });
     },
     markManagedServiceUninstalling(expected) {

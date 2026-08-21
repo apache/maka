@@ -18,14 +18,20 @@
  */
 
 import type { IpcMain } from 'electron';
-import type { RuntimeHostServiceManagementFrame } from '@maka/runtime-host/operator';
+import {
+  runtimeHostAccessCredentialFingerprint,
+  type RuntimeHostAccessManagementFrame,
+  type RuntimeHostServiceManagementFrame,
+} from '@maka/runtime-host/operator';
 import type {
+  DesktopRuntimeHostAccessSnapshot,
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostManagementResponse,
 } from '../preload/bridge-contract.js';
 import type { DesktopRuntimeHostProfileService } from './runtime-host-profile-service.js';
 import type {
   DesktopRuntimeHostSshCleanupInput,
+  DesktopRuntimeHostSshAccessInput,
   DesktopRuntimeHostSshManagementInput,
 } from './runtime-host-ssh-terminal.js';
 
@@ -40,24 +46,33 @@ const MANAGEMENT_ACTIONS = new Set<DesktopRuntimeHostManagementAction>([
 
 export function createDesktopRuntimeHostManagement(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
+  readonly clientInstanceId: string;
   readonly profiles: Pick<
     DesktopRuntimeHostProfileService,
     | 'resolveManagedService'
+    | 'resolveManagedCredentialFingerprint'
+    | 'rotateManagedCredential'
     | 'markManagedServiceUninstalling'
     | 'clearManagedServiceBinding'
   >;
   readonly runServiceManagement: (
     input: DesktopRuntimeHostSshManagementInput,
   ) => Promise<RuntimeHostServiceManagementFrame>;
+  readonly runAccessManagement: (
+    input: DesktopRuntimeHostSshAccessInput,
+  ) => Promise<RuntimeHostAccessManagementFrame>;
   readonly cleanupManagedDeployment: (
     input: DesktopRuntimeHostSshCleanupInput,
   ) => Promise<void>;
 }): { close(): void } {
-  const resolveManagedService = async (value: unknown) => {
+  const requireProfileId = (value: unknown): string => {
     if (typeof value !== 'string' || value.length === 0 || value.length > 128) {
       throw new Error('Runtime Host profile ID is invalid');
     }
-    const managed = await input.profiles.resolveManagedService(value);
+    return value;
+  };
+  const resolveManagedService = async (value: unknown) => {
+    const managed = await input.profiles.resolveManagedService(requireProfileId(value));
     if (!managed) throw new Error('This Runtime Host profile is not bound to a managed service');
     return managed;
   };
@@ -121,13 +136,154 @@ export function createDesktopRuntimeHostManagement(input: {
     return { kind: 'uninstalled', retainedStateRoot: service.rootPath };
   };
 
-  const channel = 'runtime-host-management:run';
-  input.ipcMain.handle(channel, (_event, profileId: unknown, action: unknown) =>
+  const principalId = `desktop:${input.clientInstanceId}`;
+  const accessInput = async (
+    profileId: unknown,
+    action: DesktopRuntimeHostSshAccessInput['action'],
+    detail: {
+      readonly credentialId?: string;
+      readonly principalId?: string;
+      readonly protectedCredentialFingerprint?: string;
+    } = {},
+  ): Promise<DesktopRuntimeHostSshAccessInput> => {
+    const managed = await resolveManagedService(profileId);
+    if (managed.state === 'uninstalling') {
+      throw new Error('Finish uninstalling this Runtime Host service before managing access');
+    }
+    if (managed.profile.transport.kind !== 'ssh') {
+      throw new Error('This Runtime Host profile does not have an SSH management channel');
+    }
+    return {
+      destination: managed.profile.transport.destination,
+      ...(managed.profile.transport.sshPort === undefined
+        ? {}
+        : { sshPort: managed.profile.transport.sshPort }),
+      operatorPath: managed.service.operatorPath,
+      rootPath: managed.service.rootPath,
+      expectedRootId: managed.profile.rootId,
+      action,
+      ...detail,
+    };
+  };
+
+  const accessSnapshot = (
+    credentials: Extract<RuntimeHostAccessManagementFrame, { kind: 'list' }>['credentials'],
+    currentFingerprint: string | undefined,
+  ): DesktopRuntimeHostAccessSnapshot => ({
+    credentials: credentials.map((credential) => ({
+      credentialId: credential.credentialId,
+      principalKind: credential.principalKind,
+      principalId: credential.principalId,
+      status: credential.status,
+      createdAt: credential.createdAt,
+      ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}),
+      isCurrentDesktop: credential.credentialFingerprint === currentFingerprint,
+    })),
+  });
+
+  const listCredentials = async (
+    profileId: unknown,
+  ): Promise<DesktopRuntimeHostAccessSnapshot> => {
+    const resolvedProfileId = requireProfileId(profileId);
+    const response = await input.runAccessManagement(
+      await accessInput(resolvedProfileId, 'list'),
+    );
+    if (response.kind === 'error') throw new Error(response.error.message);
+    if (response.kind !== 'list') {
+      throw new Error('Remote Runtime Host did not return its access credentials');
+    }
+    const currentFingerprint = await input.profiles.resolveManagedCredentialFingerprint(
+      resolvedProfileId,
+    );
+    return accessSnapshot(response.credentials, currentFingerprint);
+  };
+
+  const rotateCredential = async (
+    profileId: unknown,
+  ): Promise<DesktopRuntimeHostAccessSnapshot> => {
+    const managed = await resolveManagedService(profileId);
+    const response = await input.runAccessManagement(
+      await accessInput(profileId, 'prepare', { principalId }),
+    );
+    if (response.kind === 'error') throw new Error(response.error.message);
+    if (response.kind !== 'prepared') {
+      throw new Error('Remote Runtime Host did not prepare a replacement credential');
+    }
+    const replacementFingerprint = runtimeHostAccessCredentialFingerprint(response.credential);
+    const replacement = response.credentials.find(
+      (credential) => credential.credentialFingerprint === replacementFingerprint,
+    );
+    if (
+      !replacement ||
+      replacement.status !== 'pending' ||
+      replacement.principalKind !== 'remote_owner' ||
+      replacement.principalId !== principalId ||
+      !replacement.canPublishClientCapabilities ||
+      replacement.canUseHostPaths
+    ) {
+      throw new Error('Remote Runtime Host returned an invalid Desktop credential replacement');
+    }
+    await input.profiles.rotateManagedCredential(managed.profile.id, response.credential);
+    const finalized = response.credentials.flatMap((credential) => {
+      if (credential.credentialId === replacement.credentialId) {
+        const { expiresAt: _expiresAt, ...active } = credential;
+        return [{ ...active, status: 'active' as const }];
+      }
+      return credential.status === 'active' &&
+        credential.principalKind === replacement.principalKind &&
+        credential.principalId === replacement.principalId
+        ? []
+        : [credential];
+    });
+    return accessSnapshot(finalized, replacementFingerprint);
+  };
+
+  const revokeCredential = async (
+    profileId: unknown,
+    credentialId: unknown,
+  ): Promise<DesktopRuntimeHostAccessSnapshot> => {
+    if (typeof credentialId !== 'string' || credentialId.length === 0 || credentialId.length > 128) {
+      throw new Error('Runtime Host access credential ID is invalid');
+    }
+    const resolvedProfileId = requireProfileId(profileId);
+    const currentFingerprint = await input.profiles.resolveManagedCredentialFingerprint(
+      resolvedProfileId,
+    );
+    if (!currentFingerprint) throw new Error('The current Desktop credential is unavailable');
+    const response = await input.runAccessManagement(
+      await accessInput(resolvedProfileId, 'revoke', {
+        credentialId,
+        protectedCredentialFingerprint: currentFingerprint,
+      }),
+    );
+    if (response.kind === 'error') throw new Error(response.error.message);
+    if (response.kind !== 'revoked') {
+      throw new Error('Remote Runtime Host did not confirm credential revocation');
+    }
+    return accessSnapshot(response.credentials, currentFingerprint);
+  };
+
+  const channels = [
+    'runtime-host-management:run',
+    'runtime-host-management:list-credentials',
+    'runtime-host-management:rotate-credential',
+    'runtime-host-management:revoke-credential',
+  ] as const;
+  input.ipcMain.handle(channels[0], (_event, profileId: unknown, action: unknown) =>
     run(profileId, action));
+  input.ipcMain.handle(channels[1], (_event, profileId: unknown) =>
+    listCredentials(profileId));
+  input.ipcMain.handle(channels[2], (_event, profileId: unknown) =>
+    rotateCredential(profileId));
+  input.ipcMain.handle(
+    channels[3],
+    (_event, profileId: unknown, credentialId: unknown) =>
+      revokeCredential(profileId, credentialId),
+  );
 
   return {
     close() {
-      input.ipcMain.removeHandler(channel);
+      for (const channel of channels) input.ipcMain.removeHandler(channel);
     },
   };
 }

@@ -297,6 +297,10 @@ async function writeOperatorLauncher(
     `  rmdir -- ${quotePosix(deploymentRoot)} || exit 1`,
     '  exit 0',
     'fi',
+    'if [ "$#" -ge 1 ] && [ "$1" = "access" ]; then',
+    '  shift',
+    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host access "$@"`,
+    'fi',
     `exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service "$@" --client-data-root ${quotePosix(clientDataRoot)}`,
     '',
   ].join('\n');

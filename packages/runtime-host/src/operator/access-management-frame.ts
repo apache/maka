@@ -1,0 +1,113 @@
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
+
+export const RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX =
+  'MAKA_RUNTIME_HOST_ACCESS_MANAGEMENT_V1 ';
+export const RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_CODE_MAX_BYTES = 128;
+export const RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_MESSAGE_MAX_BYTES = 2 * 1024;
+
+const FRAME_MAX_BYTES = 768 * 1024;
+const CREDENTIAL_MAX_BYTES = 8 * 1024;
+const CREDENTIAL_FINGERPRINT_HEX_LENGTH = 32;
+const ACCESS_ACTIONS = ['list', 'prepare', 'revoke'] as const;
+
+const boundedString = (maxBytes: number) =>
+  z
+    .string()
+    .min(1)
+    .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);
+const CREDENTIAL_METADATA_SCHEMA = z
+  .object({
+    credentialId: boundedString(128),
+    credentialFingerprint: z.string().regex(/^[a-f0-9]{32}$/u),
+    principalKind: z.enum(['remote_owner', 'capability_provider']),
+    principalId: boundedString(128),
+    status: z.enum(['active', 'pending']),
+    operationGrants: z.array(boundedString(128)).max(256),
+    canPublishClientCapabilities: z.boolean(),
+    canUseHostPaths: z.boolean(),
+    createdAt: boundedString(64),
+    expiresAt: boundedString(64).optional(),
+  })
+  .strict();
+
+const ACCESS_MANAGEMENT_FRAME_SCHEMA = z.discriminatedUnion('kind', [
+  z
+    .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('list'),
+      credentials: z.array(CREDENTIAL_METADATA_SCHEMA),
+    })
+    .strict(),
+  z
+    .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('prepared'),
+      credential: boundedString(CREDENTIAL_MAX_BYTES),
+      credentials: z.array(CREDENTIAL_METADATA_SCHEMA),
+    })
+    .strict(),
+  z
+    .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('revoked'),
+      credentialId: boundedString(128),
+      revoked: z.boolean(),
+      credentials: z.array(CREDENTIAL_METADATA_SCHEMA),
+    })
+    .strict(),
+  z
+    .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('error'),
+      action: z.enum(ACCESS_ACTIONS),
+      error: z
+        .object({
+          code: boundedString(RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_CODE_MAX_BYTES),
+          message: boundedString(RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_MESSAGE_MAX_BYTES),
+        })
+        .strict(),
+    })
+    .strict(),
+]);
+
+export type RuntimeHostAccessManagementAction = (typeof ACCESS_ACTIONS)[number];
+export type RuntimeHostAccessManagementFrame = z.infer<typeof ACCESS_MANAGEMENT_FRAME_SCHEMA>;
+export type RuntimeHostAccessCredentialMetadata = z.infer<typeof CREDENTIAL_METADATA_SCHEMA>;
+
+export function encodeRuntimeHostAccessManagementFrame(
+  frame: RuntimeHostAccessManagementFrame,
+): string {
+  const encoded = Buffer.from(JSON.stringify(ACCESS_MANAGEMENT_FRAME_SCHEMA.parse(frame))).toString(
+    'base64url',
+  );
+  if (Buffer.byteLength(encoded, 'utf8') > FRAME_MAX_BYTES) {
+    throw new RangeError('Runtime Host access management frame exceeds the encoded size limit');
+  }
+  return `${RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX}${encoded}\n`;
+}
+
+export function decodeRuntimeHostAccessManagementFrame(
+  line: string,
+): RuntimeHostAccessManagementFrame | undefined {
+  const marker = line.indexOf(RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX);
+  if (marker === -1) return undefined;
+  try {
+    const encoded = line.slice(marker + RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX.length).trim();
+    if (encoded.length === 0 || Buffer.byteLength(encoded, 'utf8') > FRAME_MAX_BYTES) {
+      return undefined;
+    }
+    const value: unknown = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    const decoded = ACCESS_MANAGEMENT_FRAME_SCHEMA.safeParse(value);
+    return decoded.success ? decoded.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function runtimeHostAccessCredentialFingerprint(credential: string): string {
+  return createHash('sha256')
+    .update(credential)
+    .digest('hex')
+    .slice(0, CREDENTIAL_FINGERPRINT_HEX_LENGTH);
+}

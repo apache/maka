@@ -19,11 +19,146 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { runtimeHostAccessCredentialFingerprint } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostManagement } from '../runtime-host-management.js';
 import type {
+  DesktopRuntimeHostSshAccessInput,
   DesktopRuntimeHostSshCleanupInput,
   DesktopRuntimeHostSshManagementInput,
 } from '../runtime-host-ssh-terminal.js';
+
+test('identifies, rotates, and revokes managed credentials without exposing secrets', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const profile = {
+    id: 'office',
+    name: 'Office',
+    kind: 'remote' as const,
+    rootId: 'a'.repeat(64),
+    transport: {
+      kind: 'ssh' as const,
+      destination: 'operator@example.com',
+      remotePort: 7443,
+      websocketPath: '/runtime-host',
+    },
+  };
+  const service = {
+    id: 'b'.repeat(64),
+    rootPath: '/srv/maka',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+  };
+  const principalId = 'desktop:desktop-client';
+  const replacement = 'maka_rh_replacement-secret';
+  let currentFingerprint = runtimeHostAccessCredentialFingerprint('maka_rh_current-secret');
+  let credentials = [
+    accessCredential('current', principalId, currentFingerprint),
+    accessCredential(
+      'obsolete',
+      principalId,
+      runtimeHostAccessCredentialFingerprint('maka_rh_obsolete-secret'),
+    ),
+  ];
+
+  createDesktopRuntimeHostManagement({
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    clientInstanceId: 'desktop-client',
+    profiles: {
+      resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
+      resolveManagedCredentialFingerprint: async () => currentFingerprint,
+      rotateManagedCredential: async (_profileId, credential) => {
+        assert.equal(credential, replacement);
+        currentFingerprint = runtimeHostAccessCredentialFingerprint(credential);
+        credentials = [accessCredential('replacement', principalId, currentFingerprint)];
+      },
+      markManagedServiceUninstalling: async (binding) => binding,
+      clearManagedServiceBinding: async () => undefined,
+    },
+    runServiceManagement: async () => assert.fail('service management is not expected'),
+    runAccessManagement: async (input: DesktopRuntimeHostSshAccessInput) => {
+      if (input.action === 'list') {
+        return { schemaVersion: 1, kind: 'list', credentials };
+      }
+      if (input.action === 'prepare') {
+        const pending = {
+          ...accessCredential(
+            'replacement',
+            principalId,
+            runtimeHostAccessCredentialFingerprint(replacement),
+          ),
+          status: 'pending' as const,
+          expiresAt: '2026-08-21T01:15:00.000Z',
+        };
+        return {
+          schemaVersion: 1,
+          kind: 'prepared',
+          credential: replacement,
+          credentials: [...credentials, pending],
+        };
+      }
+      assert.equal(input.protectedCredentialFingerprint, currentFingerprint);
+      const target = credentials.find(
+        (credential) => credential.credentialId === input.credentialId,
+      );
+      if (target?.credentialFingerprint === input.protectedCredentialFingerprint) {
+        return {
+          schemaVersion: 1,
+          kind: 'error',
+          action: 'revoke',
+          error: {
+            code: 'credential_protected',
+            message: 'Rotate this Desktop credential instead of revoking it',
+          },
+        };
+      }
+      credentials = credentials.filter(
+        (credential) => credential.credentialId !== input.credentialId,
+      );
+      return {
+        schemaVersion: 1,
+        kind: 'revoked',
+        credentialId: input.credentialId!,
+        revoked: true,
+        credentials,
+      };
+    },
+    cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
+  });
+
+  const list = handlers.get('runtime-host-management:list-credentials');
+  const rotate = handlers.get('runtime-host-management:rotate-credential');
+  const revoke = handlers.get('runtime-host-management:revoke-credential');
+  assert.ok(list && rotate && revoke);
+  const initial = await list({}, profile.id);
+  assert.deepEqual(
+    (initial as { credentials: { credentialId: string; isCurrentDesktop: boolean }[] }).credentials
+      .map(({ credentialId, isCurrentDesktop }) => ({ credentialId, isCurrentDesktop })),
+    [
+      { credentialId: 'current', isCurrentDesktop: true },
+      { credentialId: 'obsolete', isCurrentDesktop: false },
+    ],
+  );
+  await assert.rejects(
+    revoke({}, profile.id, 'current') as Promise<unknown>,
+    /Rotate this Desktop credential/u,
+  );
+  const revoked = await revoke({}, profile.id, 'obsolete');
+  assert.equal(JSON.stringify(revoked).includes('obsolete-secret'), false);
+  const rotated = await rotate({}, profile.id);
+  assert.equal(JSON.stringify(rotated).includes(replacement), false);
+  assert.deepEqual(
+    (rotated as { credentials: { credentialId: string; isCurrentDesktop: boolean }[] }).credentials,
+    [{
+      credentialId: 'replacement',
+      principalKind: 'remote_owner',
+      principalId,
+      status: 'active',
+      createdAt: '2026-08-21T01:00:00.000Z',
+      isCurrentDesktop: true,
+    }],
+  );
+});
 
 test('manages only the service identity bound by Desktop onboarding', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -53,11 +188,13 @@ test('manages only the service identity bound by Desktop onboarding', async () =
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
     },
+    clientInstanceId: 'desktop-client',
     profiles: {
       resolveManagedService: async (profileId) =>
         profileId === managedProfile.id
           ? { profile: managedProfile, service: managedService, state: 'active' as const }
           : undefined,
+      resolveManagedCredentialFingerprint: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
         uninstallOrder.push('mark-uninstalling');
         return { ...binding, state: 'uninstalling' as const };
@@ -66,6 +203,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
         cleared += 1;
         uninstallOrder.push('clear-binding');
       },
+      rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
     },
     runServiceManagement: async (input) => {
       managementInputs.push(input);
@@ -74,6 +212,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
       }
       return serviceResult(input.action);
     },
+    runAccessManagement: async () => assert.fail('access management is not expected'),
     cleanupManagedDeployment: async (input) => {
       cleanupInputs.push(input);
       uninstallOrder.push('cleanup-deployment');
@@ -160,8 +299,10 @@ test('resumes deployment cleanup without repeating the committed service uninsta
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
     },
+    clientInstanceId: 'desktop-client',
     profiles: {
       resolveManagedService: async () => ({ profile, service, state }),
+      resolveManagedCredentialFingerprint: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
         state = 'uninstalling';
         return { ...binding, state };
@@ -170,11 +311,13 @@ test('resumes deployment cleanup without repeating the committed service uninsta
         clearAttempts += 1;
         if (clearAttempts === 1) throw new Error('local metadata is unavailable');
       },
+      rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
     },
     runServiceManagement: async (input) => {
       calls.push(input);
       return serviceResult(input.action);
     },
+    runAccessManagement: async () => assert.fail('access management is not expected'),
     cleanupManagedDeployment: async () => {
       cleanups += 1;
     },
@@ -204,6 +347,7 @@ test('does not commit uninstall until the remote service confirms it is removed'
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
     },
+    clientInstanceId: 'desktop-client',
     profiles: {
       resolveManagedService: async () => ({
         profile: {
@@ -225,11 +369,13 @@ test('does not commit uninstall until the remote service confirms it is removed'
         },
         state: 'active' as const,
       }),
+      resolveManagedCredentialFingerprint: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
         marked = true;
         return { ...binding, state: 'uninstalling' as const };
       },
       clearManagedServiceBinding: async () => assert.fail('uninstall was not committed'),
+      rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
     },
     runServiceManagement: async () => {
       const result = serviceResult('uninstall');
@@ -238,6 +384,7 @@ test('does not commit uninstall until the remote service confirms it is removed'
         service: { ...result.service, state: 'running' as const, pid: 42 },
       };
     },
+    runAccessManagement: async () => assert.fail('access management is not expected'),
     cleanupManagedDeployment: async () => assert.fail('cleanup must not start'),
   });
 
@@ -265,5 +412,23 @@ function serviceResult(action: DesktopRuntimeHostSshManagementInput['action']) {
       installedVersion: action === 'uninstall' ? null : '1.2.3',
       projectDirectoryRoots: [],
     },
+  };
+}
+
+function accessCredential(
+  credentialId: string,
+  principalId: string,
+  credentialFingerprint: string,
+) {
+  return {
+    credentialId,
+    credentialFingerprint,
+    principalKind: 'remote_owner' as const,
+    principalId,
+    status: 'active' as const,
+    operationGrants: ['host.status', 'turn.start'],
+    canPublishClientCapabilities: true,
+    canUseHostPaths: false,
+    createdAt: '2026-08-21T01:00:00.000Z',
   };
 }

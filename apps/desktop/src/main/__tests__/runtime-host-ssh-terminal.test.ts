@@ -27,8 +27,10 @@ import {
   type RuntimeHostSshProcessFactory,
 } from '@maka/runtime-host/client';
 import {
+  encodeRuntimeHostAccessManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
+  runtimeHostAccessCredentialFingerprint,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
 } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
@@ -264,6 +266,77 @@ test('reads a framed service result without projecting it into the SSH terminal'
   assert.equal(result.service.installedVersion, '1.2.3');
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   assert.match(JSON.stringify(harness.events), /Password/u);
+  await harness.terminal.close();
+});
+
+test('keeps a prepared access credential out of the SSH terminal projection', async () => {
+  const harness = createHarness('pending');
+  const credential = 'maka_rh_secret-replacement';
+  const management = harness.terminal.runAccessManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    rootPath: '/srv/maka',
+    expectedRootId: 'a'.repeat(64),
+    action: 'prepare',
+    principalId: 'desktop:stable-client',
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData('Password: ');
+  harness.pty.emitData(
+    encodeRuntimeHostAccessManagementFrame({
+      schemaVersion: 1,
+      kind: 'prepared',
+      credential,
+      credentials: [{
+        credentialId: 'credential-2',
+        credentialFingerprint: runtimeHostAccessCredentialFingerprint(credential),
+        principalKind: 'remote_owner',
+        principalId: 'desktop:stable-client',
+        status: 'pending',
+        operationGrants: ['host.status', 'access.credential.finalize'],
+        canPublishClientCapabilities: true,
+        canUseHostPaths: false,
+        createdAt: '2026-08-21T01:00:00.000Z',
+        expiresAt: '2026-08-21T01:15:00.000Z',
+      }],
+    }),
+  );
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(result.kind, 'prepared');
+  assert.equal(result.kind === 'prepared' ? result.credential : undefined, credential);
+  assert.doesNotMatch(JSON.stringify(harness.events), /secret-replacement|MAKA_RUNTIME/u);
+  const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(command, /access.*prepare/u);
+  assert.match(command, /desktop:stable-client/u);
+  assert.doesNotMatch(command, /secret-replacement/u);
+  await harness.terminal.close();
+});
+
+test('accepts the revoked result for an access revoke action', async () => {
+  const harness = createHarness('pending');
+  const management = harness.terminal.runAccessManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    rootPath: '/srv/maka',
+    expectedRootId: 'a'.repeat(64),
+    action: 'revoke',
+    credentialId: 'credential-1',
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData(
+    encodeRuntimeHostAccessManagementFrame({
+      schemaVersion: 1,
+      kind: 'revoked',
+      credentialId: 'credential-1',
+      revoked: true,
+      credentials: [],
+    }),
+  );
+  harness.pty.exit(0);
+
+  assert.equal((await management).kind, 'revoked');
   await harness.terminal.close();
 });
 

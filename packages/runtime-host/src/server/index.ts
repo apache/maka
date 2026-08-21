@@ -26,3 +26,7 @@ export { createUnavailableDomainOperationHandlers } from './operation-dispatcher
 export { startExecutionRuntimeHostService } from './execution-service.js';
 export { runRuntimeHostProcessLifecycle } from './process-lifecycle.js';
 export { installRuntimeHostLogCapture } from '../process-diagnostics.js';
+export {
+  readRuntimeHostAccessCredentialMetadata,
+  type RuntimeHostAccessCredentialMetadata,
+} from './access-credential-metadata.js';
