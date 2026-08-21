@@ -35,10 +35,6 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/prepare-bundled-git.mjs',
   'scripts/prepare-windows-upgrade-baseline.mjs',
   'scripts/prepare-windows-upgrade-baseline.test.mjs',
-  'scripts/product-release-authority.mjs',
-  'scripts/product-release-authority.test.mjs',
-  'scripts/product-release-identity.mjs',
-  'scripts/product-release-tag.mjs',
   'scripts/product-release.test.mjs',
   'scripts/release-eval-smoke-sitecustomize.py',
   'scripts/release-version.mjs',
@@ -97,7 +93,11 @@ function isCliPackagePath(path) {
 }
 
 function isReleaseContractPath(path) {
-  return RELEASE_CONTRACT_FILES.has(path) || path.startsWith('scripts/release-cli-');
+  return (
+    RELEASE_CONTRACT_FILES.has(path) ||
+    path.startsWith('scripts/product-release-') ||
+    path.startsWith('scripts/release-cli-')
+  );
 }
 
 const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host']);

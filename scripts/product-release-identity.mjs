@@ -97,7 +97,25 @@ export function resolveProductReleaseIdentity({
   }
 
   const toolchain = releaseToolchainFromManifest(rootManifest);
+  const dmg = `Maka-${version}-mac-arm64.dmg`;
+  const macZip = `Maka-${version}-mac-arm64.zip`;
+  const exe = `Maka-${version}-win-x64.exe`;
+  const windowsZip = `Maka-${version}-win-x64.zip`;
   const cliArchive = `Maka-${version}-cli-mac-arm64.zip`;
+  const sourceArchive = `Maka-${version}-bundled-git-source.tar.gz`;
+  const artifacts = {
+    'desktop-macos': [dmg, `${dmg}.sha256`, macZip, `${macZip}.blockmap`, 'latest-mac.yml'],
+    'desktop-windows': [
+      exe,
+      `${exe}.blockmap`,
+      `${exe}.sha256`,
+      windowsZip,
+      `${windowsZip}.sha256`,
+      'latest.yml',
+    ],
+    'cli-macos-arm64': [cliArchive, `${cliArchive}.sha256`],
+    source: [sourceArchive, `${sourceArchive}.sha256`],
+  };
 
   return {
     ...toolchain,
@@ -105,11 +123,12 @@ export function resolveProductReleaseIdentity({
     tag: `v${version}`,
     sourceCommit: sha,
     sourceReferenceTag,
-    dmg: `Maka-${version}-mac-arm64.dmg`,
-    exe: `Maka-${version}-win-x64.exe`,
+    dmg,
+    exe,
     cliArchive,
     cliChecksum: `${cliArchive}.sha256`,
-    sourceArchive: `Maka-${version}-bundled-git-source.tar.gz`,
+    sourceArchive,
+    artifacts,
   };
 }
 

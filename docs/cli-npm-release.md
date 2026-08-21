@@ -31,16 +31,18 @@ The two workflow boundaries are:
 
 ### GitHub Environment
 
-Create an Environment named `npm-release` with:
+The checked-in `.asf.yaml` is the authority for the `npm-release` Environment. After it reaches
+`main`, confirm ASF reconciliation produced:
 
 - a selected deployment tag rule matching `v*`, with no branch rule;
-- the active CLI release maintainer as a required reviewer;
-- self-review allowed while one person is the sole release maintainer;
+- `M4n5ter` as the required reviewer;
+- self-review disabled;
 - administrator bypass disabled where repository policy permits it;
 - no environment secrets or variables.
 
-Repository administration permission is required to configure the Environment. The workflow itself
-uses GitHub OIDC and does not read an npm token.
+Repository administration permission is required to inspect or repair reconciliation. Do not maintain
+a second manual Environment policy in GitHub. The workflow itself uses GitHub OIDC and does not read
+an npm token.
 
 ### npm Trusted Publisher
 

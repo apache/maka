@@ -99,6 +99,8 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/package-macos-arm64-cli.mjs',
     'scripts/package-windows-x64.mjs',
     'scripts/prepare-windows-upgrade-baseline.mjs',
+    'scripts/product-release-artifacts.mjs',
+    'scripts/product-release-artifacts.test.mjs',
     'scripts/product-release-authority.mjs',
     'scripts/product-release-authority.test.mjs',
     'scripts/product-release-identity.mjs',

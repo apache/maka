@@ -200,8 +200,6 @@ jobs:
         if: matrix.platform == 'windows'
         run: npm run package:windows-autoupdate-next
 
-      # The fake-versioned artifacts live outside apps/desktop/release, so the
-      # upload globs below can never pick them up.
       - name: Verify automatic update end to end
         if: matrix.platform == 'windows'
         run: |
@@ -209,13 +207,18 @@ jobs:
             "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
 
+      - name: Stage the exact product artifact group
+        run: >-
+          node scripts/product-release-artifacts.mjs stage
+          "desktop-${{ matrix.platform }}"
+          apps/desktop/release
+          "${{ runner.temp }}/release-assets"
+
       - name: Upload the verified release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.platform }}
-          path: |
-            apps/desktop/release/Maka-*
-            apps/desktop/release/latest*.yml
+          path: ${{ runner.temp }}/release-assets
           if-no-files-found: error
           retention-days: 7
 
@@ -300,13 +303,18 @@ jobs:
           npm run verify:cli:macos-arm64 --
           "apps/desktop/release/${{ needs.release-identity.outputs.cli_archive }}"
 
+      - name: Stage the exact product artifact group
+        run: >-
+          node scripts/product-release-artifacts.mjs stage
+          "cli-macos-arm64"
+          apps/desktop/release
+          "${{ runner.temp }}/release-assets"
+
       - name: Upload the verified CLI release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-cli-macos-arm64
-          path: |
-            apps/desktop/release/${{ needs.release-identity.outputs.cli_archive }}
-            apps/desktop/release/${{ needs.release-identity.outputs.cli_checksum }}
+          path: ${{ runner.temp }}/release-assets
           if-no-files-found: error
           retention-days: 7
 
@@ -355,13 +363,18 @@ jobs:
           tar -C apps/desktop/release-sources/bundled-git -czf "$archive" .
           (cd "$archive_dir" && sha256sum "$SOURCE_ARCHIVE" > "${SOURCE_ARCHIVE}.sha256")
 
+      - name: Stage the exact product artifact group
+        run: >-
+          node scripts/product-release-artifacts.mjs stage
+          "source"
+          apps/desktop/release-sources
+          "${{ runner.temp }}/release-assets"
+
       - name: Upload verified source assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-source
-          path: |
-            apps/desktop/release-sources/${{ needs.release-identity.outputs.source_archive }}
-            apps/desktop/release-sources/${{ needs.release-identity.outputs.source_archive }}.sha256
+          path: ${{ runner.temp }}/release-assets
           if-no-files-found: error
           retention-days: 7
 
@@ -392,21 +405,9 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Verify the complete required artifact set
+      - name: Verify the exact product artifact manifest
         run: |
-          required=(
-            "${{ needs.release-identity.outputs.dmg }}"
-            "${{ needs.release-identity.outputs.dmg }}.sha256"
-            "${{ needs.release-identity.outputs.exe }}"
-            "${{ needs.release-identity.outputs.exe }}.sha256"
-            "${{ needs.release-identity.outputs.cli_archive }}"
-            "${{ needs.release-identity.outputs.cli_checksum }}"
-            "${{ needs.release-identity.outputs.source_archive }}"
-            "${{ needs.release-identity.outputs.source_archive }}.sha256"
-          )
-          for name in "${required[@]}"; do
-            test -f "release-assets/${name}"
-          done
+          node scripts/product-release-artifacts.mjs verify release-assets
           while IFS= read -r -d '' checksum; do
             (cd "$(dirname "$checksum")" && sha256sum -c "$(basename "$checksum")")
           done < <(find release-assets -type f -name '*.sha256' -print0)

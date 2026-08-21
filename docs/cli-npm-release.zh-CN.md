@@ -27,16 +27,17 @@
 
 ### GitHub Environment
 
-创建名为 `npm-release` 的 Environment，并设置：
+仓库中的 `.asf.yaml` 是 `npm-release` Environment 的权威。该配置进入 `main` 后，确认 ASF
+同步出的 live 配置满足：
 
 - 使用匹配 `v*` 的 selected deployment tag rule，不配置 branch rule；
-- 将当前 CLI 发布维护者设为 required reviewer；
-- 只有一名发布维护者期间允许 self-review；
+- required reviewer 为 `M4n5ter`；
+- 禁止 self-review；
 - 仓库策略允许时禁用 administrator bypass；
 - 不配置 environment secret 或 variable。
 
-配置 Environment 需要仓库 administration 权限。workflow 使用 GitHub OIDC，不读取 npm
-token。
+检查或修复同步结果需要仓库 administration 权限；不要再在 GitHub UI 中维护第二套手工
+Environment policy。workflow 使用 GitHub OIDC，不读取 npm token。
 
 ### npm Trusted Publisher
 

@@ -42,11 +42,9 @@ jobs:
       - name: Resolve the exact product release
         id: product
         env:
-          EXPECTED_VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
           PRODUCT_TAG: v${{ inputs.version }}
         run: |
-          node scripts/release-version.mjs "$EXPECTED_VERSION"
           source_commit="$(git rev-parse HEAD)"
           test "$source_commit" = "$GITHUB_SHA"
           node scripts/product-release-authority.mjs verify-draft \

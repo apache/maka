@@ -36,9 +36,10 @@ ID requires its own reviewed product-release change.
 Windows remains unsigned until an Authenticode policy and certificate are added. Release secrets
 must never be exposed to fork or ordinary pull-request jobs.
 
-Before the first product release, configure repository release immutability:
+Before the first product release, confirm the checked-in `.asf.yaml` has reconciled the live repository:
 
-- add a `v*` tag ruleset that blocks updates, force-pushes, and deletions after creation, with bypass limited to the release authority required by `product-release-tag.mjs`;
+- the `Immutable release tags` ruleset blocks updates, force-pushes, and deletions of `v*` tags;
+- the `release` and `npm-release` Environments accept only their declared tag patterns and require a reviewer other than the triggering user;
 - enable immutable releases so assets and the associated tag cannot change after publication.
 
 These controls close the check-to-upload and check-to-stage windows. Keep the Release in Draft while assets and acceptance are incomplete; publishing early must make subsequent mutation fail closed.
@@ -58,12 +59,9 @@ These controls close the check-to-upload and check-to-stage windows. Keep the Re
    `publish` pass. A skipped or failed required job must prevent Draft creation.
 6. Confirm one Draft named `v<version>` targets the approved source SHA, identifies the ASF source
    reference in its notes, is marked as a GitHub prerelease exactly when the product version is a
-   prerelease, is not marked Latest while it remains a Draft, and contains at least:
-   - `Maka-<version>-mac-arm64.dmg` and checksum;
-   - `Maka-<version>-win-x64.exe` and checksum;
-   - `Maka-<version>-cli-mac-arm64.zip` and checksum;
-   - `Maka-<version>-bundled-git-source.tar.gz` and checksum;
-   - the platform update metadata and Desktop ZIPs produced by electron-builder.
+   prerelease, is not marked Latest while it remains a Draft, and contains exactly the manifest
+   reported by `node scripts/product-release-artifacts.mjs list`. The manifest covers both Desktop
+   platforms and update metadata, the standalone CLI/TUI, bundled source, and their required checksums.
 7. Inspect the CLI ZIP. It must contain `bin/maka`, `RELEASE.json`, `DISCLAIMER-WIP`, `LICENSE`, `NOTICE`,
    `THIRD_PARTY_NOTICES.txt`, the pinned Node license, and no `bin/maka-agent`.
 8. Confirm `RELEASE.json` records the Draft's product version and source SHA, Apple Team ID

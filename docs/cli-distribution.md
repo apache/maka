@@ -68,7 +68,7 @@ consume the standalone ZIP.
 | --- | --- | --- |
 | Which file owns the product version? | Root `package.json`; Desktop and CLI manifests must match it. | `product-release-identity.mjs` and release contract tests |
 | Which event defines a product release? | One `v<version>` tag from `main`, one source commit, and one Draft GitHub Release. An interrupted Draft upload may retry only that exact commit. | `release.yml` identity and publish jobs plus the exact-tag helper |
-| Which artifacts are required? | macOS and Windows Desktop installers, the macOS arm64 standalone CLI ZIP, and bundled source. | The publish job's required-file checks and trusted artifact-job outputs |
+| Which artifacts are required? | macOS and Windows Desktop installers and update assets, the macOS arm64 standalone CLI ZIP, and bundled source. | The exact manifest from `product-release-identity.mjs`, enforced by each artifact job and the publish job |
 | Is npm another release authority? | No. It is an optional install channel whose Stage ref, source, workflow identity, and provenance all resolve to the existing product tag commit. | Tag-dispatched OIDC staging and read-only finalization; no npm-specific tag or GitHub Release |
 | Does the standalone CLI define another package policy? | No. It derives the workspace closure, third-party pruning, notices, and Eval runtime assets from their current manifests and shared policy. | Packaging and artifact contract tests |
 | Which commands are public? | `maka` only; TUI is its default mode. | CLI manifest, help tests, wrapper, and release metadata |

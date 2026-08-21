@@ -78,6 +78,25 @@ test('one root version defines every product artifact from one source commit', (
   assert.equal(identity.exe, 'Maka-1.2.3-win-x64.exe');
   assert.equal(identity.cliArchive, 'Maka-1.2.3-cli-mac-arm64.zip');
   assert.equal(identity.sourceArchive, 'Maka-1.2.3-bundled-git-source.tar.gz');
+  assert.deepEqual(identity.artifacts, {
+    'desktop-macos': [
+      'Maka-1.2.3-mac-arm64.dmg',
+      'Maka-1.2.3-mac-arm64.dmg.sha256',
+      'Maka-1.2.3-mac-arm64.zip',
+      'Maka-1.2.3-mac-arm64.zip.blockmap',
+      'latest-mac.yml',
+    ],
+    'desktop-windows': [
+      'Maka-1.2.3-win-x64.exe',
+      'Maka-1.2.3-win-x64.exe.blockmap',
+      'Maka-1.2.3-win-x64.exe.sha256',
+      'Maka-1.2.3-win-x64.zip',
+      'Maka-1.2.3-win-x64.zip.sha256',
+      'latest.yml',
+    ],
+    'cli-macos-arm64': ['Maka-1.2.3-cli-mac-arm64.zip', 'Maka-1.2.3-cli-mac-arm64.zip.sha256'],
+    source: ['Maka-1.2.3-bundled-git-source.tar.gz', 'Maka-1.2.3-bundled-git-source.tar.gz.sha256'],
+  });
 });
 
 test('the standalone launcher identifies its installed Eval bundle root', async (t) => {
@@ -567,6 +586,25 @@ test('one product workflow gates one draft release on every required artifact', 
     const verifierIndex = desktopStepNames.indexOf(verifier);
     assert.ok(verifierIndex >= 0 && verifierIndex < uploadIndex);
   }
+  for (const [jobName, group] of [
+    ['desktop', 'desktop-${{ matrix.platform }}'],
+    ['cli-macos-arm64', 'cli-macos-arm64'],
+    ['source', 'source'],
+  ]) {
+    const stage = jobs[jobName].steps.find(
+      (step) => step.name === 'Stage the exact product artifact group',
+    );
+    assert.ok(stage.run.includes(`product-release-artifacts.mjs stage "${group}"`));
+    const upload = jobs[jobName].steps.find((step) =>
+      String(step.uses).startsWith('actions/upload-artifact@'),
+    );
+    assert.equal(upload.with.path, '${{ runner.temp }}/release-assets');
+  }
+  const verifyArtifacts = jobs.publish.steps.find(
+    (step) => step.name === 'Verify the exact product artifact manifest',
+  ).run;
+  assert.match(verifyArtifacts, /product-release-artifacts\.mjs verify release-assets/u);
+  assert.doesNotMatch(verifyArtifacts, /required=\(|Maka-\*|latest\*\.yml/u);
 
   const commands = Object.values(jobs)
     .flatMap((job) => job.steps ?? [])
@@ -609,4 +647,33 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.ok(listAssets >= 0 && listAssets < compareAssets && compareAssets < uploadAssets);
   assert.doesNotMatch(commands, /gh release create[\s\S]*--target/u);
   assert.doesNotMatch(commands, /cli-v|npm (?:stage )?publish/u);
+});
+
+test('repository control plane admits only reviewed immutable release tags', async () => {
+  const config = parseYaml(await readFile(new URL('../.asf.yaml', import.meta.url), 'utf8'));
+  const environments = config.github.environments;
+  for (const [name, tagPattern] of [
+    ['release', 'v*-incubating-rc*'],
+    ['npm-release', 'v*'],
+  ]) {
+    assert.deepEqual(environments[name], {
+      required_reviewers: [{ id: 'M4n5ter', type: 'User' }],
+      wait_timer: 0,
+      prevent_self_review: true,
+      deployment_branch_policy: {
+        protected_branches: false,
+        policies: [{ name: tagPattern, type: 'tag' }],
+      },
+    });
+  }
+  assert.deepEqual(
+    config.github.rulesets.find((ruleset) => ruleset.name === 'Immutable release tags'),
+    {
+      name: 'Immutable release tags',
+      type: 'tag',
+      branches: { includes: ['v*'], excludes: [] },
+      restrict_deletion: true,
+      restrict_force_push: true,
+    },
+  );
 });
