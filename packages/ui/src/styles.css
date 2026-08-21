@@ -229,7 +229,12 @@
    - Only `[data-density="compact"]`. The document mode is not broken (its
      lists sit 10px apart against 12px paragraphs, which is already in order),
      and the Daily Review renders through it. Fixing only the broken half keeps
-     that surface out of the blast radius.
+     that surface out of the blast radius. Compact is not the transcript
+     alone, though — the desktop Artifact Preview asks for it too, so it takes
+     these gaps as well. For the block rung that is the point rather than a
+     cost: 12px IS the document rhythm, so the preview moves toward Astryx's
+     default rather than further from it. The heading rules below are the ones
+     where sharing is arguable, and they say so.
    - Scoped to Astryx's own `data-density`, not to a `.maka-turn` ancestor.
      `themeProps()` reflects every visual prop as a data attribute for exactly
      this ("consumers target stable data-attribute selectors"), so the rhythm
@@ -317,14 +322,28 @@
    rather than spacing, and Astryx's density RFC (facebook/astryx#839) draws
    the line at "density shifts heights and spacing, not typography". Keying
    them on `data-density` is honest only while `compact` and "transcript" name
-   the same set — true today, since the transcript is the only caller asking
-   for compact and the Daily Review renders a document at the default. A
-   second compact surface would silently inherit transcript heading sizes and
-   dimmed deep headings. Giving typography its own surface attribute would
-   decouple them, but nothing needs it yet; the assumption is held by a test
-   instead (__tests__/markdown-rhythm-contract.test.tsx, "keeps compact
-   markdown a transcript-only surface"), which fails the moment the sets
-   diverge and says what the choice is. */
+   the same set, and they DO NOT. Two surfaces ask for compact: the transcript
+   (chat-turn.tsx) and the desktop Artifact Preview
+   (apps/desktop/src/renderer/artifact-preview.tsx, since #2506), so the
+   preview pane has been rendering `.md` files at transcript heading sizes
+   with dimmed h4-h6 ever since. Nothing scopes it out: the
+   `[data-maka-contract="markdown"]` prefix is on every MarkdownBody, so
+   `density` is the whole key.
+
+   Left shared on purpose, not by omission. The preview is a narrow side pane
+   showing a document a few lines at a time, which is the shape the flattening
+   was designed for, and no report has called it wrong. Splitting the key —
+   moving these three rules onto a surface attribute the transcript sets and
+   the preview does not — is a visible change to the preview's typography and
+   belongs in its own change, argued and looked at on that surface rather
+   than smuggled in under a spacing token.
+
+   So: a THIRD compact surface inherits transcript typography silently, and
+   nothing catches it. That is unguarded, and it stays unguarded knowingly —
+   the caller set spans workspaces, so the only test that could hold it is a
+   library test grepping application source. One was written and it was wrong
+   on its first commit, passing while already false. A comment that is checked
+   when these rules are read beats an assertion that lies. */
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading:is([data-level="1"], [data-level="2"]) {
   font: var(--maka-text-heading-3);
 }

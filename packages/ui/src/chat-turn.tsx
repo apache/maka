@@ -1104,13 +1104,16 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
         text={props.text}
         streaming={props.phase === 'streaming'}
         settledText={settledText}
-        // Names the surface; it does NOT set this turn's block spacing. Every
-        // top-level gap in a transcript turn comes from the rhythm table in
-        // styles.css, which keys on the `data-density="compact"` this prop
-        // reflects and overrides Astryx's own margins outright. So `compact`
-        // still buys the transcript heading scale and the tighter rhythm
-        // inside a list item or a quote, and reading it as "paragraphs are
-        // squeezed here" is the wrong file — retune `--md-gap-block` instead.
+        // Names the surface, and not exclusively: the desktop Artifact
+        // Preview asks for compact too and takes the same rules, so retuning
+        // them here is retuning them there. What this prop does NOT do is set
+        // this turn's block spacing. Every top-level gap in a transcript turn
+        // comes from the rhythm table in styles.css, which keys on the
+        // `data-density="compact"` this prop reflects and overrides Astryx's
+        // own margins outright. So `compact` still buys the transcript
+        // heading scale and the tighter rhythm inside a list item or a quote,
+        // and reading it as "paragraphs are squeezed here" is the wrong
+        // file — retune `--md-gap-block` instead.
         density="compact"
       />
       {truncated && (

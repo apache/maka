@@ -26,25 +26,22 @@
  * measures. Same for the adjacent-sibling gap form, the `hr` rung, and the two
  * heading size tiers: those are how the table is written, not what it
  * promises.
+ *
+ * Also not pinned, and deliberately not testable from here: WHICH surfaces
+ * ask for compact. That set spans workspaces — `chat-turn.tsx` here and
+ * Artifact Preview in `apps/desktop` — so asserting it would mean a library
+ * test reading application source, which is the dependency backwards. It is
+ * documented where it is decided instead, next to the heading rules in
+ * styles.css that the sharing actually matters for.
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { readdir, readFile } from 'node:fs/promises';
-import { join, relative, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MarkdownBody } from '../markdown-body.js';
 
 const UI_SRC = resolve(import.meta.dirname, '..', '..', 'src');
-
-async function tsxFiles(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...(await tsxFiles(path)));
-    else if (entry.name.endsWith('.tsx') && !entry.name.includes('.test.')) out.push(path);
-  }
-  return out;
-}
 
 const SAMPLE = ['## Heading two', '', 'A paragraph.', '', '1. First item', '2. Second item'].join('\n');
 
@@ -121,45 +118,6 @@ describe('transcript markdown rhythm', () => {
       'ListItem block padding is no longer zeroed on the compact surface, so the real ' +
         'list-item gap is padding + gap and the declared ladder is not the spacing you get. ' +
         `Found: { ${rule[1].trim()} }`,
-    );
-  });
-
-  /**
-   * The rhythm table carries the transcript's heading TYPOGRAPHY, not just its
-   * spacing, and keys both on `density`. That is a deliberate bet, and it is a
-   * bet: Astryx's density RFC (facebook/astryx#839) draws the line at "density
-   * shifts heights and spacing, not typography", so the key is honest only
-   * while `compact` and "transcript" name the same set. They do today — the
-   * transcript is the only caller asking for compact, and the Daily Review
-   * renders a document at the default.
-   *
-   * A separate surface attribute would decouple them, but nothing needs it yet
-   * and it would add a prop to a public component for a caller that does not
-   * exist. Guard the assumption instead: the moment a second surface asks for
-   * compact markdown it silently inherits transcript heading sizes and dimmed
-   * deep headings, and this is what tells whoever adds it that they have to
-   * choose — inherit deliberately, or split the key then.
-   */
-  it('keeps compact markdown a transcript-only surface', async () => {
-    const callers: string[] = [];
-    for (const file of await tsxFiles(UI_SRC)) {
-      const source = await readFile(file, 'utf8');
-      // `<Markdown …>` opening tags only — not MarkdownBody's internal plumbing
-      // and not the density Maka hands its own code-block renderers.
-      for (const tag of source.matchAll(/<Markdown\s[^>]*?\/?>/gs)) {
-        if (/density=(["'])compact\1/.test(tag[0])) callers.push(relative(UI_SRC, file));
-      }
-    }
-
-    assert.deepEqual(
-      [...new Set(callers)].sort(),
-      ['chat-turn.tsx'],
-      'a new caller renders markdown at compact density. The rhythm table treats ' +
-        '`density="compact"` as "this is a transcript" and gives it flattened heading sizes ' +
-        'plus secondary-colour h4-h6 — typography, which Astryx\'s density is explicitly not ' +
-        'supposed to carry (facebook/astryx#839). Either that is what the new surface wants, ' +
-        'and this list grows, or the typography rules need their own key. ' +
-        `Found: ${JSON.stringify([...new Set(callers)].sort())}`,
     );
   });
 });
