@@ -97,6 +97,7 @@ const ASTRYX_COMPONENTS = new Set([
  */
 const MAKA_UI_ASTRYX_REEXPORTS = new Set([
   'Badge',
+  'Selector',
   'Card',
   'Button',
   'IconButton',
