@@ -163,7 +163,7 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
 
   assert.deepEqual([...handlers.keys()].sort(), [...RUNTIME_HOST_OAUTH_IPC_CHANNELS].sort());
 
-  for (const prefix of ['openai-codex', 'xai-oauth']) {
+  for (const prefix of ['openai-codex', 'xai-oauth', 'github-copilot']) {
     assert.equal(handlers.has(`${prefix}:get-auth-url`), true);
     assert.equal(handlers.has(`${prefix}:complete-authorization`), true);
     assert.equal(handlers.has(`${prefix}:get-account-state`), true);

@@ -180,3 +180,44 @@ test('polling stops before issuing a request once the local window elapsed', asy
   );
   assert.equal(polls, 0);
 });
+
+test('polling records the lifetime GitHub returned instead of a non-expiring token', async () => {
+  const fetchFn: typeof fetch = async () =>
+    Response.json({
+      access_token: 'gho_expiring_token',
+      expires_in: 28_800,
+      refresh_token: 'ghr_renewal_token',
+      refresh_token_expires_in: 15_897_600,
+      token_type: 'bearer',
+    });
+
+  const tokens = await pollGitHubCopilotDeviceAuthorization({
+    authorization: authorization(),
+    fetchFn,
+    signal: new AbortController().signal,
+    now: () => NOW,
+    sleep: immediateSleep,
+  });
+
+  assert.equal(tokens.access_token, 'gho_expiring_token');
+  // The renewal credential must be the refresh token, not a copy of the access
+  // token: without it the connection would die at expiry.
+  assert.equal(tokens.refresh_token, 'ghr_renewal_token');
+  assert.equal(tokens.expires_at, NOW + 28_800_000);
+});
+
+test('polling rejects an expiring grant that carries no refresh token', async () => {
+  const fetchFn: typeof fetch = async () =>
+    Response.json({ access_token: 'gho_expiring_token', expires_in: 28_800 });
+  await assert.rejects(
+    pollGitHubCopilotDeviceAuthorization({
+      authorization: authorization(),
+      fetchFn,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      sleep: immediateSleep,
+    }),
+    (error: unknown) =>
+      error instanceof OAuthTokenEndpointError && error.category === 'invalid_response',
+  );
+});

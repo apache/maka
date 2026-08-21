@@ -13,11 +13,6 @@ import {
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
 } from '@maka/runtime/subscription-credentials';
-import {
-  pollGitHubCopilotDeviceAuthorization,
-  startGitHubCopilotDeviceAuthorization,
-  type GitHubCopilotDeviceAuthorization,
-} from '@maka/runtime/github-copilot-oauth-enrollment';
 import { fetchGitHubCopilotModels } from '@maka/runtime/model-fetcher';
 import type { CredentialStore } from '@maka/storage';
 
@@ -41,21 +36,6 @@ export type GitHubCopilotValidatedActionResult =
   | { ok: true; models: ModelInfo[] }
   | Exclude<SubscriptionActionResult, { ok: true }>;
 
-/**
- * What the user must be shown to authorize the device grant. `expiresAt` is an
- * absolute deadline so the renderer can render a countdown without assuming its
- * own clock started when the request left the main process.
- */
-export interface GitHubCopilotDeviceLoginPrompt {
-  readonly userCode: string;
-  readonly verificationUrl: string;
-  readonly expiresAt: number;
-}
-
-export type GitHubCopilotDeviceLoginStartResult =
-  | ({ ok: true } & GitHubCopilotDeviceLoginPrompt)
-  | Exclude<SubscriptionActionResult, { ok: true }>;
-
 /** Main-process adapter for importing an existing supported `gh` login. */
 export class GitHubCopilotSubscriptionService {
   private readonly credentialStore: GitHubCopilotSubscriptionServiceDeps['credentialStore'];
@@ -65,10 +45,6 @@ export class GitHubCopilotSubscriptionService {
   private refreshing = false;
   private lastRefreshError: string | null = null;
   private lastStorageError: string | null = null;
-  private pendingDeviceLogin: {
-    readonly authorization: GitHubCopilotDeviceAuthorization;
-    readonly abort: AbortController;
-  } | null = null;
 
   constructor(deps: GitHubCopilotSubscriptionServiceDeps) {
     this.credentialStore = deps.credentialStore;
@@ -95,99 +71,7 @@ export class GitHubCopilotSubscriptionService {
         };
       }
       const tokens = createGitHubCopilotAccountTokens(githubToken);
-      return await this.adoptAccountTokens(tokens);
-    } catch {
-      return {
-        ok: false,
-        reason: 'token_exchange_failed',
-        message: '无法连接 GitHub Copilot。请确认账号具有订阅访问权限，且凭据具有 Copilot Requests 权限；普通 gh auth login 可能不包含该权限。',
-      };
-    }
-  }
-
-  /**
-   * Ask GitHub for a device code. The returned prompt is what the user takes to
-   * the browser; nothing is stored until `completeDeviceLogin` observes the
-   * grant, so an abandoned prompt leaves no credential behind.
-   */
-  async beginDeviceLogin(): Promise<GitHubCopilotDeviceLoginStartResult> {
-    this.cancelDeviceLogin();
-    const abort = new AbortController();
-    try {
-      const authorization = await startGitHubCopilotDeviceAuthorization({
-        fetchFn: this.fetchFn,
-        signal: abort.signal,
-        now: this.now,
-      });
-      this.pendingDeviceLogin = { authorization, abort };
-      return {
-        ok: true,
-        userCode: authorization.userCode,
-        verificationUrl: authorization.verificationUrl,
-        expiresAt: authorization.expiresAt,
-      };
-    } catch {
-      return {
-        ok: false,
-        reason: 'token_exchange_failed',
-        message: '无法向 GitHub 申请设备验证码，请检查网络后重试。',
-      };
-    }
-  }
-
-  /**
-   * Wait for the user to authorize the pending device grant, then adopt the
-   * account exactly as an imported login would. Resolves only once the grant is
-   * spent, denied, or its window elapses.
-   */
-  async completeDeviceLogin(): Promise<GitHubCopilotValidatedActionResult> {
-    const pending = this.pendingDeviceLogin;
-    if (!pending) {
-      return {
-        ok: false,
-        reason: 'token_exchange_failed',
-        message: '没有待完成的 GitHub 设备登录，请重新开始。',
-      };
-    }
-    try {
-      const tokens = await pollGitHubCopilotDeviceAuthorization({
-        authorization: pending.authorization,
-        fetchFn: this.fetchFn,
-        signal: pending.abort.signal,
-        now: this.now,
-      });
-      return await this.adoptAccountTokens(tokens);
-    } catch {
-      return {
-        ok: false,
-        reason: 'token_exchange_failed',
-        message: 'GitHub 设备登录未完成。验证码可能已过期或被拒绝，请重试。',
-      };
-    } finally {
-      if (this.pendingDeviceLogin === pending) this.pendingDeviceLogin = null;
-    }
-  }
-
-  /** Abandons an in-flight device login so its poll stops on the next tick. */
-  cancelDeviceLogin(): void {
-    this.pendingDeviceLogin?.abort.abort();
-    this.pendingDeviceLogin = null;
-  }
-
-  /**
-   * The one place an account credential becomes this app's Copilot connection:
-   * both the imported `gh` login and the device grant land here, so neither can
-   * be stored without first proving the account returns usable models.
-   */
-  private async adoptAccountTokens(
-    tokens: OAuthSubscriptionTokens,
-  ): Promise<GitHubCopilotValidatedActionResult> {
-    try {
-      const models = await fetchGitHubCopilotModels(
-        tokens.base_url!,
-        tokens.access_token,
-        this.fetchFn,
-      );
+      const models = await fetchGitHubCopilotModels(tokens.base_url!, tokens.access_token, this.fetchFn);
       if (models.length === 0) throw new Error('GitHub Copilot account returned no usable models.');
       await this.saveTokens(tokens);
       this.lastRefreshError = null;

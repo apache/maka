@@ -6,6 +6,7 @@ import {
   Badge,
   Button,
   useMountedRef,
+  useToast,
   useUiLocale,
 } from '@maka/ui';
 import { getProviderSettingsCopy, type ProviderSettingsCopy } from '../locales/settings-provider-copy';
@@ -13,7 +14,6 @@ import {
   useOAuthLoginFlow,
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
-  type OAuthLoginFlowBridge,
   type SubscriptionSnapshot,
 } from './use-oauth-login-flow';
 import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
@@ -231,84 +231,85 @@ function SubscriptionLoginPanel(props: {
 
 function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void> }) {
   const host = useRuntimeHostSettingsTarget();
-  const copy = getProviderSettingsCopy(useUiLocale()).oauthSection;
-  const [devicePrompt, setDevicePrompt] = useState<{
-    userCode: string;
-    verificationUrl: string;
-  } | null>(null);
-  // Both sign-in paths are one bridge action from the flow's point of view, so
-  // they share its pending guard and snapshot refresh. The mode is read at call
-  // time rather than bound per button to avoid a second login controller.
-  const loginMode = useRef<'device' | 'import'>('device');
-  // The shared login-flow controller owns the snapshot refresh, the
-  // synchronous one-shot pending guard, and the unmount safety; Copilot
-  // rides it through the direct account flow (one bridge call per action,
-  // no browser handoff, no logout confirm) instead of owning a separate
-  // pending-action state machine here (#1042).
+  const locale = useUiLocale();
+  const copy = getProviderSettingsCopy(locale).oauthSection;
+  const toast = useToast();
+  const mountedRef = useMountedRef();
+  // The Host owns the device grant, so the panel drives the same browser-
+  // assisted controller as Codex and xAI: one attempt at a time, superseded
+  // and cancelled by the Host, with the user code arriving as the state hint.
   const flow = useOAuthLoginFlow({
-    bridge: {
-      getAccountState: () => window.maka.githubCopilotSubscription.getAccountState(host),
-      logout: () => window.maka.githubCopilotSubscription.logout(host),
-    } as OAuthLoginFlowBridge,
+    bridge: runtimeHostOAuthLoginBridge(window.maka.githubCopilotSubscription, host),
     display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
     onLoginSuccess: props.onLoginSuccess,
-    direct: {
-      login: async () => {
-        if (loginMode.current === 'import') {
-          return window.maka.githubCopilotSubscription.connectExistingLogin(host);
-        }
-        const started = await window.maka.githubCopilotSubscription.beginDeviceLogin(host);
-        if (!started.ok) return started;
-        setDevicePrompt({
-          userCode: started.userCode,
-          verificationUrl: started.verificationUrl,
-        });
-        try {
-          return await window.maka.githubCopilotSubscription.completeDeviceLogin(host);
-        } finally {
-          setDevicePrompt(null);
-        }
-      },
-      refreshTokens: () => window.maka.githubCopilotSubscription.refreshTokens(host),
-    },
   });
-  const refreshTokens = flow.refreshTokens;
-  const loggedIn = flow.state?.runtimeState === 'authenticated' || flow.state?.runtimeState === 'refreshing';
-  const startLogin = (mode: 'device' | 'import') => {
-    loginMode.current = mode;
-    void flow.startLogin();
-  };
-  const cancelDeviceLogin = () => {
-    void window.maka.githubCopilotSubscription.cancelDeviceLogin(host);
-    setDevicePrompt(null);
+  // Sign-in presents an OAuth app identity Maka does not own yet, so the Host
+  // keeps it behind an opt-in; the local import below is the shipped path.
+  const [signInEnabled, setSignInEnabled] = useState(false);
+  const [directAction, setDirectAction] = useState<'import' | 'refresh' | null>(null);
+  useEffect(() => {
+    void window.maka.githubCopilotSubscription
+      .isExperimentalEnabled(host)
+      .then((enabled) => {
+        if (mountedRef.current) setSignInEnabled(enabled);
+      })
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const loggedIn = flow.isLoggedIn;
+  const actionBusy = flow.actionBusy || directAction !== null;
+  // Importing an existing `gh` credential and re-verifying it are single main
+  // process calls with no browser handoff, so they run beside the controller
+  // rather than through its authRequestId lifecycle.
+  const runDirectAction = async (
+    action: 'import' | 'refresh',
+    call: () => Promise<{ ok: boolean; message?: string }>,
+  ) => {
+    if (actionBusy) return;
+    setDirectAction(action);
+    try {
+      const result = await call();
+      if (!mountedRef.current) return;
+      if (!result.ok) {
+        toast.error(
+          copy.copilotActionFailed,
+          subscriptionResultMessage(result.message, copy.copilotActionFailed, locale),
+        );
+      }
+      await flow.refresh();
+      if (result.ok && action === 'import' && mountedRef.current) await props.onLoginSuccess();
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.copilotActionFailed, subscriptionActionErrorMessage(error, locale));
+      }
+    } finally {
+      if (mountedRef.current) setDirectAction(null);
+    }
   };
   return (
     <VStack gap={3} data-status={flow.runtimeState}>
       <Text type="body">
-        {loggedIn
-          ? copy.copilotImported
-          : flow.state?.runtimeState === 'refresh_failed' || flow.state?.runtimeState === 'storage_failed'
-            ? flow.state.errorMessage
-            : copy.copilotSetup}
+        {loggedIn ? copy.copilotImported : (flow.errorMessage ?? copy.copilotSetup)}
       </Text>
-      {devicePrompt && (
-        <VStack gap={1} data-testid="github-copilot-device-prompt">
-          <Text type="body">{copy.copilotDevicePrompt(devicePrompt.verificationUrl)}</Text>
-          <Text type="code">{devicePrompt.userCode}</Text>
-          <Text type="body">{copy.copilotDeviceWaiting}</Text>
-        </VStack>
+      {flow.stateHint && (
+        <Text type="supporting" color="secondary" data-testid="github-copilot-device-code">
+          {copy.deviceCode} {flow.stateHint}
+        </Text>
       )}
       <HStack gap={2} hAlign="end">
-        {devicePrompt ? (
-          <Button variant="ghost" onClick={cancelDeviceLogin} label={copy.copilotDeviceCancel} />
-        ) : (
-          <Button variant="primary" onClick={() => startLogin('device')} isDisabled={flow.actionBusy} label={flow.pendingAction === 'login' ? copy.importing : copy.copilotSignIn} />
+        {signInEnabled && !loggedIn && (
+          <Button variant="primary" onClick={() => void flow.startLogin()} isDisabled={actionBusy} label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.copilotSignIn} />
         )}
-        <Button variant="secondary" onClick={() => startLogin('import')} isDisabled={flow.actionBusy} label={loggedIn ? copy.reimport : copy.importCredential} />
+        <Button
+          variant={signInEnabled || loggedIn ? 'secondary' : 'primary'}
+          onClick={() => void runDirectAction('import', () => window.maka.githubCopilotSubscription.connectExistingLogin(host))}
+          isDisabled={actionBusy}
+          label={directAction === 'import' ? copy.importing : loggedIn ? copy.reimport : copy.importCredential}
+        />
         {loggedIn && (
           <>
-            <Button variant="secondary" onClick={() => void refreshTokens?.()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'refresh' ? copy.verifying : copy.reverify} />
-            <Button variant="ghost" onClick={() => void flow.logout()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'logout' ? copy.removing : copy.removeLocal} />
+            <Button variant="secondary" onClick={() => void runDirectAction('refresh', () => window.maka.githubCopilotSubscription.refreshTokens(host))} isDisabled={actionBusy} label={directAction === 'refresh' ? copy.verifying : copy.reverify} />
+            <Button variant="ghost" onClick={() => void flow.logout()} isDisabled={actionBusy} label={flow.pendingAction === 'logout' ? copy.removing : copy.removeLocal} />
           </>
         )}
       </HStack>

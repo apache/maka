@@ -18,6 +18,7 @@ import {
 } from './oauth-provider-contracts.js';
 
 const COPILOT = OAUTH_PROVIDER_CONTRACTS['github-copilot'];
+const MAX_TOKEN_LIFETIME_SECONDS = 366 * 24 * 60 * 60;
 
 /**
  * RFC 8628 device authorization for a GitHub account that carries a Copilot
@@ -157,7 +158,7 @@ export async function pollGitHubCopilotDeviceAuthorization(
       throw new OAuthTokenEndpointError('invalid_grant', response.status);
     if (code === 'expired_token') throw new OAuthDeviceAuthorizationExpiredError();
     if (code) throw new OAuthTokenEndpointError('provider_rejected', response.status);
-    return decodeGitHubCopilotAccountToken(payload);
+    return decodeGitHubCopilotAccountToken(payload, now);
   }
 }
 
@@ -165,15 +166,35 @@ export async function pollGitHubCopilotDeviceAuthorization(
  * The device grant must yield a GitHub OAuth user token (`gho_`/`ghu_`). A
  * classic PAT shape here would mean the flow resolved to something other than
  * the account that authorized it, so it is rejected rather than stored.
+ *
+ * GitHub returns `expires_in`/`refresh_token` only when the OAuth app has
+ * expiring user tokens enabled. That lifetime is carried through verbatim so
+ * the credential can be renewed; an expiring token recorded as non-expiring
+ * would silently stop working and force another interactive login. An
+ * expiring response without a refresh token is unusable for the same reason
+ * and is rejected instead of stored.
  */
 function decodeGitHubCopilotAccountToken(
   payload: Record<string, unknown>,
+  now: () => number,
 ): OAuthSubscriptionTokens {
   const accessToken = requireOAuthBoundedString(payload.access_token, OAUTH_LOGIN_MAX_TOKEN_CHARS);
   if (!isSupportedGitHubCopilotAccountToken(accessToken)) {
     throw new OAuthTokenEndpointError('invalid_response');
   }
-  return createGitHubCopilotAccountTokens(accessToken);
+  if (payload.expires_in === undefined) return createGitHubCopilotAccountTokens(accessToken);
+  const expiresInSeconds = requireOAuthPositiveInteger(
+    payload.expires_in,
+    MAX_TOKEN_LIFETIME_SECONDS,
+  );
+  const refreshToken = requireOAuthBoundedString(
+    payload.refresh_token,
+    OAUTH_LOGIN_MAX_TOKEN_CHARS,
+  );
+  return createGitHubCopilotAccountTokens(accessToken, {
+    expiresAt: oauthExpiresAt(now(), expiresInSeconds),
+    refreshToken,
+  });
 }
 
 function providerErrorCode(value: unknown): string | undefined {

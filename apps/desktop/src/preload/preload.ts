@@ -2250,23 +2250,24 @@ const makaBridge = {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:connect-existing-login');
     },
-    beginDeviceLogin(
-      host?: DesktopRuntimeHostRef,
-    ): Promise<
-      | { ok: true; userCode: string; verificationUrl: string; expiresAt: number }
-      | Exclude<SubscriptionActionResult, { ok: true }>
-    > {
-      return invokeSelectedRuntimeHost(host, 'github-copilot:begin-device-login');
+    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:is-experimental-enabled');
     },
-    completeDeviceLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'github-copilot:complete-device-login');
+    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:get-auth-url');
     },
-    cancelDeviceLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'github-copilot:cancel-device-login');
+    openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:open-auth-url', authRequestId);
+    },
+    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:complete-authorization', authRequestId);
+    },
+    cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:cancel-authorization', authRequestId);
     },
     getAccountState(host?: DesktopRuntimeHostRef): Promise<{
       provider: 'github-copilot';
-      runtimeState: 'not_logged_in' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';
+      runtimeState: 'not_logged_in' | 'authorizing' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';
       errorMessage?: string;
     }> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:get-account-state');

@@ -122,7 +122,7 @@ export interface InteractiveOAuthLoginTicket {
 
 export type InteractiveOAuthLoginProvider = Extract<
   ConnectionCatalogEntry['providerType'],
-  'openai-codex' | 'xai-oauth'
+  'openai-codex' | 'xai-oauth' | 'github-copilot'
 >;
 
 export type BeginInteractiveOAuthLoginResult =

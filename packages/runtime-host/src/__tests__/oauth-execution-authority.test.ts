@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { mock, test } from 'node:test';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import {
+  GITHUB_COPILOT_NON_EXPIRING_AT,
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
 } from '@maka/runtime/subscription-credentials';
@@ -29,7 +30,40 @@ const CODEX_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
 const FIXED_NOW = 1_785_600_000_000;
 
 test('one OAuth generation singleflights refresh and persists its lease with canonical CAS', async () => {
-  await withCopilotCredential(expiredTokens('access-v1'), async (fixture) => {
+  await withCopilotCredential(expiredTokens('gho_access_v1'), async (fixture) => {
+    const before = fixture.material;
+    let refreshes = 0;
+    const binding = fixture.authority.bind({
+      providerType: 'github-copilot',
+      connectionSlug: CONNECTION_SLUG,
+      material: before,
+      createRefreshTransport: () =>
+        testRefreshTransport(async () => {
+          refreshes += 1;
+          return Response.json({
+            access_token: 'gho_access_v2',
+            refresh_token: 'ghr_renewal_v2',
+            expires_in: 28_800,
+          });
+        }),
+    });
+
+    const [first, second] = await Promise.all([binding.resolve(), binding.resolve()]);
+
+    // Two resolves, one refresh grant spent: the second rides the first.
+    assert.equal(refreshes, 1);
+    assert.equal(first.access_token, 'gho_access_v2');
+    assert.equal(first.refresh_token, 'ghr_renewal_v2');
+    assert.deepEqual(second, first);
+    const after = await readMaterial(fixture.stores);
+    assert.equal(after.credentialId, before.credentialId);
+    assert.equal(after.revision, before.revision + 2);
+    assert.notEqual(after.secret, before.secret);
+  });
+});
+
+test('a GitHub account token with no declared lifetime refreshes without provider I/O', async () => {
+  await withCopilotCredential(nonExpiringCopilotTokens('gho_durable'), async (fixture) => {
     const before = fixture.material;
     const binding = fixture.authority.bind({
       providerType: 'github-copilot',
@@ -38,13 +72,8 @@ test('one OAuth generation singleflights refresh and persists its lease with can
       createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
     });
 
-    const [first, second] = await Promise.all([binding.resolve(), binding.resolve()]);
-
-    assert.deepEqual(first, expiredTokens('access-v1'));
-    assert.deepEqual(second, first);
+    assert.deepEqual(await binding.resolve(), nonExpiringCopilotTokens('gho_durable'));
     const after = await readMaterial(fixture.stores);
-    assert.equal(after.credentialId, before.credentialId);
-    assert.equal(after.revision, before.revision + 2);
     assert.equal(after.secret, before.secret);
   });
 });
@@ -528,6 +557,15 @@ function currentTokens(accessToken: string, accountUuid?: string): OAuthSubscrip
     refresh_token: `${accessToken}-refresh`,
     expires_at: Number.MAX_SAFE_INTEGER,
     ...(accountUuid ? { account_uuid: accountUuid } : {}),
+  };
+}
+
+/** What GitHub returns when its OAuth app does not issue expiring user tokens. */
+function nonExpiringCopilotTokens(accessToken: string): OAuthSubscriptionTokens {
+  return {
+    access_token: accessToken,
+    refresh_token: accessToken,
+    expires_at: GITHUB_COPILOT_NON_EXPIRING_AT,
   };
 }
 

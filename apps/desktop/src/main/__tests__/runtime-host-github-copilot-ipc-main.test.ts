@@ -156,16 +156,11 @@ test('imports a local GitHub credential through the shared Host account path', a
     connectionId: CONNECTION_ID,
     modelId: discoveredModelId,
   });
-  assert.deepEqual(await invoke(handlers, 'github-copilot:get-account-state'), {
-    provider: 'github-copilot',
-    runtimeState: 'authenticated',
-  });
-
-  assert.deepEqual(await invoke(handlers, 'github-copilot:refresh-tokens'), { ok: true });
-  assert.deepEqual(await invoke(handlers, 'github-copilot:logout'), { ok: true });
-  assert.equal(storedSecret, undefined);
-  assert.equal(catalog.connections[0]?.enabled, false);
-  assert.equal(changed, 3);
+  assert.equal(changed, 1);
+  // Interactive enrollment, account state, refresh, and sign-out belong to the
+  // Host OAuth coordinator's shared adapter; Desktop registers the local
+  // credential import and nothing else.
+  assert.deepEqual([...handlers.keys()], ['github-copilot:connect-existing-login']);
 });
 
 async function invoke(

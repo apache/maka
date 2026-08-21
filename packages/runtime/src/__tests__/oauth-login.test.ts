@@ -60,6 +60,24 @@ describe('OAuth enrollment policy', () => {
     assert.equal(isOAuthEnrollmentProviderEnabled('xai-oauth', environment), true);
     assert.equal(isOAuthEnrollmentProviderEnabled('openai-codex', {}), true);
   });
+
+  it('keeps GitHub Copilot enrollment opt-in until its app identity is authorized', () => {
+    // Opt-in, not opt-out: an unset variable must not expose a sign-in that
+    // presents an OAuth app identity Maka does not own.
+    assert.equal(isOAuthEnrollmentProviderEnabled('github-copilot', {}), false);
+    assert.equal(
+      isOAuthEnrollmentProviderEnabled('github-copilot', {
+        MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL: '0',
+      }),
+      false,
+    );
+    assert.equal(
+      isOAuthEnrollmentProviderEnabled('github-copilot', {
+        MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL: '1',
+      }),
+      true,
+    );
+  });
 });
 
 const TOKEN_ENDPOINT = 'https://auth.example/oauth/token';

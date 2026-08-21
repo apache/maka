@@ -99,7 +99,14 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for sandbox failure results', () => {
-    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 33);
+    // Epoch 32 predates the bounded sandbox failure reason on live tool results
+    // and rejects that closed-frame addition, so mixed peers must fail the
+    // handshake instead of decoding each other's tool results asymmetrically.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH >= 33);
+  });
+
+  test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
+    assert.equal(RUNTIME_HOST_COMPATIBILITY_EPOCH, 34);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {

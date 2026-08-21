@@ -74,6 +74,62 @@ test('xAI enrollment keeps device polling and credential material in the Host', 
   });
 });
 
+test('GitHub Copilot enrollment runs its device grant on the Host, not in a Client', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const presentationCalls: string[] = [];
+    const client = await attachPresentation(
+      fixture.capabilities,
+      'client-copilot',
+      presentationCalls,
+    );
+    const tokens = tokenFixture('gho_account_token', {
+      base_url: 'https://api.githubcopilot.com',
+    });
+    let polls = 0;
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startGitHubCopilotAuthorization: async () => ({
+        deviceCode: 'host-only-device-code',
+        userCode: 'ABCD-1234',
+        verificationUrl: 'https://github.com/login/device',
+        expiresAt: NOW + 900_000,
+        intervalMs: 5_000,
+      }),
+      pollGitHubCopilotAuthorization: async () => {
+        polls += 1;
+        return tokens;
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      { attemptId: 'attempt-copilot', connectionId: fixture.connection.connectionId },
+      operationContext('client-copilot', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-copilot');
+    assert.equal(terminal.phase, 'authenticated');
+    assert.equal(terminal.provider, 'github-copilot');
+    // The one-time code reaches the user through the Host's presentation seam,
+    // so no Client ever holds the grant or the credential it produces.
+    assert.deepEqual(presentationCalls, ['client-copilot']);
+    assert.equal(polls, 1);
+    assert.equal(fixture.invalidations, 1);
+    await coordinator.close();
+    client.close();
+  });
+});
+
 test('a new OAuth start supersedes an in-progress login instead of failing with operation_conflict', async () => {
   await withFixture('xai-oauth', async (fixture) => {
     const client = await attachPresentation(fixture.capabilities, 'client-xai-supersede', []);
@@ -819,7 +875,7 @@ function operationContext(connectionId: string, acquireResidency: () => { releas
 }
 
 async function withFixture(
-  providerType: 'openai-codex' | 'xai-oauth',
+  providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot',
   run: (fixture: {
     stores: RuntimePolicyStoresWriter;
     connection: ConnectionCatalogEntry;
