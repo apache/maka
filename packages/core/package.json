@@ -72,6 +72,7 @@
     "./deep-research-client-progress": "./dist/deep-research-client-progress.js",
     "./daily-review": "./dist/daily-review.js",
     "./work-board": "./dist/work-board.js",
+    "./workhub": "./dist/workhub.js",
     "./explore-agent": "./dist/explore-agent.js",
     "./long-term-memory": "./dist/long-term-memory.js",
     "./local-memory": "./dist/local-memory.js",

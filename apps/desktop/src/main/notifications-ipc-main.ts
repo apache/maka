@@ -6,16 +6,40 @@ import {
   isRunNotificationKind,
   resolveNotificationContent,
   shouldRaiseRunNotification,
+  type RunNotificationInput,
 } from './notifications-policy.js';
 
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 
-interface NotificationsIpcDeps {
+export interface NotificationsIpcDeps {
   ipcMain?: Pick<typeof ipcMain, 'handle'>;
   settingsStore: { get(): Promise<AppSettings> };
   locale: Pick<DesktopLocaleAuthority, 'observe'>;
   mainWindowController: MainWindowController;
   e2e: boolean;
+}
+
+export type RunNotifier = (input: RunNotificationInput) => Promise<void>;
+
+/** Shared notification authority used by both ordinary Sessions and WorkHub. */
+export function createRunNotifier(deps: NotificationsIpcDeps): RunNotifier {
+  return async (input) => {
+    const supported = Notification.isSupported();
+    const settings = await deps.settingsStore.get();
+    const gate = {
+      enabled: settings.notifications.runComplete,
+      supported,
+      windowFocused: deps.mainWindowController.isFocused(),
+      incognito: settings.privacy.incognitoActive,
+      e2e: deps.e2e,
+    };
+    if (!shouldRaiseRunNotification(gate)) return;
+
+    const copy = resolveNotificationContent(input, deps.locale.observe(settings));
+    const notification = new Notification({ title: copy.title, body: copy.body });
+    notification.on('click', () => deps.mainWindowController.focus());
+    notification.show();
+  };
 }
 
 /**
@@ -29,35 +53,14 @@ interface NotificationsIpcDeps {
  * result, so we resolve `void` and never surface main-side failures to
  * the chat UI — a missed banner must never break a completed turn.
  */
-export function registerNotificationsIpc(deps: NotificationsIpcDeps): void {
+export function registerNotificationsIpc(
+  deps: NotificationsIpcDeps,
+  notify: RunNotifier = createRunNotifier(deps),
+): void {
   const target = deps.ipcMain ?? ipcMain;
   target.handle('notifications:runEnded', async (_event, payload: unknown): Promise<void> => {
     const raw = (payload ?? {}) as { kind?: unknown; title?: unknown; body?: unknown };
     if (!isRunNotificationKind(raw.kind)) return;
-
-    const supported = Notification.isSupported();
-    // Read the toggle lazily so a mid-session settings change takes
-    // effect on the very next turn without any cache invalidation.
-    const settings = await deps.settingsStore.get();
-    const gate = {
-      enabled: settings.notifications.runComplete,
-      supported,
-      windowFocused: deps.mainWindowController.isFocused(),
-      incognito: settings.privacy.incognitoActive,
-      e2e: deps.e2e,
-    };
-    if (!shouldRaiseRunNotification(gate)) return;
-
-    // Prefer the renderer's session name + reply preview; policy applies
-    // per-field fallbacks + sanitization for blank/oversize/non-strings.
-    const copy = resolveNotificationContent(
-      { kind: raw.kind, title: raw.title, body: raw.body },
-      deps.locale.observe(settings),
-    );
-    const notification = new Notification({ title: copy.title, body: copy.body });
-    // Clicking the banner should pull the (unfocused/minimized) window
-    // back to the foreground — `focus()` already restores + shows.
-    notification.on('click', () => deps.mainWindowController.focus());
-    notification.show();
+    await notify({ kind: raw.kind, title: raw.title, body: raw.body });
   });
 }

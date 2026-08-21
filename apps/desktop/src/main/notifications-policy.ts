@@ -10,11 +10,11 @@ import type { UiLocale } from '@maka/core/ui-locale';
  * whether to actually raise an OS notification.
  */
 
-/** Terminal states a turn can reach that are worth notifying about. */
-export type RunNotificationKind = 'completed' | 'errored';
+/** Run states that are worth notifying about while Maka is in the background. */
+export type RunNotificationKind = 'completed' | 'errored' | 'waiting_for_user';
 
 export function isRunNotificationKind(value: unknown): value is RunNotificationKind {
-  return value === 'completed' || value === 'errored';
+  return value === 'completed' || value === 'errored' || value === 'waiting_for_user';
 }
 
 export interface RunNotificationGate {
@@ -63,9 +63,15 @@ export function runNotificationCopy(
   locale: UiLocale,
 ): RunNotificationCopy {
   if (locale === 'en') {
+    if (kind === 'waiting_for_user') {
+      return { title: 'Your decision is needed', body: 'Maka is waiting for you. Click to continue.' };
+    }
     return kind === 'errored'
       ? { title: 'Conversation error', body: 'This response did not finish. Click to view details.' }
       : { title: 'Response ready', body: 'Maka finished this response. Click to view it.' };
+  }
+  if (kind === 'waiting_for_user') {
+    return { title: '需要你的决定', body: 'Maka 正在等待你的操作，点击继续。' };
   }
   if (kind === 'errored') {
     return { title: '任务出错', body: '本轮回答未能完成，点击查看详情。' };

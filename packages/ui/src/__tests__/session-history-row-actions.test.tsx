@@ -102,6 +102,26 @@ test('renders Runtime Host live runs without requiring renderer-local streaming'
   assert.match(markup, /aria-label="Responding"/);
 });
 
+test('renders a decorative Work identity without replacing the status signal', () => {
+  const hostRunning = { ...session, runningTurnIds: ['turn-live'] };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <SessionHistoryList
+        sessions={[hostRunning]}
+        sessionIdentityColor={() => 'var(--workhub-identity-3)'}
+        onSelectSession={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  const { document } = parseHTML(markup);
+  const identity = document.querySelector('.maka-session-row-work-identity');
+  assert.ok(identity);
+  assert.equal(identity.getAttribute('aria-hidden'), 'true');
+  assert.match(identity.getAttribute('style') ?? '', /--maka-session-work-identity/);
+  assert.ok(document.querySelector('[data-session-status="active"]'));
+});
+
 for (const [status, attentionLabel] of [
   ['waiting_for_user', 'Waiting for you'],
   ['blocked', 'Needs attention'],

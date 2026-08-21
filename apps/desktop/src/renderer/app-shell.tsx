@@ -15,6 +15,7 @@ import type { QuoteRef } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import { workHubWorkKey, type WorkHubWorkRef } from '@maka/core/workhub';
 import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 import type { UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 import { collapseSessionRevisions } from '@maka/core/session-revisions';
@@ -53,7 +54,7 @@ import {
   reconcileInteractions,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
-import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
+import { ArrowLeft, GitBranch, ICON_SIZE, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
@@ -114,6 +115,9 @@ import {
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
+import { WorkHubSurface } from './workhub-surface.js';
+import { workHubIdentityColor } from './workhub-identity.js';
+import { desktopSessionKey, parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import {
@@ -448,6 +452,9 @@ function AppShellContent({
     ));
   }, []);
   const navSelectionRef = useRef<NavSelection>(navSelection);
+  const [workHubEnabled, setWorkHubEnabled] = useState(false);
+  const [workHubActive, setWorkHubActive] = useState(false);
+  const workHubEnabledRef = useRef(false);
   // #1985: the shell's complete read of session UI state. See the hook for why
   // the two token-rate maps are absent.
   const {
@@ -1210,6 +1217,7 @@ function AppShellContent({
   }
 
   function openSessionInChat(sessionId: string, turnId?: string, sequence?: number): void {
+    setWorkHubActive(false);
     setNavSelection({ section: 'sessions' });
     setActiveId(sessionId);
     if (turnId) {
@@ -1262,7 +1270,23 @@ function AppShellContent({
     [shellCopy],
   );
   const sessionListSelectSession = useCallback((sessionId: string) => {
+    if (workHubEnabled && (workHubActive || activeIdRef.current !== sessionId)) {
+      void window.maka.workHub.handle({
+        kind: 'record_metric',
+        metric: 'manual_session_switch',
+      }).catch(() => {});
+    }
     openSessionInChatRef.current(sessionId);
+  }, [workHubActive, workHubEnabled]);
+  const openWorkHub = useCallback(() => {
+    setNavSelection({ section: 'sessions' });
+    setWorkHubActive(true);
+  }, [setNavSelection]);
+  const openWorkHubWork = useCallback((work: WorkHubWorkRef) => {
+    openSessionInChatRef.current(desktopSessionKey({
+      hostId: work.workspaceId,
+      sessionId: work.sessionId,
+    }));
   }, []);
 
   // PR109f: branched session context. When the active session was
@@ -1531,6 +1555,35 @@ function AppShellContent({
     pinWorkbarTab,
     openWorkbarLauncher,
   } = useShellLayout();
+  useEffect(() => {
+    let cancelled = false;
+    const refreshWorkHubSetting = async () => {
+      try {
+        const enabled = (await window.maka.settings.getClient()).workHub.enabled;
+        if (cancelled) return;
+        const becameEnabled = enabled && !workHubEnabledRef.current;
+        workHubEnabledRef.current = enabled;
+        setWorkHubEnabled(enabled);
+        if (!enabled) setWorkHubActive(false);
+        if (becameEnabled) {
+          setWorkHubActive(true);
+          setNavSelection({ section: 'sessions' });
+          setSessionListCollapsed(true);
+        }
+      } catch {
+        // Settings owns its error presentation. A failed read should not make
+        // the main shell unavailable, so the experimental entry stays hidden.
+      }
+    };
+    void refreshWorkHubSetting();
+    const unsubscribe = window.maka.settings.subscribeClientChanged(() => {
+      void refreshWorkHubSetting();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [setNavSelection, setSessionListCollapsed]);
   const openNewSideConversation = useCallback(
     (placement: SessionWorkbarPlacement, initialPrompt?: string) => {
       const sourceSessionId = activeIdRef.current;
@@ -2959,7 +3012,7 @@ function AppShellContent({
                 summary loads, and the name this replaced (the context layer's) was
                 showing through that window. Hung on the real record alone, 新任务
                 was named nowhere for the length of it. */}
-            {navSelection.section === 'sessions' && activeSessionForView && (
+            {navSelection.section === 'sessions' && !workHubActive && activeSessionForView && (
               <TitlebarSessionIdentity
                 /* Keyed by session: the open rename is local state and the field is
                    uncontrolled, so a switch that left the instance mounted would
@@ -2985,7 +3038,7 @@ function AppShellContent({
             )}
             {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
               <AppShellWorkspaceTopActions
-                workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
+                workbarAvailable={navSelection.section === 'sessions' && !workHubActive && Boolean(activeId)}
                 workbarCollapsed={workbarCollapsed}
                 onToggleWorkbar={toggleWorkbar}
               />
@@ -3018,7 +3071,7 @@ function AppShellContent({
             maxWidth={SESSION_LIST_EXPANDED_MAX_WIDTH}
             selection={navSelection}
             sessions={visibleSessions}
-            activeId={sidebarActiveId}
+            activeId={workHubActive ? undefined : sidebarActiveId}
             scheduledTasks={scheduledTasks}
             streamingSessionIds={streamingSessionIds}
             staleSessionIds={staleSessionIds}
@@ -3027,15 +3080,29 @@ function AppShellContent({
             groups={viewMode === 'project' ? sessionProjectGroups : undefined}
             worktreeSessionIds={worktreeSessionIds}
             sessionMeta={runtimeHostSessionMeta}
+            sessionIdentityColor={workHubEnabled
+              ? workHubSessionIdentityColor
+              : undefined}
             moduleMemory={navigationState.moduleMemory}
-            onSelect={setNavSelection}
+            onSelect={(selection) => {
+              setWorkHubActive(false);
+              setNavSelection(selection);
+            }}
             onSelectSession={sessionListSelectSession}
             onOpenSettings={openSettings}
             updateReminder={updateReminder}
             onOpenUpdate={openUpdateDownload}
-            onNew={createSession}
+            onNew={() => {
+              setWorkHubActive(false);
+              void createSession();
+            }}
             rowActions={sessionRowActions}
             projectActions={projectRowActions}
+            workHubEntry={workHubEnabled ? {
+              active: workHubActive,
+              label: 'WorkHub',
+              onSelect: openWorkHub,
+            } : undefined}
           />
         }
       >
@@ -3120,6 +3187,28 @@ function AppShellContent({
                   onSaveMarkdown={(input) => saveDailyReviewMarkdown(input, { shouldShowFeedback: isDailyReviewSurfaceActive })}
                 />
               ) : null}
+              {workHubEnabled && workHubActive && navSelection.section === 'sessions' ? (
+                <WorkHubSurface
+                  onOpenWork={openWorkHubWork}
+                  modelLabel={newChatModelLabel ?? undefined}
+                  modelChoices={chatModelChoices}
+                  newChatModel={newChatModel}
+                  newChatProviderType={newChatProviderType}
+                  renderProviderMark={(type) => <ProviderBrandMark type={type} />}
+                  onPickNewChatModel={(input) => {
+                    setPendingNewChatModel(input);
+                    if (modelSettingsOwnsComposerHost) saveComposerDefaults({ model: input });
+                  }}
+                  onOpenModelSettings={modelSettingsOwnsComposerHost
+                    ? () => openSettingsSection('models')
+                    : undefined}
+                  noModelConnection={connections.length === 0}
+                  noModelHint={!modelSettingsOwnsComposerHost && composerProfileName
+                    ? shellCopy.configureModelsOnHost(composerProfileName)
+                    : undefined}
+                  mentionSkills={mentionSkills}
+                />
+              ) : (
               <ChatSurfaceLayout
                 // Reset conversation-owned scroll state without remounting the
                 // composer: its contenteditable DOM carries the live draft.
@@ -3139,6 +3228,37 @@ function AppShellContent({
                       />
                     ) : null}
                     {navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
+                    {workHubEnabled &&
+                    navSelection.section === 'sessions' &&
+                    activeId &&
+                    activeSessionForView ? (
+                      <button
+                        type="button"
+                        className="maka-workhub-composer-return"
+                        aria-label={uiLocale === 'zh' ? '返回 WorkHub' : 'Return to WorkHub'}
+                        style={{
+                          '--maka-workhub-return-identity': workHubSessionIdentityColor(activeId),
+                        } as CSSProperties}
+                        onClick={openWorkHub}
+                      >
+                        <span className="maka-workhub-composer-return__destination">
+                          <ArrowLeft
+                            className="maka-workhub-composer-return__arrow"
+                            size={ICON_SIZE.chrome}
+                            aria-hidden="true"
+                          />
+                          <span>{uiLocale === 'zh' ? '返回 WorkHub' : 'Return to WorkHub'}</span>
+                        </span>
+                        <span className="maka-workhub-composer-return__context" aria-hidden="true">
+                          <span className="maka-workhub-composer-return__identity" />
+                          <span>
+                            {titlebarProjectName
+                              ? `${titlebarProjectName} / ${activeSessionForView.name}`
+                              : activeSessionForView.name}
+                          </span>
+                        </span>
+                      </button>
+                    ) : null}
                     <ChatComposerRegion
                   workspacePicker={workspacePicker}
                   composerRef={composerRef}
@@ -3502,12 +3622,13 @@ function AppShellContent({
                   />
                 ) : null}
               </ChatSurfaceLayout>
+              )}
             </div>
             {/* Rendered collapsed too: ChatWorkbar's own box is what the
                 collapse animates, and it has to be in the tree on both sides of
                 the toggle for there to be an animation at all. The column
                 inside it still unmounts. */}
-            {navSelection.section === 'sessions' && activeId && (
+            {navSelection.section === 'sessions' && !workHubActive && activeId && (
               <ChatWorkbar
                 activeId={activeId}
                 rightCollapsed={workbarCollapsed}
@@ -3693,6 +3814,14 @@ function AppShellContent({
 
 function runtimeHostSessionMeta(session: DesktopSessionSummary): string | undefined {
   return session.profileKind === 'remote' ? session.profileName : undefined;
+}
+
+function workHubSessionIdentityColor(sessionKey: string): string {
+  const session = parseDesktopSessionKey(sessionKey);
+  return workHubIdentityColor(workHubWorkKey({
+    workspaceId: session.hostId,
+    sessionId: session.sessionId,
+  }));
 }
 
 function deriveDesktopSessionGroups(

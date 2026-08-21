@@ -5,6 +5,7 @@ import {
   SegmentedControlItem,
 } from '@astryxdesign/core/SegmentedControl';
 import { SideNav, type SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
+import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import {
   SessionHistoryList,
@@ -16,6 +17,7 @@ import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } f
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import type { Ref } from 'react';
+import { Network } from './icons.js';
 
 export type SessionViewMode = 'conversation' | 'project';
 
@@ -42,6 +44,7 @@ export function SessionListPanel(props: {
   groups?: ReadonlyArray<SessionHistoryGroup>;
   worktreeSessionIds?: ReadonlySet<string>;
   sessionMeta?(session: SessionSummary): string | undefined;
+  sessionIdentityColor?(sessionId: string): string | undefined;
   projectActions?: ProjectRowActions;
   viewMode?: SessionViewMode;
   onViewModeChange?: (mode: SessionViewMode) => void;
@@ -53,6 +56,11 @@ export function SessionListPanel(props: {
   onOpenUpdate?(): void;
   onNew(): void;
   rowActions?: SessionRowActions;
+  workHubEntry?: {
+    active: boolean;
+    label: string;
+    onSelect(): void;
+  };
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const {
@@ -146,6 +154,17 @@ export function SessionListPanel(props: {
               onSelect={props.onSelect}
               onNew={props.onNew}
             />
+            {props.workHubEntry ? (
+              <SideNavSection title={props.workHubEntry.label} isHeaderHidden>
+                <SideNavItem
+                  label={props.workHubEntry.label}
+                  icon={Network}
+                  size="md"
+                  isSelected={props.workHubEntry.active}
+                  onClick={props.workHubEntry.onSelect}
+                />
+              </SideNavSection>
+            ) : null}
             {groupingSwitch}
           </>
         }
@@ -167,6 +186,7 @@ export function SessionListPanel(props: {
             groups={groups}
             worktreeSessionIds={props.worktreeSessionIds}
             sessionMeta={props.sessionMeta}
+            sessionIdentityColor={props.sessionIdentityColor}
             projectActions={props.projectActions}
             onSelectSession={props.onSelectSession}
             rowActions={props.rowActions}

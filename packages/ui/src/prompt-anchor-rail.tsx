@@ -195,6 +195,16 @@ export interface PromptAnchorRailTurn {
   label: string;
   reply?: string;
   sequence?: number;
+  /** Optional product context shown in the hover preview. */
+  contextLabel?: string;
+  /** Optional identity color used only while this landmark is inspected. */
+  accentColor?: string;
+  /** Optional product identity shared by landmarks that belong to one Work. */
+  groupId?: string;
+}
+
+export interface PromptAnchorRailActivation {
+  repeated: boolean;
 }
 
 export interface PromptAnchorRailProps {
@@ -213,15 +223,40 @@ export interface PromptAnchorRailProps {
    * changes the virtual window's height, so auto-follow must be released first.
    */
   onNavigateStart?: (() => void) | undefined;
+  /** Product-specific action layered after the rail's ordinary jump. */
+  onActivate?: (
+    turn: PromptAnchorRailTurn,
+    activation: PromptAnchorRailActivation,
+  ) => void;
+  /** Identity whose ticks remain accented while a product filter is active. */
+  selectedGroupId?: string;
+  /** Ordinary Sessions need several landmarks; filtered product views may not. */
+  minimumTurns?: number;
+}
+
+export function isRepeatedPromptRailActivation(
+  previousTurnId: string | null,
+  turnId: string,
+): boolean {
+  return previousTurnId === turnId;
 }
 
 /** Right-edge rail: bounded prompt landmarks that scroll to `[data-turn-id]`. */
-export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRef, onNavigateFallback, onNavigateStart }: PromptAnchorRailProps): React.ReactElement | null {
+export const PromptAnchorRail = memo(function PromptAnchorRail({
+  turns,
+  scrollRef,
+  onNavigateFallback,
+  onNavigateStart,
+  onActivate,
+  selectedGroupId,
+  minimumTurns = 3,
+}: PromptAnchorRailProps): React.ReactElement | null {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const activeTurnIdRef = useRef<string | null>(null);
   const [safeArea, setSafeArea] = useState<{ scrollport: number; dock: number } | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const lastActivatedTurnIdRef = useRef<string | null>(null);
   const activeVisibilityFrame = useRef(0);
   const markActiveTurn = useCallback((turnId: string) => {
     if (activeTurnIdRef.current === turnId) return;
@@ -270,6 +305,9 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       turns[Math.round(index * (turns.length - 1) / (MAX_PROMPT_RAIL_TICKS - 1))]!,
     );
   }, [turns]);
+  const hoveredGroupId = hoveredIndex === null
+    ? undefined
+    : railTurns[hoveredIndex]?.groupId;
 
   const railTurnIdFor = (turnId: string): string | null => {
     const turnIndex = turnIndexById.get(turnId);
@@ -470,10 +508,13 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     jumpSequenceRef.current += 1;
     setJump({ sequence: jumpSequenceRef.current, turnId });
     markActiveTurn(turnId);
+    const repeated = isRepeatedPromptRailActivation(lastActivatedTurnIdRef.current, turnId);
+    lastActivatedTurnIdRef.current = turnId;
+    onActivate?.(turn, { repeated });
   }
 
   // A rail is only useful once there are a few prompts to jump between.
-  if (railTurns.length < 3) return null;
+  if (railTurns.length < minimumTurns) return null;
 
   return (
     <div
@@ -496,12 +537,21 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
         {railTurns.map((turn, index) => {
           const isActive = turn.turnId === activeTurnIdRef.current;
           const preview = turn.label.trim() || copy.emptyPrompt;
+          const accessiblePreview = turn.contextLabel
+            ? `${turn.contextLabel}: ${preview}`
+            : preview;
           const replyPreview = (turn.reply ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
           const proximity =
             hoveredIndex === null
               ? HOVER_FALLOFF_TICKS
               : Math.min(Math.abs(index - hoveredIndex), HOVER_FALLOFF_TICKS);
           const scale = (14 + ((HOVER_FALLOFF_TICKS - proximity) * 3)) / 26;
+          const groupHighlighted = Boolean(
+            turn.groupId && hoveredGroupId && turn.groupId === hoveredGroupId,
+          );
+          const groupSelected = Boolean(
+            turn.groupId && selectedGroupId && turn.groupId === selectedGroupId,
+          );
           return (
             <HoverCard
               key={turn.turnId}
@@ -509,6 +559,18 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
               delay={PREVIEW_DELAY_MS}
               content={
                 <span className="maka-prompt-rail-preview">
+                  {turn.contextLabel ? (
+                    <span
+                      className="maka-prompt-rail-preview-context"
+                      style={
+                        turn.accentColor
+                          ? ({ '--maka-prompt-rail-accent': turn.accentColor } as CSSProperties)
+                          : undefined
+                      }
+                    >
+                      {turn.contextLabel}
+                    </span>
+                  ) : null}
                   <span className="maka-prompt-rail-preview-prompt">{preview}</span>
                   {replyPreview ? (
                     <span className="maka-prompt-rail-preview-reply">{replyPreview}</span>
@@ -520,17 +582,25 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
                 type="button"
                 variant="ghost"
                 size="sm"
-                label={copy.jumpToPrompt(preview)}
+                label={copy.jumpToPrompt(accessiblePreview)}
                 className="maka-prompt-rail-tick"
                 data-prompt-turn-id={turn.turnId}
+                data-has-accent={turn.accentColor ? 'true' : undefined}
+                data-group-highlighted={groupHighlighted ? 'true' : undefined}
+                data-group-selected={groupSelected ? 'true' : undefined}
                 data-active={isActive ? 'true' : undefined}
                 aria-current={isActive ? 'true' : undefined}
                 onClick={() => jumpTo(turn)}
                 onPointerEnter={() => setHoveredIndex(index)}
+                onFocus={() => setHoveredIndex(index)}
+                onBlur={() => setHoveredIndex(null)}
                 style={
                   {
                     '--maka-prompt-rail-index': index,
                     '--maka-prompt-rail-scale': scale,
+                    ...(turn.accentColor
+                      ? { '--maka-prompt-rail-accent': turn.accentColor }
+                      : {}),
                   } as CSSProperties
                 }
               >

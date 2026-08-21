@@ -24,16 +24,21 @@ it('gates native notifications through every required condition', () => {
 });
 
 it('recognizes terminal kinds and keeps distinct localized fallback copy', () => {
-  for (const value of ['completed', 'errored']) assert.equal(isRunNotificationKind(value), true);
+  for (const value of ['completed', 'errored', 'waiting_for_user']) {
+    assert.equal(isRunNotificationKind(value), true);
+  }
   for (const value of ['complete', 'error', 'aborted', '', undefined, null, 1, {}]) {
     assert.equal(isRunNotificationKind(value), false);
   }
 
   const completed = runNotificationCopy('completed', 'zh');
   const errored = runNotificationCopy('errored', 'zh');
+  const waiting = runNotificationCopy('waiting_for_user', 'zh');
   assert.ok(completed.title && completed.body);
   assert.ok(errored.title && errored.body);
+  assert.ok(waiting.title && waiting.body);
   assert.notEqual(completed.title, errored.title);
+  assert.notEqual(completed.title, waiting.title);
 });
 
 it('sanitizes renderer content, caps it, and falls back per field', () => {

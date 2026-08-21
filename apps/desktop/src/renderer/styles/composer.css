@@ -284,6 +284,109 @@
   padding-top: 0;
 }
 
+/* A concrete Session is one WorkHub context, so returning to the unified
+   surface belongs beside the place where work continues — not among global
+   window controls. This is a direct child of ChatLayout's dockInner. The dock
+   already owns its balanced 12px outer gutter; subtract only the composer's
+   own 24px inline gutters so this bar and the composer card share one edge. */
+.maka-workhub-composer-return {
+  width: min(
+    var(--maka-chat-measure),
+    calc(100% - (2 * var(--space-6)))
+  );
+  max-width: var(--maka-chat-measure);
+  min-height: var(--space-8);
+  margin: 0 auto var(--space-2);
+  padding: 0 var(--space-3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  color: var(--foreground-secondary);
+  font: var(--maka-text-label);
+  text-align: start;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-quick) var(--ease-out-strong),
+    border-color var(--duration-quick) var(--ease-out-strong),
+    color var(--duration-quick) var(--ease-out-strong);
+}
+
+.maka-workhub-composer-return:hover {
+  border-color: color-mix(in srgb, var(--foreground) 18%, var(--border));
+  background: var(--state-hover-bg);
+  color: var(--foreground);
+}
+
+.maka-workhub-composer-return:active {
+  background: var(--state-pressed-bg);
+}
+
+.maka-workhub-composer-return:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}
+
+.maka-workhub-composer-return__destination,
+.maka-workhub-composer-return__context {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.maka-workhub-composer-return__destination {
+  flex: none;
+  gap: var(--space-2);
+  color: var(--foreground);
+}
+
+.maka-workhub-composer-return__arrow {
+  flex: none;
+  color: var(--accent-solid);
+  transition: transform var(--duration-quick) var(--ease-out-strong);
+}
+
+.maka-workhub-composer-return:hover .maka-workhub-composer-return__arrow {
+  transform: translateX(-2px);
+}
+
+.maka-workhub-composer-return__context {
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  font: var(--maka-text-supporting);
+  color: var(--foreground-secondary);
+}
+
+.maka-workhub-composer-return__context > :last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-workhub-composer-return__identity {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: var(--radius-pill);
+  background: var(--maka-workhub-return-identity, var(--foreground-tertiary));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-workhub-composer-return,
+  .maka-workhub-composer-return__arrow {
+    transition: none;
+  }
+
+  .maka-workhub-composer-return:hover .maka-workhub-composer-return__arrow {
+    transform: none;
+  }
+}
+
 /* U3 no-model dead-end hint. Sits ABOVE the composer form (outside its box, so
    it never touches the #740 constant footprint). Edged, not pill; quiet caption
    text + one link-button into Settings · 模型. Theme-aware via tokens. Centered to the chat measure, matching the revision-notice layout. */

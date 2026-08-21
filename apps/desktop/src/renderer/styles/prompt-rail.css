@@ -127,6 +127,7 @@
   width: 100%;
   box-shadow: none;
   animation: maka-prompt-rail-tick-in var(--duration-large) var(--ease-out-strong) backwards;
+  transition: color var(--duration-base) var(--ease-out-strong);
   /* Capped, so a 90-prompt conversation cascades in a third of a second rather
      than nearly two: past the cap the tail arrives together. */
   animation-delay: calc(min(var(--maka-prompt-rail-index, 0), 20) * 18ms);
@@ -135,6 +136,21 @@
 .maka-prompt-rail-tick:hover,
 .maka-prompt-rail-tick[data-active="true"] {
   color: var(--foreground);
+}
+
+/* WorkHub can attach an identity color to a landmark. It stays neutral at
+   rest so the rail remains as quiet as an ordinary Session, then reveals the
+   Work identity only when the user inspects that exact tick. */
+.maka-prompt-rail-tick[data-has-accent="true"]:hover {
+  color: var(--maka-prompt-rail-accent);
+}
+
+/* WorkHub landmarks share one identity. Hovering or keyboard-focusing any
+   member reveals that identity across the whole Work; an active Work filter
+   keeps the same signal visible until the filter is released. */
+.maka-prompt-rail-tick[data-has-accent="true"][data-group-highlighted="true"],
+.maka-prompt-rail-tick[data-has-accent="true"][data-group-selected="true"] {
+  color: var(--maka-prompt-rail-accent);
 }
 
 /* Dock-style falloff. The bar keeps a fixed layout width and changes only its
@@ -182,10 +198,28 @@
   overflow: hidden;
 }
 
+.maka-prompt-rail-preview-context {
+  min-width: 0;
+  color: var(--maka-prompt-rail-accent, var(--foreground-secondary));
+  font-weight: var(--font-weight-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .maka-prompt-rail-preview-reply {
   color: var(--muted-foreground);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-prompt-rail,
+  .maka-prompt-rail-tick,
+  .maka-prompt-rail-tick-bar {
+    animation: none;
+    transition-duration: 0.01s;
+  }
 }

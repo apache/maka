@@ -31,6 +31,7 @@ import type {
   DesktopRuntimeHostRef,
   DesktopProjectSnapshot,
   DesktopAppInfo,
+  DesktopWorkHubCommand,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import {
@@ -80,6 +81,10 @@ import type {
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
+import type {
+  WorkHubCommandResult,
+  WorkHubEvent,
+} from '@maka/core/workhub';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 
@@ -1299,6 +1304,23 @@ const makaBridge = {
       };
     },
   },
+  workHub: {
+    async handle(command: DesktopWorkHubCommand): Promise<WorkHubCommandResult> {
+      if (command.kind === 'submit' && command.attachmentItems?.length) {
+        return ipcRenderer.invoke('workhub:handle', {
+          ...command,
+          attachmentItems: await encodeIngestItems(command.attachmentItems),
+        });
+      }
+      return ipcRenderer.invoke('workhub:handle', command);
+    },
+    subscribe(handler: (event: WorkHubEvent) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, payload: WorkHubEvent) =>
+        handler(payload);
+      ipcRenderer.on('workhub:event', listener);
+      return () => ipcRenderer.off('workhub:event', listener);
+    },
+  },
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]> {
       return listDesktopSessions(filter);
@@ -2377,7 +2399,7 @@ const makaBridge = {
     // generic copy when blank. Main gates on the product toggle + window
     // focus before raising a native OS notification.
     runEnded(payload: {
-      kind: 'completed' | 'errored';
+      kind: 'completed' | 'errored' | 'waiting_for_user';
       title?: string;
       body?: string;
     }): Promise<void> {

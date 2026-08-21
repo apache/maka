@@ -38,6 +38,7 @@
 @import "./styles/composer.css" layer(components);
 @import "./styles/composer-mention.css" layer(components);
 @import "./styles/chat-detail.css" layer(components);
+@import "./styles/workhub.css" layer(components);
 @import "./styles/settings.css" layer(components);
 @import "./styles/interaction-prompts.css" layer(components);
 @import "./styles/daily-review.css" layer(components);

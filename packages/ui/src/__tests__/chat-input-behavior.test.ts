@@ -6,9 +6,17 @@ import {
   composerWireText,
   createTriggerSearchSource,
   isChatInputComposing,
+  skillMentionQuery,
 } from '../chat-input-behavior.js';
 
 describe('shared chat input behavior', () => {
+  it('treats /skill as the discoverable form of the skill invocation grammar', () => {
+    assert.equal(skillMentionQuery('skill'), '');
+    assert.equal(skillMentionQuery('SKILL'), '');
+    assert.equal(skillMentionQuery('skill:review'), 'review');
+    assert.equal(skillMentionQuery('review'), 'review');
+  });
+
   it('strips the token anchor from the wire text without touching real spaces', () => {
     // U+00A0 is what `insertToken` puts after a chip; the editor must keep it
     // (upstream's backspace-eats-the-token check keys on that codepoint) and

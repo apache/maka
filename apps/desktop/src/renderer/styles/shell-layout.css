@@ -345,6 +345,8 @@ dialog:modal {
   /* Never the whole column: what is left of it is the strip's drag band. */
   max-width: calc(100% - var(--maka-titlebar-drag-reserve));
   display: flex;
+  align-items: center;
+  gap: var(--space-1);
   padding-left: var(--space-3);
   -webkit-app-region: no-drag;
 }

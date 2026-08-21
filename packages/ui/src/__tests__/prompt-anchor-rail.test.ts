@@ -1,10 +1,65 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import {
   holdJumpDestination,
+  isRepeatedPromptRailActivation,
   observeActivePromptRailVisibility,
+  PromptAnchorRail,
   type PromptRailFrameScheduler,
 } from '../prompt-anchor-rail.js';
+import { LocaleProvider } from '../locale-context.js';
+
+test('carries optional Work identity onto rail ticks without changing ordinary landmarks', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'zh',
+    children: createElement(PromptAnchorRail, {
+      scrollRef: { current: null },
+      turns: [
+        { turnId: 'one', label: '普通消息' },
+        {
+          turnId: 'two',
+          label: '排查登录超时',
+          contextLabel: '登录稳定性',
+          accentColor: '#b91c1c',
+          groupId: 'work-login',
+        },
+        {
+          turnId: 'three',
+          label: '继续处理',
+          accentColor: '#b91c1c',
+          groupId: 'work-login',
+        },
+      ],
+      selectedGroupId: 'work-login',
+    }),
+  }));
+
+  assert.equal((markup.match(/data-prompt-turn-id=/gu) ?? []).length, 3);
+  assert.equal((markup.match(/data-has-accent="true"/gu) ?? []).length, 2);
+  assert.equal((markup.match(/data-group-selected="true"/gu) ?? []).length, 2);
+  assert.match(markup, /--maka-prompt-rail-accent:#b91c1c/u);
+});
+
+test('recognizes only a consecutive click on the same landmark as the filter action', () => {
+  assert.equal(isRepeatedPromptRailActivation(null, 'turn-a'), false);
+  assert.equal(isRepeatedPromptRailActivation('turn-a', 'turn-b'), false);
+  assert.equal(isRepeatedPromptRailActivation('turn-a', 'turn-a'), true);
+});
+
+test('can retain a single landmark for a filtered product view', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'zh',
+    children: createElement(PromptAnchorRail, {
+      scrollRef: { current: null },
+      minimumTurns: 1,
+      turns: [{ turnId: 'only', label: '唯一消息' }],
+    }),
+  }));
+
+  assert.match(markup, /data-prompt-turn-id="only"/u);
+});
 
 /**
  * The e2e suite cannot stage what these cover. Whether a jump survives depends

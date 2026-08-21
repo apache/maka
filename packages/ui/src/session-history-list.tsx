@@ -4,6 +4,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
@@ -75,6 +76,7 @@ export function SessionHistoryList(props: {
   groups?: ReadonlyArray<SessionHistoryGroup>;
   worktreeSessionIds?: ReadonlySet<string>;
   sessionMeta?(session: SessionSummary): string | undefined;
+  sessionIdentityColor?(sessionId: string): string | undefined;
   projectActions?: ProjectRowActions;
   groupVariant?: SessionHistoryGroupVariant;
   onSelectSession(sessionId: string): void;
@@ -126,6 +128,7 @@ export function SessionHistoryList(props: {
         staleSessionIds={props.staleSessionIds}
         worktreeSessionIds={props.worktreeSessionIds}
         sessionMeta={props.sessionMeta}
+        sessionIdentityColor={props.sessionIdentityColor}
         onSelectSession={props.onSelectSession}
         rowActions={props.rowActions}
         projectActions={props.projectActions}
@@ -147,6 +150,7 @@ function SessionListGroups(props: {
   staleSessionIds?: Set<string>;
   worktreeSessionIds?: ReadonlySet<string>;
   sessionMeta?(session: SessionSummary): string | undefined;
+  sessionIdentityColor?(sessionId: string): string | undefined;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
   projectActions?: ProjectRowActions;
@@ -208,6 +212,7 @@ function SessionListGroups(props: {
         stale={props.staleSessionIds?.has(session.id) ?? false}
         worktree={props.worktreeSessionIds?.has(session.id) ?? false}
         meta={props.sessionMeta?.(session)}
+        identityColor={props.sessionIdentityColor?.(session.id)}
         onSelectSession={props.onSelectSession}
         actions={props.rowActions}
         onStartRename={startRename}
@@ -219,6 +224,7 @@ function SessionListGroups(props: {
       props.onSelectSession,
       props.rowActions,
       props.sessionMeta,
+      props.sessionIdentityColor,
       props.staleSessionIds,
       props.streamingSessionIds,
       props.worktreeSessionIds,
@@ -362,6 +368,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   stale: boolean;
   worktree: boolean;
   meta?: string;
+  identityColor?: string;
   onSelectSession(sessionId: string): void;
   actions?: SessionRowActions;
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
@@ -408,17 +415,26 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         // whether or not it has a dot, so state reads as one column down the
         // rail instead of a mark that drifts with each title's length.
         icon={
-          signal ? (
-            <StatusDot
-              variant={signal.variant}
-              label={signal.label}
-              isPulsing={signal.isPulsing}
-              tooltip={signal.tooltip}
-              data-session-status={props.session.status}
-            />
-          ) : (
-            <span className="maka-session-row-signal-empty" aria-hidden="true" />
-          )
+          <span className="maka-session-row-signals">
+            {props.identityColor ? (
+              <span
+                className="maka-session-row-work-identity"
+                style={{ '--maka-session-work-identity': props.identityColor } as CSSProperties}
+                aria-hidden="true"
+              />
+            ) : null}
+            {signal ? (
+              <StatusDot
+                variant={signal.variant}
+                label={signal.label}
+                isPulsing={signal.isPulsing}
+                tooltip={signal.tooltip}
+                data-session-status={props.session.status}
+              />
+            ) : (
+              <span className="maka-session-row-signal-empty" aria-hidden="true" />
+            )}
+          </span>
         }
         onClick={(event) => {
           if (event.detail > 1 && props.actions) {

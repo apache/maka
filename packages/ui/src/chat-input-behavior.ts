@@ -97,9 +97,14 @@ export function mentionQueryMatches(query: string, text: string): boolean {
     .every((token) => haystack.includes(token));
 }
 
-/** Normalize `/skill:<query>` and bare `/<query>` into the same Skill search query. */
+/** Normalize `/skill`, `/skill:<query>`, and bare `/<query>` into the same
+ * Skill search query. `/skill` is a discoverable command form: before the
+ * user types an id it opens the complete Skill catalog instead of filtering
+ * for the literal word "skill". */
 export function skillMentionQuery(query: string): string {
-  return query.toLowerCase().startsWith('skill:') ? query.slice('skill:'.length) : query;
+  const normalized = query.toLowerCase();
+  if (normalized === 'skill') return '';
+  return normalized.startsWith('skill:') ? query.slice('skill:'.length) : query;
 }
 
 /** Return the searchable command query only when `/` starts the draft's first token. */

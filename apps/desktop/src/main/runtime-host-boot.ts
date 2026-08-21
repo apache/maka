@@ -72,7 +72,7 @@ import {
   registerTaskSubmissionReadinessIpc,
   type DesktopModelTargetResolution,
 } from "./task-submission-readiness-main.js";
-import { registerNotificationsIpc } from "./notifications-ipc-main.js";
+import { createRunNotifier, registerNotificationsIpc } from "./notifications-ipc-main.js";
 import { registerMarkdownSaveIpc } from "./markdown-save-ipc-main.js";
 import { registerPetPackIpc } from "./pet-pack-import.js";
 import {
@@ -153,6 +153,16 @@ import {
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
 import { startupStep, whileAwaitingPerson } from "./startup-step.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
+import { createWorkHubOrchestrator } from './workhub/work-orchestrator.js';
+import {
+  createRuntimeHostWorkHubDiscussionResponder,
+  createRuntimeHostWorkHubHost,
+  createRuntimeHostWorkHubIntentResolver,
+} from './workhub/runtime-host-workhub-host.js';
+import { createSqliteWorkHubStateStore } from './workhub/sqlite-workhub-state-store.js';
+import { projectWorkHubLifecycleNotifications } from './workhub/workhub-product-events.js';
+import { registerWorkHubIpc } from './workhub/workhub-ipc-main.js';
+import { createWorkHubIntentResolver } from './workhub/workhub-intent-resolver.js';
 import {
   projectDesktopUsageStats,
 } from "../shared/desktop-session-projection.js";
@@ -180,6 +190,9 @@ const runtimeHostStartup = await resolveDesktopRuntimeHostStartup(userDataDir, {
   credentialStore: runtimeHostCredentialStore,
 });
 let runtimeHostManager: RuntimeHostDesktopManager | undefined;
+let workHubStore: ReturnType<typeof createSqliteWorkHubStateStore> | undefined;
+let workHubIpc: ReturnType<typeof registerWorkHubIpc> | undefined;
+let disposeWorkHubNotifications: (() => void) | undefined;
 function activeRuntimeHostRef(): DesktopTargetScope | undefined {
   const current = runtimeHostManager?.current();
   return current?.hostId
@@ -497,13 +510,15 @@ const browserIpc = registerBrowserIpc({
   mainWindowController,
   isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
 });
-registerNotificationsIpc({
+const notificationDeps = {
   ipcMain,
   settingsStore,
   locale: desktopLocale,
   mainWindowController,
   e2e: isE2e,
-});
+};
+const notifyRunLifecycle = createRunNotifier(notificationDeps);
+registerNotificationsIpc(notificationDeps, notifyRunLifecycle);
 
 const sessionCopyOwnerProcessId = randomUUID();
 runtimeHostManager = await startRuntimeHostDesktopManager(
@@ -725,6 +740,62 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     return new Promise<never>(() => undefined);
   }
   throw error;
+});
+const resolveWorkHubCreateWorkspace = async (workspaceId: string): Promise<WorkspaceTarget> => {
+  const target = runtimeHostManager?.entries().find(
+    (candidate) =>
+      candidate.readiness === 'ready' && candidate.candidate.client.hostId === workspaceId,
+  );
+  if (!target || target.readiness !== 'ready') {
+    throw new Error('WorkHub Workspace is unavailable');
+  }
+  const context = runtimePolicyTargetsByEpoch.get(target.epoch);
+  if (!context?.isActive()) throw new Error('WorkHub Workspace generation is unavailable');
+  return currentDesktopWorkspaceTarget(context.policy);
+};
+workHubStore = createSqliteWorkHubStateStore(join(userDataDir, 'workhub', 'workhub.sqlite'));
+const workHubHost = createRuntimeHostWorkHubHost({
+  manager: runtimeHostManager,
+  resolveCreateWorkspace: resolveWorkHubCreateWorkspace,
+  includeFakeSessions: isE2e,
+  resizeImage: resizeImageForAttachment,
+});
+const workHubOrchestrator = createWorkHubOrchestrator({
+  store: workHubStore,
+  hosts: workHubHost,
+  resolveIntent: createRuntimeHostWorkHubIntentResolver({
+    manager: runtimeHostManager,
+    resolveCreateWorkspace: resolveWorkHubCreateWorkspace,
+    fallback: createWorkHubIntentResolver({
+      defaultWorkspaceId: () => runtimeHostManager?.current()?.hostId,
+    }),
+  }),
+  defaultPermissionMode: async () => (await settingsStore.get()).chatDefaults.permissionMode,
+  answerDiscussion: createRuntimeHostWorkHubDiscussionResponder({
+    manager: runtimeHostManager,
+    resolveCreateWorkspace: resolveWorkHubCreateWorkspace,
+  }),
+  onError: (error) => console.error('[workhub] orchestration failed:', error),
+});
+let workHubNotificationSnapshot = await workHubStore.read();
+disposeWorkHubNotifications = workHubOrchestrator.subscribe((event) => {
+  const notifications = projectWorkHubLifecycleNotifications(
+    workHubNotificationSnapshot,
+    event.snapshot,
+  );
+  workHubNotificationSnapshot = event.snapshot;
+  for (const notification of notifications) {
+    void notifyRunLifecycle(notification).catch((error) =>
+      console.error('[workhub] notification failed:', error),
+    );
+  }
+});
+workHubIpc = registerWorkHubIpc({
+  ipcMain,
+  orchestrator: workHubOrchestrator,
+  attachmentApprovals,
+  stat: (path) => import('node:fs/promises').then(({ stat }) => stat(path)),
+  publish: (event) => mainWindowController.send('workhub:event', event),
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
@@ -1364,6 +1435,10 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   updateService.dispose();
   settingsBotsIpc?.dispose();
   permissionOverlay.dismiss();
+  disposeWorkHubNotifications?.();
+  disposeWorkHubNotifications = undefined;
+  workHubIpc?.dispose();
+  workHubStore?.close();
   const results = await Promise.allSettled([
     runtimeHostManager?.close(),
     runtimeHostOnboarding.close(),

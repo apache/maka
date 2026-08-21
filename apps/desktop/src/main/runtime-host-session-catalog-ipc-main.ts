@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isWorkHubInternalSession } from '@maka/core/workhub';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
 import { isPermissionMode } from '@maka/core/permission';
@@ -74,6 +75,7 @@ export function registerRuntimeHostSessionCatalogIpc(
     const sessions = await deps.client.listSessions();
     return sessions
       .filter((session) => !pendingCleanup.has(session.id))
+      .filter((session) => !isWorkHubInternalSession(session.labels))
       .filter((session) =>
         parentSessionId === undefined ? true : session.subagent?.parentSessionId === parentSessionId,
       )

@@ -30,6 +30,11 @@ import type {
 } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
+import type {
+  WorkHubCommand,
+  WorkHubCommandResult,
+  WorkHubEvent,
+} from '@maka/core/workhub';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type {
@@ -141,6 +146,13 @@ export interface DesktopTaskSubmissionReadinessRequest {
 export type RendererIngestInput =
   | { approvalId: string; name: string; mimeType?: string }
   | { file: File };
+
+type WorkHubSubmitCommand = Extract<WorkHubCommand, { kind: 'submit' }>;
+export type DesktopWorkHubCommand =
+  | Exclude<WorkHubCommand, WorkHubSubmitCommand>
+  | (Omit<WorkHubSubmitCommand, 'attachmentItems'> & {
+      attachmentItems?: RendererIngestInput[];
+    });
 
 export type DesktopBranchFromTurnInput = BranchFromTurnInput & {
   /** Stable target identity for retrying one Desktop copy action. */
@@ -555,6 +567,10 @@ export interface MakaBridge {
       handler: () => void,
     ): () => void;
   };
+  workHub: {
+    handle(command: DesktopWorkHubCommand): Promise<WorkHubCommandResult>;
+    subscribe(handler: (event: WorkHubEvent) => void): () => void;
+  };
   sessions: {
     list(filter?: SessionListFilter): Promise<DesktopSessionSummary[]>;
     create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary>;
@@ -839,7 +855,7 @@ export interface MakaBridge {
      * generic copy. Main gates on the product toggle + window focus
      * before raising a native OS notification. */
     runEnded(payload: {
-      kind: 'completed' | 'errored';
+        kind: 'completed' | 'errored' | 'waiting_for_user';
       title?: string;
       body?: string;
     }): Promise<void>;

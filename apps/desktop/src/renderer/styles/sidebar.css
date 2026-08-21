@@ -278,6 +278,27 @@
   flex: none;
 }
 
+/* WorkHub identity and runtime status are two different facts. The short
+ * vertical rail carries the Work identity shared with the transcript;
+ * Astryx's circle stays the status vocabulary. Their distinct silhouettes
+ * prevent two adjacent colours from reading as two Work identities. */
+.maka-session-row-signals {
+  display: inline-flex;
+  min-width: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+.maka-session-row-work-identity {
+  width: 2px;
+  height: 14px;
+  flex: none;
+  border-radius: var(--radius-pill);
+  background: var(--maka-session-work-identity);
+  opacity: 0.82;
+}
+
 /*
  * Slot 2: the timestamp at rest, the ⋯ menu on hover or keyboard focus.
  *
