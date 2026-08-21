@@ -131,10 +131,7 @@ export function formatCompactTimestamp(
   locale: UiLocale = 'zh',
 ): string {
   const diffMs = now - ts;
-  if (diffMs >= 0 && diffMs <= RELATIVE_HORIZON_MS) {
-    return formatRelativeTimestamp(ts, now, locale);
-  }
-  if (diffMs < 0) return formatRelativeTimestamp(ts, now, locale);
+  if (diffMs <= RELATIVE_HORIZON_MS) return formatRelativeTimestamp(ts, now, locale);
   const { sameYear, otherYear } = getCompactFormats(locale);
   const date = new Date(ts);
   const nowDate = new Date(now);
