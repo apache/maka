@@ -98,6 +98,54 @@ test('loads the default Host projection without waiting for the new-task catalog
   assert.equal(current.defaultConnection, 'default-connection');
 });
 
+test('reports connection refresh failures against their owning Host', async () => {
+  const { root } = installReactRenderer();
+  const sessionId = desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' });
+  const diagnosticTargets: unknown[] = [];
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    connections: {
+      getSnapshot: async () => {
+        throw new Error('session unavailable');
+      },
+    },
+    newTasks: {
+      getConnections: async () => {
+        throw new Error('profile unavailable');
+      },
+    },
+  };
+
+  function Probe(props: { target: Parameters<typeof useShellConnections>[0]['target'] }) {
+    useShellConnections({
+      toastApi: {
+        error: (_title, _description, _details, target) => {
+          diagnosticTargets.push(target);
+        },
+      },
+      uiLocale: 'en',
+      target: props.target,
+    });
+    return null;
+  }
+
+  await act(async () => {
+    root.render(createElement(Probe, { target: { kind: 'session', sessionId } }));
+  });
+  await act(async () => {
+    root.render(createElement(Probe, {
+      target: {
+        kind: 'new-task',
+        host: { profileId: 'profile-b', hostId: 'host-b' },
+      },
+    }));
+  });
+
+  assert.deepEqual(diagnosticTargets, [
+    { sessionId },
+    { profileId: 'profile-b' },
+  ]);
+});
+
 afterEach(() => {
   cleanupFakeDom();
   delete (globalThis as { window?: unknown }).window;

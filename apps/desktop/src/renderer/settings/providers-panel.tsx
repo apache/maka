@@ -36,6 +36,7 @@ import { ProviderLogo, providerDisplay } from './provider-display';
 import { oauthPanelSubtitle } from './provider-oauth-section';
 import { providerPanelActionErrorMessage, type ConnectionsBridge } from './provider-panel-shared';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 export type { ConnectionsBridge } from './provider-panel-shared';
 
@@ -83,6 +84,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   /** Called once the setup level has been entered. */
   onInitialCreateProviderConsumed?: () => void;
 }) {
+  const host = useRuntimeHostSettingsTarget();
   const [connections, setConnections] = useState<LlmConnection[]>([]);
   const [defaultSlug, setDefaultSlug] = useState<string | null>(null);
   const [route, setRoute] = useState<PanelRoute>({ kind: 'list' });
@@ -118,7 +120,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
       const message = providerPanelActionErrorMessage(error, locale);
       setLoadError(message);
       setLoading(false);
-      toast.error(copy.loadFailed, message);
+      toast.error(
+        copy.loadFailed,
+        message,
+        undefined,
+        { profileId: host.profileId },
+      );
       return false;
     }
   }
@@ -288,7 +295,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                     } catch (error) {
                       // The state is unchanged on failure, so the Badge stays
                       // where it was and the button remains the way to retry.
-                      toast.error(copy.setDefaultFailed, settingsActionErrorMessage(error, locale));
+                      toast.error(
+                        copy.setDefaultFailed,
+                        settingsActionErrorMessage(error, locale),
+                        undefined,
+                        { profileId: host.profileId },
+                      );
                     }
                   }}
                 />
@@ -355,6 +367,8 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                     providerPanelActionErrorMessage(modelDiscoveryError, locale),
                     providerCopy.detail.endpointTroubleshooting,
                   ),
+                  undefined,
+                  { profileId: host.profileId },
                 );
               }
             }}

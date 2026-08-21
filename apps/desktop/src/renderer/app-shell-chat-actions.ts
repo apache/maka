@@ -424,7 +424,12 @@ export function createAppShellChatActions(deps: {
         });
         if (!sendResult.ok) {
           if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-            showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+            showSkillInvocationFeedback(
+              uiLocale,
+              toastApi,
+              sendResult.skillInvocation,
+              session.id,
+            );
           }
           disarmTurnActive(session.id, turnId);
           await discardUnsentSession();
@@ -435,7 +440,12 @@ export function createAppShellChatActions(deps: {
         if (settledTurnId !== undefined) optimisticTurnId = settledTurnId;
         options.onSessionResolved?.(session.id);
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-          showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+          showSkillInvocationFeedback(
+            uiLocale,
+            toastApi,
+            sendResult.skillInvocation,
+            session.id,
+          );
         }
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           setNavSelection({ section: 'sessions' });
@@ -497,7 +507,12 @@ export function createAppShellChatActions(deps: {
       });
       if (!sendResult.ok) {
         if (activeIdRef.current === sessionId) {
-          showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+          showSkillInvocationFeedback(
+            uiLocale,
+            toastApi,
+            sendResult.skillInvocation,
+            sessionId,
+          );
         }
         disarmTurnActive(sessionId, turnId);
         return false;
@@ -507,7 +522,12 @@ export function createAppShellChatActions(deps: {
       if (startedTurnId === undefined) return true;
       optimisticTurnId = startedTurnId;
       if (activeIdRef.current === sessionId) {
-        showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+        showSkillInvocationFeedback(
+          uiLocale,
+          toastApi,
+          sendResult.skillInvocation,
+          sessionId,
+        );
       }
       showOptimisticUserMessage(
         sessionId,

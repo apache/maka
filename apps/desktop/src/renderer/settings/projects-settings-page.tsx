@@ -126,14 +126,40 @@ export function ProjectsSettingsPage(props: {
     defaultProjectId !== undefined &&
     listed.some((project) => project.id === defaultProjectId && project.available);
 
-  async function runRowAction(key: string, action: () => Promise<void>, failure: string) {
+  async function runRowAction(
+    key: string,
+    action: () => Promise<void>,
+    failure: string,
+    diagnosticTarget?: { profileId: string },
+  ) {
     const release = actionGuard.begin(key);
     if (!release) return;
     try {
-      await action();
-      await reload();
-    } catch (error) {
-      if (mountedRef.current) toast.error(failure, settingsActionErrorMessage(error, locale));
+      try {
+        await action();
+      } catch (error) {
+        if (mountedRef.current) {
+          toast.error(
+            failure,
+            settingsActionErrorMessage(error, locale),
+            undefined,
+            diagnosticTarget,
+          );
+        }
+        return;
+      }
+      try {
+        await reload();
+      } catch (error) {
+        if (mountedRef.current) {
+          toast.error(
+            failure,
+            settingsActionErrorMessage(error, locale),
+            undefined,
+            host ? { profileId: host.profileId } : undefined,
+          );
+        }
+      }
     } finally {
       release();
     }
@@ -164,6 +190,7 @@ export function ProjectsSettingsPage(props: {
       </SettingsPage>
     );
   }
+  const selectedHost = host;
 
   return (
     <SettingsPage as="section" aria-label={copy.section}>
@@ -273,6 +300,7 @@ export function ProjectsSettingsPage(props: {
                                         if (!result.ok) throw new Error(result.reason);
                                       },
                                       copy.openFolderFailed,
+                                      { profileId: host.profileId },
                                     ),
                                 },
                               ]
@@ -295,9 +323,21 @@ export function ProjectsSettingsPage(props: {
                                   // Removing the default leaves the preference
                                   // pointing at nothing; clear it in the same
                                   // action rather than leaving a dangling id.
-                                  if (isDefault) await setDefault(undefined);
+                                  if (isDefault) {
+                                    try {
+                                      await setDefault(undefined);
+                                    } catch (error) {
+                                      if (mountedRef.current) {
+                                        toast.error(
+                                          copy.setDefaultFailed,
+                                          settingsActionErrorMessage(error, locale),
+                                        );
+                                      }
+                                    }
+                                  }
                                 },
                                 copy.actionFailed,
+                                { profileId: host.profileId },
                               ),
                           },
                         ]}
@@ -319,6 +359,7 @@ export function ProjectsSettingsPage(props: {
                     setRenamingId(null);
                   },
                   copy.renameFailed,
+                  { profileId: selectedHost.profileId },
                 );
               }
 

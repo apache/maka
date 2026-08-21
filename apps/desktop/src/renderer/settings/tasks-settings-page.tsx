@@ -128,7 +128,14 @@ export function TasksSettingsPage(props: ArchivedTasksBridge) {
           : outcome.firstError
             ? settingsActionErrorMessage(outcome.firstError, locale)
             : copy.purgeFailedBody(outcome.remaining.length);
-        toast.error(copy.purgeFailedTitle, kept ? `${reason} ${kept}` : reason);
+        toast.error(
+          copy.purgeFailedTitle,
+          kept ? `${reason} ${kept}` : reason,
+          undefined,
+          outcome.firstErrorSessionId
+            ? { sessionId: outcome.firstErrorSessionId }
+            : undefined,
+        );
       } else {
         toast.success(copy.purgedToast(outcome.removed), kept);
       }

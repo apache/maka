@@ -25,7 +25,7 @@ type ToastApi = {
     title: string,
     description?: string,
     diagnosticDetails?: string,
-    diagnosticTarget?: { sessionId: string },
+    diagnosticTarget?: { sessionId: string } | { profileId: string },
   ): void;
 };
 
@@ -56,6 +56,7 @@ export function createAppShellProjectActions(deps: {
   projects: readonly ProjectRecord[];
   projectCapabilities: DesktopProjectCapabilities;
   sessionId?: string;
+  defaultProfileId?: string;
   onProjectSelected(ownerSessionId?: string): void;
   toastApi: ToastApi;
 }): AppShellProjectActions {
@@ -70,13 +71,18 @@ export function createAppShellProjectActions(deps: {
     projects,
     projectCapabilities,
     sessionId,
+    defaultProfileId,
     onProjectSelected,
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).projectActions;
-  const diagnosticTarget = sessionId ? { sessionId } : undefined;
-  const showProjectError = (title: string, description?: string) => {
-    toastApi.error(title, description, undefined, diagnosticTarget);
+  const defaultDiagnosticTarget = defaultProfileId ? { profileId: defaultProfileId } : undefined;
+  const sessionDiagnosticTarget = sessionId ? { sessionId } : undefined;
+  const showDefaultProjectError = (title: string, description?: string) => {
+    toastApi.error(title, description, undefined, defaultDiagnosticTarget);
+  };
+  const showSessionProjectError = (title: string, description?: string) => {
+    toastApi.error(title, description, undefined, sessionDiagnosticTarget);
   };
 
   async function refreshProjects(): Promise<ProjectRecord[]> {
@@ -124,7 +130,7 @@ export function createAppShellProjectActions(deps: {
       return result.project;
     } catch (error) {
       if (isCurrentProjectPickerRequest()) {
-        showProjectError(
+        showDefaultProjectError(
           copy.selectDirectoryFailedTitle,
           localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
         );
@@ -144,7 +150,7 @@ export function createAppShellProjectActions(deps: {
       if (!project) return false;
       return await selectProjectRecord(project, true);
     } catch (error) {
-      showProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
+      showDefaultProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
       return false;
     }
   }
@@ -156,7 +162,7 @@ export function createAppShellProjectActions(deps: {
       await refreshProjects();
       onProjectSelected(sessionId);
     } catch (error) {
-      showProjectError(
+      showDefaultProjectError(
         copy.selectDirectoryFailedTitle,
         localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
       );
@@ -168,7 +174,7 @@ export function createAppShellProjectActions(deps: {
       const project = projects.find((candidate) => candidate.id === projectId);
       return project ? await selectProjectRecord(project, false) : false;
     } catch (error) {
-      showProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
+      showDefaultProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
       return false;
     }
   }
@@ -187,7 +193,7 @@ export function createAppShellProjectActions(deps: {
       }
       return await selectProjectRecord(project, false);
     } catch (error) {
-      showProjectError(
+      showDefaultProjectError(
         copy.selectDirectoryFailedTitle,
         localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
       );
@@ -204,7 +210,7 @@ export function createAppShellProjectActions(deps: {
       else await refreshProjects();
       return result.project;
     } catch (error) {
-      showProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
+      showDefaultProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
       return null;
     }
   }
@@ -214,7 +220,7 @@ export function createAppShellProjectActions(deps: {
       await window.maka.projects.rename(projectId, name);
       await refreshProjects();
     } catch (error) {
-      showProjectError(
+      showDefaultProjectError(
         copy.projectUpdateFailedTitle,
         localizedShellErrorMessage(error, copy.projectUpdateFailedFallback, uiLocale),
       );
@@ -226,7 +232,7 @@ export function createAppShellProjectActions(deps: {
       await window.maka.projects.archive(projectId);
       await refreshProjects();
     } catch (error) {
-      showProjectError(
+      showDefaultProjectError(
         copy.projectUpdateFailedTitle,
         localizedShellErrorMessage(error, copy.projectUpdateFailedFallback, uiLocale),
       );
@@ -238,7 +244,7 @@ export function createAppShellProjectActions(deps: {
       await window.maka.projects.restore(projectId);
       await refreshProjects();
     } catch (error) {
-      showProjectError(
+      showDefaultProjectError(
         copy.projectUpdateFailedTitle,
         localizedShellErrorMessage(error, copy.projectUpdateFailedFallback, uiLocale),
       );
@@ -249,13 +255,13 @@ export function createAppShellProjectActions(deps: {
     try {
       const result = await window.maka.app.openPath('skills');
       if (!result.ok) {
-        showProjectError(
+        showDefaultProjectError(
           copy.openFailedTitle(openPathActionLabel('skills', uiLocale)),
           openPathFailureCopy(result.reason, uiLocale),
         );
       }
     } catch (error) {
-      showProjectError(
+      showDefaultProjectError(
         copy.openFailedTitle(openPathActionLabel('skills', uiLocale)),
         openPathActionErrorMessage(error, 'skills', uiLocale),
       );
@@ -266,16 +272,16 @@ export function createAppShellProjectActions(deps: {
     try {
       const result = await window.maka.app.openPath('project', sessionId);
       if (!result.ok) {
-        showProjectError(
+        showSessionProjectError(
           copy.openFailedTitle(openPathActionLabel('project', uiLocale)),
           openPathFailureCopy(result.reason, uiLocale),
         );
       }
     } catch (error) {
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, diagnosticTarget);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, sessionDiagnosticTarget);
       } else {
-        showProjectError(
+        showSessionProjectError(
           copy.openFailedTitle(openPathActionLabel('project', uiLocale)),
           openPathActionErrorMessage(error, 'project', uiLocale),
         );
@@ -287,13 +293,13 @@ export function createAppShellProjectActions(deps: {
     try {
       const result = await window.maka.app.openPath('workspace');
       if (!result.ok) {
-        showProjectError(
+        showDefaultProjectError(
           copy.openFailedTitle(openPathActionLabel('workspace', uiLocale)),
           openPathFailureCopy(result.reason, uiLocale),
         );
       }
     } catch (error) {
-      showProjectError(
+      showDefaultProjectError(
         copy.openFailedTitle(openPathActionLabel('workspace', uiLocale)),
         openPathActionErrorMessage(error, 'workspace', uiLocale),
       );

@@ -141,7 +141,7 @@ export function ArtifactPane(props: {
           setRecordsSessionId(undefined);
           setRecords([]);
         } else {
-          toast.error(copy.pane.refreshFailed, message);
+          toast.error(copy.pane.refreshFailed, message, undefined, { sessionId });
         }
       }
     }
@@ -247,11 +247,21 @@ export function ArtifactPane(props: {
       const result = await window.maka.app.openArtifactPath(sessionId, artifactId);
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       if (!result.ok) {
-        toast.error(copy.pane.openFailed, openPathFailureCopy(result.reason, locale));
+        toast.error(
+          copy.pane.openFailed,
+          openPathFailureCopy(result.reason, locale),
+          undefined,
+          { sessionId: actionSessionId },
+        );
       }
     } catch (error) {
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
-      toast.error(copy.pane.openFailed, artifactActionErrorMessage(error, locale, copy));
+      toast.error(
+        copy.pane.openFailed,
+        artifactActionErrorMessage(error, locale, copy),
+        undefined,
+        { sessionId: actionSessionId },
+      );
     }
   }
 
@@ -262,13 +272,30 @@ export function ArtifactPane(props: {
     const record = activeRecords.find((entry) => entry.id === artifactId);
     if (!record || !isTextKind(record.kind)) return;
     const actionSessionId = sessionId;
+    let result: Awaited<ReturnType<typeof window.maka.artifacts.readText>>;
     try {
-      const result = await window.maka.artifacts.readText(sessionId, artifactId);
+      result = await window.maka.artifacts.readText(sessionId, artifactId);
+    } catch (error) {
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
-      if (!result.ok) {
-        toast.error(copy.pane.copyFailed, copy.pane.readTextFailed);
-        return;
-      }
+      toast.error(
+        copy.pane.copyFailed,
+        artifactActionErrorMessage(error, locale, copy),
+        undefined,
+        { sessionId: actionSessionId },
+      );
+      return;
+    }
+    if (!isArtifactActionSurfaceActive(actionSessionId)) return;
+    if (!result.ok) {
+      toast.error(
+        copy.pane.copyFailed,
+        copy.pane.readTextFailed,
+        undefined,
+        { sessionId: actionSessionId },
+      );
+      return;
+    }
+    try {
       await navigator.clipboard.writeText(result.text);
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
       toast.success(copy.pane.copied, `${record.name} · ${formatBytes(record.sizeBytes)}`);
@@ -289,10 +316,20 @@ export function ArtifactPane(props: {
         return;
       }
       if (result.reason === 'canceled') return;
-      toast.error(copy.pane.saveFailed, saveArtifactFailureCopy(result.reason, copy));
+      toast.error(
+        copy.pane.saveFailed,
+        saveArtifactFailureCopy(result.reason, copy),
+        undefined,
+        { sessionId: actionSessionId },
+      );
     } catch (error) {
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
-      toast.error(copy.pane.saveFailed, artifactActionErrorMessage(error, locale, copy));
+      toast.error(
+        copy.pane.saveFailed,
+        artifactActionErrorMessage(error, locale, copy),
+        undefined,
+        { sessionId: actionSessionId },
+      );
     }
   }
 
@@ -316,7 +353,12 @@ export function ArtifactPane(props: {
       toast.success(copy.pane.deleted(name));
     } catch (error) {
       if (!isArtifactActionSurfaceActive(actionSessionId)) return;
-      toast.error(copy.pane.deleteFailed(name), artifactActionErrorMessage(error, locale, copy));
+      toast.error(
+        copy.pane.deleteFailed(name),
+        artifactActionErrorMessage(error, locale, copy),
+        undefined,
+        { sessionId: actionSessionId },
+      );
     }
   }
 

@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
 import { type UiLocale } from '@maka/core/ui-locale';
-import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  useMountedRef,
+  useToast,
+  useUiLocale,
+  type ToastDiagnosticTarget,
+} from '@maka/ui';
 import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
@@ -90,6 +95,7 @@ export interface OAuthLoginFlowController {
 export function useOAuthLoginFlow(params: {
   bridge: OAuthLoginFlowBridge;
   display: OAuthLoginFlowDisplay;
+  diagnosticTarget: ToastDiagnosticTarget;
   // Fired after a successful completeAuthorization (browser handoff done).
   // The detail sheet uses it to re-probe hasSecret + reload connection status;
   // catalog modals use it to refresh both their account card and the shared
@@ -105,6 +111,8 @@ export function useOAuthLoginFlow(params: {
   const copy = getProviderSettingsCopy(locale).oauthFlow;
   const direct = params.direct;
   const toast = useToast();
+  const reportHostError = (title: string, description?: string) =>
+    toast.error(title, description, undefined, params.diagnosticTarget);
   const [state, setState] = useState<SubscriptionSnapshot | null>(null);
   const [authRequestId, setAuthRequestId] = useState<string | null>(null);
   const [stateHint, setStateHint] = useState<string | null>(null);
@@ -123,7 +131,7 @@ export function useOAuthLoginFlow(params: {
     } catch (error) {
       if (!oauthLoginFlowMountedRef.current) return false;
       const message = subscriptionActionErrorMessage(error, locale);
-      toast.error(copy.refreshFailed, message);
+      reportHostError(copy.refreshFailed, message);
       setErrorMessage(message);
       return false;
     }
@@ -160,14 +168,20 @@ export function useOAuthLoginFlow(params: {
         const result = await direct.login();
         if (!oauthLoginFlowMountedRef.current) return;
         if (!result.ok) {
-          toast.error(copy.accountActionFailed(display.name), subscriptionResultMessage(result.message, copy.loginFailedRetry, locale));
+          reportHostError(
+            copy.accountActionFailed(display.name),
+            subscriptionResultMessage(result.message, copy.loginFailedRetry, locale),
+          );
         }
         await refresh();
         if (!oauthLoginFlowMountedRef.current) return;
         if (result.ok && params.onLoginSuccess) await params.onLoginSuccess();
       } catch (error) {
         if (!oauthLoginFlowMountedRef.current) return;
-        toast.error(copy.accountActionFailed(display.name), subscriptionActionErrorMessage(error, locale));
+        reportHostError(
+          copy.accountActionFailed(display.name),
+          subscriptionActionErrorMessage(error, locale),
+        );
       } finally {
         finishPendingAction();
       }
@@ -178,7 +192,7 @@ export function useOAuthLoginFlow(params: {
       if ('ok' in payload) {
         if (!oauthLoginFlowMountedRef.current) return;
         const failureMessage = payload.ok ? copy.retry : subscriptionResultMessage(payload.message, copy.startFailedRetry, locale);
-        toast.error(copy.startFailed, failureMessage);
+        reportHostError(copy.startFailed, failureMessage);
         setErrorMessage(failureMessage);
         return;
       }
@@ -194,7 +208,7 @@ export function useOAuthLoginFlow(params: {
       if (!oauthLoginFlowMountedRef.current) return;
       if (!opened.ok) {
         const message = subscriptionResultMessage(opened.message, copy.openFailedRetry, locale);
-        toast.error(copy.openFailed, message);
+        reportHostError(copy.openFailed, message);
         setErrorMessage(message);
         void bridge.cancelAuthorization(payload.authRequestId);
         authRequestIdRef.current = null;
@@ -217,7 +231,7 @@ export function useOAuthLoginFlow(params: {
         if (params.onLoginSuccess) await params.onLoginSuccess();
       } else {
         const message = subscriptionResultMessage(result.message, copy.incompleteRetry, locale);
-        toast.error(copy.incomplete, message);
+        reportHostError(copy.incomplete, message);
         setErrorMessage(message);
       }
     } catch (error) {
@@ -228,7 +242,7 @@ export function useOAuthLoginFlow(params: {
       setAuthRequestId(null);
       setStateHint(null);
       const message = subscriptionActionErrorMessage(error, locale);
-      toast.error(copy.loginFailed, message);
+      reportHostError(copy.loginFailed, message);
       setErrorMessage(message);
     } finally {
       finishPendingAction();
@@ -259,16 +273,28 @@ export function useOAuthLoginFlow(params: {
         }
         await refresh();
       } else if (direct) {
-        toast.error(copy.accountActionFailed(display.name), subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale));
+        reportHostError(
+          copy.accountActionFailed(display.name),
+          subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale),
+        );
       } else {
-        toast.error(copy.logoutFailed, subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale));
+        reportHostError(
+          copy.logoutFailed,
+          subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale),
+        );
       }
     } catch (error) {
       if (!oauthLoginFlowMountedRef.current) return;
       if (direct) {
-        toast.error(copy.accountActionFailed(display.name), subscriptionActionErrorMessage(error, locale));
+        reportHostError(
+          copy.accountActionFailed(display.name),
+          subscriptionActionErrorMessage(error, locale),
+        );
       } else {
-        toast.error(copy.logoutFailed, subscriptionActionErrorMessage(error, locale));
+        reportHostError(
+          copy.logoutFailed,
+          subscriptionActionErrorMessage(error, locale),
+        );
       }
     } finally {
       finishPendingAction();
@@ -282,12 +308,18 @@ export function useOAuthLoginFlow(params: {
       const result = await direct.refreshTokens();
       if (!oauthLoginFlowMountedRef.current) return;
       if (!result.ok) {
-        toast.error(copy.accountActionFailed(display.name), subscriptionResultMessage(result.message, copy.reverifyFailedRetry, locale));
+        reportHostError(
+          copy.accountActionFailed(display.name),
+          subscriptionResultMessage(result.message, copy.reverifyFailedRetry, locale),
+        );
       }
       await refresh();
     } catch (error) {
       if (!oauthLoginFlowMountedRef.current) return;
-      toast.error(copy.accountActionFailed(display.name), subscriptionActionErrorMessage(error, locale));
+      reportHostError(
+        copy.accountActionFailed(display.name),
+        subscriptionActionErrorMessage(error, locale),
+      );
     } finally {
       finishPendingAction();
     }

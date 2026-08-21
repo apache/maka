@@ -189,9 +189,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       .catch((error) => {
         if (!isConnectionDetailCurrent(lifecycle)) return;
         setHasSecret('error');
-        toast.error(copy.credentialReadFailed, providerPanelActionErrorMessage(error, locale));
+        toast.error(
+          copy.credentialReadFailed,
+          providerPanelActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
+        );
       });
-  }, [props.bridge, connection.slug, probesCredential, toast]);
+  }, [props.bridge, connection.slug, host.profileId, probesCredential, toast]);
 
   useEffect(() => {
     const nextSnapshot = connectionDetailSnapshot(connection, defaults.baseUrl);
@@ -302,6 +307,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       toast.error(
         saved ? copy.refreshFailed : copy.saveFailed,
         providerPanelActionErrorMessage(error, locale),
+        undefined,
+        { profileId: host.profileId },
       );
       return saved;
     } finally {
@@ -336,6 +343,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       toast.error(
         saved ? copy.refreshFailed : copy.saveModelsFailed,
         providerPanelActionErrorMessage(error, locale),
+        undefined,
+        { profileId: host.profileId },
       );
     } finally {
       releaseSaveModels();
@@ -477,7 +486,12 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       return true;
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return false;
-      toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+      toast.error(
+        copy.saveFailed,
+        providerPanelActionErrorMessage(error, locale),
+        undefined,
+        { profileId: host.profileId },
+      );
       return false;
     } finally {
       releaseSave();
@@ -576,12 +590,19 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
             auth: copy.authTroubleshooting(credentialTroubleshootingCopy),
             recheck: copy.recheckTroubleshooting(credentialTroubleshootingCopy),
           }, locale),
+          undefined,
+          { profileId: host.profileId },
         );
       }
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       const message = providerPanelActionErrorMessage(error, locale);
-      toast.error(copy.connectionTestError(connection.name), message);
+      toast.error(
+        copy.connectionTestError(connection.name),
+        message,
+        undefined,
+        { profileId: host.profileId },
+      );
     } finally {
       releaseTest();
       if (isConnectionDetailCurrent(lifecycle)) setTesting(false);
@@ -621,11 +642,18 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // means whatever's on screen is not from the latest probe.
       if (!fetched && models.length === 0) setModelSource('fallback');
       if (fetched) {
-        toast.error(copy.refreshFailed, message);
+        toast.error(
+          copy.refreshFailed,
+          message,
+          undefined,
+          { profileId: host.profileId },
+        );
       } else {
         toast.error(
           copy.modelsFetchFailed(connection.name),
           copy.modelsFetchFailedDetail(message, credentialTroubleshootingCopy),
+          undefined,
+          { profileId: host.profileId },
         );
       }
     } finally {
@@ -664,6 +692,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       toast.error(
         deleted ? copy.refreshFailed : copy.deleteFailed,
         providerPanelActionErrorMessage(error, locale),
+        undefined,
+        { profileId: host.profileId },
       );
     } finally {
       releaseDelete();
@@ -683,7 +713,12 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       setHasSecret('error');
-      toast.error(copy.credentialReadFailed, providerPanelActionErrorMessage(error, locale));
+      toast.error(
+        copy.credentialReadFailed,
+        providerPanelActionErrorMessage(error, locale),
+        undefined,
+        { profileId: host.profileId },
+      );
     }
     await props.onChanged();
   }

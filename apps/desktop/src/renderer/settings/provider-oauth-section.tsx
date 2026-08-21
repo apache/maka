@@ -194,6 +194,7 @@ function SubscriptionLoginPanel(props: {
       host,
     ),
     display: { name: display.name, shortName: display.shortName },
+    diagnosticTarget: { profileId: host.profileId },
     onLoginSuccess: props.onLoginSuccess,
   });
 
@@ -243,6 +244,7 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
       logout: () => window.maka.githubCopilotSubscription.logout(host),
     } as OAuthLoginFlowBridge,
     display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
+    diagnosticTarget: { profileId: host.profileId },
     onLoginSuccess: props.onLoginSuccess,
     direct: {
       login: () => window.maka.githubCopilotSubscription.connectExistingLogin(host),

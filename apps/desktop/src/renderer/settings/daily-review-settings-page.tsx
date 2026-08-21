@@ -80,7 +80,12 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
       if (mountedRef.current && saveConfigGuard.current === key) setConfig(next);
     } catch (error) {
       if (mountedRef.current && saveConfigGuard.current === key) {
-        toast.error(copy.saveFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.saveFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
+        );
       }
     } finally {
       if (saveConfigGuard.current === key) saveConfigGuard.finish();

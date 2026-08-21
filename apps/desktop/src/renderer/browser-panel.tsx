@@ -141,7 +141,12 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
     const ownerSessionId = sessionId;
     void window.maka.browser.navigate(ownerSessionId, result.url).catch(() => {
       if (isBrowserPanelSessionCurrent(ownerSessionId)) {
-        toast.error(copy.navigationFailed, copy.navigationFailedDetail);
+        toast.error(
+          copy.navigationFailed,
+          copy.navigationFailedDetail,
+          undefined,
+          { sessionId: ownerSessionId },
+        );
       }
     });
   }, [address, copy, isBrowserPanelSessionCurrent, sessionId, toast]);

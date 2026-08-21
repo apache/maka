@@ -1901,6 +1901,9 @@ function AppShellContent({
     sessionCwd: activeSession?.cwd,
     sessionProjectId: activeSession?.projectId,
     sessionProfileKind: activeDesktopSession?.profileKind,
+    defaultProfileId: newTask.catalog.hosts.length > 0
+      ? newTask.catalog.defaultProfileId
+      : undefined,
     onProjectSelected: (ownerSessionId) => {
       void refreshSkills();
       void refreshManagedSkillSources();

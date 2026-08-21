@@ -70,6 +70,7 @@ export function ConnectionDetail(props: ConnectionDetailProps) {
 }
 
 function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
@@ -94,7 +95,12 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
       await props.onDeleted();
     } catch (error) {
       if (!mounted.current) return;
-      toast.error(copy.deleteFailed, providerPanelActionErrorMessage(error, locale));
+      toast.error(
+        copy.deleteFailed,
+        providerPanelActionErrorMessage(error, locale),
+        undefined,
+        { profileId: host.profileId },
+      );
     } finally {
       if (mounted.current) setDeleting(false);
     }
@@ -116,6 +122,7 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
 }
 
 function ConnectionDetailInner(props: ConnectionDetailProps) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
@@ -223,7 +230,12 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       })
       .catch((error) => {
         if (!current) return;
-        toast.error(copy.requestCustomizationInvalid, providerPanelActionErrorMessage(error, locale));
+        toast.error(
+          copy.requestCustomizationInvalid,
+          providerPanelActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
+        );
       });
     return () => {
       current = false;
@@ -256,7 +268,12 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       return true;
     } catch (error) {
       if (mounted.current) {
-        toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+        toast.error(
+          copy.saveFailed,
+          providerPanelActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
+        );
       }
       return false;
     } finally {
@@ -279,7 +296,12 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       return true;
     } catch (error) {
       if (mounted.current) {
-        toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+        toast.error(
+          copy.saveFailed,
+          providerPanelActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
+        );
       }
       return false;
     } finally {
@@ -852,13 +874,20 @@ function GitHubCopilotReloginNotice(props: {
     try {
       const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
       if (!result.ok) {
-        toast.error(copy.copilotImportFailed, result.message);
+        toast.error(copy.copilotImportFailed, result.message, undefined, {
+          profileId: host.profileId,
+        });
         return;
       }
       await props.onRelogin();
     } catch (error) {
       if (mountedRef.current) {
-        toast.error(copy.copilotImportFailed, providerPanelActionErrorMessage(error, locale));
+        toast.error(
+          copy.copilotImportFailed,
+          providerPanelActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
+        );
       }
     } finally {
       connectGuard.finish();
@@ -887,10 +916,12 @@ function OAuthReloginNotice(props: {
   hasSecret: CredentialPresenceStatus;
   onRelogin(): Promise<void>;
 }) {
+  const host = useRuntimeHostSettingsTarget();
   const copy = getProviderSettingsCopy(useUiLocale()).detail;
   const flow = useOAuthLoginFlow({
     bridge: props.service.bridge,
     display: props.service.display,
+    diagnosticTarget: { profileId: host.profileId },
     onLoginSuccess: props.onRelogin,
   });
   const { hasSecret } = props;

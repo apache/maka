@@ -3,7 +3,12 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
 type ToastApi = {
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
 };
 
 /**
@@ -41,6 +46,8 @@ export function useShellMemoryPill({
       toastApi.error(
         failureContext === 'load' ? copy.memoryLoadErrorTitle : copy.memoryRefreshErrorTitle,
         localizedShellErrorMessage(error, copy.memoryErrorFallback, uiLocale),
+        undefined,
+        sessionId ? { sessionId } : undefined,
       );
     }
   }

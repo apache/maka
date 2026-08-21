@@ -61,6 +61,60 @@ test('remote Project capabilities do not dispatch Client-local actions', async (
   }
 });
 
+test('Project errors preserve the Host authority of the failed operation', async () => {
+  const actionsModule = await importProjectActions();
+  const previousWindow = globalThis.window;
+  const diagnosticTargets: unknown[] = [];
+  globalThis.window = {
+    maka: {
+      app: {
+        openPath: async () => {
+          throw new Error('unavailable');
+        },
+      },
+    },
+  } as unknown as Window & typeof globalThis;
+
+  try {
+    const actions = actionsModule.createAppShellProjectActions({
+      uiLocale: 'en',
+      projectPickerPendingRef: { current: false },
+      projectPickerRequestRef: { current: 0 },
+      rendererMountedRef: { current: true },
+      setProjectPickerPending: () => {},
+      refreshDefaultProjectState: async () => [],
+      selectedProjectId: null,
+      projects: [],
+      projectCapabilities: {
+        chooseClientDirectory: false,
+        chooseHostDirectory: false,
+        selectNoProject: false,
+        setLocalDefault: false,
+        viewClientPath: false,
+      },
+      sessionId: 'session-key',
+      defaultProfileId: 'default-profile',
+      onProjectSelected: () => {},
+      toastApi: {
+        success: () => {},
+        error: (_title, _description, _details, target) => {
+          diagnosticTargets.push(target);
+        },
+      },
+    });
+
+    await actions.openWorkspaceFolder();
+    await actions.openProjectFolder();
+
+    assert.deepEqual(diagnosticTargets, [
+      { profileId: 'default-profile' },
+      { sessionId: 'session-key' },
+    ]);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
 async function importProjectActions(): Promise<typeof ProjectActions> {
   const outdir = await mkdtemp(resolve(REPO_ROOT, 'apps/desktop/dist/main/__tests__/project-actions-'));
   const outfile = resolve(outdir, 'app-shell-project-actions.mjs');

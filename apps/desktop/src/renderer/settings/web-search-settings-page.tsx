@@ -89,7 +89,12 @@ export function WebSearchSettingsPage(props: {
       return true;
     } catch (error) {
       if (webSearchMountedRef.current) {
-        toast.error(failureTitle, settingsActionErrorMessage(error, locale));
+        toast.error(
+          failureTitle,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
+        );
       }
       return false;
     }
@@ -164,11 +169,21 @@ export function WebSearchSettingsPage(props: {
       if (result.ok) {
         toast.success(copy.credentialValid, copy.resultCount(result.results.length));
       } else {
-        toast.error(copy.testFailed, copy.errors[result.reason]);
+        toast.error(
+          copy.testFailed,
+          copy.errors[result.reason],
+          undefined,
+          { profileId: host.profileId },
+        );
       }
     } catch (err) {
       if (webSearchMountedRef.current) {
-        toast.error(copy.testError, settingsActionErrorMessage(err, locale));
+        toast.error(
+          copy.testError,
+          settingsActionErrorMessage(err, locale),
+          undefined,
+          { profileId: host.profileId },
+        );
       }
     } finally {
       releaseTest();

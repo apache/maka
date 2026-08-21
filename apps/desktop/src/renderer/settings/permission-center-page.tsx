@@ -140,10 +140,22 @@ export function PermissionCenterPage() {
           setRefreshTick((tick) => tick + 1);
         }
       } else if (mountedRef.current) {
-        toast.error(copy.actionFailed, permissionActionFailureCopy(result.reason, result.message, copy));
+        toast.error(
+          copy.actionFailed,
+          permissionActionFailureCopy(result.reason, result.message, copy),
+          undefined,
+          { profileId: host.profileId },
+        );
       }
     } catch (err) {
-      if (mountedRef.current) toast.error(copy.actionFailed, settingsActionErrorMessage(err, locale));
+      if (mountedRef.current) {
+        toast.error(
+          copy.actionFailed,
+          settingsActionErrorMessage(err, locale),
+          undefined,
+          { profileId: host.profileId },
+        );
+      }
     } finally {
       if (permissionActionGuard.current === actionKey) {
         permissionActionGuard.finish();

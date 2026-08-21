@@ -152,6 +152,7 @@ describe('purgeSessions', () => {
       restored: [],
       verified: true,
       firstError: undefined,
+      firstErrorSessionId: undefined,
     });
     // Every delete in a sweep carries the archived premise the confirm named.
     assert.deepEqual(h.removeOptions, [
@@ -297,6 +298,7 @@ describe('purgeSessions', () => {
     assert.deepEqual(outcome.remaining, ['survivor']);
     assert.equal(outcome.removed, 1);
     assert.equal((outcome.firstError as Error).message, 'busy:committed');
+    assert.equal(outcome.firstErrorSessionId, 'committed');
   });
 
   it('claims nothing when the catalog cannot be read back', async () => {

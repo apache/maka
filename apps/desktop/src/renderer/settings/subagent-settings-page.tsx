@@ -61,6 +61,7 @@ import {
   type SubagentPageRoute,
 } from './subagent-preset-presentation.js';
 import { statusBadgeVariant } from './settings-status-badge.js';
+import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 /** How many characters a value spends on leading whitespace the store trims. */
 function leadingSpace(value: string): number {
@@ -79,6 +80,7 @@ export function SubagentSettingsPage(props: {
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
 }) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSubagentSettingsCopy(locale);
   const toast = useToast();
@@ -140,12 +142,22 @@ export function SubagentSettingsPage(props: {
         expectPresent !== undefined &&
         !result.settings.subagents.presets.some((candidate) => candidate.id === expectPresent)
       ) {
-        toast.error(copy.toast.saveFailed, copy.toast.rejected);
+        toast.error(
+          copy.toast.saveFailed,
+          copy.toast.rejected,
+          undefined,
+          { profileId: host.profileId },
+        );
         return false;
       }
       return true;
     } catch (error) {
-      toast.error(copy.toast.saveFailed, settingsActionErrorMessage(error, locale));
+      toast.error(
+        copy.toast.saveFailed,
+        settingsActionErrorMessage(error, locale),
+        undefined,
+        { profileId: host.profileId },
+      );
       return false;
     } finally {
       setSaving(false);
