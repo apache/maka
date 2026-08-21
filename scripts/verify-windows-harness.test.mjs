@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -13,6 +14,8 @@ import {
   waitForUsableRenderer,
 } from './verify-packaged-app.mjs';
 import {
+  completeInstalledApplicationUninstall,
+  listInstalledProcesses,
   terminateInstalledProcesses,
   waitForInstalledProcessAppearance,
   waitForInstalledProcessesToExit,
@@ -24,6 +27,9 @@ import {
 // real, and this file proves their contracts on every PR that touches them.
 
 const temporaryRoots = [];
+const delay = (milliseconds) =>
+  new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+
 async function makeTree(shape) {
   const root = await mkdtemp(join(tmpdir(), 'maka-harness-test-'));
   temporaryRoots.push(root);
@@ -144,11 +150,23 @@ describe('diffTreeManifests', () => {
 
 describe('runCommand', () => {
   it('kills the child and rejects when timeoutMs elapses', async () => {
+    const root = await makeTree({});
+    const sentinel = join(root, 'child-survived.txt');
     await assert.rejects(
       () =>
-        runCommand(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { timeoutMs: 300 }),
-      /did not finish within 300ms/,
+        runCommand(
+          process.execPath,
+          [
+            '-e',
+            "setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'leaked'), 600)",
+            sentinel,
+          ],
+          { timeoutMs: 100 },
+        ),
+      /did not finish within 100ms/,
     );
+    await delay(800);
+    await assert.rejects(() => access(sentinel), { code: 'ENOENT' });
   });
 
   it('resolves stdout for a completing command without a timeout', async () => {
@@ -215,6 +233,34 @@ describe('waitForUsableRenderer', () => {
     assert.ok(elapsed >= 700, `deadline respected: ${elapsed}`);
     assert.ok(elapsed < 30_000, `no runaway: ${elapsed}`);
   });
+
+  it('caps a half-open WebSocket probe to the remaining deadline budget', async () => {
+    const sockets = new Set();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+    });
+    await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise));
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const startedAt = Date.now();
+    try {
+      await assert.rejects(
+        () =>
+          waitForUsableRenderer(
+            `ws://127.0.0.1:${address.port}/devtools/page/hung`,
+            { exitCode: null },
+            { deadlineMs: 200, description: 'T' },
+          ),
+        /T did not become usable within 200ms/,
+      );
+      const elapsed = Date.now() - startedAt;
+      assert.ok(elapsed < 2_000, `inner probe exceeded the outer deadline budget: ${elapsed}`);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolvePromise) => server.close(resolvePromise));
+    }
+  });
 });
 
 describe('waitForInstalledProcessesToExit', () => {
@@ -239,6 +285,20 @@ describe('waitForInstalledProcessesToExit', () => {
         }),
       /Could not enumerate installed Maka processes within 200ms: wmi stalled/,
     );
+  });
+});
+
+describe('listInstalledProcesses', () => {
+  it('bounds a WMI round to ten seconds so polling can retry', async () => {
+    let observedTimeout;
+    const processes = await listInstalledProcesses('C:/nowhere', {
+      run: async (_command, _args, options) => {
+        observedTimeout = options.timeoutMs;
+        return { stdout: '', stderr: '' };
+      },
+    });
+    assert.deepEqual(processes, []);
+    assert.equal(observedTimeout, 10_000);
   });
 });
 
@@ -330,6 +390,57 @@ describe('terminateInstalledProcesses', () => {
         }),
       /exit code 1/,
     );
+  });
+
+  it('retries a transient enumeration failure before killing and proving exit', async () => {
+    const events = [];
+    let attempts = 0;
+    await terminateInstalledProcesses('C:/nowhere/installed', {
+      listProcesses: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('wmi stalled');
+        return [process7];
+      },
+      run: async () => {
+        events.push('kill');
+        return { stdout: '', stderr: '' };
+      },
+      waitForExit: async () => events.push('wait'),
+      pollIntervalMs: 1,
+    });
+    assert.equal(attempts, 2);
+    assert.deepEqual(events, ['kill', 'wait']);
+  });
+});
+
+describe('completeInstalledApplicationUninstall', () => {
+  it('runs the uninstaller and waits for both cleanup barriers in order', async () => {
+    const events = [];
+    await completeInstalledApplicationUninstall('C:/installed', 'C:/installed/uninstall.exe', {
+      requirePath: async () => events.push('access'),
+      run: async () => {
+        events.push('uninstall');
+        return { stdout: '', stderr: '' };
+      },
+      waitForMissing: async () => events.push('files-missing'),
+      waitForRegistration: async () => events.push('registration-clear'),
+    });
+    assert.deepEqual(events, ['access', 'uninstall', 'files-missing', 'registration-clear']);
+  });
+
+  it('still proves both barriers when a detached uninstaller is already gone', async () => {
+    const events = [];
+    await completeInstalledApplicationUninstall('C:/installed', 'C:/installed/uninstall.exe', {
+      requirePath: async () => {
+        const error = new Error('missing');
+        error.code = 'ENOENT';
+        throw error;
+      },
+      run: async () => assert.fail('a missing uninstaller must not be launched'),
+      waitForMissing: async () => events.push('files-missing'),
+      waitForRegistration: async () => events.push('registration-clear'),
+    });
+    assert.deepEqual(events, ['files-missing', 'registration-clear']);
   });
 });
 

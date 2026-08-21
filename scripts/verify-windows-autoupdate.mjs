@@ -15,13 +15,12 @@ import {
   stopChild,
 } from './verify-packaged-app.mjs';
 import {
+  completeInstalledApplicationUninstall,
   installerVersion,
   readUninstallDisplayVersions,
   terminateInstalledProcesses,
   waitForInstalledProcessAppearance,
   waitForInstalledProcessesToExit,
-  waitForUninstallRegistrationToClear,
-  waitUntilMissing,
 } from './verify-windows-installer-lifecycle.mjs';
 import {
   assertWindowsProductVersion,
@@ -546,14 +545,12 @@ export async function verifyWindowsAutoupdate(
     await waitForInstalledProcessesToExit(installDirectory);
 
     step('uninstalling the upgraded application');
-    await run(uninstaller, ['/S'], { timeoutMs: 120_000 });
-    await waitUntilMissing(installDirectory);
     // Files gone is not uninstall over: the detached uninstaller deletes the
     // uninstall registry keys as its last action, tens of seconds later on a
     // busy runner. Declaring success on files alone let the next verify step
     // install inside that window and lose its fresh registration to this
     // step's stale uninstaller (see waitForUninstallRegistrationToClear).
-    await waitForUninstallRegistrationToClear({ run });
+    await completeInstalledApplicationUninstall(installDirectory, uninstaller, { run });
     uninstallCompleted = true;
     step(`verified automatic update ${candidateVersion} -> ${nextVersion}`);
     return { candidateVersion, nextVersion, installDirectory };
@@ -589,8 +586,7 @@ export async function verifyWindowsAutoupdate(
       }
       if (exited) {
         try {
-          await access(uninstaller);
-          await run(uninstaller, ['/S'], { timeoutMs: 120_000 });
+          await completeInstalledApplicationUninstall(installDirectory, uninstaller, { run });
         } catch (error) {
           cleanupErrors.push(error);
         }

@@ -271,8 +271,8 @@ export const RENDERER_STATE_EXPRESSION = `({
   hasAppShell: Boolean(document.querySelector('#root [data-agents-page]'))
 })`;
 
-function evaluateRenderer(webSocketDebuggerUrl) {
-  return evaluateInRenderer(webSocketDebuggerUrl, RENDERER_STATE_EXPRESSION);
+function evaluateRenderer(webSocketDebuggerUrl, timeoutMs) {
+  return evaluateInRenderer(webSocketDebuggerUrl, RENDERER_STATE_EXPRESSION, { timeoutMs });
 }
 
 export function isPackagedRendererUsable(rendererState) {
@@ -304,7 +304,10 @@ export async function waitForUsableRenderer(
   let lastError;
   for (;;) {
     try {
-      state = await evaluateRenderer(webSocketDebuggerUrl);
+      state = await evaluateRenderer(
+        webSocketDebuggerUrl,
+        Math.max(1, Math.min(10_000, deadline - Date.now())),
+      );
       lastError = undefined;
       if (isPackagedRendererUsable(state)) return;
     } catch (error) {

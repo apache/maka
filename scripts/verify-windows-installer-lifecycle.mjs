@@ -8,6 +8,7 @@ import { powerShellLiteral, verifyPackagedWindowsApp } from './verify-windows-x6
 const uninstallExecutableName = 'Uninstall Maka.exe';
 const temporaryCleanupRetries = 20;
 const temporaryCleanupRetryDelayMs = 250;
+const pollingProbeTimeoutMs = 10_000;
 
 export function installerVersion(path) {
   const match = basename(path).match(/^Maka-(\d+\.\d+\.\d+)-win-x64\.exe$/u);
@@ -21,7 +22,10 @@ function delay(milliseconds) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
 
-export async function listInstalledProcesses(installDirectory, { run = runCommand } = {}) {
+export async function listInstalledProcesses(
+  installDirectory,
+  { run = runCommand, timeoutMs = pollingProbeTimeoutMs } = {},
+) {
   const root = `${resolve(installDirectory)}${sep}`;
   const script = String.raw`
 $root = [IO.Path]::GetFullPath(${powerShellLiteral(root)})
@@ -44,7 +48,7 @@ $matches | ConvertTo-Json -Compress
     'powershell',
     ['-NoProfile', '-NonInteractive', '-Command', script],
     {
-      timeoutMs: 30_000,
+      timeoutMs,
     },
   );
   if (!stdout.trim()) return [];
@@ -69,7 +73,9 @@ export async function waitForInstalledProcessesToExit(
     // polling and fail at the deadline, not pass or die on one hiccup.
     let processes;
     try {
-      processes = await listProcesses(installDirectory);
+      processes = await listProcesses(installDirectory, {
+        timeoutMs: remainingProbeBudget(deadline),
+      });
       lastProbeError = undefined;
     } catch (error) {
       lastProbeError = error;
@@ -115,7 +121,11 @@ export async function waitForInstalledProcessAppearance(
   let lastProbeError;
   for (;;) {
     try {
-      const matched = (await listProcesses(installDirectory)).filter(
+      const matched = (
+        await listProcesses(installDirectory, {
+          timeoutMs: remainingProbeBudget(deadline),
+        })
+      ).filter(
         (processInfo) => basename(processInfo.path).toLowerCase() === executableName.toLowerCase(),
       );
       lastProbeError = undefined;
@@ -150,9 +160,31 @@ export async function terminateInstalledProcesses(
     run = runCommand,
     listProcesses = listInstalledProcesses,
     waitForExit = waitForInstalledProcessesToExit,
+    enumerationTimeoutMs = 60_000,
+    pollIntervalMs = 1_000,
+    sleep = delay,
   } = {},
 ) {
-  const processes = await listProcesses(installDirectory);
+  const deadline = Date.now() + enumerationTimeoutMs;
+  const enumerate = (directory, options = {}) => listProcesses(directory, { run, ...options });
+  let processes;
+  for (;;) {
+    try {
+      processes = await enumerate(installDirectory, {
+        timeoutMs: remainingProbeBudget(deadline),
+      });
+      break;
+    } catch (error) {
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Could not enumerate installed Maka processes within ${enumerationTimeoutMs}ms: ` +
+            `${error.message}`,
+          { cause: error },
+        );
+      }
+      await sleep(pollIntervalMs);
+    }
+  }
   for (const processInfo of processes) {
     try {
       await run('taskkill', ['/PID', String(processInfo.processId), '/T', '/F'], {
@@ -165,7 +197,7 @@ export async function terminateInstalledProcesses(
       }
     }
   }
-  await waitForExit(installDirectory, { listProcesses });
+  await waitForExit(installDirectory, { listProcesses: enumerate });
 }
 
 export async function waitUntilMissing(
@@ -192,7 +224,10 @@ export async function waitUntilMissing(
  * with commas ('' when none). One PowerShell scan, shared by the harnesses
  * that assert on — or wait out — the uninstall registration.
  */
-export async function readUninstallDisplayVersions({ run = runCommand } = {}) {
+export async function readUninstallDisplayVersions({
+  run = runCommand,
+  timeoutMs = pollingProbeTimeoutMs,
+} = {}) {
   // electron-builder's default uninstallDisplayName is
   // "${productName} ${version}" (NsisTarget: UNINSTALL_DISPLAY_NAME), so the
   // registered DisplayName is "Maka 0.1.11", never the bare product name. The
@@ -212,7 +247,7 @@ $entries = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninst
     'powershell',
     ['-NoProfile', '-NonInteractive', '-Command', script],
     {
-      timeoutMs: 30_000,
+      timeoutMs,
     },
   );
   return stdout.trim();
@@ -248,7 +283,10 @@ export async function waitForUninstallRegistrationToClear({
     // end a wait that owns two minutes of budget.
     let versions;
     try {
-      versions = await readUninstallDisplayVersions({ run });
+      versions = await readUninstallDisplayVersions({
+        run,
+        timeoutMs: remainingProbeBudget(deadline),
+      });
       lastProbeError = undefined;
     } catch (error) {
       lastProbeError = error;
@@ -270,6 +308,34 @@ export async function waitForUninstallRegistrationToClear({
     }
     await delay(pollIntervalMs);
   }
+}
+
+export async function completeInstalledApplicationUninstall(
+  installDirectory,
+  uninstaller,
+  {
+    run = runCommand,
+    requirePath = access,
+    waitForMissing = waitUntilMissing,
+    waitForRegistration = waitForUninstallRegistrationToClear,
+  } = {},
+) {
+  let uninstallerExists = true;
+  try {
+    await requirePath(uninstaller);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    uninstallerExists = false;
+  }
+  if (uninstallerExists) {
+    await run(uninstaller, ['/S'], { timeoutMs: 120_000 });
+  }
+  await waitForMissing(installDirectory);
+  await waitForRegistration({ run });
+}
+
+function remainingProbeBudget(deadline) {
+  return Math.max(1, Math.min(pollingProbeTimeoutMs, deadline - Date.now()));
 }
 
 export async function verifyWindowsInstallerLifecycle(
@@ -345,13 +411,14 @@ export async function verifyWindowsInstallerLifecycle(
     await waitForProcessesToExit(installDirectory);
 
     console.log('[verify-windows-installer] uninstalling');
-    await run(uninstaller, ['/S'], { timeoutMs: 120_000 });
-    await waitForMissing(installDirectory);
     // The registration's disappearance, not the files', is the uninstall's
     // final action; the next verify step in this job installs immediately and
-    // must not race the detached uninstaller's DeleteRegKey (see
-    // waitForUninstallRegistrationToClear).
-    await waitForUninstallRegistrationToClear({ run });
+    // must not race the detached uninstaller's DeleteRegKey.
+    await completeInstalledApplicationUninstall(installDirectory, uninstaller, {
+      run,
+      requirePath,
+      waitForMissing,
+    });
     uninstallCompleted = true;
     console.log('[verify-windows-installer] lifecycle verified');
 
@@ -371,8 +438,11 @@ export async function verifyWindowsInstallerLifecycle(
       }
       if (installedProcessesExited) {
         try {
-          await requirePath(uninstaller);
-          await run(uninstaller, ['/S'], { timeoutMs: 120_000 });
+          await completeInstalledApplicationUninstall(installDirectory, uninstaller, {
+            run,
+            requirePath,
+            waitForMissing,
+          });
         } catch (error) {
           cleanupErrors.push(error);
         }
