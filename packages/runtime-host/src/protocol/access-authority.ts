@@ -72,7 +72,6 @@ export type AccessCredentialRevokeInput =
   | {
       readonly credentialId: string;
       readonly protectedCredentialId: string;
-      readonly expectedStatus: 'active' | 'pending';
     };
 
 export interface AccessCredentialRevokeResult {
@@ -210,19 +209,14 @@ function principalKind(value: unknown): AccessCredentialPrincipalKind {
 
 export function decodeAccessCredentialRevokeInput(value: unknown): AccessCredentialRevokeInput {
   const record = requireRecord(value, 'access credential revoke input');
-  if (Object.hasOwn(record, 'protectedCredentialId') || Object.hasOwn(record, 'expectedStatus')) {
+  if (Object.hasOwn(record, 'protectedCredentialId')) {
     const guarded = requireExactRecord(record, 'guarded access credential revoke input', [
       'credentialId',
       'protectedCredentialId',
-      'expectedStatus',
     ]);
-    if (guarded.expectedStatus !== 'active' && guarded.expectedStatus !== 'pending') {
-      throw invalidProtocolFrame('Invalid access credential expectedStatus');
-    }
     return {
       credentialId: requireId(guarded.credentialId, 'credentialId'),
       protectedCredentialId: requireId(guarded.protectedCredentialId, 'protectedCredentialId'),
-      expectedStatus: guarded.expectedStatus,
     };
   }
   const unguarded = requireExactRecord(record, 'access credential revoke input', ['credentialId']);

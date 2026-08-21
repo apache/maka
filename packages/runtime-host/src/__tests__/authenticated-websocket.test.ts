@@ -626,7 +626,7 @@ test('credential rotation preserves authority and cannot outlive its active sour
   }
 });
 
-test('guarded credential revocation rejects stale caller and target state', async () => {
+test('guarded credential revocation rejects a stale Desktop caller', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-guarded-revoke-'));
   const authority = await openRuntimeHostAccessAuthority(directory);
   try {
@@ -637,29 +637,18 @@ test('guarded credential revocation rejects stale caller and target state', asyn
       canPublishClientCapabilities: true,
       canUseHostPaths: false,
     });
-    const target = await authority.prepare({
+    const target = await authority.issue({
       principalKind: 'remote_owner',
       principalId: 'other-client',
       operationGrants: ['access.credential.finalize'],
       canPublishClientCapabilities: false,
       canUseHostPaths: false,
     });
-    await authority.finalize(target.credentialId);
-    await assert.rejects(
-      authority.revoke({
-        credentialId: target.credentialId,
-        protectedCredentialId: desktop.credentialId,
-        expectedStatus: 'pending',
-      }),
-      /changed before it could be revoked/u,
-    );
-
     await authority.revoke({ credentialId: desktop.credentialId });
     await assert.rejects(
       authority.revoke({
         credentialId: target.credentialId,
         protectedCredentialId: desktop.credentialId,
-        expectedStatus: 'active',
       }),
       /current Desktop credential is no longer active/u,
     );

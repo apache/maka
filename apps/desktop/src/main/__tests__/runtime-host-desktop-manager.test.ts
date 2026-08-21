@@ -463,6 +463,40 @@ test('defers pairing finalization when reconnect does not complete in time', asy
   await manager.close();
 });
 
+test('bounds an in-flight pairing finalization and preserves its unknown outcome', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remote = candidateHarness({
+    hostId: 'a'.repeat(64),
+    finalizeFailures: [
+      new RuntimeHostRequestInterruptedError(
+        'access.credential.finalize',
+        'command',
+        'dispatched',
+        'timeout',
+      ),
+    ],
+  });
+  let starts = 0;
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => ready(starts++ === 0 ? local.candidate : remote.candidate),
+      pairingFinalizationTimeoutMs: 25,
+    },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  await assert.rejects(
+    () => manager.finalizePairing('office'),
+    RuntimeHostPairingFinalizationInterruptedError,
+  );
+
+  assert.equal(remote.finalizeCalls, 1);
+  assert.equal(remote.finalizeTimeouts.length, 1);
+  assert.ok(remote.finalizeTimeouts[0]! > 0 && remote.finalizeTimeouts[0]! <= 25);
+  await manager.close();
+});
+
 test('coalesces concurrent enable requests for one remote profile', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
   const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
@@ -796,6 +830,7 @@ function candidateHarness(
   let lifecycleState: 'ready' | 'unavailable' = 'ready';
   let prepareUpgradeCalls = 0;
   let finalizeCalls = 0;
+  const finalizeTimeouts: number[] = [];
   const prepareUpgradeAuthorities: boolean[] = [];
   const candidate = {
     closed,
@@ -821,8 +856,9 @@ function candidateHarness(
         }
         return { kind: 'prepared' as const, pid: 42 };
       },
-      async finalizeAccessCredential() {
+      async finalizeAccessCredential(timeoutMs?: number) {
         finalizeCalls += 1;
+        if (timeoutMs !== undefined) finalizeTimeouts.push(timeoutMs);
         const failure = options.finalizeFailures?.shift();
         if (failure) {
           if (options.disconnectOnFinalizeFailure) {
@@ -873,6 +909,7 @@ function candidateHarness(
     get finalizeCalls() {
       return finalizeCalls;
     },
+    finalizeTimeouts,
   };
 }
 
