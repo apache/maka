@@ -48,6 +48,8 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
   };
   const principalId = 'desktop:original-installation';
   const replacement = 'maka_rh_replacement-secret';
+  let profileEnabled = true;
+  let prepareCalls = 0;
   let currentFingerprint = runtimeHostAccessCredentialFingerprint('maka_rh_current-secret');
   let credentials = [
     accessCredential('current', principalId, currentFingerprint),
@@ -70,6 +72,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
         service,
         state: 'active' as const,
         credentialFingerprint: currentFingerprint,
+        enabled: profileEnabled,
       }),
       rotateManagedCredential: async (_profileId, credential) => {
         assert.equal(credential, replacement);
@@ -85,6 +88,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
         return { schemaVersion: 1, kind: 'result', action: 'list', credentials };
       }
       if (input.action === 'prepare') {
+        prepareCalls += 1;
         assert.equal(input.currentCredentialFingerprint, currentFingerprint);
         const pending = {
           ...accessCredential(
@@ -138,6 +142,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
   const revoke = handlers.get('runtime-host-management:revoke-credential');
   assert.ok(list && rotate && revoke);
   const initial = await list({}, profile.id);
+  assert.equal((initial as { canRotate: boolean }).canRotate, true);
   assert.deepEqual(
     (initial as { credentials: { credentialId: string; isCurrentDesktop: boolean }[] }).credentials
       .map(({ credentialId, isCurrentDesktop }) => ({ credentialId, isCurrentDesktop })),
@@ -165,6 +170,13 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
       isCurrentDesktop: true,
     }],
   );
+  profileEnabled = false;
+  assert.equal((await list({}, profile.id) as { canRotate: boolean }).canRotate, false);
+  await assert.rejects(
+    rotate({}, profile.id) as Promise<unknown>,
+    /Enable this Runtime Host before rotating/u,
+  );
+  assert.equal(prepareCalls, 1);
 });
 
 test('manages only the service identity bound by Desktop onboarding', async () => {
