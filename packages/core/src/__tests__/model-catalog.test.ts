@@ -132,6 +132,27 @@ test('connection catalogs preserve user-choice provenance without inventing avai
   assert.deepEqual(entries[2]?.provenance.sources?.userChoice, ['session_model']);
 });
 
+test('catalog provenance follows the projected model facts marker used in production', () => {
+  const [entry] = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: 'facts',
+      providerType: 'openai',
+      defaultModel: 'custom-model',
+      models: [
+        {
+          id: 'custom-model',
+          contextWindow: 200_000,
+          capabilities: { chat: true },
+          factOverriddenFields: ['contextWindow', 'capabilities'],
+        },
+      ],
+      modelSource: 'fetched',
+    },
+  });
+  assert.equal(entry?.capabilitySource, 'user_override');
+  assert.equal(entry?.contextWindow, 200_000);
+});
+
 test('unknown persisted provider ids return an empty catalog', () => {
   assert.deepEqual(
     buildConnectionModelCatalogEntries({
@@ -173,4 +194,23 @@ test('Alibaba Token Plan catalogs the formal Qwen3.8 model instead of its retire
     assert.deepEqual(model?.modalities, { input: ['text', 'image', 'pdf'], output: ['text'] });
     assert.equal(model?.canUseAsChatDefault, true, providerType);
   }
+});
+
+test('saved model choices do not expose unrelated entries', () => {
+  const entries = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: 'zai-live',
+      providerType: 'zai-coding-plan',
+      defaultModel: 'glm-4.7',
+      models: [{ id: 'glm-4.7' }],
+      modelSource: 'fetched',
+    },
+    savedModelIds: [{ id: 'saved-custom', source: 'session_model' }],
+  });
+  const saved = entries.find((entry) => entry.id === 'saved-custom');
+  assert.equal(saved?.displayName, undefined);
+  assert.equal(
+    entries.some((entry) => entry.id === 'hidden'),
+    false,
+  );
 });

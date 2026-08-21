@@ -225,6 +225,8 @@ export interface ConnectionCatalogEntry extends ConnectionConfiguration {
   readonly modelSource?: ConnectionModelDiscoveryResult['source'];
   readonly modelsFetchedAt?: ConnectionModelDiscoveryResult['fetchedAt'];
   readonly lastTest?: ConnectionTestSummary;
+  /** Digest of the model-facts subset used when `lastTest` was recorded. */
+  readonly lastTestModelFactsFingerprint?: string;
 }
 
 export type ConnectionCatalogEntryDraft = ConnectionConfiguration;

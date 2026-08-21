@@ -976,6 +976,7 @@ describe('runtime policy stores', () => {
       );
 
       const fetch = await stores.operations.beginModelFetch(connection.connectionId);
+      await stores.modelFacts.replace({ 'openai:gpt-5': { apiProtocol: 'openai-responses' } });
       const testTicket = await stores.operations.beginConnectionTest(
         connection.connectionId,
         'gpt-5',
@@ -984,6 +985,7 @@ describe('runtime policy stores', () => {
       assert.equal(testTicket.kind, 'ready');
       if (fetch.kind !== 'ready' || testTicket.kind !== 'ready') return;
       assert.equal(testTicket.modelId, 'gpt-5');
+      assert.equal(testTicket.connection.models?.[0]?.apiProtocol, 'openai-responses');
       assert.equal(fetch.secretMaterial.connection?.secret, 'effect-secret');
 
       await assert.rejects(
@@ -1018,8 +1020,16 @@ describe('runtime policy stores', () => {
       if (discovered.kind !== 'committed') return;
       const afterDiscovery = discovered.snapshot.connections[0];
       assert.ok(afterDiscovery);
-      assert.deepEqual(afterDiscovery.models, [{ id: 'gpt-5.1' }, { id: 'gpt-5.2' }]);
-      assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5.1']);
+      assert.deepEqual(afterDiscovery.models, [
+        { id: 'gpt-5.1' },
+        { id: 'gpt-5.2' },
+        {
+          id: 'gpt-5',
+          apiProtocol: 'openai-responses',
+          factOverriddenFields: ['apiProtocol'],
+        },
+      ]);
+      assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5']);
       assert.equal(afterDiscovery.modelSource, 'fetched');
       assert.equal(afterDiscovery.modelsFetchedAt, 42);
 

@@ -301,6 +301,9 @@ export class ConnectionCatalogDocumentOwner {
     current: ConnectionCatalogDocument,
     expected: ConnectionVersionBasis,
     rawResult: ConnectionModelDiscoveryResult,
+    options?: {
+      readonly factBackedModelIds?: ReadonlySet<string>;
+    },
   ): Promise<ConnectionCatalogSnapshot> {
     const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
     if (result.models.length === 0) {
@@ -328,7 +331,10 @@ export class ConnectionCatalogDocumentOwner {
               hasModelInventory: previous.models.length > 0,
             },
             result.models,
-            { aliases: modelIdAliasesForProvider(previous.providerType) },
+            {
+              aliases: modelIdAliasesForProvider(previous.providerType),
+              factBackedModelIds: options?.factBackedModelIds,
+            },
           )
         : {
             defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0] ?? '',
@@ -497,6 +503,7 @@ export class ConnectionCatalogDocumentOwner {
     current: ConnectionCatalogDocument,
     expected: ConnectionVersionBasis,
     rawResult: ConnectionTestSummary,
+    modelFactsFingerprint: string,
   ): Promise<ConnectionCatalogSnapshot> {
     const result = decodeConnectionInput(() => decodeConnectionTestSummary(rawResult));
     const index = findConnectionIndex(current, expected);
@@ -508,6 +515,7 @@ export class ConnectionCatalogDocumentOwner {
       ...previous,
       revision: nextRevision(previous.revision),
       lastTest: result,
+      lastTestModelFactsFingerprint: modelFactsFingerprint,
     });
   }
 
@@ -522,7 +530,11 @@ export class ConnectionCatalogDocumentOwner {
       throw codecError('invalid_document', 'Coordinator admitted an unknown connection');
     }
     if (previous.lastTest === undefined) return false;
-    const { lastTest: _lastTest, ...withoutLastTest } = previous;
+    const {
+      lastTest: _lastTest,
+      lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
+      ...withoutLastTest
+    } = previous;
     await this.writePatchedResult(root, current, index, {
       ...withoutLastTest,
       revision: nextRevision(previous.revision),
@@ -537,7 +549,11 @@ export class ConnectionCatalogDocumentOwner {
     if (current.connections.every((connection) => connection.lastTest === undefined)) return false;
     const connections = current.connections.map((connection) => {
       if (connection.lastTest === undefined) return connection;
-      const { lastTest: _lastTest, ...withoutLastTest } = connection;
+      const {
+        lastTest: _lastTest,
+        lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
+        ...withoutLastTest
+      } = connection;
       return {
         ...withoutLastTest,
         revision: nextRevision(connection.revision),

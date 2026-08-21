@@ -14,6 +14,8 @@ import type {
   SetDefaultConnectionTargetInput,
   UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
+import type { ModelFactOverrides, ModelFactsDocument } from '@maka/core/model-facts';
+import type { ModelFactsReadResult } from './model-facts-store.js';
 import {
   assertStorageRootLease,
   runWithStorageRootLease,
@@ -89,6 +91,14 @@ export interface ConnectionCatalogWriter extends ConnectionCatalogReader {
   ): Promise<ConnectionCatalogMutationResult>;
 }
 
+export interface ModelFactsReader {
+  get(): Promise<ModelFactsReadResult>;
+}
+
+export interface ModelFactsWriter extends ModelFactsReader {
+  replace(overrides: ModelFactOverrides, expectedFingerprint?: string): Promise<ModelFactsDocument>;
+}
+
 export interface CredentialVaultReader {
   getSnapshot(): Promise<CredentialVaultSnapshot>;
   getStatus(locator: CredentialLocator): Promise<CredentialStatusQuery>;
@@ -105,6 +115,7 @@ export interface RuntimePolicyStoresReader {
   readonly [readerBrand]: true;
   readonly runtimePolicy: Readonly<RuntimePolicyReader>;
   readonly connectionCatalog: Readonly<ConnectionCatalogReader>;
+  readonly modelFacts: Readonly<ModelFactsReader>;
   readonly credentialVault: Readonly<CredentialVaultReader>;
 }
 
@@ -114,6 +125,7 @@ export interface RuntimePolicyStoresWriter {
   readonly [writerBrand]: true;
   readonly runtimePolicy: Readonly<RuntimePolicyWriter>;
   readonly connectionCatalog: Readonly<ConnectionCatalogWriter>;
+  readonly modelFacts: Readonly<ModelFactsWriter>;
   readonly credentialVault: Readonly<CredentialVaultWriter>;
   readonly operations: Readonly<OperationCoordinator>;
 }
@@ -145,6 +157,7 @@ export async function openInteractiveRuntimePolicyStoresForRead(
     [readerBrand]: true,
     runtimePolicy: { getSnapshot: () => coordinator.getPolicySnapshot() },
     connectionCatalog: { getSnapshot: () => coordinator.getCatalogSnapshot() },
+    modelFacts: { get: () => coordinator.getModelFacts() },
     credentialVault: {
       getSnapshot: () => coordinator.getVaultSnapshot(),
       getStatus: (locator) => coordinator.getCredentialStatus(locator),
@@ -201,6 +214,11 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       remove: (input) => coordinator.removeConnection(input),
       setDefaultTarget: (input) => coordinator.setDefaultTarget(input),
     },
+    modelFacts: {
+      get: () => coordinator.getModelFacts(),
+      replace: (overrides, expectedFingerprint) =>
+        coordinator.replaceModelFacts(overrides, expectedFingerprint),
+    },
     credentialVault: {
       getSnapshot: () => coordinator.getVaultSnapshot(),
       getStatus: (locator) => coordinator.getCredentialStatus(locator),
@@ -247,11 +265,13 @@ function invalidFacade(access: 'read' | 'write'): StorageRootAuthorityError {
 function freezeFacade(stores: {
   readonly runtimePolicy: object;
   readonly connectionCatalog: object;
+  readonly modelFacts: object;
   readonly credentialVault: object;
   readonly operations?: object;
 }): void {
   Object.freeze(stores.runtimePolicy);
   Object.freeze(stores.connectionCatalog);
+  Object.freeze(stores.modelFacts);
   Object.freeze(stores.credentialVault);
   if (stores.operations) Object.freeze(stores.operations);
   Object.freeze(stores);

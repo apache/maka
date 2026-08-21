@@ -139,6 +139,33 @@ test('model reconciliation never invents a default the user cleared', () => {
   );
 });
 
+test('model reconciliation preserves enabled model-fact overrides outside live inventory', () => {
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'custom-model',
+        enabledModelIds: ['custom-model'],
+        hasModelInventory: true,
+      },
+      [{ id: 'live-model' }],
+      { factBackedModelIds: new Set(['custom-model']) },
+    ),
+    { defaultModel: 'custom-model', enabledModelIds: ['custom-model'] },
+  );
+  assert.deepEqual(
+    reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: 'live-model',
+        enabledModelIds: ['live-model', 'custom-model'],
+        hasModelInventory: true,
+      },
+      [{ id: 'live-model' }, { id: 'other-live-model' }],
+      { factBackedModelIds: new Set(['custom-model']) },
+    ),
+    { defaultModel: 'live-model', enabledModelIds: ['live-model', 'custom-model'] },
+  );
+});
+
 test('a renamed id follows its model, and only for a caller that supplies the table', () => {
   const curated = [{ id: 'claude-opus-5' }, { id: 'claude-haiku-4-5' }];
   const stored = {
