@@ -47,40 +47,40 @@ test('does not render legacy zero cost as a known free Session', () => {
   assert.equal(estimatedSessionCost({ ...summary, totalCostUsd: 0.01 }), 0.01);
 });
 
-test('reports zero recorded requests with incomplete provenance as unavailable', () => {
-  assert.equal(
-    hasUnavailableSessionUsage({
-      range: { from: 0, to: 1 },
-      totalRequests: 0,
-      totalCostUsd: 0,
-      totalTokens: {
-        input: 0,
-        output: 0,
-        cacheMiss: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        reasoning: 0,
-        total: 0,
+test('reports incomplete provenance as unavailable regardless of recorded request count', () => {
+  const summary = {
+    range: { from: 0, to: 1 },
+    totalRequests: 0,
+    totalCostUsd: 0,
+    totalTokens: {
+      input: 0,
+      output: 0,
+      cacheMiss: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      reasoning: 0,
+      total: 0,
+    },
+    cacheHitRequests: 0,
+    cacheCreateRequests: 0,
+    errorRequests: 0,
+    provenance: {
+      coverage: {
+        attempts: 0,
+        pricedAttempts: 0,
+        unpricedAttempts: 0,
+        usageReportedAttempts: 0,
+        usagePartialAttempts: 0,
+        usageMissingAttempts: 0,
       },
-      cacheHitRequests: 0,
-      cacheCreateRequests: 0,
-      errorRequests: 0,
-      provenance: {
-        coverage: {
-          attempts: 0,
-          pricedAttempts: 0,
-          unpricedAttempts: 0,
-          usageReportedAttempts: 0,
-          usagePartialAttempts: 0,
-          usageMissingAttempts: 0,
-        },
-        legacyRecords: 0,
-        unreadableRecords: 1,
-        pendingRepairs: 0,
-      },
-    }),
-    true,
-  );
+      legacyRecords: 0,
+      unreadableRecords: 1,
+      pendingRepairs: 0,
+    },
+  };
+
+  assert.equal(hasUnavailableSessionUsage(summary), true);
+  assert.equal(hasUnavailableSessionUsage({ ...summary, totalRequests: 1 }), true);
 });
 
 test('does not estimate a cache-hit ratio from partial usage', () => {

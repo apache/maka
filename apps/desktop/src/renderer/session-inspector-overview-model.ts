@@ -139,10 +139,7 @@ export function estimatedSessionCost(
 export function hasUnavailableSessionUsage(
   summary: UsageSummaryV2 & { readonly provenance: UsageProvenance },
 ): boolean {
-  return (
-    summary.totalRequests === 0 &&
-    (summary.provenance.unreadableRecords > 0 || summary.provenance.pendingRepairs > 0)
-  );
+  return summary.provenance.unreadableRecords > 0 || summary.provenance.pendingRepairs > 0;
 }
 
 /**
