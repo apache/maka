@@ -77,21 +77,30 @@ test('unknown provider ids fail closed without breaking persisted connections', 
   assert.equal(providerAuthSupportsApiKey(unknown), false);
 });
 
-test('model reconciliation keeps live choices and repairs stale defaults', () => {
+test('a fetch never deletes a choice the user made', () => {
+  // Reconciliation used to intersect the selection with whatever the response
+  // listed. That deleted models the user had picked on every provider whose
+  // list is partial — filtered on arrival, lagging the account, or a shipped
+  // snapshot replayed by a provider with no model-list endpoint (#1584). One
+  // observation is not grounds for discarding a decision; the picker marks an
+  // id the provider stopped mentioning and unchecking it stays the user's
+  // call.
   assert.deepEqual(
     reconcileConnectionAfterModelFetch(
       { defaultModel: 'live', enabledModelIds: ['retired', 'live'] },
       [{ id: 'live' }, { id: 'other' }],
     ),
-    { defaultModel: 'live', enabledModelIds: ['live'] },
+    { defaultModel: 'live', enabledModelIds: ['live', 'retired'] },
   );
+  // A default absent from the response is not repaired onto another model
+  // either — silently switching which model answers is its own surprise.
   assert.deepEqual(
     reconcileConnectionAfterModelFetch({ defaultModel: 'retired', enabledModelIds: ['retired'] }, [
       { id: '  live  ' },
       { id: '' },
       { id: 'live' },
     ]),
-    { defaultModel: 'live', enabledModelIds: ['live'] },
+    { defaultModel: 'retired', enabledModelIds: ['retired'] },
   );
   assert.deepEqual(
     reconcileConnectionAfterModelFetch({ defaultModel: 'saved', enabledModelIds: ['saved'] }, []),
@@ -109,7 +118,7 @@ test('model reconciliation never invents a default the user cleared', () => {
       { defaultModel: '', enabledModelIds: ['kept', 'retired'], hasModelInventory: true },
       [{ id: 'kept' }, { id: 'fresh' }],
     ),
-    { defaultModel: '', enabledModelIds: ['kept'] },
+    { defaultModel: '', enabledModelIds: ['kept', 'retired'] },
   );
   // Same with nothing enabled at all.
   assert.deepEqual(
@@ -146,11 +155,12 @@ test('a renamed id follows its model, and only for a caller that supplies the ta
     enabledModelIds: ['claude-haiku-4-5-20251001'],
     hasModelInventory: true,
   };
-  // `claude-opus-5` leads the inventory, so without the table this falls through
-  // to the first live id — the two behaviours differ and the assertion can fail.
+  // Without the table the rename is invisible, so the stored id is left exactly
+  // as the user last set it — a fetch migrates ids it can prove were renamed
+  // and touches nothing else.
   assert.deepEqual(reconcileConnectionAfterModelFetch(stored, curated), {
-    defaultModel: 'claude-opus-5',
-    enabledModelIds: ['claude-opus-5'],
+    defaultModel: 'claude-haiku-4-5-20251001',
+    enabledModelIds: ['claude-haiku-4-5-20251001'],
   });
   assert.deepEqual(
     reconcileConnectionAfterModelFetch(stored, curated, {
@@ -201,6 +211,34 @@ test('the alias table is selected by provider and names only renames', () => {
     // A withdrawn model must be repaired against the live list, never rewritten.
     assert.notEqual(lookupModelMetadata('anthropic', renamed).lifecycle, 'deprecated');
   }
+});
+
+test('the model picker lists an enabled model a snapshot provider never listed', () => {
+  // Catalog projection reads `connection.models`, which for a provider without
+  // a model-list endpoint is the array this build shipped — recorded as
+  // `modelSource: 'fetched'`, because a discovery run did happen; it just had
+  // nothing to ask. Projecting the enabled ids as user choices is what keeps a
+  // model the user picked — one their Ark plan serves but Maka's snapshot
+  // predates — from vanishing out of every picker (#1584).
+  const choices = buildChatModelChoices([
+    {
+      slug: 'ark-plan',
+      name: 'Ark Agent Plan',
+      providerType: 'volcengine-agent-plan',
+      enabled: true,
+      defaultModel: 'doubao-seed-2.1-turbo',
+      enabledModelIds: ['doubao-seed-2.1-turbo', 'deepseek-v4-pro-beta'],
+      models: [{ id: 'doubao-seed-2.1-turbo' }],
+      modelSource: 'fetched',
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  ]);
+
+  assert.deepEqual(choices.map(({ model }) => model).sort(), [
+    'deepseek-v4-pro-beta',
+    'doubao-seed-2.1-turbo',
+  ]);
 });
 
 test('provider recognition does not resolve inherited object members', () => {

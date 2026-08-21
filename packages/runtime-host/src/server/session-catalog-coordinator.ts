@@ -1,5 +1,6 @@
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { createHash } from 'node:crypto';
+import { authorizeConnectionModel } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
@@ -62,7 +63,6 @@ import {
 } from '../protocol/index.js';
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
-import { resolveAdmittedConnectionModel } from './connection-model-admission.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
 
@@ -688,7 +688,7 @@ export class HostSessionCatalogCoordinator {
       );
     }
     const connection = readiness.connection;
-    const model = resolveAdmittedConnectionModel(connection, selected.modelId);
+    const model = authorizeConnectionModel(connection, selected.modelId);
     if (!model) {
       throw new SessionOperationFailure('invalid_request', 'Session model is not enabled');
     }

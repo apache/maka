@@ -216,7 +216,7 @@ async function fetchProviderModelsStrict(
       const models = providerObjectArray<RawProviderModel>(data.data, 'Anthropic models')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
-      return filterDiscoveredModels(models, discovery.filter, definition.fallbackModels);
+      return filterDiscoveredModels(models, discovery.filter);
     }
     case 'openai': {
       const r = await fetchForConnectionEffect(
@@ -254,7 +254,7 @@ async function fetchProviderModelsStrict(
         .filter((model) => discovery.filter !== 'language-models' || model.type === 'language')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
-      return filterDiscoveredModels(models, discovery.filter, definition.fallbackModels);
+      return filterDiscoveredModels(models, discovery.filter);
     }
     case 'google': {
       const r = await fetchForConnectionEffect(fetchFn, googleApiUrl(baseUrl, '/models', apiKey), {
@@ -610,17 +610,22 @@ async function fetchCohereModels(
   }
 }
 
+/**
+ * Provider-reported filters only. `tool-capable` and `language-models` keep
+ * what the provider itself said about each model; there is no filter that
+ * intersects a live response with the array this build shipped. Doing that
+ * made "the provider listed this" mean "this build has heard of it", so a
+ * model the account gained after release was dropped on arrival and could
+ * never be selected (#1584).
+ */
 function filterDiscoveredModels(
   models: ModelInfo[],
-  filter: 'fallback-models' | 'language-models' | 'tool-capable' | undefined,
-  fallbackModels: readonly string[],
+  filter: 'language-models' | 'tool-capable' | undefined,
 ): ModelInfo[] {
   if (filter === 'tool-capable') {
     return models.filter((model) => model.capabilities?.functionCalling === true);
   }
-  if (filter !== 'fallback-models') return models;
-  const supported = new Set(fallbackModels);
-  return models.filter((model) => supported.has(model.id));
+  return models;
 }
 
 function modelListUrl(

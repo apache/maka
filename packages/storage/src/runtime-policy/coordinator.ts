@@ -1408,10 +1408,12 @@ function isCanonicalConnectionTestModel(
   modelId: string,
 ): boolean {
   const basis = connectionTestModelBasis(connection);
-  const inCanonicalModels = basis.models.some((model) => model.id === modelId);
-  return basis.modelSource === 'fetched'
-    ? inCanonicalModels
-    : inCanonicalModels || basis.enabledModelIds.includes(modelId);
+  // Either source admits: testing a discovered model before enabling it is the
+  // point of the button, and the user's own selection is authorization no
+  // catalog overrules (#1584).
+  return (
+    basis.models.some((model) => model.id === modelId) || basis.enabledModelIds.includes(modelId)
+  );
 }
 
 function canonicalEffectiveEndpoint(connection: ConnectionCatalogEntry): string {

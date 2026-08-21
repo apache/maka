@@ -188,54 +188,65 @@ test('backend creation admits the enabled bootstrap DeepSeek model before discov
   await backend.dispose();
 });
 
-test('backend creation does not bypass a non-empty DeepSeek inventory', async () => {
+test('backend creation admits an enabled model a live list omits', async () => {
+  // A live list is the strongest observation Maka has and still cannot refuse
+  // on the account's behalf: it answers for the moment it was fetched, and a
+  // model added since then, or filtered out on the way in, is one the account
+  // may well serve. The request goes out and DeepSeek answers for itself
+  // (#1584).
   const modelId = 'deepseek-v4-flash';
-  await assert.rejects(
-    createHostAiSdkBackend(
-      backendCreationFixture({
-        abortSignal: new AbortController().signal,
-        modelId,
-        resolveExecutionConnection: async () => ({
-          kind: 'ready',
-          connection: {
-            slug: 'backend-creation-connection',
-            providerType: 'deepseek',
-            enabledModelIds: [modelId],
-            models: [{ id: 'deepseek-chat' }],
-          },
-          networkProxy: { enabled: false },
-          secretMaterial: { connection: { secret: API_KEY } },
-        }),
-        readPricing: async () => ({ revision: 0, overrides: [] }),
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      modelId,
+      resolveExecutionConnection: async () => ({
+        kind: 'ready',
+        connection: {
+          slug: 'backend-creation-connection',
+          providerType: 'deepseek',
+          enabledModelIds: [modelId],
+          models: [{ id: 'deepseek-chat' }],
+          modelSource: 'fetched' as const,
+        },
+        networkProxy: { enabled: false },
+        secretMaterial: { connection: { secret: API_KEY } },
       }),
-    ),
-    /Session model is not enabled/,
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    }),
   );
+
+  await backend.dispose();
 });
 
-test('backend creation does not treat aliased provider metadata as inventory', async () => {
+test('backend creation admits an enabled model a snapshot never listed', async () => {
+  // `opencode-free` has no model-list endpoint, so its discovery run replays
+  // the array this build shipped and records `modelSource: 'fallback'`. The
+  // user enabled this id; a release snapshot cannot rule on what an account
+  // serves (#1584). Until now the only id that could get through an absent
+  // inventory was a hardcoded `deepseek` / `deepseek-v4-flash` pair (#2896) —
+  // the same situation, conceded for one provider.
   const modelId = 'claude-opus-5';
-  await assert.rejects(
-    createHostAiSdkBackend(
-      backendCreationFixture({
-        abortSignal: new AbortController().signal,
-        modelId,
-        resolveExecutionConnection: async () => ({
-          kind: 'ready',
-          connection: {
-            slug: 'backend-creation-connection',
-            providerType: 'opencode-free',
-            enabledModelIds: [modelId],
-            models: [],
-          },
-          networkProxy: { enabled: false },
-          secretMaterial: {},
-        }),
-        readPricing: async () => ({ revision: 0, overrides: [] }),
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      modelId,
+      resolveExecutionConnection: async () => ({
+        kind: 'ready',
+        connection: {
+          slug: 'backend-creation-connection',
+          providerType: 'opencode-free',
+          enabledModelIds: [modelId],
+          models: [{ id: 'grok-code' }],
+          modelSource: 'fetched' as const,
+        },
+        networkProxy: { enabled: false },
+        secretMaterial: {},
       }),
-    ),
-    /Session model is not enabled/,
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    }),
   );
+
+  await backend.dispose();
 });
 
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {

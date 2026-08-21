@@ -308,12 +308,16 @@ describe('runtime policy stores', () => {
       });
       assert.equal(discovered.kind, 'committed');
       if (discovered.kind !== 'committed') return;
-      // Repaired against the live list like any other id, not migrated.
-      assert.deepEqual(discovered.snapshot.connections[0]?.enabledModelIds, ['claude-opus-5']);
+      // Left exactly as the user set it. A refresh migrates only ids it can
+      // prove were renamed, and a relay supplies no rename table — so neither
+      // `claude-opus-5` nor `claude-haiku-4-5` may replace this one.
+      assert.deepEqual(discovered.snapshot.connections[0]?.enabledModelIds, [
+        'claude-haiku-4-5-20251001',
+      ]);
     });
   });
 
-  test('a model refresh prunes profiles for models the inventory retired', async () => {
+  test('a model refresh keeps the selection, and an explicit change prunes it', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(stores, 0, {
         ...connectionDraft('refresh-relay', 'openai-compatible', 'Refresh Relay'),
@@ -338,10 +342,10 @@ describe('runtime policy stores', () => {
       });
       assert.equal(credential.kind, 'committed');
 
-      // The /models refresh drops model-a from the live inventory. The
-      // refresh write bypasses the canonical decoder — without pruning the
-      // table, model-a's profile would persist and every later canonical
-      // read would reject the document.
+      // The /models refresh no longer lists model-a. One response is not
+      // grounds for deleting a model the user picked (#1584), so the selection
+      // and its declaration both stand — and the subset invariant holds
+      // because neither side moved.
       const fetch = await stores.operations.beginModelFetch(connection.connectionId);
       assert.equal(fetch.kind, 'ready');
       if (fetch.kind !== 'ready') return;
@@ -353,12 +357,16 @@ describe('runtime policy stores', () => {
       assert.equal(discovered.kind, 'committed');
       if (discovered.kind !== 'committed') return;
       const after = discovered.snapshot.connections[0];
-      assert.deepEqual(after?.enabledModelIds, ['model-b']);
-      assert.deepEqual(after?.relayModelProfiles, { 'model-b': { contextWindow: 64_000 } });
+      assert.deepEqual(after?.enabledModelIds, ['model-a', 'model-b']);
+      assert.deepEqual(after?.relayModelProfiles, {
+        'model-a': { vision: true },
+        'model-b': { contextWindow: 64_000 },
+      });
 
-      // The document must survive a canonical reload: the next mutation
-      // re-decodes persisted state, and a stranding here would have raised
-      // invalid_document instead of committing.
+      // Unchecking model-a IS a decision, and the update path prunes its
+      // declaration with it. The document must also survive a canonical
+      // reload: the next mutation re-decodes persisted state, and a stranding
+      // here would have raised invalid_document instead of committing.
       const roundtrip = await stores.connectionCatalog.update({
         expected: connectionBasis(after!),
         changes: {
@@ -1400,7 +1408,9 @@ describe('runtime policy stores', () => {
       const afterDiscovery = discovered.snapshot.connections[0];
       assert.ok(afterDiscovery);
       assert.deepEqual(afterDiscovery.models, [{ id: 'gpt-5.1' }, { id: 'gpt-5.2' }]);
-      assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5.1']);
+      // Discovery records what the provider reported; it does not re-decide what
+      // the user enabled. `gpt-5` was chosen and stays chosen (#1584).
+      assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5']);
       assert.equal(afterDiscovery.modelSource, 'fetched');
       assert.equal(afterDiscovery.modelsFetchedAt, 42);
 
@@ -1426,7 +1436,7 @@ describe('runtime policy stores', () => {
     });
   });
 
-  test('repairs the canonical default target when discovery removes its model', async () => {
+  test('keeps the canonical default target when discovery stops listing its model', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(
         stores,
@@ -1449,7 +1459,11 @@ describe('runtime policy stores', () => {
       });
       assert.equal(completed.kind, 'committed');
       if (completed.kind !== 'committed') return;
-      const expected = { connectionId: connection.connectionId, modelId: 'llama3.3' };
+      // Silently pointing the workspace default at a different model is its own
+      // surprise, and the response that omitted `gpt-5` is one observation of
+      // an account it does not fully describe (#1584). The target stands; the
+      // picker marks it, and switching stays the user's decision.
+      const expected = { connectionId: connection.connectionId, modelId: 'gpt-5' };
       assert.deepEqual(completed.snapshot.defaultTarget, expected);
       assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, expected);
     });
@@ -1604,7 +1618,7 @@ describe('runtime policy stores', () => {
     });
   });
 
-  test('admits only canonical explicit connection test models', async () => {
+  test('admits a test model the user selected or the provider listed, and nothing else', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(
         stores,
@@ -1653,8 +1667,17 @@ describe('runtime policy stores', () => {
         ).kind,
         'ready',
       );
+      // Still selected, so still testable: discovery not mentioning `gpt-5`
+      // says something about that response, not about the account (#1584).
+      // Testing it is exactly how the user finds out which is true.
+      assert.equal(
+        (await stores.operations.beginConnectionTest(connection.connectionId, 'gpt-5')).kind,
+        'ready',
+      );
+      // An id from neither source is still refused — the gate rejects strings
+      // nobody chose and nobody reported, which is all it ever needed to do.
       await assert.rejects(
-        () => stores.operations.beginConnectionTest(connection.connectionId, 'gpt-5'),
+        () => stores.operations.beginConnectionTest(connection.connectionId, 'injected-model'),
         isStoreError('invalid_connection_input'),
       );
       assert.equal(

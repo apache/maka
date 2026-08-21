@@ -42,6 +42,15 @@ function generatedMetadataProviderType(providerType: ProviderType): ProviderType
   return GENERATED_METADATA_PROVIDER_ALIASES[providerType] ?? providerType;
 }
 
+/**
+ * Whether the bundled metadata describes this model at all. `lookupModelMetadata`
+ * answers "no" with an empty object, and callers were reading that sentinel by
+ * hand; the question they mean to ask is this one.
+ */
+export function hasModelMetadata(providerType: ProviderType, modelId: string): boolean {
+  return Object.keys(lookupModelMetadata(providerType, modelId)).length > 0;
+}
+
 export function lookupModelMetadata(providerType: ProviderType, modelId: string): ModelMetadata {
   const id = modelId.trim();
   const metadataProviderType = generatedMetadataProviderType(providerType);

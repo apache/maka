@@ -551,19 +551,31 @@ test('creation refuses a retired provider named explicitly', async () => {
   assert.equal(createAttempts, 0);
 });
 
-test('creation does not bypass a non-empty DeepSeek inventory', async () => {
-  const modelId = 'deepseek-v4-flash';
+test('creation admits an enabled model a snapshot provider never listed', async () => {
+  // `volcengine-agent-plan` has no model-list endpoint, so refresh replays the
+  // array this build shipped — and still records it as `fetched`. That
+  // snapshot cannot rule on what an Ark plan serves, so an id the user enabled
+  // must survive its absence; treating the snapshot as a live inventory is
+  // what dropped models the plan demonstrably serves (#1584).
+  const modelId = 'deepseek-v4-pro-beta';
   let createAttempts = 0;
   const fixture = createFixture({
     connection: {
-      providerType: 'deepseek',
+      providerType: 'volcengine-agent-plan',
       enabledModelIds: [modelId],
-      models: [{ id: 'deepseek-chat' }],
+      models: [{ id: 'doubao-seed-2.1-turbo' }],
+      modelSource: 'fetched' as const,
     },
     stores: {
-      createStableSession: async () => {
+      createStableSession: async (args) => {
         createAttempts += 1;
-        assert.fail('A model missing from a non-empty inventory must not be persisted');
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(
+            { ...sessionHeader(args.sessionId, ['user-label']), model: modelId },
+            1,
+          ),
+        };
       },
     },
   });
@@ -577,11 +589,46 @@ test('creation does not bypass a non-empty DeepSeek inventory', async () => {
     context,
   );
 
-  assert.deepEqual(outcome, {
-    ok: false,
-    error: { code: 'invalid_request', message: 'Session model is not enabled' },
+  assert.equal(outcome.ok, true);
+  assert.equal(createAttempts, 1);
+});
+
+test('creation admits an enabled model a live list omits', async () => {
+  // Same rule as execution: the user's selection authorizes, and a live list
+  // that has not caught up does not veto it (#1584).
+  const modelId = 'deepseek-v4-flash';
+  let createAttempts = 0;
+  const fixture = createFixture({
+    connection: {
+      providerType: 'deepseek',
+      enabledModelIds: [modelId],
+      models: [{ id: 'deepseek-chat' }],
+    },
+    stores: {
+      createStableSession: async (args) => {
+        createAttempts += 1;
+        return {
+          kind: 'existing' as const,
+          record: headerSnapshot(
+            { ...sessionHeader(args.sessionId, ['user-label']), model: modelId },
+            1,
+          ),
+        };
+      },
+    },
   });
-  assert.equal(createAttempts, 0);
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: modelId },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(createAttempts, 1);
 });
 
 test('creation on a relay connection without declarations still fails closed on any thinkingLevel', async () => {
@@ -1161,11 +1208,20 @@ function createFixture(
 }
 
 type FixtureConnection = {
-  readonly providerType?: 'claude-subscription' | 'deepseek' | 'openai' | 'openai-compatible';
+  readonly providerType?:
+    | 'claude-subscription'
+    | 'deepseek'
+    | 'openai'
+    | 'openai-compatible'
+    | 'volcengine-agent-plan';
   /** Lets a case exercise a resolver verdict other than `ready`. */
   readonly executionResolution?: ResolveExecutionConnectionResult;
   readonly enabledModelIds?: readonly string[];
   readonly models?: readonly { id: string }[];
+  // Mirrors what the codec allows: a non-empty inventory must carry a source,
+  // an empty one carries none — that is the row a connection has before its
+  // first discovery run.
+  readonly modelSource?: 'fetched' | 'fallback';
   readonly relayModelProfiles?: Readonly<Record<string, RelayModelProfile>>;
 };
 
@@ -1180,6 +1236,11 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
     enabled: true,
     enabledModelIds: overrides.enabledModelIds ?? ['model-1'],
     models: overrides.models ?? [{ id: 'model-1' }],
+    ...(overrides.modelSource
+      ? { modelSource: overrides.modelSource }
+      : (overrides.models ?? [{ id: 'model-1' }]).length > 0
+        ? { modelSource: 'fetched' as const }
+        : {}),
     ...(overrides.relayModelProfiles === undefined
       ? {}
       : { relayModelProfiles: overrides.relayModelProfiles }),
