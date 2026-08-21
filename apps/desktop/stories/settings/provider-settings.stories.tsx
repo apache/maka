@@ -330,7 +330,7 @@ function ProviderStoryFrame(props: {
               window's width and hides exactly the layout question a page-level
               form raises. */}
           <Layout
-            height="fill"
+            height="auto"
             padding={0}
             contentWidth={920}
             header={(
@@ -343,7 +343,7 @@ function ProviderStoryFrame(props: {
               </LayoutHeader>
             )}
             content={(
-              <LayoutContent padding={6}>
+              <LayoutContent padding={6} isScrollable={false}>
                 <SettingsPage className="settingsModelsPage">
                   <ProvidersPanel bridge={props.bridge} />
                 </SettingsPage>

@@ -674,7 +674,10 @@ export function SettingsSurface(props: {
             aria-label={copy.contentLabel}
           >
             <Layout
-              height="fill"
+              /* The rounded main pane owns page scrolling. Keeping scroll on
+                 the centered LayoutContent made the wide gutters inert and
+                 parked the scrollbar beside the 920px content column. */
+              height="auto"
               padding={0}
               /* One column width for EVERY section. Usage used to get 920
                  while the rest sat in a 640 column, so switching pages
@@ -709,7 +712,7 @@ export function SettingsSurface(props: {
                 </LayoutHeader>
               )}
               content={(
-                <LayoutContent padding={6}>
+                <LayoutContent padding={6} isScrollable={false}>
                   {loading ? (
                     <SettingsSkeleton />
                   ) : requiresRuntimeHost && runtimeHostContentStatus === 'error' ? (
