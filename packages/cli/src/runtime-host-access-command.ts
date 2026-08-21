@@ -274,15 +274,12 @@ export async function runRuntimeHostAccessRevokeCli(
     if (target?.credentialFingerprint === options.currentCredentialFingerprint) {
       throw new Error('Rotate this Desktop credential instead of revoking it');
     }
-    if (current && !target) {
-      throw new Error('The credential changed before it could be revoked');
-    }
     const result = await revokeRuntimeHostAccessCredential(
       options,
-      current && target
+      current
         ? {
-            credentialId: target.credentialId,
-            protectedCredentialId: current.credentialId,
+            credentialId: options.credentialId,
+            requiredActiveCredentialId: current.credentialId,
           }
         : undefined,
     );
@@ -334,7 +331,7 @@ function mutableCredentialMetadata(credentials: readonly RuntimeHostAccessCreden
 
 export async function revokeRuntimeHostAccessCredential(
   options: RuntimeHostAccessRevokeOptions,
-  guardedInput?: Extract<AccessCredentialRevokeInput, { protectedCredentialId: string }>,
+  guardedInput?: Extract<AccessCredentialRevokeInput, { requiredActiveCredentialId: string }>,
 ) {
   const connection = await connectLocalOwner(options.rootPath, options.expectedRootId);
   try {

@@ -71,7 +71,7 @@ export type AccessCredentialRevokeInput =
   | { readonly credentialId: string }
   | {
       readonly credentialId: string;
-      readonly protectedCredentialId: string;
+      readonly requiredActiveCredentialId: string;
     };
 
 export interface AccessCredentialRevokeResult {
@@ -209,14 +209,17 @@ function principalKind(value: unknown): AccessCredentialPrincipalKind {
 
 export function decodeAccessCredentialRevokeInput(value: unknown): AccessCredentialRevokeInput {
   const record = requireRecord(value, 'access credential revoke input');
-  if (Object.hasOwn(record, 'protectedCredentialId')) {
+  if (Object.hasOwn(record, 'requiredActiveCredentialId')) {
     const guarded = requireExactRecord(record, 'guarded access credential revoke input', [
       'credentialId',
-      'protectedCredentialId',
+      'requiredActiveCredentialId',
     ]);
     return {
       credentialId: requireId(guarded.credentialId, 'credentialId'),
-      protectedCredentialId: requireId(guarded.protectedCredentialId, 'protectedCredentialId'),
+      requiredActiveCredentialId: requireId(
+        guarded.requiredActiveCredentialId,
+        'requiredActiveCredentialId',
+      ),
     };
   }
   const unguarded = requireExactRecord(record, 'access credential revoke input', ['credentialId']);
