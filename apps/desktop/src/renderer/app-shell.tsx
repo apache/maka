@@ -278,16 +278,13 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
   const errorToastAction = useMemo<ToastErrorAction>(
     () => ({
       label: getShellCopy(uiLocale).errorBoundary.copyReport,
-      onClick: (input) => {
-        void window.maka.diagnostics.copyReport({
-            surface: 'toast',
-            title: input.title,
-            ...(input.description ? { description: input.description } : {}),
-            ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
-            ...(input.diagnosticTarget ? { execution: input.diagnosticTarget } : {}),
-          })
-          .catch(() => undefined);
-      },
+      onClick: (input) => window.maka.diagnostics.copyReport({
+        surface: 'toast',
+        title: input.title,
+        ...(input.description ? { description: input.description } : {}),
+        ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
+        ...(input.diagnosticTarget ? { execution: input.diagnosticTarget } : {}),
+      }),
     }),
     [uiLocale],
   );

@@ -52,6 +52,7 @@ test('formats one redacted Desktop and Runtime Host diagnostic report', () => {
     {
       surface: 'toast',
       title: 'Connection failed',
+      hostTarget: 'default',
       description: 'api_key=sk-secretvalue123',
       rendererLocale: 'en-US',
     },
@@ -74,6 +75,7 @@ test('bounds renderer diagnostic text and rejects unknown fields', () => {
   const input = parseDesktopDiagnosticInput({
     surface: 'toast',
     title: '🚀'.repeat(513),
+    hostTarget: 'default',
     description: 'x'.repeat(30 * 1024),
   });
 
@@ -82,32 +84,37 @@ test('bounds renderer diagnostic text and rejects unknown fields', () => {
   assert.ok(Buffer.byteLength(input.description ?? '') <= 24 * 1024);
   assert.match(input.title, /<diagnostic input truncated>$/);
   assert.throws(
-    () => parseDesktopDiagnosticInput({ surface: 'toast', title: 'error', extra: true }),
+    () => parseDesktopDiagnosticInput({
+      surface: 'toast',
+      title: 'error',
+      hostTarget: 'default',
+      extra: true,
+    }),
     /Invalid Desktop diagnostic input/,
   );
 });
 
-test('accepts only a Runtime Host policy and renderer context for manual capture', () => {
+test('accepts only a Runtime Host target and renderer context for capture', () => {
   assert.deepEqual(
     parseDesktopDiagnosticInput({
       surface: 'manual',
-      runtimeHost: { kind: 'default' },
+      hostTarget: 'default',
       rendererLocale: 'en-US',
     }),
     {
       surface: 'manual',
-      runtimeHost: { kind: 'default' },
+      hostTarget: 'default',
       rendererLocale: 'en-US',
     },
   );
   assert.deepEqual(
     parseDesktopDiagnosticInput({
       surface: 'manual',
-      runtimeHost: { kind: 'target', hostId: 'remote-host' },
+      hostTarget: 'task',
     }),
     {
       surface: 'manual',
-      runtimeHost: { kind: 'target', hostId: 'remote-host' },
+      hostTarget: 'task',
     },
   );
   assert.throws(
@@ -117,9 +124,9 @@ test('accepts only a Runtime Host policy and renderer context for manual capture
   assert.throws(
     () => parseDesktopDiagnosticInput({
       surface: 'manual',
-      runtimeHost: { kind: 'target', hostId: '' },
+      hostTarget: { kind: 'target', hostId: '' },
     }),
-    /Invalid Desktop diagnostic hostId/,
+    /Invalid Desktop diagnostic Runtime Host target/,
   );
 });
 
@@ -127,7 +134,7 @@ test('formats a manual capture without inventing an error', () => {
   const report = formatDesktopDiagnosticReport(
     {
       surface: 'manual',
-      runtimeHost: { kind: 'default' },
+      hostTarget: 'default',
       rendererLocale: 'en-US',
     },
     environment,
@@ -171,7 +178,7 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
   await handler(
     {} as never,
     { hostId: 'test-host', targetEpoch: 'test-target' },
-    { surface: 'toast', title: 'Host failed' },
+    { surface: 'toast', title: 'Host failed', hostTarget: 'task' },
   );
 
   assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
@@ -202,10 +209,89 @@ test('copies Desktop diagnostics while the scoped Host is reconnecting', async (
   await handler(
     {} as never,
     { hostId: 'test-host', targetEpoch: 'test-target' },
-    { surface: 'toast', title: 'Host reconnecting' },
+    { surface: 'toast', title: 'Host reconnecting', hostTarget: 'task' },
   );
   assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
   assert.match(clipboard, /Diagnostics unavailable: Runtime Host is reconnecting/);
+});
+
+test('copies error diagnostics when the default Runtime Host cannot be resolved', async () => {
+  type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+  const handlers = new Map<string, IpcHandler>();
+  let clipboard = '';
+  registerDesktopDiagnosticsIpc({
+    ipcMain: {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    environment: () => environment,
+    mainLogs: () => ['main remained available'],
+    resolveActiveRuntimeHost: () => {
+      throw new Error('The default Runtime Host is unavailable');
+    },
+    resolveRuntimeHost: () => {
+      throw new Error('Default capture must not resolve a task Host');
+    },
+    writeClipboard: (value) => {
+      clipboard = value;
+    },
+  });
+
+  const handler = handlers.get('diagnostics:copyReport');
+  assert.ok(handler);
+  await handler(
+    {} as never,
+    undefined,
+    { surface: 'renderer_crash', title: 'Renderer failed', hostTarget: 'default' },
+  );
+
+  assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
+  assert.match(clipboard, /Diagnostics unavailable: Runtime Host is reconnecting/);
+});
+
+test('copies task error diagnostics without Host evidence when its scope is unavailable', async () => {
+  type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+  const handlers = new Map<string, IpcHandler>();
+  let clipboard = '';
+  registerDesktopDiagnosticsIpc({
+    ipcMain: {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    environment: () => environment,
+    mainLogs: () => ['main remained available'],
+    resolveActiveRuntimeHost: () => {
+      throw new Error('Task capture must not fall back to the default Host');
+    },
+    resolveRuntimeHost: () => {
+      throw new Error('An unavailable task must not resolve a Host');
+    },
+    writeClipboard: (value) => {
+      clipboard = value;
+    },
+  });
+
+  const handler = handlers.get('diagnostics:copyReport');
+  assert.ok(handler);
+  await handler(
+    {} as never,
+    undefined,
+    {
+      surface: 'toast',
+      title: 'Task failed',
+      hostTarget: 'task',
+      execution: { sessionId: 'session-1', turnId: 'turn-1', eventId: 'event-1' },
+    },
+  );
+
+  assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
+  assert.match(
+    clipboard,
+    /Diagnostics unavailable: Runtime Host for this task is unavailable/,
+  );
+  assert.match(clipboard, /Execution evidence unavailable: not queried/);
 });
 
 test('copies bounded evidence for the exact failed Turn', async () => {
@@ -291,6 +377,7 @@ test('copies bounded evidence for the exact failed Turn', async () => {
     {
       surface: 'toast',
       title: 'Conversation error',
+      hostTarget: 'task',
       execution: { sessionId: 'session-1', turnId: 'turn-1', eventId: 'event-1' },
     },
   );
@@ -343,6 +430,7 @@ test('keeps every diagnostic read bound to the scoped Host during a switch', asy
     {
       surface: 'toast',
       title: 'Conversation error',
+      hostTarget: 'task',
       execution: {
         sessionId: 'shared-session',
         turnId: 'shared-turn',
@@ -385,7 +473,7 @@ test('copies manual Desktop diagnostics without an active Runtime Host', async (
     undefined,
     {
       surface: 'manual',
-      runtimeHost: { kind: 'default' },
+      hostTarget: 'default',
       rendererLocale: 'en-US',
     },
   );
@@ -431,7 +519,7 @@ test('copies diagnostics from the Runtime Host that owns the current task', asyn
     { hostId: 'remote-host', targetEpoch: 'remote-target' },
     {
       surface: 'manual',
-      runtimeHost: { kind: 'target', hostId: 'remote-host' },
+      hostTarget: 'task',
     },
   );
   assert.match(clipboard, /Recent Runtime Host logs \(1\)\nremote task host log/);
@@ -467,7 +555,7 @@ test('keeps targeted manual capture Desktop-only when the task Host is unavailab
     undefined,
     {
       surface: 'manual',
-      runtimeHost: { kind: 'unavailable' },
+      hostTarget: 'task',
     },
   );
   assert.match(
@@ -479,7 +567,7 @@ test('keeps targeted manual capture Desktop-only when the task Host is unavailab
     { hostId: 'remote-host', targetEpoch: 'stale-target' },
     {
       surface: 'manual',
-      runtimeHost: { kind: 'target', hostId: 'remote-host' },
+      hostTarget: 'task',
     },
   );
   assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
@@ -489,7 +577,7 @@ test('keeps targeted manual capture Desktop-only when the task Host is unavailab
   );
 });
 
-test('rejects a manual diagnostic scope from a different task Host', async () => {
+test('rejects a default diagnostic request that carries a task Host scope', async () => {
   type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
   const handlers = new Map<string, IpcHandler>();
   registerDesktopDiagnosticsIpc({
@@ -502,10 +590,10 @@ test('rejects a manual diagnostic scope from a different task Host', async () =>
     mainLogs: () => [],
     resolveActiveRuntimeHost: () => undefined,
     resolveRuntimeHost: () => {
-      throw new Error('Mismatched scope must be rejected before Host resolution');
+      throw new Error('Default capture must be rejected before Host resolution');
     },
     writeClipboard() {
-      throw new Error('Mismatched scope must be rejected before clipboard output');
+      throw new Error('Default capture must be rejected before clipboard output');
     },
   });
 
@@ -517,10 +605,10 @@ test('rejects a manual diagnostic scope from a different task Host', async () =>
       { hostId: 'default-host', targetEpoch: 'default-target' },
       {
         surface: 'manual',
-        runtimeHost: { kind: 'target', hostId: 'remote-host' },
+        hostTarget: 'default',
       },
     ),
-    /Desktop diagnostic target belongs to a different Runtime Host/,
+    /Default Desktop diagnostics must not carry a Host scope/,
   );
 });
 
@@ -548,7 +636,7 @@ test('rejects the copy request when the main-process clipboard write fails', asy
     handler(
       {} as never,
       undefined,
-      { surface: 'manual', runtimeHost: { kind: 'default' } },
+      { surface: 'manual', hostTarget: 'default' },
     ),
     /System clipboard unavailable/,
   );

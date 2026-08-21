@@ -39,14 +39,14 @@ export type ToastVariant = 'info' | 'success' | 'warning' | 'error';
 
 export interface ToastAction {
   label: string;
-  onClick(): void;
+  onClick(): void | Promise<void>;
 }
 
 export interface ToastErrorAction {
   label: string;
   onClick(
     input: Pick<ToastInput, 'title' | 'description' | 'diagnosticDetails' | 'diagnosticTarget'>,
-  ): void;
+  ): Promise<void>;
 }
 
 export interface ToastDiagnosticTarget {
@@ -149,8 +149,19 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
                 size="sm"
                 label={action.label}
                 onClick={() => {
-                  action.onClick();
-                  dismissCurrent?.();
+                  try {
+                    const pending = action.onClick();
+                    if (!pending) {
+                      dismissCurrent?.();
+                      return;
+                    }
+                    void pending.then(
+                      () => dismissCurrent?.(),
+                      () => undefined,
+                    );
+                  } catch {
+                    // Keep the toast visible so the user can retry the action.
+                  }
                 }}
               />
             ))}

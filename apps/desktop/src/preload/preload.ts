@@ -49,8 +49,8 @@ import {
 } from './transcript-contract.js';
 import type {
   DesktopDiagnosticInput,
+  DesktopDiagnosticHostTarget,
   DesktopErrorDiagnosticWireInput,
-  DesktopManualDiagnosticRuntimeHost,
   DesktopManualDiagnosticTarget,
   DesktopManualDiagnosticWireInput,
 } from './diagnostics-contract.js';
@@ -305,8 +305,8 @@ async function runtimeHostSessionRef(sessionId: string): Promise<{
   return { scope, sessionId: ref.sessionId };
 }
 
-type ManualDiagnosticRuntimeHostResolution = {
-  readonly runtimeHost: DesktopManualDiagnosticRuntimeHost;
+type DiagnosticRuntimeHostResolution = {
+  readonly hostTarget: DesktopDiagnosticHostTarget;
   readonly scope?: DesktopTargetScope;
 };
 
@@ -316,21 +316,25 @@ type ManualDiagnosticHostSelector =
 
 async function resolveManualDiagnosticRuntimeHost(
   value: DesktopManualDiagnosticTarget | undefined,
-): Promise<ManualDiagnosticRuntimeHostResolution> {
-  if (value === undefined) return { runtimeHost: { kind: 'default' } };
+): Promise<DiagnosticRuntimeHostResolution> {
+  if (value === undefined) return { hostTarget: 'default' };
   const selector = parseManualDiagnosticTarget(value);
+  return resolveTaskDiagnosticRuntimeHost(selector);
+}
+
+async function resolveTaskDiagnosticRuntimeHost(
+  selector: ManualDiagnosticHostSelector,
+): Promise<DiagnosticRuntimeHostResolution> {
   try {
     await runtimeHostScopeList();
   } catch {
-    return { runtimeHost: { kind: 'unavailable' } };
+    return { hostTarget: 'task' };
   }
   const hostId = selector.kind === 'host'
     ? selector.hostId
     : runtimeHostProfiles.get(selector.profileId);
   const scope = hostId ? runtimeHostScopes.get(hostId) : undefined;
-  return scope
-    ? { runtimeHost: { kind: 'target', hostId: scope.hostId }, scope }
-    : { runtimeHost: { kind: 'unavailable' } };
+  return { hostTarget: 'task', ...(scope ? { scope } : {}) };
 }
 
 function parseManualDiagnosticTarget(value: unknown): ManualDiagnosticHostSelector {
@@ -2671,7 +2675,7 @@ const makaBridge = {
         const resolution = await resolveManualDiagnosticRuntimeHost(target);
         const wireInput: DesktopManualDiagnosticWireInput = {
           ...manualInput,
-          runtimeHost: resolution.runtimeHost,
+          hostTarget: resolution.hostTarget,
           ...rendererContext,
         };
         await ipcRenderer.invoke(
@@ -2681,16 +2685,28 @@ const makaBridge = {
         );
         return;
       }
-      const wireInput: DesktopErrorDiagnosticWireInput = { ...input, ...rendererContext };
-      if (!input.execution) {
-        await invokeActiveRuntimeHost('diagnostics:copyReport', wireInput);
+      const { execution, ...errorInput } = input;
+      if (!execution) {
+        const wireInput: DesktopErrorDiagnosticWireInput = {
+          ...errorInput,
+          hostTarget: 'default',
+          ...rendererContext,
+        };
+        await ipcRenderer.invoke('diagnostics:copyReport', undefined, wireInput);
         return;
       }
-      const session = await runtimeHostSessionRef(input.execution.sessionId);
-      await ipcRenderer.invoke('diagnostics:copyReport', session.scope, {
-        ...wireInput,
-        execution: { ...input.execution, sessionId: session.sessionId },
+      const session = parseDesktopSessionKey(execution.sessionId);
+      const resolution = await resolveTaskDiagnosticRuntimeHost({
+        kind: 'host',
+        hostId: session.hostId,
       });
+      const wireInput: DesktopErrorDiagnosticWireInput = {
+        ...errorInput,
+        hostTarget: resolution.hostTarget,
+        ...rendererContext,
+        execution: { ...execution, sessionId: session.sessionId },
+      };
+      await ipcRenderer.invoke('diagnostics:copyReport', resolution.scope, wireInput);
     },
   },
   workspace: {

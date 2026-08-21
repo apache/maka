@@ -34,18 +34,17 @@ export interface DesktopErrorDiagnosticInput {
 
 export type DesktopDiagnosticInput = DesktopManualDiagnosticInput | DesktopErrorDiagnosticInput;
 
-export type DesktopManualDiagnosticRuntimeHost =
-  | { readonly kind: 'default' }
-  | { readonly kind: 'target'; readonly hostId: string }
-  | { readonly kind: 'unavailable' };
+export type DesktopDiagnosticHostTarget = 'default' | 'task';
 
 export type DesktopManualDiagnosticWireInput = Omit<DesktopManualDiagnosticInput, 'target'> &
   DesktopDiagnosticRendererContext & {
-    readonly runtimeHost: DesktopManualDiagnosticRuntimeHost;
+    readonly hostTarget: DesktopDiagnosticHostTarget;
   };
 
 export type DesktopErrorDiagnosticWireInput = DesktopErrorDiagnosticInput &
-  DesktopDiagnosticRendererContext;
+  DesktopDiagnosticRendererContext & {
+    readonly hostTarget: DesktopDiagnosticHostTarget;
+  };
 
 export type DesktopDiagnosticWireInput =
   | DesktopManualDiagnosticWireInput
