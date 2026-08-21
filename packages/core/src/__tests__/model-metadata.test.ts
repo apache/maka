@@ -3,11 +3,43 @@ import { describe, it } from 'node:test';
 import {
   lookupModelMetadata,
   openAiAdapterApiProtocol,
+  resolveModelInputModalities,
   resolveModelVisionSupport,
 } from '../model-metadata.js';
 import type { ModelInfo, ProviderType } from '../llm-connections.js';
 
 describe('model-metadata vision capability', () => {
+  it('recognizes the DeepSeek V4 vision model from a bare discovered id', () => {
+    const modelId = 'deepseek-v4-flash-vision-exp';
+    const discovered: ModelInfo[] = [{ id: modelId }];
+    const metadata = lookupModelMetadata('deepseek', modelId);
+
+    assert.equal(metadata.displayName, 'DeepSeek-V4-Flash-Vision-Exp');
+    assert.equal(
+      metadata.description,
+      'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
+    );
+    assert.equal(metadata.docsUrl, 'https://api-docs.deepseek.com/guides/vision/');
+    assert.equal(metadata.contextWindow, 1_000_000);
+    assert.equal(metadata.maxOutputTokens, 384_000);
+    assert.equal(metadata.structuredOutput, true);
+    assert.equal(metadata.lastUpdated, '2026-08-21');
+    assert.deepEqual(metadata.thinkingOptions, {
+      efforts: ['low', 'high', 'max'],
+      toggle: true,
+    });
+    assert.equal(metadata.capabilities?.vision, true);
+    assert.deepEqual(resolveModelInputModalities('deepseek', discovered, modelId), [
+      'text',
+      'image',
+    ]);
+    assert.equal(resolveModelVisionSupport('deepseek', discovered, modelId), true);
+    assert.equal(
+      resolveModelVisionSupport('deepseek', [{ id: 'deepseek-v4-flash' }], 'deepseek-v4-flash'),
+      false,
+    );
+  });
+
   it('treats a Claude newer than the generated snapshot as able to read images', () => {
     assert.deepEqual(lookupModelMetadata('anthropic', 'claude-opus-6'), {});
     assert.equal(resolveModelVisionSupport('anthropic', undefined, 'claude-opus-6'), true);
