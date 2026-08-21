@@ -8,6 +8,7 @@ import type { SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { formatDailyReviewMarkdown } from "@maka/ui";
 import type { DailyReviewMarkdownActionInput, NavSelection } from "@maka/ui";
+import type { DesktopManualDiagnosticTarget } from '../preload/diagnostics-contract.js';
 import {
   buildCommandList,
   buildSessionCommands,
@@ -54,6 +55,7 @@ export interface AppShellCommandListOptions {
   defaultConnection: string | null;
   dailyReviewBridge: DailyReviewBridge;
   messages: StoredMessage[];
+  newTaskProfileId: string | undefined;
   sessions: SessionSummary[];
   themePref: ThemePreference;
   visibleSessions: SessionSummary[];
@@ -79,6 +81,17 @@ export interface AppShellCommandListOptions {
   setPermissionMode: (mode: PermissionMode) => Promise<void>;
   setThemePref: (themePref: ThemePreference) => void;
   toastApi: ToastApi;
+}
+
+export function resolveManualDiagnosticTarget(
+  owner: Pick<ComposerImportOwner, 'navSection' | 'sessionId'>,
+  newTaskProfileId: string | undefined,
+): DesktopManualDiagnosticTarget | undefined {
+  if (owner.navSection !== 'sessions') return undefined;
+  if (owner.sessionId) return { kind: 'session', sessionId: owner.sessionId };
+  return newTaskProfileId
+    ? { kind: 'profile', profileId: newTaskProfileId }
+    : undefined;
 }
 
 export function buildAppShellCommandList(
@@ -364,18 +377,18 @@ export function buildAppShellCommandList(
       }
     },
     onCopyDiagnostics: async () => {
-      const { captureComposerImportOwner, toastApi } = optionsRef.current;
+      const {
+        captureComposerImportOwner,
+        newTaskProfileId,
+        toastApi,
+      } = optionsRef.current;
       const owner = captureComposerImportOwner();
+      const target = resolveManualDiagnosticTarget(owner, newTaskProfileId);
       try {
-        const result = await window.maka.diagnostics.copyReport({
+        await window.maka.diagnostics.copyReport({
           surface: "manual",
-          ...(owner.navSection === "sessions" && owner.sessionId
-            ? { targetSessionId: owner.sessionId }
-            : {}),
-          rendererUserAgent: navigator.userAgent,
-          rendererLocale: navigator.language,
+          ...(target ? { target } : {}),
         });
-        if (!result.ok) throw new Error(copy.clipboardDenied);
         toastApi.success(copy.diagnosticsCopiedTitle, copy.diagnosticsCopiedDescription);
       } catch (err) {
         toastApi.error(

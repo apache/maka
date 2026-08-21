@@ -285,8 +285,6 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
             ...(input.description ? { description: input.description } : {}),
             ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
             ...(input.diagnosticTarget ? { execution: input.diagnosticTarget } : {}),
-            rendererUserAgent: navigator.userAgent,
-            rendererLocale: navigator.language,
           })
           .catch(() => undefined);
       },
@@ -2859,6 +2857,7 @@ function AppShellContent({
     defaultConnection: defaultHostConnections.snapshot.defaultConnection,
     dailyReviewBridge,
     messages,
+    newTaskProfileId: newTask.selectedProfileId,
     sessions,
     themePref,
     visibleSessions,

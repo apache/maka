@@ -98,10 +98,7 @@ import type { DesktopSessionSummary } from '../shared/desktop-session-projection
 export type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
 import type { DesktopExternalSessionCatalogItem } from './external-session-catalog.js';
-import type {
-  DesktopDiagnosticCopyResult,
-  DesktopDiagnosticInput,
-} from './diagnostics-contract.js';
+import type { DesktopDiagnosticInput } from './diagnostics-contract.js';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
@@ -1121,7 +1118,7 @@ export interface MakaBridge {
     saveArtifactAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult>;
   };
   diagnostics: {
-    copyReport(input: DesktopDiagnosticInput): Promise<DesktopDiagnosticCopyResult>;
+    copyReport(input: DesktopDiagnosticInput): Promise<void>;
   };
   workspace: {
     searchFiles(

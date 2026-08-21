@@ -48,8 +48,11 @@ import {
   type DesktopTranscriptOpenResult,
 } from './transcript-contract.js';
 import type {
-  DesktopDiagnosticCopyResult,
   DesktopDiagnosticInput,
+  DesktopErrorDiagnosticWireInput,
+  DesktopManualDiagnosticRuntimeHost,
+  DesktopManualDiagnosticTarget,
+  DesktopManualDiagnosticWireInput,
 } from './diagnostics-contract.js';
 import type { ConnectionEvent } from '@maka/core/connections';
 import type {
@@ -300,6 +303,62 @@ async function runtimeHostSessionRef(sessionId: string): Promise<{
   const scope = runtimeHostScopes.get(ref.hostId);
   if (!scope) throw new Error('The Runtime Host for this task is unavailable');
   return { scope, sessionId: ref.sessionId };
+}
+
+type ManualDiagnosticRuntimeHostResolution = {
+  readonly runtimeHost: DesktopManualDiagnosticRuntimeHost;
+  readonly scope?: DesktopTargetScope;
+};
+
+type ManualDiagnosticHostSelector =
+  | { readonly kind: 'host'; readonly hostId: string }
+  | { readonly kind: 'profile'; readonly profileId: string };
+
+async function resolveManualDiagnosticRuntimeHost(
+  value: DesktopManualDiagnosticTarget | undefined,
+): Promise<ManualDiagnosticRuntimeHostResolution> {
+  if (value === undefined) return { runtimeHost: { kind: 'default' } };
+  const selector = parseManualDiagnosticTarget(value);
+  try {
+    await runtimeHostScopeList();
+  } catch {
+    return { runtimeHost: { kind: 'unavailable' } };
+  }
+  const hostId = selector.kind === 'host'
+    ? selector.hostId
+    : runtimeHostProfiles.get(selector.profileId);
+  const scope = hostId ? runtimeHostScopes.get(hostId) : undefined;
+  return scope
+    ? { runtimeHost: { kind: 'target', hostId: scope.hostId }, scope }
+    : { runtimeHost: { kind: 'unavailable' } };
+}
+
+function parseManualDiagnosticTarget(value: unknown): ManualDiagnosticHostSelector {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Invalid Desktop manual diagnostic target');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.kind === 'session' &&
+    Object.keys(record).length === 2 &&
+    Object.hasOwn(record, 'sessionId') &&
+    typeof record.sessionId === 'string' &&
+    Buffer.byteLength(record.sessionId, 'utf8') <= 512
+  ) {
+    return { kind: 'host', hostId: parseDesktopSessionKey(record.sessionId).hostId };
+  }
+  if (
+    record.kind === 'profile' &&
+    Object.keys(record).length === 2 &&
+    Object.hasOwn(record, 'profileId') &&
+    typeof record.profileId === 'string' &&
+    record.profileId.length > 0 &&
+    !/[\u0000-\u001f\u007f]/.test(record.profileId) &&
+    Buffer.byteLength(record.profileId, 'utf8') <= 512
+  ) {
+    return { kind: 'profile', profileId: record.profileId };
+  }
+  throw new TypeError('Invalid Desktop manual diagnostic target');
 }
 
 async function activeRuntimeHostRef(): Promise<DesktopTargetScope> {
@@ -2602,29 +2661,34 @@ const makaBridge = {
     },
   },
   diagnostics: {
-    async copyReport(input: DesktopDiagnosticInput): Promise<DesktopDiagnosticCopyResult> {
+    async copyReport(input: DesktopDiagnosticInput): Promise<void> {
+      const rendererContext = {
+        rendererUserAgent: navigator.userAgent,
+        rendererLocale: navigator.language,
+      };
       if (input.surface === 'manual') {
-        if (!input.targetSessionId) {
-          return ipcRenderer.invoke('diagnostics:copyReport', undefined, input);
-        }
-        const ref = parseDesktopSessionKey(input.targetSessionId);
-        try {
-          await runtimeHostScopeList();
-        } catch {
-          return ipcRenderer.invoke('diagnostics:copyReport', undefined, input);
-        }
-        return ipcRenderer.invoke(
+        const { target, ...manualInput } = input;
+        const resolution = await resolveManualDiagnosticRuntimeHost(target);
+        const wireInput: DesktopManualDiagnosticWireInput = {
+          ...manualInput,
+          runtimeHost: resolution.runtimeHost,
+          ...rendererContext,
+        };
+        await ipcRenderer.invoke(
           'diagnostics:copyReport',
-          runtimeHostScopes.get(ref.hostId),
-          input,
+          resolution.scope,
+          wireInput,
         );
+        return;
       }
+      const wireInput: DesktopErrorDiagnosticWireInput = { ...input, ...rendererContext };
       if (!input.execution) {
-        return invokeActiveRuntimeHost('diagnostics:copyReport', input);
+        await invokeActiveRuntimeHost('diagnostics:copyReport', wireInput);
+        return;
       }
       const session = await runtimeHostSessionRef(input.execution.sessionId);
-      return ipcRenderer.invoke('diagnostics:copyReport', session.scope, {
-        ...input,
+      await ipcRenderer.invoke('diagnostics:copyReport', session.scope, {
+        ...wireInput,
         execution: { ...input.execution, sessionId: session.sessionId },
       });
     },

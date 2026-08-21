@@ -82,14 +82,11 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
     try {
       const diagnostics = window.maka?.diagnostics;
       if (diagnostics) {
-        const result = await diagnostics.copyReport({
+        await diagnostics.copyReport({
           surface: 'renderer_crash',
           title: `${error.name}: ${error.message}`,
           details: formatRendererErrorDetails(error, errorInfo),
-          rendererUserAgent: navigator.userAgent,
-          rendererLocale: navigator.language,
         });
-        if (!result.ok) throw new Error('Desktop diagnostic clipboard write failed');
       } else {
         await navigator.clipboard.writeText(formatRendererErrorReport(error, errorInfo));
       }

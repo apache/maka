@@ -3,9 +3,7 @@ import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import type { TurnTrace } from '@maka/core/session-trace';
 import type { HostDiagnosticsResult } from '@maka/runtime-host/protocol';
-import type { DesktopDiagnosticCopyResult } from '../preload/diagnostics-contract.js';
 import {
-  parseDesktopSessionKey,
   requireDesktopTargetScope,
   type DesktopTargetScope,
 } from '../shared/runtime-host-identity.js';
@@ -37,16 +35,23 @@ export interface DesktopDiagnosticsIpcDeps {
 export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): void {
   deps.ipcMain.handle(
     'diagnostics:copyReport',
-    async (_event, scope: unknown, rawInput: unknown): Promise<DesktopDiagnosticCopyResult> => {
+    async (_event, scope: unknown, rawInput: unknown): Promise<void> => {
       const input = parseDesktopDiagnosticInput(rawInput);
       let runtime: RuntimeHostDiagnosticsClient | undefined;
       if (input.surface !== 'manual') {
         runtime = deps.resolveRuntimeHost(requireDesktopTargetScope(scope));
-      } else if (input.targetSessionId === undefined) {
+      } else if (input.runtimeHost.kind === 'default') {
+        if (scope !== undefined) {
+          throw new Error('Default Desktop diagnostics must not carry a Host scope');
+        }
         runtime = deps.resolveActiveRuntimeHost();
-      } else if (scope !== undefined) {
+      } else if (input.runtimeHost.kind === 'unavailable') {
+        if (scope !== undefined) {
+          throw new Error('Unavailable Desktop diagnostics must not carry a Host scope');
+        }
+      } else {
         const target = requireDesktopTargetScope(scope);
-        if (target.hostId !== parseDesktopSessionKey(input.targetSessionId).hostId) {
+        if (target.hostId !== input.runtimeHost.hostId) {
           throw new Error('Desktop diagnostic target belongs to a different Runtime Host');
         }
         try {
@@ -62,7 +67,7 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
         runtimeHost = {
           ok: false,
           error: input.surface === 'manual'
-            ? input.targetSessionId === undefined
+            ? input.runtimeHost.kind === 'default'
               ? 'Runtime Host is unavailable'
               : 'Runtime Host for this task is unavailable'
             : 'Runtime Host is reconnecting',
@@ -108,12 +113,7 @@ export function registerDesktopDiagnosticsIpc(deps: DesktopDiagnosticsIpcDeps): 
         runtimeHost,
         runtimeExecution,
       );
-      try {
-        deps.writeClipboard(report);
-        return { ok: true };
-      } catch {
-        return { ok: false, reason: 'clipboard_unavailable' };
-      }
+      deps.writeClipboard(report);
     },
   );
 }

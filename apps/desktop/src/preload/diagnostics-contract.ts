@@ -9,13 +9,22 @@ interface DesktopDiagnosticRendererContext {
   readonly rendererLocale?: string;
 }
 
-export interface DesktopManualDiagnosticInput extends DesktopDiagnosticRendererContext {
+export type DesktopManualDiagnosticTarget =
+  | {
+      readonly kind: 'session';
+      readonly sessionId: string;
+    }
+  | {
+      readonly kind: 'profile';
+      readonly profileId: string;
+    };
+
+export interface DesktopManualDiagnosticInput {
   readonly surface: 'manual';
-  /** Desktop session key whose Runtime Host should contribute diagnostics. */
-  readonly targetSessionId?: string;
+  readonly target?: DesktopManualDiagnosticTarget;
 }
 
-export interface DesktopErrorDiagnosticInput extends DesktopDiagnosticRendererContext {
+export interface DesktopErrorDiagnosticInput {
   readonly surface: 'toast' | 'renderer_crash';
   readonly title: string;
   readonly description?: string;
@@ -25,6 +34,19 @@ export interface DesktopErrorDiagnosticInput extends DesktopDiagnosticRendererCo
 
 export type DesktopDiagnosticInput = DesktopManualDiagnosticInput | DesktopErrorDiagnosticInput;
 
-export type DesktopDiagnosticCopyResult =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly reason: 'clipboard_unavailable' };
+export type DesktopManualDiagnosticRuntimeHost =
+  | { readonly kind: 'default' }
+  | { readonly kind: 'target'; readonly hostId: string }
+  | { readonly kind: 'unavailable' };
+
+export type DesktopManualDiagnosticWireInput = Omit<DesktopManualDiagnosticInput, 'target'> &
+  DesktopDiagnosticRendererContext & {
+    readonly runtimeHost: DesktopManualDiagnosticRuntimeHost;
+  };
+
+export type DesktopErrorDiagnosticWireInput = DesktopErrorDiagnosticInput &
+  DesktopDiagnosticRendererContext;
+
+export type DesktopDiagnosticWireInput =
+  | DesktopManualDiagnosticWireInput
+  | DesktopErrorDiagnosticWireInput;

@@ -87,19 +87,27 @@ test('bounds renderer diagnostic text and rejects unknown fields', () => {
   );
 });
 
-test('accepts only renderer context for a manual diagnostic capture', () => {
+test('accepts only a Runtime Host policy and renderer context for manual capture', () => {
   assert.deepEqual(
-    parseDesktopDiagnosticInput({ surface: 'manual', rendererLocale: 'en-US' }),
-    { surface: 'manual', rendererLocale: 'en-US' },
+    parseDesktopDiagnosticInput({
+      surface: 'manual',
+      runtimeHost: { kind: 'default' },
+      rendererLocale: 'en-US',
+    }),
+    {
+      surface: 'manual',
+      runtimeHost: { kind: 'default' },
+      rendererLocale: 'en-US',
+    },
   );
   assert.deepEqual(
     parseDesktopDiagnosticInput({
       surface: 'manual',
-      targetSessionId: '["remote-host","session-1"]',
+      runtimeHost: { kind: 'target', hostId: 'remote-host' },
     }),
     {
       surface: 'manual',
-      targetSessionId: '["remote-host","session-1"]',
+      runtimeHost: { kind: 'target', hostId: 'remote-host' },
     },
   );
   assert.throws(
@@ -107,14 +115,21 @@ test('accepts only renderer context for a manual diagnostic capture', () => {
     /Invalid Desktop diagnostic input/,
   );
   assert.throws(
-    () => parseDesktopDiagnosticInput({ surface: 'manual', targetSessionId: 'session-1' }),
-    /Invalid Desktop diagnostic targetSessionId/,
+    () => parseDesktopDiagnosticInput({
+      surface: 'manual',
+      runtimeHost: { kind: 'target', hostId: '' },
+    }),
+    /Invalid Desktop diagnostic hostId/,
   );
 });
 
 test('formats a manual capture without inventing an error', () => {
   const report = formatDesktopDiagnosticReport(
-    { surface: 'manual', rendererLocale: 'en-US' },
+    {
+      surface: 'manual',
+      runtimeHost: { kind: 'default' },
+      rendererLocale: 'en-US',
+    },
     environment,
     ['main log'],
     { ok: true, value: runtimeHostDiagnostics },
@@ -153,13 +168,12 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
 
   const handler = handlers.get('diagnostics:copyReport');
   assert.ok(handler);
-  const result = await handler(
+  await handler(
     {} as never,
     { hostId: 'test-host', targetEpoch: 'test-target' },
     { surface: 'toast', title: 'Host failed' },
   );
 
-  assert.deepEqual(result, { ok: true });
   assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
   assert.match(clipboard, /Diagnostics unavailable: Runtime Host disconnected/);
 });
@@ -185,13 +199,10 @@ test('copies Desktop diagnostics while the scoped Host is reconnecting', async (
 
   const handler = handlers.get('diagnostics:copyReport');
   assert.ok(handler);
-  assert.deepEqual(
-    await handler(
-      {} as never,
-      { hostId: 'test-host', targetEpoch: 'test-target' },
-      { surface: 'toast', title: 'Host reconnecting' },
-    ),
-    { ok: true },
+  await handler(
+    {} as never,
+    { hostId: 'test-host', targetEpoch: 'test-target' },
+    { surface: 'toast', title: 'Host reconnecting' },
   );
   assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
   assert.match(clipboard, /Diagnostics unavailable: Runtime Host is reconnecting/);
@@ -274,7 +285,7 @@ test('copies bounded evidence for the exact failed Turn', async () => {
 
   const handler = handlers.get('diagnostics:copyReport');
   assert.ok(handler);
-  const result = await handler(
+  await handler(
     {} as never,
     { hostId: 'test-host', targetEpoch: 'test-target' },
     {
@@ -284,7 +295,6 @@ test('copies bounded evidence for the exact failed Turn', async () => {
     },
   );
 
-  assert.deepEqual(result, { ok: true });
   assert.match(clipboard, /Runtime Host execution[\s\S]*Run: run-1/);
   assert.match(clipboard, /Failure message: No endpoints accepted the request/);
 });
@@ -343,7 +353,7 @@ test('keeps every diagnostic read bound to the scoped Host during a switch', asy
   activeHostId = 'host-b';
   releaseDiagnostics();
 
-  assert.deepEqual(await copying, { ok: true });
+  await copying;
   assert.deepEqual(traceReads, ['host-a']);
 });
 
@@ -370,13 +380,14 @@ test('copies manual Desktop diagnostics without an active Runtime Host', async (
 
   const handler = handlers.get('diagnostics:copyReport');
   assert.ok(handler);
-  assert.deepEqual(
-    await handler(
-      {} as never,
-      undefined,
-      { surface: 'manual', rendererLocale: 'en-US' },
-    ),
-    { ok: true },
+  await handler(
+    {} as never,
+    undefined,
+    {
+      surface: 'manual',
+      runtimeHost: { kind: 'default' },
+      rendererLocale: 'en-US',
+    },
   );
   assert.match(clipboard, /Capture\nSurface: manual/);
   assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
@@ -415,16 +426,13 @@ test('copies diagnostics from the Runtime Host that owns the current task', asyn
 
   const handler = handlers.get('diagnostics:copyReport');
   assert.ok(handler);
-  assert.deepEqual(
-    await handler(
-      {} as never,
-      { hostId: 'remote-host', targetEpoch: 'remote-target' },
-      {
-        surface: 'manual',
-        targetSessionId: '["remote-host","session-1"]',
-      },
-    ),
-    { ok: true },
+  await handler(
+    {} as never,
+    { hostId: 'remote-host', targetEpoch: 'remote-target' },
+    {
+      surface: 'manual',
+      runtimeHost: { kind: 'target', hostId: 'remote-host' },
+    },
   );
   assert.match(clipboard, /Recent Runtime Host logs \(1\)\nremote task host log/);
 });
@@ -454,31 +462,25 @@ test('keeps targeted manual capture Desktop-only when the task Host is unavailab
 
   const handler = handlers.get('diagnostics:copyReport');
   assert.ok(handler);
-  assert.deepEqual(
-    await handler(
-      {} as never,
-      undefined,
-      {
-        surface: 'manual',
-        targetSessionId: '["remote-host","session-1"]',
-      },
-    ),
-    { ok: true },
+  await handler(
+    {} as never,
+    undefined,
+    {
+      surface: 'manual',
+      runtimeHost: { kind: 'unavailable' },
+    },
   );
   assert.match(
     clipboard,
     /Diagnostics unavailable: Runtime Host for this task is unavailable/,
   );
-  assert.deepEqual(
-    await handler(
-      {} as never,
-      { hostId: 'remote-host', targetEpoch: 'stale-target' },
-      {
-        surface: 'manual',
-        targetSessionId: '["remote-host","session-1"]',
-      },
-    ),
-    { ok: true },
+  await handler(
+    {} as never,
+    { hostId: 'remote-host', targetEpoch: 'stale-target' },
+    {
+      surface: 'manual',
+      runtimeHost: { kind: 'target', hostId: 'remote-host' },
+    },
   );
   assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
   assert.match(
@@ -515,9 +517,39 @@ test('rejects a manual diagnostic scope from a different task Host', async () =>
       { hostId: 'default-host', targetEpoch: 'default-target' },
       {
         surface: 'manual',
-        targetSessionId: '["remote-host","session-1"]',
+        runtimeHost: { kind: 'target', hostId: 'remote-host' },
       },
     ),
     /Desktop diagnostic target belongs to a different Runtime Host/,
+  );
+});
+
+test('rejects the copy request when the main-process clipboard write fails', async () => {
+  type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+  const handlers = new Map<string, IpcHandler>();
+  registerDesktopDiagnosticsIpc({
+    ipcMain: {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+    },
+    environment: () => environment,
+    mainLogs: () => [],
+    resolveActiveRuntimeHost: () => undefined,
+    resolveRuntimeHost: () => undefined,
+    writeClipboard() {
+      throw new Error('System clipboard unavailable');
+    },
+  });
+
+  const handler = handlers.get('diagnostics:copyReport');
+  assert.ok(handler);
+  await assert.rejects(
+    handler(
+      {} as never,
+      undefined,
+      { surface: 'manual', runtimeHost: { kind: 'default' } },
+    ),
+    /System clipboard unavailable/,
   );
 });

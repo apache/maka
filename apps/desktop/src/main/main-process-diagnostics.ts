@@ -4,10 +4,10 @@ import { redactSecrets } from '@maka/core/redaction';
 import type { TurnTrace } from '@maka/core/session-trace';
 import type { HostDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type {
-  DesktopDiagnosticInput,
+  DesktopDiagnosticWireInput,
   DesktopExecutionDiagnosticTarget,
+  DesktopManualDiagnosticRuntimeHost,
 } from '../preload/diagnostics-contract.js';
-import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 
 const INPUT_LIMITS = {
   title: 512,
@@ -52,22 +52,20 @@ export function installMainProcessLogCapture(buffer: DiagnosticLogBuffer = mainP
   installConsoleDiagnosticLogCapture(buffer);
 }
 
-export function parseDesktopDiagnosticInput(input: unknown): DesktopDiagnosticInput {
+export function parseDesktopDiagnosticInput(input: unknown): DesktopDiagnosticWireInput {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new TypeError('Invalid Desktop diagnostic input');
   }
   const record = input as Record<string, unknown>;
   const rendererKeys = new Set(['surface', 'rendererUserAgent', 'rendererLocale']);
   if (record.surface === 'manual') {
-    const manualKeys = new Set([...rendererKeys, 'targetSessionId']);
+    const manualKeys = new Set([...rendererKeys, 'runtimeHost']);
     if (Object.keys(record).some((key) => !manualKeys.has(key))) {
       throw new TypeError('Invalid Desktop diagnostic input');
     }
     return {
       surface: 'manual',
-      ...(record.targetSessionId !== undefined
-        ? { targetSessionId: requireDesktopDiagnosticSessionKey(record.targetSessionId) }
-        : {}),
+      runtimeHost: parseManualDiagnosticRuntimeHost(record.runtimeHost),
       ...optionalBoundedString(record, 'rendererUserAgent', INPUT_LIMITS.rendererUserAgent),
       ...optionalBoundedString(record, 'rendererLocale', INPUT_LIMITS.rendererLocale),
     };
@@ -100,7 +98,7 @@ export function parseDesktopDiagnosticInput(input: unknown): DesktopDiagnosticIn
 }
 
 export function formatDesktopDiagnosticReport(
-  input: DesktopDiagnosticInput,
+  input: DesktopDiagnosticWireInput,
   environment: DesktopDiagnosticEnvironment,
   mainLogs: readonly string[],
   runtimeHost: RuntimeHostDiagnosticRead,
@@ -166,16 +164,28 @@ export function formatDesktopDiagnosticReport(
   return collapseHomePath(redacted, environment.homePath, environment.platform);
 }
 
-function requireDesktopDiagnosticSessionKey(value: unknown): string {
-  if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > 512) {
-    throw new TypeError('Invalid Desktop diagnostic targetSessionId');
+function parseManualDiagnosticRuntimeHost(value: unknown): DesktopManualDiagnosticRuntimeHost {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Invalid Desktop manual diagnostic Runtime Host');
   }
-  try {
-    parseDesktopSessionKey(value);
-  } catch {
-    throw new TypeError('Invalid Desktop diagnostic targetSessionId');
+  const record = value as Record<string, unknown>;
+  if (
+    (record.kind === 'default' || record.kind === 'unavailable') &&
+    Object.keys(record).length === 1
+  ) {
+    return { kind: record.kind };
   }
-  return value;
+  if (
+    record.kind === 'target' &&
+    Object.keys(record).length === 2 &&
+    Object.hasOwn(record, 'hostId')
+  ) {
+    return {
+      kind: 'target',
+      hostId: requireDiagnosticId(record.hostId, 'hostId'),
+    };
+  }
+  throw new TypeError('Invalid Desktop manual diagnostic Runtime Host');
 }
 
 function parseExecutionDiagnosticTarget(value: unknown): DesktopExecutionDiagnosticTarget {

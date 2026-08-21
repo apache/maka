@@ -81,12 +81,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     if (!diagnosticCopyGuard.begin('copy')) return;
     setCopyingDiagnostics(true);
     try {
-      const result = await window.maka.diagnostics.copyReport({
-        surface: 'manual',
-        rendererUserAgent: navigator.userAgent,
-        rendererLocale: navigator.language,
-      });
-      if (!result.ok) throw new Error('Desktop diagnostic clipboard write failed');
+      await window.maka.diagnostics.copyReport({ surface: 'manual' });
       if (aboutPageMountedRef.current) toast.success(copy.copied, copy.pasteHint);
     } catch {
       if (aboutPageMountedRef.current) {
