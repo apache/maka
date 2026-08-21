@@ -59,7 +59,7 @@ export const DISTRIBUTION_NODE_RUNTIME_ENTITLEMENTS = Object.freeze(
   ),
 );
 
-function runCommand(command, args, options = {}) {
+export function runCommand(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd ?? repoRoot,
@@ -74,7 +74,7 @@ function runCommand(command, args, options = {}) {
       }
       reject(
         new Error(
-          `${command} ${args.join(' ')} failed with ${
+          `${command} ${(options.displayArgs ?? args).join(' ')} failed with ${
             signal ? `signal ${signal}` : `exit code ${code}`
           }`,
         ),
@@ -120,7 +120,10 @@ while [ -L "$launcher" ]; do
   esac
 done
 bin_dir=$(CDPATH= cd -P "$(dirname "$launcher")" && pwd)
-exec "$bin_dir/../libexec/node/bin/node" "$bin_dir/../libexec/node_modules/maka-agent/dist/cli.js" "$@"
+libexec_dir=$(CDPATH= cd -P "$bin_dir/../libexec" && pwd)
+MAKA_EVAL_MAKA_BUNDLE_PATH=$libexec_dir
+export MAKA_EVAL_MAKA_BUNDLE_PATH
+exec "$libexec_dir/node/bin/node" "$libexec_dir/node_modules/maka-agent/dist/cli.js" "$@"
 `;
 }
 
@@ -632,7 +635,7 @@ export function assertExpectedAppleTeam(identity, expectedTeamIdentifier) {
   return identity;
 }
 
-async function createSigningKeychain({ env, expectedTeamIdentifier, run, inspect }) {
+export async function createSigningKeychain({ env, expectedTeamIdentifier, run, inspect }) {
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'maka-cli-signing-'));
   const certificatePath = join(temporaryRoot, 'identity.p12');
   const pemPath = join(temporaryRoot, 'identity.pem');
@@ -640,21 +643,41 @@ async function createSigningKeychain({ env, expectedTeamIdentifier, run, inspect
   const keychainPassword = randomBytes(32).toString('hex');
   let created = false;
   const cleanup = async () => {
+    let keychainDeletionError;
     if (created) {
       try {
         await run('security', ['delete-keychain', keychainFile], { env });
+      } catch (error) {
+        keychainDeletionError = error;
       } finally {
         created = false;
       }
     }
-    await rm(temporaryRoot, { recursive: true, force: true });
+    try {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    } catch (error) {
+      if (keychainDeletionError) {
+        throw new AggregateError(
+          [keychainDeletionError, error],
+          'Signing keychain and temporary credential cleanup both failed',
+        );
+      }
+      throw error;
+    }
+    if (keychainDeletionError) throw keychainDeletionError;
   };
 
   try {
     await writeFile(certificatePath, decodeSigningCertificate(env.CSC_LINK).bytes, { mode: 0o600 });
-    await run('security', ['create-keychain', '-p', keychainPassword, keychainFile], { env });
+    await run('security', ['create-keychain', '-p', keychainPassword, keychainFile], {
+      env,
+      displayArgs: ['create-keychain', '-p', '<redacted>', keychainFile],
+    });
     created = true;
-    await run('security', ['unlock-keychain', '-p', keychainPassword, keychainFile], { env });
+    await run('security', ['unlock-keychain', '-p', keychainPassword, keychainFile], {
+      env,
+      displayArgs: ['unlock-keychain', '-p', '<redacted>', keychainFile],
+    });
     await run('security', ['set-keychain-settings', '-lut', '21600', keychainFile], { env });
     await run(
       'openssl',
@@ -685,7 +708,18 @@ async function createSigningKeychain({ env, expectedTeamIdentifier, run, inspect
         keychainPassword,
         keychainFile,
       ],
-      { env },
+      {
+        env,
+        displayArgs: [
+          'set-key-partition-list',
+          '-S',
+          'apple-tool:,apple:',
+          '-s',
+          '-k',
+          '<redacted>',
+          keychainFile,
+        ],
+      },
     );
     const identityOutput = await inspect(
       'security',

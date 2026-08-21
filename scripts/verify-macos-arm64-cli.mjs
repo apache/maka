@@ -281,6 +281,14 @@ async function smokePackagedEval(archiveRoot, sourceCommit, environment, run) {
             'MAKA_CLI_EVAL_SMOKE_MARKER',
           ],
           mounts: [],
+          egressProxy: {
+            composeSourceEnv: 'MAKA_EVAL_MAKA_BUNDLE_PATH',
+            composeRelativePath: 'packages/eval/harbor/docker-compose-egress-proxy.yaml',
+            networkPolicyRelativePath: 'packages/eval/harbor/egress-proxy/network-policy',
+            proxyUrl: 'http://maka-eval-mitmproxy:8080',
+            allowedHost: 'maka-eval-mitmproxy',
+            containerCaPath: '/opt/maka-egress/mitmproxy-ca-cert.pem',
+          },
         },
       },
       execution: { maxConcurrentTaskGroups: 1 },
@@ -479,6 +487,17 @@ async function verifyBinarySignatures(
   return expectedTeamIdentifier;
 }
 
+export async function verifyQuarantinedExecution(archiveRoot, nodePath, run) {
+  await run('xattr', [
+    '-w',
+    '-r',
+    'com.apple.quarantine',
+    '0083;00000000;GitHub;MakaReleaseVerification',
+    archiveRoot,
+  ]);
+  await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', nodePath]);
+}
+
 export async function verifyMacosArm64Cli(
   archivePath,
   {
@@ -622,14 +641,7 @@ export async function verifyMacosArm64Cli(
     });
 
     if (requireReleaseSigning) {
-      await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', nodePath]);
-      await run('xattr', [
-        '-w',
-        '-r',
-        'com.apple.quarantine',
-        '0083;00000000;GitHub;MakaReleaseVerification',
-        archiveRoot,
-      ]);
+      await verifyQuarantinedExecution(archiveRoot, nodePath, run);
     }
 
     const isolatedHome = join(extractionRoot, 'home');

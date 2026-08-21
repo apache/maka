@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -15,21 +15,24 @@ import {
 } from './product-release-identity.mjs';
 import {
   assertExpectedAppleTeam,
+  createSigningKeychain,
   decodeSigningCertificate,
   DISTRIBUTION_NODE_RUNTIME_ENTITLEMENTS,
   distributionNodeEntitlements,
   extractDistributionNodeEntitlements,
   extractOfficialNodeEntitlements,
   macosArm64MachOAction,
+  macosArm64CliWrapper,
   parseDeveloperIdApplicationIdentity,
   pruneThirdPartyDevelopmentArtifacts,
   resolveCliWorkspacePackages,
+  runCommand,
   stageWorkspacePackages,
   standaloneInstallEnvironment,
   standaloneInstallRootManifest,
 } from './package-macos-arm64-cli.mjs';
 import { resolveWorkspaceReleaseFiles } from './release-cli-file-policy.mjs';
-import { isTuiReadyOutput } from './verify-macos-arm64-cli.mjs';
+import { isTuiReadyOutput, verifyQuarantinedExecution } from './verify-macos-arm64-cli.mjs';
 import { makePtyProbe } from './verify-packaged-app.mjs';
 import { ensureProductTag } from './product-release-tag.mjs';
 
@@ -75,6 +78,26 @@ test('one root version defines every product artifact from one source commit', (
   assert.equal(identity.exe, 'Maka-1.2.3-win-x64.exe');
   assert.equal(identity.cliArchive, 'Maka-1.2.3-cli-mac-arm64.zip');
   assert.equal(identity.sourceArchive, 'Maka-1.2.3-bundled-git-source.tar.gz');
+});
+
+test('the standalone launcher identifies its installed Eval bundle root', async (t) => {
+  const archiveRoot = await mkdtemp(join(tmpdir(), 'maka-standalone-launcher-'));
+  t.after(() => rm(archiveRoot, { recursive: true, force: true }));
+  const launcher = join(archiveRoot, 'bin', 'maka');
+  const node = join(archiveRoot, 'libexec', 'node', 'bin', 'node');
+  await Promise.all([
+    mkdir(join(archiveRoot, 'bin'), { recursive: true }),
+    mkdir(join(archiveRoot, 'libexec', 'node', 'bin'), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(launcher, macosArm64CliWrapper()),
+    writeFile(node, '#!/bin/sh\nprintf %s "$MAKA_EVAL_MAKA_BUNDLE_PATH"\n'),
+  ]);
+  await Promise.all([chmod(launcher, 0o755), chmod(node, 0o755)]);
+
+  const { stdout } = await execFileAsync(launcher);
+
+  assert.equal(stdout, await realpath(join(archiveRoot, 'libexec')));
 });
 
 test('the product identity classifies prereleases once for every publication surface', () => {
@@ -272,6 +295,20 @@ test('standalone verification recognizes the current TUI status line through ANS
   );
 });
 
+test('standalone verification assesses the downloaded quarantine state', async () => {
+  const commands = [];
+
+  await verifyQuarantinedExecution(
+    '/artifact/Maka',
+    '/artifact/Maka/libexec/node/bin/node',
+    async (command) => {
+      commands.push(command);
+    },
+  );
+
+  assert.deepEqual(commands, ['xattr', 'spctl']);
+});
+
 test('standalone packaging keeps or thins arm64 Mach-O files instead of deleting them', () => {
   const macos = 'platform MACOS\n';
   assert.equal(macosArm64MachOAction('arm64', macos), 'keep');
@@ -317,6 +354,42 @@ test('CLI signing accepts one base64 PKCS12 and one isolated Developer ID identi
         rootManifest.releaseToolchain.appleTeamIdentifier,
       ),
     /belongs to Apple team ABCDEFGHIJ, expected FABM2QUA8Q/u,
+  );
+});
+
+test('CLI signing removes temporary credentials when keychain deletion fails', async () => {
+  const signing = await createSigningKeychain({
+    env: { CSC_LINK: Buffer.from('pkcs12').toString('base64') },
+    expectedTeamIdentifier: 'FABM2QUA8Q',
+    run: async (command, args) => {
+      if (command === 'openssl') {
+        await writeFile(args[args.indexOf('-out') + 1], 'temporary private key');
+      }
+      if (command === 'security' && args[0] === 'delete-keychain') {
+        throw new Error('simulated keychain deletion failure');
+      }
+    },
+    inspect: async () => ({
+      stdout:
+        '  1) ABCDEF0123456789ABCDEF0123456789ABCDEF01 "Developer ID Application: Maka Test (FABM2QUA8Q)"\n     1 valid identities found\n',
+    }),
+  });
+
+  await assert.rejects(signing.cleanup(), /simulated keychain deletion failure/u);
+  await assert.rejects(access(signing.directory), { code: 'ENOENT' });
+});
+
+test('CLI signing command failures do not disclose credential arguments', async () => {
+  const secret = 'temporary-keychain-password';
+  await assert.rejects(
+    runCommand(process.execPath, ['-e', 'process.exit(9)', secret], {
+      displayArgs: ['-e', '<script>', '<redacted>'],
+    }),
+    (error) => {
+      assert.doesNotMatch(error.message, new RegExp(secret, 'u'));
+      assert.match(error.message, /<redacted>/u);
+      return true;
+    },
   );
 });
 
