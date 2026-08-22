@@ -171,6 +171,29 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(line, /project-directory/);
   });
 
+  test('status line drops a drive-root cwd instead of rendering an empty basename (#3421)', () => {
+    const line = stripAnsi(
+      renderMakaPiStatusLine(
+        {
+          ...meta(),
+          cwd: 'C:\\',
+          modelContextWindow: 500_000,
+          usage: {
+            costUsd: 0.5,
+            cacheHitInput: 1,
+            cacheMissInput: 1,
+            contextRemaining: 480_000,
+          },
+        },
+        40,
+      ),
+    );
+    // C:\ has no useful basename; the segment drops cleanly rather than
+    // leaving an empty segment dangling after the separator.
+    assert.doesNotMatch(line, /C:\\/);
+    assert.doesNotMatch(line, /·\s*$/);
+  });
+
   test('status line never drops mode, model, goal, or ctx at narrow widths (#3421)', () => {
     const line = stripAnsi(
       renderMakaPiStatusLine(

@@ -1395,11 +1395,15 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
   // #1064: shorten cwd to ~-relative path instead of the full path.
   const cwd = shortenCwd(metadata.cwd);
   // cwd degrades progressively (full → basename → dropped), after every
-  // ranked segment above but before the final truncation fallback.
+  // ranked segment above but before the final truncation fallback. A drive
+  // root (C:\) or filesystem root has no useful basename — empty, or the
+  // path itself — so it drops directly instead of rendering an empty
+  // segment after the separator.
+  const cwdBase = basename(cwd);
   parts.push({
     text: ansi.dim(cwd),
     dropRank: 5,
-    shortenedText: cwd === '~' || cwd === '/' ? undefined : ansi.dim(basename(cwd)),
+    shortenedText: cwdBase === '' || cwdBase === cwd ? undefined : ansi.dim(cwdBase),
   });
   return fitStatusLine(parts, sep, safeWidth);
 }
