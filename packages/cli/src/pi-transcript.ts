@@ -14,6 +14,7 @@ import {
   type SystemNoteMessage,
 } from '@maka/core/session';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
+import { providerRetryRemainingMs } from '@maka/core/provider-retry-countdown';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
@@ -1428,16 +1429,14 @@ export function renderMakaPiActivityStrip(
 /**
  * Remaining wait for a scheduled provider retry, ticked against the client's
  * own receipt time so the strip counts down on the 1s heartbeat instead of
- * pinning the original delay for the whole sleep. `remainingMs` — when the
- * emitter provided one — is a duration and therefore already skew-free; the
- * full delay is the fallback. Long provider-mandated waits (a subscription
- * quota window can be hours) render as `4h 28m 3s` via the shared duration
- * formatter rather than a raw five-digit second count.
+ * pinning the original delay for the whole sleep. The computation itself is
+ * shared with the desktop banner in `@maka/core/provider-retry-countdown`.
+ * Long provider-mandated waits (a subscription quota window can be hours)
+ * render as `4h 28m 3s` via the shared duration formatter rather than a raw
+ * five-digit second count.
  */
 function formatRetryCountdown(retry: ProviderRetryScheduledEvent, receivedAtMs: number): string {
-  const grantedMs = retry.remainingMs ?? retry.delayMs;
-  const remainingMs = Math.max(0, grantedMs - (Date.now() - receivedAtMs));
-  return formatElapsedDuration(remainingMs);
+  return formatElapsedDuration(providerRetryRemainingMs(retry, Date.now() - receivedAtMs));
 }
 
 function formatElapsedDuration(elapsedMs: number): string {

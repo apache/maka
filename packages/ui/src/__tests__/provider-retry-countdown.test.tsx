@@ -102,7 +102,25 @@ test('provider retry banner never shows a negative countdown', async (t) => {
   const { container, root } = domRoot();
 
   await renderRetry(root, { event: scheduledRetry(), receivedAtMs: now - 60_000 });
-  assert.match(container.textContent ?? '', /Retrying in 1s \(2\/10\)/);
+  // One agreed floor across surfaces (#3393): an expired countdown reads 0s
+  // until the `started` event replaces it.
+  assert.match(container.textContent ?? '', /Retrying in 0s \(2\/10\)/);
+});
+
+test('reduced motion keeps a correct static value at mount without ticking', async (t) => {
+  const now = 1_700_000_000_000;
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now });
+  const { container, root } = domRoot();
+  // The reduced-motion preference freezes the per-second tick, but the
+  // initial measurement still lands: four seconds into the wait the banner
+  // reads 6s from the start instead of pinning the full delay.
+  document.documentElement.dataset.makaReducedMotion = 'true';
+
+  await renderRetry(root, { event: scheduledRetry(), receivedAtMs: now - 4_000 });
+  assert.match(container.textContent ?? '', /Retrying in 6s \(2\/10\)/);
+
+  await act(() => t.mock.timers.tick(2_000));
+  assert.match(container.textContent ?? '', /Retrying in 6s \(2\/10\)/);
 });
 
 test('provider retry banner counts down from remainingMs when the host provides it', async (t) => {

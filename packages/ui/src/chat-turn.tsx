@@ -36,6 +36,7 @@ import {
   type QuoteRef,
 } from '@maka/core/events';
 import { type LiveProviderRetry } from './live-turn-projection.js';
+import { providerRetryRemainingMs } from '@maka/core/provider-retry-countdown';
 import {
   finalAssistantReplyText,
   type TurnTimelineItem,
@@ -1024,30 +1025,33 @@ export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry })
   const copy = getConversationCopy(useUiLocale()).messages;
   const { event: retry, receivedAtMs } = props.retry;
   const rootRef = useRef<HTMLDivElement>(null);
-  // Undefined until an effect measures it — the same determinism contract as
-  // the elapsed clock above: frozen fixtures keep the provider's original
-  // delay; live, the banner counts down against the CLIENT-local receipt time
-  // (a single clock domain — the event's `ts` belongs to the possibly remote
-  // Runtime Host clock), taking its length from the skew-free `remainingMs`
-  // duration when the emitter provided one.
+  // Undefined until an effect measures it, so SSR and first paint render the
+  // granted delay untouched; the effect then counts down against the
+  // CLIENT-local receipt time (a single clock domain — the event's `ts`
+  // belongs to the possibly remote Runtime Host clock), taking its length
+  // from the skew-free `remainingMs` duration when the emitter provided one.
   const [nowMs, setNowMs] = useState<number | undefined>(undefined);
   useEffect(() => {
-    if (retry.phase !== 'scheduled' || !isTimeDrivenMotionEnabled(rootRef.current)) return;
+    if (retry.phase !== 'scheduled') return;
+    // The initial measurement sits OUTSIDE the motion gate on purpose: under
+    // a genuine reduced-motion preference the banner must still show the
+    // correct remaining wait at mount — gating it would pin the full delay
+    // for the whole wait, the exact #3393 symptom. Only the per-second tick
+    // respects the preference (and the frozen-fixture contract).
     setNowMs(Date.now());
+    if (!isTimeDrivenMotionEnabled(rootRef.current)) return;
     const tick = window.setInterval(() => setNowMs(Date.now()), ELAPSED_TICK_MS);
     return () => window.clearInterval(tick);
   }, [retry.phase, retry.id, receivedAtMs]);
-  const grantedMs = retry.phase === 'scheduled' ? (retry.remainingMs ?? retry.delayMs) : 0;
   const remainingMs =
     retry.phase !== 'scheduled'
       ? 0
-      : nowMs === undefined
-        ? grantedMs
-        : Math.max(0, grantedMs - (nowMs - receivedAtMs));
+      : // nowMs undefined (SSR / first paint) reads as zero elapsed.
+        providerRetryRemainingMs(retry, (nowMs ?? receivedAtMs) - receivedAtMs);
   const titleText =
     retry.phase === 'scheduled'
       ? copy.providerRetryScheduled(
-          Math.max(1, Math.ceil(remainingMs / 1_000)),
+          Math.ceil(remainingMs / 1_000),
           retry.attempt,
           retry.maxAttempts,
         )

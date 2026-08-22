@@ -217,6 +217,8 @@ export interface ConversationCopy {
     workingPhrases: readonly string[];
     providerRetryScheduled: (seconds: number, attempt: number, maxAttempts: number) => string;
     providerRetryStarted: (attempt: number, maxAttempts: number) => string;
+    /** Stable accessible label for the retry live region; the ticking countdown itself stays aria-hidden. */
+    providerRetryWaiting: (attempt: number, maxAttempts: number) => string;
     providerRetryReason: Record<ProviderRetryReason, string>;
     safeResumePending: string;
     safeResume: string;
