@@ -132,9 +132,27 @@ export type SandboxTransformResult =
       message?: string;
     };
 
+/**
+ * Side-effect-free capability preview used by diagnostics. A successful probe
+ * identifies the executable that would enforce the sandbox without
+ * materializing per-execution resources such as a Windows broker manifest or
+ * Linux file-descriptor pins.
+ */
+export type SandboxCapabilityProbeResult =
+  | {
+      ok: true;
+      executable: string;
+      sandboxType: SandboxType;
+      requiresSandbox: boolean;
+      preference: SandboxablePreference;
+    }
+  | Extract<SandboxTransformResult, { ok: false }>;
+
 export interface SandboxBackend {
   readonly type: Exclude<SandboxType, 'none'>;
   isAvailable?(platform?: SandboxPlatform): boolean;
   canEnforceProfile?(profile: PermissionProfile): boolean;
+  /** Must not create files, open execution-owned descriptors, or scan workspace contents. */
+  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult;
   transform(request: SandboxTransformRequest): SandboxTransformResult;
 }

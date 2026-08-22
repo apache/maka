@@ -29,6 +29,7 @@ import {
 } from './linux-capability.js';
 import type {
   SandboxBackend,
+  SandboxCapabilityProbeResult,
   SandboxCommand,
   SandboxPathContext,
   SandboxTransformRequest,
@@ -89,6 +90,56 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
       }
     }
     return true;
+  }
+
+  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult {
+    const { command } = request;
+    const preference = request.preference ?? 'auto';
+    const platform = request.platform ?? process.platform;
+    if (command.profile.type !== 'managed' || command.profile.fileSystem.kind !== 'restricted') {
+      return failure(
+        'invalid_request',
+        'Linux bubblewrap backend only accepts managed restricted profiles.',
+        platform,
+        preference,
+      );
+    }
+    if (command.profile.fileSystem.entries.some((entry) => entry.access === 'deny')) {
+      return failure(
+        'invalid_request',
+        'Linux sandbox deny entries are not supported by the bubblewrap backend.',
+        platform,
+        preference,
+      );
+    }
+    const capability = this.capability(platform);
+    if (!capability.available) {
+      return failure(
+        'backend_not_available',
+        `Linux bubblewrap sandbox is not available (${capability.reason}).`,
+        platform,
+        preference,
+      );
+    }
+    if (networkRestricted(command.profile)) {
+      try {
+        networkSyscalls(this.options.arch ?? process.arch);
+      } catch (error) {
+        return failure(
+          'backend_not_available',
+          error instanceof Error ? error.message : String(error),
+          platform,
+          preference,
+        );
+      }
+    }
+    return {
+      ok: true,
+      executable: capability.bwrapPath,
+      sandboxType: 'linux',
+      requiresSandbox: true,
+      preference,
+    };
   }
 
   transform(request: SandboxTransformRequest): SandboxTransformResult {
@@ -421,7 +472,7 @@ function failure(
   message: string,
   platform: string,
   preference: 'auto' | 'require' | 'forbid',
-): SandboxTransformResult {
+): Extract<SandboxTransformResult, { ok: false }> {
   return {
     ok: false,
     reason,

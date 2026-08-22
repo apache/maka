@@ -41,6 +41,7 @@ import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuati
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
 import {
   createBuiltinSandboxManager,
+  createSandboxDiagnosticsProvider,
   isBuiltinFilesystemWorkerSandboxAvailable,
 } from '@maka/runtime/sandbox';
 import {
@@ -301,6 +302,12 @@ export async function createExecutionRuntimeHostComposition(
             resourceLocation: { kind: 'runtime' },
           })
         : undefined;
+    const sandboxDiagnostics = createSandboxDiagnosticsProvider({
+      ...(sandboxManager ? { sandboxManager } : {}),
+      ...(filesystemWorkerLaunchSpecProvider
+        ? { getFilesystemWorkerLaunchSpec: filesystemWorkerLaunchSpecProvider }
+        : {}),
+    });
     const filesystemWorker =
       sandboxManager && filesystemWorkerLaunchSpecProvider
         ? new FilesystemWorkerClient({
@@ -608,6 +615,7 @@ export async function createExecutionRuntimeHostComposition(
             context: backendContext,
             runtimePolicy: runtimePolicyStores,
             oauthCredentials,
+            sandboxDiagnostics,
             createRunComposer: createInteractiveRunComposerFactory({
               skills,
               memory: requireMemory(memory),
