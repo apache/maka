@@ -53,12 +53,12 @@
 
 ## Why Maka
 
-- **Local-first instead of hosted-first**: sessions, settings, and run records stay on your machine by default. You choose the model connection: cloud API, local model, or compatible gateway.
-- **Log is the Runtime**: model messages, Tool Calls, Tool Results, and termination facts enter Runtime Event Log. Sessions, UI, model context, and recovery are projections over that log.
-- **Context is not history**: Tool Result pruning and LLM Compaction change what the next inference sees without treating recorded evidence as disposable context.
-- **One execution authority**: Runtime Host owns Session, Turn, agent lifecycle, continuation, tools, and events. Eval owns only experiment semantics and results.
+- **Your machine, your data.** Sessions, settings, and run records stay local by default. You bring the model: a cloud API, a local model, or a compatible gateway.
+- **The record is kept.** Model messages, tool calls, tool results, and how a turn ended are written down. The UI and the next model call are views of that record, not the only copy.
+- **Shorter context is not deleted history.** Maka can omit old tool output from the next prompt without throwing away the saved evidence.
+- **One place runs the agent.** Desktop, the terminal, and Maka evaluation all go through Runtime Host. Eval only owns the experiment and its scores.
 
-Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
+Read [Maka Backend Architecture](./ARCHITECTURE.md) for the design.
 
 ## Surfaces
 
@@ -72,17 +72,17 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 
 ### Agent Runtime
 
-- Multiple model connections, streaming output, thinking, usage accounting, and provider-error normalization;
-- Local tools including `Read`, `Write`, `Edit`, `Bash`, `Glob`, and `Grep`;
-- Tool schema validation, dynamic availability, permission policy, watchdogs, abort, and error classification;
-- Runtime Event Log, AgentRun ledger, startup recovery, Turn Evidence, active Tool Result pruning, and history compaction.
+- Multiple model connections, streaming output, thinking, usage, and clearer provider errors;
+- Built-in tools: `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`. Computer Use and catalog skills are optional and not on by default;
+- Tools that leave the sandbox must be approved; runs can be aborted; failures are classified;
+- A durable execution record, crash recovery, and optional resume of an interrupted turn.
 
 ### Desktop workspace
 
 - Create, archive, search, rename, retry, regenerate, and branch sessions from a Turn;
-- Artifact lists and previews, workspace instructions, model settings, and permission settings;
-- Local memory, web search, and bot entry points;
-- Integrations are configured independently, and not every experimental entry is available by default.
+- Artifact lists and previews, workspace instructions, model settings, and sandbox settings;
+- Local memory and web search when configured;
+- Chat apps (IM bots) are experimental. See [IM onboarding](./docs/architecture/bot-onboarding-runtime.zh-CN.md).
 
 ### Evaluation
 
@@ -203,9 +203,9 @@ docs/               Architecture, product, security, privacy, and test contracts
 scripts/            Build hygiene, visual checks, smoke tests, and release helpers
 ```
 
-## Local data and security boundary
+## Local data and recovery
 
-Maka stores workspace data under Electron `userData` by default:
+Workspace data lives under Electron `userData` by default:
 
 ```text
 <Electron userData>/workspaces/default/
@@ -216,54 +216,12 @@ Maka stores workspace data under Electron `userData` by default:
   artifacts/
 ```
 
-Current boundaries that matter:
+- API keys and similar secrets are a local plaintext file (`credential-vault.json`), readable only by your OS account. The renderer never sees them.
+- Tools that write files or run a shell must pass the sandbox boundary first.
+- `runtime.sqlite` is the live record. Older JSONL transcripts and Electron `safeStorage` credential files are not imported; an upgraded workspace can show empty threads, and those credentials must be entered again.
+- Resuming an interrupted turn is off by default. Set `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` only if you want Desktop **Safe resume**, CLI `/resume`, and startup auto-resume — those calls hit the model and use tokens.
 
-- The current connection catalog is `connection-catalog.json`. Existing `llm-connections.json` files stay on disk and are not imported;
-- Sessions, messages, execution ledgers, workflows, usage, Automations, and Daily Review live in `runtime.sqlite`;
-- Runtime Policy credentials, including Connection API/OAuth material, request headers, web-search keys, and proxy passwords, live in local plaintext `credential-vault.json`, behind the OS account boundary, with POSIX directory mode `0700` and file mode `0600` enforced;
-- Runtime Host client profile access credentials are separate and live under `<Electron userData>/runtime-host-client/credentials.json`. Pre-existing Electron `safeStorage` credential/token files are not imported; affected users must re-authenticate;
-- Renderer does not receive plaintext credentials. File writes, Shell, and other tools that cross the sandbox boundary raise a boundary expansion request instead of running unchecked;
-- Eval does not construct Runtime or read Runtime storage. Maka subjects connect to an existing Runtime Host.
-
-Read [SECURITY.md](./SECURITY.md) for security reporting and policy, and [docs/README.md](./docs/README.md) for current privacy and sandbox contracts.
-
-## Runtime storage and recovery
-
-`runtime.sqlite` is the sole operational authority. It owns RuntimeEvents,
-session metadata and message history, Agent Graph control, core execution state,
-workflow state, usage and pricing, Artifact metadata, Automations, Daily Review,
-and Runtime continuation records. Artifact payload bytes remain regular files under
-`artifacts/`; connections, credentials, settings, MCP configuration, skills,
-and device identity remain configuration files.
-
-This storage generation does not import earlier File/JSONL authorities. On
-upgrade, legacy session titles may still be discoverable through current
-metadata, but conversation history that exists only in legacy transcript files
-is not copied into `session_messages` and opens as an empty thread. Likewise,
-pre-version or `safeStorage`-encrypted credential/token files are not migrated;
-users with only those copies must re-authenticate. This data-loss boundary is
-intentional for this release and must be considered before upgrading an
-existing workspace.
-
-Full operational backup uses the database owner's online SQLite backup API and
-copies canonical Artifact payloads under the Artifact writer lock. Its manifest
-binds every file by size and SHA-256. Validation checks the standalone SQLite
-snapshot's integrity, foreign keys, schema registry and required tables,
-decodes canonical session-message and Artifact records, and verifies Artifact
-payload sizes against SQLite metadata before restore. Backup and restore use
-owner-only file modes, file and directory synchronization, staging, and atomic
-publication.
-
-Runtime continuation remains opt-in:
-
-- `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` enables the Desktop interrupted-turn
-  **Safe resume** action, CLI/TUI `/resume`, and Desktop startup auto-resume.
-  These paths may call the configured model provider and consume tokens. Enable
-  the flag only when that behavior is explicitly desired.
-
-Phase 2 provides the durable write-side boundary and fail-closed safe-boundary
-continuation. Phase 3 reconciliation for indeterminate tool side effects is not
-implemented yet; ambiguous tool outcomes remain parked rather than retried.
+Details: [SECURITY.md](./SECURITY.md), [privacy](./docs/workspace-privacy-context.md), [resume](./docs/architecture/runtime-resume-architecture.md).
 
 ## Development and verification
 

@@ -51,10 +51,10 @@
 
 ## 为什么是 Maka
 
-- **本地优先，而不是云端托管优先**：会话、设置和运行记录默认保存在本机；模型连接由你配置，可以使用云 API、本地模型或兼容网关。
-- **Log is the Runtime**：模型消息、Tool Call、Tool Result 和终止事实进入 Runtime Event Log，Session、UI、模型上下文和恢复逻辑从日志生成投影。
-- **上下文不是历史本身**：Tool Result prune 和 LLM Compaction 只改变下一次推理看到什么，不把已记录的证据当作上下文垃圾删除。
-- **唯一执行 authority**：Runtime Host 拥有 Session、Turn、agent lifecycle、continuation、tools 和 events；Eval 只拥有实验语义与结果。
+- **数据在你的机器上。** 会话、设置和运行记录默认保存在本机。模型由你接：云 API、本地模型或兼容网关。
+- **做过的事会留下来。** 模型消息、工具调用、工具结果、这一轮怎么结束，都会记下来。界面和下一次模型请求只是这份记录的视图，不是唯一副本。
+- **缩短上下文不等于删掉历史。** Maka 可以不把旧的工具输出送进下一轮提示，但不会扔掉已保存的证据。
+- **Agent 只在一处跑。** 桌面、终端和 Maka 评测都走 Runtime Host。Eval 只负责实验和分数。
 
 完整设计见 [Maka Backend Architecture](./ARCHITECTURE.zh-CN.md)。
 
@@ -70,17 +70,17 @@
 
 ### Agent Runtime
 
-- 多模型连接、流式输出、thinking、usage 和 provider error normalization；
-- `Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep` 等本地工具；
-- Tool schema validation、动态 availability、permission policy、watchdog、abort 和错误分类；
-- Runtime Event Log、AgentRun ledger、启动恢复、Turn Evidence、active tool prune 与 history compaction。
+- 多模型连接、流式输出、thinking、用量统计，以及更清楚的 provider 错误；
+- 内置工具：`Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep`。Computer Use 和目录里的 skill 是可选的，默认不开；
+- 越出沙箱的工具需要批准；运行可以中止；失败会被分类；
+- 有一份可恢复的执行记录，进程崩溃后可以收敛状态，中断的回合可以按需续跑。
 
 ### Desktop Workspace
 
 - 会话创建、归档、搜索、重命名、重试、重新生成和从 Turn 分支；
-- Artifact 列表与预览、workspace instructions、模型与权限设置；
-- 本地记忆、联网搜索和机器人入口；
-- 不同集成需要单独配置，并非所有实验入口默认可用。
+- Artifact 列表与预览、工作区说明、模型和沙箱设置；
+- 配置后可使用本地记忆和联网搜索；
+- 聊天应用（IM bot）仍是实验能力，见 [IM 接入](./docs/architecture/bot-onboarding-runtime.zh-CN.md)。
 
 ### Evaluation
 
@@ -200,9 +200,9 @@ docs/               架构、产品、安全、隐私和测试契约
 scripts/            Build hygiene、视觉检查、smoke 和 release helpers
 ```
 
-## 本地数据与安全边界
+## 本地数据与恢复
 
-Maka 默认把 workspace 数据放在 Electron `userData` 下：
+Workspace 数据默认放在 Electron `userData` 下：
 
 ```text
 <Electron userData>/workspaces/default/
@@ -213,50 +213,12 @@ Maka 默认把 workspace 数据放在 Electron `userData` 下：
   artifacts/
 ```
 
-需要明确的当前边界：
+- API key 一类的秘密是本地明文文件（`credential-vault.json`），只有你的系统账号能读。界面进程拿不到明文。
+- 写文件、跑 Shell 的工具必须先过沙箱边界。
+- `runtime.sqlite` 是当前活记录。更早的 JSONL transcript 和 Electron `safeStorage` 凭据不会导入；升级后会话可能是空的，那些凭据需要重新填写。
+- 中断回合的续跑默认关闭。只有设置 `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 才会打开 Desktop **安全恢复**、CLI `/resume` 和启动时自动续跑——这些路径会打模型、消耗 token。
 
-- 当前连接配置文件为 `connection-catalog.json`；已有的 `llm-connections.json` 不会被导入；
-- 会话、消息、执行 ledger、workflow、usage、Automations 和 Daily Review 都保存在 `runtime.sqlite`；
-- Runtime Policy 凭据（包括 Connection API/OAuth 信息、请求头、Web Search key 和代理密码）保存在本地 plaintext `credential-vault.json`，依赖 OS 账号边界，并在 POSIX 上强制目录 `0700`、文件 `0600`；
-- Runtime Host client profile 的访问凭据单独保存在 `<Electron userData>/runtime-host-client/credentials.json`；历史 Electron `safeStorage` 凭据/token 文件不会被导入，仅保留这些历史副本的用户需要重新登录；
-- Renderer 不接收明文凭据；文件写入、Shell 以及其他越出沙箱边界的工具会发起边界扩张请求，而不是直接执行；
-- Eval 不构造 Runtime，也不读取 Runtime storage；Maka subject 连接已有 Runtime Host。
-
-安全问题请阅读 [SECURITY.md](./SECURITY.md)，当前隐私和 sandbox contract 见 [docs/README.md](./docs/README.md)。
-
-## 运行时存储与恢复
-
-`runtime.sqlite` 是唯一的运行 authority。它拥有 RuntimeEvents、
-session 元数据和消息历史、Agent Graph 控制、核心执行状态、
-workflow 状态、usage 与定价、Artifact 元数据、Automations、Daily Review
-以及 Runtime continuation 记录。Artifact 的 payload 字节仍是 `artifacts/` 下的普通文件；
-connections、credentials、settings、MCP 配置、skills
-和 device identity 仍是配置文件。
-
-本存储代次不会导入更早的 File/JSONL authority。升级时，
-legacy session 标题仍可能通过当前元数据被发现，但仅存在于 legacy transcript
-文件中的会话历史不会被复制进 `session_messages`，打开时会显示为空会话。同样，
-pre-version 或 `safeStorage` 加密的 credential/token 文件不会被迁移；
-仅保留这些副本的用户必须重新认证。这一数据丢失边界是本版本的有意设计，
-升级既有 workspace 之前必须仔细考虑。
-
-完整运维备份使用数据库 owner 的 online SQLite backup API，并在 Artifact
-writer 锁下复制 canonical Artifact payload。其 manifest 以 size 和 SHA-256
-绑定每个文件。校验会在 restore 之前检查独立 SQLite snapshot 的完整性、
-foreign keys、schema registry 与必需表，解码 canonical session-message
-和 Artifact 记录，并对照 SQLite 元数据核对 Artifact payload 大小。备份与恢复
-使用 owner-only 文件权限、文件与目录同步、staging 以及原子发布。
-
-Runtime continuation 仍为显式开启：
-
-- `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 会开启 Desktop 中断回合的
-  **安全恢复**（Safe resume）操作、CLI/TUI 的 `/resume` 以及 Desktop 启动时自动续跑。
-  这些路径都可能调用已配置的模型 provider 并消耗 token，
-  只应在你明确需要这一行为时开启。
-
-Phase 2 交付 durable 的写侧边界和 fail-closed 的 safe-boundary continuation。
-Phase 3 针对不确定工具副作用的 reconcile 尚未实现；结果不明的工具结果仍保持 park，
-不会被盲目重试。
+细节见 [SECURITY.md](./SECURITY.md)、[隐私](./docs/workspace-privacy-context.md)、[续跑](./docs/architecture/runtime-resume-architecture.zh-CN.md)。
 
 ## 开发与验证
 
