@@ -52,7 +52,11 @@ describe('Runtime Host operation dispatcher', () => {
     );
   });
 
-  test('converts handler throws and malformed outcomes to declared internal_failure', async () => {
+  test('records handler failures and converts them to declared internal_failure', async (t) => {
+    const logs: string[] = [];
+    t.mock.method(console, 'error', (...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
     const malformedOutcomes: unknown[] = [
       { ok: true, result: { sessionId: 'session-1', turnId: 'turn-1' } },
       {
@@ -77,11 +81,15 @@ describe('Runtime Host operation dispatcher', () => {
     const thrown = await dispatchOperation(
       request,
       handlersWithQuery(async () => {
-        throw new Error('private failure');
+        throw new Error('api_key=sk-secretvalue123');
       }),
       context,
     );
     assert.deepEqual(thrown, internalFailure());
+    assert.equal(logs.length, malformedOutcomes.length + 1);
+    assert.match(logs.at(-1) ?? '', /unexpected turn\.query failure/);
+    assert.match(logs.at(-1) ?? '', /\[redacted\]/i);
+    assert.doesNotMatch(logs.at(-1) ?? '', /sk-secretvalue123/);
   });
 
   test('passes only decoded valid success and declared exact failure outcomes', async () => {
@@ -107,7 +115,8 @@ describe('Runtime Host operation dispatcher', () => {
     });
   });
 
-  test('revalidates Message operation outcomes through the shared decoder', async () => {
+  test('revalidates Message operation outcomes through the shared decoder', async (t) => {
+    t.mock.method(console, 'error', () => undefined);
     const messageRequest = {
       requestId: 'submit-request-1',
       operation: 'turn.message.submit',

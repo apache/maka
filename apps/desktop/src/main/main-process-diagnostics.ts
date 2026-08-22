@@ -434,21 +434,54 @@ function appendTurnTrace(
   if (turn.failure) {
     lines.push(`Failure: ${turn.failure.code}`);
     if (turn.failure.message) lines.push(`Failure message: ${turn.failure.message}`);
+    if (turn.failure.attributedToStepId) {
+      lines.push(`Failure step: ${turn.failure.attributedToStepId}`);
+    }
   }
-  const calls = turn.steps.filter((step) => step.kind === 'model_call');
-  lines.push(`Model calls (${calls.length})`);
-  if (calls.length === 0) {
+  lines.push(`Steps (${turn.steps.length})`);
+  if (turn.steps.length === 0) {
     lines.push('<none recorded>');
     return;
   }
-  for (const call of calls) {
-    lines.push(
-      `- ${call.providerId}/${call.modelId} · ${call.status} · ${call.durationMs}ms · ${call.attempts.length} attempt(s)`,
-    );
-    for (const attempt of call.attempts) {
-      lines.push(
-        `  - ${attempt.attemptId} · ${attempt.status} · ${attempt.latencyMs}ms${attempt.errorClass ? ` · ${attempt.errorClass}` : ''}`,
-      );
+  for (const step of turn.steps) {
+    switch (step.kind) {
+      case 'model_call':
+        lines.push(
+          `- [${step.id}] model ${step.callKind} · ${step.providerId}/${step.modelId} · ${step.status} · ${step.durationMs}ms · ${step.attempts.length} attempt(s)`,
+        );
+        for (const attempt of step.attempts) {
+          const details = [
+            attempt.errorClass,
+            attempt.httpStatus === undefined ? undefined : `HTTP ${attempt.httpStatus}`,
+            attempt.providerCode === undefined ? undefined : `provider ${attempt.providerCode}`,
+            attempt.providerRequestId === undefined
+              ? undefined
+              : `request ${attempt.providerRequestId}`,
+            attempt.retryable === undefined ? undefined : `retryable ${attempt.retryable}`,
+          ].filter((detail): detail is string => detail !== undefined);
+          lines.push(
+            `  - ${attempt.attemptId} · ${attempt.status} · ${attempt.latencyMs}ms${details.length > 0 ? ` · ${details.join(' · ')}` : ''}`,
+          );
+        }
+        break;
+      case 'tool':
+        lines.push(
+          `- [${step.id}] tool ${step.toolName} · ${step.status}${step.durationMs === undefined ? '' : ` · ${step.durationMs}ms`}${step.recoveryPolicy ? ` · recovery ${step.recoveryPolicy}` : ''}${step.recovered ? ` · ${step.recovered.disposition} (${step.recovered.reasonCode})` : ''}`,
+        );
+        break;
+      case 'permission':
+        lines.push(
+          `- [${step.id}] permission${step.toolName ? ` ${step.toolName}` : ''} · ${step.decision}`,
+        );
+        break;
+      case 'compaction':
+        lines.push(
+          `- [${step.id}] compaction${step.checkpointId ? ` · checkpoint ${step.checkpointId}` : ''}`,
+        );
+        break;
+      case 'error':
+        lines.push(`- [${step.id}] error · ${step.message}`);
+        break;
     }
   }
 }

@@ -399,11 +399,45 @@ test('copies bounded evidence for the exact failed Turn', async () => {
                 completedAt: 4_501,
                 latencyMs: 3_501,
                 errorClass: 'unknown',
+                httpStatus: 503,
+                providerCode: 'no_endpoint',
+                providerRequestId: 'provider-request-1',
+                retryable: true,
                 costBasis: 'unpriced',
                 usageBasis: 'missing',
               },
             ],
             status: 'failed',
+          },
+          {
+            kind: 'tool',
+            id: 'tool-1',
+            turnId,
+            runId: 'run-1',
+            startedAt: 2_000,
+            endedAt: 2_100,
+            durationMs: 100,
+            toolName: 'web_search',
+            status: 'failed',
+            recoveryPolicy: 'retry_safe',
+            recovered: { disposition: 'parked', reasonCode: 'host_restart' },
+          },
+          {
+            kind: 'permission',
+            id: 'permission-1',
+            turnId,
+            runId: 'run-1',
+            startedAt: 2_101,
+            toolName: 'web_search',
+            decision: 'denied',
+          },
+          {
+            kind: 'compaction',
+            id: 'compaction-1',
+            turnId,
+            runId: 'run-1',
+            startedAt: 3_000,
+            checkpointId: 'checkpoint-1',
           },
           {
             kind: 'error',
@@ -452,6 +486,22 @@ test('copies bounded evidence for the exact failed Turn', async () => {
 
   assert.match(clipboard, /Runtime Host execution[\s\S]*Run: run-1/);
   assert.match(clipboard, /Failure message: No endpoints accepted the request/);
+  assert.match(clipboard, /Failure step: call-1/);
+  assert.match(
+    clipboard,
+    /model main · openrouter\/openrouter\/free · failed · 3501ms · 1 attempt\(s\)/,
+  );
+  assert.match(
+    clipboard,
+    /attempt-1 · failed · 3501ms · unknown · HTTP 503 · provider no_endpoint · request provider-request-1 · retryable true/,
+  );
+  assert.match(
+    clipboard,
+    /tool web_search · failed · 100ms · recovery retry_safe · parked \(host_restart\)/,
+  );
+  assert.match(clipboard, /permission web_search · denied/);
+  assert.match(clipboard, /compaction · checkpoint checkpoint-1/);
+  assert.match(clipboard, /error · No endpoints accepted the request/);
 });
 
 test('keeps every diagnostic read bound to the scoped Host during a switch', async () => {
