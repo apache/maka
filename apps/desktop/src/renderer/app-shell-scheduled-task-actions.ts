@@ -6,6 +6,7 @@ import { localizedShellErrorMessage } from "./locales/shell-copy.js";
 import type { DesktopRuntimeHostRef } from '../preload/bridge-contract.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
+  runIfDefaultRuntimeHostCurrent,
   runOnDefaultRuntimeHost,
 } from './default-runtime-host-operation.js';
 
@@ -64,7 +65,7 @@ export function createAppShellScheduledTaskActions(deps: {
       const next = await runOnDefaultRuntimeHost((host) =>
         window.maka.scheduledTasks.list(host),
       );
-      setScheduledTasks(next.value);
+      await runIfDefaultRuntimeHostCurrent(next.host, () => setScheduledTasks(next.value));
     } catch (error) {
       if (options.shouldShowError?.() ?? true) {
         toastApi.error(

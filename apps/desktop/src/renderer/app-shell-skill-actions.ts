@@ -10,6 +10,7 @@ import { openSkillFailureCopy } from './app-shell-copy';
 import { createOpenSkillAction } from './app-shell-open-skill-action';
 import {
   defaultRuntimeHostDiagnosticTarget,
+  runIfDefaultRuntimeHostCurrent,
   runOnDefaultRuntimeHost,
 } from './default-runtime-host-operation.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -84,7 +85,7 @@ export function createAppShellSkillActions(deps: {
   async function refreshSkills(options: { shouldShowError?: () => boolean } = {}) {
     try {
       const next = await runOnDefaultRuntimeHost((host) => window.maka.skills.list(host));
-      setSkills(next.value);
+      await runIfDefaultRuntimeHostCurrent(next.host, () => setSkills(next.value));
     } catch (error) {
       if (options.shouldShowError?.() ?? true) {
         reportRuntimeHostError(copy.refreshSkillsFailedTitle, copy.refreshSkillsFallback, error);
@@ -95,7 +96,7 @@ export function createAppShellSkillActions(deps: {
   async function refreshManagedSkillSources(options: { shouldShowError?: () => boolean } = {}) {
     try {
       const next = await runOnDefaultRuntimeHost((host) => window.maka.skills.sources.list(host));
-      setManagedSkillSources(next.value);
+      await runIfDefaultRuntimeHostCurrent(next.host, () => setManagedSkillSources(next.value));
     } catch (error) {
       if (options.shouldShowError?.() ?? true) {
         reportRuntimeHostError(copy.refreshSourcesFailedTitle, copy.refreshSourcesFallback, error);
@@ -106,7 +107,7 @@ export function createAppShellSkillActions(deps: {
   async function refreshBundledSkillCatalog(options: { shouldShowError?: () => boolean } = {}) {
     try {
       const next = await runOnDefaultRuntimeHost((host) => window.maka.skills.catalog.list(host));
-      setBundledSkillCatalog(next.value);
+      await runIfDefaultRuntimeHostCurrent(next.host, () => setBundledSkillCatalog(next.value));
     } catch (error) {
       if (options.shouldShowError?.() ?? true) {
         reportRuntimeHostError(copy.refreshBundledFailedTitle, copy.refreshBundledFallback, error);

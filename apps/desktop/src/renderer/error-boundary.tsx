@@ -7,6 +7,7 @@
 // crashed early just left the user staring at an empty viewport).
 
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { ICON_SIZE, AlertTriangle, Check, Clipboard, RotateCw } from '@maka/ui/icons';
 import { Button as UiButton, Card, redactSecrets } from '@maka/ui';
@@ -18,20 +19,36 @@ type State = {
   copyState: 'idle' | 'pending' | 'copied' | 'failed';
 };
 
+const RENDERER_ERROR_DETAILS_MAX_BYTES = 24 * 1024;
+const RENDERER_USER_AGENT_MAX_BYTES = 2 * 1024;
+const RENDERER_LOCATION_MAX_BYTES = 8 * 1024;
+export const RENDERER_ERROR_REPORT_MAX_BYTES = 32 * 1024;
+const RENDERER_FIELD_TRUNCATION_MARKER = '\n<renderer diagnostic field truncated>';
+const RENDERER_REPORT_TRUNCATION_MARKER = '\n<renderer diagnostic report truncated>';
+
 export function formatRendererErrorReport(error: Error, info?: ErrorInfo | null): string {
   const lines = [
     'Maka renderer error report',
     `Captured at: ${new Date().toISOString()}`,
     '',
-    formatRendererErrorDetails(error, info),
+    boundedRendererField(formatRendererErrorDetails(error, info), RENDERER_ERROR_DETAILS_MAX_BYTES),
   ];
   if (typeof navigator !== 'undefined' && navigator.userAgent) {
-    lines.push('', `User agent: ${navigator.userAgent}`);
+    lines.push(
+      '',
+      `User agent: ${boundedRendererField(navigator.userAgent, RENDERER_USER_AGENT_MAX_BYTES)}`,
+    );
   }
   if (typeof window !== 'undefined' && window.location?.href) {
-    lines.push(`Location: ${window.location.href}`);
+    lines.push(
+      `Location: ${boundedRendererField(window.location.href, RENDERER_LOCATION_MAX_BYTES)}`,
+    );
   }
-  return redactSecrets(lines.join('\n'));
+  return truncateUtf8(
+    redactSecrets(lines.join('\n')),
+    RENDERER_ERROR_REPORT_MAX_BYTES,
+    RENDERER_REPORT_TRUNCATION_MARKER,
+  );
 }
 
 export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLocale }, State> {
@@ -168,4 +185,8 @@ function formatRendererErrorDetails(error: Error, info?: ErrorInfo | null): stri
     lines.push('', 'React component stack:', info.componentStack.trim());
   }
   return redactSecrets(lines.join('\n'));
+}
+
+function boundedRendererField(value: string, maximumBytes: number): string {
+  return truncateUtf8(redactSecrets(value), maximumBytes, RENDERER_FIELD_TRUNCATION_MARKER);
 }

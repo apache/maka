@@ -11,6 +11,7 @@ import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.j
 import { isSessionWorkspaceUnavailableError, showSessionWorkspaceUnavailableToast } from './session-workspace-errors';
 import {
   defaultRuntimeHostDiagnosticTarget,
+  runIfDefaultRuntimeHostCurrent,
   runOnDefaultRuntimeHost,
 } from './default-runtime-host-operation.js';
 
@@ -95,14 +96,7 @@ export function createAppShellProjectActions(deps: {
   };
 
   async function refreshDefaultProjectPresentation(host: DesktopRuntimeHostRef): Promise<void> {
-    let currentHost: DesktopRuntimeHostRef;
-    try {
-      currentHost = await window.maka.runtimeHostProfiles.getDefaultHost();
-    } catch {
-      return;
-    }
-    if (currentHost.profileId !== host.profileId || currentHost.hostId !== host.hostId) return;
-    await refreshDefaultProjectState(host);
+    await runIfDefaultRuntimeHostCurrent(host, () => refreshDefaultProjectState(host));
   }
 
   async function refreshProjects(): Promise<ProjectRecord[]> {
