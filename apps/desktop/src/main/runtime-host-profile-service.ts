@@ -750,6 +750,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     },
     markManagedServiceUninstalling(expected) {
       return mutateProfiles(async () => {
+        assertPairingComplete(expected.profile.id);
         const current = (await catalog.read()).profiles.find(
           (profile) => profile.id === expected.profile.id,
         );
@@ -768,6 +769,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     },
     clearManagedServiceBinding(expected) {
       return mutateProfiles(async () => {
+        assertPairingComplete(expected.profile.id);
         const current = (await catalog.read()).profiles.find(
           (profile) => profile.id === expected.profile.id,
         );

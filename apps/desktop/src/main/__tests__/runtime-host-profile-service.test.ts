@@ -520,6 +520,12 @@ test("recovers interrupted managed credential rotation after restart", async () 
     RuntimeHostPairingFinalizationInterruptedError,
   );
   assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "new-token");
+  const managed = await service.resolveManagedService(MANAGED_PROFILE.id);
+  assert.ok(managed);
+  await assert.rejects(
+    service.markManagedServiceUninstalling(managed),
+    /unfinished pairing/u,
+  );
 
   const recoveredStartup = await resolveDesktopRuntimeHostStartup(root, { catalog });
   assert.equal(recoveredStartup.pairingIntents.length, 1);
