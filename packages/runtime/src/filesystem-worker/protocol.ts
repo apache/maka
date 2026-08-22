@@ -8,6 +8,15 @@ import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 // JSON protocol boundary.
 export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 7 as const;
 
+/** The single authority on which operation kinds are writes. Shared by the
+ * client (permission/identity decisions) and the worker (operation guards) so
+ * the set cannot drift. */
+export function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
+  return kind === 'write' || kind === 'apply_patch' || kind === 'edit' || kind === 'format_json'
+    ? 'write'
+    : 'read';
+}
+
 const path = z.string().min(1).max(4096);
 const cwd = z.string().min(1).max(4096);
 

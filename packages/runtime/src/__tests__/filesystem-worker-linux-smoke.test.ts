@@ -61,7 +61,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       },
       cwd: workspace,
       mode: 'ask',
-    expectedIdentity: 'unchecked',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(await readFile(sourceFile, 'utf8'), 'export const healthSignal = true;\n');
 
@@ -69,7 +69,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       operation: { kind: 'read', path: sourceFile },
       cwd: workspace,
       mode: 'ask',
-    expectedIdentity: 'unchecked',
+      expectedIdentity: 'unchecked',
     });
     assert.deepEqual(read, {
       kind: 'read',
@@ -103,7 +103,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       },
       cwd: workspace,
       mode: 'ask',
-    expectedIdentity: 'unchecked',
+      expectedIdentity: 'unchecked',
     });
     assert.deepEqual(glob, { kind: 'glob', files: ['health.ts'] });
 
@@ -118,7 +118,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       },
       cwd: workspace,
       mode: 'ask',
-    expectedIdentity: 'unchecked',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(grep.kind, 'grep');
     if (grep.kind === 'grep') {
@@ -139,7 +139,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       },
       cwd: workspace,
       mode: 'ask',
-    expectedIdentity: 'unchecked',
+      expectedIdentity: 'unchecked',
     });
 
     assert.equal(await readFile(target, 'utf8'), 'created');
@@ -155,7 +155,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
         operation: { kind: 'write', path: allowedPath, content: 'blocked' },
         cwd: workspace,
         mode: 'ask',
-      expectedIdentity: 'unchecked',
+        expectedIdentity: 'unchecked',
       }),
       isPathDenied,
     );
@@ -165,7 +165,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
         cwd: workspace,
         mode: 'ask',
         executionBoundary,
-      expectedIdentity: 'unchecked',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -184,7 +184,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       cwd: workspace,
       mode: 'ask',
       executionBoundary,
-    expectedIdentity: 'unchecked',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(await readFile(allowedPath, 'utf8'), 'outside-ok');
   });

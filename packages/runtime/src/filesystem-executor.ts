@@ -31,6 +31,7 @@ import type {
 } from './filesystem-worker/client.js';
 import { isSupportedImagePath, type ImageMimeType } from './image-file.js';
 import type { FilesystemWorkerResult } from './filesystem-worker/protocol.js';
+import { operationAccess } from './filesystem-worker/protocol.js';
 import { resolveCanonicalDirectoryEntryTarget } from './path-containment.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import { SandboxCommandError } from './sandbox/errors.js';
@@ -217,16 +218,13 @@ export function createBoundaryFilesystemExecutor(
       ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
       // The worker client now requires an explicit T0 marker (#3484): a
       // mutation carries its captured identity, or 'missing' when T0 saw no
-      // target; a read never participates in CAS and says so. The kind list
-      // deliberately mirrors `operationAccess` in the worker client
-      // (write | apply_patch | edit | format_json) — `mutates` is narrower
-      // and would silently drop the apply_patch identity onto 'unchecked',
-      // disabling the queue-window CAS on the main editing channel.
+      // target; a read never participates in CAS and says so. `operationAccess`
+      // is the single authority on which kinds are writes (write | apply_patch
+      // | edit | format_json) — `mutates` is narrower and would silently drop
+      // the apply_patch identity onto 'unchecked', disabling the queue-window
+      // CAS on the main editing channel.
       expectedIdentity:
-        call.operation.kind === 'write' ||
-        call.operation.kind === 'apply_patch' ||
-        call.operation.kind === 'edit' ||
-        call.operation.kind === 'format_json'
+        operationAccess(call.operation.kind) === 'write'
           ? (expectedIdentity ?? 'missing')
           : 'unchecked',
     });

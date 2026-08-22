@@ -25,6 +25,7 @@ import {
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
   FilesystemWorkerOperationSchema,
+  operationAccess,
   operationUsesDirectoryEntry,
   parseFilesystemWorkerResponse,
   type FilesystemWorkerErrorCode,
@@ -650,12 +651,6 @@ function deriveWorkerProfile(
     },
     network: { kind: 'restricted' },
   };
-}
-
-function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
-  return kind === 'write' || kind === 'apply_patch' || kind === 'edit' || kind === 'format_json'
-    ? 'write'
-    : 'read';
 }
 
 function operationScope(kind: FilesystemWorkerOperation['kind']): 'exact' | 'subtree' | 'auto' {

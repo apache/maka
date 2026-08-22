@@ -24,6 +24,7 @@ import {
 import { isSupportedImagePath, readWorkspaceImage } from '../image-file.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
+  operationAccess,
   operationUsesDirectoryEntry,
   type FilesystemWorkerErrorCode,
   type FilesystemWorkerOperation,
@@ -66,12 +67,6 @@ export interface FilesystemWorkerGrepRunResult {
 export type FilesystemWorkerGrepRunner = (
   input: FilesystemWorkerGrepRunInput,
 ) => Promise<FilesystemWorkerGrepRunResult>;
-
-function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
-  return kind === 'write' || kind === 'apply_patch' || kind === 'edit' || kind === 'format_json'
-    ? 'write'
-    : 'read';
-}
 
 export async function executeFilesystemWorkerRequest(
   request: FilesystemWorkerRequest,

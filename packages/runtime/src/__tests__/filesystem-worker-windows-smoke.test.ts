@@ -103,7 +103,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
       operation: { kind: 'read', path: target },
       cwd: workspace,
       mode: 'ask',
-    expectedIdentity: 'unchecked',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(read.kind, 'read');
     if (read.kind === 'read') assert.match(read.content, /windows-relay-ok/);
@@ -119,7 +119,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
         operation: { kind: 'write', path: missing, content: 'blocked' },
         cwd: workspace,
         mode: 'ask',
-      expectedIdentity: 'unchecked',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) =>
         error instanceof FilesystemWorkerClientError &&
@@ -139,7 +139,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
       operation: { kind: 'glob', path: sourceDirectory, pattern: '**/*.ts' },
       cwd: workspace,
       mode: 'ask',
-    expectedIdentity: 'unchecked',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(globResult.kind, 'glob');
     if (globResult.kind === 'glob') {
@@ -162,7 +162,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
         },
         cwd: workspace,
         mode: 'ask',
-      expectedIdentity: 'unchecked',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) =>
         error instanceof FilesystemWorkerClientError && error.reason === 'grep_unavailable',
@@ -179,7 +179,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
         },
         cwd: workspace,
         mode: 'ask',
-      expectedIdentity: 'unchecked',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) =>
         error instanceof FilesystemWorkerClientError && error.reason === 'path_denied',

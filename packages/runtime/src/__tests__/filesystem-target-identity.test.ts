@@ -155,6 +155,37 @@ describe('filesystem worker target identity CAS', () => {
     assert.equal(await readFile(target, 'utf8'), 'replacement\nold\n');
   });
 
+  test('rejects an apply_patch update when the target inode changed after authorisation', async () => {
+    const cwd = await temporaryDirectory('maka-identity-applypatch-update-');
+    const target = join(cwd, 'file.txt');
+    const replacement = join(cwd, 'replacement.txt');
+    await writeFile(target, 'line\noriginal\n', 'utf8');
+    await writeFile(replacement, 'line\nreplacement\n', 'utf8');
+
+    const identity = await captureIdentity(target);
+    await rename(replacement, target);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        {
+          kind: 'apply_patch',
+          cwd,
+          path: target,
+          action: 'update',
+          diff: '--- a\n+++ b\n@@ -1,2 +1,2 @@\n line\n-original\n+updated\n',
+        },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
+      ),
+    );
+
+    assert.equal(response.ok, false);
+    assert.equal(response.error?.code, 'path_changed');
+    // The replacement content must be untouched (the patch never applied).
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(target, 'utf8'), 'line\nreplacement\n');
+  });
+
   test('creates a missing target without requiring an identity', async () => {
     const cwd = await temporaryDirectory('maka-identity-missing-');
     const target = join(cwd, 'brand-new.txt');
