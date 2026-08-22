@@ -21,14 +21,25 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Text } from '@astryxdesign/core/Text';
-import { Banner, Button, Spinner, useToast, useUiLocale } from '@maka/ui';
+import { Badge, Banner, Button, Spinner, useToast, useUiLocale } from '@maka/ui';
+import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
 import type { RemoteRuntimeHostProfile } from '@maka/runtime-host/client';
 import type {
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostManagementResult,
+  DesktopRuntimeHostAccessCredential,
+  DesktopRuntimeHostAccessSnapshot,
 } from '../../preload/bridge-contract.js';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
+
+type RuntimeHostManagementConfirmation =
+  | { readonly kind: 'uninstall' }
+  | { readonly kind: 'rotate' }
+  | {
+      readonly kind: 'revoke';
+      readonly credential: DesktopRuntimeHostAccessCredential;
+    };
 
 export function RuntimeHostManagementDialog(props: {
   readonly profile: RemoteRuntimeHostProfile | undefined;
@@ -41,7 +52,8 @@ export function RuntimeHostManagementDialog(props: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [uninstalledRoot, setUninstalledRoot] = useState<string>();
-  const [confirmingUninstall, setConfirmingUninstall] = useState(false);
+  const [access, setAccess] = useState<DesktopRuntimeHostAccessSnapshot>();
+  const [confirmation, setConfirmation] = useState<RuntimeHostManagementConfirmation>();
   const logsRef = useRef<HTMLPreElement>(null);
 
   const profile = props.profile;
@@ -51,7 +63,8 @@ export function RuntimeHostManagementDialog(props: {
     setResult(undefined);
     setError(undefined);
     setUninstalledRoot(undefined);
-    setConfirmingUninstall(false);
+    setAccess(undefined);
+    setConfirmation(undefined);
     setLoading(true);
     void window.maka.runtimeHostManagement.run(profile.id, 'status').then(
       (response) => {
@@ -103,6 +116,60 @@ export function RuntimeHostManagementDialog(props: {
     }
   }
 
+  async function loadAccess(): Promise<void> {
+    if (!profile) return;
+    setLoading(true);
+    setError(undefined);
+    try {
+      setAccess(await window.maka.runtimeHostManagement.listCredentials(profile.id));
+    } catch (failure) {
+      const message = settingsActionErrorMessage(failure, locale);
+      setError(message);
+      toast.error(copy.accessActionFailed, message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function rotateCredential(): Promise<void> {
+    if (!profile) return;
+    setLoading(true);
+    setError(undefined);
+    try {
+      setAccess(await window.maka.runtimeHostManagement.rotateCredential(profile.id));
+    } catch (failure) {
+      const message = settingsActionErrorMessage(failure, locale);
+      setError(message);
+      toast.error(copy.accessActionFailed, message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function revokeCredential(): Promise<void> {
+    const revokeTarget = confirmation?.kind === 'revoke'
+      ? confirmation.credential
+      : undefined;
+    if (!profile || !revokeTarget) return;
+    setLoading(true);
+    setError(undefined);
+    try {
+      setAccess(
+        await window.maka.runtimeHostManagement.revokeCredential(
+          profile.id,
+          revokeTarget.credentialId,
+        ),
+      );
+      setConfirmation(undefined);
+    } catch (failure) {
+      const message = settingsActionErrorMessage(failure, locale);
+      setError(message);
+      toast.error(copy.accessActionFailed, message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const service = result?.service;
   const uninstalled = uninstalledRoot !== undefined;
   const serviceInstalled = service !== undefined && service.state !== 'not_installed';
@@ -136,11 +203,18 @@ export function RuntimeHostManagementDialog(props: {
                 </div>
               ) : null}
               {error ? <Banner status="error" title={error} /> : null}
-              {confirmingUninstall ? (
+              {confirmation?.kind === 'uninstall' ? (
                 <Banner
                   status="warning"
                   title={copy.uninstallConfirmTitle}
                   description={copy.uninstallConfirmBody}
+                />
+              ) : null}
+              {confirmation?.kind === 'rotate' ? (
+                <Banner
+                  status="warning"
+                  title={copy.rotateCredentialConfirmTitle}
+                  description={copy.rotateCredentialConfirmBody}
                 />
               ) : null}
               {uninstalledRoot ? (
@@ -149,7 +223,7 @@ export function RuntimeHostManagementDialog(props: {
                   title={copy.uninstallRetained(uninstalledRoot)}
                 />
               ) : null}
-              {service ? (
+              {!access && service ? (
                 <>
                   <dl className="settingsRuntimeHostManagementFacts">
                     <Fact label={copy.serviceStatus} value={copy.serviceState[service.state]} />
@@ -189,28 +263,156 @@ export function RuntimeHostManagementDialog(props: {
                   ) : null}
                 </>
               ) : null}
+              {access ? (
+                <div className="settingsRuntimeHostAccess">
+                  <Text type="body" weight="semibold">{copy.accessTitle}</Text>
+                  {!access.canRotate ? (
+                    <Text type="supporting" color="secondary">
+                      {copy.enableBeforeRotate}
+                    </Text>
+                  ) : null}
+                  {!serviceActive ? (
+                    <Text type="supporting" color="secondary">
+                      {copy.startBeforeChangingAccess}
+                    </Text>
+                  ) : null}
+                  {confirmation?.kind === 'revoke' ? (
+                    <Banner
+                      status="warning"
+                      title={copy.revokeCredentialConfirm(
+                        confirmation.credential.principalId,
+                      )}
+                      description={copy.revokeCredentialConfirmBody}
+                    />
+                  ) : null}
+                  {access.credentials.length === 0 ? (
+                    <Text type="supporting" color="secondary">
+                      {copy.noAccessCredentials}
+                    </Text>
+                  ) : (
+                    <ul className="settingsRuntimeHostAccessList">
+                      {access.credentials.map((credential) => (
+                        <li key={credential.credentialId}>
+                          <div className="settingsRuntimeHostAccessIdentity">
+                            <div>
+                              <strong>{credential.principalId}</strong>
+                              <span>
+                                {credential.principalKind === 'capability_provider'
+                                  ? copy.accessKind.capabilityProvider
+                                  : copy.accessKind.owner}
+                              </span>
+                            </div>
+                            <div className="settingsRuntimeHostAccessBadges">
+                              {credential.isCurrentDesktop ? (
+                                <Badge variant="neutral" label={copy.currentDesktop} />
+                              ) : null}
+                              {credential.status === 'pending' ? (
+                                <Badge variant="warning" label={copy.accessPending} />
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="settingsRuntimeHostAccessMeta">
+                            <span>{copy.accessCreated(formatCredentialDate(credential.createdAt, locale))}</span>
+                            {credential.isCurrentDesktop ? (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                label={copy.rotateCredential}
+                                isDisabled={
+                                  loading ||
+                                  confirmation !== undefined ||
+                                  credential.status === 'pending' ||
+                                  !access.canRotate ||
+                                  !serviceActive
+                                }
+                                onClick={() => setConfirmation({ kind: 'rotate' })}
+                              />
+                            ) : (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                label={copy.revokeCredential}
+                                isDisabled={
+                                  loading || confirmation !== undefined || !serviceActive
+                                }
+                                onClick={() => setConfirmation({ kind: 'revoke', credential })}
+                              />
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
             </div>
           </LayoutContent>
         )}
         footer={(
           <LayoutFooter hasDivider>
             <div className="settingsRuntimeHostManagementActions">
-              {confirmingUninstall ? (
+              {confirmation?.kind === 'revoke' ? (
                 <>
                   <Button
                     variant="secondary"
                     label={copy.cancel}
                     isDisabled={loading}
-                    onClick={() => setConfirmingUninstall(false)}
+                    onClick={() => setConfirmation(undefined)}
+                  />
+                  <Button
+                    variant="destructive"
+                    label={copy.revokeCredential}
+                    isDisabled={loading}
+                    onClick={() => void revokeCredential()}
+                  />
+                </>
+              ) : confirmation?.kind === 'uninstall' ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    label={copy.cancel}
+                    isDisabled={loading}
+                    onClick={() => setConfirmation(undefined)}
                   />
                   <Button
                     variant="destructive"
                     label={copy.uninstallConfirm}
                     isDisabled={loading}
-                    clickAction={async () => {
-                      await run('uninstall');
-                      setConfirmingUninstall(false);
+                    onClick={() => void run('uninstall').then(() => setConfirmation(undefined))}
+                  />
+                </>
+              ) : confirmation?.kind === 'rotate' ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    label={copy.cancel}
+                    isDisabled={loading}
+                    onClick={() => setConfirmation(undefined)}
+                  />
+                  <Button
+                    variant="primary"
+                    label={copy.rotateCredentialConfirm}
+                    isDisabled={loading}
+                    onClick={() => void rotateCredential().then(() => setConfirmation(undefined))}
+                  />
+                </>
+              ) : access ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    label={copy.back}
+                    isDisabled={loading}
+                    onClick={() => {
+                      setAccess(undefined);
+                      setConfirmation(undefined);
+                      setError(undefined);
                     }}
+                  />
+                  <Button
+                    variant="primary"
+                    label={copy.refresh}
+                    isDisabled={loading}
+                    onClick={() => void loadAccess()}
                   />
                 </>
               ) : (
@@ -226,7 +428,15 @@ export function RuntimeHostManagementDialog(props: {
                       variant="secondary"
                       label={copy.repairService}
                       isDisabled={loading}
-                      clickAction={() => run('install')}
+                      onClick={() => void run('install')}
+                    />
+                  ) : null}
+                  {profile && serviceInstalled && result?.accessManagementAvailable && !uninstalled ? (
+                    <Button
+                      variant="secondary"
+                      label={copy.manageAccess}
+                      isDisabled={loading}
+                      onClick={() => void loadAccess()}
                     />
                   ) : null}
                   {result && profile && !uninstalled ? (
@@ -235,14 +445,14 @@ export function RuntimeHostManagementDialog(props: {
                         variant="secondary"
                         label={copy.refresh}
                         isDisabled={loading}
-                        clickAction={() => run('status')}
+                        onClick={() => void run('status')}
                       />
                       {serviceInstalled ? (
                         <Button
                           variant="secondary"
                           label={copy.showLogs}
                           isDisabled={loading}
-                          clickAction={() => run('logs')}
+                          onClick={() => void run('logs')}
                         />
                       ) : null}
                       {serviceInstalled && serviceActive ? (
@@ -250,14 +460,14 @@ export function RuntimeHostManagementDialog(props: {
                           variant="primary"
                           label={copy.restartService}
                           isDisabled={loading}
-                          clickAction={() => run('restart')}
+                          onClick={() => void run('restart')}
                         />
                       ) : serviceInstalled ? (
                         <Button
                           variant="primary"
                           label={copy.startService}
                           isDisabled={loading}
-                          clickAction={() => run('start')}
+                          onClick={() => void run('start')}
                         />
                       ) : null}
                     </>
@@ -267,7 +477,7 @@ export function RuntimeHostManagementDialog(props: {
                       variant="secondary"
                       label={copy.uninstallService}
                       isDisabled={loading}
-                      onClick={() => setConfirmingUninstall(true)}
+                      onClick={() => setConfirmation({ kind: 'uninstall' })}
                     />
                   ) : null}
                 </>
@@ -291,4 +501,12 @@ function Fact(props: {
       <dd>{props.value}</dd>
     </div>
   );
+}
+
+function formatCredentialDate(value: string, locale: UiLocale): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Intl.DateTimeFormat(uiLocaleToIntlLocale(locale), {
+    dateStyle: 'medium',
+  }).format(timestamp);
 }

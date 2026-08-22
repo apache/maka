@@ -99,6 +99,27 @@ export type SettingsProjectsCopy = {
     uninstallConfirm: string;
     uninstallRetained(path: string): string;
     managementActionFailed: string;
+    manageAccess: string;
+    accessTitle: string;
+    noAccessCredentials: string;
+    currentDesktop: string;
+    accessKind: {
+      owner: string;
+      capabilityProvider: string;
+    };
+    accessPending: string;
+    accessCreated(date: string): string;
+    rotateCredential: string;
+    rotateCredentialConfirmTitle: string;
+    rotateCredentialConfirmBody: string;
+    rotateCredentialConfirm: string;
+    enableBeforeRotate: string;
+    startBeforeChangingAccess: string;
+    revokeCredential: string;
+    revokeCredentialConfirm(name: string): string;
+    revokeCredentialConfirmBody: string;
+    accessActionFailed: string;
+    back: string;
     remove: string;
     empty: string;
     loadFailed: string;
@@ -242,6 +263,27 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       uninstallConfirm: '卸载服务',
       uninstallRetained: (path: string) => `服务已卸载，数据保留在 ${path}`,
       managementActionFailed: '无法管理 Runtime Host 服务',
+      manageAccess: '管理访问权限',
+      accessTitle: '访问权限',
+      noAccessCredentials: '没有访问凭据',
+      currentDesktop: '当前 Desktop',
+      accessKind: {
+        owner: '客户端访问',
+        capabilityProvider: 'Capability Provider',
+      },
+      accessPending: '等待确认',
+      accessCreated: (date: string) => `创建于 ${date}`,
+      rotateCredential: '轮换凭据',
+      rotateCredentialConfirmTitle: '轮换当前 Desktop 的凭据？',
+      rotateCredentialConfirmBody: '轮换会重新连接这个 Runtime Host，并可能中断正在进行的工作。请先完成或暂停活跃任务。',
+      rotateCredentialConfirm: '继续轮换',
+      enableBeforeRotate: '请先启用这个 Runtime Host，再轮换当前 Desktop 的凭据。',
+      startBeforeChangingAccess: '请先启动 Runtime Host 服务，再修改访问权限。',
+      revokeCredential: '撤销',
+      revokeCredentialConfirm: (name: string) => `撤销 ${name} 的访问权限？`,
+      revokeCredentialConfirmBody: '使用此凭据的客户端会立即断开连接，并可能中断正在进行的工作。',
+      accessActionFailed: '无法管理访问权限',
+      back: '返回',
       remove: '移除',
       empty: '还没有远程 Host',
       loadFailed: '无法读取 Runtime Host profiles',
@@ -383,6 +425,27 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       uninstallConfirm: 'Uninstall service',
       uninstallRetained: (path: string) => `Service uninstalled. Data was retained at ${path}`,
       managementActionFailed: 'Unable to manage the Runtime Host service',
+      manageAccess: 'Manage access',
+      accessTitle: 'Access',
+      noAccessCredentials: 'No active access credentials',
+      currentDesktop: 'This Desktop',
+      accessKind: {
+        owner: 'Client access',
+        capabilityProvider: 'Capability provider',
+      },
+      accessPending: 'Pending confirmation',
+      accessCreated: (date: string) => `Created ${date}`,
+      rotateCredential: 'Rotate credential',
+      rotateCredentialConfirmTitle: 'Rotate this Desktop credential?',
+      rotateCredentialConfirmBody: 'Rotation reconnects this Runtime Host and may interrupt active work. Finish or pause active tasks before continuing.',
+      rotateCredentialConfirm: 'Continue rotation',
+      enableBeforeRotate: 'Enable this Runtime Host before rotating this Desktop credential.',
+      startBeforeChangingAccess: 'Start the Runtime Host service before changing access.',
+      revokeCredential: 'Revoke',
+      revokeCredentialConfirm: (name: string) => `Revoke access for ${name}?`,
+      revokeCredentialConfirmBody: 'Clients using this credential disconnect immediately, which may interrupt active work.',
+      accessActionFailed: 'Unable to manage access',
+      back: 'Back',
       remove: 'Remove',
       empty: 'No remote Hosts yet',
       loadFailed: 'Could not load Runtime Host profiles',

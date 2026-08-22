@@ -33,6 +33,7 @@ import {
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfileCatalog,
 } from "@maka/runtime-host/client";
+import { runtimeHostAccessCredentialFingerprint } from "@maka/runtime-host/operator";
 import type { CredentialStore } from "@maka/storage/credential-store";
 import { withFileUpdateLock } from "@maka/storage/file-update-lock";
 import type {
@@ -56,6 +57,7 @@ import {
 import {
   createDesktopRuntimeHostManagedServiceStore,
   findDesktopRuntimeHostManagedServiceBinding,
+  sameDesktopRuntimeHostManagedServiceBinding,
   type DesktopRuntimeHostManagedService,
   type DesktopRuntimeHostManagedServiceBinding,
   type DesktopRuntimeHostManagedServiceStore,
@@ -94,15 +96,31 @@ export interface DesktopRuntimeHostProfileService {
   resolveManagedService(
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedServiceBinding | undefined>;
+  resolveManagedAccess(
+    profileId: string,
+  ): Promise<DesktopRuntimeHostManagedAccess | undefined>;
   clearManagedServiceBinding(expected: DesktopRuntimeHostManagedServiceBinding): Promise<void>;
   markManagedServiceUninstalling(
     expected: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<DesktopRuntimeHostManagedServiceBinding>;
+  markManagedServiceCleanupPending(
+    expected: DesktopRuntimeHostManagedServiceBinding,
+  ): Promise<DesktopRuntimeHostManagedServiceBinding>;
+  rotateManagedCredential(
+    expected: DesktopRuntimeHostManagedAccess,
+    credential: string,
+  ): Promise<void>;
   startEnabledProfiles(): Promise<void>;
   resolvePairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
   setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
   setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
   remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
+}
+
+export interface DesktopRuntimeHostManagedAccess
+  extends DesktopRuntimeHostManagedServiceBinding {
+  readonly credentialFingerprint: string;
+  readonly enabled: boolean;
 }
 
 export async function resolveDesktopRuntimeHostStartup(
@@ -286,6 +304,12 @@ export function createDesktopRuntimeHostProfileService(input: {
     await persistPairingIntents(new Map(pairingIntents).set(profileId, intent));
   };
 
+  const assertPairingComplete = (profileId: string): void => {
+    if (pairingIntents.has(profileId)) {
+      throw new Error('Resolve this Runtime Host\'s unfinished pairing before changing it');
+    }
+  };
+
   const snapshot = async (): Promise<DesktopRuntimeHostProfileSnapshot> => {
     const document = await catalog.read();
     const managedDocument = await managedServices.read();
@@ -371,6 +395,24 @@ export function createDesktopRuntimeHostProfileService(input: {
     }
   };
 
+  const startupSshInteraction = (
+    target: ResolvedRuntimeHostProfile,
+  ): "terminal" | "batch" =>
+    target.profile.kind === "remote" &&
+    target.profile.transport.kind === "ssh" &&
+    target.profile.id === preferences.defaultProfileId
+      ? "terminal"
+      : "batch";
+
+  const resolveExistingPairingTarget = async (
+    profileId: string,
+  ): Promise<ResolvedRuntimeHostProfile | undefined> => {
+    const profile = (await catalog.read()).profiles.find(
+      (candidate) => candidate.id === profileId,
+    );
+    return profile ? catalog.resolve(profileId) : undefined;
+  };
+
   const finishPairingIntent = async (
     intent: DesktopRuntimeHostPairingIntent,
   ): Promise<void> => {
@@ -388,7 +430,15 @@ export function createDesktopRuntimeHostProfileService(input: {
     intent: DesktopRuntimeHostPairingIntent,
     failure: unknown,
   ): Promise<void> => {
-    const current = await catalog.resolve(intent.target.profile.id).catch(() => undefined);
+    let current: ResolvedRuntimeHostProfile | undefined;
+    try {
+      current = await resolveExistingPairingTarget(intent.target.profile.id);
+    } catch (resolveFailure) {
+      throw new AggregateError(
+        [failure, resolveFailure],
+        "Runtime Host pairing failed and its current profile could not be read",
+      );
+    }
     if (!current || !pairingIntentMatchesTarget(intent.target, current)) {
       if (!intent.previous) {
         await managedServices.removeForProfileIfCurrent(intent.target.profile);
@@ -474,12 +524,30 @@ export function createDesktopRuntimeHostProfileService(input: {
   const recoverPairingIntent = async (
     intent: DesktopRuntimeHostPairingIntent,
   ): Promise<Error | undefined> => {
-    const current = await catalog.resolve(intent.target.profile.id).catch(() => undefined);
+    let current: ResolvedRuntimeHostProfile | undefined;
+    try {
+      current = await resolveExistingPairingTarget(intent.target.profile.id);
+    } catch (error) {
+      const failure = asError(error);
+      unavailable.set(intent.target.profile.id, failure);
+      return failure;
+    }
     if (!current || !pairingIntentMatchesTarget(intent.target, current)) {
       if (!intent.previous) {
         await managedServices.removeForProfileIfCurrent(intent.target.profile);
       }
       await clearPairingIntentBestEffort(intent.target.profile.id);
+      if (
+        current &&
+        (preferences.defaultProfileId === current.profile.id ||
+          preferences.enabledRemoteProfileIds.includes(current.profile.id))
+      ) {
+        try {
+          await activateTarget(current, startupSshInteraction(current));
+        } catch (error) {
+          return asError(error);
+        }
+      }
       return undefined;
     }
     try {
@@ -598,6 +666,55 @@ export function createDesktopRuntimeHostProfileService(input: {
         }
       });
     },
+    rotateManagedCredential(expected, credential) {
+      return mutateProfiles(async () => {
+        const profileId = expected.profile.id;
+        if (!preferences.enabledRemoteProfileIds.includes(profileId)) {
+          throw new Error('Enable this Runtime Host before rotating its access credential');
+        }
+        const previous = await catalog.resolve(profileId);
+        if (previous.profile.kind !== 'remote') {
+          throw new Error('Only a remote Runtime Host credential can be rotated');
+        }
+        const managed = findDesktopRuntimeHostManagedServiceBinding(
+          await managedServices.read(),
+          previous.profile,
+        );
+        if (
+          !managed ||
+          !sameDesktopRuntimeHostManagedServiceBinding(managed, expected) ||
+          !previous.credential ||
+          runtimeHostAccessCredentialFingerprint(previous.credential) !==
+            expected.credentialFingerprint
+        ) {
+          throw new Error(
+            'Runtime Host profile changed before its access credential could be rotated',
+          );
+        }
+        const target = { profile: previous.profile, credential } as const;
+        const intent = createDesktopRuntimeHostPairingIntent({
+          target,
+          previous,
+          wasEnabled: true,
+        });
+        await beginPairingIntent(intent);
+        try {
+          const rebound = await catalog.rebindIfCurrent(
+            previous,
+            previous.profile,
+            credential,
+          );
+          if (!rebound.rebound) {
+            throw new Error('Runtime Host profile changed before its credential could be rotated');
+          }
+          await finishPairingIntent(intent);
+        } catch (failure) {
+          if (failure instanceof RuntimeHostPairingFinalizationInterruptedError) throw failure;
+          await rollbackPairingIntent(intent, failure);
+          throw failure;
+        }
+      });
+    },
     resolveManagedService(profileId) {
       return mutate(async () => {
         const profile = (await catalog.read()).profiles.find(
@@ -611,8 +728,32 @@ export function createDesktopRuntimeHostProfileService(input: {
         return binding;
       });
     },
+    resolveManagedAccess(profileId) {
+      return mutate(async () => {
+        if (pairingReadFailure || pairingIntents.has(profileId)) {
+          throw new Error(
+            "Resolve this Runtime Host's unfinished pairing before managing its access",
+            pairingReadFailure ? { cause: pairingReadFailure } : undefined,
+          );
+        }
+        const resolved = await catalog.resolve(profileId).catch(() => undefined);
+        if (!resolved?.credential || resolved.profile.kind !== "remote") return undefined;
+        const binding = findDesktopRuntimeHostManagedServiceBinding(
+          await managedServices.read(),
+          resolved.profile,
+        );
+        return binding
+          ? {
+              ...binding,
+              credentialFingerprint: runtimeHostAccessCredentialFingerprint(resolved.credential),
+              enabled: preferences.enabledRemoteProfileIds.includes(profileId),
+            }
+          : undefined;
+      });
+    },
     markManagedServiceUninstalling(expected) {
       return mutateProfiles(async () => {
+        assertPairingComplete(expected.profile.id);
         const current = (await catalog.read()).profiles.find(
           (profile) => profile.id === expected.profile.id,
         );
@@ -629,15 +770,38 @@ export function createDesktopRuntimeHostProfileService(input: {
         return { ...expected, state: 'uninstalling' };
       });
     },
-    clearManagedServiceBinding(expected) {
+    markManagedServiceCleanupPending(expected) {
       return mutateProfiles(async () => {
+        assertPairingComplete(expected.profile.id);
         const current = (await catalog.read()).profiles.find(
           (profile) => profile.id === expected.profile.id,
         );
         if (
           !current ||
           !sameRemoteRuntimeHostProfileTarget(current, expected.profile) ||
-          !(await managedServices.removeIfCurrent(expected.profile, expected.service))
+          !(await managedServices.markCleanupPendingIfCurrent(
+            expected.profile,
+            expected.service,
+          ))
+        ) {
+          throw new Error('Runtime Host managed service binding changed during uninstall');
+        }
+        return { ...expected, state: 'cleanup_pending' };
+      });
+    },
+    clearManagedServiceBinding(expected) {
+      return mutateProfiles(async () => {
+        assertPairingComplete(expected.profile.id);
+        const current = (await catalog.read()).profiles.find(
+          (profile) => profile.id === expected.profile.id,
+        );
+        if (
+          !current ||
+          !sameRemoteRuntimeHostProfileTarget(current, expected.profile) ||
+          !(await managedServices.removeCleanupPendingIfCurrent(
+            expected.profile,
+            expected.service,
+          ))
         ) {
           throw new Error('Runtime Host managed service binding changed during uninstall');
         }
@@ -655,11 +819,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       for (const target of input.startup.remotes) {
         if (target.profile.kind !== "remote" || !target.credential) continue;
         if (pairingIntents.has(target.profile.id)) continue;
-        const sshInteraction =
-          target.profile.transport.kind === "ssh" &&
-          target.profile.id === preferences.defaultProfileId
-            ? "terminal"
-            : "batch";
+        const sshInteraction = startupSshInteraction(target);
         const activation = () => activateTarget(target, sshInteraction);
         tasks.push(
           (sshInteraction === "terminal" ? interactiveStartup.then(activation) : activation()).catch((error) =>
@@ -704,6 +864,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           await enable(profileId);
           return snapshot();
         }
+        assertPairingComplete(profileId);
         if (preferences.defaultProfileId === profileId) {
           throw new Error("Choose another default Runtime Host before disabling this one");
         }
@@ -733,6 +894,7 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
           throw new Error("Local Runtime Host cannot be removed");
         }
+        assertPairingComplete(profileId);
         if (preferences.enabledRemoteProfileIds.includes(profileId)) {
           throw new Error("Disable a Runtime Host before removing it");
         }
@@ -747,7 +909,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           await managedServices.read(),
           profile,
         );
-        if (managedBinding?.state === 'uninstalling') {
+        if (managedBinding && managedBinding.state !== 'active') {
           throw new Error('Finish uninstalling this Runtime Host service before removing it');
         }
         await catalog.remove(profileId);

@@ -21,6 +21,8 @@ import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { release } from 'node:os';
 import {
   encodeRuntimeHostServiceManagementFrame,
+  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostServiceManagementFrame,
@@ -140,6 +142,10 @@ function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServi
     kind: 'result',
     action: result.action,
     service,
+    ...(process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] ===
+    RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY
+      ? { operatorCapabilities: [RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY] }
+      : {}),
     ...(result.retainedStateRoot ? { retainedStateRoot: result.retainedStateRoot } : {}),
     ...(result.logs !== undefined ? { logs: result.logs } : {}),
   };

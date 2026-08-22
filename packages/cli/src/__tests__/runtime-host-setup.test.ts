@@ -378,6 +378,22 @@ test('managed operator binds its Client Data Root and survives package cleanup i
     clientDataRoot,
   ]);
 
+  await execFile(
+    deployment.operatorPath,
+    ['access', 'list', '--root', '/runtime-root', '--framed'],
+    {
+      env: { ...process.env, MAKA_TEST_OUTPUT: invocationPath },
+    },
+  );
+  assert.deepEqual(JSON.parse(await readFile(invocationPath, 'utf8')), [
+    'runtime-host',
+    'access',
+    'list',
+    '--root',
+    '/runtime-root',
+    '--framed',
+  ]);
+
   await rm(join(deployment.root, 'versions'), { recursive: true });
   await execFile(deployment.operatorPath, ['__cleanup-managed-deployment']);
   await assert.rejects(access(deployment.root));

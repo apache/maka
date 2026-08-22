@@ -88,5 +88,12 @@ test("keeps Desktop service bindings outside the shared profile catalog", async 
     findDesktopRuntimeHostManagedServiceBinding(await managedServices.read(), profile)?.state,
     "uninstalling",
   );
-  assert.equal(await managedServices.removeIfCurrent(profile, service), true);
+  assert.equal(await managedServices.removeCleanupPendingIfCurrent(profile, service), false);
+  assert.equal(await managedServices.markCleanupPendingIfCurrent(profile, service), true);
+  assert.equal(
+    findDesktopRuntimeHostManagedServiceBinding(await managedServices.read(), profile)?.state,
+    "cleanup_pending",
+  );
+  assert.equal(await managedServices.markUninstallingIfCurrent(profile, service), false);
+  assert.equal(await managedServices.removeCleanupPendingIfCurrent(profile, service), true);
 });

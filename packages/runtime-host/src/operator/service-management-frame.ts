@@ -24,6 +24,9 @@ export const RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX =
 export const RUNTIME_HOST_SERVICE_LOG_MAX_BYTES = 48 * 1024;
 export const RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES = 128;
 export const RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES = 2 * 1024;
+export const RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY = 'access-management-v1';
+export const RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV =
+  'MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST';
 
 const FRAME_MAX_BYTES = 96 * 1024;
 const PATH_MAX_BYTES = 4 * 1024;
@@ -38,6 +41,7 @@ const SERVICE_ACTIONS = [
   'uninstall',
 ] as const;
 const SERVICE_STATES = ['not_installed', 'stopped', 'starting', 'running', 'failed'] as const;
+const OPERATOR_CAPABILITIES = [RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY] as const;
 
 const boundedString = (maxBytes: number) =>
   z.string().refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);
@@ -77,6 +81,7 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.discriminatedUnion('kind', [
       kind: z.literal('result'),
       action: z.enum(SERVICE_ACTIONS),
       service: SERVICE_SUMMARY_SCHEMA,
+      operatorCapabilities: z.array(z.enum(OPERATOR_CAPABILITIES)).max(16).optional(),
       retainedStateRoot: boundedString(PATH_MAX_BYTES).optional(),
       logs: boundedString(RUNTIME_HOST_SERVICE_LOG_MAX_BYTES).optional(),
     })
@@ -98,6 +103,7 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.discriminatedUnion('kind', [
 
 export type RuntimeHostServiceManagementAction = (typeof SERVICE_ACTIONS)[number];
 export type RuntimeHostServiceManagementFrame = z.infer<typeof SERVICE_MANAGEMENT_FRAME_SCHEMA>;
+export type RuntimeHostOperatorCapability = (typeof OPERATOR_CAPABILITIES)[number];
 export type RuntimeHostServiceSummary = z.infer<typeof SERVICE_SUMMARY_SCHEMA>;
 
 export function encodeRuntimeHostServiceManagementFrame(
