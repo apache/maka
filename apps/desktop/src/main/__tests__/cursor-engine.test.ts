@@ -23,15 +23,18 @@ import assert from 'node:assert/strict';
 import { DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS } from '@maka/runtime/computer-use-tools';
 
 import {
+  CODEX_CURSOR_GLYPH,
   CODEX_CURSOR_MOTION,
   CubicCursorPath,
   CURSOR_CLOSE_ENOUGH,
   CursorEngine,
+  cursorHeadingAt,
   cursorPresentationReadyDeadlineMs,
   measureCursorPath,
   planCursorPath,
   scoreCursorPath,
 } from '../../renderer/computer-use-overlay/engine/cursor-engine.js';
+import { cursorCandidatePairs } from '../../renderer/computer-use-overlay/engine/cursor-candidate-grid.js';
 
 const finite = (value: number): boolean => Number.isFinite(value);
 
@@ -120,7 +123,7 @@ test('planner takes the straightest acceptable path, not the bendiest', () => {
 
 
 test('a fresh move departs toward its target, never along the parked rest angle', () => {
-  // Down and to the left: the exact opposite of the -44 degree rest angle that
+  // Down and to the left: the exact opposite of the -45 degree rest angle that
   // every fresh move used to launch along.
   const start: Vec = [600, 400];
   const end: Vec = [200, 700];
@@ -371,7 +374,7 @@ test('an interrupted move may still honour the heading it is already carrying', 
 });
 
 
-test('first appearance uses the requested center hotspot without an off-screen glide', () => {
+test('first appearance uses the requested action hotspot without an off-screen glide', () => {
   const engine = new CursorEngine();
   engine.moveTo(400, 300);
   assert.deepEqual(engine.pos, [400, 300]);
@@ -381,7 +384,7 @@ test('first appearance uses the requested center hotspot without an off-screen g
   assert.ok(!engine.isMoving());
 });
 
-test('subsequent move spring-settles exactly on the center hotspot', () => {
+test('subsequent move spring-settles exactly on the action hotspot', () => {
   const engine = new CursorEngine();
   engine.moveTo(100, 100);
   engine.moveTo(700, 360);
@@ -498,7 +501,7 @@ test('a long fast move keeps the glyph inside a single scootRotationMax', () => 
 
 
 
-test('native completion snaps the center hotspot and cancels the planned move', () => {
+test('native completion snaps the action hotspot and cancels the planned move', () => {
   const engine = new CursorEngine();
   engine.moveTo(100, 100);
   engine.moveTo(500, 300);
@@ -572,4 +575,307 @@ test('click press animation clears over about 0.25 seconds', () => {
     ticks++;
   }
   assert.ok(ticks >= 14 && ticks <= 18, `${ticks} ticks`);
+});
+
+function slowestSpringSamples(seconds = 10): number[] {
+  const dt = 1 / 240;
+  const omega = (Math.PI * 2) / CODEX_CURSOR_MOTION.springResponseMax;
+  let value = 0;
+  let velocity = 0;
+  const samples: number[] = [];
+  for (let step = 0; step < seconds / dt; step++) {
+    velocity += (
+      omega * omega * (1 - value)
+      - 2 * CODEX_CURSOR_MOTION.springDampingFraction * omega * velocity
+    ) * dt;
+    value += velocity * dt;
+    samples.push(value);
+  }
+  return samples;
+}
+
+function signedAngleDifference(value: number): number {
+  let result = value;
+  while (result > Math.PI) result -= Math.PI * 2;
+  while (result < -Math.PI) result += Math.PI * 2;
+  return result;
+}
+
+test('independent score charges a direct route less than an equal-length detour', () => {
+  const common = {
+    length: 100,
+    angleChangeEnergy: 0,
+    maxAngleChange: 0,
+    totalTurn: 0,
+    staysInBounds: true,
+    arrivalDirection: [1, 0] as const,
+  };
+  const directScore = scoreCursorPath(common, 100, [1, 0]);
+  const detourScore = scoreCursorPath(common, 80, [1, 0]);
+
+  assert.ok(directScore < detourScore);
+  assert.equal(detourScore - directScore, 8 * 0.25);
+});
+
+test('independent score rejects an out-of-bounds shortcut in favour of a usable route', () => {
+  const usable = {
+    length: 200,
+    angleChangeEnergy: 0,
+    maxAngleChange: 0,
+    totalTurn: 0,
+    staysInBounds: true,
+    arrivalDirection: [1, 0] as const,
+  };
+  const shortcut = { ...usable, length: 100, staysInBounds: false };
+
+  assert.ok(
+    scoreCursorPath(shortcut, 100, [1, 0]) > scoreCursorPath(usable, 100, [1, 0]),
+    'leaving the viewport must lose even when it halves the raw path length',
+  );
+});
+
+test('the rendered glyph tip is the action hotspot and every path lands exactly on it', () => {
+  const engine = new CursorEngine();
+  engine.moveTo(320, 240);
+  engine.tick(1);
+  const translations: Array<readonly [number, number]> = [];
+  const starts: Array<readonly [number, number]> = [];
+  const curves: number[][] = [];
+  const gradient = { addColorStop() {} };
+  const ctx = {
+    createLinearGradient: () => gradient,
+    beginPath() {},
+    fill() {},
+    stroke() {},
+    moveTo(x: number, y: number) { starts.push([x, y]); },
+    lineTo() {},
+    bezierCurveTo(...points: number[]) { curves.push(points); },
+    closePath() {},
+    save() {},
+    restore() {},
+    translate(x: number, y: number) { translations.push([x, y]); },
+    rotate() {},
+    scale() {},
+    set fillStyle(_value: unknown) {},
+    set strokeStyle(_value: unknown) {},
+    set lineWidth(_value: number) {},
+    set lineJoin(_value: CanvasLineJoin) {},
+    set lineCap(_value: CanvasLineCap) {},
+    set shadowColor(_value: string) {},
+    set shadowBlur(_value: number) {},
+    set shadowOffsetX(_value: number) {},
+    set shadowOffsetY(_value: number) {},
+    set globalAlpha(_value: number) {},
+  } as unknown as CanvasRenderingContext2D;
+
+  engine.paint(ctx, 0, 0);
+  assert.deepEqual(engine.pos, [320, 240]);
+  assert.deepEqual(translations[0], engine.pos);
+  assert.deepEqual(CODEX_CURSOR_GLYPH.start, [0, 0]);
+  assert.deepEqual(starts[0], [0, 0]);
+  assert.deepEqual(curves.at(-1)?.slice(-2), [0, 0]);
+
+  const destination: Vec = [987, 654];
+  assert.deepEqual(planCursorPath([320, 240], destination, null, null).sample(1), destination);
+});
+
+test('the independently tuned position spring never overshoots its target', () => {
+  const samples = slowestSpringSamples();
+  assert.ok(samples.some((value) => value >= CURSOR_CLOSE_ENOUGH.progress));
+  assert.ok(
+    samples.every((value) => value <= 1 + Number.EPSILON),
+    `position spring overshot by ${Math.max(...samples) - 1}`,
+  );
+});
+
+test('five-nines progress and the two-pixel gate cover the same landing', () => {
+  assert.equal(CURSOR_CLOSE_ENOUGH.progress, 0.99999);
+  assert.equal(CURSOR_CLOSE_ENOUGH.distance, 2);
+  const remainingAtFiveNines = 100_000 * (1 - CURSOR_CLOSE_ENOUGH.progress);
+  assert.ok(
+    remainingAtFiveNines <= CURSOR_CLOSE_ENOUGH.distance,
+    `${remainingAtFiveNines}px remains after the progress gate opens`,
+  );
+});
+
+test('the 2100ms deadline covers 240Hz release and one-fps observability', () => {
+  const samples = slowestSpringSamples();
+  const releaseStep = samples.findIndex((value) => value >= CURSOR_CLOSE_ENOUGH.progress) + 1;
+  assert.ok(releaseStep > 0, 'the slowest spring reaches the progress gate');
+  const releaseMs = releaseStep * 1000 / 240;
+  assert.equal(releaseMs, 1725);
+
+  const observableAtOneFpsMs = Math.ceil(releaseMs / 1000) * 1000;
+  assert.equal(observableAtOneFpsMs, 2000);
+  assert.equal(cursorPresentationReadyDeadlineMs(), observableAtOneFpsMs + 100);
+  assert.ok(cursorPresentationReadyDeadlineMs() < 5000);
+});
+
+test('terminal heading smoothsteps through the shortest signed angle', () => {
+  const tangentAngle = 170 * Math.PI / 180;
+  const tangent: Vec = [Math.cos(tangentAngle), Math.sin(tangentAngle)];
+  const progress = 0.85;
+  const phase = (progress - 0.80) / 0.20;
+  const smoothstep = phase * phase * (3 - 2 * phase);
+  const shortest = signedAngleDifference(CODEX_CURSOR_MOTION.clickAngle - tangentAngle);
+  const expected = signedAngleDifference(tangentAngle + shortest * smoothstep);
+  const actual = cursorHeadingAt(tangent, progress);
+
+  assert.ok(Math.abs(signedAngleDifference(actual - expected)) < 1e-12);
+  assert.ok(
+    Math.abs(signedAngleDifference(cursorHeadingAt(tangent, 1) - CODEX_CURSOR_MOTION.clickAngle))
+      < 1e-12,
+  );
+});
+
+test('independent score preserves detour ratios for positive subpixel chords', () => {
+  const measurement = {
+    length: 0.75,
+    angleChangeEnergy: 0,
+    maxAngleChange: 0,
+    totalTurn: 0,
+    staysInBounds: true,
+    arrivalDirection: [1, 0] as const,
+  };
+
+  assert.equal(scoreCursorPath(measurement, 0.5, [1, 0]), 4.75);
+});
+
+test('fresh planning spends all nine candidates on a symmetric direct-departure arc grid', () => {
+  const pairs = cursorCandidatePairs(CODEX_CURSOR_MOTION.candidateCount, 5, false);
+  assert.equal(pairs.length, 9);
+  assert.deepEqual([...new Set(pairs.map(({ departureWeight }) => departureWeight))], [0]);
+  assert.deepEqual(
+    pairs.map(({ arcWeight }) => arcWeight),
+    [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1],
+  );
+});
+
+test('interrupted planning selects nine candidates across all five departure weights', () => {
+  const pairs = cursorCandidatePairs(CODEX_CURSOR_MOTION.candidateCount, 5, true);
+  assert.equal(pairs.length, 9);
+  assert.deepEqual(
+    pairs.filter(({ departureWeight }) => departureWeight === 0).map(({ arcWeight }) => arcWeight),
+    [-1, -0.5, 0, 0.5, 1],
+    'direct departure keeps five symmetric arcs including zero',
+  );
+  assert.deepEqual(
+    pairs.filter(({ arcWeight }) => arcWeight === 0).map(({ departureWeight }) => departureWeight),
+    [0, 0.25, 0.5, 0.75, 1],
+    'zero arc covers every DEPARTURE_FAN weight including direct and incoming endpoints',
+  );
+});
+
+test('zero path length over a zero chord has no detour', () => {
+  const stationary = {
+    length: 0,
+    angleChangeEnergy: 0,
+    maxAngleChange: 0,
+    totalTurn: 0,
+    staysInBounds: true,
+    arrivalDirection: [1, 0] as const,
+  };
+
+  assert.equal(scoreCursorPath(stationary, 0, [1, 0]), 0);
+});
+
+test('positive path length over a zero chord is rejected', () => {
+  const impossible = {
+    length: 0.5,
+    angleChangeEnergy: 0,
+    maxAngleChange: 0,
+    totalTurn: 0,
+    staysInBounds: true,
+    arrivalDirection: [1, 0] as const,
+  };
+
+  assert.equal(scoreCursorPath(impossible, 0, [1, 0]), Number.POSITIVE_INFINITY);
+});
+
+test('moving and pressed canvas transforms keep the local tip on engine.pos', () => {
+  type Matrix = [number, number, number, number, number, number];
+  let matrix: Matrix = [1, 0, 0, 1, 0, 0];
+  const stack: Matrix[] = [];
+  const transformedStarts: Array<readonly [number, number]> = [];
+  const rotations: number[] = [];
+  const scales: Array<readonly [number, number]> = [];
+  const gradient = { addColorStop() {} };
+  const ctx = {
+    createLinearGradient: () => gradient,
+    beginPath() {},
+    fill() {},
+    stroke() {},
+    moveTo(x: number, y: number) {
+      transformedStarts.push([
+        matrix[0] * x + matrix[2] * y + matrix[4],
+        matrix[1] * x + matrix[3] * y + matrix[5],
+      ]);
+    },
+    lineTo() {},
+    bezierCurveTo() {},
+    closePath() {},
+    save() { stack.push([...matrix]); },
+    restore() { matrix = stack.pop() ?? [1, 0, 0, 1, 0, 0]; },
+    translate(x: number, y: number) {
+      matrix[4] += matrix[0] * x + matrix[2] * y;
+      matrix[5] += matrix[1] * x + matrix[3] * y;
+    },
+    rotate(angle: number) {
+      rotations.push(angle);
+      const [a, b, c, d, e, f] = matrix;
+      const cosine = Math.cos(angle);
+      const sine = Math.sin(angle);
+      matrix = [
+        a * cosine + c * sine,
+        b * cosine + d * sine,
+        -a * sine + c * cosine,
+        -b * sine + d * cosine,
+        e,
+        f,
+      ];
+    },
+    scale(x: number, y: number) {
+      scales.push([x, y]);
+      matrix[0] *= x;
+      matrix[1] *= x;
+      matrix[2] *= y;
+      matrix[3] *= y;
+    },
+    set fillStyle(_value: unknown) {},
+    set strokeStyle(_value: unknown) {},
+    set lineWidth(_value: number) {},
+    set lineJoin(_value: CanvasLineJoin) {},
+    set lineCap(_value: CanvasLineCap) {},
+    set shadowColor(_value: string) {},
+    set shadowBlur(_value: number) {},
+    set shadowOffsetX(_value: number) {},
+    set shadowOffsetY(_value: number) {},
+    set globalAlpha(_value: number) {},
+  } as unknown as CanvasRenderingContext2D;
+
+  const engine = new CursorEngine();
+  engine.moveTo(100, 100);
+  engine.tick(1);
+  engine.moveTo(900, 500);
+  engine.pressed = true;
+  engine.tick(1 / 60);
+  assert.equal(engine.hasMotionPath(), true);
+
+  engine.paint(ctx, 0, 0);
+  assert.equal(rotations.length, 3, 'stretch axis, unwind, and rotation offset apply');
+  assert.equal(scales.length, 2, 'stretch and pressed scale apply');
+  assert.ok(Math.abs(rotations[0]) > 1e-9, 'moving stretch axis is rotated');
+  assert.ok(Math.abs(rotations[0] + rotations[1]) < 1e-12, 'stretch axis is unwound');
+  assert.ok(Math.abs(rotations[2]) > 1e-9, 'moving rotation offset is active');
+  assert.ok(
+    Math.abs(scales[0][0] - 1) > 1e-9 || Math.abs(scales[0][1] - 1) > 1e-9,
+    'moving stretch scale is active',
+  );
+  assert.ok(scales[1][0] < 1 && scales[1][1] < 1, 'pressed scale is active');
+  const transformedTip = transformedStarts[0];
+  assert.ok(transformedTip, 'glyph path starts at its local tip');
+  assert.ok(
+    Math.hypot(transformedTip[0] - engine.pos[0], transformedTip[1] - engine.pos[1]) < 1e-9,
+    `transformed tip ${transformedTip} diverged from action coordinate ${engine.pos}`,
+  );
 });
