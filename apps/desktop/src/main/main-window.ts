@@ -10,7 +10,7 @@ import { BrowserViewController } from './browser/controller.js';
 import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
-import { shouldReportMainRendererProcessGone } from './main-renderer-process-gone.js';
+import { observeMainRendererProcessGone } from './main-renderer-process-gone.js';
 import { isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
 import {
@@ -350,17 +350,20 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         allowRunningInsecureContent: false,
       },
     });
-    mainWindow.webContents.once('render-process-gone', (_event, details) => {
-      if (!shouldReportMainRendererProcessGone(details, signal)) return;
-      console.error(
-        `[renderer] main Renderer process exited unexpectedly: reason=${details.reason} exitCode=${details.exitCode}`,
-      );
-      void Promise.resolve()
-        .then(() => deps.onRendererProcessGone(details))
-        .catch((error) => {
-          console.error('[renderer] failed to handle main Renderer process exit:', error);
-          app.quit();
-        });
+    observeMainRendererProcessGone({
+      source: mainWindow.webContents,
+      shutdownSignal: signal,
+      onUnexpectedExit: (details) => {
+        console.error(
+          `[renderer] main Renderer process exited unexpectedly: reason=${details.reason} exitCode=${details.exitCode}`,
+        );
+        void Promise.resolve()
+          .then(() => deps.onRendererProcessGone(details))
+          .catch((error) => {
+            console.error('[renderer] failed to handle main Renderer process exit:', error);
+            app.quit();
+          });
+      },
     });
     installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntryUrl);
 

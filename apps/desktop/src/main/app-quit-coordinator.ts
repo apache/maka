@@ -4,14 +4,14 @@ export interface AppQuitEvent {
 
 export interface AppQuitCoordinator {
   focusOrCreateWindow(): void;
-  getWindowCreationSignal(): AbortSignal | undefined;
   handleBeforeQuit(event: AppQuitEvent): void;
 }
 
 export interface AppQuitCoordinatorDeps {
   cleanup(): Promise<void>;
-  focusOrCreateWindow(signal: AbortSignal): void;
+  focusOrCreateWindow(signal: AbortSignal): void | Promise<void>;
   onCleanupError(error: unknown): void;
+  onWindowCreationError(error: unknown): void;
   resumeQuit(): void;
 }
 
@@ -24,10 +24,13 @@ export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitC
   return {
     focusOrCreateWindow(): void {
       if (phase !== 'running') return;
-      deps.focusOrCreateWindow(windowCreationAbort.signal);
-    },
-    getWindowCreationSignal(): AbortSignal | undefined {
-      return phase === 'running' ? windowCreationAbort.signal : undefined;
+      try {
+        void Promise.resolve(deps.focusOrCreateWindow(windowCreationAbort.signal)).catch(
+          deps.onWindowCreationError,
+        );
+      } catch (error) {
+        deps.onWindowCreationError(error);
+      }
     },
     handleBeforeQuit(event): void {
       if (phase === 'ready-to-exit') return;

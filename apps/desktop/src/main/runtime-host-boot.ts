@@ -1435,10 +1435,12 @@ function wireLifecycle(): void {
     cleanup: closeRuntimeHostDesktop,
     focusOrCreateWindow: (signal) => {
       if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
-      else void mainWindowController.createWindow(signal);
+      else return mainWindowController.createWindow(signal);
     },
     onCleanupError: (error) =>
       console.error("[runtime-host] shutdown failed:", error),
+    onWindowCreationError: (error) =>
+      console.error("[window] creation failed:", error),
     resumeQuit: () => app.quit(),
   });
   installDesktopShellPresentation({
@@ -1459,8 +1461,7 @@ function wireLifecycle(): void {
     if (process.platform !== "darwin") app.quit();
   });
   app.on("before-quit", quitCoordinator.handleBeforeQuit);
-  const initialWindowSignal = quitCoordinator.getWindowCreationSignal();
-  if (initialWindowSignal) void mainWindowController.createWindow(initialWindowSignal);
+  quitCoordinator.focusOrCreateWindow();
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {

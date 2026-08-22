@@ -10,6 +10,7 @@ describe('app quit coordinator', () => {
       cleanup: async () => {},
       focusOrCreateWindow: () => {},
       onCleanupError: () => {},
+      onWindowCreationError: () => {},
       resumeQuit: () => {
         resumeQuitCount += 1;
       },
@@ -50,6 +51,7 @@ describe('app quit coordinator', () => {
         focusOrCreateCount += 1;
       },
       onCleanupError: () => {},
+      onWindowCreationError: () => {},
       resumeQuit: () => {
         resumeQuitCount += 1;
       },
@@ -85,22 +87,44 @@ describe('app quit coordinator', () => {
 
   it('does not reopen the main window after quit cleanup starts', () => {
     let focusOrCreateCount = 0;
+    let windowCreationSignal: AbortSignal | undefined;
     const coordinator = createAppQuitCoordinator({
       cleanup: () => new Promise<void>(() => {}),
-      focusOrCreateWindow: () => {
+      focusOrCreateWindow: (signal) => {
         focusOrCreateCount += 1;
+        windowCreationSignal = signal;
       },
       onCleanupError: () => {},
+      onWindowCreationError: () => {},
       resumeQuit: () => {},
     });
-    const windowCreationSignal = coordinator.getWindowCreationSignal();
 
+    coordinator.focusOrCreateWindow();
     coordinator.handleBeforeQuit({ preventDefault: () => {} });
     coordinator.focusOrCreateWindow();
 
-    assert.equal(focusOrCreateCount, 0);
+    assert.equal(focusOrCreateCount, 1);
     assert.equal(windowCreationSignal?.aborted, true);
-    assert.equal(coordinator.getWindowCreationSignal(), undefined);
+  });
+
+  it('reports window creation failure without leaking an unhandled rejection', async () => {
+    const failure = new Error('window load failed');
+    const reportedErrors: unknown[] = [];
+    const coordinator = createAppQuitCoordinator({
+      cleanup: async () => {},
+      focusOrCreateWindow: async () => {
+        throw failure;
+      },
+      onCleanupError: () => {},
+      onWindowCreationError: (error) => reportedErrors.push(error),
+      resumeQuit: () => {},
+    });
+
+    coordinator.focusOrCreateWindow();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.deepEqual(reportedErrors, [failure]);
   });
 
   it('reports cleanup failure without leaking an unhandled rejection', async () => {
@@ -118,6 +142,7 @@ describe('app quit coordinator', () => {
       onCleanupError: (error: unknown) => {
         reportedErrors.push(error);
       },
+      onWindowCreationError: () => {},
       resumeQuit: () => {
         resumeQuitCount += 1;
       },
@@ -139,6 +164,5 @@ describe('app quit coordinator', () => {
     assert.equal(focusOrCreateCount, 0);
     assert.equal(resumeQuitCount, 1);
     assert.equal(secondQuitPrevented, false);
-    assert.equal(coordinator.getWindowCreationSignal(), undefined);
   });
 });
