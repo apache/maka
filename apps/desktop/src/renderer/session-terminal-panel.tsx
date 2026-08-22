@@ -83,7 +83,7 @@ export function SessionTerminalPanel(props: {
     // replies can therefore outlive short capability probes and be echoed into
     // the next prompt. Do not route xterm-generated query replies through that
     // input path; terminal setters and ordinary user input remain unaffected.
-    const terminalQueryReplies = suppressTerminalQueryReplies(terminal.parser);
+    const terminalQueryReplies = suppressTerminalQueryReplies(terminal);
 
     const writeEvent = (event: { sequence: number; data: string }) => {
       const live = hydration.accept(event);

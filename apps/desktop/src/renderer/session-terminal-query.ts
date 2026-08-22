@@ -2,53 +2,91 @@ import type { IDisposable, IParser } from '@xterm/xterm';
 
 export type TerminalParams = (number | number[])[];
 
-const WINDOW_REPORT_OPERATIONS = new Set([11, 13, 14, 15, 16, 18, 19, 20, 21]);
-
-function isSingleParam(params: TerminalParams, expected: number): boolean {
-  return params.length === 1 && params[0] === expected;
+interface TerminalQueryTarget {
+  readonly parser: IParser;
+  write(data: string): void;
 }
 
-/** Returns true only for pure OSC color queries, never for color setters. */
-export function isColorQuery(ident: number, data: string): boolean {
+interface ColorQueryAction {
+  hasQuery: boolean;
+  setters: string[];
+}
+
+const WINDOW_REPORT_OPERATIONS = new Set([11, 13, 14, 15, 16, 18, 19, 20, 21]);
+const OSC_START = '\x1b]';
+const STRING_TERMINATOR = '\x1b\\';
+
+function firstParamIs(params: TerminalParams, expected: number): boolean {
+  return params[0] === expected;
+}
+
+function getColorQueryAction(ident: number, data: string): ColorQueryAction {
+  let hasQuery = false;
+  const setters: string[] = [];
+
   if (ident === 4) {
     const parts = data.split(';');
-    if (parts.length === 0 || parts.length % 2 !== 0) return false;
-    for (let index = 0; index < parts.length; index += 2) {
-      if (!/^\d+$/.test(parts[index] ?? '') || parts[index + 1] !== '?') {
-        return false;
+    const setterParts: string[] = [];
+    for (let offset = 0; offset + 1 < parts.length; offset += 2) {
+      const indexText = parts[offset] ?? '';
+      const value = parts[offset + 1] ?? '';
+      const index = /^\d+$/.test(indexText) ? Number(indexText) : -1;
+      if (index < 0 || index > 255) continue;
+      if (value === '?') {
+        hasQuery = true;
+      } else {
+        setterParts.push(indexText, value);
       }
     }
-    return true;
+    if (setterParts.length > 0) {
+      setters.push(`${OSC_START}4;${setterParts.join(';')}${STRING_TERMINATOR}`);
+    }
+    return { hasQuery, setters };
   }
 
-  // OSC 10 may query foreground, background, and cursor colors together by
-  // supplying additional semicolon-separated question marks. OSC 11 and 12
-  // use the same payload grammar for their respective color.
-  return (
-    (ident === 10 || ident === 11 || ident === 12) &&
-    data.length > 0 &&
-    data.split(';').every((part) => part === '?')
-  );
+  if (ident < 10 || ident > 12) return { hasQuery, setters };
+
+  // OSC 10 can address foreground, background, and cursor colors by adding
+  // values; OSC 11 can address the latter two, and OSC 12 only the cursor.
+  // Replay non-query values separately because removing a query value would
+  // otherwise shift every following value to the wrong color slot.
+  const parts = data.split(';');
+  for (let offset = 0; offset < parts.length && ident + offset <= 12; offset += 1) {
+    const value = parts[offset] ?? '';
+    if (value === '?') {
+      hasQuery = true;
+    } else {
+      setters.push(`${OSC_START}${ident + offset};${value}${STRING_TERMINATOR}`);
+    }
+  }
+  return { hasQuery, setters };
+}
+
+/** Returns true when an OSC color payload contains a reply-generating query. */
+export function isColorQuery(ident: number, data: string): boolean {
+  return getColorQueryAction(ident, data).hasQuery;
 }
 
 export function isDeviceAttributesQuery(params: TerminalParams): boolean {
-  return isSingleParam(params, 0);
+  return firstParamIs(params, 0);
 }
 
 export function isDeviceStatusQuery(params: TerminalParams): boolean {
-  return isSingleParam(params, 5) || isSingleParam(params, 6);
+  return firstParamIs(params, 5) || firstParamIs(params, 6);
 }
 
 export function isPrivateDeviceStatusQuery(params: TerminalParams): boolean {
-  return isSingleParam(params, 6);
+  return firstParamIs(params, 6);
 }
 
 export function isWindowReportQuery(params: TerminalParams): boolean {
-  return (
-    params.length === 1 &&
-    typeof params[0] === 'number' &&
-    WINDOW_REPORT_OPERATIONS.has(params[0])
-  );
+  const operation = params[0];
+  if (typeof operation !== 'number' || !WINDOW_REPORT_OPERATIONS.has(operation)) {
+    return false;
+  }
+
+  // CSI 14;2 t requests only the text-area size, which xterm does not report.
+  return operation !== 14 || params[1] !== 2;
 }
 
 /**
@@ -59,32 +97,28 @@ export function isWindowReportQuery(params: TerminalParams): boolean {
  * These handlers cover every response-generating query implemented by xterm:
  * color reports, device attributes/status, mode/window reports, and DECRQSS.
  * Setters and other terminal control sequences continue to xterm's handlers.
+ * Mixed OSC color payloads are intercepted in full, then their setter-only
+ * portions are written back so xterm applies them without emitting replies.
  */
-export function suppressTerminalQueryReplies(parser: IParser): IDisposable {
+export function suppressTerminalQueryReplies(terminal: TerminalQueryTarget): IDisposable {
+  const { parser } = terminal;
   const handlers: IDisposable[] = [
     ...[4, 10, 11, 12].map((ident) =>
-      parser.registerOscHandler(ident, (data) => isColorQuery(ident, data)),
+      parser.registerOscHandler(ident, (data) => {
+        const action = getColorQueryAction(ident, data);
+        if (!action.hasQuery) return false;
+        for (const setter of action.setters) terminal.write(setter);
+        return true;
+      }),
     ),
     parser.registerCsiHandler({ final: 'c' }, isDeviceAttributesQuery),
-    parser.registerCsiHandler(
-      { prefix: '>', final: 'c' },
-      isDeviceAttributesQuery,
-    ),
+    parser.registerCsiHandler({ prefix: '>', final: 'c' }, isDeviceAttributesQuery),
     parser.registerCsiHandler({ final: 'n' }, isDeviceStatusQuery),
-    parser.registerCsiHandler(
-      { prefix: '?', final: 'n' },
-      isPrivateDeviceStatusQuery,
-    ),
+    parser.registerCsiHandler({ prefix: '?', final: 'n' }, isPrivateDeviceStatusQuery),
     parser.registerCsiHandler({ intermediates: '$', final: 'p' }, () => true),
-    parser.registerCsiHandler(
-      { prefix: '?', intermediates: '$', final: 'p' },
-      () => true,
-    ),
+    parser.registerCsiHandler({ prefix: '?', intermediates: '$', final: 'p' }, () => true),
     parser.registerCsiHandler({ final: 't' }, isWindowReportQuery),
-    parser.registerDcsHandler(
-      { intermediates: '$', final: 'q' },
-      () => true,
-    ),
+    parser.registerDcsHandler({ intermediates: '$', final: 'q' }, () => true),
   ];
 
   return {
