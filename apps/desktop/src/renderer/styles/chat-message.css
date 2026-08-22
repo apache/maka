@@ -67,13 +67,12 @@
    rule (Maka renders user input as typed, which the primitive has no opinion
    about) — and, since Visual System 2.0 (T3), the radius TIER.
 
-   The primitive resolves `--radius-container` (12px). DESIGN.md §6 assigns
-   radius by box height, and container is scoped to "modals, panels, portal
-   surfaces" — a message bubble is none of those. Measured in the chat fixture
-   the filled user bubble is 44px tall, which lands it in the card tier (10px,
-   "cards, rows-as-cards, list containers"). Astryx publishes no radius prop on
-   this component (only `variant`), so the tier is expressed on Maka's own
-   class rather than by reaching into the primitive's internals.
+   The primitive resolves `--radius-container` (12px). DESIGN.md §6 gives the
+   filled user bubble the conversation tier (16px): the bubble is speech, not
+   chrome, and at the card tier's 10px it read as a settings row instead of a
+   message. Astryx publishes no radius prop on this component (only
+   `variant`), so the tier is expressed on Maka's own class rather than by
+   reaching into the primitive's internals.
 
    Scoped to the filled bubble on purpose: the assistant bubble is `ghost` (no
    fill, measured transparent), so it has no corner to round and inherits
@@ -81,7 +80,7 @@
 .maka-chat-message-bubble-user {
   background: var(--chat-user-bg);
   color: var(--chat-user-foreground, var(--foreground));
-  border-radius: var(--radius-surface);
+  border-radius: var(--radius-conversation);
   white-space: pre-wrap;
 }
 
@@ -91,19 +90,28 @@
   padding: var(--space-0-5) 0 0;
 }
 
+/* Reading rhythm between a turn's evidence blocks (reasoning row, tool group,
+   prose). At --space-1 the blocks measured 8-12px apart and read as one dense
+   log; --space-3 lands them at ~16-20px, the reading tier DESIGN.md asks for
+   ("spacious around reading"). Turn-to-turn spacing is ChatMessageList's own
+   balanced gap and is not declared here. */
 .maka-processing-sequence {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-3);
 }
 
 /* Expanded activity headers stay reachable while their own detail is being
    read. Native sticky positioning keeps the header in the transcript flow,
    so it leaves naturally at the card boundary and does not disturb ChatLayout
    scroll anchoring while reasoning or tool output continues to stream. */
+/* Sticky offset 0, not a breathing gap: any positive offset opens a strip
+   above the stuck header through which the previous row scrolls half-visible
+   (measured 8px of bleed-through at --space-2). Flush with the scrollport is
+   what sticky headers look like everywhere else in the product. */
 .maka-turn :is(.maka-deep-thinking, .maka-tool-activity-card) {
-  --maka-activity-sticky-top: var(--space-2);
+  --maka-activity-sticky-top: 0px;
   --maka-activity-header-height: var(--h-control-sm);
 }
 

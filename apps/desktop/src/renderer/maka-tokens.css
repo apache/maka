@@ -686,6 +686,11 @@
   --radius-control: 6px;
   --radius-surface: 10px;
   --radius-modal: 12px;
+  /* Conversation tier (DESIGN.md §6): the filled user speech bubble only.
+     The box-height ladder put the 44px bubble on the card tier, where it
+     read as a settings row; speech rounds by register, not by height. Not
+     a general rung — chrome and cards stay on the ladder above. */
+  --radius-conversation: 16px;
   --radius-pill: 999px;
   /* Square icon plates (provider logo, about logo, feature status) are
      governed by RATIO, not by tier: their roundness must read the same

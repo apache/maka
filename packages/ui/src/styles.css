@@ -131,7 +131,10 @@
   opacity: 1;
 }
 .maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
-.maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
+/* 16px, the same reading rhythm as .maka-processing-sequence's --space-3 +
+   the tool group's own 8px margin: evidence and answer are separate thoughts,
+   and at 8px the prose sat glued to the last tool row. */
+.maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 16px; }
 .maka-subagent-session-label,
 .maka-subagent-session-end {
   display: flex;

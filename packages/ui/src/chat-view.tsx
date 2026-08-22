@@ -481,10 +481,13 @@ export function ChatView(props: {
             header used to be rendered here anyway, holding a lone spacer, to
             occupy the window titlebar line — which the shell's titlebar row now
             owns. */}
+        {/* `balanced`, Astryx's own reading density. The list used to force
+            `compact` with a `gap={4}` override that already restored the
+            balanced gap — so compact bought nothing but the tighter padding,
+            against DESIGN.md's "spacious around reading". */}
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
-          density="compact"
-          gap={4}
+          density="balanced"
           emptyState={conversationItems.length === 0 ? emptyContent : undefined}
         >
           {conversationItems.length > 0 ? (
@@ -586,11 +589,12 @@ export function ChatView(props: {
           onNavigateFallback={navigatePromptRailFallback}
           onNavigateStart={chatLayout.unlockAutoFollow}
         />
+        {/* `balanced` for the same reason as the empty-session list above:
+            compact + `gap={4}` was balanced's gap with compact's padding. */}
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
           data-turn-source-count={turns.length}
-          density="compact"
-          gap={4}
+          density="balanced"
           isStreaming={streamingActive}
           emptyState={showEmptyState ? emptyContent : undefined}
         >

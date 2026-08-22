@@ -121,16 +121,18 @@ Default surfaces are flat. Depth comes first from the surface ladder, then a lin
 
 ## 6. Radius
 
-Nothing interactive is square. One ladder, assigned monotonically by box height:
+Nothing interactive is square. One ladder, assigned monotonically by box height — with one register exception, the conversation tier:
 
 | Radius | Maka tier | Astryx tier | Assign to |
 |---|---|---|---|
 | 6px | control | inner | chips, keycaps, nested inlays, and product-drawn compact controls |
 | 10px | card | element | cards, rows-as-cards, list containers, chat bubbles; Astryx `Button`, `Input`, `SegmentedControl` |
 | 12px | container | container | modals, panels, portal surfaces; Astryx `Card`, `Dialog`, `DropdownMenu` |
+| 16px | conversation | — | the filled user speech bubble, and nothing else |
 | full | pill (999px) | full (9999px) | badges, pills, circular controls |
 
 - **The Two-Name Rule.** These are one ladder under two vocabularies, and the names never line up: Maka's `control` is Astryx's `inner`, Maka's `card` is Astryx's `element`, Maka's `modal` is Astryx's `container`. Resolve a tier from the box, never from the token name that sounds right. The paired values agree *today* but are independent literals, not aliases — an Astryx upgrade can move one side silently, so a mismatch is a real failure mode rather than an impossibility. Astryx's `--radius-page` (28px) has no Maka tier and no product consumer; anything reaching for a page-level radius is inventing a rung.
+- **The Conversation Exception.** The filled user bubble takes 16px regardless of its box height: it is speech, and at the card tier's 10px a one-line message read as a settings row. The tier has exactly one consumer; anything else claiming it is reaching for a softer look, which is not a role. The assistant side stays a ghost bubble — no fill, no corner to round.
 - **The Full-Bleed Rule.** `border-radius: 0` is legal only on true full-bleed rows — an element flush with its container on both sides. Radius and gap move together: if it has breathing room, it has corners.
 - **Proportional marks.** Product-drawn icon plates use ratio-owned radius (~25–27% of the box edge), recorded in prose because Stitch accepts only absolute units.
 
