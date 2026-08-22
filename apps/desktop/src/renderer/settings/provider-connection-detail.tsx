@@ -817,11 +817,22 @@ function OAuthReloginNotice(props: {
       : errored
         ? copy.oauthUnknownDetail
         : copy.oauthStartDetail;
+  // The device page will not accept anything until the user types this code, so
+  // the surface that opened the browser is the one that has to show it. Without
+  // it the button opens a page the user cannot get past.
+  const deviceCode = props.service.showsDeviceCode ? flow.stateHint : null;
   return (
     <Banner
       status="info"
       title={title}
-      description={detail}
+      description={deviceCode ? (
+        <VStack gap={0.5}>
+          <Text type="supporting">{detail}</Text>
+          <Text type="supporting" data-testid="oauth-relogin-device-code">
+            {copy.deviceCode} {deviceCode}
+          </Text>
+        </VStack>
+      ) : detail}
       endContent={!loading ? (
           <Button
             variant="primary"

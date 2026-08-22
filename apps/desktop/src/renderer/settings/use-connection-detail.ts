@@ -43,6 +43,12 @@ import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 export interface OAuthLoginService {
   bridge: OAuthLoginFlowBridge;
   display: { name: string; shortName: string };
+  /**
+   * The provider's device page asks the user to type a one-time code, so the
+   * surface driving this login has to show it. xAI's verification URL carries
+   * the code itself, which is why it is the one flow that does not.
+   */
+  showsDeviceCode?: boolean;
 }
 
 export function oauthLoginServiceFor(
@@ -54,6 +60,7 @@ export function oauthLoginServiceFor(
       return {
         bridge: runtimeHostOAuthLoginBridge(window.maka.openAiCodex, host),
         display: { name: 'OpenAI Codex', shortName: 'Codex' },
+        showsDeviceCode: true,
       };
     case 'xai-oauth':
       return {
@@ -67,6 +74,7 @@ export function oauthLoginServiceFor(
       return {
         bridge: runtimeHostOAuthLoginBridge(window.maka.githubCopilotSubscription, host),
         display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
+        showsDeviceCode: true,
       };
     default:
       return null;
