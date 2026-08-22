@@ -110,7 +110,13 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
     // any launch.
     let parentEntryDenied = false;
     try {
-      await execute({ kind: 'write', path: join(workspace, 'missing.txt'), content: 'x' });
+      // The target is genuinely missing; 'missing' is the truthful T0 state
+      // so the client lets the request through and the sandbox's own
+      // fail-closed parent-entry check is what rejects it (#3487).
+      await execute(
+        { kind: 'write', path: join(workspace, 'missing.txt'), content: 'x' },
+        'missing',
+      );
     } catch (error) {
       parentEntryDenied =
         error instanceof FilesystemWorkerClientError &&
@@ -161,7 +167,12 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
 
     let denied = false;
     try {
-      await execute({ kind: 'write', path: join(outside, 'blocked.txt'), content: 'blocked' });
+      // Same contract as above: a truthful T0 state so the client's own
+      // permission gate (not the identity validation) is what denies.
+      await execute(
+        { kind: 'write', path: join(outside, 'blocked.txt'), content: 'blocked' },
+        'missing',
+      );
     } catch (error) {
       denied = error instanceof FilesystemWorkerClientError && error.reason === 'path_denied';
     }
