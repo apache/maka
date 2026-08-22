@@ -78,7 +78,10 @@ import {
   mainProcessLogBuffer,
   type DesktopDiagnosticsDeps,
 } from "./main-process-diagnostics.js";
-import { showMessageBoxWithDiagnostics } from "./native-diagnostic-dialog.js";
+import {
+  showMainRendererProcessGoneDialog,
+  showMessageBoxWithDiagnostics,
+} from "./native-diagnostic-dialog.js";
 import {
   resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
@@ -323,6 +326,17 @@ const mainWindowController = createMainWindowController({
   settingsStore,
   startHidden,
   onClose: () => onMainWindowClose(),
+  onRendererProcessGone: async (details) => {
+    const decision = await showMainRendererProcessGoneDialog(details, {
+      locale: desktopLocale.current(),
+      environment: desktopDiagnostics.environment,
+      mainLogs: desktopDiagnostics.mainLogs,
+      writeClipboard: desktopDiagnostics.writeClipboard,
+      showMessageBox: (options) => dialog.showMessageBox(options),
+    });
+    if (decision === "relaunch") app.relaunch();
+    app.quit();
+  },
 });
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,

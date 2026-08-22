@@ -56,9 +56,18 @@ export interface DesktopStartupDiagnosticInput {
   readonly hostTarget: 'none';
 }
 
+export interface DesktopMainRendererDiagnosticInput {
+  readonly surface: 'renderer_process_gone';
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+  readonly hostTarget: 'none';
+}
+
 export type DesktopDiagnosticReportInput =
   | DesktopDiagnosticWireInput
-  | DesktopStartupDiagnosticInput;
+  | DesktopStartupDiagnosticInput
+  | DesktopMainRendererDiagnosticInput;
 
 export type RuntimeHostDiagnosticRead =
   | { readonly ok: true; readonly value: HostDiagnosticsResult }
@@ -120,6 +129,27 @@ export function createDesktopStartupDiagnosticInput(input: {
 }): DesktopStartupDiagnosticInput {
   return {
     surface: 'startup',
+    ...createDesktopNativeDiagnosticFields(input),
+  };
+}
+
+export function createDesktopMainRendererDiagnosticInput(input: {
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+}): DesktopMainRendererDiagnosticInput {
+  return {
+    surface: 'renderer_process_gone',
+    ...createDesktopNativeDiagnosticFields(input),
+  };
+}
+
+function createDesktopNativeDiagnosticFields(input: {
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+}): Omit<DesktopStartupDiagnosticInput, 'surface'> {
+  return {
     hostTarget: 'none',
     title: requireDiagnosticString(input.title, 'title', INPUT_LIMITS.title),
     ...(input.description
@@ -308,7 +338,12 @@ export function formatDesktopDiagnosticReport(
   capturedAt = new Date(),
 ): string {
   const lines = ['Maka Desktop diagnostic report', `Captured at: ${capturedAt.toISOString()}`];
-  const rendererContext = input.surface === 'startup' ? undefined : input;
+  const rendererContext =
+    input.surface === 'manual' ||
+    input.surface === 'toast' ||
+    input.surface === 'renderer_crash'
+      ? input
+      : undefined;
   if (input.surface === 'manual') {
     lines.push('', 'Capture', 'Surface: manual');
   } else {

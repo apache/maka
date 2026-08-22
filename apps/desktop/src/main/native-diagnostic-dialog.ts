@@ -1,11 +1,24 @@
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { MessageBoxOptions, MessageBoxReturnValue } from 'electron';
+import type {
+  MessageBoxOptions,
+  MessageBoxReturnValue,
+  RenderProcessGoneDetails,
+} from 'electron';
 import {
+  createDesktopMainRendererDiagnosticInput,
   createDesktopStartupDiagnosticInput,
   formatDesktopDiagnosticReport,
   type DesktopDiagnosticEnvironment,
 } from './main-process-diagnostics.js';
 import { whileAwaitingPerson } from './startup-step.js';
+
+interface NativeDiagnosticDialogDeps {
+  readonly locale: UiLocale;
+  readonly environment: () => DesktopDiagnosticEnvironment;
+  readonly mainLogs: () => readonly string[];
+  readonly writeClipboard: (value: string) => void;
+  readonly showMessageBox: (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
+}
 
 export async function showMessageBoxWithDiagnostics(
   options: MessageBoxOptions,
@@ -26,13 +39,7 @@ export async function showMessageBoxWithDiagnostics(
 
 export async function showFatalStartupError(
   error: unknown,
-  deps: {
-    readonly locale: UiLocale;
-    readonly environment: () => DesktopDiagnosticEnvironment;
-    readonly mainLogs: () => readonly string[];
-    readonly writeClipboard: (value: string) => void;
-    readonly showMessageBox: (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
-  },
+  deps: NativeDiagnosticDialogDeps,
 ): Promise<void> {
   const copy = FATAL_STARTUP_COPY[deps.locale];
   const message = error instanceof Error ? error.message : String(error);
@@ -66,6 +73,44 @@ export async function showFatalStartupError(
         ),
     },
   );
+}
+
+export async function showMainRendererProcessGoneDialog(
+  details: RenderProcessGoneDetails,
+  deps: NativeDiagnosticDialogDeps,
+): Promise<'relaunch' | 'exit'> {
+  const copy = MAIN_RENDERER_GONE_COPY[deps.locale];
+  const input = createDesktopMainRendererDiagnosticInput({
+    title: 'Maka main Renderer process exited unexpectedly',
+    description: `Reason: ${details.reason}`,
+    details: `Exit code: ${details.exitCode}`,
+  });
+  const result = await showMessageBoxWithDiagnostics(
+    {
+      type: 'error',
+      title: copy.title,
+      message: copy.message,
+      detail: copy.detail,
+      buttons: [copy.relaunch, copy.exit],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    },
+    {
+      locale: deps.locale,
+      showMessageBox: deps.showMessageBox,
+      copyDiagnostics: () =>
+        deps.writeClipboard(
+          formatDesktopDiagnosticReport(
+            input,
+            deps.environment(),
+            deps.mainLogs(),
+            { ok: false, error: 'No Runtime Host authority was associated with this error' },
+          ),
+        ),
+    },
+  );
+  return result.response === 0 ? 'relaunch' : 'exit';
 }
 
 async function copyDiagnostics(
@@ -129,6 +174,23 @@ const FATAL_STARTUP_COPY = {
     title: 'Maka 启动失败',
     message: 'Maka 无法完成启动。',
     unknownError: '启动时发生未知错误。',
+    exit: '退出',
+  },
+} as const;
+
+const MAIN_RENDERER_GONE_COPY = {
+  en: {
+    title: 'Maka needs to recover',
+    message: "Maka's interface stopped unexpectedly.",
+    detail: 'Relaunch Maka to continue, or exit and reopen it later.',
+    relaunch: 'Relaunch',
+    exit: 'Exit',
+  },
+  zh: {
+    title: 'Maka 需要恢复',
+    message: 'Maka 界面意外停止运行。',
+    detail: '重新启动 Maka 以继续，或退出后稍后再打开。',
+    relaunch: '重新启动',
     exit: '退出',
   },
 } as const;
