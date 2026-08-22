@@ -426,8 +426,52 @@ export type ModelStepOutcome =
       continuation: 'none';
     };
 
+/**
+ * One tool call's outcome from `tool-call-execution-guard.ts`'s raw-byte
+ * verification, keyed by `toolCallId` in `ToolCallExecutionSafety.decisions`.
+ * `name`/`value` are the guard's own proof — the tool name and parsed
+ * argument value it verified from the raw stream, present only for
+ * `action: 'execute'` — and are authoritative over whatever the AI SDK's
+ * post-hoc `tool-call` chunk claims for that same id: a caller that trusts
+ * `toolCall.toolName`/`.input` instead accepts an unverified value a later
+ * repair/coercion could have substituted for what actually streamed.
+ */
+export interface ToolCallSafetyDecision {
+  readonly action: 'execute' | 'retry' | 'reject';
+  readonly name?: string;
+  readonly value?: unknown;
+}
+
+/**
+ * The full per-physical-request result of `tool-call-execution-guard.ts`'s
+ * raw-byte verification. `decisions` covers only calls the guard actually
+ * observed real (non-empty) `tool-input-delta` bytes for; a call missing
+ * from it got no raw-byte evidence either way — genuinely atomic delivery
+ * (no delta chunks exist for it to have been cut short from) if
+ * `hadRawArgumentEvidence` is `false` for the whole request, but otherwise
+ * indistinguishable from an id mismatch between the guard's raw-chunk view
+ * and the SDK's resolved `tool-call`, and must be treated as unsafe either
+ * way. `hadRawArgumentEvidence` is therefore the ONLY condition under which
+ * a missing decision may fall back to a step-level safety check: once any
+ * call in this physical request streamed real bytes, every other call's own
+ * identity must be independently proved too, or it fails closed.
+ */
+export interface ToolCallExecutionSafety {
+  readonly hadRawArgumentEvidence: boolean;
+  readonly decisions: ReadonlyMap<string, ToolCallSafetyDecision>;
+}
+
 /** One physical provider request: live output plus one authoritative settlement. */
 export interface ModelStreamResult {
   events: AsyncIterable<ModelStreamEvent>;
   outcome: Promise<ModelStepOutcome>;
+  /**
+   * Per-tool-call positive-completion proof for this same physical provider
+   * request — see `tool-call-execution-guard.ts` and `ToolCallExecutionSafety`
+   * above. A call is safe to execute only when `decisions.get(toolCallId)`
+   * is present with `action: 'execute'` AND its proved `name` matches the
+   * call's own; a missing decision falls back to a step-level check only
+   * when `hadRawArgumentEvidence` is `false` for the whole request.
+   */
+  toolCallSafety: Promise<ToolCallExecutionSafety>;
 }
