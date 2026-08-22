@@ -566,8 +566,10 @@ export function modelPickerItems(
 /**
  * `/model` items across every ready connection. The value is the choice's index
  * (models can repeat across connections, so no id is unique on its own); the
- * caller maps it back to the {@link ModelChoice}. The description carries the
- * owning connection so identical model ids on different providers are readable.
+ * caller maps it back to the {@link ModelChoice}. Items prefer the catalog
+ * display name and fall back to the model id — the same rule desktop uses —
+ * while the description carries the owning connection so identical models on
+ * different providers are readable.
  */
 function modelChoicePickerItems(
   choices: readonly ModelChoice[],
@@ -579,18 +581,19 @@ function modelChoicePickerItems(
     const tags = [choice.connectionName || choice.connectionSlug];
     if (isCurrent) tags.push('current');
     else if (choice.isDefaultConnection) tags.push('default');
-    return { value: String(index), label: choice.model, description: tags.join(' · ') };
+    const label = choice.displayName?.trim() || choice.model;
+    return { value: String(index), label, description: tags.join(' · ') };
   });
 }
 
 /**
  * Case-insensitive substring match for the `/model` search field, against every
- * criterion the issue names: model id, provider label/type, and connection
- * name/slug. `ModelChoice` carries no display name, so the model id is the only
- * model-side match target; a display-name enrichment would slot in here.
+ * criterion the issue names: model display name (when the catalog supplies
+ * one), model id, provider label/type, and connection name/slug.
  */
 function matchesModelChoice(choice: ModelChoice, query: string): boolean {
   if (choice.model.toLowerCase().includes(query)) return true;
+  if (choice.displayName?.toLowerCase().includes(query)) return true;
   if (choice.connectionName.toLowerCase().includes(query)) return true;
   if (choice.connectionSlug.toLowerCase().includes(query)) return true;
   if (choice.providerType.toLowerCase().includes(query)) return true;

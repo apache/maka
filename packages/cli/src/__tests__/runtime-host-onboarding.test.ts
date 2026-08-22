@@ -52,4 +52,23 @@ describe('projectRuntimeHostModelChoices', () => {
       ['openai'],
     );
   });
+
+  test('projects the catalog display name so the picker can label like desktop', () => {
+    const choices = projectRuntimeHostModelChoices(
+      catalog([
+        {
+          ...live,
+          enabledModelIds: ['gpt-5-mini', 'gpt-5.2-codex'],
+          models: [{ id: 'gpt-5-mini', displayName: 'GPT-5 mini' }, { id: 'gpt-5.2-codex' }],
+        },
+      ]),
+    );
+    assert.deepEqual(
+      choices.map(({ model, displayName }) => ({ model, displayName })),
+      [
+        { model: 'gpt-5-mini', displayName: 'GPT-5 mini' },
+        { model: 'gpt-5.2-codex', displayName: undefined },
+      ],
+    );
+  });
 });

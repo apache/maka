@@ -8,6 +8,13 @@ export interface ModelChoice {
   connectionName: string;
   providerType: ProviderType;
   model: string;
+  /**
+   * Human-readable model name from the connection catalog, mirroring the
+   * desktop label rule (`displayName?.trim() || model`). Optional so
+   * hand-written choice literals and ids-only minimal hosts stay valid —
+   * consumers must fall back to `model`.
+   */
+  displayName?: string;
   isDefaultConnection: boolean;
   /** Maximum context tokens for this model, resolved from the connection or provider catalog. */
   contextWindow?: number;

@@ -2839,6 +2839,66 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('/model labels choices by catalog display name and searches it', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      // Same trick as the search test above: a current model absent from the
+      // choices, so raw ids can only reach the screen through picker labels.
+      model: 'legacy-curated-out',
+      connectionSlug: 'ghost',
+      providerType: 'openai',
+      modelChoices: [
+        {
+          connectionSlug: 'alpha',
+          connectionName: 'Aurora',
+          providerType: 'openai',
+          model: 'gpt-5.5',
+          displayName: 'GPT-5.5 Mini',
+          isDefaultConnection: true,
+        },
+        {
+          connectionSlug: 'beta',
+          connectionName: 'Boreal',
+          providerType: 'zai',
+          model: 'glm-max',
+          isDefaultConnection: false,
+        },
+      ],
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/model');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Select Model'));
+    // The labeled choice renders its display name instead of the raw id; the
+    // choice without one falls back to the id like desktop does.
+    await waitFor(() => {
+      const out = plainTerminalOutput(terminal.screenOutput());
+      return out.includes('GPT-5.5 Mini') && !out.includes('gpt-5.5') && out.includes('glm-max');
+    });
+
+    // Searching by the friendly name finds the model (#3482).
+    terminal.input('mini');
+    await waitFor(() => {
+      const out = plainTerminalOutput(terminal.screenOutput());
+      return out.includes('GPT-5.5 Mini') && !out.includes('glm-max');
+    });
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('switches models in a fresh conversation without a cache warning', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
