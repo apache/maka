@@ -122,9 +122,11 @@ test('a populated skill catalog renders the row enabled with no caveat', () => {
 });
 
 test('a loading catalog holds the row still and marks the held state', () => {
-  // Mid-refresh the row keeps the previous catalog's look (here: populated),
-  // and the loading class is the observable contract that a click acts as a
-  // no-op rather than writing a stray `/` against the fail-closed list.
+  // Mid-refresh the row keeps the previous catalog's look (here: populated).
+  // `aria-busy` is what assistive technology gets instead of a geometry
+  // change: activation is deferred, and a row that still announced plain
+  // "available" would silently ignore it. The class is the same contract for
+  // tests and styling.
   const menu = plusMenu({
     ...base,
     mentionSkills: [],
@@ -134,10 +136,24 @@ test('a loading catalog holds the row still and marks the held state', () => {
   assert.equal(count(menu, 'No skills available'), 0, 'geometry does not grow mid-refresh');
   assert.equal(skillsRow(menu).includes('aria-disabled="true"'), false);
   assert.equal(
+    skillsRow(menu).includes('aria-busy="true"'),
+    true,
+    'the deferred activation is announced',
+  );
+  assert.equal(
     skillsRow(menu).includes('maka-composer-skills-loading'),
     true,
     'the loading state is observable on the row',
   );
+});
+
+test('a settled catalog carries no busy announcement', () => {
+  for (const props of [
+    { ...base, mentionSkills: [{ id: 'demo', name: 'Demo' }], mentionSkillsLoading: false },
+    { ...base, mentionSkills: [{ id: 'demo', name: 'Demo' }] },
+  ]) {
+    assert.equal(plusMenu(props).includes('aria-busy'), false);
+  }
 });
 
 test('a loading refresh from a settled-empty catalog holds the empty look', () => {

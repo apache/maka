@@ -28,7 +28,7 @@ Delete when that guard passes against an unpatched package.
 
 ## `@astryxdesign/core@0.4.0`
 
-Five published component seams drop host-owned state or semantics:
+Six published component seams drop host-owned state or semantics:
 
 - `ChatLayout` needs a conversation identity that resets scroll/unread state
   without remounting its composer slot and discarding the live draft.
@@ -48,6 +48,10 @@ Five published component seams drop host-owned state or semantics:
   control, while a sibling outside `SideNavItem` can only come before the
   project control or after all of its tasks; neither produces the visual Tab
   order used by the task rail.
+- `DropdownMenuItem` must forward `aria-busy` to its row. The composer's
+  Skills entry holds its look steady while the Skill catalog refreshes and
+  defers activation meanwhile; without the attribute the row announces
+  "available" to assistive technology and silently ignores the action.
 
 Blank UA-CH `navigator.userAgentData.platform` must also not mean "not Apple".
 Electron builds with a rewritten identity ship `platform: ''`, which made every

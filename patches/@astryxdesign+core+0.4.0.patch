@@ -132,6 +132,52 @@ index 8c509bc..4b09993 100644
    };
  }
 \ No newline at end of file
+diff --git a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
+index 82ae62c..a97eff5 100644
+--- a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
++++ b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
+@@ -42,6 +42,12 @@ export interface DropdownMenuItemProps extends Pick<BaseProps, 'xstyle' | 'class
+      * @default true
+      */
+     hasCloseOnSelect?: boolean;
++    /**
++     * Exposes WAI-ARIA busy semantics on the row (maka patch): a host that
++     * holds the row's look steady while its backing data refreshes needs to
++     * say so to assistive technology, since activation is deferred meanwhile.
++     */
++    'aria-busy'?: boolean;
+     /**
+      * Visual variant. `'destructive'` renders the label, description, and icon in
+      * the error color for dangerous actions (e.g. Delete). @default 'default'
+@@ -62,7 +68,7 @@ export interface DropdownMenuItemProps extends Pick<BaseProps, 'xstyle' | 'class
+  * </DropdownMenu>
+  * ```
+  */
+-export declare function DropdownMenuItem({ icon, label, description, onClick, isDisabled, endContent, hasCloseOnSelect, variant, xstyle, className, style, }: DropdownMenuItemProps): import("react").JSX.Element;
++export declare function DropdownMenuItem({ icon, 'aria-busy': ariaBusy, label, description, onClick, isDisabled, endContent, hasCloseOnSelect, variant, xstyle, className, style, }: DropdownMenuItemProps): import("react").JSX.Element;
+ export declare namespace DropdownMenuItem {
+     var displayName: string;
+ }
+diff --git a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js
+index 5bf241b..f773a97 100644
+--- a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js
++++ b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.js
+@@ -91,6 +91,7 @@ const itemSizeStyles = {
+  */
+ export function DropdownMenuItem({
+   icon,
++  'aria-busy': ariaBusy,
+   label,
+   description,
+   onClick,
+@@ -117,6 +118,7 @@ export function DropdownMenuItem({
+   const isDestructive = variant === 'destructive';
+   return /*#__PURE__*/_jsx(Item, {
+     role: "menuitem",
++    'aria-busy': ariaBusy,
+     tabIndex: isDisabled ? undefined : -1,
+     onPointerMove: handlePointerMove,
+     startContent: icon ? renderIconSlot(icon, {
 diff --git a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js b/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
 index 33ed78d..0ecbce6 100644
 --- a/node_modules/@astryxdesign/core/dist/Kbd/Kbd.js
@@ -283,7 +329,7 @@ index 867ed5a..4b8f835 100644
  Markdown.displayName = 'Markdown';
 \ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
-index 16107cf..57aeb6c 100644
+index 16107cf..8a26b5d 100644
 --- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
 @@ -61,6 +61,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
@@ -309,7 +355,7 @@ index 16107cf..57aeb6c 100644
      var displayName: string;
  }
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
-index a72d264..c65bd32 100644
+index a72d264..778e0e2 100644
 --- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
 +++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
 @@ -159,6 +159,7 @@ export function SideNavItem({
@@ -526,6 +572,39 @@ index a2da3d9..91a020e 100644
        aria-expanded={hasDetail ? isDetailOpen : undefined}
        aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
        onClick={toggleDetail}
+diff --git a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx b/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
+index 8dbf5f6..b778ca9 100644
+--- a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
++++ b/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
+@@ -108,6 +108,12 @@ export interface DropdownMenuItemProps extends Pick<
+    * @default true
+    */
+   hasCloseOnSelect?: boolean;
++  /**
++   * Exposes WAI-ARIA busy semantics on the row (maka patch): a host that
++   * holds the row's look steady while its backing data refreshes needs to
++   * say so to assistive technology, since activation is deferred meanwhile.
++   */
++  'aria-busy'?: boolean;
+   /**
+    * Visual variant. `'destructive'` renders the label, description, and icon in
+    * the error color for dangerous actions (e.g. Delete). @default 'default'
+@@ -131,6 +137,7 @@ export interface DropdownMenuItemProps extends Pick<
+  */
+ export function DropdownMenuItem({
+   icon,
++  'aria-busy': ariaBusy,
+   label,
+   description,
+   onClick,
+@@ -165,6 +172,7 @@ export function DropdownMenuItem({
+   return (
+     <Item
+       role="menuitem"
++      aria-busy={ariaBusy}
+       tabIndex={isDisabled ? undefined : -1}
+       onPointerMove={handlePointerMove}
+       startContent={
 diff --git a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
 index a6f850b..b6e0f2a 100644
 --- a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx

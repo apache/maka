@@ -1729,21 +1729,28 @@ export const Composer = forwardRef<
                         // Mid-refresh the row LOOKS like the previous catalog
                         // but cannot act for the current one: opening the `/`
                         // menu now would write a stray slash against a list
-                        // that is fail-closed empty. A loading click is a
-                        // complete no-op — nothing typed, menu left open — so
-                        // the same click a beat later simply works. The class
-                        // is the observable contract for that state.
+                        // that is fail-closed empty. A loading click or Enter
+                        // is a complete no-op — nothing typed, menu left open —
+                        // so the same activation a beat later simply works.
+                        // `aria-busy` says so to assistive technology (the
+                        // geometry-stable row would otherwise announce
+                        // "available" and silently ignore the action); the
+                        // class is the same contract for tests and styling.
+                        // The gate lives INSIDE one always-present handler:
+                        // swapping the prop between undefined and a function
+                        // changes Item's internal structure, and the remount
+                        // would drop keyboard focus mid-refresh.
+                        aria-busy={props.mentionSkillsLoading === true ? true : undefined}
                         className={
                           props.mentionSkillsLoading === true
                             ? 'maka-composer-skills-loading'
                             : undefined
                         }
                         hasCloseOnSelect={props.mentionSkillsLoading !== true}
-                        onClick={
-                          props.mentionSkillsLoading === true
-                            ? undefined
-                            : openSkillMenu
-                        }
+                        onClick={() => {
+                          if (props.mentionSkillsLoading === true) return;
+                          openSkillMenu();
+                        }}
                       />
                     ) : null}
                     {props.onSetGoal ? (

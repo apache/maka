@@ -167,17 +167,64 @@ test('a Skills click during the catalog refresh does nothing, then works settled
   const skillsRow = menu.getByRole('menuitem', { name: /选择技能/ });
 
   // The Plan toggle starts the (now latched) refresh; the row announces the
-  // held state and a click inside the window has no effect at all.
+  // held state — busy to assistive technology, a class for styling and tests
+  // — and a click inside the window has no effect at all.
   await planRow.click();
   await expect(skillsRow).toHaveClass(/maka-composer-skills-loading/);
+  await expect(skillsRow).toHaveAttribute('aria-busy', 'true');
   await skillsRow.click();
   await expect(menu).toBeVisible();
   await expect(composer).toHaveText('');
   await expect(page.getByRole('listbox', { name: /技能/ })).toHaveCount(0);
 
-  // Released, the same click opens the `/` popup as usual.
+  // Keyboard activation is the same no-op: Enter on the focused row neither
+  // closes the menu nor writes the slash.
+  await skillsRow.focus();
+  await page.keyboard.press('Enter');
+  await expect(menu).toBeVisible();
+  await expect(composer).toHaveText('');
+  await expect(page.getByRole('listbox', { name: /技能/ })).toHaveCount(0);
+
+  // Released, the same activation opens the `/` popup as usual. Re-focus the
+  // row first: the settle re-renders the composer input's trigger config,
+  // which takes focus back to the editor (long-standing behavior on every
+  // catalog refresh, independent of this journey).
   await releaseBridgeLatch(page, 'newTasks.listInvocableSkills');
   await expect(skillsRow).not.toHaveClass(/maka-composer-skills-loading/);
+  await expect(skillsRow).not.toHaveAttribute('aria-busy', 'true');
+  await skillsRow.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('listbox', { name: /技能/ })).toBeVisible();
+});
+
+test('a context switch re-enters loading instead of holding the old catalog', async ({
+  invocableSkillsWindow: page,
+}) => {
+  // Populate and settle a session-scoped catalog first.
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('alpha-marker');
+  await composer.press('Enter');
+  await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+
+  // Switching to a new chat is a context change: the new-task catalog is
+  // latched, so the Skills row must present as loading — deferring activation
+  // — rather than as the previous session's settled, actionable catalog.
+  await armBridgeLatch(page, 'newTasks.listInvocableSkills');
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await expect(composer).toHaveText('');
+
+  await page.getByRole('button', { name: '添加上下文' }).click();
+  const menu = page.getByRole('menu', { name: '添加上下文' });
+  const skillsRow = menu.getByRole('menuitem', { name: /选择技能/ });
+  await expect(skillsRow).toHaveAttribute('aria-busy', 'true');
+  await skillsRow.click();
+  await expect(menu).toBeVisible();
+  await expect(composer).toHaveText('');
+
+  await releaseBridgeLatch(page, 'newTasks.listInvocableSkills');
+  await expect(skillsRow).not.toHaveAttribute('aria-busy', 'true');
   await skillsRow.click();
   await expect(page.getByRole('listbox', { name: /技能/ })).toBeVisible();
 });
@@ -194,6 +241,9 @@ test('two rapid Plan toggles land on the last requested state', async ({
   const menu = page.getByRole('menu', { name: '添加上下文' });
   const planRow = menu.getByRole('menuitemcheckbox', { name: 'Plan' });
   await expect(planRow).toHaveAttribute('aria-checked', 'false');
+  // The echo can land while the turn is still settling, and mode changes are
+  // refused mid-turn; wait for the row to become actionable.
+  await expect(planRow).not.toHaveAttribute('aria-disabled', 'true');
 
   // The session-list refresh is the tail of a Plan commit: latching its next
   // call keeps the commit pending — deterministically — after the mode has
@@ -211,4 +261,46 @@ test('two rapid Plan toggles land on the last requested state', async ({
   // The queued intent drains after the in-flight commit settles: OFF wins.
   await releaseBridgeLatch(page, 'sessions.list');
   await expect(planRow).toHaveAttribute('aria-checked', 'false');
+});
+
+test('deleting the session while a toggle is pending settles clean', async ({
+  invocableSkillsWindow: page,
+}) => {
+  // pending → cleanup → settle: the Session's renderer lifecycle ends while a
+  // mode commit (and a queued follow-up intent) is still in flight. Cleanup
+  // must drop the queued ask with the rest of the Session state, so the
+  // commit's tail has nothing to replay against the removed Session.
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('alpha-marker');
+  await composer.press('Enter');
+  await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+
+  await page.getByRole('button', { name: '添加上下文' }).click();
+  const menu = page.getByRole('menu', { name: '添加上下文' });
+  const planRow = menu.getByRole('menuitemcheckbox', { name: 'Plan' });
+  // Mode changes are refused mid-turn; wait for the row to become actionable.
+  await expect(planRow).not.toHaveAttribute('aria-disabled', 'true');
+  await armBridgeLatch(page, 'sessions.list', { oneShot: true });
+  await planRow.click();
+  await expect(planRow).toHaveAttribute('aria-checked', 'true');
+  await planRow.click();
+  await page.keyboard.press('Escape');
+  await expect(menu).not.toBeVisible();
+
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  const row = sidebar.locator('[data-maka-contract="session-row"]').first();
+  await row.hover();
+  await row.getByRole('button', { name: '任务操作' }).click();
+  await page.getByRole('menuitem', { name: '删除', exact: true }).click();
+  const confirm = page.getByRole('alertdialog');
+  await confirm.getByRole('button', { name: '删除', exact: true }).click();
+
+  await releaseBridgeLatch(page, 'sessions.list');
+  await expect(sidebar.locator('[data-maka-contract="session-row"]')).toHaveCount(0);
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+  // The composer is back on a clean new chat: no error surfaced and no stale
+  // Plan state re-applied by the drained commit.
+  await expect(composer).toBeVisible();
+  await expect(page.locator('.maka-composer-mode-button[data-mode="plan"]')).toHaveCount(0);
 });
