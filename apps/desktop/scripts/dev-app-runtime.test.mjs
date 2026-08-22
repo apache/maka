@@ -221,3 +221,61 @@ test('TCC monitor recheck on appeared→exited wires the REAL quiet recheck', as
   }
   assert.ok(errors.some((message) => message.includes('absorbed this launch')), `expected conflict, got ${errors.join(' | ')}`);
 });
+
+test('TCC monitor recheck on never-started wires the REAL quiet recheck', async () => {
+  const { monitorDevelopmentApp } = await import('./dev-app-runtime.mjs');
+  const never = (() => {
+    let calls = 0;
+    return () => { calls += 1; return calls >= 5; }; // never appears within the window
+  })();
+  const foreign = '/Users/other/codebase/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron /Users/other/codebase/apps/desktop';
+  const errors = [];
+  const originalError = console.error;
+  console.error = (message) => errors.push(String(message));
+  try {
+    const outcome = await monitorDevelopmentApp({
+      isRunning: never,
+      commandLines: [foreign],
+      pollMs: 1,
+      startupAttempts: 4,
+    });
+    assert.equal(outcome, 'never-started');
+  } finally {
+    console.error = originalError;
+  }
+  assert.ok(errors.some((message) => message.includes('absorbed this launch')), `expected conflict, got ${errors.join(' | ')}`);
+});
+
+test('recheck still names the holder when the loser env IS readable (env halves)', async () => {
+  const { monitorDevelopmentApp } = await import('./dev-app-runtime.mjs');
+  const appearedThenExited = (() => {
+    let calls = 0;
+    return () => { calls += 1; return calls < 3; };
+  })();
+  // env readable and declaring the SHARED default for the foreign worktree:
+  // the recheck must still match and print the conflict (not rely on the
+  // unknown-blocks fallback).
+  const envFor = (path) => {
+    if (path.endsWith('/apps/desktop/.maka-dev/dev-env.json')) {
+      return JSON.stringify({ schemaVersion: 1, env: {}, userDataDir: undefined, electronArgs: [] });
+    }
+    throw new Error(`unexpected env read: ${path}`);
+  };
+  const foreign = '/Users/other/codebase/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron /Users/other/codebase/apps/desktop';
+  const errors = [];
+  const originalError = console.error;
+  console.error = (message) => errors.push(String(message));
+  try {
+    const outcome = await monitorDevelopmentApp({
+      isRunning: appearedThenExited,
+      commandLines: [foreign],
+      readFile: envFor,
+      pollMs: 1,
+      startupAttempts: 10,
+    });
+    assert.equal(outcome, 'exited');
+  } finally {
+    console.error = originalError;
+  }
+  assert.ok(errors.some((message) => message.includes('absorbed this launch')), `expected conflict, got ${errors.join(' | ')}`);
+});
