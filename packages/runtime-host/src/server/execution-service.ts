@@ -13,7 +13,6 @@ import type { PublishedProjectDirectoryRoot } from './project-directory-authorit
 export interface ExecutionRuntimeHostServiceOptions {
   readonly rootPath: string;
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
-  readonly bundledGitResourcesRoot?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
   readonly handshakeTimeoutMs?: number;
   readonly shutdownGraceMs?: number;

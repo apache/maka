@@ -79,9 +79,7 @@
     "windows:inventory": "node --test scripts/windows-test-inventory.test.mjs && node scripts/windows-test-inventory.mjs --check",
     "windows:inventory:write": "node scripts/windows-test-inventory.mjs --write",
     "smoke:windows": "npm run build && npm run smoke:windows:dist",
-    "smoke:windows:dist": "node scripts/windows-smoke.mjs",
-    "prepare:bundled-git": "node scripts/prepare-bundled-git.mjs",
-    "prepare:bundled-git-source": "node scripts/prepare-bundled-git-source.mjs"
+    "smoke:windows:dist": "node scripts/windows-smoke.mjs"
   },
   "devDependencies": {
     "@ai-sdk/provider-utils": "5.0.27",
@@ -90,7 +88,6 @@
     "@astryxdesign/core": "0.4.0",
     "@biomejs/biome": "2.5.6",
     "@types/node": "^26.1.2",
-    "dugite": "3.2.2",
     "knip": "^6.26.0",
     "patch-package": "8.0.1",
     "typescript": "^7.0.2",
@@ -99,7 +96,6 @@
   "allowScripts": {
     "esbuild@0.27.7": true,
     "@jackwener/opencli@1.8.4": true,
-    "dugite@3.2.2": true,
     "node-pty@1.2.0-beta.15": true
   },
   "overrides": {

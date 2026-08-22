@@ -102,7 +102,6 @@ export function resolveProductReleaseIdentity({
   const exe = `Maka-${version}-win-x64.exe`;
   const windowsZip = `Maka-${version}-win-x64.zip`;
   const cliArchive = `Maka-${version}-cli-mac-arm64.zip`;
-  const sourceArchive = `Maka-${version}-bundled-git-source.tar.gz`;
   const artifacts = {
     'desktop-macos': [dmg, `${dmg}.sha256`, macZip, `${macZip}.blockmap`, 'latest-mac.yml'],
     'desktop-windows': [
@@ -114,7 +113,6 @@ export function resolveProductReleaseIdentity({
       'latest.yml',
     ],
     'cli-macos-arm64': [cliArchive, `${cliArchive}.sha256`],
-    source: [sourceArchive, `${sourceArchive}.sha256`],
   };
 
   return {
@@ -126,7 +124,6 @@ export function resolveProductReleaseIdentity({
     dmg,
     exe,
     cliArchive,
-    sourceArchive,
     artifacts,
   };
 }
@@ -172,7 +169,6 @@ function githubOutputEntries(identity) {
     dmg: identity.dmg,
     exe: identity.exe,
     cli_archive: identity.cliArchive,
-    source_archive: identity.sourceArchive,
     node_version: identity.nodeVersion,
     node_archive: identity.nodeArchive,
     node_archive_sha256: identity.nodeArchiveSha256,

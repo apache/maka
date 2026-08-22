@@ -1,5 +1,4 @@
 import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
-import { resolveBundledGitRuntime } from './bundled-git-runtime.js';
 import type { PublishedProjectDirectoryRoot } from './project-directory-authority.js';
 import {
   createExecutionRuntimeHostComposition,
@@ -13,7 +12,6 @@ import {
 
 export interface ExecutionRuntimeHostCompositionSourceOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
-  readonly bundledGitResourcesRoot?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
 }
 
@@ -28,14 +26,10 @@ export async function createExecutionRuntimeHostCompositionSource(
   options: ExecutionRuntimeHostCompositionSourceOptions,
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<RuntimeHostCompositionSource> {
-  if (options.managedWorkspaceGitRuntime && options.bundledGitResourcesRoot) {
-    throw new Error('Managed workspace Git runtime must have exactly one authority');
-  }
-  const managedWorkspaceGitRuntime = options.bundledGitResourcesRoot
-    ? await resolveBundledGitRuntime({ resourcesRoot: options.bundledGitResourcesRoot })
-    : options.managedWorkspaceGitRuntime;
   const compositionOptions = {
-    ...(managedWorkspaceGitRuntime ? { managedWorkspaceGitRuntime } : {}),
+    ...(options.managedWorkspaceGitRuntime
+      ? { managedWorkspaceGitRuntime: options.managedWorkspaceGitRuntime }
+      : {}),
     ...(options.projectDirectoryRoots
       ? { projectDirectoryRoots: options.projectDirectoryRoots }
       : {}),

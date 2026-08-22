@@ -19,7 +19,6 @@ const FULL_SUITE_FILES = new Set([
 const RELEASE_CONTRACT_FILES = new Set([
   'apps/desktop/build/entitlements.mac.inherit.plist',
   'apps/desktop/build/entitlements.mac.plist',
-  'apps/desktop/bundled-git.json',
   'apps/desktop/bundled-tools.json',
   'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
   'apps/desktop/electron-builder.config.mjs',
@@ -32,8 +31,6 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/package-macos-arm64-cli.mjs',
   'scripts/package-windows-autoupdate-next.mjs',
   'scripts/package-windows-x64.mjs',
-  'scripts/prepare-bundled-git-source.mjs',
-  'scripts/prepare-bundled-git.mjs',
   'scripts/prepare-windows-upgrade-baseline.mjs',
   'scripts/generate-third-party-notices.test.mjs',
   'scripts/prepare-windows-upgrade-baseline.test.mjs',

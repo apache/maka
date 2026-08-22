@@ -155,4 +155,5 @@ JavaScript finally，因此本切片的安全保证来自“只读 operation all
    与 successor workspace version。
 
 M1.2 提供真实 runtime-host composition seam，但本切片不修改 Desktop/CLI 默认配置，因此不默认开启 managed
-execution，也不改变 attached mode。bundled Git 的发行与 launcher 参数接线仍是独立发布能力，不得回退系统 Git。
+execution，也不改变 attached mode。ASF Desktop 已停止分发 bundled Git；在兼容许可证的 verified runtime
+接入前，managed execution 必须在 admission/T1 前保持不可用，且不得回退系统 Git。

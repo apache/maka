@@ -72,7 +72,6 @@ export async function packageMacosArm64({
 
   await run('npm', ['run', 'clean']);
   await run('npm', ['run', 'build']);
-  await run('npm', ['run', 'prepare:bundled-git']);
   await run('npm', ['run', 'check:release']);
   await remove(releaseDirectory, { recursive: true, force: true });
   await run('npm', ['--workspace', '@maka/desktop', 'run', 'package:macos-arm64']);

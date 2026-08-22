@@ -88,7 +88,6 @@ export async function packageWindowsX64({
   await run('npm', ['run', 'check:windows-cargo-notices']);
   await mkdir(sandboxResourceDirectory, { recursive: true });
   await copyFile(sandboxBinaryPath, sandboxResourcePath);
-  await run('npm', ['run', 'prepare:bundled-git']);
   await run('npm', ['run', 'check:release']);
   await remove(releaseDirectory, { recursive: true, force: true });
   await run('npm', ['--workspace', '@maka/desktop', 'run', 'package:windows-x64']);

@@ -48,14 +48,6 @@ export default {
   ],
   extraResources: [
     {
-      from: '../../node_modules/dugite/git',
-      to: 'git',
-    },
-    {
-      from: 'bundled-git.json',
-      to: 'bundled-git.json',
-    },
-    {
       from: 'bundled-tools.json',
       to: 'bundled-tools.json',
     },
@@ -92,22 +84,6 @@ export default {
     {
       from: '../../LICENSE',
       to: 'licenses/maka/LICENSE',
-    },
-    {
-      from: '../../node_modules/dugite/LICENSE',
-      to: 'licenses/dugite/LICENSE',
-    },
-    {
-      from: 'resources/licenses/git/NOTICE.txt',
-      to: 'licenses/git/NOTICE.txt',
-    },
-    {
-      from: 'resources/licenses/git/LICENSE.txt',
-      to: 'licenses/git/LICENSE.txt',
-    },
-    {
-      from: 'resources/licenses/git/SOURCE_OFFER.txt',
-      to: 'licenses/git/SOURCE_OFFER.txt',
     },
     {
       from: '../../NOTICE',

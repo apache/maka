@@ -14,8 +14,6 @@ export type ExecutionRuntimeHostCandidateResult = InteractiveRuntimeHostCandidat
 export interface ExecutionRuntimeHostCandidateOptions
   extends InteractiveRuntimeHostCandidateOptions {
   readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
-  /** Packaged resource root containing bundled-git.json and the Git toolchain. */
-  readonly bundledGitResourcesRoot?: string;
 }
 
 export type ExecutionRuntimeHostCandidateDependencies = ExecutionRuntimeHostCompositionDependencies;

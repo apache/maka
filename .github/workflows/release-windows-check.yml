@@ -17,7 +17,6 @@ on:
       - 'apps/desktop/package.json'
       - 'scripts/package-windows-x64.mjs'
       - 'scripts/verify-windows-sandbox-e2e.mjs'
-      - 'scripts/prepare-bundled-git.mjs'
       - 'scripts/verify-windows-x64.mjs'
       - 'scripts/verify-windows-sandbox-e2e.mjs'
       - 'scripts/verify-windows-installer-lifecycle.mjs'
@@ -38,7 +37,6 @@ on:
       - '.gitattributes'
       - 'package.json'
       - 'package-lock.json'
-      - 'apps/desktop/resources/licenses/git/NOTICE.txt'
       - 'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt'
       - '.github/workflows/release-windows-check.yml'
   workflow_dispatch:

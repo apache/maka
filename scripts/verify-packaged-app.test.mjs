@@ -4,7 +4,31 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, test } from 'node:test';
 import { createPackage } from '@electron/asar';
-import { asarLookupPath, assertPackagedDependencyClosure } from './verify-packaged-app.mjs';
+import {
+  asarLookupPath,
+  assertPackagedDependencyClosure,
+  assertPackagedResources,
+} from './verify-packaged-app.mjs';
+
+test('packaged resources forbid the retired bundled Git distribution', async () => {
+  const required = [];
+  const forbidden = [];
+  await assertPackagedResources('resources', {
+    requirePath: async (path) => required.push(path),
+    forbidPath: async (path) => forbidden.push(path),
+    requireWindowsSandbox: false,
+  });
+
+  for (const path of [
+    join('resources', 'git'),
+    join('resources', 'bundled-git.json'),
+    join('resources', 'licenses', 'dugite'),
+    join('resources', 'licenses', 'git'),
+  ]) {
+    assert.equal(required.includes(path), false);
+    assert.equal(forbidden.includes(path), true);
+  }
+});
 
 describe('asarLookupPath', () => {
   // The archive stores `/`-joined paths, but `@electron/asar` resolves a lookup

@@ -714,15 +714,10 @@ export async function assertPackagedResources(
   const required = [
     'app.asar',
     'bundled-tools.json',
-    'bundled-git.json',
-    join('licenses', 'git', 'LICENSE.txt'),
-    join('licenses', 'git', 'SOURCE_OFFER.txt'),
     join('workers', 'filesystem-worker.js'),
     join('licenses', 'maka', 'LICENSE'),
     join('licenses', 'maka', 'NOTICE'),
     ...(requireDisclaimer ? [join('licenses', 'maka', 'DISCLAIMER-WIP')] : []),
-    join('licenses', 'dugite', 'LICENSE'),
-    join('licenses', 'git', 'NOTICE.txt'),
     join('licenses', 'electron', 'LICENSE'),
     join('licenses', 'electron', 'LICENSES.chromium.html'),
     join('licenses', 'npm', 'THIRD_PARTY_NOTICES.txt'),
@@ -746,6 +741,10 @@ export async function assertPackagedResources(
     await requirePath(join(resourcesPath, path));
   }
   const forbidden = [
+    'git',
+    'bundled-git.json',
+    join('licenses', 'dugite'),
+    join('licenses', 'git'),
     join('tools', 'officecli'),
     join('licenses', 'officecli'),
     // cua-driver is gone from this repository, and these two forbids stay for the
