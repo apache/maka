@@ -12,7 +12,12 @@ import {
   type SessionHistoryGroup,
   type SessionRowActions,
 } from './session-history-list.js';
-import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } from './session-sidebar-nav.js';
+import {
+  SessionSidebarFooter,
+  SessionSidebarNav,
+  type SidebarBuildStamp,
+  type SidebarUpdateReminder,
+} from './session-sidebar-nav.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import type { Ref } from 'react';
@@ -49,6 +54,7 @@ export function SessionListPanel(props: {
   moduleMemory?: NavModuleMemory;
   onSelect(selection: NavSelection): void;
   onOpenSettings(): void;
+  buildStamp?: SidebarBuildStamp;
   updateReminder?: SidebarUpdateReminder;
   onOpenUpdate?(): void;
   onNew(): void;
@@ -151,6 +157,7 @@ export function SessionListPanel(props: {
         }
         footer={
           <SessionSidebarFooter
+            buildStamp={props.buildStamp}
             updateReminder={props.updateReminder}
             onOpenSettings={props.onOpenSettings}
             onOpenUpdate={props.onOpenUpdate}

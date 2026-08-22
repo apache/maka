@@ -10,7 +10,9 @@ import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
  */
 type ExternalSessionImportCopy = {
   sourceLabel: string;
-  codex: string;
+  /** Display names by adapter id. An id with no entry falls back to the id
+   *  itself, which is legible enough to ship and obvious enough to fix. */
+  sourceNames: Readonly<Record<string, string>>;
   includeArchived: string;
   loading: string;
   listAria: string;
@@ -59,7 +61,7 @@ type ExternalSessionImportCopy = {
 const COPY = {
   zh: {
     sourceLabel: '来源',
-    codex: 'Codex',
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code' },
     includeArchived: '包含已归档的对话',
     loading: '正在读取外部对话…',
     listAria: '可导入的对话',
@@ -102,7 +104,7 @@ const COPY = {
   },
   en: {
     sourceLabel: 'Source',
-    codex: 'Codex',
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code' },
     includeArchived: 'Include archived conversations',
     loading: 'Reading external conversations…',
     listAria: 'Conversations available to import',

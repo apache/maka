@@ -1,4 +1,4 @@
-# Maka
+# Apache Maka (Incubating)
 
 [![CI](https://github.com/apache/maka/actions/workflows/ci.yml/badge.svg)](https://github.com/apache/maka/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
@@ -9,6 +9,9 @@
 **A local-first Agent workspace built for real work.**
 
 Maka does more than answer questions. With controlled permissions, it can inspect projects, execute tools, produce artifacts, and preserve model messages and tool calls as recoverable execution facts. Desktop, the terminal TUI, the non-interactive CLI, and Maka evaluation subjects all execute through Runtime Host.
+
+> [!NOTE]
+> Apache Maka (Incubating) is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF. [DISCLAIMER-WIP](./DISCLAIMER-WIP) records the issues the project is currently aware of.
 
 > [!IMPORTANT]
 > Maka is under active development. The macOS Apple Silicon desktop build is an early public release; data formats, CLI commands, and experimental capabilities may still change.
@@ -55,24 +58,13 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 
 ## Quick start
 
-### Download Desktop for macOS
+### Releases and downloads
 
-The signed and notarized Desktop app is available from [GitHub Releases](https://github.com/apache/maka/releases/latest) for Apple Silicon Macs only (`arm64`).
+Apache Maka has not made an Apache release yet. Everything currently published from this repository or from a package registry was produced before or during incubation, is not an Apache Software Foundation release, and has not been reviewed or voted on by the Incubator PMC.
 
-1. Download `Maka-<version>-mac-arm64.dmg`;
-2. Open the DMG and drag Maka to Applications;
-3. Install `ripgrep` with `brew install ripgrep` to enable Runtime's `Grep` tool;
-4. Launch Maka and configure your own model connection under `Settings → Models`.
+Once Apache releases exist, the official release is the source release published by the ASF and approved by the podling PPMC and the Incubator PMC. A package built from that source and distributed elsewhere, for example through a package registry or as a Desktop installer, is a convenience artifact rather than the release itself, and it is valid only when it is built from an approved source release. [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) holds the candidate contract, signing path, and verification steps.
 
-Computer Use is not included in this first public build. Intel Macs, Windows, and Linux packages are not supported yet.
-
-### Windows x64 preview
-
-Windows is still an unsigned preview, not a supported release tier. When a release includes Windows
-assets, follow the [Windows preview installation and verification guide](docs/windows-support.md#install-the-windows-x64-preview)
-before running `Maka-<version>-win-x64.exe`. SmartScreen will identify the installer as coming from
-an unknown publisher; do not bypass that warning unless the downloaded SHA-256 matches the checksum
-published with the same release.
+Until an approved source release exists, this README recommends no prebuilt download. Build and run Maka from source as described below. Desktop currently targets Apple Silicon Macs (`arm64`); Intel Macs, Windows, and Linux are not supported yet, and [Windows support](docs/windows-support.md) remains an unsigned preview rather than a supported release tier.
 
 ### Requirements
 
@@ -288,3 +280,5 @@ Before submitting code, run typecheck, build, and focused tests proportionate to
 Maka is licensed under the [Apache License 2.0](./LICENSE). See
 [NOTICE](./NOTICE) for attribution information. Third-party components remain
 subject to their respective licenses and notices.
+
+Apache Maka, Maka, Apache, the Apache feather, and the Apache Maka project logo are either registered trademarks or trademarks of The Apache Software Foundation.

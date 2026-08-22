@@ -47,3 +47,41 @@ test('settings hides expanded workbar chrome and restores it on close', async ({
   await expect(workbarToolbar).toBeVisible();
   await expect(taskTab).toBeVisible();
 });
+
+test('wide settings gutters scroll the whole main pane', async ({ window: page }) => {
+  await page.setViewportSize({ width: 1600, height: 520 });
+  await page.getByRole('button', { name: '设置' }).click();
+  await page.getByRole('button', { name: '通用', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '助手语气偏好' })).toBeEnabled();
+
+  const pane = page.locator('.settingsMainPane');
+  const content = pane.locator('.settingsPageStack').first();
+  const geometry = await pane.evaluate((element) => {
+    const paneRect = element.getBoundingClientRect();
+    const contentElement = element.querySelector('.settingsPageStack');
+    const contentRect = contentElement?.getBoundingClientRect();
+    const layoutContent = element.querySelector('.astryx-layout-content');
+    if (!contentRect || !layoutContent) throw new Error('Settings layout is incomplete');
+    return {
+      blankRight: paneRect.right - contentRect.right,
+      clientHeight: element.clientHeight,
+      contentOverflowY: getComputedStyle(layoutContent).overflowY,
+      paneOverflowY: getComputedStyle(element).overflowY,
+      scrollHeight: element.scrollHeight,
+      wheelPoint: {
+        x: Math.floor((contentRect.right + paneRect.right) / 2),
+        y: Math.floor(Math.min(contentRect.top + 120, paneRect.bottom - 40)),
+      },
+    };
+  });
+
+  expect(geometry.blankRight).toBeGreaterThan(40);
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
+  expect(geometry.contentOverflowY).not.toBe('auto');
+  expect(geometry.paneOverflowY).toBe('auto');
+
+  await page.mouse.move(geometry.wheelPoint.x, geometry.wheelPoint.y);
+  await page.mouse.wheel(0, 600);
+  await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect(content).toBeVisible();
+});

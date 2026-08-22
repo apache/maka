@@ -487,7 +487,7 @@ export function ImportTasksSettingsPage(props: {
         title={copy.sourceLabel}
         description={
           adapterIds.length === 1 && adapterId !== null
-            ? sourceLabel(adapterId, copy.codex)
+            ? sourceLabel(adapterId, copy.sourceNames)
             : undefined
         }
         variant="bare"
@@ -503,7 +503,7 @@ export function ImportTasksSettingsPage(props: {
               isDisabled={catalogLoading}
             >
               {adapterIds.map((id) => (
-                <SegmentedControlItem key={id} value={id} label={sourceLabel(id, copy.codex)} />
+                <SegmentedControlItem key={id} value={id} label={sourceLabel(id, copy.sourceNames)} />
               ))}
             </SegmentedControl>
           )}
@@ -714,6 +714,6 @@ export function ImportTasksSettingsPage(props: {
   );
 }
 
-function sourceLabel(adapterId: string, codexLabel: string): string {
-  return adapterId === 'codex' ? codexLabel : adapterId;
+function sourceLabel(adapterId: string, names: Readonly<Record<string, string>>): string {
+  return names[adapterId] ?? adapterId;
 }

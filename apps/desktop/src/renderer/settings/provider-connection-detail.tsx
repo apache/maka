@@ -57,6 +57,7 @@ import {
   savedRequestHeaderDrafts,
   type RequestHeaderDraft,
 } from './request-customization-editor';
+import { bulkThinkingLevelStates } from './relay-thinking-bulk';
 
 export function ConnectionDetail(props: ConnectionDetailProps) {
   const defaults = PROVIDER_DEFAULTS[props.connection.providerType];
@@ -158,6 +159,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     relayProfileDraft,
     hasRelayProfileChanges,
     setDraftThinkingLevels,
+    setDraftThinkingLevelForAll,
     setDraftVision,
     setDraftContextWindow,
     setDraftServiceTier,
@@ -189,6 +191,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       !hasModelMetadata(connection.providerType, modelId),
   );
   const showsCapabilities = capabilityModelIds.length > 0;
+  // The bulk control shares the 思考档位 row's relay gate — it edits exactly
+  // that row — and needs repetition to be worth a control at all: with one
+  // row it would be a second widget doing what the row under it already does.
+  const showsThinkingBulk = isRelay && capabilityModelIds.length > 1;
   // One row is a form at a time, the way the settings-sidebar template does it.
   // Opening a row discards the other's draft: leaving an abandoned draft in
   // state meant it reappeared when the user came back to that row, and — until
@@ -578,6 +584,68 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           <Divider />
           <DetailSection title={copy.capabilities} description={copy.capabilitiesHelp}>
             <VStack gap={4}>
+              {/* One control for the whole table, above the rows it edits. A
+                  relay usually fronts one model family that accepts the same
+                  reasoning_effort values, and declaring that per row was
+                  models × levels clicks for a single fact. */}
+              {showsThinkingBulk && (
+                <CapabilityRow label={copy.thinkingBulk} description={copy.thinkingBulkHelp}>
+                  <DropdownMenu
+                    button={{
+                      variant: 'secondary',
+                      size: 'sm',
+                      label: copy.thinkingBulkTrigger,
+                      // Starts with the visible label so voice control can
+                      // act on what the button says, then names the thing it
+                      // sets — the row's heading is beside it visually but is
+                      // not attached to the control.
+                      'aria-label': `${copy.thinkingBulkTrigger} — ${copy.thinkingBulk}`,
+                      isDisabled: allActionsBusy,
+                    }}
+                    hasChevron
+                    menuWidth={240}
+                  >
+                    {/* The declarable vocabulary, which is the whole of what
+                        a draft can hold: the seed sanitizes through
+                        `normalizeRelayModelProfiles`, so `off` — a disable
+                        wire no generic relay is presumed to speak — cannot
+                        reach a row here either. */}
+                    {bulkThinkingLevelStates(
+                      capabilityModelIds,
+                      relayProfileDraft,
+                      DECLARABLE_RELAY_THINKING_LEVELS,
+                    ).map((state) => (
+                      <DropdownMenuCheckboxItem
+                        key={state.level}
+                        label={state.level}
+                        /* The box only ticks at full coverage, so the count
+                           is the sole place partial coverage is legible —
+                           without it "3 of 5 declare high" and "none do"
+                           present as the same empty box. */
+                        description={copy.thinkingBulkCoverage(state.declaredCount, state.total)}
+                        aria-label={`${copy.thinkingBulk} ${state.level}`}
+                        /* The item's `description` is visible text only — the
+                           component does not wire it to `aria-describedby`,
+                           and this item's own `aria-label` replaces the name
+                           the description would otherwise have joined. Without
+                           this, "1/4 个模型" and "全部未声明" both reach a screen
+                           reader as an unchecked box with the same name, which
+                           is exactly the partial state the count exists to
+                           show. */
+                        aria-description={copy.thinkingBulkCoverage(
+                          state.declaredCount,
+                          state.total,
+                        )}
+                        value={state.checked}
+                        onChange={(checked) => {
+                          setDraftThinkingLevelForAll(capabilityModelIds, state.level, checked);
+                        }}
+                        isDisabled={allActionsBusy}
+                      />
+                    ))}
+                  </DropdownMenu>
+                </CapabilityRow>
+              )}
               {capabilityModelIds.map((modelId, modelIndex) => {
                 const declared: RelayModelProfile | undefined = relayProfileDraft[modelId];
                 // Vision resolves to one of three states: absent (Auto),
@@ -608,7 +676,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 );
                 return (
                   <VStack key={modelId} gap={3}>
-                    {modelIndex > 0 && <Divider />}
+                    {(modelIndex > 0 || showsThinkingBulk) && <Divider />}
                     <Text weight="semibold">{modelId}</Text>
                     {/* One row per declaration: label + what it does on the
                         left, one compact control on the right (the 模型功能
@@ -687,7 +755,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                       <DeclaredContextWindowField
                         declared={declared?.contextWindow}
                         disabled={allActionsBusy}
-                        label={copy.contextWindow}
+                        /* Named per model, like the three controls around it:
+                           the visible label is the row's, but the field's own
+                           name is all a screen reader gets, and every row in
+                           the section carries the same one. */
+                        label={`${copy.contextWindow} — ${modelId}`}
                         onCommit={(value) =>
                           setDraftContextWindow(modelId, value ?? undefined)
                         }

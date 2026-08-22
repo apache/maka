@@ -15,6 +15,11 @@ const zhCapabilitiesCopy = {
   thinkingEffortHelp: '勾选需要的思考强度档位，不勾选即为不声明。',
   thinkingUndeclared: '未声明',
   thinkingSelectedCount: (count: number) => `已选择 ${count} 个`,
+  thinkingBulk: '批量设置思考档位',
+  thinkingBulkHelp: '勾选写入下方全部已启用模型，取消勾选则从全部模型移除；其余档位不受影响。',
+  thinkingBulkTrigger: '应用到全部模型',
+  thinkingBulkCoverage: (declared: number, total: number) =>
+    declared === 0 ? '全部未声明' : `${declared}/${total} 个模型`,
   visionInput: '视觉输入（vision）',
   visionInputHelp: '「自动」跟随内置元数据；「启用/禁用」是显式声明，覆盖自动判断。',
   visionAuto: '自动',
@@ -34,6 +39,12 @@ const enCapabilitiesCopy = {
   thinkingEffortHelp: 'Tick the thinking levels this model supports; none ticked means undeclared.',
   thinkingUndeclared: 'Undeclared',
   thinkingSelectedCount: (count: number) => `${count} selected`,
+  thinkingBulk: 'Set thinking levels for all models',
+  thinkingBulkHelp:
+    'Ticking adds the level to every enabled model below; unticking removes it from all of them. Other levels are left alone.',
+  thinkingBulkTrigger: 'Apply to all models',
+  thinkingBulkCoverage: (declared: number, total: number) =>
+    declared === 0 ? 'On no model' : `On ${declared} of ${total} models`,
   visionInput: 'Vision input',
   visionInputHelp: 'Auto follows built-in metadata; Enabled/Disabled overrides it explicitly.',
   visionAuto: 'Auto',
@@ -160,7 +171,7 @@ const zhCopy = {
     accountIdPlaceholder: '填写账户 ID',
     saving: '保存中…', save: '保存供应商', keyRequired: (name: string) => `请填写 ${name} API Key`,
     apiKeyLabel: 'API Key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: '服务地址',
-    defaultModel: '默认模型', defaultModelPlaceholder: '填写你的中转站模型 ID，例如 gpt-4o、claude-sonnet-4-5 或自定义模型名', defaultModelHelp: '用于首次连接测试和模型选择器兜底；保存后仍会自动拉取模型目录。', defaultModelRequired: '请填写默认模型 ID。保存后仍会自动拉取模型目录。',
+    defaultModel: '默认模型', defaultModelPlaceholder: '留空即可，保存后自动拉取', defaultModelHelp: '保存后 Maka 会向该端点拉取模型目录。只有当端点不提供目录时，才需要在这里手填一个模型 ID。',
     ...zhCapabilitiesCopy,
   },
   oauthFlow: {
@@ -304,7 +315,7 @@ const enCopy: ProviderSettingsCopy = {
     accountIdPlaceholder: 'Enter account ID',
     saving: 'Saving…', save: 'Save provider', keyRequired: (name: string) => `Enter the ${name} API key`,
     apiKeyLabel: 'API key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: 'Service URL',
-    defaultModel: 'Default model', defaultModelPlaceholder: 'Enter your relay model id, e.g. gpt-4o, claude-sonnet-4-5, or a custom model name', defaultModelHelp: 'Used as the first connection-test and picker fallback; Maka still fetches the model catalog after saving.', defaultModelRequired: 'Enter a default model id. Maka still fetches the model catalog after saving.',
+    defaultModel: 'Default model', defaultModelPlaceholder: 'Leave empty — fetched after saving', defaultModelHelp: 'Maka fetches the model catalog from this endpoint after saving. Type a model id here only if the endpoint serves no catalog.',
     ...enCapabilitiesCopy,
   },
   oauthFlow: {

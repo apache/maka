@@ -16,8 +16,8 @@
  * One-shot — captured at module load and cached.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 export interface BuildInfo {
   readonly mode: 'dev' | 'packaged';
@@ -38,16 +38,74 @@ function findRepoRoot(start: string): string | null {
   return null;
 }
 
-function resolveCommit(repoRoot: string): string | null {
+/**
+ * The directory holding this checkout's Git metadata.
+ *
+ * `.git` is a directory in an ordinary clone and a **file** in a linked
+ * worktree, where it holds `gitdir: <path>` pointing at
+ * `<main>/.git/worktrees/<name>`. Reading `<root>/.git/HEAD` therefore finds
+ * nothing in a worktree — and a worktree is exactly the checkout whose commit
+ * a developer most needs to see, since it is the one that differs from the
+ * tree they think they are running.
+ *
+ * A relative `gitdir:` is resolved against the checkout, which is how Git
+ * writes it for a worktree created inside the repository.
+ */
+function resolveGitDir(repoRoot: string): string | null {
+  const dotGit = join(repoRoot, '.git');
   try {
-    const headPath = join(repoRoot, '.git', 'HEAD');
+    if (statSync(dotGit).isDirectory()) return dotGit;
+  } catch {
+    return null;
+  }
+  try {
+    const pointer = readFileSync(dotGit, 'utf8').trim();
+    if (!pointer.startsWith('gitdir:')) return null;
+    const target = pointer.slice('gitdir:'.length).trim();
+    if (!target) return null;
+    return isAbsolute(target) ? target : resolve(repoRoot, target);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The Git directory holding refs for this checkout.
+ *
+ * A linked worktree splits its Git directory in two: the private admin
+ * directory named by `.git` holds that worktree's own `HEAD` and index, while
+ * loose refs and `packed-refs` stay in the *common* directory shared with the
+ * main checkout. `commondir` inside the admin directory names it, relative to
+ * the admin directory itself.
+ *
+ * Reading a branch ref from the admin directory therefore finds nothing on a
+ * real branch-linked worktree, and the build stamp loses its commit.
+ */
+function resolveCommonDir(gitDir: string): string {
+  try {
+    const pointer = readFileSync(join(gitDir, 'commondir'), 'utf8').trim();
+    if (!pointer) return gitDir;
+    return isAbsolute(pointer) ? pointer : resolve(gitDir, pointer);
+  } catch {
+    // An ordinary clone has no `commondir`; its own directory is the common one.
+    return gitDir;
+  }
+}
+
+function resolveCommit(repoRoot: string): string | null {
+  const gitDir = resolveGitDir(repoRoot);
+  if (!gitDir) return null;
+  // HEAD is per-worktree; refs are shared.
+  const commonDir = resolveCommonDir(gitDir);
+  try {
+    const headPath = join(gitDir, 'HEAD');
     if (!existsSync(headPath)) return null;
     const head = readFileSync(headPath, 'utf8').trim();
     if (head.startsWith('ref: ')) {
-      const refPath = join(repoRoot, '.git', head.slice(5).trim());
+      const refPath = join(commonDir, head.slice(5).trim());
       if (!existsSync(refPath)) {
         // Packed refs path — read packed-refs and match the ref name.
-        const packed = join(repoRoot, '.git', 'packed-refs');
+        const packed = join(commonDir, 'packed-refs');
         if (!existsSync(packed)) return null;
         const target = head.slice(5).trim();
         const lines = readFileSync(packed, 'utf8').split('\n');

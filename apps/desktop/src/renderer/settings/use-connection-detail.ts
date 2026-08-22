@@ -23,6 +23,7 @@ import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { connectionChipStatus } from './provider-connection-status';
 import { relayProfileDraftReseedPlan, relayProfileDraftSeed } from './relay-profile-draft';
+import { applyBulkThinkingLevel, relayProfileWithThinkingLevels } from './relay-thinking-bulk';
 import { useKeyedActionGuard } from './use-action-guard';
 import type { OAuthLoginFlowBridge } from './use-oauth-login-flow';
 import {
@@ -400,16 +401,24 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
 
   // One shape for all three fields: the field setter pins or removes its key,
   // and an entry with no keys left IS the undeclared state — storing it would
-  // keep the row looking edited after the user emptied every field.
+  // keep the row looking edited after the user emptied every field. The rule
+  // lives in relay-thinking-bulk so the row setter and the bulk control
+  // cannot drift on what an emptied declaration collapses to.
   function setDraftThinkingLevels(modelId: string, levels: ThinkingLevel[] | undefined): void {
-    updateRelayProfileDraft(modelId, (current) => {
-      if (levels === undefined || levels.length === 0) {
-        if (!current) return current;
-        const { thinkingLevels: _dropped, ...rest } = current;
-        return Object.keys(rest).length > 0 ? rest : undefined;
-      }
-      return { ...(current ?? {}), thinkingLevels: levels };
-    });
+    updateRelayProfileDraft(modelId, (current) => relayProfileWithThinkingLevels(current, levels));
+  }
+
+  // The same edit across every enabled model, as ONE state update rather than
+  // a loop of per-model setters: a bulk tick is a single user gesture, and
+  // committing it in N steps would let a re-render land mid-way and paint a
+  // half-applied table.
+  function setDraftThinkingLevelForAll(
+    modelIds: readonly string[],
+    level: ThinkingLevel,
+    checked: boolean,
+  ): void {
+    setRelayProfilesDirty(true);
+    setRelayProfileDrafts((current) => applyBulkThinkingLevel(modelIds, current, level, checked));
   }
 
   // Tri-state vision: undefined = Auto (relay/metadata decides), true/false
@@ -756,6 +765,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     relayProfilesDirty,
     hasRelayProfileChanges,
     setDraftThinkingLevels,
+    setDraftThinkingLevelForAll,
     setDraftVision,
     setDraftContextWindow,
     setDraftServiceTier,

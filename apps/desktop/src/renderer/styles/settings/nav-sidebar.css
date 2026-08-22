@@ -44,7 +44,11 @@
   border: 0;
   border-radius: var(--radius-modal);
   background: var(--agents-content-area-bg);
-  overflow: hidden;
+  /* The pane, not the centered 920px column, is the page scroll owner. This
+     lets wheel input from either wide gutter scroll and keeps the native
+     scrollbar against the pane's outer edge. */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .settingsPageHeader {

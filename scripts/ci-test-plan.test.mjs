@@ -126,6 +126,28 @@ test('release authority changes select their dedicated contract gate', () => {
   assert.equal(planTests(['.github/RELEASE_CHECKLIST.md'], { graph }).releaseContract, false);
 });
 
+// Both notices are committed generator output. A hand edit or a merge-conflict
+// resolution can corrupt either one, and `check:release` is what regenerates
+// and diffs them, so both must reach that gate — the desktop notice lives
+// outside `packages/cli/**` and would otherwise reach no gate at all.
+test('both committed third-party notices reach the release gate', () => {
+  for (const path of [
+    'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
+    'packages/cli/THIRD_PARTY_NOTICES.txt',
+  ]) {
+    assert.equal(planTests([path], { graph }).releaseContract, true, path);
+  }
+});
+
+// The test only reads the generator, so it belongs to the release contract and
+// not to the CLI package gate, whose tarball build and install smoke prove
+// nothing about a test-only edit.
+test('the notice regression test selects the release gate alone', () => {
+  const plan = planTests(['scripts/generate-third-party-notices.test.mjs'], { graph });
+  assert.equal(plan.releaseContract, true);
+  assert.equal(plan.cliPackage, false);
+});
+
 test('ASF source authority changes select their dedicated gate', () => {
   for (const path of [
     '.gitattributes',
