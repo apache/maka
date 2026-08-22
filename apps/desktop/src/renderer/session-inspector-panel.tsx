@@ -709,7 +709,7 @@ function StepRow(props: {
             <Button
               variant="ghost"
               size="sm"
-              icon={<Copy size={14} aria-hidden="true" />}
+              icon={<Copy size={ICON_SIZE.chrome} aria-hidden="true" />}
               label={`${copy.copyPricingKey}: ${pricingKey}`}
               onClick={() => {
                 void props.onCopyPricingKey(pricingKey);

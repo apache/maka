@@ -114,6 +114,10 @@ jobs:
         if: steps.plan.outputs.code == 'true'
         run: npm run format:check
 
+      - name: Check icon sizes
+        if: steps.plan.outputs.code == 'true'
+        run: npm run check:icon-size
+
       - name: Build
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm run build

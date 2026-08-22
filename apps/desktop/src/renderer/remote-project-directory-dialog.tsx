@@ -7,7 +7,7 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import { useUiLocale } from '@maka/ui';
-import { Check, Eye, EyeOff, FolderOpen } from '@maka/ui/icons';
+import { ICON_SIZE, Check, Eye, EyeOff, FolderOpen } from '@maka/ui/icons';
 import type {
   DesktopProjectDirectoryEntry,
   DesktopProjectDirectoryRoot,
@@ -224,9 +224,9 @@ export function RemoteProjectDirectoryDialog(props: {
                       <DropdownMenuItem
                         key={candidate.id}
                         label={candidate.label}
-                        icon={<FolderOpen size={18} aria-hidden="true" />}
+                        icon={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
                         endContent={candidate.id === root?.id
-                          ? <Check size={18} aria-hidden="true" />
+                          ? <Check size={ICON_SIZE.control} aria-hidden="true" />
                           : undefined}
                         onClick={() => selectRoot(candidate)}
                       />
@@ -273,7 +273,7 @@ export function RemoteProjectDirectoryDialog(props: {
                       key={entry.name}
                       variant="ghost"
                       label={entry.name}
-                      icon={<FolderOpen size={18} aria-hidden="true" />}
+                      icon={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
                       isDisabled={registering}
                       onClick={() => navigate([...segments, entry.name])}
                     />
@@ -294,8 +294,8 @@ export function RemoteProjectDirectoryDialog(props: {
                   ? copy.remoteDirectoryHideHidden
                   : copy.remoteDirectoryShowHidden}
                 icon={showHidden
-                  ? <Eye size={18} aria-hidden="true" />
-                  : <EyeOff size={18} aria-hidden="true" />}
+                  ? <Eye size={ICON_SIZE.chrome} aria-hidden="true" />
+                  : <EyeOff size={ICON_SIZE.chrome} aria-hidden="true" />}
                 aria-pressed={showHidden}
                 isDisabled={registering}
                 onClick={() => setShowHidden((current) => !current)}
