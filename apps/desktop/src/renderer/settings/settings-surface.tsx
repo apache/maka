@@ -17,7 +17,14 @@
  * under the License.
  */
 
-import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import {
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from 'react';
 import {
   Badge,
   Button,
@@ -44,6 +51,7 @@ import type {
 } from '@maka/core/settings';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
 import type {
+  DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostProfileSnapshot,
   DesktopRuntimeHostRef,
   DesktopSessionSummary,
@@ -96,6 +104,7 @@ import {
   completeSettingsResourceLoad,
   createSettingsResourceState,
   failSettingsResourceLoad,
+  invalidateSettingsResourceGeneration,
   reconcileRuntimeHostProfileSelection,
   settingsResourceSnapshot,
   settingsResourceStatus,
@@ -119,9 +128,19 @@ type RuntimeHostAvailabilityStatus = 'loading' | 'ready' | 'unavailable' | 'erro
 function readyRuntimeHost(
   snapshot: DesktopRuntimeHostProfileSnapshot | undefined,
   profileId: string | undefined,
+  lifecycle?: DesktopRuntimeHostProfileChangedEvent,
 ): DesktopRuntimeHostRef | undefined {
   const entry = snapshot?.entries.find((candidate) => candidate.profile.id === profileId);
   if (entry?.readiness !== 'ready' || !entry.hostId) return undefined;
+  if (
+    lifecycle &&
+    (
+      lifecycle.removed === true ||
+      lifecycle.readiness !== 'ready' ||
+      !lifecycle.hostId ||
+      lifecycle.hostId !== entry.hostId
+    )
+  ) return undefined;
   return { profileId: entry.profile.id, hostId: entry.hostId };
 }
 
@@ -286,6 +305,12 @@ export function SettingsSurface(props: {
   const runtimeHostReloadTicketRef = useRef(0);
   const runtimeHostCatalogHydratedRef = useRef(false);
   const selectedProfileChangedByUserRef = useRef(false);
+  const runtimeHostLifecycleByProfileRef = useRef(
+    new Map<string, DesktopRuntimeHostProfileChangedEvent>(),
+  );
+  const [runtimeHostLifecycleByProfile, setRuntimeHostLifecycleByProfile] = useState(
+    runtimeHostLifecycleByProfileRef.current,
+  );
   const toast = useToast();
 
   const runtimeHosts = settingsResourceSnapshot(
@@ -301,8 +326,14 @@ export function SettingsSurface(props: {
     (entry) => entry.profile.id === selectedProfileId,
   );
   const selectedRuntimeHost = useMemo(
-    () => readyRuntimeHost(runtimeHosts, selectedProfileId),
-    [runtimeHosts, selectedProfileId],
+    () => readyRuntimeHost(
+      runtimeHosts,
+      selectedProfileId,
+      selectedProfileId
+        ? runtimeHostLifecycleByProfile.get(selectedProfileId)
+        : undefined,
+    ),
+    [runtimeHostLifecycleByProfile, runtimeHosts, selectedProfileId],
   );
   const connectionsBridge = useMemo(
     () => selectedRuntimeHost
@@ -317,11 +348,15 @@ export function SettingsSurface(props: {
     profileId: string,
     snapshot = runtimeHosts,
   ): void {
-    const nextHost = readyRuntimeHost(snapshot, profileId);
+    const lifecycle = runtimeHostLifecycleByProfileRef.current.get(profileId);
+    const nextHost = readyRuntimeHost(snapshot, profileId, lifecycle);
     const nextKey = nextHost ? runtimeHostSettingsKey(nextHost) : undefined;
     // Reject old-Host reads and writes synchronously with the authority
     // change, before React renders the newly selected profile.
-    runtimeHostRequestAuthority.selectTarget(nextKey);
+    runtimeHostRequestAuthority.selectTarget(
+      nextKey,
+      lifecycle?.epoch,
+    );
     selectedProfileIdRef.current = profileId;
     setSelectedProfileId(profileId);
   }
@@ -529,6 +564,9 @@ export function SettingsSurface(props: {
       const result = host
         ? await window.maka.settings.update(patch, host)
         : await window.maka.settings.updateClient(patch);
+      if (hostTicket && !runtimeHostRequestAuthority.isCurrentTarget(hostTicket)) {
+        throw new Error(copy.runtimeHostUnavailable);
+      }
       props.uiLocaleUpdateGate.commit(
         uiLocaleTicket,
         result.settings.personalization.uiLocale,
@@ -623,11 +661,41 @@ export function SettingsSurface(props: {
     }
   }
 
+  const handleRuntimeHostProfileChange = useEffectEvent(
+    (event: DesktopRuntimeHostProfileChangedEvent) => {
+      // Retain removed/unavailable events as tombstones until a newer event for
+      // the profile arrives. Otherwise selecting that profile while the
+      // catalog refresh is pending could revive its last-ready snapshot.
+      const nextLifecycleByProfile = new Map(
+        runtimeHostLifecycleByProfileRef.current,
+      );
+      nextLifecycleByProfile.set(event.profileId, event);
+      runtimeHostLifecycleByProfileRef.current = nextLifecycleByProfile;
+      setRuntimeHostLifecycleByProfile(nextLifecycleByProfile);
+      if (selectedProfileIdRef.current === event.profileId) {
+        const nextHost = readyRuntimeHost(runtimeHosts, event.profileId, event);
+        const targetChanged = runtimeHostRequestAuthority.selectTarget(
+          nextHost ? runtimeHostSettingsKey(nextHost) : undefined,
+          event.epoch,
+        );
+        if (targetChanged) {
+          // Fence synchronously, before the catalog refresh can resolve. The
+          // previous generation's snapshots stay visible but no Host-backed
+          // control may treat them as current write authority.
+          setRuntimeHostCatalog(invalidateSettingsResourceGeneration);
+          setRuntimeHostSettings(invalidateSettingsResourceGeneration);
+          setRuntimeHostConnections(invalidateSettingsResourceGeneration);
+        }
+      }
+      void reloadRuntimeHosts().catch(() => undefined);
+    },
+  );
+
   useEffect(() => {
     let disposed = false;
-    const unsubscribe = window.maka.runtimeHostProfiles.subscribeChanges(() => {
-      void reloadRuntimeHosts().catch(() => undefined);
-    });
+    const unsubscribe = window.maka.runtimeHostProfiles.subscribeChanges(
+      handleRuntimeHostProfileChange,
+    );
     void reloadRuntimeHosts().catch((error) => {
       if (!disposed) {
         toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));

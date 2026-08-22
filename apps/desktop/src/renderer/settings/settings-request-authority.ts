@@ -19,31 +19,52 @@
 
 interface SettingsRequestTicket {
   readonly key: string;
-  readonly generation: number;
+  readonly targetEpoch: string | undefined;
+  readonly targetRevision: number;
+  readonly requestGeneration: number;
 }
 
 /**
  * Separates Runtime Host read refreshes from mutations while fencing both to
- * the currently selected Host epoch. Catalog refreshes may invalidate reads
- * without discarding a same-Host mutation that has already reached Desktop.
+ * the currently selected Host generation. Catalog refreshes may invalidate
+ * reads without discarding a same-generation mutation that has already reached
+ * Desktop, while a lifecycle epoch change invalidates every outstanding ticket
+ * even when the renderer-facing `profileId:hostId` key stays the same.
  */
-export function createSettingsRequestAuthority(initialKey?: string) {
+export function createSettingsRequestAuthority(
+  initialKey?: string,
+  initialTargetEpoch?: string,
+) {
   let targetKey = initialKey;
+  let targetEpoch = initialTargetEpoch;
+  let targetRevision = 0;
   let settingsReadGeneration = 0;
   let connectionsReadGeneration = 0;
   let settingsWriteGeneration = 0;
 
-  function ticket(key: string, generation: number): SettingsRequestTicket {
-    return { key, generation };
+  function ticket(key: string, requestGeneration: number): SettingsRequestTicket {
+    return { key, targetEpoch, targetRevision, requestGeneration };
+  }
+
+  function isCurrentTarget(candidate: SettingsRequestTicket): boolean {
+    return candidate.key === targetKey &&
+      candidate.targetEpoch === targetEpoch &&
+      candidate.targetRevision === targetRevision;
   }
 
   return {
-    selectTarget(nextKey: string | undefined): void {
-      if (targetKey === nextKey) return;
+    selectTarget(
+      nextKey: string | undefined,
+      nextTargetEpoch?: string,
+    ): boolean {
+      if (targetKey === nextKey && targetEpoch === nextTargetEpoch) return false;
       targetKey = nextKey;
+      targetEpoch = nextTargetEpoch;
+      targetRevision += 1;
       settingsReadGeneration += 1;
       connectionsReadGeneration += 1;
       settingsWriteGeneration += 1;
+      return true;
     },
 
     invalidateReads(): void {
@@ -58,8 +79,8 @@ export function createSettingsRequestAuthority(initialKey?: string) {
     },
 
     acceptsSettingsRead(candidate: SettingsRequestTicket): boolean {
-      return candidate.key === targetKey &&
-        candidate.generation === settingsReadGeneration;
+      return isCurrentTarget(candidate) &&
+        candidate.requestGeneration === settingsReadGeneration;
     },
 
     beginConnectionsRead(key: string): SettingsRequestTicket | undefined {
@@ -69,8 +90,8 @@ export function createSettingsRequestAuthority(initialKey?: string) {
     },
 
     acceptsConnectionsRead(candidate: SettingsRequestTicket): boolean {
-      return candidate.key === targetKey &&
-        candidate.generation === connectionsReadGeneration;
+      return isCurrentTarget(candidate) &&
+        candidate.requestGeneration === connectionsReadGeneration;
     },
 
     beginSettingsWrite(key: string): SettingsRequestTicket | undefined {
@@ -80,8 +101,10 @@ export function createSettingsRequestAuthority(initialKey?: string) {
     },
 
     acceptsSettingsWrite(candidate: SettingsRequestTicket): boolean {
-      return candidate.key === targetKey &&
-        candidate.generation === settingsWriteGeneration;
+      return isCurrentTarget(candidate) &&
+        candidate.requestGeneration === settingsWriteGeneration;
     },
+
+    isCurrentTarget,
   };
 }

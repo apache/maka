@@ -57,6 +57,7 @@ import type { ConnectionsBridge } from '../../src/renderer/settings/providers-pa
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
 import type {
+  DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostProfileSnapshot,
   DesktopSessionSummary,
 } from '../../src/preload/bridge-contract.js';
@@ -615,6 +616,31 @@ const runtimeHostProfiles: DesktopRuntimeHostProfileSnapshot = {
   ],
 };
 
+const runtimeHostProfilesWithRemote: DesktopRuntimeHostProfileSnapshot = {
+  defaultProfileId: 'local',
+  entries: [
+    ...runtimeHostProfiles.entries,
+    {
+      profile: {
+        id: 'remote',
+        name: 'Remote',
+        kind: 'remote',
+        rootId: 'storybook-remote-root',
+        transport: {
+          kind: 'ssh',
+          destination: 'storybook.example.test',
+          remotePort: 43123,
+          websocketPath: '/runtime-host',
+        },
+      },
+      enabled: true,
+      isDefault: false,
+      readiness: 'ready',
+      hostId: 'storybook-remote-host',
+    },
+  ],
+};
+
 const unavailableRuntimeHostProfiles: DesktopRuntimeHostProfileSnapshot = {
   defaultProfileId: 'local',
   entries: [
@@ -639,6 +665,11 @@ function seedGeneralSnapshotCache(cache: SettingsSnapshotCache): void {
     connections,
     defaultSlug: 'zai-live',
   });
+}
+
+function seedGeneralTwoHostSnapshotCache(cache: SettingsSnapshotCache): void {
+  seedGeneralSnapshotCache(cache);
+  cache.commitRuntimeHostCatalogRead(runtimeHostProfilesWithRemote);
 }
 
 let storyClientSettings = createDefaultSettings();
@@ -824,6 +855,46 @@ const withGeneralCachedRevalidationBridge = withScopedMakaBridge({
   connections: {
     ...connectionsBridge,
     getSnapshot: () => pendingForever(),
+  },
+} satisfies Record<string, unknown>);
+
+let generationStoryCatalogPending = false;
+let generationStoryRuntimeHostProfiles = runtimeHostProfiles;
+let generationStoryProfileListener:
+  | ((event: DesktopRuntimeHostProfileChangedEvent) => void)
+  | undefined;
+
+function resetGenerationStoryBridge(
+  snapshot: DesktopRuntimeHostProfileSnapshot = runtimeHostProfiles,
+): void {
+  generationStoryCatalogPending = false;
+  generationStoryRuntimeHostProfiles = snapshot;
+  generationStoryProfileListener = undefined;
+}
+
+const withGeneralHostGenerationRevalidationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: {
+    ...makaBridge.runtimeHostProfiles,
+    getSnapshot: () => {
+      return generationStoryCatalogPending
+        ? pendingForever()
+        : Promise.resolve({
+            ...generationStoryRuntimeHostProfiles,
+            // IPC returns a fresh structured clone. Reusing the cache's exact
+            // object identity would suppress the selected-Host effect after
+            // catalog hydration and make this fake less faithful than Desktop.
+            entries: [...generationStoryRuntimeHostProfiles.entries],
+          });
+    },
+    subscribeChanges: (handler: (event: DesktopRuntimeHostProfileChangedEvent) => void) => {
+      generationStoryProfileListener = handler;
+      return () => {
+        if (generationStoryProfileListener === handler) {
+          generationStoryProfileListener = undefined;
+        }
+      };
+    },
   },
 } satisfies Record<string, unknown>);
 
@@ -1479,8 +1550,127 @@ export const GeneralCachedRevalidation: Story = {
     await expect(
       canvas.getByRole('switch', { name: '完成时发送系统通知' }),
     ).toBeEnabled();
+    await expect(canvas.getByRole('radio', { name: '中文' })).toBeEnabled();
+    const mixedBoundary = canvasElement.querySelector<HTMLElement>(
+      '.settingsRuntimeHostInteractionBoundary',
+    );
+    if (!mixedBoundary) throw new Error('General mixed-ownership boundary did not render');
+    await expect(mixedBoundary).not.toHaveAttribute('inert');
     await canvas.findByText('正在加载设置');
     await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+// A Runtime Host can be replaced without changing its renderer-facing
+// profileId:hostId key. The lifecycle epoch is the generation boundary: keep
+// cached Host values visible, revoke their write authority immediately, and
+// leave Desktop-owned controls usable while the new generation verifies.
+export const GeneralHostGenerationRevalidation: Story = {
+  decorators: [withGeneralHostGenerationRevalidationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return (
+      <SettingsStory
+        section="general"
+        seedSnapshotCache={seedGeneralSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    const defaultModel = await canvas.findByRole('button', { name: '默认模型' });
+    await waitForStoryCondition(
+      () => !tone.matches(':disabled') && !defaultModel.matches(':disabled'),
+      'Initial Runtime Host generation did not become interactive',
+    );
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+
+    generationStoryCatalogPending = true;
+    listener({
+      epoch: 'storybook-generation-2',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+      readiness: 'ready',
+      hostId: 'storybook-local-host',
+      isDefault: true,
+    });
+
+    await waitForStoryCondition(
+      () => tone.matches(':disabled') && defaultModel.matches(':disabled'),
+      'Previous Runtime Host generation remained writable',
+    );
+    await expect(tone).toBeDisabled();
+    await expect(defaultModel).toBeDisabled();
+    await expect(
+      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+    ).toBeEnabled();
+    await expect(canvas.getByRole('radio', { name: '中文' })).toBeEnabled();
+    const mixedBoundary = canvasElement.querySelector<HTMLElement>(
+      '.settingsRuntimeHostInteractionBoundary',
+    );
+    if (!mixedBoundary) throw new Error('General mixed-ownership boundary did not render');
+    await expect(mixedBoundary).not.toHaveAttribute('inert');
+  },
+};
+// A lifecycle event is newer than the cached catalog even when its profile is
+// not selected yet. Switching to that profile must respect the event's
+// reconnecting tombstone instead of reviving the catalog's last-ready Host.
+export const GeneralBackgroundHostReconnectThenSelect: Story = {
+  decorators: [withGeneralHostGenerationRevalidationBridge],
+  render: () => {
+    resetGenerationStoryBridge(runtimeHostProfilesWithRemote);
+    return (
+      <SettingsStory
+        section="general"
+        seedSnapshotCache={seedGeneralTwoHostSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    await waitForStoryCondition(
+      () => !tone.matches(':disabled'),
+      'Initial Runtime Host did not become interactive',
+    );
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+
+    generationStoryCatalogPending = true;
+    listener({
+      epoch: 'storybook-remote-generation-2',
+      profileId: 'remote',
+      profileName: 'Remote',
+      profileKind: 'remote',
+      readiness: 'reconnecting',
+      hostId: 'storybook-remote-host',
+      isDefault: false,
+    });
+
+    await userEvent.click(canvas.getByRole('combobox', { name: 'Runtime Host' }));
+    await userEvent.click(
+      await within(document.body).findByRole('option', { name: 'Remote' }),
+    );
+    await waitForStoryCondition(
+      () => {
+        const currentTone = canvas.queryByRole('textbox', {
+          name: '助手语气偏好',
+        });
+        return currentTone === null || currentTone.matches(':disabled');
+      },
+      'The reconnecting background Host was revived from the stale catalog',
+    );
+    await expect(canvas.getByRole('combobox', { name: 'Runtime Host' }))
+      .toHaveTextContent('Remote');
+    await canvas.findByText('助手语气偏好');
+    const currentTone = canvas.queryByRole('textbox', { name: '助手语气偏好' });
+    if (currentTone) await expect(currentTone).toBeDisabled();
+    await expect(
+      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+    ).toBeEnabled();
+    await expect(canvas.getByRole('radio', { name: '中文' })).toBeEnabled();
   },
 };
 // Error is a real signal rather than a loading state. Desktop-owned controls
