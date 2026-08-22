@@ -136,3 +136,29 @@ test('owner gate resolves a foreign plain holder through the REAL probe chain', 
   // marker via /apps/desktop) is the shared-default owner.
   assert.equal(owner, foreignShim);
 });
+
+test('plain liveness is macOS-only; off-darwin probes only the bundle', async () => {
+  const { isDevelopmentAppRunning } = await import('./dev-app-runtime.mjs');
+  const calls = [];
+  // Linux: whatever is probed returns false (the bundle never exists off
+  // macOS); the shim being alive is irrelevant because it is never probed.
+  const probe = (executable) => {
+    calls.push(executable);
+    return false;
+  };
+  // Only the bundle is probed → false → the launch is NOT blocked even
+  // though the shim is alive — kabi grok's P1 regression.
+  assert.equal(
+    isDevelopmentAppRunning({ platform: 'linux', probe, plainExecutable: '/wt/node_modules/.bin/electron', realPlainExecutable: '/wt/Electron.app/Electron' }),
+    false,
+  );
+  assert.equal(calls.length, 1); // bundle only, shim/real never probed
+  // darwin probes all three shapes.
+  const calls2 = [];
+  const probe2 = (executable) => { calls2.push(executable); return false; };
+  assert.equal(
+    isDevelopmentAppRunning({ platform: 'darwin', probe: probe2, plainExecutable: '/wt/shim', realPlainExecutable: '/wt/real' }),
+    false,
+  );
+  assert.equal(calls2.length, 3); // all three shapes probed on darwin
+});

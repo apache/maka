@@ -297,8 +297,13 @@ export function isDevelopmentAppRunning(options = {}) {
   const shim = options.plainExecutable ?? resolveElectronBinary();
   const real = options.realPlainExecutable ?? realElectronBinary();
   const probe = options.probe ?? defaultLivenessProbe;
-  // Own dev app in either shape: the npm shim, the Electron it spawned, or
-  // the TCC bundle. All three hold the shared profile lock.
+  // The shared-profile lock is a macOS concept (plain dev and the TCC bundle
+  // both reach it only there). On other platforms keep main's behavior: only
+  // the bundle is probed — the bundle never exists off macOS, so liveness is
+  // false and the launch proceeds to the single-instance lock. Probing the
+  // shim/Electron shapes off-darwin would hard-fail a plain `npm run dev`
+  // that main allowed (the shim exists on Linux; quit is darwin-only).
+  if ((options.platform ?? process.platform) !== 'darwin') return probe(bundle);
   return probe(bundle) || probe(shim) || probe(real);
 }
 
