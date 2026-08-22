@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -88,13 +88,18 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
       platform: 'win32',
       getLaunchSpec,
     });
-    const execute = (operation) => client.execute({ operation, cwd: workspace, mode: 'ask' });
+    const execute = (operation, expectedIdentity) =>
+      client.execute({ operation, cwd: workspace, mode: 'ask', expectedIdentity });
 
     // Exact writes stay exact in the preview: the target is pre-seeded so the
     // grant covers only this file object, never its parent directory.
     const insidePath = join(workspace, 'inside.txt');
     await writeFile(insidePath, 'seeded');
-    await execute({ kind: 'write', path: insidePath, content: 'packaged-relay-ok' });
+    const insideMetadata = await stat(insidePath, { bigint: true });
+    await execute(
+      { kind: 'write', path: insidePath, content: 'packaged-relay-ok' },
+      { dev: String(insideMetadata.dev), ino: String(insideMetadata.ino) },
+    );
     assertCondition(
       (await readFile(insidePath, 'utf8')) === 'packaged-relay-ok',
       'Sandboxed write did not land in the workspace.',
