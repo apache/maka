@@ -2876,6 +2876,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     transcript: {
       description: primaryGuidance.commands.transcript,
+      midTurn: 'local',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
