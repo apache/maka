@@ -1,0 +1,278 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+/* WorkHub is a conversation surface. These rules intentionally reuse the
+   product chat layout instead of maintaining a second page/composer system. */
+.workhub-surface {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.workhub-timeline {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.workhub-header,
+.workhub-empty,
+.workhub-turns {
+  width: min(var(--maka-chat-measure), 100%);
+  max-width: var(--maka-chat-measure);
+  margin-inline: auto;
+}
+
+.workhub-header {
+  box-sizing: border-box;
+  align-items: flex-start;
+  margin-top: var(--space-6, 24px);
+  padding: 0 var(--space-3, 12px) 24px;
+  border-bottom: 1px solid var(--color-border-subtle, var(--border));
+}
+
+.workhub-header h1,
+.workhub-empty h2 {
+  margin: 0;
+  font-size: var(--font-size-heading-md, 16px);
+  line-height: 1.25;
+}
+
+.workhub-header p,
+.workhub-empty p {
+  margin: 6px 0 0;
+  color: var(--color-text-secondary, var(--muted-foreground));
+  line-height: 1.55;
+}
+
+.workhub-header > span {
+  padding-top: 3px;
+  font-size: var(--font-size-body-sm, 12px);
+}
+
+.workhub-message-list {
+  flex: 1 1 auto;
+}
+
+.workhub-empty {
+  box-sizing: border-box;
+  padding: 72px 16px;
+  border: 0;
+  background: transparent;
+  text-align: center;
+}
+
+.workhub-turns {
+  display: flex;
+  flex-direction: column;
+}
+
+.workhub-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 24px 0;
+  border-bottom: 1px solid var(--color-border-subtle, var(--border));
+}
+
+.workhub-message {
+  width: 100%;
+}
+
+.workhub-user-bubble p,
+.workhub-assistant-bubble p,
+.workhub-result {
+  margin: 0;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.workhub-assistant-bubble.maka-chat-message-bubble-assistant {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+}
+
+.workhub-assistant-bubble > small,
+.workhub-status {
+  color: var(--color-text-secondary, var(--muted-foreground));
+  font-size: var(--font-size-body-sm, 12px);
+}
+
+.workhub-error {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-danger, var(--destructive-text));
+}
+
+.workhub-clarification {
+  display: flex;
+  flex-direction: column;
+  margin-top: 12px;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--color-border-subtle, var(--border));
+  border-radius: 0;
+  background: transparent;
+}
+
+.workhub-clarification > button,
+.workhub-submitted > button {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 0;
+  gap: 16px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border-subtle, var(--border));
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-primary, var(--foreground));
+  font: inherit;
+  text-align: left;
+}
+
+.workhub-clarification > button:hover,
+.workhub-submitted > button:hover {
+  color: var(--color-accent, var(--accent));
+}
+
+.workhub-clarification > button:focus-visible,
+.workhub-submitted > button:focus-visible {
+  border-radius: var(--radius-control, 6px);
+  outline: 2px solid var(--color-border-focus, var(--ring));
+  outline-offset: 2px;
+}
+
+.workhub-clarification > button:disabled {
+  opacity: 0.55;
+}
+
+.workhub-clarification small,
+.workhub-submitted small,
+.workhub-submitted-state {
+  color: var(--color-text-secondary, var(--muted-foreground));
+  font-size: var(--font-size-body-xs, 12px);
+}
+
+.workhub-clarification small {
+  max-width: 45%;
+  text-align: right;
+}
+
+.workhub-submitted > p:first-child {
+  color: var(--color-text-secondary, var(--muted-foreground));
+}
+
+.workhub-submitted-session {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workhub-result {
+  margin-top: 12px;
+  color: var(--color-text-secondary, var(--muted-foreground));
+}
+
+.workhub-waiting,
+.workhub-correction {
+  margin-top: 12px;
+}
+
+.workhub-waiting small,
+.workhub-correction-note,
+.workhub-correction summary {
+  color: var(--color-text-secondary, var(--muted-foreground));
+  font-size: var(--font-size-body-xs, 12px);
+}
+
+.workhub-correction summary {
+  width: max-content;
+  cursor: pointer;
+}
+
+.workhub-correction > div {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+  border-top: 1px solid var(--color-border-subtle, var(--border));
+}
+
+.workhub-correction button {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  gap: 16px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border-subtle, var(--border));
+  background: transparent;
+  color: var(--color-text-primary, var(--foreground));
+  font: inherit;
+  text-align: left;
+}
+
+.workhub-correction button:hover {
+  color: var(--color-accent, var(--accent));
+}
+
+.workhub-correction button:disabled {
+  opacity: 0.55;
+}
+
+.workhub-return {
+  display: block;
+  width: min(680px, calc(100% - 48px));
+  margin: 0 auto 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--color-border-subtle, var(--border));
+  border-radius: var(--radius-control, 6px);
+  background: var(--color-background-secondary, var(--muted));
+  color: var(--color-text-secondary, var(--muted-foreground));
+  font: inherit;
+  text-align: left;
+}
+
+.workhub-return:hover {
+  color: var(--color-text-primary, var(--foreground));
+  border-color: var(--color-border-strong, var(--border-strong));
+}
+
+@media (max-width: 720px) {
+  .workhub-header {
+    padding-inline: 16px;
+  }
+
+  .workhub-turn {
+    padding-inline: 4px;
+  }
+}
