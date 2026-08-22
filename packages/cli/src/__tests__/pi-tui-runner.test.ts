@@ -5137,6 +5137,159 @@ describe('Maka Pi TUI runner', () => {
       await run;
     });
 
+    test('/session <id> mid-turn detaches from the running Turn instead of refusing', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new DetachingSwitchDriver([
+        storedUserMessage('user-s2', 'turn-old-2', 'history from session two'),
+        storedAssistantMessage('assistant-s2', 'turn-old-2', 'prior answer'),
+      ]);
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('start the long task');
+      terminal.input('\r');
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+
+      // The escape hatch a second TUI needs (#3380): switching Sessions
+      // mid-turn detaches the view and leaves the Host-owned Turn running,
+      // instead of refusing (trapping the client) or stopping the Turn.
+      terminal.input('/session session-2');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes('Detached from the running Turn'),
+      );
+      assert.equal(driver.stopCalls, 0);
+      assert.deepEqual(driver.sessionIds, ['session-2']);
+      // The adopted Session's history replaced the old transcript.
+      assert.match(plainTerminalOutput(terminal.screenOutput()), /history from session two/);
+
+      // Late events from the abandoned Turn never reach the adopted
+      // transcript — neither as content nor as a synthesized failure about
+      // the stream ending without a completion event.
+      driver.emit({
+        type: 'text_delta',
+        id: 'delta-leak',
+        turnId: 'turn-1',
+        messageId: 'assistant-old',
+        ts: 2,
+        text: 'LEAK-OLD-DELTA',
+      });
+      driver.releaseOldTurn();
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('attached replay done'));
+      const after = plainTerminalOutput(terminal.output());
+      assert.doesNotMatch(after, /LEAK-OLD-DELTA/);
+      assert.doesNotMatch(after, /without a completion event/);
+      assert.equal(driver.stopCalls, 0);
+      // The orphaned drain released the runner, and only then did the freshly
+      // attached Turn of session-2 start and complete.
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+
+      // A follow-up prompt lands on the adopted Session.
+      terminal.input('next step');
+      terminal.input('\r');
+      await waitFor(() => driver.displayPrompts.includes('next step'));
+      assert.deepEqual(driver.sessionIds, ['session-2']);
+
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('/session mid-turn opens the picker and Escape closes it without arming an interrupt', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new DetachingSwitchDriver([]);
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('start the long task');
+      terminal.input('\r');
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Resume Session'));
+      assert.doesNotMatch(
+        plainTerminalOutput(terminal.output()),
+        /Cannot run \/session while a turn is running/,
+      );
+
+      // Escape belongs to the overlay while it is open: closing it must not
+      // arm the double-Escape interrupt — a second Escape would otherwise
+      // abort the very Turn the user is navigating away from (#3380).
+      terminal.input('\x1b');
+      await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('Resume Session'));
+      await delay(50);
+      assert.equal(driver.stopCalls, 0);
+      assert.equal(terminal.progressStates.at(-1), true);
+
+      // Settle the parked Turn normally, then leave.
+      driver.releaseOldTurn();
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('a failed mid-turn /session leaves the running Turn fully live', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new DetachingSwitchDriver([]);
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('start the long task');
+      terminal.input('\r');
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+
+      // A rejected switch must not orphan the in-flight drain: the error is
+      // reported, nothing was switched, and the Turn keeps streaming into the
+      // same transcript.
+      driver.failNextSwitch = true;
+      terminal.input('/session does-not-exist');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('session not found'));
+      assert.equal(driver.stopCalls, 0);
+      assert.equal(terminal.progressStates.at(-1), true);
+
+      driver.emit({
+        type: 'text_delta',
+        id: 'delta-after-failure',
+        turnId: 'turn-1',
+        messageId: 'assistant-old',
+        ts: 3,
+        text: 'still streaming after failure',
+      });
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes('still streaming after failure'),
+      );
+
+      driver.releaseOldTurn();
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
     test('unknown slash-prefixed text still steers into the running turn', async () => {
       const terminal = new FakeTerminal();
       const driver = new SteeringTurnDriver();
@@ -6969,6 +7122,100 @@ class ActiveResumeDriver extends SlashCommandDriver {
             type: 'complete',
             id: 'complete-active',
             turnId,
+            ts: 4,
+            stopReason: 'end_turn',
+          } satisfies SessionEvent;
+        })(),
+      },
+    };
+  }
+}
+
+// A parking first Turn on session-1 plus a switchable session-2, for the
+// mid-turn /session detach tests (#3380). The parked stream ends only when
+// the test releases it or stop() lands — a detach leaves it running, exactly
+// like a Host-owned Turn surviving a client that switches away. Later prompts
+// (submitted after switching) complete immediately.
+class DetachingSwitchDriver extends SlashCommandDriver {
+  stopCalls = 0;
+  /** When set, the next switchSession rejects — a failed detach must leave
+   *  the running drain fully live. */
+  failNextSwitch = false;
+  private pendingEvents: SessionEvent[] = [];
+  private wakeTurn: (() => void) | null = null;
+  private turnEnded = false;
+  private promptCount = 0;
+
+  constructor(sessionTwoMessages: StoredMessage[]) {
+    super([fakeSessionSummary('session-2', '/repo')], new Map([['session-2', sessionTwoMessages]]));
+  }
+
+  /** Queues an event onto the parked first-session Turn. */
+  emit(event: SessionEvent): void {
+    this.pendingEvents.push(event);
+    this.wakeTurn?.();
+    this.wakeTurn = null;
+  }
+
+  /** Ends the parked stream the way a Host does when its Turn settles. */
+  releaseOldTurn(): void {
+    this.turnEnded = true;
+    this.wakeTurn?.();
+    this.wakeTurn = null;
+  }
+
+  override async *promptEvents(_prompt: string, turnId = 'turn-1'): AsyncIterable<SessionEvent> {
+    this.promptCount += 1;
+    if (this.promptCount > 1) {
+      yield { type: 'complete', id: `complete-${turnId}`, turnId, ts: 9, stopReason: 'end_turn' };
+      return;
+    }
+    for (;;) {
+      while (this.pendingEvents.length > 0) yield this.pendingEvents.shift()!;
+      if (this.turnEnded) break;
+      await new Promise<void>((resolve) => {
+        this.wakeTurn = resolve;
+      });
+    }
+    yield { type: 'abort', id: 'abort-old', turnId, ts: 8, reason: 'user_stop' };
+    yield { type: 'complete', id: 'complete-old', turnId, ts: 9, stopReason: 'user_stop' };
+  }
+
+  override async stop(): Promise<void> {
+    this.stopCalls += 1;
+    this.turnEnded = true;
+    this.wakeTurn?.();
+    this.wakeTurn = null;
+  }
+
+  // session-2 carries a live Turn, so adopting it hands back an activeTurn —
+  // the reattach path the runner must start once the orphaned drain unwinds.
+  override async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    if (this.failNextSwitch) {
+      this.failNextSwitch = false;
+      throw new Error('session not found');
+    }
+    const switched = await super.switchSession(sessionId);
+    if (sessionId !== 'session-2') return switched;
+    const attachedTurnId = 'turn-attached-2';
+    return {
+      ...switched,
+      activeTurn: {
+        sessionId,
+        turnId: attachedTurnId,
+        events: (async function* () {
+          yield {
+            type: 'text_complete',
+            id: 'text-attached',
+            turnId: attachedTurnId,
+            messageId: 'assistant-attached',
+            ts: 3,
+            text: 'attached replay done',
+          } satisfies SessionEvent;
+          yield {
+            type: 'complete',
+            id: 'complete-attached',
+            turnId: attachedTurnId,
             ts: 4,
             stopReason: 'end_turn',
           } satisfies SessionEvent;
