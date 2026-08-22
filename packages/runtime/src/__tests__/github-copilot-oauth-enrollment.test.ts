@@ -3,8 +3,11 @@ import { test } from 'node:test';
 import { OAuthTokenEndpointError } from '../oauth-login.js';
 import { OAuthDeviceAuthorizationExpiredError } from '../oauth-provider-contracts.js';
 import {
+  GitHubCopilotEntitlementError,
+  GitHubCopilotEntitlementUnavailableError,
   pollGitHubCopilotDeviceAuthorization,
   startGitHubCopilotDeviceAuthorization,
+  verifyGitHubCopilotModelEntitlement,
   type GitHubCopilotDeviceAuthorization,
 } from '../github-copilot-oauth-enrollment.js';
 
@@ -220,4 +223,86 @@ test('polling rejects an expiring grant that carries no refresh token', async ()
     (error: unknown) =>
       error instanceof OAuthTokenEndpointError && error.category === 'invalid_response',
   );
+});
+
+const ENTITLED_TOKENS = {
+  access_token: 'gho_account_token',
+  refresh_token: 'gho_account_token',
+  expires_at: Number.MAX_SAFE_INTEGER,
+  base_url: 'https://api.githubcopilot.com',
+};
+
+function copilotModelsResponse(models: readonly { id: string }[]): Response {
+  return Response.json({
+    data: models.map((model) => ({
+      ...model,
+      model_picker_enabled: true,
+      supported_endpoints: ['/responses'],
+      policy: { state: 'enabled' },
+      capabilities: {
+        limits: { max_prompt_tokens: 128_000, max_output_tokens: 16_000 },
+        supports: { tool_calls: true },
+      },
+    })),
+  });
+}
+
+test('entitlement accepts an account whose catalog lists a usable model', async () => {
+  await verifyGitHubCopilotModelEntitlement({
+    tokens: ENTITLED_TOKENS,
+    fetchFn: async () => copilotModelsResponse([{ id: 'gpt-5.4' }]),
+  });
+});
+
+test('entitlement refuses an account the provider proved ineligible', async () => {
+  // An empty catalog the account could read, and the two statuses that are the
+  // provider refusing this account rather than failing to answer.
+  const proofs: ReadonlyArray<() => Response> = [
+    () => copilotModelsResponse([]),
+    () => new Response(null, { status: 401 }),
+    () => new Response(null, { status: 403 }),
+  ];
+  for (const respond of proofs) {
+    await assert.rejects(
+      verifyGitHubCopilotModelEntitlement({
+        tokens: ENTITLED_TOKENS,
+        fetchFn: async () => respond(),
+      }),
+      (error: unknown) => error instanceof GitHubCopilotEntitlementError,
+    );
+  }
+});
+
+test('entitlement does not call a subscribed account ineligible when it cannot ask', async () => {
+  // None of these say anything about the subscription. Reporting them as
+  // ineligibility would send a paying user back through a device login that
+  // was never the problem.
+  const unanswered: ReadonlyArray<{ readonly status?: number; readonly fetchFn: typeof fetch }> = [
+    { status: 429, fetchFn: async () => new Response(null, { status: 429 }) },
+    { status: 500, fetchFn: async () => new Response(null, { status: 500 }) },
+    { status: 503, fetchFn: async () => new Response(null, { status: 503 }) },
+    {
+      fetchFn: async () => {
+        throw new DOMException('The operation was aborted', 'TimeoutError');
+      },
+    },
+    {
+      fetchFn: async () => {
+        throw new TypeError('fetch failed');
+      },
+    },
+    {
+      fetchFn: async () =>
+        new Response('not json', { headers: { 'content-type': 'application/json' } }),
+    },
+  ];
+  for (const { status, fetchFn } of unanswered) {
+    await assert.rejects(
+      verifyGitHubCopilotModelEntitlement({ tokens: ENTITLED_TOKENS, fetchFn }),
+      (error: unknown) =>
+        error instanceof GitHubCopilotEntitlementUnavailableError &&
+        !(error instanceof GitHubCopilotEntitlementError) &&
+        error.status === status,
+    );
+  }
 });

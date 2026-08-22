@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
-import { GitHubCopilotEntitlementError } from '@maka/runtime/github-copilot-oauth-enrollment';
+import {
+  GitHubCopilotEntitlementError,
+  GitHubCopilotEntitlementUnavailableError,
+} from '@maka/runtime/github-copilot-oauth-enrollment';
 import {
   parseOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
@@ -186,6 +189,55 @@ test('GitHub Copilot enrollment refuses an account that reaches no Copilot model
       resolved.kind === 'ready' ? resolved.secretMaterial.connection : undefined,
       undefined,
     );
+    assert.equal(fixture.invalidations, 0);
+    assert.equal(fixture.activeResidencies, 0);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('GitHub Copilot enrollment reports an unanswered entitlement check as retryable', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-copilot-unavailable', []);
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startGitHubCopilotAuthorization: async () => ({
+        deviceCode: 'host-only-device-code',
+        userCode: 'ABCD-1234',
+        verificationUrl: 'https://github.com/login/device',
+        expiresAt: NOW + 900_000,
+        intervalMs: 5_000,
+      }),
+      pollGitHubCopilotAuthorization: async () =>
+        tokenFixture('gho_account_token', { base_url: 'https://api.githubcopilot.com' }),
+      // The Copilot API never answered — a 429, a 5xx, or a dropped
+      // connection. Nothing was learned about the subscription.
+      verifyGitHubCopilotEntitlement: async () => {
+        throw new GitHubCopilotEntitlementUnavailableError(503);
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      { attemptId: 'attempt-copilot-unavailable', connectionId: fixture.connection.connectionId },
+      operationContext('client-copilot-unavailable', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-copilot-unavailable');
+    assert.equal(terminal.phase, 'failed');
+    // Not provider_rejected: telling a subscribed user their account is
+    // ineligible sends them after a plan they already have.
+    assert.equal(terminal.failure, 'authorization_failed');
     assert.equal(fixture.invalidations, 0);
     assert.equal(fixture.activeResidencies, 0);
     await coordinator.close();

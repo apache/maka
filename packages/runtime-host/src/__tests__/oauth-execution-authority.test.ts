@@ -470,6 +470,73 @@ test('a GitHub Copilot 401 force-refreshes canonical credentials and replays onc
   );
 });
 
+test('a caller who cancels during the post-401 refresh is released, not made to wait', async () => {
+  await withSeededOAuthCredential(
+    'github-copilot',
+    expiringCopilotTokens('gho_account_v1'),
+    async (fixture) => {
+      const refreshBlocked = deferred<Response>();
+      let refreshRequests = 0;
+      const modelHeaders: Headers[] = [];
+      const providerFetch: typeof fetch = async (url, init) => {
+        if (String(url) === COPILOT_TOKEN_ENDPOINT) {
+          refreshRequests += 1;
+          return refreshBlocked.promise;
+        }
+        modelHeaders.push(new Headers(init?.headers));
+        return Response.json({ message: 'Bad credentials' }, { status: 401 });
+      };
+      const binding = fixture.authority.bind({
+        providerType: 'github-copilot',
+        connectionSlug: CONNECTION_SLUG,
+        material: fixture.material,
+        createRefreshTransport: () => testRefreshTransport(providerFetch),
+      });
+      const modelFetch = createHostOAuthModelFetch({
+        binding,
+        initialTokens: await binding.resolve(),
+        connection: {
+          slug: CONNECTION_SLUG,
+          providerType: 'github-copilot',
+          defaultModel: MODEL_ID,
+        },
+        sessionId: 'copilot-401-cancel-session',
+        modelId: MODEL_ID,
+        fetchFn: providerFetch,
+      });
+
+      const controller = new AbortController();
+      const reason = new Error('run stopped');
+      const request = modelFetch('https://api.githubcopilot.com/chat/completions', {
+        method: 'POST',
+        signal: controller.signal,
+        body: JSON.stringify({ messages: [] }),
+      });
+      // Let the 401 land and the refresh begin before the user gives up.
+      await waitFor(() => refreshRequests === 1);
+      controller.abort(reason);
+
+      await assert.rejects(request, (error) => error === reason);
+      // One model request: the replay never went out on a cancelled turn.
+      assert.equal(modelHeaders.length, 1);
+      // The refresh is left to settle rather than stranding a spent grant.
+      refreshBlocked.resolve(
+        Response.json({
+          access_token: 'gho_account_v2',
+          refresh_token: 'ghr_rotated',
+          expires_in: 28_800,
+        }),
+      );
+      await waitFor(async () => {
+        const canonical = JSON.parse(
+          (await readMaterial(fixture.stores)).secret,
+        ) as OAuthSubscriptionTokens;
+        return canonical.access_token === 'gho_account_v2';
+      });
+    },
+  );
+});
+
 test('a GitHub 401 on a non-expiring account token is not replayed with the same token', async () => {
   await withSeededOAuthCredential(
     'github-copilot',
@@ -781,4 +848,16 @@ const unexpectedFetch: typeof fetch = async () => {
 
 function testRefreshTransport(fetchFn: typeof fetch): ProxiedFetchTransport {
   return { fetch: fetchFn, close: async () => undefined };
+}
+
+/** Polls until a condition holds, so a test never races a background settle. */
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for OAuth execution state');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }

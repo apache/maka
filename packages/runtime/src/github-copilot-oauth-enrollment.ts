@@ -5,6 +5,7 @@ import {
   type OAuthSubscriptionTokens,
 } from './subscription-credentials.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
+import { ConnectionEffectHttpError } from './connection-effect-outcome.js';
 import {
   OAUTH_LOGIN_MAX_TOKEN_CHARS,
   OAuthTokenEndpointError,
@@ -23,15 +24,41 @@ const COPILOT = OAUTH_PROVIDER_CONTRACTS['github-copilot'];
 const MAX_TOKEN_LIFETIME_SECONDS = 366 * 24 * 60 * 60;
 
 /**
- * A GitHub account authorized the grant, but the Copilot API exposes no model
- * to it — an account without a live subscription, or one whose organization
- * withholds Copilot. The credential is real and the authorization succeeded,
- * so this is the provider refusing the account rather than a failed login.
+ * A GitHub account authorized the grant, and the Copilot API then refused it —
+ * an account without a live subscription, or one whose organization withholds
+ * Copilot. The credential is real and the authorization succeeded, so this is
+ * the provider refusing the account rather than a failed login. Only a proven
+ * refusal reaches here: a catalog the account can read but that lists nothing,
+ * or a deterministic 401/403 from the Copilot API.
  */
 export class GitHubCopilotEntitlementError extends Error {
   constructor(options?: ErrorOptions) {
     super('GitHub account exposes no usable Copilot model', options);
     this.name = 'GitHubCopilotEntitlementError';
+  }
+}
+
+/**
+ * The entitlement question could not be answered — a timeout, a dropped
+ * connection, a rate limit, a 5xx, or a response the client could not read.
+ *
+ * This must never be reported as an ineligible account: nothing about the
+ * subscription was learned, no credential was committed, and the same login
+ * will usually succeed on the next attempt. The provider status is preserved
+ * for diagnosis, and the Host maps this to a retryable authorization failure.
+ */
+export class GitHubCopilotEntitlementUnavailableError extends Error {
+  constructor(
+    readonly status: number | undefined,
+    options?: ErrorOptions,
+  ) {
+    super(
+      status === undefined
+        ? 'GitHub Copilot entitlement could not be verified'
+        : `GitHub Copilot entitlement could not be verified (${status})`,
+      options,
+    );
+    this.name = 'GitHubCopilotEntitlementUnavailableError';
   }
 }
 
@@ -198,8 +225,23 @@ export async function verifyGitHubCopilotModelEntitlement(input: {
       input.fetchFn,
     );
   } catch (error) {
-    throw new GitHubCopilotEntitlementError({ cause: error });
+    // Only the provider refusing this account is an entitlement answer. A
+    // timeout, a dropped connection, a rate limit, a 5xx, or an unreadable
+    // body tell us nothing about the subscription, and reporting them as
+    // ineligibility would send a paying user back through a device login that
+    // was never the problem.
+    if (
+      error instanceof ConnectionEffectHttpError &&
+      (error.status === 401 || error.status === 403)
+    ) {
+      throw new GitHubCopilotEntitlementError({ cause: error });
+    }
+    throw new GitHubCopilotEntitlementUnavailableError(
+      error instanceof ConnectionEffectHttpError ? error.status : undefined,
+      { cause: error },
+    );
   }
+  // A catalog the account could read, listing nothing it may use.
   if (models.length === 0) throw new GitHubCopilotEntitlementError();
 }
 

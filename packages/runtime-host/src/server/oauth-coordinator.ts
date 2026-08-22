@@ -8,6 +8,7 @@ import {
 import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
 import {
   GitHubCopilotEntitlementError,
+  GitHubCopilotEntitlementUnavailableError,
   pollGitHubCopilotDeviceAuthorization,
   startGitHubCopilotDeviceAuthorization,
   verifyGitHubCopilotModelEntitlement,
@@ -578,6 +579,10 @@ function loginFailureCode(error: unknown): OAuthLoginFailureCode {
   // The account authorized the grant and the provider then refused it: the
   // login worked, the subscription behind it did not.
   if (error instanceof GitHubCopilotEntitlementError) return 'provider_rejected';
+  // The provider never answered the entitlement question. Nothing is known
+  // about the subscription, so this is a login that did not complete — the
+  // user retries, they do not go looking for a plan they already have.
+  if (error instanceof GitHubCopilotEntitlementUnavailableError) return 'authorization_failed';
   // A local device window that elapsed without approval is a timeout, not
   // a provider rejection of the account.
   if (error instanceof OAuthDeviceAuthorizationExpiredError) return 'authorization_failed';
