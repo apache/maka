@@ -157,6 +157,32 @@ describe('Provider error classification', () => {
     assert.equal(providerFailureDiagnostic(delayedRateLimit).retryable, true);
   });
 
+  test('classifies provider capacity errors and retries with backoff', () => {
+    const capacity = Object.assign(
+      new Error('The model is currently at capacity due to high demand.'),
+      {
+        name: 'AI_APICallError',
+        data: { error: { code: 'resource-exhausted' } },
+      },
+    );
+
+    assert.equal(classifyError(capacity), 'ProviderCapacity');
+    assert.deepEqual(providerRetryMetadata(capacity), { retryable: true });
+    assert.deepEqual(
+      providerRetryMetadata(
+        Object.assign(capacity, {
+          responseHeaders: { 'retry-after': '12' },
+        }),
+      ),
+      { retryable: true, retryAfterMs: 12_000 },
+    );
+
+    const topLevelCode = Object.assign(new Error('The model is currently at capacity'), {
+      code: 'resource-exhausted',
+    });
+    assert.equal(classifyError(topLevelCode), 'ProviderCapacity');
+  });
+
   test('classifies context overflow by predicate, carrier shape, and evidence precedence', () => {
     const overflow = (message: string, extra: Record<string, unknown> = {}) =>
       classifyError(Object.assign(new Error(message), { name: 'AI_APICallError', ...extra }));
