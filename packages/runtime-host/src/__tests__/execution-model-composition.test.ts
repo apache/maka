@@ -336,7 +336,11 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
       'current',
       'expand',
     ]);
-    assert.ok(toolRequiredParameters(mainRequests[0]?.body, 'Bash').includes('boundary_intent'));
+    assert.equal(
+      toolRequiredParameters(mainRequests[0]?.body, 'Bash').includes('boundary_intent'),
+      false,
+    );
+    assert.equal(toolParameterDefault(mainRequests[0]?.body, 'Bash', 'boundary_intent'), 'current');
     assert.equal((latestToolResultText(mainRequests[1]!.body) ?? '').includes(project), true);
     assert.deepEqual(
       await execution.sessionStore.listPendingSandboxBoundaryRequests(session.id),
@@ -3839,6 +3843,23 @@ function toolParameterEnum(
   return schema && typeof schema === 'object' ? (schema as { enum?: unknown }).enum : undefined;
 }
 
+function toolParameterDefault(
+  body: Record<string, unknown> | undefined,
+  toolName: string,
+  property: string,
+): unknown {
+  const tools = Array.isArray(body?.tools) ? body.tools : [];
+  const tool = tools.find((candidate) => {
+    if (!candidate || typeof candidate !== 'object') return false;
+    const fn = (candidate as { function?: unknown }).function;
+    return Boolean(fn && typeof fn === 'object' && (fn as { name?: unknown }).name === toolName);
+  }) as { function?: { parameters?: { properties?: Record<string, unknown> } } } | undefined;
+  const schema = tool?.function?.parameters?.properties?.[property];
+  return schema && typeof schema === 'object'
+    ? (schema as { default?: unknown }).default
+    : undefined;
+}
+
 function toolRequiredParameters(
   body: Record<string, unknown> | undefined,
   toolName: string,
@@ -4010,7 +4031,6 @@ async function handleProviderRequest(
     assert.ok(toolNames(body).includes('Bash'));
     respondProviderToolCall(response, streamRequestIndex, 'Bash', {
       command: '/bin/pwd',
-      boundary_intent: 'current',
       required_boundary: {
         filesystem: {
           entries: [{ path: '.', access: 'read', scope: 'exact' }],

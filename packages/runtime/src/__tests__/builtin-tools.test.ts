@@ -284,6 +284,16 @@ describe('builtin Bash streaming output', () => {
       sandboxPlatform: 'linux',
     }).find((tool) => tool.name === 'Bash');
     assert.ok(linuxBash);
+    const parsedWithoutIntent = (linuxBash.parameters as z.ZodTypeAny).safeParse({
+      command: 'echo safe',
+    });
+    assert.equal(parsedWithoutIntent.success, true);
+    if (parsedWithoutIntent.success) {
+      assert.equal(
+        (parsedWithoutIntent.data as { boundary_intent?: unknown }).boundary_intent,
+        'current',
+      );
+    }
     assert.equal(
       (linuxBash.parameters as z.ZodTypeAny).safeParse({
         command: 'echo unsafe',
@@ -304,9 +314,15 @@ describe('builtin Bash streaming output', () => {
       },
     }).find((tool) => tool.name === 'Bash');
     if (!bash) throw new Error('Bash tool missing');
-    const parameters = bash.parameters as { safeParse(input: unknown): { success: boolean } };
+    const parameters = bash.parameters as z.ZodTypeAny;
 
-    expect(parameters.safeParse({ command: 'sleep 60' }).success).toBe(false);
+    const parsedWithoutIntent = parameters.safeParse({ command: 'sleep 60' });
+    expect(parsedWithoutIntent.success).toBe(true);
+    if (parsedWithoutIntent.success) {
+      expect((parsedWithoutIntent.data as { boundary_intent?: unknown }).boundary_intent).toBe(
+        'current',
+      );
+    }
     expect(
       parameters.safeParse({
         command: 'sleep 60',
@@ -379,6 +395,8 @@ describe('builtin Bash streaming output', () => {
     ).toBe(false);
 
     const modelVisibleSchema = JSON.stringify(z.toJSONSchema(bash.parameters as z.ZodTypeAny));
+    assert.match(modelVisibleSchema, /Defaults to current when omitted/);
+    assert.match(modelVisibleSchema, /"default":"current"/);
     assert.match(modelVisibleSchema, /Use current when the command needs no specifically declared/);
     assert.match(modelVisibleSchema, /ordinary workspace inspection/);
     assert.match(modelVisibleSchema, /used only when boundary_intent is expand/);

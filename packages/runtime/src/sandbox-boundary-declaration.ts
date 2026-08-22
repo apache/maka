@@ -18,11 +18,13 @@ export const BASH_REQUIRED_BOUNDARY_DESCRIPTION =
 
 export const bashBoundaryIntentSchema = z
   .enum(['current', 'expand'])
+  .default('current')
   .describe(
-    'Required. Use current when the command needs no specifically declared path or process-network ' +
-      'requirement, including ordinary workspace inspection, edits, local Git, and offline builds or ' +
-      'tests. Use expand when the command depends on a specifically declared path or process-network ' +
-      'capability, whether it is already approved or must be requested; then provide required_boundary.',
+    'Defaults to current when omitted. Use current when the command needs no specifically declared ' +
+      'path or process-network requirement, including ordinary workspace inspection, edits, local Git, ' +
+      'and offline builds or tests. Use expand when the command depends on a specifically declared path ' +
+      'or process-network capability, whether it is already approved or must be requested; then provide ' +
+      'required_boundary.',
   );
 
 const filesystemEntrySchema = z
