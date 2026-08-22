@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 201 files — blocker 0, polish 0, aligned 201.
+**Totals:** 202 files — blocker 0, polish 0, aligned 202.
 
 ## Exclusions (explicit)
 
@@ -104,6 +104,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/settings-rows.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/settings-section.tsx` | settings-module | Divider, HStack, Heading, Item, Text, VStack | aligned — uses Astryx (Divider, HStack, Heading, Item, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/settings-skeleton.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/settings/settings-status-summary-filter.tsx` | settings-module | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/settings/settings-surface.tsx` | settings-module | Badge, Banner, Button, IconButton, Layout, LayoutContent, LayoutHeader, LayoutPanel, Selector, SideNav | aligned — uses Astryx (Badge, Banner, Button, IconButton, Layout, LayoutContent, LayoutHeader, LayoutPanel) | aligned |
 | `apps/desktop/src/renderer/settings/subagent-settings-page.tsx` | settings-page | Badge, Banner, Button, EmptyState, HStack, IconButton, Selector, VStack | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, IconButton, Selector, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/tasks-settings-page.tsx` | settings-page | Button, EmptyState, HStack, List, ListItem, TextInput | aligned — uses Astryx (Button, EmptyState, HStack, List, ListItem, TextInput) | aligned |
