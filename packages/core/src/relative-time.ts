@@ -38,6 +38,11 @@ const JUST_NOW: UiCatalog<string> = {
   en: 'just now',
 };
 
+/** Future timestamps are treated as age zero and therefore display as just now. */
+function relativeAgeMs(ts: number, now: number): number {
+  return Math.max(0, now - ts);
+}
+
 let cachedRelativeFormat: Intl.RelativeTimeFormat | null = null;
 let cachedAbsoluteFormat: Intl.DateTimeFormat | null = null;
 let cachedLocale: string | null = null;
@@ -75,7 +80,7 @@ export function formatRelativeTimestamp(
   now: number = Date.now(),
   locale: UiLocale = 'zh',
 ): string {
-  const diffMs = now - ts;
+  const diffMs = relativeAgeMs(ts, now);
   if (diffMs < JUST_NOW_MS) {
     return JUST_NOW[locale];
   }
@@ -130,7 +135,7 @@ export function formatCompactTimestamp(
   now: number = Date.now(),
   locale: UiLocale = 'zh',
 ): string {
-  const diffMs = now - ts;
+  const diffMs = relativeAgeMs(ts, now);
   if (diffMs <= RELATIVE_HORIZON_MS) return formatRelativeTimestamp(ts, now, locale);
   const { sameYear, otherYear } = getCompactFormats(locale);
   const date = new Date(ts);
@@ -159,9 +164,9 @@ export function resetRelativeTimeFormatters(): void {
  * past the horizon (never re-render).
  */
 export function nextRelativeRefreshDelay(ts: number, now: number = Date.now()): number | null {
-  const diffMs = now - ts;
-  if (diffMs > RELATIVE_HORIZON_MS) return null;
-  if (diffMs < JUST_NOW_MS) return JUST_NOW_MS - diffMs;
-  if (diffMs < 60 * 60_000) return 60_000;
+  const ageMs = relativeAgeMs(ts, now);
+  if (ageMs > RELATIVE_HORIZON_MS) return null;
+  if (ageMs < JUST_NOW_MS) return JUST_NOW_MS - ageMs;
+  if (ageMs < 60 * 60_000) return 60_000;
   return 10 * 60_000;
 }
