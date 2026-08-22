@@ -26,6 +26,8 @@ import './styles.css';
 import { readSystemUiLocale } from './use-system-ui-locale';
 import { WorkbarServicesProvider } from './features/workbar';
 import { createDesktopWorkbarServices } from './platform/desktop/create-workbar-services';
+import { GoalServicesProvider } from './features/goals';
+import { createDesktopGoalServices } from './platform/desktop/create-goal-services';
 
 const ONBOARDING_SNAPSHOT_RETRY_DELAY_MS = 150;
 const ONBOARDING_SNAPSHOT_TIMEOUT_MS = 2_500;
@@ -33,6 +35,7 @@ const ONBOARDING_SNAPSHOT_TIMEOUT_MS = 2_500;
 syncUiLocaleDocument(readSystemUiLocale());
 applyCachedThemeBeforeMount();
 const workbarServices = createDesktopWorkbarServices();
+const goalServices = createDesktopGoalServices();
 
 /**
  * Prefetch the onboarding snapshot BEFORE mounting React. The preload
@@ -65,8 +68,10 @@ async function prefetchOnboardingSnapshot(): Promise<OnboardingSnapshot | null> 
 
 void prefetchOnboardingSnapshot().then((initialOnboardingSnapshot) => {
   createRoot(document.getElementById('root')!).render(
-    <WorkbarServicesProvider services={workbarServices}>
-      <App initialOnboardingSnapshot={initialOnboardingSnapshot} />
-    </WorkbarServicesProvider>,
+    <GoalServicesProvider services={goalServices}>
+      <WorkbarServicesProvider services={workbarServices}>
+        <App initialOnboardingSnapshot={initialOnboardingSnapshot} />
+      </WorkbarServicesProvider>
+    </GoalServicesProvider>,
   );
 });
