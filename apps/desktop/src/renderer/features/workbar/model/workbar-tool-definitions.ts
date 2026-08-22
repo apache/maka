@@ -39,8 +39,14 @@ export interface WorkbarToolDefinition {
   readonly defaultPlacement: SessionWorkbarPlacement;
 }
 
-export const WORKBAR_TOOL_DEFINITIONS = [
-  {
+type WorkbarToolDefinitionsByKind = {
+  readonly [Kind in SessionWorkbarTabKind]: WorkbarToolDefinition & {
+    readonly kind: Kind;
+  };
+};
+
+const WORKBAR_TOOL_DEFINITION_BY_KIND = {
+  'side-chat': {
     kind: 'side-chat',
     labelKey: 'side-chat',
     icon: 'message-circle-question',
@@ -49,7 +55,7 @@ export const WORKBAR_TOOL_DEFINITIONS = [
     singleton: false,
     defaultPlacement: 'right',
   },
-  {
+  review: {
     kind: 'review',
     labelKey: 'review',
     icon: 'git-branch',
@@ -58,7 +64,7 @@ export const WORKBAR_TOOL_DEFINITIONS = [
     singleton: true,
     defaultPlacement: 'right',
   },
-  {
+  terminal: {
     kind: 'terminal',
     labelKey: 'terminal',
     icon: 'terminal',
@@ -67,7 +73,7 @@ export const WORKBAR_TOOL_DEFINITIONS = [
     singleton: false,
     defaultPlacement: 'right',
   },
-  {
+  browser: {
     kind: 'browser',
     labelKey: 'browser',
     icon: 'globe',
@@ -76,7 +82,7 @@ export const WORKBAR_TOOL_DEFINITIONS = [
     singleton: true,
     defaultPlacement: 'right',
   },
-  {
+  files: {
     kind: 'files',
     labelKey: 'files',
     icon: 'folder',
@@ -85,7 +91,7 @@ export const WORKBAR_TOOL_DEFINITIONS = [
     singleton: true,
     defaultPlacement: 'right',
   },
-  {
+  tasks: {
     kind: 'tasks',
     labelKey: 'tasks',
     icon: 'list-todo',
@@ -93,7 +99,7 @@ export const WORKBAR_TOOL_DEFINITIONS = [
     singleton: true,
     defaultPlacement: 'right',
   },
-  {
+  inspector: {
     kind: 'inspector',
     labelKey: 'inspector',
     icon: 'activity',
@@ -101,16 +107,13 @@ export const WORKBAR_TOOL_DEFINITIONS = [
     singleton: true,
     defaultPlacement: 'right',
   },
-] as const satisfies readonly WorkbarToolDefinition[];
+} as const satisfies WorkbarToolDefinitionsByKind;
 
 export type RegisteredWorkbarToolDefinition =
-  (typeof WORKBAR_TOOL_DEFINITIONS)[number];
+  (typeof WORKBAR_TOOL_DEFINITION_BY_KIND)[SessionWorkbarTabKind];
 
-const WORKBAR_TOOL_DEFINITION_BY_KIND = Object.fromEntries(
-  WORKBAR_TOOL_DEFINITIONS.map((definition) => [definition.kind, definition]),
-) as Readonly<
-  Record<SessionWorkbarTabKind, RegisteredWorkbarToolDefinition>
->;
+export const WORKBAR_TOOL_DEFINITIONS: readonly RegisteredWorkbarToolDefinition[] =
+  Object.values(WORKBAR_TOOL_DEFINITION_BY_KIND);
 
 export function workbarToolDefinition(
   kind: SessionWorkbarTabKind,

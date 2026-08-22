@@ -57,6 +57,9 @@ export function useWorkbarLayoutState() {
   stateRef.current = state;
   const rightDragStartRef = useRef(state.rightWidth);
   const bottomDragStartRef = useRef(state.bottomHeight);
+  // The Workbar reducer is the controlled size authority. These props adapt it
+  // to Astryx's ResizeHandle contract without introducing useResizable state;
+  // snapping and handle-driven collapse are deliberately disabled here.
   const workbarResizable = useMemo<ResizableProps>(
     () => ({
       _size: state.rightWidth,

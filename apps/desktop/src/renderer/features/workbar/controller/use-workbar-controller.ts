@@ -102,6 +102,10 @@ export interface WorkbarController {
   selectors: WorkbarControllerSelectors;
 }
 
+function assertNever(value: never): never {
+  throw new Error(`Unexpected Workbar tool: ${JSON.stringify(value)}`);
+}
+
 function nextOrdinal(
   tabs: readonly SessionWorkbarTab[],
   kind: 'side-chat' | 'terminal',
@@ -286,55 +290,60 @@ export function useWorkbarController(
         revealPlacement(targetPlacement);
         return;
       }
-      if (definition.kind === 'side-chat') {
-        openNewSideConversation(targetPlacement, options.initialPrompt);
-        return;
+      switch (definition.kind) {
+        case 'side-chat':
+          openNewSideConversation(targetPlacement, options.initialPrompt);
+          return;
+        case 'terminal': {
+          const ownerSessionId = activeSessionIdRef.current;
+          if (!ownerSessionId) return;
+          const generation = resourceGenerationRef.current;
+          void terminal
+            .start(ownerSessionId)
+            .then((update) => {
+              const ref = update.result.ref;
+              registerTerminal(ownerSessionId, ref);
+              if (
+                generation !== resourceGenerationRef.current ||
+                activeSessionIdRef.current !== ownerSessionId
+              ) {
+                stopTerminal(ownerSessionId, ref);
+                return;
+              }
+              layout.openDynamicWorkbarTab(
+                {
+                  id: terminalSessionWorkbarTabId(ref),
+                  kind: 'terminal',
+                  ordinal: reserveOrdinal('terminal'),
+                  resourceRef: ref,
+                  ownerSessionId,
+                },
+                targetPlacement,
+              );
+              revealPlacement(targetPlacement);
+            })
+            .catch((error) => {
+              if (
+                generation !== resourceGenerationRef.current ||
+                activeSessionIdRef.current !== ownerSessionId
+              ) {
+                return;
+              }
+              input.reportError(
+                terminalCopy.startFailed,
+                localizedShellErrorMessage(
+                  error,
+                  terminalCopy.startFailed,
+                  locale,
+                ),
+                ownerSessionId,
+              );
+            });
+          return;
+        }
+        default:
+          return assertNever(definition);
       }
-
-      const ownerSessionId = activeSessionIdRef.current;
-      if (!ownerSessionId) return;
-      const generation = resourceGenerationRef.current;
-      void terminal
-        .start(ownerSessionId)
-        .then((update) => {
-          const ref = update.result.ref;
-          registerTerminal(ownerSessionId, ref);
-          if (
-            generation !== resourceGenerationRef.current ||
-            activeSessionIdRef.current !== ownerSessionId
-          ) {
-            stopTerminal(ownerSessionId, ref);
-            return;
-          }
-          layout.openDynamicWorkbarTab(
-            {
-              id: terminalSessionWorkbarTabId(ref),
-              kind: 'terminal',
-              ordinal: reserveOrdinal('terminal'),
-              resourceRef: ref,
-              ownerSessionId,
-            },
-            targetPlacement,
-          );
-          revealPlacement(targetPlacement);
-        })
-        .catch((error) => {
-          if (
-            generation !== resourceGenerationRef.current ||
-            activeSessionIdRef.current !== ownerSessionId
-          ) {
-            return;
-          }
-          input.reportError(
-            terminalCopy.startFailed,
-            localizedShellErrorMessage(
-              error,
-              terminalCopy.startFailed,
-              locale,
-            ),
-            ownerSessionId,
-          );
-        });
     },
     [
       input.reportError,
@@ -561,9 +570,8 @@ export function useWorkbarController(
     () => browser.subscribeLive((payload) => setLiveBrowserSessionIds(payload.sessionIds)),
     [browser],
   );
-  useLayoutEffect(() => {
+  useEffect(() => {
     browser.setActiveSession(activeSessionId ?? null);
-    return () => browser.setActiveSession(null);
   }, [activeSessionId, browser]);
 
   useEffect(() => {

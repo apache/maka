@@ -481,6 +481,6 @@ describe('useWorkbarController', () => {
 
     assert.equal(subscriptions, 1);
     assert.equal(disposals, 1);
-    assert.deepEqual(activeSessions, ['a', null, 'b', null]);
+    assert.deepEqual(activeSessions, ['a', 'b']);
   });
 });
