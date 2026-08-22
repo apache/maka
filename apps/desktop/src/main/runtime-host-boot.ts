@@ -1,7 +1,15 @@
-import { app, clipboard, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
+import {
+  app,
+  clipboard,
+  dialog,
+  ipcMain,
+  powerSaveBlocker,
+  shell,
+  type MessageBoxOptions,
+  type MessageBoxReturnValue,
+} from "electron";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { arch as osArch, homedir, release as osRelease } from "node:os";
 import { basename, join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import type { UsageRange } from '@maka/core/settings';
@@ -60,7 +68,14 @@ import {
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
 import { createMainWindowController } from "./main-window.js";
-import { mainProcessLogBuffer } from "./main-process-diagnostics.js";
+import {
+  captureDesktopDiagnosticEnvironment,
+  copyDesktopDiagnosticReport,
+  createDesktopStartupDiagnosticInput,
+  mainProcessLogBuffer,
+  type DesktopDiagnosticsDeps,
+} from "./main-process-diagnostics.js";
+import { showMessageBoxWithDiagnostics } from "./native-diagnostic-dialog.js";
 import {
   resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
@@ -151,7 +166,7 @@ import {
   isIsolatedE2e,
 } from "./startup-context.js";
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
-import { startupStep, whileAwaitingPerson } from "./startup-step.js";
+import { startupStep } from "./startup-step.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
 import {
   projectDesktopUsageStats,
@@ -194,6 +209,42 @@ const workspaceRoot = join(
   "workspaces",
   e2eFixture?.workspaceName ?? "default",
 );
+const desktopDiagnostics: DesktopDiagnosticsDeps = {
+  environment: () =>
+    captureDesktopDiagnosticEnvironment({
+      appVersion: app.getVersion(),
+      buildMode: buildInfo.mode,
+      buildCommit: buildInfo.commit,
+      locale: app.getLocale(),
+      workspacePath: workspaceRoot,
+    }),
+  mainLogs: () => mainProcessLogBuffer.snapshot(),
+  resolveActiveRuntimeHost: () => {
+    const scope = activeRuntimeHostRef();
+    return scope ? resolveRuntimeHostDiagnostics(scope) : undefined;
+  },
+  resolveRuntimeHost: resolveRuntimeHostDiagnostics,
+  writeClipboard: (report) => clipboard.writeText(report),
+};
+
+function showStartupDiagnosticDialog(
+  options: MessageBoxOptions,
+  locale: ReturnType<typeof resolveSystemUiLocale>,
+): Promise<MessageBoxReturnValue> {
+  return showMessageBoxWithDiagnostics(options, {
+    locale,
+    showMessageBox: (next) => dialog.showMessageBox(next),
+    copyDiagnostics: () =>
+      copyDesktopDiagnosticReport(
+        desktopDiagnostics,
+        createDesktopStartupDiagnosticInput({
+          title: options.title || options.message,
+          description: options.message,
+          ...(options.detail ? { details: options.detail } : {}),
+        }),
+      ),
+  });
+}
 if (e2eFixture) {
   console.log(
     `[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`,
@@ -632,7 +683,10 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     openSshTunnel: runtimeHostSshTerminal.openSshTunnel,
   },
   {
-    upgradePrompts: createRuntimeHostUpgradePrompts(() => desktopLocale.resolve()),
+    upgradePrompts: createRuntimeHostUpgradePrompts(
+      () => desktopLocale.resolve(),
+      showStartupDiagnosticDialog,
+    ),
     onTargetStateChanged: (state) => {
       const hostId = state.readiness === "ready"
         ? state.candidate.client.hostId
@@ -1217,31 +1271,7 @@ function registerPersistentClientIpc(): void {
       }];
     }),
   );
-  registerDesktopDiagnosticsIpc({
-    ipcMain,
-    environment: () => ({
-      appVersion: app.getVersion(),
-      buildMode: buildInfo.mode,
-      buildCommit: buildInfo.commit,
-      electronVersion: process.versions.electron ?? "",
-      nodeVersion: process.versions.node,
-      chromeVersion: process.versions.chrome ?? "",
-      platform: process.platform,
-      arch: osArch(),
-      osRelease: osRelease(),
-      locale: app.getLocale(),
-      workspacePath: workspaceRoot,
-      homePath: homedir(),
-      processUptimeSeconds: process.uptime(),
-    }),
-    mainLogs: () => mainProcessLogBuffer.snapshot(),
-    resolveActiveRuntimeHost: () => {
-      const scope = activeRuntimeHostRef();
-      return scope ? resolveRuntimeHostDiagnostics(scope) : undefined;
-    },
-    resolveRuntimeHost: resolveRuntimeHostDiagnostics,
-    writeClipboard: (report) => clipboard.writeText(report),
-  });
+  registerDesktopDiagnosticsIpc({ ipcMain, ...desktopDiagnostics });
   ipcMain.handle("attachments:pickFiles", async (event) => {
     const result = await mainWindowController.showOpenDialog({
       title: "Add attachments",
@@ -1416,8 +1446,8 @@ async function confirmDesktopStorageRootRepair(
   );
   const isChinese =
     resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
-  const { response } = await whileAwaitingPerson(
-    dialog.showMessageBox({
+  const { response } = await showStartupDiagnosticDialog(
+    {
       type: "warning",
       title: isChinese ? "Maka 工作区需要修复" : "Maka workspace needs repair",
       message: isChinese
@@ -1432,7 +1462,8 @@ async function confirmDesktopStorageRootRepair(
       defaultId: 1,
       cancelId: 1,
       noLink: true,
-    }),
+    },
+    isChinese ? "zh" : "en",
   );
   return response === 0;
 }
@@ -1443,8 +1474,8 @@ async function promptForDefaultRuntimeHostRecovery(input: {
 }): Promise<"retry" | "use_local" | "keep_offline"> {
   const isChinese =
     resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
-  const { response } = await whileAwaitingPerson(
-    dialog.showMessageBox({
+  const { response } = await showStartupDiagnosticDialog(
+    {
       type: "warning",
       title: isChinese
         ? "默认 Runtime Host 无法连接"
@@ -1461,7 +1492,8 @@ async function promptForDefaultRuntimeHostRecovery(input: {
       defaultId: 0,
       cancelId: 2,
       noLink: true,
-    }),
+    },
+    isChinese ? "zh" : "en",
   );
   return response === 0 ? "retry" : response === 1 ? "use_local" : "keep_offline";
 }

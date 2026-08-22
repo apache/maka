@@ -3,11 +3,16 @@ import { installConsoleDiagnosticLogCapture } from '@maka/core/node-diagnostic-l
 import { redactSecrets } from '@maka/core/redaction';
 import type { TurnTrace } from '@maka/core/session-trace';
 import type { HostDiagnosticsResult } from '@maka/runtime-host/protocol';
+import { arch as osArch, homedir, release as osRelease } from 'node:os';
 import type {
   DesktopDiagnosticHostTarget,
   DesktopDiagnosticWireInput,
   DesktopExecutionDiagnosticTarget,
 } from '../preload/diagnostics-contract.js';
+import {
+  requireDesktopTargetScope,
+  type DesktopTargetScope,
+} from '../shared/runtime-host-identity.js';
 
 const INPUT_LIMITS = {
   title: 512,
@@ -17,6 +22,7 @@ const INPUT_LIMITS = {
   rendererLocale: 64,
 } as const;
 const INPUT_TRUNCATION_MARKER = '\n<diagnostic input truncated>';
+const EXECUTION_DIAGNOSTIC_TIMEOUT_MS = 2_000;
 
 export interface DesktopDiagnosticEnvironment {
   readonly appVersion: string;
@@ -34,6 +40,26 @@ export interface DesktopDiagnosticEnvironment {
   readonly processUptimeSeconds: number;
 }
 
+export interface DesktopDiagnosticEnvironmentSource {
+  readonly appVersion: string;
+  readonly buildMode: 'dev' | 'packaged';
+  readonly buildCommit: string | null;
+  readonly locale: string;
+  readonly workspacePath: string;
+}
+
+export interface DesktopStartupDiagnosticInput {
+  readonly surface: 'startup';
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+  readonly hostTarget: 'none';
+}
+
+export type DesktopDiagnosticReportInput =
+  | DesktopDiagnosticWireInput
+  | DesktopStartupDiagnosticInput;
+
 export type RuntimeHostDiagnosticRead =
   | { readonly ok: true; readonly value: HostDiagnosticsResult }
   | { readonly ok: false; readonly error: string };
@@ -41,6 +67,23 @@ export type RuntimeHostDiagnosticRead =
 export type RuntimeHostExecutionDiagnosticRead =
   | { readonly ok: true; readonly value: TurnTrace }
   | { readonly ok: false; readonly error: string };
+
+type RuntimeHostDiagnosticsClient = {
+  readonly getDiagnostics: () => Promise<HostDiagnosticsResult>;
+  readonly getTurnTrace: (
+    sessionId: string,
+    turnId: string,
+    timeoutMs: number,
+  ) => Promise<TurnTrace | undefined>;
+};
+
+export interface DesktopDiagnosticsDeps {
+  readonly environment: () => DesktopDiagnosticEnvironment;
+  readonly mainLogs: () => readonly string[];
+  readonly resolveActiveRuntimeHost: () => RuntimeHostDiagnosticsClient | undefined;
+  readonly resolveRuntimeHost: (scope: DesktopTargetScope) => RuntimeHostDiagnosticsClient | undefined;
+  readonly writeClipboard: (value: string) => void;
+}
 
 export const mainProcessLogBuffer = new DiagnosticLogBuffer();
 
@@ -50,6 +93,46 @@ export function installMainProcessLogCapture(buffer: DiagnosticLogBuffer = mainP
   if (logCaptureInstalled) return;
   logCaptureInstalled = true;
   installConsoleDiagnosticLogCapture(buffer);
+}
+
+export function captureDesktopDiagnosticEnvironment(
+  source: DesktopDiagnosticEnvironmentSource,
+): DesktopDiagnosticEnvironment {
+  return {
+    ...source,
+    electronVersion: process.versions.electron ?? '',
+    nodeVersion: process.versions.node,
+    chromeVersion: process.versions.chrome ?? '',
+    platform: process.platform,
+    arch: osArch(),
+    osRelease: osRelease(),
+    homePath: homedir(),
+    processUptimeSeconds: process.uptime(),
+  };
+}
+
+export function createDesktopStartupDiagnosticInput(input: {
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+}): DesktopStartupDiagnosticInput {
+  return {
+    surface: 'startup',
+    hostTarget: 'none',
+    title: requireDiagnosticString(input.title, 'title', INPUT_LIMITS.title),
+    ...(input.description
+      ? {
+          description: requireDiagnosticString(
+            input.description,
+            'description',
+            INPUT_LIMITS.description,
+          ),
+        }
+      : {}),
+    ...(input.details
+      ? { details: requireDiagnosticString(input.details, 'details', INPUT_LIMITS.details) }
+      : {}),
+  };
 }
 
 export function parseDesktopDiagnosticInput(input: unknown): DesktopDiagnosticWireInput {
@@ -102,8 +185,97 @@ export function parseDesktopDiagnosticInput(input: unknown): DesktopDiagnosticWi
   };
 }
 
+export async function copyDesktopDiagnosticReport(
+  deps: DesktopDiagnosticsDeps,
+  input: DesktopDiagnosticReportInput,
+  scope: unknown = undefined,
+): Promise<void> {
+  let runtime: RuntimeHostDiagnosticsClient | undefined;
+  if (input.hostTarget === 'none') {
+    if (scope !== undefined) {
+      throw new Error('Desktop-only diagnostics must not carry a Host scope');
+    }
+  } else if (input.hostTarget === 'default') {
+    if (scope !== undefined) {
+      throw new Error('Default Desktop diagnostics must not carry a Host scope');
+    }
+    try {
+      runtime = deps.resolveActiveRuntimeHost();
+    } catch {
+      runtime = undefined;
+    }
+  } else if (scope !== undefined) {
+    const target = requireDesktopTargetScope(scope);
+    try {
+      runtime = deps.resolveRuntimeHost(target);
+    } catch {
+      // A task's Host may disappear between preload scope resolution and
+      // this capture. The Desktop report remains useful on its own.
+      runtime = undefined;
+    }
+  }
+  let runtimeHost: RuntimeHostDiagnosticRead;
+  if (!runtime) {
+    let error: string;
+    if (input.hostTarget === 'none') {
+      error = input.surface === 'startup'
+        ? 'Runtime Host diagnostics were unavailable before the app opened'
+        : 'No Runtime Host authority was associated with this error';
+    } else if (input.hostTarget === 'default') {
+      error = input.surface === 'manual'
+        ? 'Runtime Host is unavailable'
+        : 'Runtime Host is reconnecting';
+    } else {
+      error = input.surface !== 'manual' && scope !== undefined
+        ? 'Runtime Host is reconnecting'
+        : 'Runtime Host for this task is unavailable';
+    }
+    runtimeHost = { ok: false, error };
+  } else {
+    try {
+      runtimeHost = { ok: true, value: await runtime.getDiagnostics() };
+    } catch (error) {
+      runtimeHost = {
+        ok: false,
+        error: boundedDiagnosticError(error),
+      };
+    }
+  }
+  let runtimeExecution: RuntimeHostExecutionDiagnosticRead | undefined;
+  const execution =
+    input.surface === 'toast' || input.surface === 'renderer_crash'
+      ? input.execution
+      : undefined;
+  if (execution && runtime) {
+    try {
+      const turn = await runtime.getTurnTrace(
+        execution.sessionId,
+        execution.turnId,
+        EXECUTION_DIAGNOSTIC_TIMEOUT_MS,
+      );
+      runtimeExecution = turn
+        ? { ok: true, value: turn }
+        : { ok: false, error: 'Execution evidence was not found' };
+    } catch (error) {
+      runtimeExecution = {
+        ok: false,
+        error: boundedDiagnosticError(error),
+      };
+    }
+  }
+  deps.writeClipboard(
+    formatDesktopDiagnosticReport(
+      input,
+      deps.environment(),
+      deps.mainLogs(),
+      runtimeHost,
+      runtimeExecution,
+    ),
+  );
+}
+
 export function formatDesktopDiagnosticReport(
-  input: DesktopDiagnosticWireInput,
+  input: DesktopDiagnosticReportInput,
   environment: DesktopDiagnosticEnvironment,
   mainLogs: readonly string[],
   runtimeHost: RuntimeHostDiagnosticRead,
@@ -111,6 +283,7 @@ export function formatDesktopDiagnosticReport(
   capturedAt = new Date(),
 ): string {
   const lines = ['Maka Desktop diagnostic report', `Captured at: ${capturedAt.toISOString()}`];
+  const rendererContext = input.surface === 'startup' ? undefined : input;
   if (input.surface === 'manual') {
     lines.push('', 'Capture', 'Surface: manual');
   } else {
@@ -129,8 +302,8 @@ export function formatDesktopDiagnosticReport(
     `Node: ${environment.nodeVersion}`,
     `OS: ${environment.platform} ${environment.osRelease} (${environment.arch})`,
     `Locale: ${environment.locale}`,
-    `Renderer locale: ${input.rendererLocale ?? '<unknown>'}`,
-    `Renderer user agent: ${input.rendererUserAgent ?? '<unknown>'}`,
+    `Renderer locale: ${rendererContext?.rendererLocale ?? '<unknown>'}`,
+    `Renderer user agent: ${rendererContext?.rendererUserAgent ?? '<unknown>'}`,
     `Workspace: ${environment.workspacePath}`,
     `Main process uptime: ${Math.max(0, Math.floor(environment.processUptimeSeconds))}s`,
     '',
@@ -155,7 +328,10 @@ export function formatDesktopDiagnosticReport(
     lines.push(`Diagnostics unavailable: ${runtimeHost.error}`);
   }
 
-  const execution = input.surface === 'manual' ? undefined : input.execution;
+  const execution =
+    input.surface === 'toast' || input.surface === 'renderer_crash'
+      ? input.execution
+      : undefined;
   if (execution) {
     lines.push('', 'Runtime Host execution');
     if (!runtimeExecution?.ok) {
@@ -275,6 +451,13 @@ function requireDiagnosticString(value: unknown, label: string, maximumBytes: nu
     throw new TypeError(`Invalid Desktop diagnostic ${label}`);
   }
   return truncateUtf8(value, maximumBytes, INPUT_TRUNCATION_MARKER);
+}
+
+function boundedDiagnosticError(error: unknown): string {
+  return truncateUtf8(
+    redactSecrets(error instanceof Error ? error.message : String(error)),
+    1024,
+  );
 }
 
 function collapseHomePath(value: string, homePath: string, platform: NodeJS.Platform): string {

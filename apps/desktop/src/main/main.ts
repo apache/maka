@@ -1,5 +1,13 @@
-import { app, dialog } from 'electron';
-import { installMainProcessLogCapture } from './main-process-diagnostics.js';
+import { resolveSystemUiLocale } from '@maka/core/ui-locale';
+import { app, clipboard, dialog } from 'electron';
+import { join } from 'node:path';
+import { resolveBuildInfo } from './build-info.js';
+import {
+  captureDesktopDiagnosticEnvironment,
+  installMainProcessLogCapture,
+  mainProcessLogBuffer,
+} from './main-process-diagnostics.js';
+import { showFatalStartupError } from './native-diagnostic-dialog.js';
 import { isIsolatedE2e } from './startup-context.js';
 
 installMainProcessLogCapture();
@@ -48,8 +56,21 @@ if (!app.requestSingleInstanceLock()) {
       // E2E runs must not hang on a modal error box (same reasoning as the
       // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
       if (!isIsolatedE2e) {
-        const message = error instanceof Error ? error.message : String(error);
-        dialog.showErrorBox('Maka failed to start', message);
+        const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
+        showFatalStartupError(error, {
+          locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+          environment: () =>
+            captureDesktopDiagnosticEnvironment({
+              appVersion: app.getVersion(),
+              buildMode: buildInfo.mode,
+              buildCommit: buildInfo.commit,
+              locale: app.getLocale(),
+              workspacePath: join(app.getPath('userData'), 'workspaces', 'default'),
+            }),
+          mainLogs: () => mainProcessLogBuffer.snapshot(),
+          writeClipboard: (report) => clipboard.writeText(report),
+          showMessageBoxSync: (options) => dialog.showMessageBoxSync(options),
+        });
       }
       app.exit(1);
     });

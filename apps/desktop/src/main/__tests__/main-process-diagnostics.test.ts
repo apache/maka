@@ -6,6 +6,8 @@ import {
   type DesktopDiagnosticsIpcDeps,
 } from '../desktop-diagnostics-ipc-main.js';
 import {
+  copyDesktopDiagnosticReport,
+  createDesktopStartupDiagnosticInput,
   formatDesktopDiagnosticReport,
   parseDesktopDiagnosticInput,
 } from '../main-process-diagnostics.js';
@@ -701,4 +703,32 @@ test('rejects the copy request when the main-process clipboard write fails', asy
     ),
     /System clipboard unavailable/,
   );
+});
+
+test('copies startup diagnostics without requiring a renderer', async () => {
+  let clipboard = '';
+  await copyDesktopDiagnosticReport(
+    {
+      environment: () => environment,
+      mainLogs: () => ['startup reached the native dialog'],
+      resolveActiveRuntimeHost: () => {
+        throw new Error('Startup diagnostics must remain Desktop-only');
+      },
+      resolveRuntimeHost: () => {
+        throw new Error('Startup diagnostics must not resolve a task Host');
+      },
+      writeClipboard: (value) => {
+        clipboard = value;
+      },
+    },
+    createDesktopStartupDiagnosticInput({
+      title: 'Maka failed to start',
+      description: 'Storage could not be opened',
+    }),
+  );
+
+  assert.match(clipboard, /Error\nSurface: startup/);
+  assert.match(clipboard, /Description: Storage could not be opened/);
+  assert.match(clipboard, /startup reached the native dialog/);
+  assert.match(clipboard, /Runtime Host diagnostics were unavailable before the app opened/);
 });
