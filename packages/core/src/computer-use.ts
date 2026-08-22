@@ -478,6 +478,9 @@ export interface ComputerUseModelCallArgs {
   window_id?: number;
   observation_id?: string;
   element_id?: string;
+  menu?: string;
+  window_action?: string;
+  steps?: readonly ComputerUseModelCallStep[];
   /** Every other argument the call carried, values reduced to their shape. */
   [key: string]:
     | string

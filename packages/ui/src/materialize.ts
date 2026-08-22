@@ -98,6 +98,8 @@ export interface ToolActivityItem {
   args: unknown;
   result?: ToolResultContent;
   durationMs?: number;
+  /** Live-only progress for a bounded multi-step tool invocation. */
+  progress?: { current: number; total: number };
   /**
    * Live streamed output buffer (PR-UI-12). Append-only from the
    * renderer's perspective — runtime side already enforces the

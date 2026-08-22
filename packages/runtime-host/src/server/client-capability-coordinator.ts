@@ -518,6 +518,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         categoryHint: 'custom_tool',
         recoveryMode: 'outcome_unknown',
         executionLocation: 'remote',
+        activityKindForDescriptor: (descriptor) =>
+          trustedClientToolActivityKind(descriptor),
       }),
     ];
     const groups = selected.map(({ offer: binding }) => ({
@@ -957,6 +959,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
           options.context,
           options.signal,
           options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+          options.emitProgress,
         );
       },
     };
@@ -1184,6 +1187,12 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     }
     return false;
   }
+}
+
+function trustedClientToolActivityKind(
+  descriptor: ClientCapabilityToolDescriptor,
+): MakaTool['activityKind'] {
+  return descriptor.activityKind;
 }
 
 function freezeRegistration(

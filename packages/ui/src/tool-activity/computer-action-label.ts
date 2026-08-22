@@ -79,7 +79,11 @@ import { getToolActivityCopy, type ToolActivityCopy } from './copy.js';
 
 /** True for a row produced by the Computer Use tool. */
 export function isComputerTool(item: ToolActivityItem): boolean {
-  return item.toolName === 'maka_computer' || item.activityKind === 'computer';
+  return (
+    item.toolName === 'maka_computer' ||
+    item.toolName.endsWith('__maka_computer') ||
+    item.activityKind === 'computer'
+  );
 }
 
 /**
@@ -99,15 +103,64 @@ export function computerActionLabel(
   return describeAction(args, copy) ?? copy.fallback;
 }
 
+export function computerActionTarget(
+  item: ToolActivityItem,
+  locale: UiLocale,
+): string | undefined {
+  if (!isComputerTool(item)) return undefined;
+  const args = asRecord(item.args);
+  if (!args) return undefined;
+  const copy = getToolActivityCopy(locale).computer;
+  const app = displayable(str(args, 'app'));
+  if (app !== undefined) return copy.targetApp(app);
+  const windowId = int(args, 'window_id');
+  return windowId === undefined ? undefined : copy.targetWindow(windowId);
+}
+
+export function computerActionLabelIncludesTarget(item: ToolActivityItem): boolean {
+  const args = asRecord(item.args);
+  const action = str(args ?? {}, 'action');
+  return (
+    action === 'launch_app' ||
+    action === 'screenshot' ||
+    (action === 'observe' && str(args ?? {}, 'menu') === undefined)
+  );
+}
+
+export function computerRunningLabel(
+  items: readonly ToolActivityItem[],
+  locale: UiLocale,
+): string | undefined {
+  let target: string | undefined;
+  let active: ToolActivityItem | undefined;
+  for (const item of items) {
+    if (!isComputerTool(item)) continue;
+    target = computerActionTarget(item, locale) ?? target;
+    if (item.status === 'pending' || item.status === 'running') active = item;
+  }
+  if (!active) return undefined;
+  const copy = getToolActivityCopy(locale).computer;
+  const args = asRecord(active.args);
+  const actionName = str(args ?? {}, 'action');
+  if (actionName === 'element_sequence' && active.progress) {
+    return copy.runningSequence(active.progress.current, active.progress.total, target);
+  }
+  const action = computerActionLabel(active, locale) ?? copy.fallback;
+  return copy.runningAction(
+    action,
+    computerActionLabelIncludesTarget(active) ? undefined : target,
+  );
+}
+
 /**
  * The keys the projection declares by name, and the only ones read below.
  *
  * Not `keyof ComputerUseModelCallArgs`: that interface carries an index
  * signature for every other argument the model sent, so `keyof` widens to
- * `string | number` and the stale `windowId` this file used to read would type
- * check again. Filtering the index signature back out leaves the five names the
- * projection spells out, so renaming one there is a build error here rather
- * than a row that quietly reads "点击该元素".
+ * `string | number` and a stale camelCase name would type check again.
+ * Filtering the index signature back out leaves only names the projection
+ * spells out, so renaming one there is a build error here rather than a row
+ * that quietly loses its target.
  */
 type DeclaredArg<T> = keyof {
   [K in keyof T as string extends K ? never : number extends K ? never : K]: unknown;
@@ -123,12 +176,19 @@ function describeAction(
   const windowId = int(args, 'window_id');
   const elementId = identifier(str(args, 'element_id'));
   const element = elementId ? copy.element(elementId) : copy.elementUnknown;
+  const menu = displayable(str(args, 'menu'));
+  const sequenceSteps = Array.isArray(args.steps) ? args.steps.length : undefined;
+  const windowAction = str(args, 'window_action');
 
   switch (action) {
     case 'list_apps':
       return copy.listApps;
+    case 'launch_app':
+      return app !== undefined ? copy.launchApp(app) : copy.launchAppUnknown;
     case 'observe':
-      return app !== undefined
+      return menu !== undefined
+        ? copy.observeMenu(menu)
+        : app !== undefined
         ? copy.observeApp(app)
         : windowId !== undefined
           ? copy.observeWindow(windowId)
@@ -147,6 +207,20 @@ function describeAction(
       return copy.selectText(element);
     case 'secondary_action':
       return copy.secondaryAction(element);
+    case 'scroll_element':
+      return copy.scrollElement(element);
+    case 'element_sequence':
+      return sequenceSteps !== undefined
+        ? copy.elementSequence(sequenceSteps)
+        : copy.elementSequenceUnknown;
+    case 'window_action':
+      return windowAction === 'move'
+        ? copy.windowMove
+        : windowAction === 'resize'
+          ? copy.windowResize
+          : windowAction === 'minimize'
+            ? copy.windowMinimize
+            : copy.windowAction;
     case 'press_key':
     case 'key':
       return copy.pressKey;

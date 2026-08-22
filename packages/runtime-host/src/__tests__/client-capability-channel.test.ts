@@ -210,3 +210,82 @@ test('Client Capability channel rejects Host paths before invoking a path-isolat
   ]);
   channel.close(new Error('test complete'));
 });
+
+test('Client Capability channel forwards admitted tool progress before the result', async () => {
+  let registrationId = '';
+  const written: unknown[] = [];
+  let channel!: ClientCapabilityChannel;
+  const provider: ClientCapabilityProvider = {
+    offers: () => [{
+      offerId: 'fixture',
+      version: '0',
+      affinity: 'call',
+      hostPathAccess: 'cwd',
+      label: 'Fixture',
+      tools: [{ serverId: 'fixture', name: 'sequence', inputSchema: { type: 'object' } }],
+    }],
+    call: async (_frame, options) => {
+      await options.accept();
+      options.progress?.(1, 3);
+      options.progress?.(2, 3);
+      return { content: [] };
+    },
+  };
+  channel = new ClientCapabilityChannel({
+    write: async (frame) => {
+      written.push(frame);
+      if (frame.kind === 'client.capability.accepted') {
+        queueMicrotask(() => channel.accept({
+          kind: 'client.capability.admitted',
+          invocationId: frame.invocationId,
+        }));
+      }
+    },
+    replace: async (input) => {
+      registrationId = input.registrationId;
+      return { registrationId, revision: 1 };
+    },
+    unregister: async (input) => ({ registrationId: input.registrationId, revision: 2 }),
+    onFailure: (error) => {
+      throw error;
+    },
+  });
+
+  await channel.replace(provider, 1_000);
+  channel.accept({
+    kind: 'client.capability.call',
+    invocationId: 'progress-invocation',
+    registrationId,
+    offerId: 'fixture',
+    serverId: 'fixture',
+    toolName: 'sequence',
+    arguments: {},
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    toolCallId: 'tool-1',
+    cwd: '/tmp',
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(written, [
+    { kind: 'client.capability.accepted', invocationId: 'progress-invocation' },
+    {
+      kind: 'client.capability.progress',
+      invocationId: 'progress-invocation',
+      current: 1,
+      total: 3,
+    },
+    {
+      kind: 'client.capability.progress',
+      invocationId: 'progress-invocation',
+      current: 2,
+      total: 3,
+    },
+    {
+      kind: 'client.capability.result',
+      invocationId: 'progress-invocation',
+      result: { content: [] },
+    },
+  ]);
+  channel.close(new Error('test complete'));
+});

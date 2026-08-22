@@ -21,9 +21,15 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
-import { ToolCallDetail } from '../tool-activity.js';
+import { computerUseModelCallArgs } from '@maka/core/computer-use';
+import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
+import {
+  computerActionLabel,
+  computerRunningLabel,
+  isComputerTool,
+} from '../tool-activity/computer-action-label.js';
 
 function renderToStaticMarkup(node: ReactNode, locale: 'zh' | 'en' = 'zh'): string {
   return renderReactToStaticMarkup(createElement(LocaleProvider, {
@@ -33,6 +39,66 @@ function renderToStaticMarkup(node: ReactNode, locale: 'zh' | 'en' = 'zh'): stri
 }
 
 describe('tool activity presentation', () => {
+  it('describes Computer Use proxy calls by action instead of the generic tool name', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'computer-observe',
+      toolName: 'mcp__desktop_computer_use__maka_computer',
+      displayName: 'Maka Computer',
+      activityKind: 'tool',
+      status: 'completed',
+      args: computerUseModelCallArgs({
+        action: 'observe',
+        app: '计算器',
+        window_id: 7,
+      }),
+    };
+
+    assert.equal(isComputerTool(item), true);
+    assert.equal(computerActionLabel(item, 'zh'), '观察「计算器」窗口');
+    const markup = renderToStaticMarkup(
+      createElement(ToolTrow, { items: [item] }),
+    );
+    assert.match(markup, /观察「计算器」窗口/);
+    assert.doesNotMatch(markup, /Maka Computer/);
+  });
+
+  it('inherits the confirmed target and exposes live sequence progress', () => {
+    const observed: ToolActivityItem = {
+      toolUseId: 'computer-observe',
+      toolName: 'maka_computer',
+      activityKind: 'computer',
+      status: 'completed',
+      args: computerUseModelCallArgs({
+        action: 'observe',
+        app: '计算器',
+        window_id: 7,
+      }),
+    };
+    const sequence: ToolActivityItem = {
+      toolUseId: 'computer-sequence',
+      toolName: 'maka_computer',
+      activityKind: 'computer',
+      status: 'running',
+      args: computerUseModelCallArgs({
+        action: 'element_sequence',
+        observation_id: '00000000-0000-0000-0000-000000000001',
+        steps: Array.from({ length: 11 }, (_, index) => ({ label: String(index) })),
+      }),
+      progress: { current: 7, total: 11 },
+    };
+
+    const markup = renderToStaticMarkup(
+      createElement(ToolTrow, { items: [observed, sequence] }),
+    );
+    assert.match(markup, /连续操作 11 个控件/);
+    assert.match(markup, /「计算器」窗口/);
+    assert.match(markup, />7\/11</);
+    assert.equal(
+      computerRunningLabel([observed, sequence], 'zh'),
+      '正在操作「计算器」窗口 · 连续操作第 7/11 步',
+    );
+  });
+
   it('contains a malformed persisted terminal result instead of crashing the renderer', () => {
     const malformed = {
       kind: 'terminal',

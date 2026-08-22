@@ -349,6 +349,7 @@ async function invokeNativeTool(
     toolCallId: frame.toolCallId,
     abortSignal: signal,
     emitOutput() {},
+    ...(options.progress ? { emitProgress: options.progress } : {}),
   });
   return projectToolResult(binding.tool, frame.toolCallId, args, output);
 }
@@ -387,6 +388,7 @@ function capabilityOffer(
           name: tool.name,
           description: tool.description,
           inputSchema: toolInputSchema(tool),
+          ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
           ...(tool.displayName
             ? { annotations: Object.freeze({ title: tool.displayName }) }
             : {}),

@@ -77,8 +77,10 @@ interface InvocationState<Registration extends ClientCapabilityInvocationRegistr
   readonly reject: (error: Error) => void;
   readonly signal?: AbortSignal;
   readonly onAbort?: () => void;
+  readonly onProgress?: (current: number, total: number) => void;
   readonly timer: NodeJS.Timeout;
   phase: 'dispatched' | 'accepted' | 'chunks';
+  progress?: { current: number; total: number };
   chunks?: {
     readonly byteLength: number;
     readonly chunkCount: number;
@@ -114,8 +116,9 @@ export class ClientCapabilityInvocationBroker<
     context: ClientCapabilityInvocationContext,
     signal: AbortSignal | undefined,
     timeoutMs: number,
+    onProgress?: (current: number, total: number) => void,
   ): Promise<ClientCapabilityCallResult> {
-    return this.#invoke(registration, signal, timeoutMs, (invocationId) => ({
+    return this.#invoke(registration, signal, timeoutMs, onProgress, (invocationId) => ({
       kind: 'client.capability.call',
       invocationId,
       registrationId: registration.registrationId,
@@ -139,7 +142,7 @@ export class ClientCapabilityInvocationBroker<
     signal: AbortSignal | undefined,
     timeoutMs: number,
   ): Promise<ClientCapabilityCallResult> {
-    return this.#invoke(registration, signal, timeoutMs, (invocationId) => ({
+    return this.#invoke(registration, signal, timeoutMs, undefined, (invocationId) => ({
       kind: 'client.capability.service_call',
       invocationId,
       registrationId: registration.registrationId,
@@ -154,6 +157,7 @@ export class ClientCapabilityInvocationBroker<
     registration: Registration,
     signal: AbortSignal | undefined,
     timeoutMs: number,
+    onProgress: ((current: number, total: number) => void) | undefined,
     frameFor: (invocationId: string) => ClientCapabilityHostFrame,
   ): Promise<ClientCapabilityCallResult> {
     const sender = this.#senderFor(registration.connectionId);
@@ -222,6 +226,7 @@ export class ClientCapabilityInvocationBroker<
         reject,
         signal,
         onAbort,
+        onProgress,
         timer,
         phase: 'dispatched',
       };
@@ -311,6 +316,23 @@ export class ClientCapabilityInvocationBroker<
           new ClientCapabilityInvocationError('provider_failed', frame.message),
           true,
         );
+        return;
+      case 'client.capability.progress':
+        if (invocation.phase !== 'accepted' && invocation.phase !== 'chunks') {
+          throw new Error('Client Capability progress arrived before acceptance');
+        }
+        if (
+          invocation.progress &&
+          (
+            frame.total !== invocation.progress.total ||
+            frame.current < invocation.progress.current
+          )
+        ) {
+          throw new Error('Client Capability progress moved backwards or changed total');
+        }
+        if (frame.current === invocation.progress?.current) return;
+        invocation.progress = { current: frame.current, total: frame.total };
+        invocation.onProgress?.(frame.current, frame.total);
         return;
       case 'client.capability.result':
         if (invocation.phase !== 'accepted') {

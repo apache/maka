@@ -571,6 +571,65 @@ export const RunningStatusDuringToolRun: Story = {
   ),
 };
 
+// Real path: Desktop Computer Use is exposed through the Runtime Host Client
+// Capability bridge. The settled observation establishes the confirmed target;
+// the following sequence inherits it while live progress replaces the generic
+// working phrase at the bottom of the turn.
+export const ComputerUseObservability: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'running', streaming: true }}
+      chat={{
+        runningStatus: true,
+        messages: [
+          user('msg-cu-1', 'turn-cu', 2, '在计算器里完成这组输入，并确认结果。'),
+          {
+            type: 'turn_state',
+            id: 'state-cu',
+            turnId: 'turn-cu',
+            ts: NOW - 40_000,
+            status: 'running',
+            partialOutputRetained: false,
+          },
+        ],
+        liveTurn: {
+          turnId: 'turn-cu',
+          phase: 'streamed',
+          steps: [{
+            stepId: 'msg-assistant-cu',
+            tools: [
+              {
+                toolUseId: 'tool-cu-observe',
+                toolName: 'mcp__desktop_computer_use__maka_computer',
+                activityKind: 'computer',
+                displayName: 'Maka Computer',
+                status: 'completed',
+                args: { action: 'observe', app: '计算器', window_id: 7 },
+                durationMs: 728,
+              },
+              {
+                toolUseId: 'tool-cu-sequence',
+                toolName: 'mcp__desktop_computer_use__maka_computer',
+                activityKind: 'computer',
+                displayName: 'Maka Computer',
+                status: 'running',
+                args: {
+                  action: 'element_sequence',
+                  observation_id: '00000000-0000-0000-0000-000000000001',
+                  steps: Array.from({ length: 11 }, (_, index) => ({
+                    label: `<text:${String(index).length}>`,
+                  })),
+                },
+                progress: { current: 7, total: 11 },
+              },
+            ],
+          }],
+        },
+      }}
+    />
+  ),
+};
+
 // Real path: the agent calls a tool that needs approval → session enters
 // waiting_for_user and the permission-mode picker is locked with a reason.
 //

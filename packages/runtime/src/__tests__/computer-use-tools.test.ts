@@ -1004,6 +1004,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     // press, so the host can take a step, look again with its own eyes, and
     // take the next.
     const dispatched: string[] = [];
+    const progress: Array<[number, number]> = [];
     let captures = 0;
     const backend = fakeBackend() as CuDispatchBackend & {
       observeApp: NonNullable<CuDispatchBackend['observeApp']>;
@@ -1042,13 +1043,17 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         observation_id: JSON.parse(observed.text).observation_id,
         steps: [{ label: '7' }, { label: '×' }, { label: '8' }, { label: '=' }],
       } as never,
-      ctx(undefined, { toolCallId: 'sequence' }),
+      ctx(undefined, {
+        toolCallId: 'sequence',
+        emitProgress: (current, total) => progress.push([current, total]),
+      }),
     )) as { text: string; modelText?: string };
 
     assert.deepEqual(dispatched, ['1', '2', '3', '4']);
     // Three re-observations between the four steps, plus the closing one.
     assert.equal(captures, 4);
     assert.match(result.text, /ok \(4 of 4 steps\)/);
+    assert.deepEqual(progress, [[0, 4], [1, 4], [2, 4], [3, 4], [4, 4]]);
   });
 
   test('a sequence stops at the step it cannot resolve, and says which', async () => {

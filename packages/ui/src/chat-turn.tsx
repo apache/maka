@@ -29,6 +29,7 @@ import {
 } from './chat-display-helpers.js';
 import { redactSecrets } from './redact.js';
 import { isProgressiveStreamingEnabled, isTimeDrivenMotionEnabled } from './streaming-presentation.js';
+import { computerRunningLabel } from './tool-activity/computer-action-label.js';
 import {
   Badge,
   Banner,
@@ -452,6 +453,7 @@ export const TurnView = memo(function TurnView(props: {
   // flat timeline. Settled turn identities are stable (memoized projections),
   // so this only recomputes for the turn whose timeline actually changed.
   const foldedTimeline = useMemo(() => foldTimeline(turn.timeline), [turn.timeline]);
+  const runningToolLabel = computerRunningLabel(turn.tools, locale);
   const conversationSegments = useMemo(
     () => splitTimelineAtUserMessages(foldedTimeline, showAssistantMessage),
     [foldedTimeline, showAssistantMessage],
@@ -684,6 +686,7 @@ export const TurnView = memo(function TurnView(props: {
                       <TurnRunningStatus
                         startedAt={turn.startedAt}
                         showSpinner={!toolSurfaceOwnsSpinner}
+                        activityLabel={runningToolLabel}
                       />
                     )
                   )}
@@ -974,7 +977,11 @@ const ELAPSED_TICK_MS = 1_000;
  * rare fallback path where streaming beat the user turn into the transcript;
  * the phrase then stands alone.
  */
-export function TurnRunningStatus(props: { startedAt?: number; showSpinner?: boolean }) {
+export function TurnRunningStatus(props: {
+  startedAt?: number;
+  showSpinner?: boolean;
+  activityLabel?: string;
+}) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const phrases = copy.workingPhrases;
   const { startedAt } = props;
@@ -1016,7 +1023,12 @@ export function TurnRunningStatus(props: { startedAt?: number; showSpinner?: boo
   }, [phrases.length]);
 
   return (
-    <div className="maka-turn-processing" role="status" aria-label={copy.processing} ref={rootRef}>
+    <div
+      className="maka-turn-processing"
+      role="status"
+      aria-label={props.activityLabel ?? copy.processing}
+      ref={rootRef}
+    >
       {props.showSpinner !== false && (
         <Spinner size="md" shade="subtle" aria-hidden="true" />
       )}
@@ -1025,7 +1037,7 @@ export function TurnRunningStatus(props: { startedAt?: number; showSpinner?: boo
           its whole accessible name and the text is decoration. */}
       <span className="maka-turn-indicator-text" aria-hidden="true">
         <span className="maka-turn-working-phrase" data-fading={phraseFading || undefined}>
-          {phrases[phraseIndex] ?? copy.processing}
+          {props.activityLabel ?? phrases[phraseIndex] ?? copy.processing}
         </span>
         {elapsedMs !== undefined && (
           <>

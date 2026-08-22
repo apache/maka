@@ -19,7 +19,13 @@
 
 import { createHash } from 'node:crypto';
 import { jsonSchema } from 'ai';
-import type { McpCallResult, McpToolBinding, McpToolSnapshot } from '@maka/core/mcp';
+import type { ToolActivityKind } from '@maka/core/events';
+import type {
+  McpCallResult,
+  McpToolBinding,
+  McpToolDescriptor,
+  McpToolSnapshot,
+} from '@maka/core/mcp';
 import type { ToolCategory } from '@maka/core/permission';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
@@ -46,6 +52,7 @@ export interface McpToolCallOptions {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly context: McpToolInvocationContext;
+  readonly emitProgress?: (current: number, total: number) => void;
 }
 
 export interface McpToolInvocationContext {
@@ -60,6 +67,9 @@ export interface BuildMcpToolsOptions {
   categoryHint?: ToolCategory;
   recoveryMode?: ToolRecoveryMode;
   executionLocation?: 'host' | 'remote';
+  activityKindForDescriptor?: (
+    descriptor: McpToolDescriptor,
+  ) => ToolActivityKind | undefined;
 }
 
 export function buildMcpTools(
@@ -82,7 +92,7 @@ export function buildMcpTools(
         descriptor.description?.trim() ||
         `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`,
       displayName: descriptor.annotations?.title?.trim() || descriptor.name,
-      activityKind: 'tool',
+      activityKind: options.activityKindForDescriptor?.(descriptor) ?? 'tool',
       // MCP annotations are advisory provider claims, not a security boundary.
       // The trusted composition may select a stricter open-world category;
       // ordinary MCP servers retain the side-effecting network default.
@@ -116,6 +126,7 @@ export function buildMcpTools(
             toolCallId: context.toolCallId,
             cwd: context.cwd,
           },
+          ...(context.emitProgress ? { emitProgress: context.emitProgress } : {}),
         });
       },
       toModelOutput: ({ output }) => mcpResultToModelOutput(output),

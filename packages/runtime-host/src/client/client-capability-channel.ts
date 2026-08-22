@@ -283,6 +283,7 @@ export class ClientCapabilityChannel {
     execute: (options: {
       readonly signal: AbortSignal;
       accept(): Promise<void>;
+      progress(current: number, total: number): void;
     }) => Promise<ReturnType<typeof decodeClientCapabilityResult>>,
   ): Promise<void> {
     let accepted = false;
@@ -305,10 +306,30 @@ export class ClientCapabilityChannel {
       return accepting;
     };
     try {
+      const progress = (current: number, total: number): void => {
+        if (
+          !accepted ||
+          invocation.released ||
+          !Number.isInteger(current) ||
+          !Number.isInteger(total) ||
+          current < 0 ||
+          total < 1 ||
+          current > total
+        ) {
+          return;
+        }
+        void this.#options.write({
+          kind: 'client.capability.progress',
+          invocationId,
+          current,
+          total,
+        }).catch((error: unknown) => this.#options.onFailure(asError(error)));
+      };
       const result = decodeClientCapabilityResult(
         await execute({
           signal: invocation.controller.signal,
           accept,
+          progress,
         }),
       );
       if (invocation.released) return;

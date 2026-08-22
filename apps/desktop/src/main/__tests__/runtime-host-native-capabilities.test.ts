@@ -48,6 +48,7 @@ test('publishes self-described session-affine Browser and Computer Use offers', 
       affinity: offer.affinity,
       toolNames: offer.tools.map((descriptor) => descriptor.name),
       serverIds: offer.tools.map((descriptor) => descriptor.serverId),
+      activityKinds: offer.tools.map((descriptor) => descriptor.activityKind),
     })),
     [
       {
@@ -56,6 +57,7 @@ test('publishes self-described session-affine Browser and Computer Use offers', 
         affinity: 'session',
         toolNames: ['browser_snapshot'],
         serverIds: ['desktop_browser'],
+        activityKinds: [undefined],
       },
       {
         offerId: 'desktop_computer_use',
@@ -63,6 +65,7 @@ test('publishes self-described session-affine Browser and Computer Use offers', 
         affinity: 'session',
         toolNames: ['maka_computer'],
         serverIds: ['desktop_computer_use'],
+        activityKinds: ['computer'],
       },
     ],
   );
@@ -566,6 +569,7 @@ function computerTools(
     ? [
         {
           ...tool('maka_computer', z.object({ wait: z.boolean().optional() }), impl),
+          activityKind: 'computer' as const,
           toModelOutput: ({ output }: { output: unknown }) => {
             const result = output as {
               text: string;

@@ -23,6 +23,7 @@ import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import {
+  decodeClientCapabilityReplaceInput,
   decodeClientFrame,
   decodeHostFrame,
   decodeHostRegistration,
@@ -155,6 +156,12 @@ describe('Runtime Host bootstrap protocol', () => {
     // Epoch 37 still speaks `execute`. Frame decoders now reject it, so such a
     // peer would fail mid-Session rather than at connect.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 37);
+  });
+
+  test('publishes a new compatibility epoch for Client Capability progress', () => {
+    // Epoch 38 peers reject the additional tool descriptor field and progress
+    // frame, so the capability must be negotiated at a newer epoch.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 38);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -1446,6 +1453,75 @@ describe('Runtime Host bootstrap protocol', () => {
         error instanceof RuntimeHostProtocolError && error.code === 'frame_too_large',
     );
   });
+});
+
+test('Client Capability tool descriptors preserve only known activity kinds', () => {
+  const input = {
+    registrationId: 'registration-1',
+    offers: [{
+      offerId: 'desktop_computer_use',
+      version: '0',
+      affinity: 'session',
+      hostPathAccess: 'cwd',
+      label: 'Computer Use',
+      tools: [{
+        serverId: 'desktop_computer_use',
+        name: 'maka_computer',
+        inputSchema: { type: 'object' },
+        activityKind: 'computer',
+      }],
+    }],
+  };
+
+  assert.equal(
+    decodeClientCapabilityReplaceInput(input).offers[0]?.tools[0]?.activityKind,
+    'computer',
+  );
+  assert.throws(
+    () => decodeClientCapabilityReplaceInput({
+      ...input,
+      offers: [{
+        ...input.offers[0],
+        tools: [{ ...input.offers[0]!.tools[0], activityKind: 'desktop' }],
+      }],
+    }),
+    isInvalidFrame,
+  );
+});
+
+test('Client Capability progress frames require bounded monotonic coordinates', () => {
+  assert.deepEqual(
+    decodeClientFrame({
+      kind: 'client.capability.progress',
+      invocationId: 'invocation-1',
+      current: 7,
+      total: 11,
+    }),
+    {
+      kind: 'client.capability.progress',
+      invocationId: 'invocation-1',
+      current: 7,
+      total: 11,
+    },
+  );
+  assert.throws(
+    () => decodeClientFrame({
+      kind: 'client.capability.progress',
+      invocationId: 'invocation-1',
+      current: 12,
+      total: 11,
+    }),
+    isInvalidFrame,
+  );
+  assert.throws(
+    () => decodeClientFrame({
+      kind: 'client.capability.progress',
+      invocationId: 'invocation-1',
+      current: 1,
+      total: 1_025,
+    }),
+    isInvalidFrame,
+  );
 });
 
 function isInvalidFrame(error: unknown): boolean {

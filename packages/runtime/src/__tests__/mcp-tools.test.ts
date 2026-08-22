@@ -243,6 +243,20 @@ test('a trusted composition can apply the Client Capability permission floor and
   });
 });
 
+test('a trusted composition can preserve provider-owned activity semantics', () => {
+  const [tool] = buildMcpTools(
+    fakeProvider(
+      [boundTool(
+        descriptor('desktop_computer_use', 'maka_computer'),
+        binding('desktop-computer-binding'),
+      )],
+      async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    ),
+    { activityKindForDescriptor: () => 'computer' },
+  );
+  assert.equal(tool?.activityKind, 'computer');
+});
+
 test('mcpProxyToolName is stable, provider-safe, and bounded to 64 chars', () => {
   const first = mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20));
   const second = mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20));

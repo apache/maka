@@ -35,6 +35,8 @@ export interface ClientCapabilityProvider {
       readonly signal: AbortSignal;
       /** Await immediately before crossing the provider's irreversible admission cut. */
       accept(): Promise<void>;
+      /** Publish bounded live progress after admission. */
+      progress?(current: number, total: number): void;
     },
   ): Promise<ClientCapabilityCallResult>;
   callService?(

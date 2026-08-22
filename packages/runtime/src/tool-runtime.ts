@@ -192,6 +192,8 @@ export interface MakaToolContext {
   operationId?: string;
   abortSignal: AbortSignal;
   emitOutput: (stream: ToolOutputStream, chunk: string) => void;
+  /** Live-only bounded progress for multi-step tools. */
+  emitProgress?: (current: number, total: number) => void;
   /** Diagnostic-only trace projection. It must never affect tool execution. */
   emitRunTrace?: (
     type:
@@ -1337,6 +1339,26 @@ export class ToolRuntime {
           ...(pushedCallEvent?.operationId ? { operationId: pushedCallEvent.operationId } : {}),
           abortSignal: ctx.abortSignal,
           emitOutput: output.emit,
+          emitProgress: (current, total) => {
+            if (
+              !Number.isInteger(current) ||
+              !Number.isInteger(total) ||
+              current < 0 ||
+              total < 1 ||
+              current > total
+            ) {
+              return;
+            }
+            queue.push({
+              type: 'tool_progress',
+              id: this.input.newId(),
+              turnId,
+              ts: this.input.now(),
+              toolUseId,
+              chunk: `steps:${current}/${total}`,
+              ...activityIdentity,
+            });
+          },
           ...(trace
             ? {
                 emitRunTrace: (

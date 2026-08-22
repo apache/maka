@@ -152,6 +152,7 @@ describe('Host Client Capability coordinator', () => {
                 serverId: 'remote',
                 name: 'inspect',
                 inputSchema: { type: 'object' },
+                activityKind: 'computer',
               },
             ],
           },
@@ -164,6 +165,7 @@ describe('Host Client Capability coordinator', () => {
     const snapshot = coordinator.snapshotForSession('session-a');
     assert.ok(snapshot);
     assert.equal(snapshot.tools[0]?.categoryHint, 'client_capability');
+    assert.equal(snapshot.tools[0]?.activityKind, 'tool');
     await invoke(snapshot.tools[0]);
     assert.ok(isRecord(observedCall));
     assert.equal(Object.hasOwn(observedCall, 'cwd'), false);
@@ -213,6 +215,7 @@ describe('Host Client Capability coordinator', () => {
               serverId: 'remote',
               name: 'inspect',
               inputSchema: { type: 'object' },
+              activityKind: 'computer',
             },
           ],
         },
@@ -228,6 +231,7 @@ describe('Host Client Capability coordinator', () => {
     assert.ok(snapshot);
     const tool = snapshot.tools[0] ?? assert.fail('Expected trusted provider tool');
     assert.equal(tool.categoryHint, 'custom_tool');
+    assert.equal(tool.activityKind, 'computer');
     const result = await tool.impl(
       {},
       {

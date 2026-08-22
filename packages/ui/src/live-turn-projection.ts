@@ -30,7 +30,7 @@ import { applyThinkingComplete, applyThinkingDelta } from './thinking-stream.js'
 import type { StreamingDisplayRedactionState } from './streaming-display-redaction.js';
 import { applyToolOutputChunk } from './tool-output-stream.js';
 
-type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_result_preview' | 'tool_result' }>;
+type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_progress' | 'tool_result_preview' | 'tool_result' }>;
 
 export interface LiveThinkingProjection {
   text: string;
@@ -236,6 +236,7 @@ export function applyLiveTurnEvent(
     && event.type !== 'text_complete'
     && event.type !== 'tool_start'
     && event.type !== 'tool_output_delta'
+    && event.type !== 'tool_progress'
     && event.type !== 'tool_result_preview'
     && event.type !== 'tool_result'
   ) {
@@ -251,6 +252,7 @@ export function applyLiveTurnEvent(
     || event.type === 'text_complete';
   const existingToolStep = event.type === 'tool_start'
     || event.type === 'tool_output_delta'
+    || event.type === 'tool_progress'
     || event.type === 'tool_result_preview'
     || event.type === 'tool_result'
     ? prior.steps.find((candidate) => candidate.tools.some((tool) => tool.toolUseId === event.toolUseId))
@@ -393,6 +395,24 @@ export function applyLiveTurnEvent(
         ? step.tools.map((candidate, index) => index === toolIndex ? tool : candidate)
         : [...step.tools, tool],
     };
+  } else if (event.type === 'tool_progress') {
+    const toolIndex = step.tools.findIndex((candidate) => candidate.toolUseId === event.toolUseId);
+    const base: ToolActivityItem = toolIndex >= 0
+      ? step.tools[toolIndex]!
+      : { toolUseId: event.toolUseId, toolName: 'Tool', status: 'running', args: undefined };
+    const progress = parseStepProgress(event.chunk);
+    const tool: ToolActivityItem = {
+      ...base,
+      ...projectToolActivityIdentity(event),
+      status: isInFlightToolStatus(base.status) ? 'running' : base.status,
+      ...(progress ? { progress } : {}),
+    };
+    nextStep = {
+      ...step,
+      tools: toolIndex >= 0
+        ? step.tools.map((candidate, index) => index === toolIndex ? tool : candidate)
+        : [...step.tools, tool],
+    };
   } else if (event.type === 'tool_result_preview') {
     // Live-only open-facts: materialize into activity.result with empty bulk
     // so ToolTrow can Open without dual storage.
@@ -491,6 +511,20 @@ function liveSteeringMessages(current: LiveTurnProjection): LiveSteeringProjecti
     ...(current.pendingSteering ?? []),
     ...current.steps.flatMap((step) => step.leadingSteering ?? []),
   ];
+}
+
+function parseStepProgress(
+  chunk: Extract<SessionEvent, { type: 'tool_progress' }>['chunk'],
+): ToolActivityItem['progress'] | undefined {
+  if (typeof chunk !== 'string') return undefined;
+  const match = /^steps:(\d+)\/(\d+)$/.exec(chunk);
+  if (!match) return undefined;
+  const current = Number(match[1]);
+  const total = Number(match[2]);
+  if (!Number.isInteger(current) || !Number.isInteger(total) || total < 1 || current > total) {
+    return undefined;
+  }
+  return { current, total };
 }
 
 function replaySafeDelta(
