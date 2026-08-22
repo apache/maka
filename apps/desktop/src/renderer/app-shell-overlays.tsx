@@ -4,6 +4,7 @@ import type { ProviderType } from '@maka/core/llm-connections';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { Spinner } from '@astryxdesign/core/Spinner';
+import { useHotkeys } from '@astryxdesign/core/hooks';
 import { SearchModal, useUiLocale } from '@maka/ui';
 import { KeyboardHelpModal } from './keyboard-help';
 import { CommandPalette } from './command-palette';
@@ -95,6 +96,14 @@ export function AppShellOverlays(props: {
   // #1045: base commands freeze per open/close; session rows stay live on
   // visibleSessions/activeId. run() closures read latest options via ref.
   const commands = useAppShellCommands(paletteOpen, commandOptions);
+  const copyDiagnosticsCommand = commands.find((command) => command.id === 'diag:copy-diagnostics');
+  useHotkeys([
+    {
+      keys: 'mod+shift+d',
+      allowInInputs: true,
+      onPress: () => void copyDiagnosticsCommand?.run(),
+    },
+  ]);
   return (
     <>
       {settingsOpen && (

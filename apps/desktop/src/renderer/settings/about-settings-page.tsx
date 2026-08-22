@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, type ReactNode } from 'react';
 import { Badge, Link, List, ListItem } from '@astryxdesign/core';
+import { Kbd } from '@astryxdesign/core/Kbd';
 import { Sparkles } from '@maka/ui/icons';
 import {
   Banner,
@@ -225,6 +226,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
             onClick={() => void copyDiagnostics()}
             label={copyingDiagnostics ? copy.copying : copy.copyDiagnostics}
           />
+          <Kbd keys="mod+shift+d" />
           <Link href={ISSUE_TRACKER_URL} target="_blank" rel="noreferrer noopener">
             {copy.reportIssueLabel}
           </Link>

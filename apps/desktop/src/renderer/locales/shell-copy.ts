@@ -565,7 +565,7 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: '复制诊断信息',
-    hint: '脱敏日志 · 仅写入剪贴板',
+    hint: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
     group: '诊断',
   },
   'diag:test-network-proxy': {
@@ -661,7 +661,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: 'Copy diagnostics',
-    hint: 'Redacted logs · clipboard only',
+    hint: '⇧⌘D · Redacted logs · clipboard only',
     group: 'Diagnostics',
   },
   'diag:test-network-proxy': {
@@ -1077,6 +1077,10 @@ const SHELL_COPY_BY_LOCALE = {
             { keys: ['?'], description: '打开 / 关闭此快捷键面板' },
             { keys: ['⌘', 'N'], description: '新建任务' },
             { keys: ['⌘', ','], description: '打开设置' },
+            {
+              keys: ['⌘', 'Shift', 'D'],
+              description: '复制当前上下文的诊断信息',
+            },
             { keys: ['Esc'], description: '关闭当前模态框' },
           ],
         },
@@ -1586,6 +1590,10 @@ const SHELL_COPY_BY_LOCALE = {
             { keys: ['?'], description: 'Open or close this shortcuts panel' },
             { keys: ['⌘', 'N'], description: 'Create a new task' },
             { keys: ['⌘', ','], description: 'Open Settings' },
+            {
+              keys: ['⌘', 'Shift', 'D'],
+              description: 'Copy diagnostics for the current context',
+            },
             { keys: ['Esc'], description: 'Close the current dialog' },
           ],
         },
