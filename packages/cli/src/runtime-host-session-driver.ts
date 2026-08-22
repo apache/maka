@@ -1028,6 +1028,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       },
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
       onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn),
+      onToolResult: (turnId) => this.#refreshLiveTranscript(sessionId, turnId),
       onTranscriptReplaced: (turnId, messages) =>
         this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect'),
       onGoalChanged: (goal) => {
@@ -1075,6 +1076,15 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .then((messages) => {
         if (this.#sessionId !== turn.sessionId) return;
         this.#publishTranscriptReplacement(turn.sessionId, turn.turnId, messages, 'terminal');
+      })
+      .catch(() => undefined);
+  }
+
+  #refreshLiveTranscript(sessionId: string, turnId: string): void {
+    void loadCurrentMessages(this.#connection, sessionId)
+      .then((messages) => {
+        if (this.#sessionId !== sessionId) return;
+        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'tool_result');
       })
       .catch(() => undefined);
   }

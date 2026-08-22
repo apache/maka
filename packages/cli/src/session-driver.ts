@@ -176,7 +176,7 @@ export type CreateSessionRequest = Omit<CreateSessionInput, 'permissionMode'> & 
   permissionMode?: PermissionMode;
 };
 
-export type MakaTranscriptReplacementReason = 'terminal' | 'reconnect';
+export type MakaTranscriptReplacementReason = 'terminal' | 'reconnect' | 'tool_result';
 
 export type SessionResumeAvailability = { available: true } | { available: false; reason: string };
 
