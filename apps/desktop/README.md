@@ -80,11 +80,15 @@ assumption of the development workflow — a separate matter from who may claim
 the bundle's identity.
 
 The default profile is `~/Library/Application Support/Maka Dev`, which keeps
-development isolated from the packaged Maka profile and is shared by the
-repository CLI (`npm run cli:dev`), the plain dev build, and the TCC dev build;
-an explicit `--user-data-dir` takes precedence. Shutdown matches this worktree's
-own bundle path, so a concurrent worktree's app survives — and then holds the
-single-instance lock for the shared profile. Because that lock is keyed
+development isolated from the packaged Maka profile and is shared by the plain
+dev build and the TCC dev build; an explicit `--user-data-dir` takes
+precedence. (The README previously also claimed the repository CLI
+(`npm run cli:dev`) shares it — unverified; the CLI entry does not go through
+the desktop dev launcher, so this claim is dropped until verified.) Shutdown
+matches this worktree's own processes — the TCC bundle, the npm shim, and the
+resolved Electron it spawns, all anchored to this worktree's path — so a
+concurrent worktree's app survives, and then holds the single-instance lock
+for the shared profile. Because that lock is keyed
 on the profile, a launch first reclaims any app left over from a hard-killed
 session of THIS worktree — otherwise the stale app would absorb the new launch
 and keep showing its old, dead Vite URL. A launch does NOT reclaim another
