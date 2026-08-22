@@ -104,3 +104,69 @@ test('wide settings gutters scroll the whole main pane', async ({ window: page }
   await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await expect(content).toBeVisible();
 });
+
+test('reopening settings keeps the last-ready General page stable while refreshing', async ({
+  window: page,
+}) => {
+  await page.getByRole('button', { name: '设置' }).click();
+  const settings = page.locator('.settingsSurface');
+  await page.getByRole('button', { name: '通用', exact: true }).click();
+  await expect(settings.getByRole('textbox', { name: '助手语气偏好' })).toBeEnabled();
+  await expect(settings.getByRole('button', { name: '默认模型' })).toBeEnabled();
+
+  await page.keyboard.press('Escape');
+  await expect(settings).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '设置' })).toBeVisible();
+
+  await page.evaluate(() => {
+    const state = {
+      sawLoadingWarning: false,
+      sawGeneralWithoutReadyHostControls: false,
+    };
+    const inspect = () => {
+      const surface = document.querySelector('.settingsSurface');
+      const main = surface?.querySelector('main, [role="main"]');
+      if (!surface || !main) return;
+      state.sawLoadingWarning ||= Array.from(
+        surface.querySelectorAll('[role="alert"]'),
+      ).some((banner) => banner.textContent?.includes('正在加载设置') === true);
+      const defaultModelReady = Array.from(main.querySelectorAll('*')).some(
+        (element) =>
+          element.children.length === 0 &&
+          element.textContent?.trim() === '默认模型' &&
+          Boolean(element.closest('.astryx-item')?.querySelector('button')),
+      );
+      state.sawGeneralWithoutReadyHostControls ||=
+        main.querySelector('textarea') === null || !defaultModelReady;
+    };
+    const observer = new MutationObserver(inspect);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    Object.assign(window, {
+      __makaSettingsReopenProbe: {
+        finish() {
+          inspect();
+          observer.disconnect();
+          return state;
+        },
+      },
+    });
+  });
+
+  await page.getByRole('button', { name: '设置' }).click();
+  await expect(settings.getByRole('textbox', { name: '助手语气偏好' })).toBeEnabled();
+  await expect(settings.getByRole('button', { name: '默认模型' })).toBeEnabled();
+
+  const probe = await page.evaluate(() => {
+    const target = window as typeof window & {
+      __makaSettingsReopenProbe: {
+        finish(): {
+          sawLoadingWarning: boolean;
+          sawGeneralWithoutReadyHostControls: boolean;
+        };
+      };
+    };
+    return target.__makaSettingsReopenProbe.finish();
+  });
+  expect(probe.sawLoadingWarning).toBe(false);
+  expect(probe.sawGeneralWithoutReadyHostControls).toBe(false);
+});

@@ -87,7 +87,7 @@ function backTarget(route: PanelRoute): PanelRoute {
   return { kind: 'list' };
 }
 
-export function ProvidersPanel({ bridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCreateProviderConsumed }: {
+export function ProvidersPanel({ bridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCatalogConsumed, onInitialCreateProviderConsumed }: {
   bridge: ConnectionsBridge;
   initialPage?: 'connections' | 'catalog';
   /**
@@ -100,6 +100,8 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
    * onInitialCreateProviderConsumed.
    */
   initialCreateProviderType?: ProviderType;
+  /** Called once the catalog level has consumed the one-shot landing intent. */
+  onInitialCatalogConsumed?: () => void;
   /** Called once the setup level has been entered. */
   onInitialCreateProviderConsumed?: () => void;
 }) {
@@ -159,7 +161,8 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     if (loading || initialPage !== 'catalog' || initialCatalogOpenedRef.current) return;
     initialCatalogOpenedRef.current = true;
     setRoute({ kind: 'catalog' });
-  }, [initialPage, loading]);
+    onInitialCatalogConsumed?.();
+  }, [initialPage, loading, onInitialCatalogConsumed]);
 
   const initialConnectionDetailOpenedRef = useRef(false);
   useEffect(() => {

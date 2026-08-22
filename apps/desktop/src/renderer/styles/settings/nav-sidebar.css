@@ -153,6 +153,20 @@
   background: transparent;
 }
 
+/* Renderer-memory snapshots keep a Runtime Host page visually stable while
+   its authority is revalidated. `inert` fences every Host mutation during
+   that first verification; display: contents keeps the page grid unchanged. */
+.settingsRuntimeHostInteractionBoundary {
+  display: contents;
+}
+
+/* `inert` is an interaction contract, not a visual state. Cached Host pages
+   otherwise look fully actionable while their fresh authority is still being
+   verified, so mute the existing page without adding layout or a flash banner. */
+.settingsRuntimeHostInteractionBoundary[inert] > * {
+  opacity: var(--opacity-disabled);
+}
+
 /* Nested `.settingsPageStack` (merged pages like 外观 stack two
    sub-pages, each wrapping in their own SettingsPage):
    the inner one just passes through. */
