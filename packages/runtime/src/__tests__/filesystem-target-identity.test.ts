@@ -29,7 +29,7 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 
 function requestFor(
   operation: FilesystemWorkerRequest['operation'],
-  expectedTarget: FilesystemWorkerTarget,
+  expectedTarget: Omit<FilesystemWorkerTarget, 't0'>,
 ): FilesystemWorkerRequest {
   return {
     version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -40,7 +40,12 @@ function requestFor(
         entries: [{ path: expectedTarget.enforcementPath, access: 'write', scope: 'exact' }],
       },
     },
-    expectedTarget,
+    expectedTarget: {
+      ...expectedTarget,
+      // These tests always CAS against a captured identity or an approved
+      // missing target; neither is an unchecked caller.
+      t0: expectedTarget.identity ? 'existing' : 'missing',
+    },
   };
 }
 

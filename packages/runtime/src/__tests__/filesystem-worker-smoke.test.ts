@@ -46,6 +46,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       operation: { kind: 'write', path: insidePath, content: 'inside-ok' },
       cwd: workspace,
       mode: 'ask',
+    expectedIdentity: 'unchecked',
     });
     assert.equal(await readFile(insidePath, 'utf8'), 'inside-ok');
 
@@ -54,6 +55,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
         operation: { kind: 'write', path: outsidePath, content: 'blocked' },
         cwd: workspace,
         mode: 'ask',
+      expectedIdentity: 'unchecked',
       }),
       (error: unknown) =>
         error instanceof FilesystemWorkerClientError && error.reason === 'path_denied',
@@ -72,6 +74,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       },
       cwd: workspace,
       mode: 'ask',
+    expectedIdentity: 'unchecked',
     });
 
     assert.equal(await readFile(target, 'utf8'), 'created');
@@ -107,6 +110,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
         cwd: workspace,
         mode: 'ask',
         executionBoundary,
+      expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -124,6 +128,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       cwd: workspace,
       mode: 'ask',
       executionBoundary,
+    expectedIdentity: 'unchecked',
     });
     assert.equal(await readFile(allowedPath, 'utf8'), 'outside-ok');
   });
@@ -138,6 +143,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       operation: grepOperation(sourceFile, 'healthSignal'),
       cwd: workspace,
       mode: 'ask',
+    expectedIdentity: 'unchecked',
     });
     assert.equal(fileResult.kind, 'grep');
     if (fileResult.kind === 'grep') {
@@ -149,6 +155,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       operation: grepOperation(sourceDirectory, 'healthSignal'),
       cwd: workspace,
       mode: 'ask',
+    expectedIdentity: 'unchecked',
     });
     assert.equal(directoryResult.kind, 'grep');
     if (directoryResult.kind === 'grep') {
@@ -160,6 +167,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       operation: grepOperation(sourceDirectory, 'does-not-exist'),
       cwd: workspace,
       mode: 'ask',
+    expectedIdentity: 'unchecked',
     });
     assert.deepEqual(emptyResult, { kind: 'grep', matches: [] });
   });

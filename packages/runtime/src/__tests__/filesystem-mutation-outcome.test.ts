@@ -17,6 +17,7 @@ import {
   type FilesystemWorkerClient,
   type FilesystemWorkerClientErrorReason,
   type FilesystemWorkerExecuteInput,
+  type FilesystemWorkerExpectedIdentity,
 } from '../filesystem-worker/client.js';
 import type { FilesystemWorkerResult } from '../filesystem-worker/protocol.js';
 import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
@@ -216,7 +217,7 @@ describe('filesystem mutation T0 identity capture (queue-window closure)', () =>
       releaseFirst = resolve;
     });
     let calls = 0;
-    let queuedIdentity: { dev: string; ino: string } | undefined;
+    let queuedIdentity: FilesystemWorkerExpectedIdentity | undefined;
     const gatedWorker: {
       execute: (input: FilesystemWorkerExecuteInput) => Promise<FilesystemWorkerResult>;
     } = {
@@ -255,9 +256,12 @@ describe('filesystem mutation T0 identity capture (queue-window closure)', () =>
     releaseFirst();
     await Promise.all([first, second]);
 
-    assert.ok(queuedIdentity, 'the queued mutation should have dispatched to the worker');
+    assert.ok(
+      queuedIdentity && typeof queuedIdentity !== 'string',
+      'the queued mutation should have dispatched with the captured identity',
+    );
     assert.equal(
-      queuedIdentity.ino,
+      (queuedIdentity as { dev: string; ino: string }).ino,
       String(original.ino),
       'identity must be the inode captured at lock acquisition (before the replacement); a T1 capture would sample the replacement',
     );

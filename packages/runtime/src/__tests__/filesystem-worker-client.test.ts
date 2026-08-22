@@ -101,6 +101,7 @@ describe('filesystem worker client permission snapshots', () => {
           cwd: workspace,
           executionBoundary: { kind, revision: 1 },
           mode: 'execute',
+          expectedIdentity: 'unchecked',
         }),
         (error: unknown) => {
           assert.ok(error instanceof FilesystemWorkerClientError);
@@ -129,6 +130,7 @@ describe('filesystem worker client permission snapshots', () => {
           createWorkspaceWritePermissionProfile(),
           0,
         ),
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -154,6 +156,7 @@ describe('filesystem worker client permission snapshots', () => {
         cwd: workspace,
         mode: 'execute',
         permissionProfile: createReadOnlyPermissionProfile(),
+        expectedIdentity: 'unchecked',
       }),
       isPathDenied,
     );
@@ -183,6 +186,7 @@ describe('filesystem worker client permission snapshots', () => {
         cwd: workspace,
         mode: 'execute',
         permissionProfile: profile,
+        expectedIdentity: 'unchecked',
       }),
       isPathDenied,
     );
@@ -210,6 +214,7 @@ describe('filesystem worker client permission snapshots', () => {
         operation: { kind: 'read', path: target },
         cwd: workspace,
         mode: 'explore',
+        expectedIdentity: 'unchecked',
       }),
       isPathDenied,
     );
@@ -218,6 +223,7 @@ describe('filesystem worker client permission snapshots', () => {
       cwd: workspace,
       mode: 'explore',
       permissionProfile: profile,
+      expectedIdentity: 'unchecked',
     });
 
     assert.deepEqual(result, { kind: 'read', content: 'worker-content' });
@@ -243,6 +249,7 @@ describe('filesystem worker client Grep target scope', () => {
       operation: grepOperation(target),
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
 
     assert.deepEqual(result, { kind: 'grep', matches: ['file.ts:1:value'] });
@@ -259,6 +266,7 @@ describe('filesystem worker client Grep target scope', () => {
       operation: grepOperation(directory),
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
 
     assert.equal(requests[0]?.expectedTarget.scope, 'subtree');
@@ -283,6 +291,7 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
       operation: { kind: 'write', path: target, content: 'target' },
       cwd: workspace,
       mode: 'execute',
+      expectedIdentity: 'unchecked',
     });
 
     const transform = transforms[0];
@@ -315,6 +324,7 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
         operation: grepOperation(target),
         cwd: workspace,
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -338,6 +348,7 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
         operation: grepOperation(target),
         cwd: workspace,
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -365,6 +376,7 @@ describe('filesystem worker Linux path context', () => {
         operation: { kind: 'glob', path: target, pattern: '*.ts', limit: 20 },
         cwd: workspace,
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -385,6 +397,7 @@ describe('filesystem worker Linux path context', () => {
       operation: { kind: 'read', path: target },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
 
     const processInput = processInputs[0];
@@ -407,6 +420,8 @@ describe('filesystem worker Linux path context', () => {
       operation: { kind: 'write', path: target, content: 'new' },
       cwd: workspace,
       mode: 'ask',
+      // T0 observed no target (a create), so the T0 marker is 'missing'.
+      expectedIdentity: 'missing',
     });
 
     const processInput = processInputs[0];
@@ -621,6 +636,7 @@ describe('filesystem worker client dispatch classification', () => {
         operation: { kind: 'write', path: '/tmp/maka-dispatch-incomplete.txt', content: 'x' },
         cwd: '/tmp',
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -638,6 +654,7 @@ describe('filesystem worker client dispatch classification', () => {
         operation: { kind: 'write', path: '/tmp/maka-dispatch-spawn.txt', content: 'x' },
         cwd: '/tmp',
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -656,6 +673,7 @@ describe('filesystem worker client dispatch classification', () => {
         operation: { kind: 'write', path: '/tmp/maka-dispatch-noflag.txt', content: 'x' },
         cwd: '/tmp',
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -757,6 +775,9 @@ describe('filesystem worker client dispatch classification', () => {
         operation: { kind: 'write', path: target, content: 'new' },
         cwd: workspace,
         mode: 'ask',
+        // T0 approved the target as missing; it appeared by T1 — the
+        // "created while queued" race, which must stay path_changed.
+        expectedIdentity: 'missing',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);

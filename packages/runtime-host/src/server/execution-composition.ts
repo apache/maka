@@ -1631,7 +1631,9 @@ function adaptManagedWorkspaceFilesystemWorker(
 ): ManagedWorkspaceFilesystemWorker {
   return {
     async execute(input) {
-      const result = await worker.execute(input);
+      // Read-only operations never participate in CAS; the adapter says so
+      // explicitly (#3484) instead of relying on an absent optional field.
+      const result = await worker.execute({ ...input, expectedIdentity: 'unchecked' });
       switch (result.kind) {
         case 'read':
         case 'read_image':

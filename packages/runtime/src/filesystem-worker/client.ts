@@ -50,6 +50,26 @@ export interface FilesystemWorkerClientInput {
   platform?: SandboxPlatform;
 }
 
+/**
+ * What the caller observed about the operation target at lock acquisition
+ * (T0). Required, so every caller must decide explicitly which CAS contract it
+ * is participating in — an absent field is no longer a silently accepted "no
+ * CAS" that a queue window can slip through (#3484).
+ *
+ * - `{ dev, ino }`: T0 observed an existing target; the worker compare-and-
+ *   swaps this against the on-disk inode at T1.
+ * - `'missing'`: T0 observed no target (a create). If the target exists by T1,
+ *   something created it while this call waited — writing would clobber
+ *   content this call never saw, so the operation fails with `path_changed`.
+ * - `'unchecked'`: the caller does not participate in CAS (no T0 snapshot,
+ *   e.g. a verification script or a read). Writes proceed without an identity
+ *   check; use deliberately, never as a default for mutations.
+ */
+export type FilesystemWorkerExpectedIdentity =
+  | { readonly dev: string; readonly ino: string }
+  | 'missing'
+  | 'unchecked';
+
 export interface FilesystemWorkerExecuteInput {
   operation: FilesystemWorkerClientOperation;
   cwd: string;
@@ -58,13 +78,8 @@ export interface FilesystemWorkerExecuteInput {
   /** Explicit embedding policy. Mode-based defaults are compiled only when omitted. */
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
-  /**
-   * The target identity captured at lock acquisition (T0), passed in by the
-   * caller so the client does not re-derive it after acquiring the lock (T1).
-   * The worker compare-and-swaps this against the on-disk inode. Undefined for
-   * a missing target (create) or when the host-local backend is in use.
-   */
-  expectedIdentity?: { dev: string; ino: string };
+  /** Required: the caller's T0 observation, see `FilesystemWorkerExpectedIdentity`. */
+  expectedIdentity: FilesystemWorkerExpectedIdentity;
 }
 
 export type FilesystemWorkerClientErrorReason =
@@ -175,21 +190,25 @@ export class FilesystemWorkerClient {
 
     const access = operationAccess(parsedOperation.data.kind);
     const entryMode = operationUsesDirectoryEntry(parsedOperation.data);
-    const target: FilesystemWorkerTarget & { writableAncestor?: string } = await (entryMode
-      ? normalizeDirectoryEntryTarget({
-          path: parsedOperation.data.path,
-          access,
-          cwd: canonicalCwd,
-        })
-      : normalizeSandboxBoundaryPath({
-          path: parsedOperation.data.path,
-          access,
-          scope: operationScope(parsedOperation.data.kind),
-          cwd: canonicalCwd,
-        })
-    ).catch(() => {
-      throw clientError('invalid_operation', 'validation', requestId);
-    });
+    // t0 is derived below from the caller's explicit expectedIdentity and
+    // added to the wire request; the normalised target itself has no T0
+    // marker, so the declared type omits it.
+    const target: Omit<FilesystemWorkerTarget, 't0'> & { writableAncestor?: string } =
+      await (entryMode
+        ? normalizeDirectoryEntryTarget({
+            path: parsedOperation.data.path,
+            access,
+            cwd: canonicalCwd,
+          })
+        : normalizeSandboxBoundaryPath({
+            path: parsedOperation.data.path,
+            access,
+            scope: operationScope(parsedOperation.data.kind),
+            cwd: canonicalCwd,
+          })
+      ).catch(() => {
+        throw clientError('invalid_operation', 'validation', requestId);
+      });
     // The identity was captured by the caller at lock acquisition (T0) and
     // passed in as expectedIdentity. Do NOT re-derive it here: re-deriving at
     // this point (after the lock is held) would sample the post-queue inode,
@@ -203,14 +222,18 @@ export class FilesystemWorkerClient {
     //   mutation proceed as a fresh exclusive create ("delete then rewrite"
     //   stays a clean apply; a rename-swap is NOT this case — it leaves an
     //   existing inode and is caught by the identity comparison instead).
-    // - T0 missing (no identity) but T1 existing: the target was created while
+    // - T0 missing ('missing') but T1 existing: the target was created while
     //   this call waited. Writing would clobber content this call never saw,
     //   so fail with a meaningful path_changed (never invalid_request).
+    // - 'unchecked': the caller does not participate in CAS. The target may
+    //   be present at T1 without this being a race — the caller simply has no
+    //   T0 snapshot, so nothing can be compared (#3484).
+    const targetExistsAtT1 = target.targetType !== 'missing';
     const identity =
-      input.expectedIdentity && target.targetType !== 'missing'
+      targetExistsAtT1 && typeof input.expectedIdentity === 'object'
         ? input.expectedIdentity
         : undefined;
-    if (!identity && target.targetType !== 'missing' && access === 'write') {
+    if (targetExistsAtT1 && access === 'write' && input.expectedIdentity === 'missing') {
       throw clientError(
         'path_changed',
         'validation',
@@ -297,6 +320,15 @@ export class FilesystemWorkerClient {
         access,
         scope: target.scope,
         targetType: target.targetType,
+        // What T0 observed, carried explicitly so the worker can tell "created
+        // while queued" (missing) from "caller has no CAS snapshot"
+        // (unchecked) — the two were conflated on this wire and cost #3484.
+        t0:
+          input.expectedIdentity === 'unchecked'
+            ? 'unchecked'
+            : input.expectedIdentity === 'missing'
+              ? 'missing'
+              : 'existing',
         ...(identity ? { identity } : {}),
       },
     } as const;
@@ -641,7 +673,7 @@ async function normalizeDirectoryEntryTarget(input: {
   path: string;
   cwd: string;
   access: 'read' | 'write';
-}): Promise<FilesystemWorkerTarget & { writableAncestor?: string }> {
+}): Promise<Omit<FilesystemWorkerTarget, 't0'> & { writableAncestor?: string }> {
   const target = await resolveCanonicalDirectoryEntryTarget(input.cwd, input.path);
   let targetType: FilesystemWorkerTarget['targetType'];
   try {

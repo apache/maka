@@ -160,6 +160,7 @@ export async function executeFilesystemOperation(
       const handle = await openStableTarget({
         path,
         approvedIdentity: expectedTarget?.identity,
+        targetType: expectedTarget?.targetType,
       });
       try {
         // Read-before-write (for the diff): only through the pinned descriptor.
@@ -226,6 +227,7 @@ export async function executeFilesystemOperation(
       const handle = await openStableTarget({
         path,
         approvedIdentity: expectedTarget?.identity,
+        targetType: expectedTarget?.targetType,
       });
       try {
         await readModifyWriteThroughHandle(handle, (existing) =>
@@ -249,6 +251,7 @@ export async function executeFilesystemOperation(
       const handle = await openStableTarget({
         path,
         approvedIdentity: expectedTarget?.identity,
+        targetType: expectedTarget?.targetType,
       });
       try {
         const content = await handle.readFile('utf8');
@@ -295,6 +298,7 @@ export async function executeFilesystemOperation(
       const handle = await openStableTarget({
         path,
         approvedIdentity: expectedTarget?.identity,
+        targetType: expectedTarget?.targetType,
       });
       try {
         const original = await handle.readFile('utf8');
@@ -485,16 +489,28 @@ async function assertTargetUnchanged(
   // while the call waited for the lock has a different inode even when its
   // canonical path and type still match.
   //
-  // A non-missing WRITE target MUST carry an identity — if it does not, the
-  // CAS is silently skipped and the entire defence collapses. Fail loudly
-  // rather than degrading to "no check", so a buggy caller that omits the
-  // identity is caught immediately instead of leaving the window open. Reads
-  // are exempt: they do not mutate, so there is no queue window to close.
-  if (access === 'write' && expected.targetType !== 'missing' && !expected.identity) {
-    throw operationError(
-      'invalid_request',
-      'A non-missing filesystem target must carry an identity for CAS.',
-    );
+  // The T0 marker on the wire distinguishes the two ways a non-missing WRITE
+  // target can arrive without a concrete identity (#3484):
+  // - t0 'missing': T0 saw no target but T1 does — something created it while
+  //   this call waited. Writing would clobber content the caller never saw.
+  // - t0 'existing' without identity: a buggy caller that captured a T0 but
+  //   failed to send it — fail loudly rather than degrading to "no check", so
+  //   the queue-window defence cannot silently collapse.
+  // - t0 'unchecked': the caller deliberately does not participate in CAS.
+  //   Reads never mutate and are exempt either way.
+  if (access === 'write' && expected.targetType !== 'missing') {
+    if (expected.t0 === 'missing') {
+      throw operationError(
+        'path_changed',
+        'The target was created while this call waited for the lock; re-read before writing.',
+      );
+    }
+    if (expected.t0 === 'existing' && !expected.identity) {
+      throw operationError(
+        'invalid_request',
+        'A non-missing filesystem target must carry an identity for CAS.',
+      );
+    }
   }
   if (expected.identity) {
     const metadata = noFollowFinalSymlink

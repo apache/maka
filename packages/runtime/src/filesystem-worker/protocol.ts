@@ -6,7 +6,7 @@ import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 // inode that was authorised at lock acquisition instead of only the path
 // string. The identity is carried as strings because bigint cannot cross the
 // JSON protocol boundary.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 6 as const;
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 7 as const;
 
 const path = z.string().min(1).max(4096);
 const cwd = z.string().min(1).max(4096);
@@ -53,11 +53,15 @@ export const FilesystemWorkerTargetSchema = z
     access: z.enum(['read', 'write']),
     scope: z.enum(['exact', 'subtree']),
     targetType: z.enum(['file', 'directory', 'symlink', 'other', 'missing']),
-    // Captured at lock acquisition (T0). Present (and required) for every
-    // targetType except 'missing'. The contract module (FilesystemTargetDescriptor)
-    // models this as a discriminated union; the wire schema keeps the field
-    // optional so it can omit it for missing targets, and the client that
-    // builds the request enforces the invariant.
+    // What the caller observed about the target at lock acquisition (T0):
+    // - 'existing' — an identity was captured and must be CAS'd at T1.
+    // - 'missing'  — T0 saw no target; a T1-existing target was created while
+    //   the call waited and must fail.
+    // - 'unchecked' — the caller does not participate in CAS (no T0 snapshot);
+    //   the write proceeds without an identity comparison.
+    t0: z.enum(['existing', 'missing', 'unchecked']),
+    // The concrete T0 identity (dev/ino). Present exactly when t0 is
+    // 'existing'; the client building the request enforces the invariant.
     identity: FilesystemTargetIdentitySchema.optional(),
   })
   .strict()
@@ -66,6 +70,12 @@ export const FilesystemWorkerTargetSchema = z
       context.addIssue({
         code: 'custom',
         message: 'A missing target cannot carry an identity.',
+      });
+    }
+    if (target.t0 !== 'existing' && target.identity !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'An identity requires t0 to be "existing".',
       });
     }
   });

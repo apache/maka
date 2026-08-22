@@ -215,7 +215,16 @@ export function createBoundaryFilesystemExecutor(
       mode: call.permissionMode ?? 'ask',
       ...(input.permissionProfile ? { permissionProfile: input.permissionProfile } : {}),
       ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
-      ...(expectedIdentity ? { expectedIdentity } : {}),
+      // The worker client now requires an explicit T0 marker (#3484): a
+      // mutation carries its captured identity, or 'missing' when T0 saw no
+      // target; a read never participates in CAS and says so. The kind check
+      // mirrors `mutates` for the backend input union.
+      expectedIdentity:
+        call.operation.kind === 'write' ||
+        call.operation.kind === 'edit' ||
+        call.operation.kind === 'format_json'
+          ? (expectedIdentity ?? 'missing')
+          : 'unchecked',
     });
     if (result.kind === 'read_image') {
       return {
