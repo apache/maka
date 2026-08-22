@@ -280,7 +280,6 @@ function ShellFrame(props: {
       data-sidebar-state={props.sidebarCollapsed ? 'collapsed' : 'expanded'}
       style={
         {
-          height: '100%',
           minHeight: 640,
           /* Same publication point as production, for the same reason as
              `data-sidebar-state` above: the titlebar's first grid track is a
