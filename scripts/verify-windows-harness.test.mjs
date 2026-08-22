@@ -12,6 +12,7 @@ import {
   diffTreeManifests,
   directoryTreeManifest,
   rendererLayoutMatchesViewport,
+  rendererViewportMatchesNativeClient,
   runCommand,
   waitForDevToolsPort,
   waitForUsableRenderer,
@@ -37,6 +38,7 @@ const delay = (milliseconds) =>
 
 describe('rendererLayoutMatchesViewport', () => {
   const viewportLayout = () => ({
+    devicePixelRatio: 1,
     innerWidth: 1920,
     innerHeight: 1040,
     outerWidth: 1920,
@@ -62,6 +64,28 @@ describe('rendererLayoutMatchesViewport', () => {
     layout.root.height = 820;
     layout.appFrame.height = 820;
     assert.equal(rendererLayoutMatchesViewport(layout), false);
+  });
+
+  it('matches the renderer viewport to native client pixels at the reported scale', () => {
+    const layout = viewportLayout();
+    layout.devicePixelRatio = 1.25;
+    assert.equal(
+      rendererViewportMatchesNativeClient(layout, {
+        clientWidth: 2400,
+        clientHeight: 1300,
+      }),
+      true,
+    );
+  });
+
+  it('rejects a renderer viewport that is stale against the native client', () => {
+    assert.equal(
+      rendererViewportMatchesNativeClient(viewportLayout(), {
+        clientWidth: 1920,
+        clientHeight: 900,
+      }),
+      false,
+    );
   });
 });
 

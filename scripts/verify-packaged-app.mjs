@@ -270,66 +270,6 @@ export async function evaluateInRenderer(
   }
 }
 
-/** Send one command to a CDP target and return the command result. */
-export async function sendCdpCommand(
-  webSocketDebuggerUrl,
-  method,
-  params = {},
-  { timeoutMs = 10_000 } = {},
-) {
-  if (typeof WebSocket !== 'function') {
-    throw new Error('The release verifier requires Node.js WebSocket support.');
-  }
-  const socket = new WebSocket(webSocketDebuggerUrl);
-  try {
-    await new Promise((resolvePromise, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`CDP WebSocket did not open within ${timeoutMs}ms.`));
-      }, timeoutMs);
-      socket.addEventListener(
-        'open',
-        () => {
-          clearTimeout(timeout);
-          resolvePromise();
-        },
-        { once: true },
-      );
-      socket.addEventListener(
-        'error',
-        (event) => {
-          clearTimeout(timeout);
-          reject(event.error ?? new Error('CDP WebSocket connection failed.'));
-        },
-        { once: true },
-      );
-    });
-  } catch (error) {
-    socket.close();
-    throw error;
-  }
-
-  try {
-    return await new Promise((resolvePromise, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`CDP ${method} timed out.`));
-      }, timeoutMs);
-      socket.addEventListener('message', (event) => {
-        const message = JSON.parse(String(event.data));
-        if (message.id !== 1) return;
-        clearTimeout(timeout);
-        if (message.error) {
-          reject(new Error(`${method}: ${message.error.message}`));
-          return;
-        }
-        resolvePromise(message.result);
-      });
-      socket.send(JSON.stringify({ id: 1, method, params }));
-    });
-  } finally {
-    socket.close();
-  }
-}
-
 export const RENDERER_STATE_EXPRESSION = `({
   readyState: document.readyState,
   hasBridge: Boolean(window.maka),
@@ -408,6 +348,7 @@ const WINDOW_LAYOUT_EXPRESSION = `(async () => {
     };
   };
   return {
+    devicePixelRatio: window.devicePixelRatio,
     innerWidth: window.innerWidth,
     innerHeight: window.innerHeight,
     outerWidth: window.outerWidth,
@@ -445,36 +386,101 @@ export function rendererLayoutMatchesViewport(layout) {
   return true;
 }
 
-async function browserDebuggerUrl(port) {
-  const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
-    signal: AbortSignal.timeout(2_000),
-  });
-  if (!response.ok) {
-    throw new Error(`CDP browser target returned HTTP ${response.status}.`);
-  }
-  const version = await response.json();
-  if (!version.webSocketDebuggerUrl) {
-    throw new Error('CDP browser target did not expose a WebSocket URL.');
-  }
-  return version.webSocketDebuggerUrl;
+export function rendererViewportMatchesNativeClient(layout, nativeWindow) {
+  if (!rendererLayoutMatchesViewport(layout)) return false;
+  if (!Number.isFinite(layout.devicePixelRatio) || layout.devicePixelRatio <= 0) return false;
+  if (!Number.isFinite(nativeWindow?.clientWidth) || nativeWindow.clientWidth <= 0) return false;
+  if (!Number.isFinite(nativeWindow?.clientHeight) || nativeWindow.clientHeight <= 0) return false;
+  const widthScale = nativeWindow.clientWidth / layout.innerWidth;
+  const heightScale = nativeWindow.clientHeight / layout.innerHeight;
+  return (
+    dimensionsMatch(widthScale, heightScale, 0.01) &&
+    dimensionsMatch(widthScale, layout.devicePixelRatio, 0.05)
+  );
 }
 
-async function captureWindowLayout(browserUrl, rendererUrl, windowId) {
-  const [{ bounds }, layout] = await Promise.all([
-    sendCdpCommand(browserUrl, 'Browser.getWindowBounds', { windowId }),
+function windowsWindowProbeScript(processId, nextWindowState) {
+  const showCommand =
+    nextWindowState === undefined
+      ? ''
+      : `[void][MakaNativeWindow]::ShowWindowAsync($handle, ${
+          nextWindowState === 'maximized' ? 3 : 9
+        })`;
+  return String.raw`
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class MakaNativeWindow {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT {
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+  }
+
+  [DllImport("user32.dll")]
+  public static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+
+  [DllImport("user32.dll")]
+  public static extern bool IsZoomed(IntPtr hWnd);
+
+  [DllImport("user32.dll")]
+  public static extern bool ShowWindowAsync(IntPtr hWnd, int command);
+}
+'@
+$process = Get-Process -Id ${processId} -ErrorAction Stop
+$process.Refresh()
+$handle = $process.MainWindowHandle
+if ($handle -eq [IntPtr]::Zero) {
+  throw 'Packaged Maka has no main window handle.'
+}
+${showCommand}
+$rect = New-Object MakaNativeWindow+RECT
+if (-not [MakaNativeWindow]::GetClientRect($handle, [ref]$rect)) {
+  throw 'GetClientRect failed for packaged Maka.'
+}
+$windowState = if ([MakaNativeWindow]::IsZoomed($handle)) { 'maximized' } else { 'normal' }
+[pscustomobject]@{
+  windowState = $windowState
+  clientWidth = $rect.Right - $rect.Left
+  clientHeight = $rect.Bottom - $rect.Top
+} | ConvertTo-Json -Compress
+`;
+}
+
+async function readWindowsNativeWindow(processId, nextWindowState) {
+  const { stdout } = await runCommand(
+    'powershell',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      windowsWindowProbeScript(processId, nextWindowState),
+    ],
+    { timeoutMs: 10_000 },
+  );
+  const json = stdout.trim().split(/\r?\n/u).at(-1);
+  if (!json) throw new Error('Windows native window probe returned no state.');
+  return JSON.parse(json);
+}
+
+async function captureWindowLayout(rendererUrl, processId) {
+  const [nativeWindow, layout] = await Promise.all([
+    readWindowsNativeWindow(processId),
     evaluateInRenderer(rendererUrl, WINDOW_LAYOUT_EXPRESSION, {
       awaitPromise: true,
       timeoutMs: 10_000,
     }),
   ]);
-  return { bounds, layout };
+  return { nativeWindow, layout };
 }
 
 async function waitForWindowLayout(
-  browserUrl,
   rendererUrl,
   child,
-  windowId,
   expectedWindowState,
   { timeoutMs = 30_000 } = {},
 ) {
@@ -486,11 +492,11 @@ async function waitForWindowLayout(
       throw new Error(`Packaged Maka exited during the ${expectedWindowState} transition.`);
     }
     try {
-      observed = await captureWindowLayout(browserUrl, rendererUrl, windowId);
+      observed = await captureWindowLayout(rendererUrl, child.pid);
       lastError = undefined;
       if (
-        observed.bounds?.windowState === expectedWindowState &&
-        rendererLayoutMatchesViewport(observed.layout)
+        observed.nativeWindow?.windowState === expectedWindowState &&
+        rendererViewportMatchesNativeClient(observed.layout, observed.nativeWindow)
       ) {
         return observed;
       }
@@ -506,36 +512,15 @@ async function waitForWindowLayout(
   );
 }
 
-export async function exercisePackagedRendererMaximizeRestore(browserUrl, rendererTarget, child) {
+export async function exercisePackagedRendererMaximizeRestore(rendererTarget, child) {
   const rendererUrl = rendererTarget.webSocketDebuggerUrl;
-  const { windowId } = await sendCdpCommand(browserUrl, 'Browser.getWindowForTarget', {
-    targetId: rendererTarget.id,
-  });
-  const restored = await waitForWindowLayout(browserUrl, rendererUrl, child, windowId, 'normal');
+  const restored = await waitForWindowLayout(rendererUrl, child, 'normal');
 
-  await sendCdpCommand(browserUrl, 'Browser.setWindowBounds', {
-    windowId,
-    bounds: { windowState: 'maximized' },
-  });
-  const maximized = await waitForWindowLayout(
-    browserUrl,
-    rendererUrl,
-    child,
-    windowId,
-    'maximized',
-  );
+  await readWindowsNativeWindow(child.pid, 'maximized');
+  const maximized = await waitForWindowLayout(rendererUrl, child, 'maximized');
 
-  await sendCdpCommand(browserUrl, 'Browser.setWindowBounds', {
-    windowId,
-    bounds: { windowState: 'normal' },
-  });
-  const restoredAgain = await waitForWindowLayout(
-    browserUrl,
-    rendererUrl,
-    child,
-    windowId,
-    'normal',
-  );
+  await readWindowsNativeWindow(child.pid, 'normal');
+  const restoredAgain = await waitForWindowLayout(rendererUrl, child, 'normal');
 
   console.log(
     `[packaged-renderer] window transition: ${JSON.stringify({
@@ -656,7 +641,7 @@ export async function smokePackagedRenderer(
     const target = await findRendererTarget(port, child);
     await waitForUsableRenderer(target.webSocketDebuggerUrl, child);
     if (verifyMaximizeRestore) {
-      await exercisePackagedRendererMaximizeRestore(await browserDebuggerUrl(port), target, child);
+      await exercisePackagedRendererMaximizeRestore(target, child);
     }
   } catch (error) {
     throw new Error(`${error.message}${stderr.trim() ? `\n${stderr.trim()}` : ''}`);
