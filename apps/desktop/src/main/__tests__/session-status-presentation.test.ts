@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { deriveFailedTurnRecovery } from '../../renderer/session-status-presentation.js';
+import {
+  deriveFailedTurnRecovery,
+  describeTurnErrorClass,
+} from '../../renderer/session-status-presentation.js';
 
 const outputFreeFailure = {
   partialOutputRetained: false,
@@ -28,6 +31,11 @@ const outputFreeFailure = {
 };
 
 describe('failed turn recovery presentation', () => {
+  it('presents persisted provider server errors as provider failures', () => {
+    assert.equal(describeTurnErrorClass('server_error', 'zh'), '模型服务返回错误');
+    assert.equal(describeTurnErrorClass('server_error', 'en'), 'Model service error');
+  });
+
   it('does not recommend a byte-identical retry after context overflow', () => {
     assert.deepEqual(
       deriveFailedTurnRecovery({ ...outputFreeFailure, errorClass: 'context_overflow' }, 'zh'),

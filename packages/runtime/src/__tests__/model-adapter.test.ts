@@ -223,6 +223,31 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(shaped.message, 'Rate limit exceeded');
   });
 
+  test('normalizes a status-less provider server_error into a retryable outage', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    const [event] = adapter.translateChunk({
+      type: 'error',
+      error: {
+        type: 'server_error',
+        code: 'server_error',
+        message:
+          'Streaming response failed: [502] Upstream error from Nvidia: Service temporarily overloaded',
+      },
+    } as Chunk);
+
+    assert.deepEqual(event, {
+      kind: 'error',
+      failure: {
+        type: 'model_failure',
+        kind: 'provider_unavailable',
+        code: 'server_error',
+        message: 'Provider returned an error',
+        retryable: true,
+      },
+    });
+  });
+
   test('preserves an explicit empty reasoning delta without inventing one for absent text', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];

@@ -32,6 +32,10 @@ const CONTEXT_OVERFLOW_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'request_too_large', // Anthropic byte-size overflow (HTTP 413): error.type
 ]);
 
+const PROVIDER_UNAVAILABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
+  'server_error', // OpenAI-compatible stream errors can omit the HTTP status.
+]);
+
 /**
  * A provider failure normalized into classification evidence. classifyError's
  * real input domain is NOT just Error instances: a request-level failure is
@@ -144,6 +148,7 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   }
   const retryable =
     errorClass === 'Network' ||
+    errorClass === 'ProviderUnavailable' ||
     status === 408 ||
     status === 409 ||
     (status >= 500 && status <= 599);
@@ -612,6 +617,8 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   if (statusCode === '413' || code === '413') return 'ContextLength';
   // Free-text overflow relations on the composite text, veto-first inside.
   if (isContextOverflowErrorText(text)) return 'ContextLength';
+  if (structuredCodes.some((c) => PROVIDER_UNAVAILABLE_PROVIDER_CODES.has(c)))
+    return 'ProviderUnavailable';
   if (/^5\d\d$/.test(statusCode) || /^5\d\d$/.test(code)) return 'ProviderUnavailable';
   // Weak word heuristics, last: they only catch errors that carried no
   // stronger evidence for any other class. `rate` must be word-shaped

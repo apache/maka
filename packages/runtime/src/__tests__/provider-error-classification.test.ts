@@ -155,6 +155,25 @@ describe('Provider error classification', () => {
     assert.deepEqual(providerRetryMetadata(missingContinuation), { retryable: true });
   });
 
+  test('treats a status-less provider server_error as temporarily unavailable', () => {
+    const failure = {
+      type: 'model_failure',
+      kind: 'unknown',
+      retryable: false,
+      message:
+        'Streaming response failed: [502] Upstream error from Nvidia: Service temporarily overloaded',
+      code: 'server_error',
+    };
+
+    assert.equal(classifyError(failure), 'ProviderUnavailable');
+    assert.deepEqual(providerRetryMetadata(failure), { retryable: true });
+    assert.deepEqual(providerFailureDiagnostic(failure), {
+      errorClass: 'ProviderUnavailable',
+      providerCode: 'server_error',
+      retryable: true,
+    });
+  });
+
   test('retries a rate limit only when the provider names a retry delay', () => {
     const bareRateLimit = Object.assign(new Error('Rate limit exceeded'), {
       name: 'AI_APICallError',
