@@ -30,6 +30,7 @@ import {
   normalizeConnectionPatchSecretsForIpc,
   normalizeConnectionSlugForIpc,
   normalizeCreateConnectionInputForIpc,
+  normalizePreviewConnectionModelsInputForIpc,
 } from './connections-ipc-validation.js';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
 
@@ -38,6 +39,7 @@ type HostConnectionsClient = Pick<
   | 'createConnection'
   | 'deleteCredential'
   | 'fetchConnectionModels'
+  | 'previewConnectionModels'
   | 'getConnectionRequestHeaders'
   | 'loadConnectionCatalog'
   | 'queryCredential'
@@ -268,6 +270,20 @@ export function registerRuntimeHostConnectionsIpc(
       source: result.source,
       fetchedAt: result.fetchedAt,
     };
+  });
+  deps.ipcMain.handle('connections:previewModels', async (_event, raw: unknown) => {
+    const input = normalizePreviewConnectionModelsInputForIpc(raw);
+    const result = await deps.client.previewConnectionModels({
+      providerType: input.providerType,
+      apiKey: input.apiKey ?? null,
+      ...(input.baseUrl === undefined ? {} : { baseUrl: input.baseUrl }),
+      ...(input.requestHeaders === undefined ? {} : { requestHeaders: input.requestHeaders }),
+    });
+    if (result.kind !== 'verified') {
+      const reason = result.kind === 'failed' ? result.errorClass : result.reason;
+      throw new Error(`Unable to preview Connection models: ${reason}`);
+    }
+    return [...result.models];
   });
   deps.ipcMain.handle(
     'connections:test',

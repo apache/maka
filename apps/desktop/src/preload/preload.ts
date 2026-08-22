@@ -2064,6 +2064,9 @@ const makaBridge = {
     fetchModels(slug: string, host?: DesktopRuntimeHostRef): Promise<ModelDiscoveryResult> {
       return invokeSelectedRuntimeHost(host, 'connections:fetchModels', slug);
     },
+    previewModels(input: import('@maka/core/llm-connections').PreviewConnectionModelsInput, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').ModelInfo[]> {
+      return invokeSelectedRuntimeHost(host, 'connections:previewModels', input);
+    },
     hasSecret(slug: string, host?: DesktopRuntimeHostRef): Promise<boolean> {
       return invokeSelectedRuntimeHost(host, 'connections:hasSecret', slug);
     },

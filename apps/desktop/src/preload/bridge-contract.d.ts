@@ -798,6 +798,7 @@ export interface MakaBridge {
     delete(slug: string, host?: DesktopRuntimeHostRef): Promise<void>;
     test(slug: string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
     fetchModels(slug: string, host?: DesktopRuntimeHostRef): Promise<ModelDiscoveryResult>;
+    previewModels(input: import('@maka/core/llm-connections').PreviewConnectionModelsInput, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').ModelInfo[]>;
     hasSecret(slug: string, host?: DesktopRuntimeHostRef): Promise<boolean>;
     getRequestHeaders(slug: string, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(

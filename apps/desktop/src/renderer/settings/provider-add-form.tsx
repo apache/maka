@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import {
+  type ModelInfo,
   OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   type ProviderType,
 } from '@maka/core/llm-connections';
@@ -7,8 +8,9 @@ import { PROVIDER_DEFAULTS, deriveConnectionSlug } from '@maka/core/llm-connecti
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
+  providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
-import { Banner, HStack, VStack } from '@astryxdesign/core';
+import { Banner, HStack, Selector, VStack } from '@astryxdesign/core';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import {
   Button,
@@ -42,9 +44,16 @@ import {
 
 /* No `defaultModel`: the creation gate has no rule that can fail on the model
    id, so an error could never be reported against that field. The union is
-   kept aligned with `AddProviderIssue` plus the two form-local fields the
+   kept aligned with `AddProviderIssue` plus the three form-local fields the
    gate does not own. */
-type ProviderFormField = 'slug' | 'apiKey' | 'accountId' | 'baseUrl' | 'advancedRequest' | 'form';
+type ProviderFormField =
+  | 'slug'
+  | 'apiKey'
+  | 'accountId'
+  | 'baseUrl'
+  | 'modelDiscovery'
+  | 'advancedRequest'
+  | 'form';
 
 type ProviderFormError = {
   field: ProviderFormField;
@@ -71,18 +80,22 @@ export function AddProviderForm(props: {
   const [cloudflareAccountId, setCloudflareAccountId] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [defaultModel, setDefaultModel] = useState(recommendedDefaultModel);
+  const [discoveredModels, setDiscoveredModels] = useState<ModelInfo[] | null>(null);
   const [requestHeaders, setRequestHeaders] = useState<RequestHeaderDraft[]>([]);
   const [requestBodyText, setRequestBodyText] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [error, setError] = useState<ProviderFormError | null>(null);
   const [busy, setBusy] = useState(false);
-  const submitGuard = useActionGuard<'submit'>();
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const submitGuard = useActionGuard<'submit' | 'fetch-models'>();
   const addProviderMountedRef = useMountedRef();
 
   const isCloudflareWorkersAi = props.providerType === 'cloudflare-workers-ai';
   const requiresBaseUrl = !defaults.baseUrl && !isCloudflareWorkersAi;
   const showsDefaultModel = recommendedDefaultModel.trim() === '';
+  const isCustomRelay = defaults.category === 'custom';
   const isExperimental = defaults.status === 'phase3-experimental';
+  const supportsRemoteDiscovery = providerSupportsModelDiscovery(props.providerType);
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
   const usesApiKeyDialog = usesQuickApiKeyDialog(props.providerType);
@@ -108,6 +121,58 @@ export function AddProviderForm(props: {
     if (issue.field === 'accountId') return copy.cloudflareAccount;
     if (issue.field === 'baseUrl') return copy.endpointRequired;
     return copy.accountLogin;
+  }
+
+  function invalidateDiscoveredModels() {
+    setDiscoveredModels(null);
+    clearFieldError('modelDiscovery');
+  }
+
+  async function fetchModelOptions() {
+    if (submitGuard.current !== null) return;
+    setError(null);
+    const normalizedApiKey = apiKey.trim();
+    if (requiresApiKey && !normalizedApiKey) {
+      return setError({ field: 'apiKey', message: copy.keyRequired(display.name) });
+    }
+    const normalizedBaseUrl = baseUrl.trim();
+    if (requiresBaseUrl && !normalizedBaseUrl) {
+      return setError({ field: 'baseUrl', message: copy.endpointRequired });
+    }
+    let normalizedRequestHeaders: Readonly<Record<string, string>>;
+    try {
+      normalizedRequestHeaders = newRequestHeaders(requestHeaders);
+    } catch {
+      setAdvancedOpen(true);
+      return setError({ field: 'advancedRequest', message: copy.requestCustomizationInvalid });
+    }
+    submitGuard.begin('fetch-models');
+    setFetchingModels(true);
+    try {
+      const models = await props.bridge.previewModels({
+        providerType: props.providerType,
+        ...(normalizedBaseUrl ? { baseUrl: normalizedBaseUrl } : {}),
+        ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
+        ...(Object.keys(normalizedRequestHeaders).length > 0
+          ? { requestHeaders: normalizedRequestHeaders }
+          : {}),
+      });
+      if (!addProviderMountedRef.current) return;
+      setDiscoveredModels(models);
+      setDefaultModel((current) =>
+        models.some((model) => model.id === current) ? current : models[0]!.id,
+      );
+    } catch (fetchError) {
+      if (!addProviderMountedRef.current) return;
+      setDiscoveredModels(null);
+      setError({
+        field: 'modelDiscovery',
+        message: providerPanelActionErrorMessage(fetchError, locale),
+      });
+    } finally {
+      submitGuard.finish();
+      if (addProviderMountedRef.current) setFetchingModels(false);
+    }
   }
 
   async function submit() {
@@ -191,6 +256,7 @@ export function AddProviderForm(props: {
           onHeadersChange={(headers) => {
             setRequestHeaders(headers);
             clearFieldError('advancedRequest');
+            invalidateDiscoveredModels();
           }}
           bodyText={requestBodyText}
           onBodyTextChange={(value) => {
@@ -225,6 +291,7 @@ export function AddProviderForm(props: {
           onChange={(next) => {
             setApiKey(next);
             clearFieldError('apiKey');
+            invalidateDiscoveredModels();
           }}
           placeholder={copy.apiKeyPlaceholder}
           label={copy.apiKeyLabel}
@@ -265,6 +332,7 @@ export function AddProviderForm(props: {
             onChange={(next) => {
               setApiKey(next);
               clearFieldError('apiKey');
+              invalidateDiscoveredModels();
             }}
             placeholder={copy.apiKeyPlaceholder}
             label={copy.apiKeyLabel}
@@ -323,6 +391,7 @@ export function AddProviderForm(props: {
             onChange={(value) => {
               setBaseUrl(value);
               clearFieldError('baseUrl');
+              invalidateDiscoveredModels();
             }}
             placeholder={defaults.baseUrl || 'https://…'}
             isDisabled={isExperimental || busy}
@@ -336,14 +405,46 @@ export function AddProviderForm(props: {
           />
         )}
         {showsDefaultModel && (
-          <TextInput
-            value={defaultModel}
-            onChange={setDefaultModel}
-            placeholder={copy.defaultModelPlaceholder}
-            isDisabled={isExperimental || busy}
-            label={copy.defaultModel}
-            description={copy.defaultModelHelp}
-          />
+          discoveredModels ? (
+            <Selector
+              label={copy.defaultModel}
+              value={defaultModel}
+              options={discoveredModels.map((model) => ({
+                value: model.id,
+                label: model.displayName ?? model.id,
+                description: model.displayName ? model.id : undefined,
+              }))}
+              width="100%"
+              isDisabled={isExperimental || busy || fetchingModels}
+              onChange={setDefaultModel}
+            />
+          ) : (
+            <TextInput
+              value={defaultModel}
+              onChange={setDefaultModel}
+              placeholder={copy.defaultModelPlaceholder}
+              isDisabled={isExperimental || busy || fetchingModels}
+              label={copy.defaultModel}
+              description={copy.defaultModelHelp}
+            />
+          )
+        )}
+        {isCustomRelay && supportsRemoteDiscovery && (
+          <VStack gap={1.5}>
+            <Button
+              variant="secondary"
+              isDisabled={busy || fetchingModels || isExperimental}
+              onClick={fetchModelOptions}
+              label={fetchingModels ? copy.fetchingModels : copy.fetchModels}
+            />
+            {error?.field === 'modelDiscovery' && (
+              <Banner
+                status="warning"
+                title={copy.modelsFetchFailed}
+                description={`${error.message} ${copy.modelsFetchFallback}`}
+              />
+            )}
+          </VStack>
         )}
         {advancedRequestEditor}
       </FormLayout>
