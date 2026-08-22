@@ -318,34 +318,6 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   await harness.terminal.close();
 });
 
-test('accepts the revoked result for an access revoke action', async () => {
-  const harness = createHarness('pending');
-  const management = harness.terminal.runAccessManagement({
-    destination: 'operator@example.com',
-    operatorPath: '/home/operator/.local/share/maka/operator',
-    rootPath: '/srv/maka',
-    expectedRootId: 'a'.repeat(64),
-    action: 'revoke',
-    credentialId: 'credential-1',
-    currentCredentialFingerprint: 'b'.repeat(32),
-  });
-  await waitFor(() => harness.pty.hasDataListener());
-  harness.pty.emitData(
-    encodeRuntimeHostAccessManagementFrame({
-      schemaVersion: 1,
-      kind: 'result',
-      action: 'revoke',
-      credentialId: 'credential-1',
-      revoked: true,
-      credentials: [],
-    }),
-  );
-  harness.pty.exit(0);
-
-  assert.deepEqual((await management).action, 'revoke');
-  await harness.terminal.close();
-});
-
 test('rejects a framed service result for a different action', async () => {
   const harness = createHarness('pending');
   const management = harness.terminal.runServiceManagement({

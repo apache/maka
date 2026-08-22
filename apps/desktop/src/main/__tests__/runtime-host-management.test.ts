@@ -50,8 +50,8 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
   const replacement = 'maka_rh_replacement-secret';
   let profileEnabled = true;
   let prepareCalls = 0;
-  let currentFingerprint = runtimeHostAccessCredentialFingerprint('maka_rh_current-secret');
-  let credentials = [
+  const currentFingerprint = runtimeHostAccessCredentialFingerprint('maka_rh_current-secret');
+  const credentials = [
     accessCredential('current', principalId, currentFingerprint),
     accessCredential(
       'obsolete',
@@ -74,10 +74,11 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
         credentialFingerprint: currentFingerprint,
         enabled: profileEnabled,
       }),
-      rotateManagedCredential: async (_profileId, credential) => {
+      rotateManagedCredential: async (expected, credential) => {
+        assert.equal(expected.profile, profile);
+        assert.equal(expected.service, service);
+        assert.equal(expected.credentialFingerprint, currentFingerprint);
         assert.equal(credential, replacement);
-        currentFingerprint = runtimeHostAccessCredentialFingerprint(credential);
-        credentials = [accessCredential('replacement', principalId, currentFingerprint)];
       },
       markManagedServiceUninstalling: async (binding) => binding,
       clearManagedServiceBinding: async () => undefined,
@@ -104,14 +105,11 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
           kind: 'result',
           action: 'prepare',
           credential: replacement,
-          credentials: [...credentials, pending],
+          credentials: [credentials[0]!, pending],
         };
       }
       assert.equal(input.currentCredentialFingerprint, currentFingerprint);
-      const target = credentials.find(
-        (credential) => credential.credentialId === input.credentialId,
-      );
-      if (target?.credentialFingerprint === input.currentCredentialFingerprint) {
+      if (input.credentialId === 'current') {
         return {
           schemaVersion: 1,
           kind: 'error',
@@ -122,16 +120,13 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
           },
         };
       }
-      credentials = credentials.filter(
-        (credential) => credential.credentialId !== input.credentialId,
-      );
       return {
         schemaVersion: 1,
         kind: 'result',
         action: 'revoke',
         credentialId: input.credentialId!,
         revoked: true,
-        credentials,
+        credentials: [credentials[0]!],
       };
     },
     cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),

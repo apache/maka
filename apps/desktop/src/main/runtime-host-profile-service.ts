@@ -57,6 +57,7 @@ import {
 import {
   createDesktopRuntimeHostManagedServiceStore,
   findDesktopRuntimeHostManagedServiceBinding,
+  sameDesktopRuntimeHostManagedServiceBinding,
   type DesktopRuntimeHostManagedService,
   type DesktopRuntimeHostManagedServiceBinding,
   type DesktopRuntimeHostManagedServiceStore,
@@ -97,23 +98,26 @@ export interface DesktopRuntimeHostProfileService {
   ): Promise<DesktopRuntimeHostManagedServiceBinding | undefined>;
   resolveManagedAccess(
     profileId: string,
-  ): Promise<
-    | (DesktopRuntimeHostManagedServiceBinding & {
-        readonly credentialFingerprint: string;
-        readonly enabled: boolean;
-      })
-    | undefined
-  >;
+  ): Promise<DesktopRuntimeHostManagedAccess | undefined>;
   clearManagedServiceBinding(expected: DesktopRuntimeHostManagedServiceBinding): Promise<void>;
   markManagedServiceUninstalling(
     expected: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<DesktopRuntimeHostManagedServiceBinding>;
-  rotateManagedCredential(profileId: string, credential: string): Promise<void>;
+  rotateManagedCredential(
+    expected: DesktopRuntimeHostManagedAccess,
+    credential: string,
+  ): Promise<void>;
   startEnabledProfiles(): Promise<void>;
   resolvePairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
   setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
   setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
   remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
+}
+
+export interface DesktopRuntimeHostManagedAccess
+  extends DesktopRuntimeHostManagedServiceBinding {
+  readonly credentialFingerprint: string;
+  readonly enabled: boolean;
 }
 
 export async function resolveDesktopRuntimeHostStartup(
@@ -382,6 +386,24 @@ export function createDesktopRuntimeHostProfileService(input: {
     }
   };
 
+  const startupSshInteraction = (
+    target: ResolvedRuntimeHostProfile,
+  ): "terminal" | "batch" =>
+    target.profile.kind === "remote" &&
+    target.profile.transport.kind === "ssh" &&
+    target.profile.id === preferences.defaultProfileId
+      ? "terminal"
+      : "batch";
+
+  const resolveExistingPairingTarget = async (
+    profileId: string,
+  ): Promise<ResolvedRuntimeHostProfile | undefined> => {
+    const profile = (await catalog.read()).profiles.find(
+      (candidate) => candidate.id === profileId,
+    );
+    return profile ? catalog.resolve(profileId) : undefined;
+  };
+
   const finishPairingIntent = async (
     intent: DesktopRuntimeHostPairingIntent,
   ): Promise<void> => {
@@ -399,7 +421,15 @@ export function createDesktopRuntimeHostProfileService(input: {
     intent: DesktopRuntimeHostPairingIntent,
     failure: unknown,
   ): Promise<void> => {
-    const current = await catalog.resolve(intent.target.profile.id).catch(() => undefined);
+    let current: ResolvedRuntimeHostProfile | undefined;
+    try {
+      current = await resolveExistingPairingTarget(intent.target.profile.id);
+    } catch (resolveFailure) {
+      throw new AggregateError(
+        [failure, resolveFailure],
+        "Runtime Host pairing failed and its current profile could not be read",
+      );
+    }
     if (!current || !pairingIntentMatchesTarget(intent.target, current)) {
       if (!intent.previous) {
         await managedServices.removeForProfileIfCurrent(intent.target.profile);
@@ -485,12 +515,30 @@ export function createDesktopRuntimeHostProfileService(input: {
   const recoverPairingIntent = async (
     intent: DesktopRuntimeHostPairingIntent,
   ): Promise<Error | undefined> => {
-    const current = await catalog.resolve(intent.target.profile.id).catch(() => undefined);
+    let current: ResolvedRuntimeHostProfile | undefined;
+    try {
+      current = await resolveExistingPairingTarget(intent.target.profile.id);
+    } catch (error) {
+      const failure = asError(error);
+      unavailable.set(intent.target.profile.id, failure);
+      return failure;
+    }
     if (!current || !pairingIntentMatchesTarget(intent.target, current)) {
       if (!intent.previous) {
         await managedServices.removeForProfileIfCurrent(intent.target.profile);
       }
       await clearPairingIntentBestEffort(intent.target.profile.id);
+      if (
+        current &&
+        (preferences.defaultProfileId === current.profile.id ||
+          preferences.enabledRemoteProfileIds.includes(current.profile.id))
+      ) {
+        try {
+          await activateTarget(current, startupSshInteraction(current));
+        } catch (error) {
+          return asError(error);
+        }
+      }
       return undefined;
     }
     try {
@@ -609,14 +657,30 @@ export function createDesktopRuntimeHostProfileService(input: {
         }
       });
     },
-    rotateManagedCredential(profileId, credential) {
+    rotateManagedCredential(expected, credential) {
       return mutateProfiles(async () => {
+        const profileId = expected.profile.id;
         if (!preferences.enabledRemoteProfileIds.includes(profileId)) {
           throw new Error('Enable this Runtime Host before rotating its access credential');
         }
         const previous = await catalog.resolve(profileId);
         if (previous.profile.kind !== 'remote') {
           throw new Error('Only a remote Runtime Host credential can be rotated');
+        }
+        const managed = findDesktopRuntimeHostManagedServiceBinding(
+          await managedServices.read(),
+          previous.profile,
+        );
+        if (
+          !managed ||
+          !sameDesktopRuntimeHostManagedServiceBinding(managed, expected) ||
+          !previous.credential ||
+          runtimeHostAccessCredentialFingerprint(previous.credential) !==
+            expected.credentialFingerprint
+        ) {
+          throw new Error(
+            'Runtime Host profile changed before its access credential could be rotated',
+          );
         }
         const target = { profile: previous.profile, credential } as const;
         const intent = createDesktopRuntimeHostPairingIntent({
@@ -722,11 +786,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       for (const target of input.startup.remotes) {
         if (target.profile.kind !== "remote" || !target.credential) continue;
         if (pairingIntents.has(target.profile.id)) continue;
-        const sshInteraction =
-          target.profile.transport.kind === "ssh" &&
-          target.profile.id === preferences.defaultProfileId
-            ? "terminal"
-            : "batch";
+        const sshInteraction = startupSshInteraction(target);
         const activation = () => activateTarget(target, sshInteraction);
         tasks.push(
           (sshInteraction === "terminal" ? interactiveStartup.then(activation) : activation()).catch((error) =>

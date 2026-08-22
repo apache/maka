@@ -41,6 +41,10 @@ import {
 } from "../runtime-host-desktop-manager.js";
 import { createDesktopRuntimeHostManagedServiceStore } from "../runtime-host-managed-services.js";
 import {
+  createDesktopRuntimeHostPairingIntent,
+  writeDesktopRuntimeHostPairingIntents,
+} from "../runtime-host-pairing-journal.js";
+import {
   createDesktopRuntimeHostProfileService,
   resolveDesktopRuntimeHostStartup,
 } from "../runtime-host-profile-service.js";
@@ -509,14 +513,22 @@ test("recovers interrupted managed credential rotation after restart", async () 
     },
   });
 
+  const managedAccess = await service.resolveManagedAccess(MANAGED_PROFILE.id);
+  assert.ok(managedAccess);
   await assert.rejects(
-    () => service.rotateManagedCredential(MANAGED_PROFILE.id, "new-token"),
+    () => service.rotateManagedCredential(managedAccess, "new-token"),
     RuntimeHostPairingFinalizationInterruptedError,
   );
   assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "new-token");
 
   const recoveredStartup = await resolveDesktopRuntimeHostStartup(root, { catalog });
   assert.equal(recoveredStartup.pairingIntents.length, 1);
+  const resolve = catalog.resolve.bind(catalog);
+  let catalogReadable = false;
+  catalog.resolve = async (profileId) => {
+    if (!catalogReadable) throw new Error("profile catalog is temporarily unavailable");
+    return resolve(profileId);
+  };
   const recovered = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     startup: recoveredStartup,
@@ -532,6 +544,13 @@ test("recovers interrupted managed credential rotation after restart", async () 
     /unfinished pairing/u,
   );
   await recovered.startEnabledProfiles();
+  assert.equal(
+    (await resolveDesktopRuntimeHostStartup(root)).pairingIntents.length,
+    1,
+  );
+
+  catalogReadable = true;
+  await recovered.startEnabledProfiles();
 
   assert.ok(await recovered.resolveManagedAccess(MANAGED_PROFILE.id));
   assert.equal(
@@ -540,6 +559,119 @@ test("recovers interrupted managed credential rotation after restart", async () 
     )?.managedService,
     true,
   );
+  assert.deepEqual(
+    (await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents,
+    [],
+  );
+});
+
+test("does not rotate a managed credential after its profile target changes", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
+  await catalog.create(MANAGED_PROFILE, "old-token");
+  await managedServices.save(MANAGED_PROFILE, MANAGED_SERVICE);
+  await writeFile(
+    join(root, "runtime-host-profile-selection.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+      enabledRemoteProfileIds: [MANAGED_PROFILE.id],
+    })}\n`,
+  );
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  let finalized = false;
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    managedServices,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => {
+      finalized = true;
+    },
+  });
+  const managedAccess = await service.resolveManagedAccess(MANAGED_PROFILE.id);
+  assert.ok(managedAccess);
+
+  const replacementProfile = {
+    ...MANAGED_PROFILE,
+    rootId: "d".repeat(64),
+    transport: {
+      ...MANAGED_PROFILE.transport,
+      destination: "other@example.com",
+    },
+  };
+  const replacementService = {
+    ...MANAGED_SERVICE,
+    id: "e".repeat(64),
+    rootPath: "/srv/other-maka",
+  };
+  await catalog.remove(MANAGED_PROFILE.id);
+  await catalog.create(replacementProfile, "other-token");
+  await managedServices.save(replacementProfile, replacementService);
+
+  await assert.rejects(
+    service.rotateManagedCredential(managedAccess, "prepared-for-original-host"),
+    /profile changed/u,
+  );
+  assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "other-token");
+  assert.equal(finalized, false);
+  assert.deepEqual(
+    (await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents,
+    [],
+  );
+});
+
+test("reactivates the previous credential after a pre-rebind rotation crash", async () => {
+  const root = await clientRoot();
+  const credentialStore = createClientRuntimeHostCredentialStore(root);
+  const catalog = createClientRuntimeHostProfileCatalog(root, credentialStore);
+  await catalog.create(MANAGED_PROFILE, "old-token");
+  await createDesktopRuntimeHostManagedServiceStore(root).save(
+    MANAGED_PROFILE,
+    MANAGED_SERVICE,
+  );
+  await writeFile(
+    join(root, "runtime-host-profile-selection.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+      enabledRemoteProfileIds: [MANAGED_PROFILE.id],
+    })}\n`,
+  );
+  await writeDesktopRuntimeHostPairingIntents(credentialStore, [
+    createDesktopRuntimeHostPairingIntent({
+      target: { profile: MANAGED_PROFILE, credential: "new-token" },
+      previous: { profile: MANAGED_PROFILE, credential: "old-token" },
+      wasEnabled: true,
+    }),
+  ]);
+  const startup = await resolveDesktopRuntimeHostStartup(root, {
+    catalog,
+    credentialStore,
+  });
+  const enabled: ResolvedRuntimeHostProfile[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    credentialStore,
+    states: () => [connectingLocal()],
+    enable: async (target) => {
+      enabled.push(target);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => assert.fail("an unapplied credential cannot be finalized"),
+  });
+
+  await service.startEnabledProfiles();
+
+  assert.deepEqual(enabled.map((target) => target.credential), ["old-token"]);
   assert.deepEqual(
     (await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents,
     [],
