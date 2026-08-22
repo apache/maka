@@ -557,7 +557,7 @@ function sameManagedWorkspaceBinding(
     left.baselineCommitOid === right.baselineCommitOid &&
     left.baselineTreeOid === right.baselineTreeOid &&
     left.headRef === right.headRef &&
-    left.gitRuntimeSha256 === right.gitRuntimeSha256 &&
+    left.gitExecutableSha256 === right.gitExecutableSha256 &&
     left.objectFormat === right.objectFormat &&
     left.materializationProfileDigest === right.materializationProfileDigest &&
     left.materializationSemantics === right.materializationSemantics

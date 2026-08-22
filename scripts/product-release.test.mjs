@@ -175,6 +175,13 @@ test('Desktop packaging does not distribute the retired bundled Git runtime', ()
   );
 });
 
+test('platform package verifiers do not reintroduce retired Git presence checks', async () => {
+  for (const verifier of ['verify-windows-x64.mjs', 'verify-macos-arm64-dmg.mjs']) {
+    const source = await readFile(join(repoRoot, 'scripts', verifier), 'utf8');
+    assert.doesNotMatch(source, /requirePath\(join\(resources, ['"]git['"]/u);
+  }
+});
+
 test('the packaged-app probe rejects a mismatched Runtime Host setup package', async () => {
   const fixture = await mkdtemp(join(tmpdir(), 'maka-packaged-manifest-'));
   try {

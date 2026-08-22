@@ -111,7 +111,6 @@ export async function verifyPackagedWindowsApp(
     requireDisclaimer: requiresCurrentContract,
   });
   if (requiresCurrentContract) await assertPackagedDependencyClosure(resources);
-  await requirePath(join(resources, 'git', 'cmd', 'git.exe'));
 
   step('reading the executable architecture');
   const machine = await readMachine(executable);

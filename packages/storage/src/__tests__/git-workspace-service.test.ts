@@ -696,6 +696,28 @@ describe('Git workspace service', () => {
       isWorkspaceError('managed_workspace_identity_conflict'),
     );
   });
+
+  test('rejects legacy distribution-identity bindings after the executable identity epoch', async () => {
+    const root = await temporaryRoot();
+    const sourceRoot = await createEligibleSource(join(root, 'source'));
+    const service = await serviceAt(join(root, 'storage'));
+    const binding = await service.createManagedWorkspaceFromSource(openRequest(sourceRoot));
+    const bindingPath = join(dirname(binding.worktreePath), 'binding.json');
+    const current = JSON.parse(await readFile(bindingPath, 'utf8'));
+    const legacy = {
+      ...current,
+      schemaVersion: 1,
+      protocol: 'git_managed_workspace_v1',
+      gitRuntimeSha256: current.gitExecutableSha256 ?? current.gitRuntimeSha256,
+    };
+    delete legacy.gitExecutableSha256;
+    await writeFile(bindingPath, `${JSON.stringify(legacy)}\n`, 'utf8');
+
+    await assert.rejects(
+      service.inspectManagedWorkspace(binding),
+      isWorkspaceError('managed_workspace_identity_conflict'),
+    );
+  });
 });
 
 async function serviceAt(storageRoot: string): Promise<GitWorkspaceService> {

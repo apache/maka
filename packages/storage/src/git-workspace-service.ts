@@ -19,9 +19,9 @@ import { registerManagedBaselineReceiptAuthorityInternal } from './managed-basel
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 2 * 60 * 1_000;
 const GIT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
-const BINDING_SCHEMA_VERSION = 1;
-const REPOSITORY_SCHEMA_VERSION = 1;
-const EPOCH_ARTIFACT_SCHEMA_VERSION = 1;
+const BINDING_SCHEMA_VERSION = 2;
+const REPOSITORY_SCHEMA_VERSION = 2;
+const EPOCH_ARTIFACT_SCHEMA_VERSION = 2;
 const QUARANTINE_INTENT_SCHEMA_VERSION = 1;
 const BASELINE_RECEIPT_SCHEMA_VERSION = 1;
 const IDENTIFIER_PATTERN = /^(repository|workspace|epoch|instance)_[a-f0-9]{32}$/u;
@@ -44,7 +44,7 @@ const BINDING_KEYS = [
   'baselineCommitOid',
   'baselineTreeOid',
   'headRef',
-  'gitRuntimeSha256',
+  'gitExecutableSha256',
   'objectFormat',
   'materializationProfileDigest',
   'materializationSemantics',
@@ -55,7 +55,7 @@ const REPOSITORY_KEYS = [
   'repositoryId',
   'repositoryPath',
   'hooksPath',
-  'gitRuntimeSha256',
+  'gitExecutableSha256',
   'objectFormat',
   'repositoryCapabilityDigest',
 ] as const;
@@ -73,7 +73,7 @@ const EPOCH_ARTIFACT_KEYS = [
   'baselineTreeOid',
   'baselineRef',
   'headRef',
-  'gitRuntimeSha256',
+  'gitExecutableSha256',
   'objectFormat',
   'materializationProfileDigest',
   'materializationSemantics',
@@ -181,8 +181,8 @@ export interface CreateManagedWorkspaceFromSourceInput extends ManagedWorkspaceI
 }
 
 export interface ManagedWorkspaceBinding {
-  readonly schemaVersion: 1;
-  readonly protocol: 'git_managed_workspace_v1';
+  readonly schemaVersion: 2;
+  readonly protocol: 'git_managed_workspace_v2';
   readonly repositoryId: string;
   readonly workspaceId: string;
   readonly workspaceEpochId: string;
@@ -197,7 +197,7 @@ export interface ManagedWorkspaceBinding {
   readonly baselineCommitOid: string;
   readonly baselineTreeOid: string;
   readonly headRef: string;
-  readonly gitRuntimeSha256: `sha256:${string}`;
+  readonly gitExecutableSha256: `sha256:${string}`;
   readonly objectFormat: 'sha1' | 'sha256';
   readonly materializationProfileDigest: `sha256:${string}`;
   readonly materializationSemantics: typeof MATERIALIZATION_SEMANTICS;
@@ -278,19 +278,19 @@ interface BaselineTreeSummary {
 }
 
 interface ManagedRepositoryRecord {
-  readonly schemaVersion: 1;
-  readonly protocol: 'maka_managed_git_repository_v1';
+  readonly schemaVersion: 2;
+  readonly protocol: 'maka_managed_git_repository_v2';
   readonly repositoryId: string;
   readonly repositoryPath: string;
   readonly hooksPath: string;
-  readonly gitRuntimeSha256: `sha256:${string}`;
+  readonly gitExecutableSha256: `sha256:${string}`;
   readonly objectFormat: 'sha1' | 'sha256';
   readonly repositoryCapabilityDigest: `sha256:${string}`;
 }
 
 interface ManagedWorkspaceEpochArtifact {
-  readonly schemaVersion: 1;
-  readonly protocol: 'maka_managed_workspace_epoch_artifact_v1';
+  readonly schemaVersion: 2;
+  readonly protocol: 'maka_managed_workspace_epoch_artifact_v2';
   readonly repositoryId: string;
   readonly workspaceId: string;
   readonly workspaceEpochId: string;
@@ -302,7 +302,7 @@ interface ManagedWorkspaceEpochArtifact {
   readonly baselineTreeOid: string;
   readonly baselineRef: string;
   readonly headRef: string;
-  readonly gitRuntimeSha256: `sha256:${string}`;
+  readonly gitExecutableSha256: `sha256:${string}`;
   readonly objectFormat: 'sha1' | 'sha256';
   readonly materializationProfileDigest: `sha256:${string}`;
   readonly materializationSemantics: typeof MATERIALIZATION_SEMANTICS;
@@ -435,7 +435,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
 
       const binding: ManagedWorkspaceBinding = {
         schemaVersion: BINDING_SCHEMA_VERSION,
-        protocol: 'git_managed_workspace_v1',
+        protocol: 'git_managed_workspace_v2',
         repositoryId: input.repositoryId,
         workspaceId: input.workspaceId,
         workspaceEpochId: input.workspaceEpochId,
@@ -450,7 +450,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
         baselineCommitOid: epoch.baselineCommitOid,
         baselineTreeOid: epoch.baselineTreeOid,
         headRef: epoch.headRef,
-        gitRuntimeSha256: runtime.digest,
+        gitExecutableSha256: runtime.digest,
         objectFormat: repository.objectFormat,
         materializationProfileDigest: epoch.materializationProfileDigest,
         materializationSemantics: MATERIALIZATION_SEMANTICS,
@@ -861,11 +861,11 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
 
       const record: ManagedRepositoryRecord = {
         schemaVersion: REPOSITORY_SCHEMA_VERSION,
-        protocol: 'maka_managed_git_repository_v1',
+        protocol: 'maka_managed_git_repository_v2',
         repositoryId: input.repositoryId,
         repositoryPath: normalize(layout.repositoryPath),
         hooksPath: normalize(layout.hooksPath),
-        gitRuntimeSha256: runtimeDigest,
+        gitExecutableSha256: runtimeDigest,
         objectFormat: source.objectFormat,
         repositoryCapabilityDigest: repositoryCapabilityDigest(runtimeDigest, source.objectFormat),
       };
@@ -1021,7 +1021,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
 
     const artifact: ManagedWorkspaceEpochArtifact = {
       schemaVersion: EPOCH_ARTIFACT_SCHEMA_VERSION,
-      protocol: 'maka_managed_workspace_epoch_artifact_v1',
+      protocol: 'maka_managed_workspace_epoch_artifact_v2',
       repositoryId: input.repositoryId,
       workspaceId: input.workspaceId,
       workspaceEpochId: input.workspaceEpochId,
@@ -1033,10 +1033,10 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       baselineTreeOid: importedTree,
       baselineRef,
       headRef: managedHeadRef(input.workspaceId, input.workspaceEpochId),
-      gitRuntimeSha256: repository.gitRuntimeSha256,
+      gitExecutableSha256: repository.gitExecutableSha256,
       objectFormat: repository.objectFormat,
       materializationProfileDigest: materializationProfileDigest(
-        repository.gitRuntimeSha256,
+        repository.gitExecutableSha256,
         repository.objectFormat,
       ),
       materializationSemantics: MATERIALIZATION_SEMANTICS,
@@ -1104,10 +1104,10 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
   ): Promise<void> {
     if (
       epoch.repositoryId !== repository.repositoryId ||
-      epoch.gitRuntimeSha256 !== repository.gitRuntimeSha256 ||
+      epoch.gitExecutableSha256 !== repository.gitExecutableSha256 ||
       epoch.objectFormat !== repository.objectFormat ||
       epoch.materializationProfileDigest !==
-        materializationProfileDigest(repository.gitRuntimeSha256, repository.objectFormat) ||
+        materializationProfileDigest(repository.gitExecutableSha256, repository.objectFormat) ||
       epoch.baselineRef !== managedBaselineRef(epoch.workspaceEpochId) ||
       epoch.headRef !== managedHeadRef(epoch.workspaceId, epoch.workspaceEpochId)
     ) {
@@ -1274,7 +1274,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     if (
       objectFormat !== record.objectFormat ||
       record.repositoryCapabilityDigest !==
-        repositoryCapabilityDigest(record.gitRuntimeSha256, record.objectFormat)
+        repositoryCapabilityDigest(record.gitExecutableSha256, record.objectFormat)
     ) {
       throw new GitWorkspaceServiceError(
         'managed_workspace_identity_conflict',
@@ -1879,7 +1879,7 @@ function assertBindingIdentity(
     binding.workspaceId !== input.workspaceId ||
     binding.workspaceEpochId !== input.workspaceEpochId ||
     binding.workspaceInstanceId !== input.workspaceInstanceId ||
-    binding.gitRuntimeSha256 !== runtimeDigest ||
+    binding.gitExecutableSha256 !== runtimeDigest ||
     binding.materializationProfileDigest !==
       materializationProfileDigest(runtimeDigest, binding.objectFormat) ||
     binding.headRef !== managedHeadRef(input.workspaceId, input.workspaceEpochId)
@@ -1899,10 +1899,10 @@ function assertBindingRepository(
     binding.repositoryId !== repository.repositoryId ||
     !samePath(binding.repositoryPath, repository.repositoryPath) ||
     !samePath(binding.hooksPath, repository.hooksPath) ||
-    binding.gitRuntimeSha256 !== repository.gitRuntimeSha256 ||
+    binding.gitExecutableSha256 !== repository.gitExecutableSha256 ||
     binding.objectFormat !== repository.objectFormat ||
     repository.repositoryCapabilityDigest !==
-      repositoryCapabilityDigest(repository.gitRuntimeSha256, repository.objectFormat)
+      repositoryCapabilityDigest(repository.gitExecutableSha256, repository.objectFormat)
   ) {
     throw new GitWorkspaceServiceError(
       'managed_workspace_identity_conflict',
@@ -1957,7 +1957,7 @@ function assertRepositoryMatches(
 ): void {
   if (
     record.repositoryId !== input.repositoryId ||
-    record.gitRuntimeSha256 !== runtimeDigest ||
+    record.gitExecutableSha256 !== runtimeDigest ||
     record.objectFormat !== objectFormat ||
     record.repositoryCapabilityDigest !== repositoryCapabilityDigest(runtimeDigest, objectFormat) ||
     !samePath(record.repositoryPath, layout.repositoryPath) ||
@@ -2013,7 +2013,7 @@ function assertEpochArtifactMatches(
     artifact.sourceHeadCommitOid !== source.headCommitOid ||
     artifact.sourceTreeOid !== source.treeOid ||
     artifact.baselineTreeOid !== source.treeOid ||
-    artifact.gitRuntimeSha256 !== repository.gitRuntimeSha256 ||
+    artifact.gitExecutableSha256 !== repository.gitExecutableSha256 ||
     artifact.objectFormat !== repository.objectFormat
   ) {
     throw new GitWorkspaceServiceError(
@@ -2107,7 +2107,7 @@ function isBinding(value: unknown): value is ManagedWorkspaceBinding {
   return (
     hasExactKeys(value, BINDING_KEYS) &&
     value.schemaVersion === BINDING_SCHEMA_VERSION &&
-    value.protocol === 'git_managed_workspace_v1' &&
+    value.protocol === 'git_managed_workspace_v2' &&
     typeof value.repositoryId === 'string' &&
     IDENTIFIER_PATTERN.test(value.repositoryId) &&
     typeof value.workspaceId === 'string' &&
@@ -2136,8 +2136,8 @@ function isBinding(value: unknown): value is ManagedWorkspaceBinding {
     OID_PATTERN.test(value.baselineTreeOid) &&
     typeof value.headRef === 'string' &&
     value.headRef === managedHeadRef(value.workspaceId, value.workspaceEpochId) &&
-    typeof value.gitRuntimeSha256 === 'string' &&
-    SHA256_PATTERN.test(value.gitRuntimeSha256) &&
+    typeof value.gitExecutableSha256 === 'string' &&
+    SHA256_PATTERN.test(value.gitExecutableSha256) &&
     (value.objectFormat === 'sha1' || value.objectFormat === 'sha256') &&
     typeof value.materializationProfileDigest === 'string' &&
     SHA256_PATTERN.test(value.materializationProfileDigest) &&
@@ -2247,15 +2247,15 @@ function isRepositoryRecord(value: unknown): value is ManagedRepositoryRecord {
   return (
     hasExactKeys(value, REPOSITORY_KEYS) &&
     value.schemaVersion === REPOSITORY_SCHEMA_VERSION &&
-    value.protocol === 'maka_managed_git_repository_v1' &&
+    value.protocol === 'maka_managed_git_repository_v2' &&
     typeof value.repositoryId === 'string' &&
     IDENTIFIER_PATTERN.test(value.repositoryId) &&
     typeof value.repositoryPath === 'string' &&
     isAbsolute(value.repositoryPath) &&
     typeof value.hooksPath === 'string' &&
     isAbsolute(value.hooksPath) &&
-    typeof value.gitRuntimeSha256 === 'string' &&
-    SHA256_PATTERN.test(value.gitRuntimeSha256) &&
+    typeof value.gitExecutableSha256 === 'string' &&
+    SHA256_PATTERN.test(value.gitExecutableSha256) &&
     (value.objectFormat === 'sha1' || value.objectFormat === 'sha256') &&
     typeof value.repositoryCapabilityDigest === 'string' &&
     SHA256_PATTERN.test(value.repositoryCapabilityDigest)
@@ -2267,7 +2267,7 @@ function isEpochArtifact(value: unknown): value is ManagedWorkspaceEpochArtifact
   return (
     hasExactKeys(value, EPOCH_ARTIFACT_KEYS) &&
     value.schemaVersion === EPOCH_ARTIFACT_SCHEMA_VERSION &&
-    value.protocol === 'maka_managed_workspace_epoch_artifact_v1' &&
+    value.protocol === 'maka_managed_workspace_epoch_artifact_v2' &&
     typeof value.repositoryId === 'string' &&
     IDENTIFIER_PATTERN.test(value.repositoryId) &&
     typeof value.workspaceId === 'string' &&
@@ -2288,8 +2288,8 @@ function isEpochArtifact(value: unknown): value is ManagedWorkspaceEpochArtifact
     OID_PATTERN.test(value.baselineTreeOid) &&
     value.baselineRef === managedBaselineRef(value.workspaceEpochId) &&
     value.headRef === managedHeadRef(value.workspaceId, value.workspaceEpochId) &&
-    typeof value.gitRuntimeSha256 === 'string' &&
-    SHA256_PATTERN.test(value.gitRuntimeSha256) &&
+    typeof value.gitExecutableSha256 === 'string' &&
+    SHA256_PATTERN.test(value.gitExecutableSha256) &&
     (value.objectFormat === 'sha1' || value.objectFormat === 'sha256') &&
     typeof value.materializationProfileDigest === 'string' &&
     SHA256_PATTERN.test(value.materializationProfileDigest) &&
@@ -2636,12 +2636,12 @@ function findWorktreeRegistration(
 }
 
 function repositoryCapabilityDigest(
-  gitRuntimeSha256: `sha256:${string}`,
+  gitExecutableSha256: `sha256:${string}`,
   objectFormat: string,
 ): `sha256:${string}` {
   const capability = JSON.stringify({
-    protocol: 'maka_managed_git_repository_capability_v1',
-    gitRuntimeSha256,
+    protocol: 'maka_managed_git_repository_capability_v2',
+    gitExecutableSha256,
     objectFormat,
     hooks: 'disabled_v1',
     credentials: 'disabled_v1',
@@ -2652,12 +2652,12 @@ function repositoryCapabilityDigest(
 }
 
 function materializationProfileDigest(
-  gitRuntimeSha256: `sha256:${string}`,
+  gitExecutableSha256: `sha256:${string}`,
   objectFormat: string,
 ): `sha256:${string}` {
   const profile = JSON.stringify({
-    protocol: 'git_materialization_profile_v1',
-    gitRuntimeSha256,
+    protocol: 'git_materialization_profile_v2',
+    gitExecutableSha256,
     objectFormat,
     platform: process.platform,
     autocrlf: false,
