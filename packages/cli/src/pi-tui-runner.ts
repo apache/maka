@@ -2876,7 +2876,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     transcript: {
       description: primaryGuidance.commands.transcript,
-      // Read-only overlay; it is explicitly available while a turn is running.
       midTurn: 'local',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
