@@ -2786,6 +2786,7 @@ describe('Maka Pi TUI runner', () => {
           connectionName: 'OpenAI',
           providerType: 'openai',
           model: 'gpt-5.5',
+          displayName: 'GPT 5.5',
           isDefaultConnection: true,
         },
         {
@@ -2793,6 +2794,7 @@ describe('Maka Pi TUI runner', () => {
           connectionName: 'Z.ai',
           providerType: 'openai',
           model: 'glm-5.2',
+          displayName: 'GLM 5.2',
           isDefaultConnection: false,
         },
       ],
@@ -2807,7 +2809,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
 
     await waitFor(() => terminal.output().includes('Select Model'));
-    await waitFor(() => terminal.output().includes('glm-5.2'));
+    await waitFor(() => terminal.output().includes('GLM 5.2'));
     assert.match(
       plainTerminalOutput(terminal.screenOutput()),
       /切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高/,
@@ -2857,6 +2859,7 @@ describe('Maka Pi TUI runner', () => {
           connectionName: 'Aurora',
           providerType: 'openai',
           model: 'gpt-5.5',
+          displayName: 'GPT 5.5',
           isDefaultConnection: true,
         },
         {
@@ -2864,6 +2867,7 @@ describe('Maka Pi TUI runner', () => {
           connectionName: 'Boreal',
           providerType: 'zai',
           model: 'glm-max',
+          displayName: 'GLM Max',
           isDefaultConnection: false,
         },
         {
@@ -2884,7 +2888,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => terminal.output().includes('Select Model'));
     await waitFor(() => {
       const out = plainTerminalOutput(terminal.screenOutput());
-      return out.includes('gpt-5.5') && out.includes('glm-max') && out.includes('text-unicorn');
+      return out.includes('GPT 5.5') && out.includes('GLM Max') && out.includes('text-unicorn');
     });
     assert.doesNotMatch(
       plainTerminalOutput(terminal.screenOutput()),
@@ -2901,11 +2905,11 @@ describe('Maka Pi TUI runner', () => {
     // clears the search field in one event so the next criterion starts from
     // the full list again.
     const cases = [
-      { query: 'gpt', keep: 'gpt-5.5', drop: ['glm-max', 'text-unicorn'] },
-      { query: 'aurora', keep: 'gpt-5.5', drop: ['glm-max', 'text-unicorn'] },
-      { query: 'alpha', keep: 'gpt-5.5', drop: ['glm-max', 'text-unicorn'] },
-      { query: 'zai', keep: 'glm-max', drop: ['gpt-5.5', 'text-unicorn'] },
-      { query: 'gemini', keep: 'text-unicorn', drop: ['gpt-5.5', 'glm-max'] },
+      { query: 'gpt', keep: 'GPT 5.5', drop: ['GLM Max', 'text-unicorn'] },
+      { query: 'aurora', keep: 'GPT 5.5', drop: ['GLM Max', 'text-unicorn'] },
+      { query: 'alpha', keep: 'GPT 5.5', drop: ['GLM Max', 'text-unicorn'] },
+      { query: 'zai', keep: 'GLM Max', drop: ['GPT 5.5', 'text-unicorn'] },
+      { query: 'gemini', keep: 'text-unicorn', drop: ['GPT 5.5', 'GLM Max'] },
     ];
     for (const c of cases) {
       terminal.input(c.query);
@@ -2916,7 +2920,7 @@ describe('Maka Pi TUI runner', () => {
       terminal.input('\x15');
       await waitFor(() => {
         const out = plainTerminalOutput(terminal.screenOutput());
-        return out.includes('gpt-5.5') && out.includes('glm-max') && out.includes('text-unicorn');
+        return out.includes('GPT 5.5') && out.includes('GLM Max') && out.includes('text-unicorn');
       });
     }
 

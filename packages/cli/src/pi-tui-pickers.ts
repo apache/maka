@@ -579,18 +579,22 @@ function modelChoicePickerItems(
     const tags = [choice.connectionName || choice.connectionSlug];
     if (isCurrent) tags.push('current');
     else if (choice.isDefaultConnection) tags.push('default');
-    return { value: String(index), label: choice.model, description: tags.join(' · ') };
+    return {
+      value: String(index),
+      label: choice.displayName?.trim() || choice.model,
+      description: tags.join(' · '),
+    };
   });
 }
 
 /**
  * Case-insensitive substring match for the `/model` search field, against every
  * criterion the issue names: model id, provider label/type, and connection
- * name/slug. `ModelChoice` carries no display name, so the model id is the only
- * model-side match target; a display-name enrichment would slot in here.
+ * name/slug. Model ids and display names are both model-side match targets.
  */
 function matchesModelChoice(choice: ModelChoice, query: string): boolean {
   if (choice.model.toLowerCase().includes(query)) return true;
+  if (choice.displayName?.toLowerCase().includes(query)) return true;
   if (choice.connectionName.toLowerCase().includes(query)) return true;
   if (choice.connectionSlug.toLowerCase().includes(query)) return true;
   if (choice.providerType.toLowerCase().includes(query)) return true;

@@ -8,6 +8,8 @@ export interface ModelChoice {
   connectionName: string;
   providerType: ProviderType;
   model: string;
+  /** Human-readable model name from the provider catalog, when available. */
+  displayName?: string;
   isDefaultConnection: boolean;
   /** Maximum context tokens for this model, resolved from the connection or provider catalog. */
   contextWindow?: number;
