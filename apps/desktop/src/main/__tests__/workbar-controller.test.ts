@@ -301,6 +301,45 @@ describe('useWorkbarController', () => {
     );
   });
 
+  it('retries a failed Terminal stop during later Session cleanup', async () => {
+    const { root } = installReactRenderer();
+    const firstStop = deferred<ShellRunUpdate | null>();
+    const stops: Array<{ sessionId: string; ref: string }> = [];
+    const defaults = createFakeWorkbarServices();
+    const services = createFakeWorkbarServices({
+      terminal: {
+        ...defaults.terminal,
+        start: async (sessionId) => shellUpdate(sessionId, 'terminal-retry'),
+        stop: (request) => {
+          stops.push(request);
+          return stops.length === 1 ? firstStop.promise : Promise.resolve(null);
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services, input(session('a'))));
+    await act(async () => controller().commands.openTool('terminal'));
+    const tab = controller().host.panelsState.right.tabs.find(
+      (candidate) => candidate.kind === 'terminal',
+    );
+    assert.ok(tab);
+    await act(async () => controller().host.onCloseTab('right', tab));
+    assert.deepEqual(stops, [{ sessionId: 'a', ref: 'terminal-retry' }]);
+
+    await act(async () => {
+      firstStop.reject(new Error('Host disconnected'));
+      await Promise.resolve();
+    });
+    await act(async () => renderController(root, services, input(session('b'))));
+    assert.deepEqual(stops, [
+      { sessionId: 'a', ref: 'terminal-retry' },
+      { sessionId: 'a', ref: 'terminal-retry' },
+    ]);
+
+    await act(async () => renderController(root, services, input(session('c'))));
+    assert.equal(stops.length, 2);
+  });
+
   it('owns a resolved Terminal before its tab state commits', async () => {
     const { root } = installReactRenderer();
     const start = deferred<ShellRunUpdate>();

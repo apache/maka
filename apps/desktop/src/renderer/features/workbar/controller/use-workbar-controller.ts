@@ -195,6 +195,7 @@ export function useWorkbarController(
     reservedOrdinalsRef.current['side-chat'].clear();
     reservedOrdinalsRef.current.terminal.clear();
   }, [layout.workbarPanelsState]);
+  const stoppingTerminalKeysRef = useRef(new Set<string>());
   const stoppedTerminalKeysRef = useRef(new Set<string>());
   const ownedTerminalResourcesRef = useRef(
     new Map<string, { sessionId: string; ref: string }>(),
@@ -203,10 +204,23 @@ export function useWorkbarController(
   const stopTerminal = useCallback(
     (sessionId: string, ref: string) => {
       const key = terminalResourceKey(sessionId, ref);
-      if (stoppedTerminalKeysRef.current.has(key)) return;
-      stoppedTerminalKeysRef.current.add(key);
-      ownedTerminalResourcesRef.current.delete(key);
-      void terminal.stop({ sessionId, ref }).catch(() => undefined);
+      if (
+        stoppingTerminalKeysRef.current.has(key) ||
+        stoppedTerminalKeysRef.current.has(key)
+      ) {
+        return;
+      }
+      stoppingTerminalKeysRef.current.add(key);
+      void terminal
+        .stop({ sessionId, ref })
+        .then(() => {
+          stoppedTerminalKeysRef.current.add(key);
+          ownedTerminalResourcesRef.current.delete(key);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          stoppingTerminalKeysRef.current.delete(key);
+        });
     },
     [terminal],
   );
