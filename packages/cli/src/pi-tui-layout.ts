@@ -8,6 +8,7 @@ import {
   renderMakaPiPendingQueue,
   renderMakaPiStatusLine,
   renderMakaPiTranscript,
+  type MakaPiTranscriptEntry,
   type MakaPiTranscriptMetadata,
   type MakaPiTranscriptState,
 } from './pi-transcript.js';
@@ -36,6 +37,36 @@ export class MakaTranscriptComponent implements Component {
 
   render(width: number): string[] {
     return renderMakaPiTranscript(this.state, this.metadata(), width);
+  }
+
+  /**
+   * Render the complete current projection without changing the geometry used
+   * by the live terminal-scrollback reconciliation path.
+   */
+  createDocumentRenderer(): (width: number) => string[] {
+    // The detached keys and their rendered-line cache live only as long as one
+    // viewer overlay. Closing it releases the complete duplicate projection.
+    const entryClones = new WeakMap<MakaPiTranscriptEntry, MakaPiTranscriptEntry>();
+    const documentEntry = (entry: MakaPiTranscriptEntry): MakaPiTranscriptEntry => {
+      const cached = entryClones.get(entry);
+      if (cached) {
+        Object.assign(cached, entry);
+        return cached;
+      }
+      const clone = { ...entry } as MakaPiTranscriptEntry;
+      entryClones.set(entry, clone);
+      return clone;
+    };
+    return (width) =>
+      renderMakaPiTranscript(
+        {
+          ...this.state,
+          entries: this.state.entries.map(documentEntry),
+          renderGeometry: { entryFirstLine: undefined, viewportTop: 0 },
+        },
+        this.metadata(),
+        width,
+      );
   }
 }
 

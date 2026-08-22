@@ -34,12 +34,15 @@ import {
   loadOrCreateRuntimeHostClientInstanceId,
 } from "@maka/runtime-host/client";
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
-import { McpClientManager } from "@maka/mcp";
+import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
 import {
   createSettingsStore,
   createMcpConfigStore,
+  createFileCredentialStore,
 } from "@maka/storage";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
+
+import { createMcpOAuthController } from "./mcp-oauth-controller.js";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
@@ -79,7 +82,7 @@ import { showMessageBoxWithDiagnostics } from "./native-diagnostic-dialog.js";
 import {
   resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
-import { registerMcpIpcMain } from "./mcp-ipc-main.js";
+import { createMcpExclusiveLane, registerMcpIpcMain } from "./mcp-ipc-main.js";
 import { createOnboardingService } from "./onboarding-service.js";
 import { registerOnboardingIpc } from "./onboarding-ipc-main.js";
 import {
@@ -278,6 +281,23 @@ const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
   clientVersion: app.getVersion(),
+  oauthStorage: createCredentialMcpOAuthStorage(
+    createFileCredentialStore(workspaceRoot),
+  ),
+});
+// One lane shared by config transactions and login claims: "no login is
+// active" checked inside a transaction cannot be invalidated by a claim
+// landing between the check and the write.
+const mcpExclusiveLane = createMcpExclusiveLane();
+const mcpOAuthController = createMcpOAuthController({
+  manager: mcpManager,
+  claimLane: mcpExclusiveLane,
+  openExternal: (url) => shell.openExternal(url),
+  ensureReady: () => ensureMcpReady(),
+  callbackPort: async (serverId) => {
+    const server = (await mcpConfigStore.get()).mcpServers[serverId];
+    return server && "url" in server ? server.oauth?.callbackPort : undefined;
+  },
 });
 let mcpStartup: Promise<void> | undefined;
 function ensureMcpReady(): Promise<void> {
@@ -822,6 +842,33 @@ updateService.start();
 void ensureMcpReady()
   .then(() => mcpCapabilityPublisher.refreshIfChanged())
   .catch((error) => console.error("[runtime-host] MCP startup failed:", error));
+// A login round persists its verifier and callback port; if the app
+// restarted mid-round, rebind the listener so the browser's redirect still
+// lands instead of hitting a dead port. Deliberately NOT chained behind the
+// connect/publish sequence above: a slow server or a publish failure must
+// not delay or block the rebind — it needs only the persisted state, and
+// the controller awaits readiness itself before the token exchange.
+void mcpConfigStore
+  .get()
+  .then((config) => {
+    for (const serverId of Object.keys(config.mcpServers)) {
+      void mcpOAuthController
+        .resumeLogin(serverId)
+        // No explicit mcp:changed here: a successful resume ends in
+        // finishAuthorization → reconnect, whose onChange handler already
+        // emits AND refreshes capabilities — a second identical emit here
+        // was strictly weaker.
+        .catch((error) =>
+          console.error(
+            `[runtime-host] MCP login resume failed for ${serverId}:`,
+            error,
+          ),
+        );
+    }
+  })
+  .catch((error) =>
+    console.error("[runtime-host] MCP login resume scan failed:", error),
+  );
 
 void clientSettingsEffects
   .refresh(false)
@@ -936,6 +983,8 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     store: mcpConfigStore,
     manager: mcpManager,
+    oauth: mcpOAuthController,
+    exclusiveLane: mcpExclusiveLane,
     ensureReady: ensureMcpReady,
     publishCapabilities: mcpCapabilityPublisher.refreshIfChanged,
     onPublicationError: (error) =>

@@ -89,9 +89,10 @@ export function UsageSettingsPage(props: {
   };
 
   async function setRange(range: UsageRange) {
-    const saved = await updateUsage({ range });
-    if (!saved || !usagePageMountedRef.current) return;
-    await props.onReload(range);
+    // Persist only: the surface refetches when the persisted range lands
+    // (the same trigger that reloads a Settings window restored directly
+    // onto this page), so a second fetch here would just race it.
+    await updateUsage({ range });
   }
 
   function updateUsage(patch: Partial<AppSettings['usage']>): Promise<boolean> {

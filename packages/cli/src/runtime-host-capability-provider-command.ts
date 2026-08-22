@@ -1,15 +1,15 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type {
   McpBoundTool,
   McpCallResult,
   McpToolBinding,
   McpToolDescriptor,
 } from '@maka/core/mcp';
-import { McpClientManager } from '@maka/mcp';
-import { normalizeMcpConfig } from '@maka/storage';
+import { createCredentialMcpOAuthStorage, McpClientManager } from '@maka/mcp';
+import { createFileCredentialStore, normalizeMcpConfig } from '@maka/storage';
 import {
   connectRemoteRuntimeHost,
   loadOrCreateRuntimeHostClientInstanceId,
@@ -67,6 +67,11 @@ export async function runRuntimeHostCapabilityProviderCli(
   const manager = new McpClientManager({
     clientName: 'maka-capability-provider',
     excludedStdioEnvironmentKeys: [credentialEnv],
+    // Same credential store Desktop writes (credentials.json beside the
+    // config): without it this process is credential-blind — every remote
+    // OAuth server 401s forever while forgetServerCredentials reports
+    // success and erases nothing.
+    oauthStorage: createCredentialMcpOAuthStorage(createFileCredentialStore(dirname(configPath))),
   });
   await manager.sync(config);
 

@@ -346,7 +346,6 @@ export const Composer = forwardRef<
      * as a resting mode the user must leave by hand.
      */
     planModeActive?: boolean;
-    planModePending?: boolean;
     planModeDisabledReason?: string;
     onPlanModeChange?(active: boolean): void | Promise<void>;
     /**
@@ -366,7 +365,6 @@ export const Composer = forwardRef<
      * neither control writes the other's field.
      */
     orchestrationMode?: OrchestrationMode;
-    orchestrationModePending?: boolean;
     orchestrationModeDisabledReason?: string;
     onOrchestrationModeChange?(mode: OrchestrationMode): void | Promise<void>;
     /**
@@ -398,6 +396,29 @@ export const Composer = forwardRef<
      *   - `onSearchMentionFiles` powers the `@` popup.
      */
     mentionSkills?: ReadonlyArray<ComposerSkillOption>;
+    /**
+     * The host's SETTLED verdict on whether the catalog has anything to offer,
+     * held steady across refreshes. The host clears `mentionSkills` while
+     * re-fetching it (the `/` popup must stay fail-closed), so the list being
+     * empty cannot tell "refreshing" from "no skills" — and reading the
+     * transient `[]` as the latter disables the ＋ menu's Skills row and grows
+     * it by a description line for the length of the round trip, blinking the
+     * open menu's geometry on every mode or model change. Hosts that never
+     * clear the list mid-flight can omit this; the row then falls back to
+     * `mentionSkills.length === 0`.
+     */
+    mentionSkillsUnavailable?: boolean;
+    /**
+     * True while the host is re-fetching `mentionSkills`. The row's LOOK is
+     * governed by `mentionSkillsUnavailable` and does not move during a
+     * refresh; this flag governs what a click DOES. Mid-refresh the enabled
+     * look is a held presentation of the previous catalog, not a promise the
+     * current one can honor — acting on it would write a stray `/` into the
+     * draft and pop an empty menu — so the row ignores clicks (and stops
+     * closing the menu, so the click can simply be retried) until the catalog
+     * settles.
+     */
+    mentionSkillsLoading?: boolean;
     slashCommands?: ReadonlyArray<ComposerSlashCommandOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
   }
@@ -1351,15 +1372,18 @@ export const Composer = forwardRef<
   ];
   /** A host that passes no handler cannot be in a mode this control can leave. */
   const planModeActive = props.onPlanModeChange !== undefined && props.planModeActive === true;
+  // Deliberately NOT disabled while the host commits a toggle. The host
+  // already drops re-entrant toggles itself, so a disable during its short
+  // IPC round trip carries no protection — it only dims the row (and the
+  // footer mark) to half opacity and back on every click, a visible blink
+  // in the very menu the user is looking at.
   const planModeDisabled =
     props.disabled === true
-    || props.planModePending === true
     || Boolean(props.planModeDisabledReason);
   const orchestrationMode: OrchestrationMode =
     props.onOrchestrationModeChange ? props.orchestrationMode ?? 'default' : 'default';
   const orchestrationModeDisabled =
     props.disabled === true
-    || props.orchestrationModePending === true
     || Boolean(props.orchestrationModeDisabledReason);
   /**
    * The marks at the tail of the footer's left controls are the resting
@@ -1682,11 +1706,51 @@ export const Composer = forwardRef<
                         // a stray slash and popping an empty menu. Say why it is
                         // unavailable: the panel this replaced showed "no skills
                         // available", and a silent grey row answers nothing.
-                        isDisabled={props.disabled || props.mentionSkills.length === 0}
-                        description={
-                          props.mentionSkills.length === 0 ? copy.noSkillsAvailable : undefined
+                        //
+                        // Only a SETTLED empty catalog counts. The host clears
+                        // the list while re-fetching it (a Plan toggle or model
+                        // change does that with this menu open), and rendering
+                        // that transient `[]` as "no skills" grows this row by
+                        // a description line and back — the menu visibly jumps.
+                        // So the verdict is the host's settled flag when it
+                        // supplies one, and the row repaints only when the
+                        // catalog's emptiness actually changed.
+                        isDisabled={
+                          props.disabled
+                          || (props.mentionSkillsUnavailable
+                            ?? props.mentionSkills.length === 0)
                         }
-                        onClick={openSkillMenu}
+                        description={
+                          (props.mentionSkillsUnavailable
+                            ?? props.mentionSkills.length === 0)
+                            ? copy.noSkillsAvailable
+                            : undefined
+                        }
+                        // Mid-refresh the row LOOKS like the previous catalog
+                        // but cannot act for the current one: opening the `/`
+                        // menu now would write a stray slash against a list
+                        // that is fail-closed empty. A loading click or Enter
+                        // is a complete no-op — nothing typed, menu left open —
+                        // so the same activation a beat later simply works.
+                        // `aria-busy` says so to assistive technology (the
+                        // geometry-stable row would otherwise announce
+                        // "available" and silently ignore the action); the
+                        // class is the same contract for tests and styling.
+                        // The gate lives INSIDE one always-present handler:
+                        // swapping the prop between undefined and a function
+                        // changes Item's internal structure, and the remount
+                        // would drop keyboard focus mid-refresh.
+                        aria-busy={props.mentionSkillsLoading === true ? true : undefined}
+                        className={
+                          props.mentionSkillsLoading === true
+                            ? 'maka-composer-skills-loading'
+                            : undefined
+                        }
+                        hasCloseOnSelect={props.mentionSkillsLoading !== true}
+                        onClick={() => {
+                          if (props.mentionSkillsLoading === true) return;
+                          openSkillMenu();
+                        }}
                       />
                     ) : null}
                     {props.onSetGoal ? (

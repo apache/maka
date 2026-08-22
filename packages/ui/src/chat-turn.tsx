@@ -21,6 +21,7 @@ import {
   ChatTokenizedText,
   HStack,
   IconButton as UiIconButton,
+  Spinner,
   Thumbnail,
   Timestamp,
   Token,
@@ -45,7 +46,7 @@ import { foldTimeline, type FoldedTimelineChild, type FoldedTimelineEntry } from
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants } from './primitives/chat.js';
-import { ToolTrow } from './tool-activity.js';
+import { ToolTrow, toolTrowHasVisibleSpinner } from './tool-activity.js';
 import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -436,6 +437,9 @@ export const TurnView = memo(function TurnView(props: {
     () => splitTimelineAtUserMessages(foldedTimeline, showAssistantMessage),
     [foldedTimeline, showAssistantMessage],
   );
+  const toolSurfaceOwnsSpinner = turn.timeline.some(
+    (item) => item.kind === 'tools' && toolTrowHasVisibleSpinner(item.items),
+  );
   return (
     <section
       className="maka-turn"
@@ -658,7 +662,10 @@ export const TurnView = memo(function TurnView(props: {
                     <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
                   ) : (
                     props.liveStreaming.runningStatus && (
-                      <TurnRunningStatus startedAt={turn.startedAt} />
+                      <TurnRunningStatus
+                        startedAt={turn.startedAt}
+                        showSpinner={!toolSurfaceOwnsSpinner}
+                      />
                     )
                   )}
                 </>
@@ -948,7 +955,7 @@ const ELAPSED_TICK_MS = 1_000;
  * rare fallback path where streaming beat the user turn into the transcript;
  * the phrase then stands alone.
  */
-export function TurnRunningStatus(props: { startedAt?: number }) {
+export function TurnRunningStatus(props: { startedAt?: number; showSpinner?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const phrases = copy.workingPhrases;
   const { startedAt } = props;
@@ -990,22 +997,14 @@ export function TurnRunningStatus(props: { startedAt?: number }) {
   }, [phrases.length]);
 
   return (
-    /* This row runs no animation of its own. Both idioms above it are already
-       spoken for — a running tool card spins, and `ChatReasoning` shimmers its
-       label while reasoning streams — and Astryx's guidance is not to stack a
-       second instance of either in one view. What moves here is the content:
-       the phrase every 20s, the seconds every second. The seconds are the
-       better proof anyway, because a spinner turns and a shimmer sweeps at the
-       same rate whether or not anything is happening. */
     <div className="maka-turn-processing" role="status" aria-label={copy.processing} ref={rootRef}>
+      {props.showSpinner !== false && (
+        <Spinner size="md" shade="subtle" aria-hidden="true" />
+      )}
       {/* Every visible token here moves on the clock. Announcing either would
           talk over the answer being streamed beside it, so the row's label is
           its whole accessible name and the text is decoration. */}
       <span className="maka-turn-indicator-text" aria-hidden="true">
-        {/* No sweep here. Astryx already owns that idiom: `ChatReasoning`
-            shimmers its own label while reasoning streams, a few pixels above
-            this row. Running a second one, at a second speed, made the two
-            read as competing rather than as one turn working. */}
         <span className="maka-turn-working-phrase" data-fading={phraseFading || undefined}>
           {phrases[phraseIndex] ?? copy.processing}
         </span>

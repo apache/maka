@@ -428,8 +428,15 @@ function AppShellContent({
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
   const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
   const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
-  const [pendingCollaborationModeBySession, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
-  const [pendingOrchestrationModeBySession, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
+  // The rows stay interactive while a commit runs, so a click landing in that
+  // window is the user updating their mind — not noise to drop. Each map holds
+  // only the LATEST ask per session; the in-flight commit's finally block
+  // applies it if the settled state does not already satisfy it. Nothing
+  // renders from a mode commit's round trip — painting it (disable/dim, then
+  // restore) is exactly the ＋ menu blink MatrixA/fix-plan-click-flicker
+  // removed — so there is no pending state here, only the registry refs.
+  const queuedCollaborationModeBySession = useRef(new Map<string, boolean>());
+  const queuedOrchestrationModeBySession = useRef(new Map<string, OrchestrationMode>());
   const [newTaskPermissionChoice, setNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
@@ -950,25 +957,30 @@ function AppShellContent({
     return next;
   }
 
+  // The registry ref is the re-entrancy authority; the setter is only for
+  // actions whose pending state something actually renders (permission, model,
+  // message retry). Mode toggles pass none — their round trip is deliberately
+  // not painted, and a write-only state would still schedule a render per
+  // add/clear.
   function addPendingSessionAction(
     sessionId: string,
     pendingRef: { current: Set<string> },
-    setPendingBySession: (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void,
+    setPendingBySession?: (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void,
   ): boolean {
     if (pendingRef.current.has(sessionId)) return false;
     pendingRef.current.add(sessionId);
-    setPendingBySession((current) => ({ ...current, [sessionId]: true }));
+    setPendingBySession?.((current) => ({ ...current, [sessionId]: true }));
     return true;
   }
 
   function clearPendingSessionAction(
     sessionId: string,
     pendingRef: { current: Set<string> },
-    setPendingBySession: (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void,
+    setPendingBySession?: (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void,
   ): void {
     if (!pendingRef.current.has(sessionId)) return;
     pendingRef.current.delete(sessionId);
-    setPendingBySession((current) => omitSessionKey(current, sessionId));
+    setPendingBySession?.((current) => omitSessionKey(current, sessionId));
   }
 
   function clearSessionRendererState(sessionId: string): void {
@@ -976,9 +988,12 @@ function AppShellContent({
     turnActionRegistry.clearForSession(sessionId);
     permissionModeChangeRegistry.keysRef.current.delete(sessionId);
     collaborationModeChangeRegistry.keysRef.current.delete(sessionId);
-    setPendingCollaborationModeBySession((current) => omitSessionKey(current, sessionId));
     orchestrationModeChangeRegistry.keysRef.current.delete(sessionId);
-    setPendingOrchestrationModeBySession((current) => omitSessionKey(current, sessionId));
+    // Queued mode intents die with the Session's renderer lifecycle: an
+    // in-flight commit's finally would otherwise replay an old ask against a
+    // Session this cleanup has already let go of.
+    queuedCollaborationModeBySession.current.delete(sessionId);
+    queuedOrchestrationModeBySession.current.delete(sessionId);
     sessionModelChangeRegistry.keysRef.current.delete(sessionId);
   }
 
@@ -1047,8 +1062,15 @@ function AppShellContent({
     if (!addPendingSessionAction(
       sessionId,
       collaborationModeChangeRegistry.keysRef,
-      setPendingCollaborationModeBySession,
-    )) return false;
+    )) {
+      // A commit is in flight and the rows stay interactive (no pending
+      // repaint), so this click is the user updating their mind, not noise.
+      // Latest intent wins: remember only the newest value and let the
+      // in-flight commit's finally block apply it, so a quick "on, then off"
+      // finishes as "off".
+      queuedCollaborationModeBySession.current.set(sessionId, active);
+      return true;
+    }
 
     try {
       const planState = await window.maka.sessions.getPlanState(sessionId);
@@ -1100,8 +1122,20 @@ function AppShellContent({
       clearPendingSessionAction(
         sessionId,
         collaborationModeChangeRegistry.keysRef,
-        setPendingCollaborationModeBySession,
       );
+      // Whatever the user last asked for while this commit ran is the state
+      // they expect to land on. Read the settled mode through the ref — the
+      // closure's projection predates this commit — and only re-apply when
+      // the intent is not already satisfied.
+      const queued = queuedCollaborationModeBySession.current.get(sessionId);
+      queuedCollaborationModeBySession.current.delete(sessionId);
+      if (queued !== undefined) {
+        const settledActive = (
+          sessionsRef.current.find((session) => session.id === sessionId)?.collaborationMode
+          ?? 'agent'
+        ) === 'plan';
+        if (queued !== settledActive) void applyPlanMode(queued, sessionId);
+      }
     }
   }
 
@@ -1119,8 +1153,13 @@ function AppShellContent({
     if (!addPendingSessionAction(
       sessionId,
       orchestrationModeChangeRegistry.keysRef,
-      setPendingOrchestrationModeBySession,
-    )) return false;
+    )) {
+      // Same latest-intent contract as applyPlanMode: the rows stay
+      // interactive while a commit runs, so keep the newest ask and apply it
+      // from the in-flight commit's finally block.
+      queuedOrchestrationModeBySession.current.set(sessionId, mode);
+      return true;
+    }
 
     try {
       const next = await window.maka.sessions.setOrchestrationMode(sessionId, mode);
@@ -1140,8 +1179,15 @@ function AppShellContent({
       clearPendingSessionAction(
         sessionId,
         orchestrationModeChangeRegistry.keysRef,
-        setPendingOrchestrationModeBySession,
       );
+      const queued = queuedOrchestrationModeBySession.current.get(sessionId);
+      queuedOrchestrationModeBySession.current.delete(sessionId);
+      if (queued !== undefined) {
+        const settled = sessionsRef.current.find(
+          (session) => session.id === sessionId,
+        )?.orchestrationMode ?? 'default';
+        if (queued !== settled) void applyOrchestrationMode(queued, sessionId);
+      }
     }
   }
 
@@ -2076,7 +2122,7 @@ function AppShellContent({
   // Composer mention popups: `/` uses Runtime's session/project-aware,
   // host-compatible projection; `@` uses workspace file search. Keep the
   // resolved project path as a refresh key for new-chat project changes.
-  const { mentionSkills, searchMentionFiles } = useComposerMentions({
+  const { mentionSkills, mentionSkillsUnavailable, mentionSkillsLoading, searchMentionFiles } = useComposerMentions({
     skills,
     sessionId: activeId,
     projectPath: activeId ? projectInfo?.projectPath : newTask.projectPath,
@@ -3216,6 +3262,8 @@ function AppShellContent({
                       : undefined
                   }
                   mentionSkills={mentionSkills}
+                  mentionSkillsUnavailable={mentionSkillsUnavailable}
+                  mentionSkillsLoading={mentionSkillsLoading}
                   slashCommands={desktopSlashCommands}
                   onSearchMentionFiles={searchMentionFiles}
                   pendingAttachments={pendingAttachments}
@@ -3294,26 +3342,16 @@ function AppShellContent({
                       : undefined
                   }
                   planModeActive={activePlanMode}
-                  planModePending={activeId
-                    ? pendingCollaborationModeBySession[activeId] === true
-                    : false}
-                  planModeDisabledReason={
-                    activeId && pendingCollaborationModeBySession[activeId] === true
-                      ? shellCopy.modeChanging
-                      : modeChangeDisabledReason
-                  }
+                  // No pending-keyed disable while a toggle commits: the
+                  // pending registries already swallow re-entrant toggles, and
+                  // a reason here would gray the row mid-click — the blink
+                  // this control had. The rows repaint when the write lands.
+                  planModeDisabledReason={modeChangeDisabledReason}
                   onPlanModeChange={(active) => {
                     void setPlanMode(active);
                   }}
                   orchestrationMode={activeOrchestrationMode}
-                  orchestrationModePending={activeId
-                    ? pendingOrchestrationModeBySession[activeId] === true
-                    : false}
-                  orchestrationModeDisabledReason={
-                    activeId && pendingOrchestrationModeBySession[activeId] === true
-                      ? shellCopy.modeChanging
-                      : modeChangeDisabledReason
-                  }
+                  orchestrationModeDisabledReason={modeChangeDisabledReason}
                   onOrchestrationModeChange={(mode) => {
                     void setOrchestrationMode(mode);
                   }}
@@ -3612,6 +3650,8 @@ function AppShellContent({
                 sourceSession={activeSessionForView}
                 modelChoices={chatModelChoices}
                 mentionSkills={mentionSkills}
+                mentionSkillsUnavailable={mentionSkillsUnavailable}
+                mentionSkillsLoading={mentionSkillsLoading}
                 onSearchMentionFiles={searchMentionFiles}
               />
             )}

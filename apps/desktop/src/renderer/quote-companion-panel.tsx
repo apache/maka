@@ -47,6 +47,8 @@ export function QuoteCompanionPanel(props: {
   /** Shared global choice list, only used to render the inherited model's label. */
   modelChoices: readonly ChatModelChoice[];
   mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
+  mentionSkillsUnavailable?: ComponentProps<typeof Composer>['mentionSkillsUnavailable'];
+  mentionSkillsLoading?: ComponentProps<typeof Composer>['mentionSkillsLoading'];
   onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
@@ -241,6 +243,8 @@ export function QuoteCompanionPanel(props: {
               pendingAttachments={pendingAttachments}
               onRemoveAttachment={removeAttachment}
               mentionSkills={props.mentionSkills}
+              mentionSkillsUnavailable={props.mentionSkillsUnavailable}
+              mentionSkillsLoading={props.mentionSkillsLoading}
               onSearchMentionFiles={props.onSearchMentionFiles}
               pendingQuotes={props.quotes.map((quote) => quote.value)}
               contextDrawerDefaultCollapsed

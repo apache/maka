@@ -1640,8 +1640,8 @@ describe('Maka Pi TUI runner', () => {
       'the head of a tall reply must still be written out',
     );
 
-    // No in-app pager: the removed scroll indicator and its PgUp/PgDn hint never
-    // appear. History is scrolled through the terminal's own scrollback instead.
+    // The live surface stays unpaged until the user explicitly opens the
+    // transcript viewer. Its navigation chrome must not consume normal rows.
     assert.doesNotMatch(cumulative, /PgUp|PgDn|\d+ more/);
 
     // The visible screen follows the tail: the last reply line and the status
@@ -1660,6 +1660,65 @@ describe('Maka Pi TUI runner', () => {
     assert.equal(
       screen[terminal.rows - 1]?.includes('Maka · Auto · deepseek-v4-flash · deepseek · /repo'),
       true,
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('browses a long transcript without depending on terminal scrollback', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new LongTranscriptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('fill');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('filler line 40'));
+
+    terminal.input('/transcript');
+    terminal.input('\r');
+    await waitFor(
+      () => plainTerminalOutput(terminal.screenOutput()).includes('TRANSCRIPT'),
+      'the transcript viewer to open',
+    );
+    let screen = plainTerminalOutput(terminal.screenOutput());
+    assert.match(screen, /PgUp\/PgDn page/);
+    assert.match(screen, /filler line 40/);
+    assert.doesNotMatch(screen, /filler line 1\s/);
+
+    terminal.input('\x1b[H');
+    await waitFor(
+      () =>
+        plainTerminalOutput(terminal.screenOutput())
+          .split(/\r?\n/)
+          .some((line) => line.trim() === 'filler line 1'),
+      'Home to reveal the transcript head',
+    );
+    screen = plainTerminalOutput(terminal.screenOutput());
+    assert.match(screen, /> fill/);
+    assert.doesNotMatch(screen, /filler line 40/);
+
+    terminal.input('q');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('TRANSCRIPT'),
+      'q to close the transcript viewer',
+    );
+    assert.match(
+      plainTerminalOutput(terminal.screenOutput()),
+      /Maka · Auto · deepseek-v4-flash · deepseek · \/repo/,
     );
 
     exitMaka(terminal);
@@ -1813,6 +1872,37 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => terminal.progressStates.at(-1) === false);
     // Interrupt refills the editor with the cleared queue; clear it before /exit.
     terminal.input('\x03');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('opens /transcript during a running turn instead of steering it', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('start the work');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    terminal.input('/transcript');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('TRANSCRIPT'));
+    assert.deepEqual(driver.steered, []);
+
+    terminal.input('q');
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
     terminal.input('/exit');
     terminal.input('\r');
     await run;
