@@ -1,14 +1,28 @@
 import type { UiLocale } from '@maka/core/ui-locale';
+import type { ToastDiagnosticTarget } from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy.js';
 
 const SESSION_WORKSPACE_UNAVAILABLE_CODE = 'SESSION_WORKSPACE_UNAVAILABLE';
 
 export function showSessionWorkspaceUnavailableToast(
-  toastApi: { error(title: string, description?: string): void },
+  toastApi: {
+    error(
+      title: string,
+      description?: string,
+      diagnosticDetails?: string,
+      diagnosticTarget?: ToastDiagnosticTarget,
+    ): void;
+  },
   locale: UiLocale,
+  diagnosticTarget?: ToastDiagnosticTarget,
 ): void {
   const copy = getShellCopy(locale).errors;
-  toastApi.error(copy.workspaceUnavailableTitle, copy.workspaceUnavailableDescription);
+  toastApi.error(
+    copy.workspaceUnavailableTitle,
+    copy.workspaceUnavailableDescription,
+    undefined,
+    diagnosticTarget,
+  );
 }
 
 export function isSessionWorkspaceUnavailableError(error: unknown): boolean {

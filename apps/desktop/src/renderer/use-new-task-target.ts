@@ -14,7 +14,12 @@ type ReadyHost = Extract<
 >;
 
 type ToastApi = {
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { profileId: string },
+  ): void;
 };
 
 export function useNewTaskTarget(options: {
@@ -140,6 +145,8 @@ export function useNewTaskTarget(options: {
       options.toastApi.error(
         copy.selectDirectoryFailedTitle,
         localizedShellErrorMessage(error, copy.readPathFailedFallback, options.uiLocale),
+        undefined,
+        { profileId: host.profile.id },
       );
     } finally {
       setPending(false);
@@ -155,7 +162,12 @@ export function useNewTaskTarget(options: {
         candidate.state === 'available',
     );
     if (!host) {
-      options.toastApi.error(copy.catalogUnavailable);
+      options.toastApi.error(
+        copy.catalogUnavailable,
+        undefined,
+        undefined,
+        { profileId },
+      );
       return;
     }
     setSelectedProfileId(profileId);
@@ -196,6 +208,8 @@ export function useNewTaskTarget(options: {
       options.toastApi.error(
         copy.selectDirectoryFailedTitle,
         localizedShellErrorMessage(error, copy.readPathFailedFallback, options.uiLocale),
+        undefined,
+        { profileId: host.profile.id },
       );
     } finally {
       setPending(false);

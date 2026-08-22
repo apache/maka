@@ -26,7 +26,12 @@ type MessageListUpdater = (
 
 type ToastApi = {
   info(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
 };
 
 /** Active edit-and-resend draft owned by the desktop shell. */
@@ -124,7 +129,12 @@ export function createAppShellRevisionActions(deps: {
         message.type === 'user' && message.turnId === turnId,
     );
     if (!userMessage) {
-      toastApi.error(copy.operationFailedTitle, copy.operationFailedFallback);
+      toastApi.error(
+        copy.operationFailedTitle,
+        copy.operationFailedFallback,
+        undefined,
+        { sessionId },
+      );
       return;
     }
 
@@ -335,11 +345,15 @@ export function createAppShellRevisionActions(deps: {
       }
       if (activeIdRef.current !== sourceSessionId) return false;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, {
+          sessionId: sourceSessionId,
+        });
       } else {
         toastApi.error(
           copy.operationFailedTitle,
           localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+          undefined,
+          { sessionId: sourceSessionId },
         );
       }
       return false;

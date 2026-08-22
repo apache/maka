@@ -88,6 +88,11 @@ import { settingsActionErrorMessage } from './settings/settings-error-copy';
 import { getMcpCopy, type McpCopy } from './locales/mcp-copy';
 import { formatCommandLine } from './mcp-command-line';
 import {
+  defaultRuntimeHostDiagnosticTarget,
+  runOnDefaultRuntimeHost,
+  type DefaultRuntimeHostDiagnosticTarget,
+} from './default-runtime-host-operation.js';
+import {
   validateMcpEditorDraft,
   type McpEditorErrors,
 } from './mcp-editor-validation';
@@ -121,6 +126,11 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const editorSessionRef = useRef(0);
   const mounted = useMountedRef();
   const toast = useToast();
+  const reportRuntimeHostError = (
+    title: string,
+    description: string | undefined,
+    diagnosticTarget?: DefaultRuntimeHostDiagnosticTarget,
+  ) => toast.error(title, description, undefined, diagnosticTarget);
   // Set when a remove starts, consumed once the row has actually left the
   // list — which only happens when the config write lands.
   const rowsContainerRef = useRef<HTMLDivElement | null>(null);
@@ -140,15 +150,23 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   async function reload() {
     setBusy((current) => current ?? 'load');
     try {
-      const [nextConfig, nextStatuses] = await Promise.all([
-        window.maka.mcp.getConfig(),
-        window.maka.mcp.listStatuses(),
-      ]);
+      const { value: [nextConfig, nextStatuses] } = await runOnDefaultRuntimeHost((host) =>
+        Promise.all([
+          window.maka.mcp.getConfig(host),
+          window.maka.mcp.listStatuses(host),
+        ]),
+      );
       if (!mounted.current) return;
       setConfig(nextConfig);
       setStatuses(nextStatuses);
     } catch (error) {
-      if (mounted.current) toast.error(copy.errors.load, settingsActionErrorMessage(error, locale));
+      if (mounted.current) {
+        reportRuntimeHostError(
+          copy.errors.load,
+          settingsActionErrorMessage(error, locale),
+          defaultRuntimeHostDiagnosticTarget(error),
+        );
+      }
     } finally {
       if (mounted.current) setBusy(null);
     }
@@ -238,10 +256,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     setInstallPhases((current) => ({ ...current, [entry.id]: 'installing' }));
     try {
       const minimumIndicator = delay(MIN_INSTALL_INDICATOR_MS);
-      const next = await window.maka.mcp.install(entry.id, structuredClone(entry.config));
+      const next = await runOnDefaultRuntimeHost((host) =>
+        window.maka.mcp.install(entry.id, structuredClone(entry.config), host),
+      );
       await minimumIndicator;
       if (!mounted.current || cancelledInstalls.current.has(entry.id)) return;
-      setConfig(next);
+      setConfig(next.value);
       if (entry.setupRequired) {
         toast.success(copy.toast.templateInstalled(entry.name), copy.toast.templateInstalledDetail);
       } else {
@@ -249,7 +269,11 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       }
     } catch (error) {
       if (mounted.current && !cancelledInstalls.current.has(entry.id)) {
-        toast.error(copy.errors.install(entry.name), settingsActionErrorMessage(error, locale));
+        reportRuntimeHostError(
+          copy.errors.install(entry.name),
+          settingsActionErrorMessage(error, locale),
+          defaultRuntimeHostDiagnosticTarget(error),
+        );
       }
     } finally {
       const wasCancelled = cancelledInstalls.current.delete(entry.id);
@@ -264,15 +288,21 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     cancelledInstalls.current.add(entry.id);
     setInstallPhases((current) => ({ ...current, [entry.id]: 'cancelling' }));
     try {
-      const next = await window.maka.mcp.cancelInstall(entry.id);
+      const next = await runOnDefaultRuntimeHost((host) =>
+        window.maka.mcp.cancelInstall(entry.id, host),
+      );
       if (!mounted.current) return;
-      setConfig(next);
+      setConfig(next.value);
       setStatuses((current) => current.filter((status) => status.serverId !== entry.id));
       toast.info(copy.toast.installCancelled(entry.name));
     } catch (error) {
       cancelledInstalls.current.delete(entry.id);
       if (mounted.current) {
-        toast.error(copy.errors.cancelInstall(entry.name), settingsActionErrorMessage(error, locale));
+        reportRuntimeHostError(
+          copy.errors.cancelInstall(entry.name),
+          settingsActionErrorMessage(error, locale),
+          defaultRuntimeHostDiagnosticTarget(error),
+        );
         void reload();
       }
     } finally {
@@ -291,14 +321,26 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     setEditorErrors({});
     setBusy('save');
     try {
-      const next = await window.maka.mcp.upsert(editor.draft.id.trim(), mcpConfigFromDraft(editor.draft, copy));
+      const next = await runOnDefaultRuntimeHost((host) =>
+        window.maka.mcp.upsert(
+          editor.draft.id.trim(),
+          mcpConfigFromDraft(editor.draft, copy),
+          host,
+        ),
+      );
       if (!mounted.current) return;
-      setConfig(next);
+      setConfig(next.value);
       closeEditor();
       switchTab('installed');
       toast.success(copy.toast.saved, copy.toast.savedDetail);
     } catch (error) {
-      if (mounted.current) toast.error(copy.errors.save, settingsActionErrorMessage(error, locale));
+      if (mounted.current) {
+        reportRuntimeHostError(
+          copy.errors.save,
+          settingsActionErrorMessage(error, locale),
+          defaultRuntimeHostDiagnosticTarget(error),
+        );
+      }
     } finally {
       if (mounted.current) setBusy(null);
     }
@@ -307,20 +349,37 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   async function importJson(event: React.FormEvent) {
     event.preventDefault();
     if (!editor || editor.mode !== 'json') return;
+    let imported: McpConfigFile;
+    try {
+      imported = parseMcpImport(editor.source, locale);
+    } catch (error) {
+      if (mounted.current) toast.error(copy.errors.import, settingsActionErrorMessage(error, locale));
+      return;
+    }
     setBusy('import');
     try {
-      const imported = parseMcpImport(editor.source, locale);
-      const next = await window.maka.mcp.setConfig({
-        version: MCP_CONFIG_VERSION,
-        mcpServers: { ...config.mcpServers, ...imported.mcpServers },
-      });
+      const next = await runOnDefaultRuntimeHost((host) =>
+        window.maka.mcp.setConfig(
+          {
+            version: MCP_CONFIG_VERSION,
+            mcpServers: { ...config.mcpServers, ...imported.mcpServers },
+          },
+          host,
+        ),
+      );
       if (!mounted.current) return;
-      setConfig(next);
+      setConfig(next.value);
       closeEditor();
       switchTab('installed');
       toast.success(copy.toast.imported, copy.toast.importedDetail(Object.keys(imported.mcpServers).length));
     } catch (error) {
-      if (mounted.current) toast.error(copy.errors.import, settingsActionErrorMessage(error, locale));
+      if (mounted.current) {
+        reportRuntimeHostError(
+          copy.errors.import,
+          settingsActionErrorMessage(error, locale),
+          defaultRuntimeHostDiagnosticTarget(error),
+        );
+      }
     } finally {
       if (mounted.current) setBusy(null);
     }
@@ -329,10 +388,18 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   async function toggle(serverId: string, server: McpServerConfig, enabled: boolean) {
     setBusy(`toggle:${serverId}`);
     try {
-      const next = await window.maka.mcp.upsert(serverId, { ...server, enabled });
-      if (mounted.current) setConfig(next);
+      const next = await runOnDefaultRuntimeHost((host) =>
+        window.maka.mcp.upsert(serverId, { ...server, enabled }, host),
+      );
+      if (mounted.current) setConfig(next.value);
     } catch (error) {
-      if (mounted.current) toast.error(copy.errors.update, settingsActionErrorMessage(error, locale));
+      if (mounted.current) {
+        reportRuntimeHostError(
+          copy.errors.update,
+          settingsActionErrorMessage(error, locale),
+          defaultRuntimeHostDiagnosticTarget(error),
+        );
+      }
     } finally {
       if (mounted.current) setBusy(null);
     }
@@ -341,13 +408,27 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   async function testServer(serverId: string) {
     setBusy(`test:${serverId}`);
     try {
-      const result = await window.maka.mcp.test(serverId);
+      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+        window.maka.mcp.test(serverId, host),
+      );
       if (!mounted.current) return;
       setStatuses((current) => replaceStatus(current, result.status));
       if (result.ok) toast.success(copy.toast.connectionOk, copy.toast.toolLatency(result.status.toolCount, result.latencyMs));
-      else toast.error(copy.toast.connectionFailed, result.status.error ?? copy.errors.unavailableStatus);
+      else {
+        reportRuntimeHostError(
+          copy.toast.connectionFailed,
+          result.status.error ?? copy.errors.unavailableStatus,
+          diagnosticTarget,
+        );
+      }
     } catch (error) {
-      if (mounted.current) toast.error(copy.errors.test, settingsActionErrorMessage(error, locale));
+      if (mounted.current) {
+        reportRuntimeHostError(
+          copy.errors.test,
+          settingsActionErrorMessage(error, locale),
+          defaultRuntimeHostDiagnosticTarget(error),
+        );
+      }
     } finally {
       if (mounted.current) setBusy(null);
     }
@@ -366,16 +447,24 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     focusRowAfterRemovalRef.current = installedEntries.findIndex(([id]) => id === serverId);
     setBusy(`remove:${serverId}`);
     try {
-      const next = await window.maka.mcp.remove(serverId);
+      const next = await runOnDefaultRuntimeHost((host) =>
+        window.maka.mcp.remove(serverId, host),
+      );
       if (!mounted.current) return;
-      setConfig(next);
+      setConfig(next.value);
       setStatuses((current) => current.filter((status) => status.serverId !== serverId));
       // Drop the id too — keeping it would reopen the inspector if a server
       // with the same id is added back later, without any user action.
       setSelectedServerId((current) => (current === serverId ? null : current));
       toast.success(copy.toast.removed);
     } catch (error) {
-      if (mounted.current) toast.error(copy.errors.remove, settingsActionErrorMessage(error, locale));
+      if (mounted.current) {
+        reportRuntimeHostError(
+          copy.errors.remove,
+          settingsActionErrorMessage(error, locale),
+          defaultRuntimeHostDiagnosticTarget(error),
+        );
+      }
     } finally {
       if (mounted.current) setBusy(null);
     }

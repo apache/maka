@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { DesktopProjectCapabilities } from '../preload/bridge-contract.js';
+import type {
+  DesktopProjectCapabilities,
+  DesktopRuntimeHostRef,
+} from '../preload/bridge-contract.js';
 import {
   createAppShellProjectActions,
   type AppShellProjectActions,
@@ -85,9 +88,11 @@ export function useAppShellProjectContext(options: {
   const projectPickerRequestRef = useRef(0);
   const defaultRefreshGenerationRef = useRef(0);
 
-  const refreshDefaultProjectState = async (): Promise<ProjectRecord[]> => {
+  const refreshDefaultProjectState = async (
+    host?: DesktopRuntimeHostRef,
+  ): Promise<ProjectRecord[]> => {
     const generation = ++defaultRefreshGenerationRef.current;
-    const { snapshot, info } = await window.maka.projects.getDefaultContext();
+    const { snapshot, info } = await window.maka.projects.getDefaultContext(host);
     if (
       !rendererMountedRef.current ||
       generation !== defaultRefreshGenerationRef.current

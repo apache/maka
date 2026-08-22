@@ -32,7 +32,10 @@ import {
   type ConnectionsBridge,
   type CredentialPresenceStatus,
 } from './provider-panel-shared';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
@@ -129,6 +132,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const connectionDetailMountedRef = useMountedRef();
   const connectionDetailLifecycleRef = useRef(0);
   const toast = useToast();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const supportsApiKey = providerAuthSupportsApiKey(connection.providerType);
   const needsOAuth = defaults.authKind === 'oauth_token';
   // A retired provider still has its credential on disk, so `hasSecret` is true
@@ -204,9 +208,12 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       .catch((error) => {
         if (!isConnectionDetailCurrent(lifecycle)) return;
         setHasSecret('error');
-        toast.error(copy.credentialReadFailed, providerPanelActionErrorMessage(error, locale));
+        reportHostError(
+          copy.credentialReadFailed,
+          providerPanelActionErrorMessage(error, locale),
+        );
       });
-  }, [props.bridge, connection.slug, probesCredential, toast]);
+  }, [props.bridge, connection.slug, probesCredential, reportHostError]);
 
   useEffect(() => {
     const nextSnapshot = connectionDetailSnapshot(connection, defaults.baseUrl);
@@ -314,7 +321,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       if (saved && probesCredential) {
         setHasSecret('error');
       }
-      toast.error(
+      reportHostError(
         saved ? copy.refreshFailed : copy.saveFailed,
         providerPanelActionErrorMessage(error, locale),
       );
@@ -348,7 +355,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (!saved) setEnabledModelIds(previous);
-      toast.error(
+      reportHostError(
         saved ? copy.refreshFailed : copy.saveModelsFailed,
         providerPanelActionErrorMessage(error, locale),
       );
@@ -492,7 +499,10 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       return true;
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return false;
-      toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+      reportHostError(
+        copy.saveFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
       return false;
     } finally {
       releaseSave();
@@ -550,7 +560,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return saved;
       if (!saved) setEnabledModelIds(previous);
-      toast.error(
+      reportHostError(
         saved ? copy.refreshFailed : copy.saveModelsFailed,
         providerPanelActionErrorMessage(error, locale),
       );
@@ -585,7 +595,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
           `${result.modelTested} · ${result.latencyMs} ms`,
         );
       } else {
-        toast.error(
+        reportHostError(
           copy.connectionFailed(connection.name),
           connectionTestFailureMessage(result, {
             auth: copy.authTroubleshooting(credentialTroubleshootingCopy),
@@ -596,7 +606,10 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       const message = providerPanelActionErrorMessage(error, locale);
-      toast.error(copy.connectionTestError(connection.name), message);
+      reportHostError(
+        copy.connectionTestError(connection.name),
+        message,
+      );
     } finally {
       releaseTest();
       if (isConnectionDetailCurrent(lifecycle)) setTesting(false);
@@ -636,9 +649,12 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // means whatever's on screen is not from the latest probe.
       if (!fetched && models.length === 0) setModelSource('fallback');
       if (fetched) {
-        toast.error(copy.refreshFailed, message);
+        reportHostError(
+          copy.refreshFailed,
+          message,
+        );
       } else {
-        toast.error(
+        reportHostError(
           copy.modelsFetchFailed(connection.name),
           copy.modelsFetchFailedDetail(message, credentialTroubleshootingCopy),
         );
@@ -676,7 +692,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       await props.onDeleted();
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
-      toast.error(
+      reportHostError(
         deleted ? copy.refreshFailed : copy.deleteFailed,
         providerPanelActionErrorMessage(error, locale),
       );
@@ -698,7 +714,10 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     } catch (error) {
       if (!isConnectionDetailCurrent(lifecycle)) return;
       setHasSecret('error');
-      toast.error(copy.credentialReadFailed, providerPanelActionErrorMessage(error, locale));
+      reportHostError(
+        copy.credentialReadFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
     }
     await props.onChanged();
   }

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { arch as osArch, release as osRelease } from 'node:os';
+import { arch as osArch, homedir, release as osRelease } from 'node:os';
+import { collapseHomePath } from '@maka/core/diagnostic-log';
 import {
   assertInteractiveRootOwner,
   authenticateInteractiveRootOwner,
@@ -595,7 +596,9 @@ export class RuntimeHostKernel {
             platform: process.platform,
             arch: osArch(),
             osRelease: osRelease(),
-            logs: runtimeHostLogBuffer.snapshot(),
+            logs: runtimeHostLogBuffer
+              .snapshot()
+              .map((entry) => collapseHomePath(entry, homedir(), process.platform)),
           },
         }),
         'host.upgrade.prepare': async (input) => {

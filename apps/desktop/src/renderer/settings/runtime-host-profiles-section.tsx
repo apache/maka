@@ -81,7 +81,12 @@ export function RuntimeHostProfilesSection(props: {
     } catch (error) {
       if (mountedRef.current) {
         await reload().catch(() => undefined);
-        toast.error(copy.selectFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.selectFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId },
+        );
       }
     } finally {
       if (mountedRef.current) setSwitching(false);
@@ -95,6 +100,7 @@ export function RuntimeHostProfilesSection(props: {
 
   async function saveAndEnable() {
     setSwitching(true);
+    const profileId = draft.id;
     try {
       const transport = createTransport(draft);
       const result = await window.maka.runtimeHostProfiles.addAndEnable({
@@ -110,7 +116,12 @@ export function RuntimeHostProfilesSection(props: {
       if (!mountedRef.current) return;
       setSnapshot(result.snapshot);
       if (result.kind === "unavailable") {
-        toast.error(copy.selectFailed, result.message);
+        toast.error(
+          copy.selectFailed,
+          result.message,
+          undefined,
+          { profileId },
+        );
         return;
       }
       setShowAdd(false);
@@ -118,7 +129,12 @@ export function RuntimeHostProfilesSection(props: {
     } catch (error) {
       if (mountedRef.current) {
         await reload().catch(() => undefined);
-        toast.error(copy.saveFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.saveFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId },
+        );
       }
     } finally {
       if (mountedRef.current) setSwitching(false);
@@ -131,7 +147,12 @@ export function RuntimeHostProfilesSection(props: {
       if (mountedRef.current) setSnapshot(next);
     } catch (error) {
       if (mountedRef.current) {
-        toast.error(copy.removeFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.removeFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId },
+        );
       }
     }
   }
@@ -144,12 +165,22 @@ export function RuntimeHostProfilesSection(props: {
       setSnapshot(next);
       const entry = next.entries.find((candidate) => candidate.profile.id === profileId);
       if (entry?.readiness === "unavailable" && entry.message) {
-        toast.error(copy.selectFailed, entry.message);
+        toast.error(
+          copy.selectFailed,
+          entry.message,
+          undefined,
+          { profileId },
+        );
       }
     } catch (error) {
       if (mountedRef.current) {
         await reload().catch(() => undefined);
-        toast.error(copy.selectFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.selectFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId },
+        );
       }
     } finally {
       if (mountedRef.current) setSwitching(false);

@@ -36,6 +36,7 @@ import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { providerDisplay } from './provider-display';
 import { AddModelDialog } from './provider-add-model-dialog';
 import { EnabledModelManager } from './provider-enabled-model-manager';
+import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
   providerPanelActionErrorMessage,
@@ -68,6 +69,7 @@ export function ConnectionDetail(props: ConnectionDetailProps) {
 }
 
 function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
@@ -92,7 +94,10 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
       await props.onDeleted();
     } catch (error) {
       if (!mounted.current) return;
-      toast.error(copy.deleteFailed, providerPanelActionErrorMessage(error, locale));
+      reportHostError(
+        copy.deleteFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
     } finally {
       if (mounted.current) setDeleting(false);
     }
@@ -114,6 +119,7 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
 }
 
 function ConnectionDetailInner(props: ConnectionDetailProps) {
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
@@ -220,7 +226,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       })
       .catch((error) => {
         if (!current) return;
-        toast.error(copy.requestCustomizationInvalid, providerPanelActionErrorMessage(error, locale));
+        reportHostError(
+          copy.requestCustomizationInvalid,
+          providerPanelActionErrorMessage(error, locale),
+        );
       });
     return () => {
       current = false;
@@ -253,7 +262,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       return true;
     } catch (error) {
       if (mounted.current) {
-        toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+        reportHostError(
+          copy.saveFailed,
+          providerPanelActionErrorMessage(error, locale),
+        );
       }
       return false;
     } finally {
@@ -276,7 +288,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       return true;
     } catch (error) {
       if (mounted.current) {
-        toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+        reportHostError(
+          copy.saveFailed,
+          providerPanelActionErrorMessage(error, locale),
+        );
       }
       return false;
     } finally {

@@ -10,7 +10,12 @@ type SessionRemoveDisposition = 'removed' | 'restored';
 
 type ToastApi = {
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
   confirm(options: {
     title: string;
     description: string;
@@ -35,8 +40,11 @@ export interface SessionPurgeOutcome {
    */
   restored: string[];
   verified: boolean;
-  /** First rejection, so the caller can show a reason rather than a count. */
-  firstError: unknown;
+  /** First rejection and the Session whose Host produced it. */
+  firstFailure?: {
+    error: unknown;
+    sessionId: string;
+  };
 }
 
 export interface AppShellSessionRowActions {
@@ -85,7 +93,12 @@ export function createAppShellSessionRowActions(deps: {
     try {
       await action();
     } catch (error) {
-      toastApi.error(errorTitle, localizedShellErrorMessage(error, copy.actionFallback, uiLocale));
+      toastApi.error(
+        errorTitle,
+        localizedShellErrorMessage(error, copy.actionFallback, uiLocale),
+        undefined,
+        { sessionId },
+      );
     } finally {
       pendingSessionRowActionsRef.current.delete(key);
     }
@@ -202,7 +215,7 @@ export function createAppShellSessionRowActions(deps: {
   async function purgeSessions(sessionIds: readonly string[]): Promise<SessionPurgeOutcome> {
     const unsettled: string[] = [];
     const restored: string[] = [];
-    let firstError: unknown;
+    let firstFailure: SessionPurgeOutcome['firstFailure'];
     let removed = 0;
     for (const sessionId of sessionIds) {
       const key = `${sessionId}:delete`;
@@ -221,14 +234,20 @@ export function createAppShellSessionRowActions(deps: {
         else removed += 1;
       } catch (error) {
         unsettled.push(sessionId);
-        firstError ??= error;
+        firstFailure ??= { error, sessionId };
       } finally {
         pendingSessionRowActionsRef.current.delete(key);
       }
     }
     if (unsettled.length === 0) {
       await refreshSessions();
-      return { removed, remaining: [], restored, verified: true, firstError };
+      return {
+        removed,
+        remaining: [],
+        restored,
+        verified: true,
+        firstFailure,
+      };
     }
     let listed: SessionSummary[] | undefined;
     try {
@@ -237,7 +256,15 @@ export function createAppShellSessionRowActions(deps: {
       listed = undefined;
     }
     await refreshSessions();
-    if (!listed) return { removed, remaining: [], restored, verified: false, firstError };
+    if (!listed) {
+      return {
+        removed,
+        remaining: [],
+        restored,
+        verified: false,
+        firstFailure,
+      };
+    }
     const present = new Set(listed.map((session) => session.id));
     const remaining = unsettled.filter((sessionId) => present.has(sessionId));
     return {
@@ -245,7 +272,7 @@ export function createAppShellSessionRowActions(deps: {
       remaining,
       restored,
       verified: true,
-      firstError,
+      firstFailure,
     };
   }
 

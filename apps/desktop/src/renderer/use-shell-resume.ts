@@ -5,7 +5,12 @@ import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.j
 
 type ToastApi = {
   info(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
 };
 
 /**
@@ -45,7 +50,7 @@ export function useShellResume(options: {
           ...current,
           [sessionId]: parkCopy.description,
         }));
-        toastApi.error(parkCopy.title, parkCopy.description);
+        toastApi.error(parkCopy.title, parkCopy.description, undefined, { sessionId });
       } else {
         setResumeParkDescriptionBySession((current) => {
           const { [sessionId]: _removed, ...remaining } = current;
@@ -62,6 +67,8 @@ export function useShellResume(options: {
           shellCopy.resumeFailedFallback,
           uiLocale,
         ),
+        undefined,
+        { sessionId },
       );
     } finally {
       setResumePendingSessionId((current) => current === sessionId ? null : current);

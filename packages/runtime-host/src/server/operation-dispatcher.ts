@@ -1,3 +1,5 @@
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   HOST_OPERATION_SPECS,
   decodeOperationOutcome,
@@ -313,7 +315,10 @@ async function dispatchTypedOperation<K extends OperationKey>(
   let outcome: OperationOutcome<K>;
   try {
     outcome = decodeOperationOutcome(request.operation, await handler(request.input, context));
-  } catch {
+  } catch (error) {
+    console.error(
+      `[runtime-host] unexpected ${request.operation} failure: ${boundedUnexpectedFailure(error)}`,
+    );
     return operationFailureResponse(
       request as RequestFrame,
       'internal_failure',
@@ -333,4 +338,10 @@ async function dispatchTypedOperation<K extends OperationKey>(
         ok: false,
         error: outcome.error,
       };
+}
+
+function boundedUnexpectedFailure(error: unknown): string {
+  const details =
+    error instanceof Error ? error.stack || `${error.name}: ${error.message}` : String(error);
+  return truncateUtf8(redactSecrets(details), 8 * 1024, '\n<diagnostic truncated>');
 }

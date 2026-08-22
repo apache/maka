@@ -94,15 +94,17 @@ implementation.
 The signed Codex Desktop Computer Use executable was statically inspected. No
 OpenAI source code or executable is included or redistributed by Maka, but
 specific geometry, numeric constants, and control-flow facts recovered from the
-binary were transcribed into the cursor implementation.
+binary were transcribed into the cursor implementation. This is a claim about
+the listed facts, not a claim that the Computer Use implementation as a whole
+was derived from the binary.
 
 This inspection provides evidence, not a license grant. Pull requests #1255 and
-#1883 accurately recorded most of the binary-derived inputs, but #1883's
+#1883 accurately recorded most of the listed binary-recovered inputs, but #1883's
 "term-for-term" phrase was broader than the current mixed scorer. The detailed
 artifact, retained facts, and Maka-authored divergences are recorded in
 `docs/computer-use-cursor-provenance.md`.
 
-| Binary-derived or observed fact | Informed area |
+| Binary-recovered or observed fact | Informed area |
 |---|---|
 | Exact cursor geometry, center hotspot, motion configuration, close-enough thresholds, path measurement, and core scoring weights | `apps/desktop/src/renderer/computer-use-overlay/engine/cursor-engine.ts` |
 | Overlay level policy — an occluded target raises the cursor rather than hiding it | same file, and `apps/desktop/src/main/computer-use/cursor-overlay-window.ts` |

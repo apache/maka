@@ -35,6 +35,15 @@ export interface ResolveAppBundleDeps {
 }
 
 /**
+ * The only size every platform can actually deliver. `'large'` is
+ * unsupported on macOS: Chromium's IconLoader hits a fatal NOTREACHED and
+ * the process dies with SIGTRAP before the promise settles — no JavaScript
+ * error is ever thrown, so the try/catch in `loadNativeBundleIcon` cannot
+ * save the app. Callers upscale the 32x32 result as needed.
+ */
+export const BUNDLE_ICON_OPTIONS = { size: 'normal' } as const;
+
+/**
  * Reading a bundle icon is presentation-only. The original unpackaged npm
  * Electron runtime could terminate natively while macOS resolved its bundle
  * icon, before the returned promise settled. Keep native icon loading for

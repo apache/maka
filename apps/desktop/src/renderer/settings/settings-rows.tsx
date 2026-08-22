@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { SettingsRow } from './settings-section';
+import { SettingsRow } from './settings-section.js';
 
 /**
  * `value` is optional: a row may exist for what it explains and what it lets

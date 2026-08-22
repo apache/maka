@@ -33,7 +33,7 @@ export const STATIC_COMMAND_IDS = [
   'diag:copy-today-daily-review',
   'diag:paste-today-daily-review',
   'diag:save-today-daily-review',
-  'diag:copy-env-summary',
+  'diag:copy-diagnostics',
   'diag:test-network-proxy',
   'diag:open-local-memory',
 ] as const;
@@ -102,15 +102,18 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
     '文件',
     '导出',
   ],
-  'diag:copy-env-summary': [
+  'diag:copy-diagnostics': [
     'env',
     'environment',
     'version',
+    'diagnostics',
+    'logs',
     'about',
     'bug',
     'report',
     '环境',
     '版本',
+    '日志',
     '关于',
     '诊断',
     '汇报',
@@ -221,7 +224,8 @@ type ShellCopy = {
     reviewSaveFallback: string;
     pasteFailedTitle: string;
     reviewUnavailable: string;
-    environmentCopiedTitle: string;
+    diagnosticsCopiedTitle: string;
+    diagnosticsCopiedDescription: string;
     clipboardDenied: string;
     networkPassedTitle: string;
     networkFailedTitle: string;
@@ -559,9 +563,9 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: '用系统保存对话框',
     group: '诊断',
   },
-  'diag:copy-env-summary': {
-    label: '复制环境信息',
-    hint: 'Markdown · bug report 友好',
+  'diag:copy-diagnostics': {
+    label: '复制诊断信息',
+    hint: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
     group: '诊断',
   },
   'diag:test-network-proxy': {
@@ -655,9 +659,9 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: 'Use the system save dialog',
     group: 'Diagnostics',
   },
-  'diag:copy-env-summary': {
-    label: 'Copy environment information',
-    hint: 'Markdown · ready for bug reports',
+  'diag:copy-diagnostics': {
+    label: 'Copy diagnostics',
+    hint: '⇧⌘D · Redacted logs · clipboard only',
     group: 'Diagnostics',
   },
   'diag:test-network-proxy': {
@@ -833,7 +837,8 @@ const SHELL_COPY_BY_LOCALE = {
       reviewSaveFallback: '保存每日回顾失败，请稍后重试。',
       pasteFailedTitle: '粘贴失败',
       reviewUnavailable: '今日回顾暂时不可用，请稍后重试。',
-      environmentCopiedTitle: '已复制环境信息',
+      diagnosticsCopiedTitle: '已复制诊断信息',
+      diagnosticsCopiedDescription: '检查内容后，可直接粘贴到问题报告',
       clipboardDenied: '剪贴板不可用或被系统拒绝',
       networkPassedTitle: '网络代理测试通过',
       networkFailedTitle: '网络代理测试失败',
@@ -1072,6 +1077,10 @@ const SHELL_COPY_BY_LOCALE = {
             { keys: ['?'], description: '打开 / 关闭此快捷键面板' },
             { keys: ['⌘', 'N'], description: '新建任务' },
             { keys: ['⌘', ','], description: '打开设置' },
+            {
+              keys: ['⌘', 'Shift', 'D'],
+              description: '复制当前上下文的诊断信息',
+            },
             { keys: ['Esc'], description: '关闭当前模态框' },
           ],
         },
@@ -1333,7 +1342,8 @@ const SHELL_COPY_BY_LOCALE = {
       reviewSaveFallback: 'The Daily Review could not be saved. Try again later.',
       pasteFailedTitle: 'Paste failed',
       reviewUnavailable: "Today's review is temporarily unavailable. Try again later.",
-      environmentCopiedTitle: 'Environment information copied',
+      diagnosticsCopiedTitle: 'Diagnostics copied',
+      diagnosticsCopiedDescription: 'Review the contents, then paste them into the issue report',
       clipboardDenied: 'The clipboard is unavailable or was denied',
       networkPassedTitle: 'Network proxy test passed',
       networkFailedTitle: 'Network proxy test failed',
@@ -1580,6 +1590,10 @@ const SHELL_COPY_BY_LOCALE = {
             { keys: ['?'], description: 'Open or close this shortcuts panel' },
             { keys: ['⌘', 'N'], description: 'Create a new task' },
             { keys: ['⌘', ','], description: 'Open Settings' },
+            {
+              keys: ['⌘', 'Shift', 'D'],
+              description: 'Copy diagnostics for the current context',
+            },
             { keys: ['Esc'], description: 'Close the current dialog' },
           ],
         },

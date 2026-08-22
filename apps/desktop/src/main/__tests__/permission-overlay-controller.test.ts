@@ -21,6 +21,7 @@ import {
   type PermissionOverlayWindowLike,
 } from '../permission-overlay/permission-overlay-controller.js';
 import {
+  BUNDLE_ICON_OPTIONS,
   loadNativeBundleIcon,
   resolveAppBundle,
 } from '../permission-overlay/app-bundle.js';
@@ -315,6 +316,12 @@ describe('app bundle resolution for the drag', () => {
     assert.equal(icon, null);
     assert.equal(calls, 0, 'unpackaged development must not call app.getFileIcon()');
     assert.equal(await loadNativeBundleIcon(true, async () => 'icon'), 'icon');
+  });
+
+  it('never requests the large icon size that kills packaged macOS builds', () => {
+    // 'large' hits a fatal NOTREACHED inside Chromium's IconLoader on
+    // macOS (SIGTRAP, not a catchable error) — see issue #3352.
+    assert.notEqual(BUNDLE_ICON_OPTIONS.size as string, 'large');
   });
 
   it('walks three levels up from the executable to the .app', () => {

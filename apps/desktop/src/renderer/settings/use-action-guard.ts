@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { createKeyedActionGuard, type KeyedActionGuard } from './action-guard';
-import { createOneShotActionGuard, type OneShotActionGuard } from './oauth-login-flow-guard';
+import { createKeyedActionGuard, type KeyedActionGuard } from './action-guard.js';
+import { createOneShotActionGuard, type OneShotActionGuard } from './oauth-login-flow-guard.js';
 
 /**
  * Shared one-shot action guards for Settings async actions.

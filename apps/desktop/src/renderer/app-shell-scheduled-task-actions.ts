@@ -3,10 +3,20 @@ import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput 
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellRemainingCopy } from "./locales/shell-remaining-copy.js";
 import { localizedShellErrorMessage } from "./locales/shell-copy.js";
+import type { DesktopRuntimeHostRef } from '../preload/bridge-contract.js';
+import {
+  defaultRuntimeHostDiagnosticTarget,
+  runOnDefaultRuntimeHost,
+} from './default-runtime-host-operation.js';
 
 type ToastApi = {
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { profileId: string },
+  ): void;
   confirm(options: {
     title: string;
     description: string;
@@ -51,20 +61,24 @@ export function createAppShellScheduledTaskActions(deps: {
     options: { shouldShowError?: () => boolean } = {},
   ) {
     try {
-      const next = await window.maka.scheduledTasks.list();
-      setScheduledTasks(next);
+      const next = await runOnDefaultRuntimeHost((host) =>
+        window.maka.scheduledTasks.list(host),
+      );
+      setScheduledTasks(next.value);
     } catch (error) {
       if (options.shouldShowError?.() ?? true) {
         toastApi.error(
           copy.refreshFailed,
           localizedShellErrorMessage(error, copy.refreshFallback, uiLocale),
+          undefined,
+          defaultRuntimeHostDiagnosticTarget(error),
         );
       }
     }
   }
 
   async function runScheduledTaskMutation(mutation: {
-    run: () => Promise<unknown>;
+    run: (host: DesktopRuntimeHostRef) => Promise<unknown>;
     successTitle?: string;
     successDetail?: string;
     errorTitle: string;
@@ -72,7 +86,7 @@ export function createAppShellScheduledTaskActions(deps: {
     errorMessage?: (error: unknown) => string | undefined;
   }): Promise<boolean> {
     try {
-      await mutation.run();
+      await runOnDefaultRuntimeHost(mutation.run);
       await refreshScheduledTasks({
         shouldShowError: isScheduledTasksSurfaceActive,
       });
@@ -86,6 +100,8 @@ export function createAppShellScheduledTaskActions(deps: {
           mutation.errorTitle,
           mutation.errorMessage?.(error) ??
             localizedShellErrorMessage(error, mutation.errorFallback, uiLocale),
+          undefined,
+          defaultRuntimeHostDiagnosticTarget(error),
         );
       }
       return false;
@@ -96,7 +112,7 @@ export function createAppShellScheduledTaskActions(deps: {
     refreshScheduledTasks,
     createScheduledTask(input) {
       return runScheduledTaskMutation({
-        run: () => window.maka.scheduledTasks.create(input),
+        run: (host) => window.maka.scheduledTasks.create(input, host),
         successTitle: copy.created,
         successDetail: input.title,
         errorTitle: copy.createFailed,
@@ -109,7 +125,7 @@ export function createAppShellScheduledTaskActions(deps: {
     },
     updateScheduledTask(id, patch) {
       return runScheduledTaskMutation({
-        run: () => window.maka.scheduledTasks.update(id, patch),
+        run: (host) => window.maka.scheduledTasks.update(id, patch, host),
         successTitle: copy.saved,
         successDetail: patch.title,
         errorTitle: copy.saveFailed,
@@ -118,7 +134,7 @@ export function createAppShellScheduledTaskActions(deps: {
     },
     async toggleScheduledTask(id, enabled) {
       await runScheduledTaskMutation({
-        run: () => window.maka.scheduledTasks.setEnabled(id, enabled),
+        run: (host) => window.maka.scheduledTasks.setEnabled(id, enabled, host),
         successTitle: enabled ? copy.enabled : copy.paused,
         errorTitle: copy.updateFailed,
         errorFallback: copy.updateFallback,
@@ -127,7 +143,7 @@ export function createAppShellScheduledTaskActions(deps: {
     async triggerScheduledTaskNow(id) {
       const task = getScheduledTasks().find((entry) => entry.id === id);
       await runScheduledTaskMutation({
-        run: () => window.maka.scheduledTasks.triggerNow(id),
+        run: (host) => window.maka.scheduledTasks.triggerNow(id, host),
         successTitle: copy.triggered,
         successDetail: task?.title,
         errorTitle: copy.triggerFailed,
@@ -137,7 +153,7 @@ export function createAppShellScheduledTaskActions(deps: {
     async snoozeScheduledTask(id) {
       const task = getScheduledTasks().find((entry) => entry.id === id);
       await runScheduledTaskMutation({
-        run: () => window.maka.scheduledTasks.snooze(id),
+        run: (host) => window.maka.scheduledTasks.snooze(id, host),
         successTitle: copy.snoozed,
         successDetail: task?.title,
         errorTitle: copy.snoozeFailed,
@@ -155,7 +171,7 @@ export function createAppShellScheduledTaskActions(deps: {
       });
       if (!ok) return;
       await runScheduledTaskMutation({
-        run: () => window.maka.scheduledTasks.clearRunHistory(id),
+        run: (host) => window.maka.scheduledTasks.clearRunHistory(id, host),
         successTitle: copy.cleared,
         successDetail: task?.title,
         errorTitle: copy.clearFailed,
@@ -173,7 +189,7 @@ export function createAppShellScheduledTaskActions(deps: {
       });
       if (!ok) return;
       await runScheduledTaskMutation({
-        run: () => window.maka.scheduledTasks.delete(id),
+        run: (host) => window.maka.scheduledTasks.delete(id, host),
         successTitle: copy.deleted,
         errorTitle: copy.deleteFailed,
         errorFallback: copy.deleteFallback,

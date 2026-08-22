@@ -1,4 +1,5 @@
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useCallback, useContext, type ReactNode } from "react";
+import { useToast } from "@maka/ui";
 import type { DesktopRuntimeHostRef } from "../../preload/bridge-contract.js";
 
 const RuntimeHostSettingsTargetContext =
@@ -23,4 +24,14 @@ export function useRuntimeHostSettingsTarget(): DesktopRuntimeHostRef {
 
 export function useOptionalRuntimeHostSettingsTarget(): DesktopRuntimeHostRef | undefined {
   return useContext(RuntimeHostSettingsTargetContext) ?? undefined;
+}
+
+export function useRuntimeHostSettingsErrorReporter() {
+  const host = useRuntimeHostSettingsTarget();
+  const toast = useToast();
+  return useCallback(
+    (title: string, description?: string) =>
+      toast.error(title, description, undefined, { profileId: host.profileId }),
+    [host.profileId, toast],
+  );
 }

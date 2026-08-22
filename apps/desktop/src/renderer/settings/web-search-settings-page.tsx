@@ -12,7 +12,10 @@ import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { dotForStatus, type StatusSemantic } from '@maka/ui';
 import { useKeyedActionGuard } from './use-action-guard';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 
 /**
  * PR-WEB-SEARCH-TAVILY-0: Settings → Web search.
@@ -53,6 +56,7 @@ export function WebSearchSettingsPage(props: {
   const webSearchActionGuard = useKeyedActionGuard<'set-enabled' | 'credential' | 'test' | 'live-query'>();
   const liveQueryInputRef = useRef(liveQuery);
   const toast = useToast();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
 
   function updateLiveQuery(next: string) {
     liveQueryInputRef.current = next;
@@ -89,7 +93,10 @@ export function WebSearchSettingsPage(props: {
       return true;
     } catch (error) {
       if (webSearchMountedRef.current) {
-        toast.error(failureTitle, settingsActionErrorMessage(error, locale));
+        reportHostError(
+          failureTitle,
+          settingsActionErrorMessage(error, locale),
+        );
       }
       return false;
     }
@@ -164,11 +171,17 @@ export function WebSearchSettingsPage(props: {
       if (result.ok) {
         toast.success(copy.credentialValid, copy.resultCount(result.results.length));
       } else {
-        toast.error(copy.testFailed, copy.errors[result.reason]);
+        reportHostError(
+          copy.testFailed,
+          copy.errors[result.reason],
+        );
       }
     } catch (err) {
       if (webSearchMountedRef.current) {
-        toast.error(copy.testError, settingsActionErrorMessage(err, locale));
+        reportHostError(
+          copy.testError,
+          settingsActionErrorMessage(err, locale),
+        );
       }
     } finally {
       releaseTest();

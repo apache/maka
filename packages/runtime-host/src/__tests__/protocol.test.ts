@@ -29,7 +29,10 @@ import {
 } from '../protocol/index.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
 import { composeOperationSpecMaps } from '../protocol/operation-spec.js';
-import { runtimeHostLogBuffer } from '../process-diagnostics.js';
+import {
+  RUNTIME_HOST_DIAGNOSTIC_LOG_MAX_BYTES,
+  runtimeHostLogBuffer,
+} from '../process-diagnostics.js';
 import {
   TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH,
   TURN_MESSAGE_QUOTE_MAX_COUNT,
@@ -1302,9 +1305,18 @@ describe('Runtime Host bootstrap protocol', () => {
       runtimeHostLogBuffer.append('info', `entry ${index}`);
     }
     runtimeHostLogBuffer.append('error', '🚀'.repeat(3_000));
-    const logs = runtimeHostLogBuffer.snapshot();
+    const entryBoundedLogs = runtimeHostLogBuffer.snapshot();
 
-    assert.equal(logs.length, 256);
+    assert.equal(entryBoundedLogs.length, 256);
+
+    for (let index = 0; index < 256; index += 1) {
+      runtimeHostLogBuffer.append('info', `retained detail ${index} ${'x'.repeat(256)}`);
+    }
+    const logs = runtimeHostLogBuffer.snapshot();
+    const encodedLogBytes = Buffer.byteLength(JSON.stringify(logs));
+
+    assert.ok(encodedLogBytes > 48 * 1024);
+    assert.ok(encodedLogBytes <= RUNTIME_HOST_DIAGNOSTIC_LOG_MAX_BYTES);
     assert.doesNotThrow(() =>
       HOST_BOOTSTRAP_OPERATION_SPECS['host.diagnostics.query'].decodeOutput({
         hostEpoch: 'epoch-1',

@@ -228,7 +228,8 @@ function readLicenseFiles(directory) {
 
 function overrideLicenseText(packageKey, selectedLicense) {
   if (selectedLicense === 'Apache-2.0' && APACHE_TEXT_OVERRIDE_KEYS.has(packageKey)) {
-    return normalizeText(readFileSync(join(repoRoot, 'LICENSE'), 'utf8'));
+    const rootLicense = readFileSync(join(repoRoot, 'LICENSE'), 'utf8');
+    return normalizeText(rootLicense.split('\nTHIRD-PARTY COMPONENTS\n', 1)[0]);
   }
   const copyrightNotice = MIT_COPYRIGHT_OVERRIDES.get(packageKey);
   if (selectedLicense === 'MIT' && copyrightNotice) return MIT_TEXT(copyrightNotice);

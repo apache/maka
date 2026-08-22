@@ -31,11 +31,14 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { RelativeTime, StatusDot, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { RelativeTime, StatusDot, useMountedRef, useUiLocale } from '@maka/ui';
 import { SettingsPage, SettingsSection } from './settings-section';
 import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/permission-center-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 import { dotForStatus } from '@maka/ui';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
@@ -76,7 +79,7 @@ export function PermissionCenterPage() {
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [pendingPermAction, setPendingPermAction] = useState<string | null>(null);
-  const toast = useToast();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const mountedRef = useMountedRef();
   const permissionActionGuard = useActionGuard<string>();
 
@@ -140,10 +143,18 @@ export function PermissionCenterPage() {
           setRefreshTick((tick) => tick + 1);
         }
       } else if (mountedRef.current) {
-        toast.error(copy.actionFailed, permissionActionFailureCopy(result.reason, result.message, copy));
+        reportHostError(
+          copy.actionFailed,
+          permissionActionFailureCopy(result.reason, result.message, copy),
+        );
       }
     } catch (err) {
-      if (mountedRef.current) toast.error(copy.actionFailed, settingsActionErrorMessage(err, locale));
+      if (mountedRef.current) {
+        reportHostError(
+          copy.actionFailed,
+          settingsActionErrorMessage(err, locale),
+        );
+      }
     } finally {
       if (permissionActionGuard.current === actionKey) {
         permissionActionGuard.finish();

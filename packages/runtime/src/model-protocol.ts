@@ -7,13 +7,28 @@
  * itself) import these names from here — never from `ai` — so AI SDK type
  * changes no longer propagate past the `ModelAdapter` boundary.
  *
- * The shapes defined here are structurally equivalent to the AI SDK 7
- * `@ai-sdk/provider-utils` message/value unions, but they are **Maka-owned**:
- * the generated declaration of this module imports nothing from `ai` or
- * `@ai-sdk/*`. Lowering Maka messages to AI SDK types, and normalizing AI SDK
- * responses back to Maka types, happens only inside `ModelAdapter`
- * (`model-adapter.ts`); that module is the lone runtime file permitted to
- * import the SDK protocol types for the lowering/normalization cast.
+ * The JSON value, provider option, file data, content part, and message
+ * contracts below are adapted from the AI SDK and modified by Maka. The source
+ * material is Copyright 2023 Vercel, Inc. (https://github.com/vercel/ai),
+ * licensed under the Apache License, Version 2.0, fixed at
+ * `@ai-sdk/provider-utils@5.0.11` (`src/types/`) and `@ai-sdk/provider@4.0.3`
+ * (`src/json-value/`, `src/shared/v4/`). Those declarations are unchanged
+ * through `@ai-sdk/provider-utils@5.0.25` and `@ai-sdk/provider@4.0.7`.
+ *
+ * Maka modified the adapted material: the deprecated `file-*` and `image-*`
+ * tool-result content variants were dropped, the inline tool-result content
+ * union was extracted into `ToolResultContentPart`, the shared provider
+ * aliases were inlined instead of re-exported, and the role message shapes
+ * were declared as interfaces. The tool definition, usage, finish reason,
+ * failure, request metadata, and stream contracts in this module are
+ * Maka-authored and have no upstream counterpart.
+ *
+ * The dependency boundary is Maka-owned: the generated declaration of this
+ * module imports nothing from `ai` or `@ai-sdk/*`. Lowering Maka messages to
+ * AI SDK types, and normalizing AI SDK responses back to Maka types, happens
+ * only inside `ModelAdapter` (`model-adapter.ts`); that module is the lone
+ * runtime file permitted to import the SDK protocol types for the
+ * lowering/normalization cast.
  *
  * Schema helpers (`jsonSchema` / `zodSchema`) and SDK value imports
  * (`generateText`, `RetryError`, ...) remain local implementation details or

@@ -3,7 +3,12 @@ import type { SkillInvocationResult } from '@maka/runtime/skill-invocation';
 import { getShellCopy } from './locales/shell-copy.js';
 
 type SkillInvocationToastApi = {
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
   info(title: string, description?: string): void;
 };
 
@@ -21,6 +26,7 @@ export function showSkillInvocationFeedback(
   uiLocale: UiLocale,
   toastApi: SkillInvocationToastApi,
   skillInvocation: SkillInvocationResult,
+  sessionId: string,
 ): void {
   const failures = skillInvocation.failed;
   if (failures.length === 0) return;
@@ -34,6 +40,8 @@ export function showSkillInvocationFeedback(
     toastApi.error(
       copy.skillInvocationBlockedTitle,
       copy.skillInvocationBlockedDescription(items),
+      undefined,
+      { sessionId },
     );
     return;
   }

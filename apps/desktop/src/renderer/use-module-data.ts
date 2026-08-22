@@ -10,7 +10,12 @@ import { createAppShellSkillActions, type AppShellSkillActions } from './app-she
 
 type ToastApi = {
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { profileId: string },
+  ): void;
   confirm(options: {
     title: string;
     description: string;
@@ -41,7 +46,12 @@ export function useAppShellModuleData(options: {
   bundledSkillCatalog: BundledSkillCatalogEntry[];
   scheduledTasks: ScheduledTask[];
 } {
-  const { uiLocale, isSkillsSurfaceActive, isScheduledTasksSurfaceActive, toastApi } = options;
+  const {
+    uiLocale,
+    isSkillsSurfaceActive,
+    isScheduledTasksSurfaceActive,
+    toastApi,
+  } = options;
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   const [managedSkillSources, setManagedSkillSources] = useState<ManagedSkillSourceEntry[]>([]);
   const [bundledSkillCatalog, setBundledSkillCatalog] = useState<BundledSkillCatalogEntry[]>([]);

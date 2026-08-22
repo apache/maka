@@ -92,7 +92,12 @@ type PendingNewChatModel = {
 type PendingNewChatThinkingLevel = ThinkingLevel | null;
 
 type ToastApi = {
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string } | { profileId: string },
+  ): void;
   info(title: string, description?: string): void;
 };
 
@@ -164,7 +169,11 @@ export function createAppShellChatActions(deps: {
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
-  showModelSetupToast: (description: string, reason?: string) => void;
+  showModelSetupToast: (
+    description: string,
+    reason?: string,
+    diagnosticTarget?: { sessionId: string } | { profileId: string },
+  ) => void;
   toastApi: ToastApi;
   upsertSessionSummary: (session: DesktopSessionSummary) => void;
   newChatModel: PendingNewChatModel;
@@ -415,7 +424,12 @@ export function createAppShellChatActions(deps: {
         });
         if (!sendResult.ok) {
           if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-            showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+            showSkillInvocationFeedback(
+              uiLocale,
+              toastApi,
+              sendResult.skillInvocation,
+              session.id,
+            );
           }
           disarmTurnActive(session.id, turnId);
           await discardUnsentSession();
@@ -426,7 +440,12 @@ export function createAppShellChatActions(deps: {
         if (settledTurnId !== undefined) optimisticTurnId = settledTurnId;
         options.onSessionResolved?.(session.id);
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-          showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+          showSkillInvocationFeedback(
+            uiLocale,
+            toastApi,
+            sendResult.skillInvocation,
+            session.id,
+          );
         }
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           setNavSelection({ section: 'sessions' });
@@ -488,7 +507,12 @@ export function createAppShellChatActions(deps: {
       });
       if (!sendResult.ok) {
         if (activeIdRef.current === sessionId) {
-          showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+          showSkillInvocationFeedback(
+            uiLocale,
+            toastApi,
+            sendResult.skillInvocation,
+            sessionId,
+          );
         }
         disarmTurnActive(sessionId, turnId);
         return false;
@@ -498,7 +522,12 @@ export function createAppShellChatActions(deps: {
       if (startedTurnId === undefined) return true;
       optimisticTurnId = startedTurnId;
       if (activeIdRef.current === sessionId) {
-        showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+        showSkillInvocationFeedback(
+          uiLocale,
+          toastApi,
+          sendResult.skillInvocation,
+          sessionId,
+        );
       }
       showOptimisticUserMessage(
         sessionId,
@@ -535,6 +564,11 @@ export function createAppShellChatActions(deps: {
       // surface and the app is now on the session it just made, so the id is
       // taken from the flight and only the section comes from the capture.
       const feedbackSessionId = optimisticSessionId ?? initialSessionId;
+      const diagnosticTarget = feedbackSessionId
+        ? { sessionId: feedbackSessionId }
+        : initialNewTaskTarget
+          ? { profileId: initialNewTaskTarget.profileId }
+          : undefined;
       const sendStillOwnsCurrentSurface =
         (feedbackSessionId !== undefined &&
           isShellSurfaceOwnerActive({
@@ -545,11 +579,20 @@ export function createAppShellChatActions(deps: {
       if (!sendStillOwnsCurrentSurface) return false;
       if (isNoRealConnectionError(error)) {
         const reason = noRealConnectionReasonFromError(error);
-        showModelSetupToast(noRealConnectionSetupDescription(reason, uiLocale), reason);
+        showModelSetupToast(
+          noRealConnectionSetupDescription(reason, uiLocale),
+          reason,
+          diagnosticTarget,
+        );
       } else if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, diagnosticTarget);
       } else {
-        toastApi.error(copy.sendFailedTitle, localizedShellErrorMessage(error, copy.sendFailedFallback, uiLocale));
+        toastApi.error(
+          copy.sendFailedTitle,
+          localizedShellErrorMessage(error, copy.sendFailedFallback, uiLocale),
+          undefined,
+          diagnosticTarget,
+        );
       }
       return false;
     }
@@ -575,11 +618,13 @@ export function createAppShellChatActions(deps: {
       // surfaces instead of dying as UnhandledPromiseRejection.
       if (activeIdRef.current !== sessionId) return;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
       } else {
         toastApi.error(
           copy.responseFailedTitle,
           localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
+          undefined,
+          { sessionId },
         );
       }
     }
@@ -595,11 +640,13 @@ export function createAppShellChatActions(deps: {
     } catch (error) {
       if (activeIdRef.current !== sessionId) return;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
       } else {
         toastApi.error(
           copy.responseFailedTitle,
           localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
+          undefined,
+          { sessionId },
         );
       }
     }
@@ -643,7 +690,7 @@ export function createAppShellChatActions(deps: {
           ...current,
           [sessionId]: message,
         }));
-        toastApi.error(copy.refreshFailedTitle, message);
+        toastApi.error(copy.refreshFailedTitle, message, undefined, { sessionId });
       }
       return false;
     }
@@ -660,7 +707,7 @@ export function createAppShellChatActions(deps: {
         ...current,
         [sessionId]: message,
       }));
-      toastApi.error(copy.refreshFailedTitle, message);
+      toastApi.error(copy.refreshFailedTitle, message, undefined, { sessionId });
     } finally {
       clearPendingSessionAction(sessionId, messageRetryPendingRef, setMessageRetryPendingBySession);
     }

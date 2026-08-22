@@ -16,7 +16,12 @@ type MessageListUpdater = (next: StoredMessage[] | ((current: StoredMessage[]) =
 type ToastApi = {
   info(title: string, description?: string): void;
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
 };
 
 export interface AppShellTurnActions {
@@ -94,11 +99,13 @@ export function createAppShellTurnActions(deps: {
     } catch (error) {
       if (activeIdRef.current !== sessionId) return;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
       } else {
         toastApi.error(
           copy.operationFailedTitle,
           localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+          undefined,
+          { sessionId },
         );
       }
     } finally {

@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { resolveOverlayAssetDir } from '../overlay-assets.js';
 import { openSystemPermissionPane, requestPermissionAccess } from '../permissions-actions.js';
-import { loadNativeBundleIcon, resolveAppBundle } from './app-bundle.js';
+import { BUNDLE_ICON_OPTIONS, loadNativeBundleIcon, resolveAppBundle } from './app-bundle.js';
 import { getPermissionOverlayCopy } from './permission-overlay-copy.js';
 import {
   createPermissionOverlayController,
@@ -77,7 +77,7 @@ export function createPermissionOverlayMain(
   async function resolveAppIconDataUrl(bundlePath: string | null): Promise<string | null> {
     if (!bundlePath) return null;
     const icon = await loadNativeBundleIcon(app.isPackaged, () =>
-      app.getFileIcon(bundlePath, { size: 'large' }),
+      app.getFileIcon(bundlePath, BUNDLE_ICON_OPTIONS),
     );
     if (!icon || icon.isEmpty()) return null;
     // nativeImage.createFromPath does not decode .icns reliably. Asking
@@ -274,7 +274,7 @@ function attachCardGestures(win: import('electron').BrowserWindow): void {
     }
     if (icon.isEmpty()) {
       const fallback = await loadNativeBundleIcon(app.isPackaged, () =>
-        app.getFileIcon(resolved.bundlePath, { size: 'large' }),
+        app.getFileIcon(resolved.bundlePath, BUNDLE_ICON_OPTIONS),
       );
       if (fallback && !fallback.isEmpty()) icon = fallback.resize({ width: 64, height: 64 });
       // The file drag still works without a decorative drag image.

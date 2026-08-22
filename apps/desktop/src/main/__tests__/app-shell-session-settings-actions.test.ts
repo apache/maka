@@ -50,6 +50,7 @@ function createHarness(options: {
   const permissionCalls: string[] = [];
   const thinkingCalls: string[] = [];
   const errors: string[] = [];
+  const errorTargets: Array<{ sessionId: string } | undefined> = [];
   const successes: Array<{ title: string; description?: string }> = [];
   const newTaskPermissionModes: string[] = [];
   const modelResult = deferred<DesktopSessionSummary>();
@@ -99,7 +100,10 @@ function createHarness(options: {
     },
     toastApi: {
       success: (title, description) => successes.push({ title, description }),
-      error: (title) => errors.push(title),
+      error: (title, _description, _details, target) => {
+        errors.push(title);
+        errorTargets.push(target);
+      },
       confirm: options.confirm ?? (async () => true),
     },
   });
@@ -108,6 +112,7 @@ function createHarness(options: {
     actions,
     activeIdRef,
     errors,
+    errorTargets,
     modelCalls,
     modelResult,
     newTaskPermissionModes,
@@ -275,6 +280,7 @@ describe('AppShell session settings actions', () => {
     assert.equal(harness.pending.has('session-a'), false);
     assert.equal(harness.pendingBySession['session-a'], undefined);
     assert.equal(harness.errors.length, 1);
+    assert.deepEqual(harness.errorTargets, [{ sessionId: 'session-a' }]);
 
     const modelChange = harness.actions.setSessionModel({
       llmConnectionSlug: 'e2e',

@@ -121,3 +121,24 @@ export function truncateUtf8(value: string, maximumBytes: number, marker = ''): 
   }
   return `${codePoints.slice(0, low).join('')}${suffix}`;
 }
+
+export function collapseHomePath(value: string, homePath: string, platform: string): string {
+  if (!homePath) return value;
+  const normalized = platform === 'win32' ? homePath.replaceAll('\\', '/') : homePath;
+  const separator = platform === 'win32' ? '[\\\\/]' : '/';
+  const encoded = normalized
+    .split('/')
+    .map((part, index) =>
+      platform === 'win32' && index === 0 && /^[a-z]:$/i.test(part)
+        ? part
+        : encodeURIComponent(part),
+    )
+    .join('/');
+  const patterns = [...new Set([normalized, encoded])].map((candidate) =>
+    candidate
+      .split('/')
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join(separator),
+  );
+  return value.replace(new RegExp(patterns.join('|'), platform === 'win32' ? 'gi' : 'g'), '~');
+}

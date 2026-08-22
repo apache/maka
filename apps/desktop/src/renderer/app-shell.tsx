@@ -35,6 +35,7 @@ import {
   LocaleProvider,
   ModuleHubSelector,
   ToastProvider,
+  type ToastDiagnosticTarget,
   type ToastErrorAction,
   type NavSelection,
   SessionListPanel,
@@ -152,6 +153,10 @@ import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
 import { derivePetActivityState } from './custom-pet-companion-model';
 import { createAppShellDailyReviewBridge } from './app-shell-daily-review-bridge';
+import {
+  defaultRuntimeHostDiagnosticTarget,
+  runOnDefaultRuntimeHost,
+} from './default-runtime-host-operation.js';
 import { useAppShellModuleData } from './use-module-data';
 import { useKeepSystemAwake } from './use-keep-system-awake';
 import { useAppShellProjectContext } from './use-project-context';
@@ -278,18 +283,15 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
   const errorToastAction = useMemo<ToastErrorAction>(
     () => ({
       label: getShellCopy(uiLocale).errorBoundary.copyReport,
-      onClick: (input) => {
-        void window.maka.diagnostics.copyErrorReport({
-            surface: 'toast',
-            title: input.title,
-            ...(input.description ? { description: input.description } : {}),
-            ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
-            ...(input.diagnosticTarget ? { execution: input.diagnosticTarget } : {}),
-            rendererUserAgent: navigator.userAgent,
-            rendererLocale: navigator.language,
-          })
-          .catch(() => undefined);
-      },
+      failureTitle: getShellCopy(uiLocale).commandActions.copyFailedTitle,
+      failureDescription: getShellCopy(uiLocale).commandActions.clipboardDenied,
+      onClick: (input) => window.maka.diagnostics.copyReport({
+        surface: 'toast',
+        title: input.title,
+        ...(input.description ? { description: input.description } : {}),
+        ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
+        ...(input.diagnosticTarget ? { target: input.diagnosticTarget } : {}),
+      }),
     }),
     [uiLocale],
   );
@@ -543,6 +545,8 @@ function AppShellContent({
     openConnectionDetail,
     openProviderCreate,
   } = useSettingsModal();
+  const [settingsDiagnosticProfileId, setSettingsDiagnosticProfileId] =
+    useState<string>();
   const {
     themePref,
     setThemePref,
@@ -1047,7 +1051,8 @@ function AppShellContent({
     try {
       const planState = await window.maka.sessions.getPlanState(sessionId);
       if (active && planState.activeExecutionId) {
-        toastApi.error(
+        showSessionError(
+          sessionId,
           shellCopy.planModeExecutionActiveTitle,
           shellCopy.planModeExecutionActiveDescription,
         );
@@ -1082,7 +1087,8 @@ function AppShellContent({
       return true;
     } catch (error) {
       if (activeIdRef.current === sessionId) {
-        toastApi.error(
+        showSessionError(
+          sessionId,
           shellCopy.planModeFailedTitle,
           localizedShellErrorMessage(error, shellCopy.planModeFallback, uiLocale),
         );
@@ -1121,7 +1127,8 @@ function AppShellContent({
       return true;
     } catch (error) {
       if (activeIdRef.current === sessionId) {
-        toastApi.error(
+        showSessionError(
+          sessionId,
           shellCopy.orchestrationModeFailedTitle,
           localizedShellErrorMessage(error, shellCopy.orchestrationModeFallback, uiLocale),
         );
@@ -1680,7 +1687,8 @@ function AppShellContent({
             else setBottomPanelOpen(true);
           })
           .catch((error) => {
-            toastApi.error(
+            showSessionError(
+              ownerSessionId,
               terminalPanelCopy.startFailed,
               localizedShellErrorMessage(
                 error,
@@ -2217,9 +2225,10 @@ function AppShellContent({
       } catch (error) {
         if (activeIdRef.current !== sessionId) return false;
         if (isSessionWorkspaceUnavailableError(error)) {
-          showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+          showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
         } else {
-          toastApi.error(
+          showSessionError(
+            sessionId,
             shellCopy.compactErrorTitle,
             localizedShellErrorMessage(error, shellCopy.compactErrorFallback, uiLocale),
           );
@@ -2370,7 +2379,8 @@ function AppShellContent({
     } catch (error) {
       if (activeIdRef.current === sessionId) {
         const copy = getDesktopConversationCopy(uiLocale).actions;
-        toastApi.error(
+        showSessionError(
+          sessionId,
           copy.operationFailedTitle,
           localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
         );
@@ -2779,7 +2789,11 @@ function AppShellContent({
     void refreshShellSettings();
   }
 
-  function showModelSetupToast(description: string, reason?: string) {
+  function showModelSetupToast(
+    description: string,
+    reason?: string,
+    diagnosticTarget?: ToastDiagnosticTarget,
+  ) {
     const copy = modelSetupToastCopy(reason, description, uiLocale);
     toastApi.toast({
       title: copy.title,
@@ -2788,6 +2802,7 @@ function AppShellContent({
         : copy.description,
       variant: 'error',
       duration: 8000,
+      ...(diagnosticTarget ? { diagnosticTarget } : {}),
       ...(modelSettingsOwnsComposerHost
         ? {
             action: {
@@ -2798,6 +2813,14 @@ function AppShellContent({
         : {}),
     });
     if (modelSettingsOwnsComposerHost) openSettingsSection('models');
+  }
+
+  function showSessionError(
+    sessionId: string,
+    title: string,
+    description?: string,
+  ) {
+    toastApi.error(title, description, undefined, { sessionId });
   }
 
   const canStageComposerContext = activeId !== undefined || newTask.target !== undefined;
@@ -2829,7 +2852,8 @@ function AppShellContent({
       ) {
         return;
       }
-      toastApi.error(
+      showSessionError(
+        sessionId,
         desktopConversationCopy.actions.messageReadFailedTitle,
         localizedShellErrorMessage(
           error,
@@ -2859,6 +2883,9 @@ function AppShellContent({
     defaultConnection: defaultHostConnections.snapshot.defaultConnection,
     dailyReviewBridge,
     messages,
+    newTaskProfileId: newTask.selectedProfileId,
+    settingsOpen,
+    settingsProfileId: settingsDiagnosticProfileId,
     sessions,
     themePref,
     visibleSessions,
@@ -3343,7 +3370,8 @@ function AppShellContent({
                             : {}),
                           onClear: () => {
                           void window.maka.goal.clear(activeGoal.sessionId).catch((error) => {
-                            toastApi.error(
+                            showSessionError(
+                              activeGoal.sessionId,
                               shellCopy.goalClearFailedTitle,
                               localizedShellErrorMessage(
                                 error,
@@ -3364,7 +3392,8 @@ function AppShellContent({
                                 activeGoal.sessionId,
                                 () => window.maka.goal.resume(activeGoal.sessionId),
                                 (error) => {
-                                  toastApi.error(
+                                  showSessionError(
+                                    activeGoal.sessionId,
                                     shellCopy.goalResumeFailedTitle,
                                     localizedShellErrorMessage(
                                       error,
@@ -3385,7 +3414,8 @@ function AppShellContent({
                               activeGoal.sessionId,
                               () => window.maka.goal.pause(activeGoal.sessionId),
                               (error) => {
-                                toastApi.error(
+                                showSessionError(
+                                  activeGoal.sessionId,
                                   shellCopy.goalPauseFailedTitle,
                                   localizedShellErrorMessage(
                                     error,
@@ -3492,12 +3522,20 @@ function AppShellContent({
                 onRefreshConnections={refreshConnections}
                 onSkip={async () => {
                   try {
-                    await window.maka.onboarding.setMilestone('initial_onboarding', 'skipped');
+                    await runOnDefaultRuntimeHost((host) =>
+                      window.maka.onboarding.setMilestone(
+                        'initial_onboarding',
+                        'skipped',
+                        host,
+                      ),
+                    );
                     onboarding.refresh();
                   } catch (error) {
                     toastApi.error(
                       shellCopy.skipErrorTitle,
                       localizedShellErrorMessage(error, shellCopy.tryAgainLater, uiLocale),
+                      undefined,
+                      defaultRuntimeHostDiagnosticTarget(error),
                     );
                   }
                 }}
@@ -3636,6 +3674,8 @@ function AppShellContent({
                 projectActionsCopy.projectUpdateFailedFallback,
                 uiLocale,
               ),
+              undefined,
+              { profileId: host.profileId },
             );
           });
         }}
@@ -3690,6 +3730,7 @@ function AppShellContent({
           openNewTaskSurface();
           void newTask.chooseProjectForProfile(profileId).catch(() => undefined);
         }}
+        onSelectedRuntimeHostProfileIdChange={setSettingsDiagnosticProfileId}
       />
     </div>
   );

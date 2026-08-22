@@ -6,7 +6,6 @@ import {
   Badge,
   Button,
   useMountedRef,
-  useToast,
   useUiLocale,
 } from '@maka/ui';
 import { getProviderSettingsCopy, type ProviderSettingsCopy } from '../locales/settings-provider-copy';
@@ -16,7 +15,10 @@ import {
   subscriptionResultMessage,
   type SubscriptionSnapshot,
 } from './use-oauth-login-flow';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 
 export type OAuthCardId = 'codex' | 'github-copilot' | 'xai';
@@ -233,7 +235,7 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
-  const toast = useToast();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const mountedRef = useMountedRef();
   // The Host owns the device grant, so the panel drives the same browser-
   // assisted controller as Codex and xAI: one attempt at a time, superseded
@@ -261,7 +263,7 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
       const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
       if (!mountedRef.current) return;
       if (!result.ok) {
-        toast.error(
+        reportHostError(
           copy.copilotActionFailed,
           subscriptionResultMessage(result.message, copy.copilotActionFailed, locale),
         );
@@ -270,7 +272,7 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
       if (result.ok && mountedRef.current) await props.onLoginSuccess();
     } catch (error) {
       if (mountedRef.current) {
-        toast.error(copy.copilotActionFailed, subscriptionActionErrorMessage(error, locale));
+        reportHostError(copy.copilotActionFailed, subscriptionActionErrorMessage(error, locale));
       }
     } finally {
       if (mountedRef.current) setImporting(false);

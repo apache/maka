@@ -8,11 +8,20 @@ import type {
 } from '@maka/ui';
 import { openSkillFailureCopy } from './app-shell-copy';
 import { createOpenSkillAction } from './app-shell-open-skill-action';
+import {
+  defaultRuntimeHostDiagnosticTarget,
+  runOnDefaultRuntimeHost,
+} from './default-runtime-host-operation.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
 type ToastApi = {
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { profileId: string },
+  ): void;
 };
 
 export interface AppShellSkillActions {
@@ -45,7 +54,26 @@ export function createAppShellSkillActions(deps: {
   setBundledSkillCatalog: Dispatch<SetStateAction<BundledSkillCatalogEntry[]>>;
   toastApi: ToastApi;
 }): AppShellSkillActions {
-  const { uiLocale, isSkillsSurfaceActive, setBundledSkillCatalog, setManagedSkillSources, setSkills, toastApi } = deps;
+  const {
+    uiLocale,
+    isSkillsSurfaceActive,
+    setBundledSkillCatalog,
+    setManagedSkillSources,
+    setSkills,
+    toastApi: baseToastApi,
+  } = deps;
+  const toastApi = {
+    success: (title: string, description?: string) =>
+      baseToastApi.success(title, description),
+    error: (title: string, description?: string, diagnosticTarget?: { profileId: string }) =>
+      baseToastApi.error(title, description, undefined, diagnosticTarget),
+  };
+  const reportRuntimeHostError = (title: string, fallback: string, error: unknown) =>
+    toastApi.error(
+      title,
+      localizedShellErrorMessage(error, fallback, uiLocale),
+      defaultRuntimeHostDiagnosticTarget(error),
+    );
   const copy = getShellCopy(uiLocale).skillActions;
   const openSkill = createOpenSkillAction({
     uiLocale,
@@ -55,52 +83,49 @@ export function createAppShellSkillActions(deps: {
 
   async function refreshSkills(options: { shouldShowError?: () => boolean } = {}) {
     try {
-      const next = await window.maka.skills.list();
-      setSkills(next);
+      const next = await runOnDefaultRuntimeHost((host) => window.maka.skills.list(host));
+      setSkills(next.value);
     } catch (error) {
       if (options.shouldShowError?.() ?? true) {
-        toastApi.error(
-          copy.refreshSkillsFailedTitle,
-          localizedShellErrorMessage(error, copy.refreshSkillsFallback, uiLocale),
-        );
+        reportRuntimeHostError(copy.refreshSkillsFailedTitle, copy.refreshSkillsFallback, error);
       }
     }
   }
 
   async function refreshManagedSkillSources(options: { shouldShowError?: () => boolean } = {}) {
     try {
-      const next = await window.maka.skills.sources.list();
-      setManagedSkillSources(next);
+      const next = await runOnDefaultRuntimeHost((host) => window.maka.skills.sources.list(host));
+      setManagedSkillSources(next.value);
     } catch (error) {
       if (options.shouldShowError?.() ?? true) {
-        toastApi.error(
-          copy.refreshSourcesFailedTitle,
-          localizedShellErrorMessage(error, copy.refreshSourcesFallback, uiLocale),
-        );
+        reportRuntimeHostError(copy.refreshSourcesFailedTitle, copy.refreshSourcesFallback, error);
       }
     }
   }
 
   async function refreshBundledSkillCatalog(options: { shouldShowError?: () => boolean } = {}) {
     try {
-      const next = await window.maka.skills.catalog.list();
-      setBundledSkillCatalog(next);
+      const next = await runOnDefaultRuntimeHost((host) => window.maka.skills.catalog.list(host));
+      setBundledSkillCatalog(next.value);
     } catch (error) {
       if (options.shouldShowError?.() ?? true) {
-        toastApi.error(
-          copy.refreshBundledFailedTitle,
-          localizedShellErrorMessage(error, copy.refreshBundledFallback, uiLocale),
-        );
+        reportRuntimeHostError(copy.refreshBundledFailedTitle, copy.refreshBundledFallback, error);
       }
     }
   }
 
   async function installBundledSkill(id: string) {
     try {
-      const result = await window.maka.skills.catalog.install(id);
+      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+        window.maka.skills.catalog.install(id, host),
+      );
       if (!result.ok) {
         if (isSkillsSurfaceActive())
-          toastApi.error(copy.installBundledFailedTitle, copy.installFailures[result.reason]);
+          toastApi.error(
+            copy.installBundledFailedTitle,
+            copy.installFailures[result.reason],
+            diagnosticTarget,
+          );
         return;
       }
       await refreshSkills({ shouldShowError: isSkillsSurfaceActive });
@@ -111,20 +136,23 @@ export function createAppShellSkillActions(deps: {
         toastApi.success(copy.installedBundledTitle, copy.installedDescription(result.skill.id));
     } catch (error) {
       if (isSkillsSurfaceActive()) {
-        toastApi.error(
-          copy.installBundledFailedTitle,
-          localizedShellErrorMessage(error, copy.installBundledFallback, uiLocale),
-        );
+        reportRuntimeHostError(copy.installBundledFailedTitle, copy.installBundledFallback, error);
       }
     }
   }
 
   async function importManagedSkillSource() {
     try {
-      const result = await window.maka.skills.sources.importLocalFile();
+      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+        window.maka.skills.sources.importLocalFile(host),
+      );
       if (!result.ok) {
         if (result.reason !== 'cancelled' && isSkillsSurfaceActive()) {
-          toastApi.error(copy.importSourceFailedTitle, copy.sourceFailures[result.reason]);
+          toastApi.error(
+            copy.importSourceFailedTitle,
+            copy.sourceFailures[result.reason],
+            diagnosticTarget,
+          );
         }
         return;
       }
@@ -134,19 +162,20 @@ export function createAppShellSkillActions(deps: {
       if (isSkillsSurfaceActive()) toastApi.success(copy.importedSourceTitle, result.source.name);
     } catch (error) {
       if (isSkillsSurfaceActive()) {
-        toastApi.error(
-          copy.importSourceFailedTitle,
-          localizedShellErrorMessage(error, copy.importSourceFallback, uiLocale),
-        );
+        reportRuntimeHostError(copy.importSourceFailedTitle, copy.importSourceFallback, error);
       }
     }
   }
 
   async function installManagedSkill(sourceId: string) {
     try {
-      const result = await window.maka.skills.installManaged(sourceId);
+      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+        window.maka.skills.installManaged(sourceId, host),
+      );
       if (!result.ok) {
-        if (isSkillsSurfaceActive()) toastApi.error(copy.installFailedTitle, copy.installFailures[result.reason]);
+        if (isSkillsSurfaceActive()) {
+          toastApi.error(copy.installFailedTitle, copy.installFailures[result.reason], diagnosticTarget);
+        }
         return;
       }
       await refreshSkills({ shouldShowError: isSkillsSurfaceActive });
@@ -156,22 +185,26 @@ export function createAppShellSkillActions(deps: {
       if (isSkillsSurfaceActive()) toastApi.success(copy.installedTitle, copy.installedDescription(result.skill.id));
     } catch (error) {
       if (isSkillsSurfaceActive()) {
-        toastApi.error(copy.installFailedTitle, localizedShellErrorMessage(error, copy.installFallback, uiLocale));
+        reportRuntimeHostError(copy.installFailedTitle, copy.installFallback, error);
       }
     }
   }
 
   async function previewManagedSkillUpdate(skillId: string): Promise<ManagedSkillUpdatePreview | null> {
     try {
-      const result = await window.maka.skills.previewUpdate(skillId);
+      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+        window.maka.skills.previewUpdate(skillId, host),
+      );
       if (!result.ok) {
-        if (isSkillsSurfaceActive()) toastApi.error(copy.previewFailedTitle, copy.previewFailures[result.reason]);
+        if (isSkillsSurfaceActive()) {
+          toastApi.error(copy.previewFailedTitle, copy.previewFailures[result.reason], diagnosticTarget);
+        }
         return null;
       }
       return result.preview;
     } catch (error) {
       if (isSkillsSurfaceActive()) {
-        toastApi.error(copy.previewFailedTitle, localizedShellErrorMessage(error, copy.previewFallback, uiLocale));
+        reportRuntimeHostError(copy.previewFailedTitle, copy.previewFallback, error);
       }
       return null;
     }
@@ -186,9 +219,13 @@ export function createAppShellSkillActions(deps: {
     } = {},
   ): Promise<boolean> {
     try {
-      const result = await window.maka.skills.updateManaged(skillId, options);
+      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+        window.maka.skills.updateManaged(skillId, options, host),
+      );
       if (!result.ok) {
-        if (isSkillsSurfaceActive()) toastApi.error(copy.updateFailedTitle, copy.updateFailures[result.reason]);
+        if (isSkillsSurfaceActive()) {
+          toastApi.error(copy.updateFailedTitle, copy.updateFailures[result.reason], diagnosticTarget);
+        }
         return false;
       }
       await refreshSkills({ shouldShowError: isSkillsSurfaceActive });
@@ -201,7 +238,7 @@ export function createAppShellSkillActions(deps: {
       return true;
     } catch (error) {
       if (isSkillsSurfaceActive()) {
-        toastApi.error(copy.updateFailedTitle, localizedShellErrorMessage(error, copy.updateFallback, uiLocale));
+        reportRuntimeHostError(copy.updateFailedTitle, copy.updateFallback, error);
       }
       return false;
     }
@@ -209,9 +246,13 @@ export function createAppShellSkillActions(deps: {
 
   async function setSkillEnabled(skillId: string, enabled: boolean) {
     try {
-      const result = await window.maka.skills.setEnabled(skillId, enabled);
+      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+        window.maka.skills.setEnabled(skillId, enabled, host),
+      );
       if (!result.ok) {
-        if (isSkillsSurfaceActive()) toastApi.error(copy.toggleFailedTitle, copy.runtimeFailures[result.reason]);
+        if (isSkillsSurfaceActive()) {
+          toastApi.error(copy.toggleFailedTitle, copy.runtimeFailures[result.reason], diagnosticTarget);
+        }
         return;
       }
       await refreshSkills({ shouldShowError: isSkillsSurfaceActive });
@@ -220,16 +261,20 @@ export function createAppShellSkillActions(deps: {
       }
     } catch (error) {
       if (isSkillsSurfaceActive()) {
-        toastApi.error(copy.toggleFailedTitle, localizedShellErrorMessage(error, copy.toggleFallback, uiLocale));
+        reportRuntimeHostError(copy.toggleFailedTitle, copy.toggleFallback, error);
       }
     }
   }
 
   async function setSkillPinned(skillRef: string, pinned: boolean) {
     try {
-      const result = await window.maka.skills.setPinned(skillRef, pinned);
+      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+        window.maka.skills.setPinned(skillRef, pinned, host),
+      );
       if (!result.ok) {
-        if (isSkillsSurfaceActive()) toastApi.error(copy.toggleFailedTitle, copy.runtimeFailures[result.reason]);
+        if (isSkillsSurfaceActive()) {
+          toastApi.error(copy.toggleFailedTitle, copy.runtimeFailures[result.reason], diagnosticTarget);
+        }
         return;
       }
       await refreshSkills({ shouldShowError: isSkillsSurfaceActive });
@@ -238,16 +283,20 @@ export function createAppShellSkillActions(deps: {
       }
     } catch (error) {
       if (isSkillsSurfaceActive()) {
-        toastApi.error(copy.toggleFailedTitle, localizedShellErrorMessage(error, copy.toggleFallback, uiLocale));
+        reportRuntimeHostError(copy.toggleFailedTitle, copy.toggleFallback, error);
       }
     }
   }
 
   async function deleteSkill(skillRef: string) {
     try {
-      const result = await window.maka.skills.delete(skillRef);
+      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+        window.maka.skills.delete(skillRef, host),
+      );
       if (!result.ok) {
-        if (isSkillsSurfaceActive()) toastApi.error(copy.deleteFailedTitle, copy.deleteFailures[result.reason]);
+        if (isSkillsSurfaceActive()) {
+          toastApi.error(copy.deleteFailedTitle, copy.deleteFailures[result.reason], diagnosticTarget);
+        }
         return;
       }
       await refreshSkills({ shouldShowError: isSkillsSurfaceActive });
@@ -262,7 +311,7 @@ export function createAppShellSkillActions(deps: {
       if (isSkillsSurfaceActive()) toastApi.success(copy.deletedTitle, copy.deletedDescription(displayId));
     } catch (error) {
       if (isSkillsSurfaceActive()) {
-        toastApi.error(copy.deleteFailedTitle, localizedShellErrorMessage(error, copy.deleteFallback, uiLocale));
+        reportRuntimeHostError(copy.deleteFailedTitle, copy.deleteFallback, error);
       }
     }
   }

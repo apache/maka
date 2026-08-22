@@ -1,12 +1,13 @@
 import type { DailyReviewRange } from '@maka/core/daily-review';
 import type { UiLocale } from '@maka/core/ui-locale';
+import type { DesktopRuntimeHostRef } from '../preload/bridge-contract.js';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 
 export function createAppShellDailyReviewBridge(locale: UiLocale = 'zh') {
   const copy = getShellRemainingCopy(locale).dailyReview;
   return {
-    async fetchDay(offsetDays: number, daySpan?: number) {
-      const result = await window.maka.dailyReview.day(offsetDays, daySpan);
+    async fetchDay(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef) {
+      const result = await window.maka.dailyReview.day(offsetDays, daySpan, host);
       if (!result.ok) throw new Error(result.error.message);
       return result.data;
     },

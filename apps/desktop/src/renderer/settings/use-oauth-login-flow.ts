@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
 import { type UiLocale } from '@maka/core/ui-locale';
-import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-
+import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
 // Shared browser-assisted OAuth login-flow controller (device-code polling).
 //
@@ -76,6 +80,7 @@ export function useOAuthLoginFlow(params: {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthFlow;
   const toast = useToast();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const [state, setState] = useState<SubscriptionSnapshot | null>(null);
   const [authRequestId, setAuthRequestId] = useState<string | null>(null);
   const [stateHint, setStateHint] = useState<string | null>(null);
@@ -94,7 +99,7 @@ export function useOAuthLoginFlow(params: {
     } catch (error) {
       if (!oauthLoginFlowMountedRef.current) return false;
       const message = subscriptionActionErrorMessage(error, locale);
-      toast.error(copy.refreshFailed, message);
+      reportHostError(copy.refreshFailed, message);
       setErrorMessage(message);
       return false;
     }
@@ -129,7 +134,7 @@ export function useOAuthLoginFlow(params: {
       if ('ok' in payload) {
         if (!oauthLoginFlowMountedRef.current) return;
         const failureMessage = payload.ok ? copy.retry : subscriptionResultMessage(payload.message, copy.startFailedRetry, locale);
-        toast.error(copy.startFailed, failureMessage);
+        reportHostError(copy.startFailed, failureMessage);
         setErrorMessage(failureMessage);
         return;
       }
@@ -145,7 +150,7 @@ export function useOAuthLoginFlow(params: {
       if (!oauthLoginFlowMountedRef.current) return;
       if (!opened.ok) {
         const message = subscriptionResultMessage(opened.message, copy.openFailedRetry, locale);
-        toast.error(copy.openFailed, message);
+        reportHostError(copy.openFailed, message);
         setErrorMessage(message);
         void bridge.cancelAuthorization(payload.authRequestId);
         authRequestIdRef.current = null;
@@ -168,7 +173,7 @@ export function useOAuthLoginFlow(params: {
         if (params.onLoginSuccess) await params.onLoginSuccess();
       } else {
         const message = subscriptionResultMessage(result.message, copy.incompleteRetry, locale);
-        toast.error(copy.incomplete, message);
+        reportHostError(copy.incomplete, message);
         setErrorMessage(message);
       }
     } catch (error) {
@@ -179,7 +184,7 @@ export function useOAuthLoginFlow(params: {
       setAuthRequestId(null);
       setStateHint(null);
       const message = subscriptionActionErrorMessage(error, locale);
-      toast.error(copy.loginFailed, message);
+      reportHostError(copy.loginFailed, message);
       setErrorMessage(message);
     } finally {
       finishPendingAction();
@@ -203,11 +208,17 @@ export function useOAuthLoginFlow(params: {
         toast.success(copy.loggedOut, copy.credentialsCleared);
         await refresh();
       } else {
-        toast.error(copy.logoutFailed, subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale));
+        reportHostError(
+          copy.logoutFailed,
+          subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale),
+        );
       }
     } catch (error) {
       if (!oauthLoginFlowMountedRef.current) return;
-      toast.error(copy.logoutFailed, subscriptionActionErrorMessage(error, locale));
+      reportHostError(
+        copy.logoutFailed,
+        subscriptionActionErrorMessage(error, locale),
+      );
     } finally {
       finishPendingAction();
     }

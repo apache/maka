@@ -1,9 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import type { UiLocale } from '@maka/core/ui-locale';
+import {
+  defaultRuntimeHostDiagnosticTarget,
+  runOnDefaultRuntimeHost,
+} from './default-runtime-host-operation.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
 type ToastApi = {
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string } | { profileId: string },
+  ): void;
 };
 
 /**
@@ -33,7 +42,13 @@ export function useShellMemoryPill({
   async function refreshMemoryActive(failureContext?: 'load') {
     const sequence = ++refreshSequence.current;
     try {
-      const next = await window.maka.memory.getState(sessionId);
+      const next = sessionId
+        ? await window.maka.memory.getState(sessionId)
+        : (
+            await runOnDefaultRuntimeHost((host) =>
+              window.maka.memory.getState(undefined, host),
+            )
+          ).value;
       if (refreshSequence.current !== sequence) return;
       setMemoryActive(next.agentReadEnabled && next.status === 'ok' && next.content.trim().length > 0);
     } catch (error) {
@@ -41,6 +56,8 @@ export function useShellMemoryPill({
       toastApi.error(
         failureContext === 'load' ? copy.memoryLoadErrorTitle : copy.memoryRefreshErrorTitle,
         localizedShellErrorMessage(error, copy.memoryErrorFallback, uiLocale),
+        undefined,
+        sessionId ? { sessionId } : defaultRuntimeHostDiagnosticTarget(error),
       );
     }
   }

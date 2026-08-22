@@ -125,15 +125,41 @@ export function ProjectsSettingsPage(props: {
   const defaultResolves =
     defaultProjectId !== undefined &&
     listed.some((project) => project.id === defaultProjectId && project.available);
+  const diagnosticTarget = host ? { profileId: host.profileId } : undefined;
 
-  async function runRowAction(key: string, action: () => Promise<void>, failure: string) {
+  async function runRowAction(
+    key: string,
+    action: () => Promise<void>,
+    failure: string,
+  ) {
     const release = actionGuard.begin(key);
     if (!release) return;
     try {
-      await action();
-      await reload();
-    } catch (error) {
-      if (mountedRef.current) toast.error(failure, settingsActionErrorMessage(error, locale));
+      try {
+        await action();
+      } catch (error) {
+        if (mountedRef.current) {
+          toast.error(
+            failure,
+            settingsActionErrorMessage(error, locale),
+            undefined,
+            diagnosticTarget,
+          );
+        }
+        return;
+      }
+      try {
+        await reload();
+      } catch (error) {
+        if (mountedRef.current) {
+          toast.error(
+            failure,
+            settingsActionErrorMessage(error, locale),
+            undefined,
+            diagnosticTarget,
+          );
+        }
+      }
     } finally {
       release();
     }
@@ -164,7 +190,6 @@ export function ProjectsSettingsPage(props: {
       </SettingsPage>
     );
   }
-
   return (
     <SettingsPage as="section" aria-label={copy.section}>
       <RuntimeHostProfilesSection onRemoteHostAdded={props.onRemoteHostAdded} />
@@ -295,7 +320,20 @@ export function ProjectsSettingsPage(props: {
                                   // Removing the default leaves the preference
                                   // pointing at nothing; clear it in the same
                                   // action rather than leaving a dangling id.
-                                  if (isDefault) await setDefault(undefined);
+                                  if (isDefault) {
+                                    try {
+                                      await setDefault(undefined);
+                                    } catch (error) {
+                                      if (mountedRef.current) {
+                                        toast.error(
+                                          copy.setDefaultFailed,
+                                          settingsActionErrorMessage(error, locale),
+                                          undefined,
+                                          diagnosticTarget,
+                                        );
+                                      }
+                                    }
+                                  }
                                 },
                                 copy.actionFailed,
                               ),

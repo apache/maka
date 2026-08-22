@@ -39,21 +39,37 @@ export type ToastVariant = 'info' | 'success' | 'warning' | 'error';
 
 export interface ToastAction {
   label: string;
-  onClick(): void;
+  onClick(): void | Promise<void>;
 }
 
 export interface ToastErrorAction {
   label: string;
+  failureTitle: string;
+  failureDescription: string;
   onClick(
     input: Pick<ToastInput, 'title' | 'description' | 'diagnosticDetails' | 'diagnosticTarget'>,
-  ): void;
+  ): Promise<void>;
 }
 
-export interface ToastDiagnosticTarget {
-  sessionId: string;
-  turnId: string;
-  eventId: string;
-}
+export type ToastDiagnosticTarget =
+  | {
+      sessionId: string;
+      profileId?: never;
+      turnId?: never;
+      eventId?: never;
+    }
+  | {
+      sessionId: string;
+      turnId: string;
+      eventId: string;
+      profileId?: never;
+    }
+  | {
+      profileId: string;
+      sessionId?: never;
+      turnId?: never;
+      eventId?: never;
+    };
 
 export interface ToastInput {
   title: string;
@@ -125,6 +141,30 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
       let dismissCurrent: ToastDismissFn | undefined;
       const duration = input.duration ?? DEFAULT_DURATION;
       const errorAction = props.errorAction;
+      const showErrorActionFailure = () => {
+        if (!errorAction) return;
+        const failureId = `t${++idSeed.current}`;
+        let dismissFailure: ToastDismissFn | undefined;
+        dismissFailure = showToast({
+          uniqueID: failureId,
+          body: (
+            <ToastBody
+              input={{
+                title: errorAction.failureTitle,
+                description: errorAction.failureDescription,
+                variant: 'error',
+              }}
+            />
+          ),
+          type: 'error',
+          isAutoHide: true,
+          autoHideDuration: DEFAULT_DURATION,
+          onHide: () => {
+            dismissByIdRef.current.delete(failureId);
+          },
+        });
+        dismissByIdRef.current.set(failureId, dismissFailure);
+      };
       const actions = [
         input.action,
         input.variant === 'error' && errorAction
@@ -149,8 +189,19 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
                 size="sm"
                 label={action.label}
                 onClick={() => {
-                  action.onClick();
-                  dismissCurrent?.();
+                  try {
+                    const pending = action.onClick();
+                    if (!pending) {
+                      dismissCurrent?.();
+                      return;
+                    }
+                    void pending.then(
+                      () => dismissCurrent?.(),
+                      showErrorActionFailure,
+                    );
+                  } catch {
+                    showErrorActionFailure();
+                  }
                 }}
               />
             ))}
