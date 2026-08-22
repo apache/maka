@@ -229,7 +229,15 @@ function readLicenseFiles(directory) {
 function overrideLicenseText(packageKey, selectedLicense) {
   if (selectedLicense === 'Apache-2.0' && APACHE_TEXT_OVERRIDE_KEYS.has(packageKey)) {
     const rootLicense = readFileSync(join(repoRoot, 'LICENSE'), 'utf8');
-    return normalizeText(rootLicense.split('\nTHIRD-PARTY COMPONENTS\n', 1)[0]);
+    // `split` returns the whole string when the delimiter is absent, which
+    // would put Maka's own third-party section back inside one npm package's
+    // notice and leave `--check` demanding that output be committed. Rename or
+    // drop the header and this fails instead.
+    const [apacheText, thirdParty] = rootLicense.split('\nTHIRD-PARTY COMPONENTS\n');
+    if (thirdParty === undefined) {
+      throw new Error('LICENSE has no THIRD-PARTY COMPONENTS section header to truncate at');
+    }
+    return normalizeText(apacheText);
   }
   const copyrightNotice = MIT_COPYRIGHT_OVERRIDES.get(packageKey);
   if (selectedLicense === 'MIT' && copyrightNotice) return MIT_TEXT(copyrightNotice);

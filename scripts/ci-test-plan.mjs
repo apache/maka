@@ -61,6 +61,7 @@ const CLI_PACKAGE_FILES = new Set([
   'scripts/apply-dependency-patches.mjs',
   'scripts/clean-paths.mjs',
   'scripts/generate-third-party-notices.mjs',
+  'scripts/generate-third-party-notices.test.mjs',
   'scripts/install-electron-with-retry.mjs',
   'scripts/npm-spawn.mjs',
   'scripts/smoke-release-cli-package.mjs',
