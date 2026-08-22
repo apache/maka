@@ -249,8 +249,18 @@ describe('isSafeToolExecutionStepOutcome', () => {
   for (const outcome of [
     { kind: 'truncated', failure, request, continuation: 'none' },
     { kind: 'terminal-failure', failure, request, continuation: 'none' },
-    { kind: 'retryable-failure', failure: { ...failure, retryable: true }, request, continuation: 'none' },
-    { kind: 'aborted', failure: { ...failure, kind: 'abort' as const }, request, continuation: 'none' },
+    {
+      kind: 'retryable-failure',
+      failure: { ...failure, retryable: true },
+      request,
+      continuation: 'none',
+    },
+    {
+      kind: 'aborted',
+      failure: { ...failure, kind: 'abort' as const },
+      request,
+      continuation: 'none',
+    },
   ] satisfies ModelStepOutcome[]) {
     test(`rejects ${outcome.kind}`, () => {
       assert.equal(isSafeToolExecutionStepOutcome(outcome), false);
