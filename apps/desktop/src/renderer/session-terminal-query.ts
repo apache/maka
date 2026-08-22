@@ -76,11 +76,7 @@ export function isXtVersionQuery(params: TerminalParams): boolean {
 }
 
 export function isDeviceStatusQuery(params: TerminalParams): boolean {
-  return firstParamIs(params, 5) || firstParamIs(params, 6);
-}
-
-export function isPrivateDeviceStatusQuery(params: TerminalParams): boolean {
-  return firstParamIs(params, 6);
+  return firstParamIs(params, 5);
 }
 
 export function isWindowReportQuery(params: TerminalParams): boolean {
@@ -98,9 +94,10 @@ export function isWindowReportQuery(params: TerminalParams): boolean {
  * Resource input path. That path can deliver a reply after a short-lived probe
  * has restored canonical echo, making the reply visible at the next prompt.
  *
- * These handlers cover every response-generating query implemented by xterm:
- * color reports, device attributes/status, XTVERSION, mode/window reports, and DECRQSS.
- * Setters and other terminal control sequences continue to xterm's handlers.
+ * These handlers cover capability probes that xterm would otherwise answer into
+ * onData: color reports, DA, XTVERSION, DSR status, mode/window reports, and DECRQSS.
+ * Cursor-position reports (CSI 6 n / CSI ? 6 n) stay with xterm so full-screen
+ * apps can still locate the cursor. Setters continue to xterm's handlers.
  * Mixed OSC color payloads are intercepted in full, then their setter-only
  * portions are written back so xterm applies them without emitting replies.
  */
@@ -119,7 +116,6 @@ export function suppressTerminalQueryReplies(terminal: TerminalQueryTarget): IDi
     parser.registerCsiHandler({ prefix: '>', final: 'c' }, isDeviceAttributesQuery),
     parser.registerCsiHandler({ prefix: '>', final: 'q' }, isXtVersionQuery),
     parser.registerCsiHandler({ final: 'n' }, isDeviceStatusQuery),
-    parser.registerCsiHandler({ prefix: '?', final: 'n' }, isPrivateDeviceStatusQuery),
     parser.registerCsiHandler({ intermediates: '$', final: 'p' }, () => true),
     parser.registerCsiHandler({ prefix: '?', intermediates: '$', final: 'p' }, () => true),
     parser.registerCsiHandler({ final: 't' }, isWindowReportQuery),

@@ -5,7 +5,6 @@ import {
   isColorQuery,
   isDeviceAttributesQuery,
   isDeviceStatusQuery,
-  isPrivateDeviceStatusQuery,
   isWindowReportQuery,
   isXtVersionQuery,
   suppressTerminalQueryReplies,
@@ -39,14 +38,9 @@ test('recognizes device attribute and status reports by their first parameter', 
 
   assert.equal(isDeviceStatusQuery([5]), true);
   assert.equal(isDeviceStatusQuery([5, 0]), true);
-  assert.equal(isDeviceStatusQuery([6]), true);
-  assert.equal(isDeviceStatusQuery([6, 1]), true);
+  assert.equal(isDeviceStatusQuery([6]), false);
+  assert.equal(isDeviceStatusQuery([6, 1]), false);
   assert.equal(isDeviceStatusQuery([4, 0]), false);
-
-  assert.equal(isPrivateDeviceStatusQuery([6]), true);
-  assert.equal(isPrivateDeviceStatusQuery([6, 1]), true);
-  assert.equal(isPrivateDeviceStatusQuery([5, 0]), false);
-  assert.equal(isPrivateDeviceStatusQuery([[6]]), false);
 
   assert.equal(isXtVersionQuery([0]), true);
   assert.equal(isXtVersionQuery([0, 1]), true);
@@ -131,7 +125,7 @@ test('registers and disposes every xterm response-generating query handler', () 
 
   const queryReplies = suppressTerminalQueryReplies(terminal);
 
-  assert.equal(registered.length, 13);
+  assert.equal(registered.length, 12);
   assert.deepEqual(
     registered.filter(({ kind }) => kind === 'osc').map(({ id }) => id),
     [4, 10, 11, 12],
