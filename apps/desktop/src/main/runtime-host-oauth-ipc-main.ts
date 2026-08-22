@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime/oauth-provider-contracts';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   OAUTH_LOGIN_PROVIDERS,
   type OAuthLoginProjection,
@@ -52,7 +52,6 @@ export interface RuntimeHostOAuthIpcDeps {
   readonly client: OAuthClient;
   readonly presentation: RuntimeHostOAuthPresentation;
   readonly emitConnectionListChanged: () => void;
-  readonly isProviderEnabled?: (provider: OAuthLoginProvider) => boolean;
 }
 
 interface ActiveOAuthAttempt {
@@ -62,15 +61,16 @@ interface ActiveOAuthAttempt {
 /** Adapts the existing Desktop OAuth UI to the Host's provider-neutral OAuth operations. */
 export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void {
   const activeAttempts = new Map<string, ActiveOAuthAttempt>();
-  const providerEnabled = deps.isProviderEnabled ?? isOAuthEnrollmentProviderEnabled;
 
   for (const provider of OAUTH_LOGIN_PROVIDERS) {
     const channel = (operation: string) => `${provider}:${operation}`;
     deps.ipcMain.handle(channel('get-auth-url'), async () => {
-      // The enrollment gate is the Host's, and this is the only place a renderer
-      // can meet it: a disabled provider refuses the start rather than answering
-      // a separate "is it enabled" question the UI would have to duplicate.
-      if (!providerEnabled(provider)) return providerDisabled();
+      // No local enrollment gate. Whether this provider may enroll is the
+      // selected Host's answer, and only the Host has it: a remote Host that
+      // enabled Copilot must not be refused because this Desktop process
+      // happens not to set the same variable. The start below carries the
+      // question, and `operation_unavailable` is the answer.
+      //
       // Drop any Desktop-tracked attempt for this provider so a re-click does
       // not race a stale completeAuthorization waiter against a new start.
       await cancelProviderAttempts(deps, activeAttempts, provider);
@@ -97,7 +97,15 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
           error instanceof Error && error.message.trim().length > 0
             ? error.message
             : 'Unable to start OAuth authorization';
-        return actionFailure(detail);
+        // The Host refuses an enrollment this install has not opted into with
+        // `operation_unavailable`; keep that as its own reason so the renderer
+        // can say so instead of reporting a generic authorization failure.
+        return actionFailure(
+          detail,
+          error instanceof RuntimeHostOperationError && error.code === 'operation_unavailable'
+            ? 'experimental_disabled'
+            : 'unknown',
+        );
       }
     });
     deps.ipcMain.handle(channel('open-auth-url'), (_event, attemptId: unknown) => {
@@ -274,10 +282,6 @@ function accountState(
   runtimeState: 'not_logged_in' | 'authorizing' | 'authenticated',
 ) {
   return { provider, runtimeState };
-}
-
-function providerDisabled() {
-  return actionFailure('OAuth enrollment is disabled for this provider', 'experimental_disabled');
 }
 
 function actionFailure(

@@ -9,6 +9,7 @@ import {
   type RuntimeHostOAuthIpcDeps,
 } from '../runtime-host-oauth-ipc-main.js';
 import { RuntimeHostOAuthPresentation } from '../runtime-host-oauth-presentation.js';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 
 test('presents the Host OAuth handoff without exposing the authorization URL', async () => {
   const opened: string[] = [];
@@ -158,7 +159,6 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
     emitConnectionListChanged: () => {
       changed += 1;
     },
-    isProviderEnabled: () => true,
   });
 
   assert.deepEqual([...handlers.keys()].sort(), [...RUNTIME_HOST_OAUTH_IPC_CHANNELS].sort());
@@ -277,7 +277,6 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
     emitConnectionListChanged: () => {
       changed += 1;
     },
-    isProviderEnabled: () => true,
   });
 
   assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url'), {
@@ -290,6 +289,80 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
   );
   assert.equal(changed, 1);
 });
+
+test('reports the selected Host refusing an enrollment this install has not enabled', async () => {
+  // The Host is the only authority on whether a provider may enroll. A remote
+  // Host that enabled Copilot must not be refused because this Desktop process
+  // does not set the same variable, so there is no local precheck to consult —
+  // the start carries the question and `operation_unavailable` is the answer.
+  const handlers = new Map<
+    string,
+    Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1]
+  >();
+  const presentation = new RuntimeHostOAuthPresentation(async () => {
+    throw new Error('A refused enrollment must never open a browser');
+  });
+  let catalog: ConnectionCatalogSnapshot = {
+    revision: 1,
+    defaultTarget: null,
+    connections: [
+      {
+        connectionId: '00000000-0000-4000-8000-000000000001',
+        revision: 1,
+        slug: 'github-copilot',
+        name: 'GitHub Copilot',
+        providerType: 'github-copilot',
+        enabled: true,
+        enabledModelIds: [...PROVIDER_DEFAULTS['github-copilot'].fallbackModels],
+        models: [],
+      },
+    ],
+  };
+  const client = {
+    loadConnectionCatalog: async () => catalog,
+    createConnection: async () => {
+      throw new Error('Existing OAuth Connection must be reused');
+    },
+    updateConnection: async () => {
+      throw new Error('Enabled OAuth Connection must not be rewritten');
+    },
+    startOAuthLogin: async () => {
+      throw new RuntimeHostOperationError(
+        'oauth.login.start',
+        'operation_unavailable',
+        'OAuth enrollment is disabled for this provider',
+      );
+    },
+    queryOAuthLogin: async () => {
+      throw new Error('A refused start has no attempt to query');
+    },
+    cancelOAuthLogin: async () => oauthCopilotProjection(),
+    queryCredential: async () => null,
+  } as unknown as RuntimeHostOAuthIpcDeps['client'];
+
+  registerRuntimeHostOAuthIpc({
+    ipcMain: { handle: (channel, handler) => void handlers.set(channel, handler) },
+    client,
+    presentation,
+    emitConnectionListChanged: () => undefined,
+  });
+
+  assert.deepEqual(await invoke(handlers, 'github-copilot:get-auth-url'), {
+    ok: false,
+    reason: 'experimental_disabled',
+    message: 'OAuth enrollment is disabled for this provider',
+  });
+  assert.equal(catalog.revision, 1);
+});
+
+function oauthCopilotProjection() {
+  return {
+    attemptId: '00000000-0000-4000-8000-0000000000ff',
+    connectionId: '00000000-0000-4000-8000-000000000001',
+    provider: 'github-copilot' as const,
+    phase: 'cancelled' as const,
+  };
+}
 
 function oauthProjection(
   attemptId: string,
