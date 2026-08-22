@@ -98,3 +98,30 @@ test('renders authoritative queued messages with one retract action', () => {
   assert.match(markup, /do this next/);
   assert.match(markup, /aria-label="Retract all"/);
 });
+
+test('does not offer retract when only an in-flight steering message remains', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        streaming
+        followUpMode="steer"
+        queuedMessages={{
+          steering: [{
+            entryId: 'entry-1',
+            messageId: 'message-1',
+            content: { text: 'adjust this run' },
+            placement: 'current_turn',
+            state: 'in_flight',
+          }],
+          followup: [],
+        }}
+        onRetractQueued={() => undefined}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  assert.match(markup, /adjust this run/);
+  assert.doesNotMatch(markup, /aria-label="Retract all"/);
+});

@@ -50,9 +50,10 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
       label: props.copy.followUpQueuedLabel,
     })),
   ];
+  const hasRetractableEntries = entries.some(({ entry }) => entry.state === 'queued');
 
   async function retractQueued() {
-    if (!props.onRetractQueued || retractPending) return;
+    if (!props.onRetractQueued || !hasRetractableEntries || retractPending) return;
     setRetractPending(true);
     try {
       await props.onRetractQueued();
@@ -80,7 +81,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
           </div>
         ))}
       </div>
-      {props.onRetractQueued ? (
+      {props.onRetractQueued && hasRetractableEntries ? (
         <IconButton
           variant="ghost"
           size="sm"

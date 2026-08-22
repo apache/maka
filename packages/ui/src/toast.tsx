@@ -355,11 +355,23 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
 }
 
 export function toastContentKey(input: ToastInput): string {
+  const diagnosticTarget = input.diagnosticTarget;
+  const diagnosticScope = !diagnosticTarget
+    ? null
+    : 'profileId' in diagnosticTarget
+      ? ['profile', diagnosticTarget.profileId]
+      : [
+          'session',
+          diagnosticTarget.sessionId,
+          diagnosticTarget.turnId ?? '',
+          diagnosticTarget.eventId ?? '',
+        ];
   return JSON.stringify([
     input.variant ?? 'info',
     input.title,
     input.description ?? '',
     input.action?.label ?? '',
+    diagnosticScope,
   ]);
 }
 

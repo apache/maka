@@ -21,13 +21,45 @@ import { strict as assert } from 'node:assert';
 import { it } from 'node:test';
 import { toastContentKey } from '../toast.js';
 
-it('deduplicates identical active toast content without merging different errors', () => {
+it('deduplicates identical active toast content within the same session', () => {
   const input = {
     title: 'Send failed',
     description: 'Try again later',
     variant: 'error' as const,
+    diagnosticTarget: { sessionId: 'session-1' },
   };
-  assert.equal(toastContentKey(input), toastContentKey({ ...input }));
+  assert.equal(
+    toastContentKey(input),
+    toastContentKey({
+      ...input,
+      diagnosticTarget: { sessionId: 'session-1' },
+    }),
+  );
+});
+
+it('does not merge identical active toast content across sessions', () => {
+  const input = {
+    title: 'Send failed',
+    description: 'Try again later',
+    variant: 'error' as const,
+    diagnosticTarget: { sessionId: 'session-1' },
+  };
+  assert.notEqual(
+    toastContentKey(input),
+    toastContentKey({
+      ...input,
+      diagnosticTarget: { sessionId: 'session-2' },
+    }),
+  );
+});
+
+it('does not merge different error content within the same session', () => {
+  const input = {
+    title: 'Send failed',
+    description: 'Try again later',
+    variant: 'error' as const,
+    diagnosticTarget: { sessionId: 'session-1' },
+  };
   assert.notEqual(
     toastContentKey(input),
     toastContentKey({ ...input, description: 'Authentication failed' }),
