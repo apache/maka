@@ -67,8 +67,8 @@ export async function terminateProcessTree(
   options: ProcessTreeTerminationOptions,
 ): Promise<boolean> {
   const { pid, signal, fallback, hasExited, beforeSignal } = options;
-  if (hasExited?.()) return false;
   if (process.platform === 'win32') {
+    if (hasExited?.()) return false;
     if (beforeSignal && !beforeSignal()) return false;
     if (await killWindowsTree(pid)) return true;
     if (hasExited?.()) return false;
@@ -76,12 +76,14 @@ export async function terminateProcessTree(
   }
 
   const processes = await readPosixProcesses();
-  if (hasExited?.()) return false;
   if (beforeSignal && !beforeSignal()) return false;
 
   const escapedDescendantSignaled = forceKillEscapedDescendants(pid, processes);
-  if (hasExited?.()) return escapedDescendantSignaled;
   try {
+    // All production callers spawn a detached POSIX group whose PGID is the
+    // direct root PID. The group survives the root, so signal it even after
+    // Node has observed root exit; inherited descendants may still own output
+    // handles and otherwise escape lifecycle completion.
     process.kill(-pid, signal);
     return true;
   } catch (error) {

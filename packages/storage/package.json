@@ -22,6 +22,7 @@
     "./interaction-store": "./dist/interaction-store-public.js",
     "./git-worktree-child-executor": "./dist/git-worktree-child-executor.js",
     "./memory-bundle-store": "./dist/memory-bundle-store.js",
+    "./managed-dependency-environment": "./dist/managed-dependency-environment.js",
     "./managed-workspace-owner": "./dist/managed-workspace-owner.js",
     "./managed-secret-store": "./dist/managed-secret-store.js",
     "./activation-secret-injector": "./dist/activation-secret-injector.js",
