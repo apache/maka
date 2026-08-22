@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   decodeClientFrame,
+  decodeExternalSessionCatalogQueryInput,
   decodeExternalSessionCatalogQueryResult,
   decodeExternalSessionSourceQueryResult,
   EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
@@ -252,3 +253,37 @@ describe('external Session protocol', () => {
 function isProtocolError(error: unknown): boolean {
   return error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame';
 }
+
+describe('external Session catalog query text', () => {
+  test('a term is accepted and carried through', () => {
+    assert.deepEqual(
+      decodeExternalSessionCatalogQueryInput({ adapterId: 'claude-code', text: 'parser' }),
+      { adapterId: 'claude-code', text: 'parser' },
+    );
+  });
+
+  test('an absent term stays absent rather than becoming an empty filter', () => {
+    assert.deepEqual(decodeExternalSessionCatalogQueryInput({ adapterId: 'codex' }), {
+      adapterId: 'codex',
+    });
+  });
+
+  test('a term that is not a bounded string is refused at the frame', () => {
+    // The term reaches every adapter, so an unbounded or wrong-typed value
+    // must not get past the protocol edge.
+    for (const text of [42, null, {}, '', 'x'.repeat(1_000)]) {
+      assert.throws(
+        () => decodeExternalSessionCatalogQueryInput({ adapterId: 'codex', text }),
+        RuntimeHostProtocolError,
+        `text=${JSON.stringify(text)?.slice(0, 24)}`,
+      );
+    }
+  });
+
+  test('an unknown field is still refused', () => {
+    assert.throws(
+      () => decodeExternalSessionCatalogQueryInput({ adapterId: 'codex', query: 'parser' }),
+      RuntimeHostProtocolError,
+    );
+  });
+});

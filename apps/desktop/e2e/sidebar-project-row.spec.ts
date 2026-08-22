@@ -100,11 +100,28 @@ test('task row action menu accepts pointer selection', async ({
   await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
 
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
-  const taskRow = sessionRow(sidebar, `${LONG_SIDEBAR_SESSION_PREFIX}00`);
+  const taskSessionId = `${LONG_SIDEBAR_SESSION_PREFIX}00`;
+  const taskRow = sessionRow(sidebar, taskSessionId);
+  const actionMenu = taskRow.locator(':scope > .maka-session-row-action');
+  const timestamp = taskRow.locator('.maka-session-row-time');
+  await expect(timestamp).toHaveCSS('visibility', 'visible');
   await taskRow.hover();
   await taskRow.getByRole('button', { name: /任务操作$/ }).click();
 
   const rename = page.getByRole('menuitem', { name: '重命名', exact: true });
+  await expect(rename).toBeVisible();
+  await expect(actionMenu).toHaveAttribute('data-menu-open', 'true');
+  await rename.hover();
+  await expect.poll(() => taskRow.evaluate((row) => row.matches(':hover'))).toBe(false);
+  await expect(timestamp).toHaveCSS('visibility', 'hidden');
+
+  await page.mouse.click(4, 4);
+  await expect(rename).not.toBeVisible();
+  await expect(actionMenu).not.toHaveAttribute('data-menu-open', 'true');
+
+  await taskRow.hover();
+  await taskRow.getByRole('button', { name: /任务操作$/ }).focus();
+  await page.keyboard.press('Enter');
   await expect(rename).toBeVisible();
   await rename.click();
 

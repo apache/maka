@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { ToastProvider, useToast } from '@maka/ui';
 import type {
   AppSettings,
@@ -705,9 +705,17 @@ const makaBridge = {
   // judge.
   externalSessions: {
     listSources: async () => ({ adapterIds: ['codex'] }),
-    list: async (input: { includeArchived?: boolean; cursor?: string }) => {
+    list: async (input: { includeArchived?: boolean; cursor?: string; text?: string }) => {
+      // The stub honours `text` because the real Host applies it before
+      // paging. A stub that ignored it would render a search box that looks
+      // wired and is not, and the story would certify that.
+      const term = input.text?.trim().toLowerCase();
       const visible = externalConversations.filter(
-        (conversation) => input.includeArchived || !conversation.archived,
+        (conversation) =>
+          (input.includeArchived || !conversation.archived) &&
+          (!term ||
+            conversation.name.toLowerCase().includes(term) ||
+            conversation.cwd.toLowerCase().includes(term)),
       );
       const start = input.cursor === EXTERNAL_SECOND_PAGE ? EXTERNAL_PAGE_SIZE : 0;
       const end = start + EXTERNAL_PAGE_SIZE;
@@ -1465,6 +1473,32 @@ export const ArchivedTasks: Story = {
 export const ImportTasks: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="import-tasks" />,
+};
+
+// Real path: 设置 → 导入任务 → type into 搜索. The catalog pages 16 at a time
+// over a source that can hold a thousand sessions, so the term is the only way
+// to reach one by name. Typing here proves the box reaches the query rather
+// than filtering the page already on screen.
+export const ImportTasksSearch: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="import-tasks" />,
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body);
+    const search = await body.findByRole('textbox', { name: '搜索' });
+    // `worktree` appears in exactly one fixture title, so a working search
+    // narrows three rows to one. Filtering the assembled page would too — the
+    // difference is that this term reaches the query, which is what the
+    // stub asserts by honouring it.
+    await userEvent.type(search, 'worktree');
+    // Debounced, so the list settles a moment after the last keystroke.
+    await waitFor(async () => {
+      const rows = body.queryAllByRole('listitem');
+      await expect(rows).toHaveLength(1);
+    });
+    await expect(
+      await body.findByText('Trace the flaky worktree teardown in CI'),
+    ).toBeInTheDocument();
+  },
 };
 
 function importOutcomeRecoveryBridge(): Record<string, unknown> {

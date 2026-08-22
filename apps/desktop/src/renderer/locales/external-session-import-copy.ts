@@ -14,6 +14,10 @@ type ExternalSessionImportCopy = {
    *  itself, which is legible enough to ship and obvious enough to fix. */
   sourceNames: Readonly<Record<string, string>>;
   includeArchived: string;
+  searchLabel: string;
+  searchHelp: string;
+  searchPlaceholder: string;
+  searchEmpty: (term: string) => string;
   loading: string;
   listAria: string;
   emptyTitle: string;
@@ -63,6 +67,10 @@ const COPY = {
     sourceLabel: '来源',
     sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code' },
     includeArchived: '包含已归档的对话',
+    searchLabel: '搜索',
+    searchHelp: '匹配对话标题与项目路径。留空显示全部。',
+    searchPlaceholder: '标题或路径的一部分',
+    searchEmpty: (term) => `没有标题或路径包含「${term}」的对话。`,
     loading: '正在读取外部对话…',
     listAria: '可导入的对话',
     emptyTitle: '没有可导入的对话',
@@ -106,6 +114,10 @@ const COPY = {
     sourceLabel: 'Source',
     sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code' },
     includeArchived: 'Include archived conversations',
+    searchLabel: 'Search',
+    searchHelp: 'Matches the conversation title and the project path. Empty shows everything.',
+    searchPlaceholder: 'Part of a title or path',
+    searchEmpty: (term) => `No conversation has "${term}" in its title or path.`,
     loading: 'Reading external conversations…',
     listAria: 'Conversations available to import',
     emptyTitle: 'No conversations to import',

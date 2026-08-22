@@ -149,16 +149,21 @@ export class HostExternalSessionCoordinator {
         ? (await this.#workspaceResolver.resolve(input.workspace)).cwd
         : undefined;
       const offset = input.cursor === undefined ? 0 : Number(input.cursor);
-      const sessions = (
-        await adapter.listSessions({
-          ...(cwd === undefined ? {} : { cwd }),
-          ...(input.includeArchived === undefined
-            ? {}
-            : { includeArchived: input.includeArchived }),
-        })
-      )
-        .map(toWireSummary)
-        .filter((summary): summary is ExternalSessionCatalogItem => summary !== undefined);
+      const sessions =
+        // The term reaches the adapter rather than being applied to the page
+        // below: paging happens after this call, so filtering afterwards would
+        // search the 16 rows already fetched instead of the source.
+        (
+          await adapter.listSessions({
+            ...(cwd === undefined ? {} : { cwd }),
+            ...(input.includeArchived === undefined
+              ? {}
+              : { includeArchived: input.includeArchived }),
+            ...(input.text === undefined ? {} : { text: input.text }),
+          })
+        )
+          .map(toWireSummary)
+          .filter((summary): summary is ExternalSessionCatalogItem => summary !== undefined);
       const candidates = sessions.slice(offset, offset + EXTERNAL_SESSION_PAGE_MAX_ITEMS);
       const imports = await this.#sessions.lookupExternalSessionImports(
         input.adapterId,

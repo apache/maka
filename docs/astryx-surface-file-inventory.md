@@ -71,7 +71,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/data-settings-page.tsx` | settings-page | Banner, Button, Selector | aligned — uses Astryx (Banner, Button, Selector) | aligned |
 | `apps/desktop/src/renderer/settings/general-settings-page.tsx` | settings-page | Banner, Button, Selector | aligned — uses Astryx (Banner, Button, Selector) | aligned |
 | `apps/desktop/src/renderer/settings/health-center-page.tsx` | settings-page | Banner, Button, Text, VStack | aligned — uses Astryx (Banner, Button, Text, VStack) | aligned |
-| `apps/desktop/src/renderer/settings/import-tasks-settings-page.tsx` | settings-page | Banner, Button, CheckboxInput, EmptyState, HStack, List, ListItem, SegmentedControl, SegmentedControlItem, Spinner, VStack | aligned — uses Astryx (Banner, Button, CheckboxInput, EmptyState, HStack, List, ListItem, SegmentedControl) | aligned |
+| `apps/desktop/src/renderer/settings/import-tasks-settings-page.tsx` | settings-page | Banner, Button, CheckboxInput, EmptyState, HStack, List, ListItem, SegmentedControl, SegmentedControlItem, Spinner, TextInput, VStack | aligned — uses Astryx (Banner, Button, CheckboxInput, EmptyState, HStack, List, ListItem, SegmentedControl) | aligned |
 | `apps/desktop/src/renderer/settings/memory-entry-list.tsx` | settings-module | Button, EmptyState | aligned — uses Astryx (Button, EmptyState) | aligned |
 | `apps/desktop/src/renderer/settings/memory-settings-page.tsx` | settings-page | Banner, Button, EmptyState | aligned — uses Astryx (Banner, Button, EmptyState) | aligned |
 | `apps/desktop/src/renderer/settings/memory-settings-sections.tsx` | settings-module | Button | aligned — uses Astryx (Button) | aligned |

@@ -70,6 +70,29 @@ describe('CodexSessionAdapter', () => {
         (await adapter.listSessions({ includeArchived: true })).map((session) => session.id),
         ['codex-session-1', 'codex-session-archived'],
       );
+
+      // The same text query the Claude Code adapter honours. A catalog filter
+      // that silently worked for one source and not the other would be worse
+      // than none — the user cannot see which source dropped their term.
+      assert.deepEqual(
+        (await adapter.listSessions({ text: 'named' })).map((session) => session.id),
+        ['codex-session-1'],
+      );
+      assert.deepEqual(
+        (await adapter.listSessions({ text: '/workspace/project' })).map((session) => session.id),
+        ['codex-session-1'],
+      );
+      assert.equal((await adapter.listSessions({ text: 'kubernetes' })).length, 0);
+      // A blank box selects nothing, so it must not filter.
+      assert.equal((await adapter.listSessions({ text: '  ' })).length, 1);
+      // Text does not override the archived gate.
+      assert.equal((await adapter.listSessions({ text: 'archived' })).length, 0);
+      assert.deepEqual(
+        (await adapter.listSessions({ includeArchived: true, text: 'archived' })).map(
+          (session) => session.id,
+        ),
+        ['codex-session-archived'],
+      );
       assert.deepEqual(
         await adapter.listSessions({ includeArchived: true, cwd: '/workspace/archive/' }),
         [
@@ -83,6 +106,45 @@ describe('CodexSessionAdapter', () => {
           },
         ],
       );
+    });
+  });
+
+  test('a Windows path spelling reaches the matcher instead of being lost in SQL', async () => {
+    // The SQL used to prefilter with `cwd IN (<spelling variants>)`, and
+    // SQLite compares those exactly — a row stored `C:\\Repo\\App` was
+    // discarded before the shared matcher could see that `c:/repo/app` names
+    // the same project. This drives the real state-database path, not the
+    // matcher in isolation, because that is where the row was being dropped.
+    await withCodexHome(async (codexHome) => {
+      const rolloutPath = await seedMinimalRollout(
+        codexHome,
+        'codex-win',
+        false,
+        'C:\\Repo\\App',
+        'hello',
+      );
+      await seedStateDatabase(codexHome, [
+        {
+          id: 'codex-win',
+          rolloutPath,
+          cwd: 'C:\\Repo\\App',
+          name: 'Windows-shaped path',
+          createdAtMs: 1_000,
+          updatedAtMs: 2_000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      for (const cwd of ['C:\\Repo\\App', 'C:/Repo/App', 'c:/repo/app', 'c:\\repo\\app\\']) {
+        assert.deepEqual(
+          (await adapter.listSessions({ cwd })).map((session) => session.id),
+          ['codex-win'],
+          `cwd=${cwd}`,
+        );
+      }
+      // A genuinely different project is still excluded.
+      assert.equal((await adapter.listSessions({ cwd: 'C:/Repo/Other' })).length, 0);
     });
   });
 

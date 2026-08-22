@@ -422,7 +422,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Show the whole slash-command set at once — discoverability is the point of
   // the menu. Keep a little headroom above the current command count.
   const editor = new MakaSkillHighlightEditor(tui, editorTheme(), {
-    paddingX: 1,
+    paddingX: 0,
     autocompleteMaxVisible: EDITOR_AUTOCOMPLETE_MAX_VISIBLE,
   });
   let refreshEditorCwd: ((cwd: string) => void) | undefined;

@@ -12,6 +12,11 @@ import { decodeSessionCatalogItem, type SessionCatalogItem } from './session-cat
 import { decodeWorkspaceTarget, type WorkspaceTarget } from './workspace.js';
 
 export const EXTERNAL_SESSION_PAGE_MAX_ITEMS = 16;
+
+/** Byte bound for a catalog search term. The 200-char contract in
+ *  `@maka/core/external-session` at 4 bytes per character, so a term the core
+ *  matcher would accept can always reach it. */
+export const EXTERNAL_SESSION_QUERY_TEXT_MAX_BYTES = 800;
 export const EXTERNAL_SESSION_RESULT_MAX_BYTES = 72 * 1024;
 export const EXTERNAL_SESSION_CWD_MAX_BYTES = 4 * 1024;
 export const EXTERNAL_SESSION_NAME_MAX_BYTES = 320;
@@ -46,6 +51,8 @@ export interface ExternalSessionCatalogQueryInput {
   readonly includeArchived?: boolean;
   readonly workspace?: WorkspaceTarget;
   readonly cursor?: string;
+  /** Free text matched against a session's title and cwd, applied before paging. */
+  readonly text?: string;
 }
 
 export interface ExternalSessionCatalogQueryResult {
@@ -148,7 +155,7 @@ export function decodeExternalSessionCatalogQueryInput(
     value,
     'external Session catalog query input',
     ['adapterId'],
-    ['includeArchived', 'workspace', 'cursor'],
+    ['includeArchived', 'workspace', 'cursor', 'text'],
   );
   return {
     adapterId: adapterId(input.adapterId),
@@ -159,6 +166,7 @@ export function decodeExternalSessionCatalogQueryInput(
       ? { workspace: decodeWorkspaceTarget(input.workspace) }
       : {}),
     ...(Object.hasOwn(input, 'cursor') ? { cursor: cursor(input.cursor) } : {}),
+    ...(Object.hasOwn(input, 'text') ? { text: catalogQueryText(input.text) } : {}),
   };
 }
 
@@ -276,6 +284,19 @@ function decodeExternalSessionImportState(
 
 function adapterId(value: unknown): string {
   return requireEntityId(value, 'external Session adapter id');
+}
+
+/**
+ * A bounded search term. Bounded rather than free-form because it reaches the
+ * adapters, and an unbounded string from a client would be matched against
+ * every summary on every source.
+ */
+function catalogQueryText(value: unknown): string {
+  return requireUtf8String(
+    value,
+    'external Session catalog query text',
+    EXTERNAL_SESSION_QUERY_TEXT_MAX_BYTES,
+  );
 }
 
 function cursor(value: unknown): string {

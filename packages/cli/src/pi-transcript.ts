@@ -1,4 +1,4 @@
-import { Markdown } from '@earendil-works/pi-tui';
+import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
 import type {
   ProviderRetryEvent,
   SandboxBoundaryRequestEvent,
@@ -1253,22 +1253,42 @@ function renderTranscriptEntryMemoized(
 }
 
 function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number): string[] {
-  switch (entry.kind) {
-    case 'user':
-      return renderUserBlock(entry.text, width);
-    case 'legacy_automation':
-      return renderLegacyAutomationBlock(entry.text, width);
-    case 'goal_continuation':
-      return renderGoalContinuationBlock(entry.text, width);
-    case 'assistant':
-      return renderAssistantBlock(entry.text, width);
-    case 'thinking':
-      return renderThinkingBlock(entry, width, entry.expanded);
-    case 'tool':
-      return renderToolBlock(entry, width, entry.expanded);
-    case 'notice':
-      return renderNotice(entry, width);
-  }
+  // Keep the conversation stream inside a one-cell gutter. The editor owns
+  // the full terminal width, so this makes the two surfaces align without
+  // changing any of the individual block renderers' internal prefixes.
+  const contentWidth = Math.max(1, width - 2);
+  const lines = (() => {
+    switch (entry.kind) {
+      case 'user':
+        return renderUserBlock(entry.text, contentWidth);
+      case 'legacy_automation':
+        return renderLegacyAutomationBlock(entry.text, contentWidth);
+      case 'goal_continuation':
+        return renderGoalContinuationBlock(entry.text, contentWidth);
+      case 'assistant':
+        return renderAssistantBlock(entry.text, contentWidth);
+      case 'thinking':
+        return renderThinkingBlock(entry, contentWidth, entry.expanded);
+      case 'tool':
+        return renderToolBlock(entry, contentWidth, entry.expanded);
+      case 'notice':
+        return renderNotice(entry, contentWidth);
+    }
+  })();
+
+  // Markdown preserves a final blank paragraph. It should not become part of
+  // the block's vertical footprint because renderMakaPiTranscript already
+  // inserts the single separator row between entries.
+  let end = lines.length;
+  while (end > 0 && isBlankTranscriptLine(lines[end - 1]!)) end -= 1;
+  return lines.slice(0, end).map((line) => {
+    if (isBlankTranscriptLine(line)) return '';
+    return fitLine(` ${line}`, width);
+  });
+}
+
+function isBlankTranscriptLine(line: string): boolean {
+  return line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim().length === 0;
 }
 
 function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): string {

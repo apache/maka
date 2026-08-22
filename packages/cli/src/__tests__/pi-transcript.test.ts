@@ -178,6 +178,33 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('uses a shared message gutter and trims trailing block rows', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'text_delta',
+        messageId: 'message-1',
+        text: 'I will run it.\n\n',
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'tool-1',
+        toolName: 'Bash',
+        args: { command: 'true' },
+      }),
+    );
+
+    const lines = renderMakaPiTranscript(state, meta(), 40).map(stripAnsi);
+    assert.equal(lines[0], '');
+    assert.equal(lines[2], '');
+    assert.match(lines[1] ?? '', /^ I will run it\.\s+$/);
+    assert.match(lines[3] ?? '', /^ ● Bash  \$ true \(running\)$/);
+  });
+
   test('treats text_complete as the authoritative assistant text', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
