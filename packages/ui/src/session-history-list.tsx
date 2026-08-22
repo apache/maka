@@ -644,6 +644,7 @@ function SessionItemActions(props: {
   return (
     <span
       className="maka-session-row-action"
+      data-menu-open={menuOpen ? 'true' : undefined}
       ref={trailingRef}
       onKeyDown={(event) => event.stopPropagation()}
     >

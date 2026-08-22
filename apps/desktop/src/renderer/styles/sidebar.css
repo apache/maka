@@ -359,13 +359,14 @@
 
 .maka-session-row:hover > .maka-session-row-action,
 .maka-session-row:focus-within > .maka-session-row-action,
-.maka-session-row > .maka-session-row-action:has([popover]:popover-open) {
+.maka-session-row > .maka-session-row-action[data-menu-open="true"] {
   opacity: 1;
   pointer-events: auto;
 }
 
 .maka-session-row:hover .maka-session-row-time,
-.maka-session-row:focus-within .maka-session-row-time {
+.maka-session-row:focus-within .maka-session-row-time,
+.maka-session-row:has(> .maka-session-row-action[data-menu-open="true"]) .maka-session-row-time {
   visibility: hidden;
 }
 
