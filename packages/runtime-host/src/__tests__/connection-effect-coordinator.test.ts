@@ -43,7 +43,7 @@ test('verifies a first-run API key without persisting a connection or credential
     });
 
     const result = await coordinator.handlers['connection.onboarding.verify'](
-      { providerType: 'openai', apiKey: 'first-run-secret' },
+      { providerType: 'openai', apiKey: 'first-run-secret', baseUrl: null },
       context,
     );
 
@@ -54,6 +54,59 @@ test('verifies a first-run API key without persisting a connection or credential
     assert.deepEqual(observed, { slug: 'openai', secret: 'first-run-secret' });
     assert.deepEqual((await stores.connectionCatalog.getSnapshot()).connections, []);
     assert.deepEqual((await stores.credentialVault.getSnapshot()).entries, []);
+  });
+});
+
+test('onboards a custom relay end to end: rejects a missing endpoint, discovers and persists a supplied one', async () => {
+  await withFixture(async ({ stores }) => {
+    let observedBaseUrl: string | undefined;
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => 123,
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async (connection) => {
+        observedBaseUrl = connection.baseUrl;
+        return { ok: true, models: [{ id: 'relay/model' }] };
+      },
+    });
+
+    // A relay has no registry endpoint and no existing connection: nothing
+    // can answer discovery, so the attempt is rejected before any probe.
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.verify'](
+        { providerType: 'openai-compatible', apiKey: 'relay-secret', baseUrl: null },
+        context,
+      ),
+      { ok: true, result: { kind: 'rejected', reason: 'base_url_not_configured' } },
+    );
+    assert.equal(observedBaseUrl, undefined);
+
+    const saved = await coordinator.handlers['connection.onboarding.save'](
+      {
+        providerType: 'openai-compatible',
+        apiKey: 'relay-secret',
+        baseUrl: 'https://relay.example.test/v1',
+        enabledModelIds: ['relay/model'],
+      },
+      context,
+    );
+    assert.deepEqual(saved, { ok: true, result: { kind: 'saved' } });
+    assert.equal(observedBaseUrl, 'https://relay.example.test/v1');
+
+    const connection = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ slug }) => slug === 'openai-compatible',
+    );
+    assert.equal(connection?.baseUrl, 'https://relay.example.test/v1');
+    // Re-verifying with a blank endpoint now reuses the persisted one.
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.verify'](
+        { providerType: 'openai-compatible', apiKey: '', baseUrl: null },
+        context,
+      ),
+      { ok: true, result: { kind: 'verified', models: [{ id: 'relay/model' }] } },
+    );
   });
 });
 
@@ -75,6 +128,7 @@ test('saves a verified first-run target through the canonical Host authorities',
       {
         providerType: 'openai',
         apiKey: 'first-run-secret',
+        baseUrl: null,
         enabledModelIds: ['second-model'],
       },
       context,
@@ -135,6 +189,7 @@ test('re-enables an existing connection without replacing another default target
       {
         providerType: 'openai',
         apiKey: null,
+        baseUrl: null,
         enabledModelIds: ['restored-model'],
       },
       context,
@@ -172,6 +227,7 @@ test('leaves canonical onboarding state unchanged when the durable intent cannot
           {
             providerType: 'openai',
             apiKey: 'new-secret',
+            baseUrl: null,
             enabledModelIds: ['new-model'],
           },
           context,
@@ -220,6 +276,7 @@ test('recovers a durable onboarding intent instead of rolling back a partial pub
           {
             providerType: 'openai',
             apiKey: 'new-secret',
+            baseUrl: null,
             enabledModelIds: ['new-model'],
           },
           context,
@@ -266,6 +323,7 @@ test('invalidates a verified result when onboarding rotates only the credential'
         {
           providerType: 'openai',
           apiKey: 'new-secret',
+          baseUrl: null,
           enabledModelIds: ['gpt-5'],
         },
         context,
@@ -309,6 +367,7 @@ test('onboarding keeps what its wizard never offered and prunes what it did', as
         {
           providerType: 'openai-compatible',
           apiKey: 'new-secret',
+          baseUrl: null,
           enabledModelIds: ['kept-model'],
         },
         context,
@@ -331,6 +390,27 @@ test('onboarding keeps what its wizard never offered and prunes what it did', as
       (await stores.connectionCatalog.getSnapshot()).connections.map(({ slug }) => slug),
       ['openai-compatible'],
     );
+
+    // Declarations are endpoint-keyed, like the update path enforces: a
+    // re-onboarding that swaps the relay URL must not carry the old relay's
+    // profile table onto the new one.
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.save'](
+        {
+          providerType: 'openai-compatible',
+          apiKey: '',
+          baseUrl: 'https://relay-b.example.test/v1',
+          enabledModelIds: ['kept-model'],
+        },
+        context,
+      ),
+      { ok: true, result: { kind: 'saved' } },
+    );
+    const swapped = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ connectionId }) => connectionId === connection.connectionId,
+    );
+    assert.equal(swapped?.baseUrl, 'https://relay-b.example.test/v1');
+    assert.equal(swapped?.relayModelProfiles, undefined);
   });
 });
 
@@ -366,6 +446,7 @@ test('onboarding drops a declaration for a model the wizard offered and the user
         {
           providerType: 'openai-compatible',
           apiKey: 'new-secret',
+          baseUrl: null,
           enabledModelIds: ['kept-model'],
         },
         context,
@@ -410,6 +491,7 @@ test('rejects an oversized final catalog before publishing a recovery intent', a
         {
           providerType: 'openai',
           apiKey: 'capacity-secret',
+          baseUrl: null,
           enabledModelIds: [discovered[0]!.id],
         },
         context,

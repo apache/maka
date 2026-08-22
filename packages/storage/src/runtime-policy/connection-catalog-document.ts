@@ -482,6 +482,7 @@ export class ConnectionCatalogDocumentOwner {
     current: ConnectionCatalogDocument,
     rawConnectionId: string,
     rawProviderType: unknown,
+    rawBaseUrl: string | null,
     rawEnabledModelIds: readonly string[],
     rawResult: ConnectionModelDiscoveryResult,
     invalidateLastTest: boolean,
@@ -515,13 +516,14 @@ export class ConnectionCatalogDocumentOwner {
         'Onboarding requires a non-empty model inventory',
       );
     }
+    // A supplied endpoint replaces the previous one; null preserves the
+    // existing override or the registry default (blank-reuse, like the key).
+    const effectiveBaseUrl = rawBaseUrl ?? previous?.baseUrl ?? definition.baseUrl;
     const changes = decodeConnectionInput(() =>
       normalizeConnectionCatalogEntryUpdateForProvider(
         {
           name: previous?.name ?? definition.label,
-          ...((previous?.baseUrl ?? definition.baseUrl)
-            ? { baseUrl: previous?.baseUrl ?? definition.baseUrl }
-            : {}),
+          ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
           enabled: true,
           enabledModelIds: rawEnabledModelIds,
         },
@@ -539,13 +541,18 @@ export class ConnectionCatalogDocumentOwner {
       (modelId) => !offered.has(modelId) && !changes.enabledModelIds.includes(modelId),
     );
     const enabledModelIds = [...changes.enabledModelIds, ...undisplayed];
+    // The endpoint keys the profile table and the last test the same way it
+    // does on the update path: declarations describe the relay that made
+    // them, so a swapped URL must not inherit either.
+    const endpointChanged = previous !== undefined && previous.baseUrl !== changes.baseUrl;
     // Onboarding installs a new enabledModelIds authority, so a profile keyed
     // by a model it dropped would violate the subset invariant. Like the
     // refresh path above, this one bypasses the canonical decoder, so pruning
     // has to happen here or the document is un-loadable on next read.
-    const relayModelProfiles = previous
-      ? pruneRelayModelProfiles(previous.relayModelProfiles, enabledModelIds)
-      : undefined;
+    const relayModelProfiles =
+      previous && !endpointChanged
+        ? pruneRelayModelProfiles(previous.relayModelProfiles, enabledModelIds)
+        : undefined;
     const base: ConnectionCatalogEntry = previous ?? {
       connectionId,
       revision: 0,
@@ -560,6 +567,7 @@ export class ConnectionCatalogDocumentOwner {
     const finalized: ConnectionCatalogEntry = {
       ...baseWithoutProfiles,
       ...(relayModelProfiles ? { relayModelProfiles } : {}),
+      ...(changes.baseUrl !== undefined ? { baseUrl: changes.baseUrl } : {}),
       revision: previous ? nextRevision(previous.revision) : 1,
       enabled: true,
       enabledModelIds,
@@ -574,6 +582,7 @@ export class ConnectionCatalogDocumentOwner {
     };
     if (
       previous?.enabled &&
+      (changes.baseUrl === undefined || changes.baseUrl === previous.baseUrl) &&
       sameStringArray(previous.enabledModelIds, enabledModelIds) &&
       isDeepStrictEqual(previous.models, result.models) &&
       previous.modelSource === result.source &&
@@ -584,7 +593,8 @@ export class ConnectionCatalogDocumentOwner {
       return { kind: 'ready', document: current, changed: false };
     }
     const testBasisChanged = previous
-      ? !sameConnectionTestModelBasis(
+      ? endpointChanged ||
+        !sameConnectionTestModelBasis(
           connectionTestModelBasis(previous),
           connectionTestModelBasis(finalized),
         )

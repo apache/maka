@@ -197,6 +197,8 @@ export type ConnectionEffectCompletionResult =
 export interface CommitConnectionOnboardingInput {
   readonly providerType: ConnectionCatalogEntry['providerType'];
   readonly suppliedSecret: string | null;
+  /** Endpoint override; null keeps the existing entry's persisted URL or the registry default. */
+  readonly baseUrl: string | null;
   readonly enabledModelIds: readonly string[];
   readonly discovery: ConnectionModelDiscoveryResult;
 }

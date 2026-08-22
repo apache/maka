@@ -211,17 +211,23 @@ export class HostConnectionEffectCoordinator {
     if (PROVIDER_DEFAULTS[input.providerType].authKind === 'api_key' && secret.length === 0) {
       return { kind: 'rejected', reason: 'credential_not_configured' };
     }
+    // Mirrors the blank-key contract above: a null baseUrl reuses the
+    // existing connection's persisted endpoint or the registry default.
+    // A relay provider with no endpoint from any of those sources cannot
+    // run discovery — reject up front instead of probing an empty URL.
+    const base = candidate
+      ? { ...candidate, ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}) }
+      : transientConnection(input.providerType, input.baseUrl);
+    if (!base.baseUrl && !PROVIDER_DEFAULTS[input.providerType].baseUrl) {
+      return { kind: 'rejected', reason: 'base_url_not_configured' };
+    }
     const proxy = await this.#stores.operations.resolveNetworkProxyExecution();
     if (proxy.kind !== 'ready') return { kind: 'failed', errorClass: 'network' };
     const transport = this.#createTransport(
       toRuntimePolicyProxy(proxy.networkProxy, proxy.secretMaterial.networkProxy?.secret),
     );
     try {
-      const effect = await this.#runModelDiscovery(
-        candidate ?? transientConnection(input.providerType),
-        secret,
-        { fetch: transport.fetch },
-      );
+      const effect = await this.#runModelDiscovery(base, secret, { fetch: transport.fetch });
       if (!effect.ok || effect.models.length === 0) {
         return {
           kind: 'failed',
@@ -246,6 +252,7 @@ export class HostConnectionEffectCoordinator {
       const committed = await this.#stores.operations.commitConnectionOnboarding({
         providerType: input.providerType,
         suppliedSecret: prepared.suppliedSecret || null,
+        baseUrl: input.baseUrl,
         enabledModelIds: input.enabledModelIds,
         discovery: {
           models: prepared.models,
@@ -420,7 +427,11 @@ type OnboardingDiscovery =
     }
   | {
       readonly kind: 'rejected';
-      readonly reason: 'provider_unsupported' | 'credential_not_configured' | 'slug_conflict';
+      readonly reason:
+        | 'provider_unsupported'
+        | 'credential_not_configured'
+        | 'base_url_not_configured'
+        | 'slug_conflict';
     }
   | { readonly kind: 'failed'; readonly errorClass: ConnectionEffectFailureClass };
 
@@ -535,6 +546,7 @@ function operationFailure<
 
 function transientConnection(
   providerType: ConnectionOnboardingVerifyInput['providerType'],
+  baseUrl: string | null = null,
 ): ConnectionCatalogEntry {
   const definition = PROVIDER_DEFAULTS[providerType];
   const models = definition.fallbackModels.map((id) => ({ id }));
@@ -544,7 +556,7 @@ function transientConnection(
     slug: deriveConnectionSlug(providerType),
     name: definition.label,
     providerType,
-    ...(definition.baseUrl ? { baseUrl: definition.baseUrl } : {}),
+    ...((baseUrl ?? definition.baseUrl) ? { baseUrl: baseUrl ?? definition.baseUrl } : {}),
     enabled: true,
     enabledModelIds: models.map(({ id }) => id),
     models,

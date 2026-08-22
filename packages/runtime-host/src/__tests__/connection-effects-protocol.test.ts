@@ -13,11 +13,13 @@ describe('Runtime Host connection effects protocol', () => {
     const verify = request('connection.onboarding.verify', {
       providerType: 'openrouter',
       apiKey: 'transient-secret',
+      baseUrl: null,
     });
     const save = request('connection.onboarding.save', {
-      providerType: 'openrouter',
+      providerType: 'openai-compatible',
       apiKey: 'transient-secret',
-      enabledModelIds: ['openrouter/free'],
+      baseUrl: 'https://relay.example.test/v1',
+      enabledModelIds: ['relay/model'],
     });
     assert.deepEqual(decodeClientFrame(verify), verify);
     assert.deepEqual(decodeClientFrame(save), save);
@@ -40,7 +42,20 @@ describe('Runtime Host connection effects protocol', () => {
     assertInvalidRequest('connection.onboarding.save', {
       providerType: 'openrouter',
       apiKey: null,
+      baseUrl: null,
       enabledModelIds: [],
+    });
+    // The endpoint override goes through the shared catalog normalizer, so a
+    // non-http(s) or credentialed URL never reaches discovery.
+    assertInvalidRequest('connection.onboarding.verify', {
+      providerType: 'openai-compatible',
+      apiKey: 'transient-secret',
+      baseUrl: 'ftp://relay.example.test/v1',
+    });
+    assertInvalidRequest('connection.onboarding.verify', {
+      providerType: 'openai-compatible',
+      apiKey: 'transient-secret',
+      baseUrl: 'https://user:pass@relay.example.test/v1',
     });
     assertInvalidResponse('connection.onboarding.verify', {
       kind: 'verified',
