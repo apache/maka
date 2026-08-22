@@ -194,6 +194,12 @@ export function ProjectsSettingsPage(props: {
     await props.onUpdate({ projects: { defaultProjectId: projectId } });
   }
 
+  // `runtimeHostStatus` describes the selected target's current read/feedback
+  // state; it is not the write-authority predicate. A same-generation refresh
+  // may fail while the already verified target remains safe to use. Every
+  // project read and mutation is therefore fenced by
+  // `runtimeHostTargetVerified`, with the Host-owned subtree below providing
+  // the matching inert, busy, and muted presentation while authority is absent.
   if (!host) {
     return (
       <SettingsPage as="section" aria-label={copy.section}>
