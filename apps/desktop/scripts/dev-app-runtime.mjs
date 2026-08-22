@@ -49,7 +49,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { DEV_USER_DATA_DIR, DEV_ENV_SCHEMA_VERSION, TCC_BUNDLE_EXECUTABLE_SUFFIX, holdsProfile, isOwnDevApp } from './dev-app-profile.mjs';
+import { DEV_USER_DATA_DIR, DEV_ENV_SCHEMA_VERSION, holdsProfile, isOwnDevApp } from './dev-app-profile.mjs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -181,6 +181,12 @@ function defaultSharedAppProbe() {
   return probeWithSpawn(spawnSync);
 }
 
+// Wide probe literal for the TCC bundle (the tail of the exact suffix):
+// the pre-filter must stay WIDE (see devAppProcessPattern), the owner
+// judgment uses the exact suffix. Exported so tests compare against the
+// same string instead of a third copy.
+export const TCC_BUNDLE_PROBE_TAIL = join('Maka Dev.app', 'Contents', 'MacOS', 'Electron');
+
 export function devAppProcessPattern() {
   // Rough filter over every shape that can hold the shared "Maka Dev" lock:
   // the TCC bundle, the plain dev npm shim, and the resolved Electron binary
@@ -190,7 +196,7 @@ export function devAppProcessPattern() {
   // never reaches judgment), while the owner judgment uses the exact suffix
   // from dev-app-profile.mjs. A test asserts the tail is a substring of the
   // suffix, so the two can drift apart but never silently.
-  const bundle = toProcessMatchPattern(join('Maka Dev.app', 'Contents', 'MacOS', 'Electron'));
+  const bundle = toProcessMatchPattern(TCC_BUNDLE_PROBE_TAIL);
   const shim = toProcessMatchPattern(join('node_modules', '.bin', 'electron'));
   const resolved = toProcessMatchPattern(join('Electron.app', 'Contents', 'MacOS', 'Electron'));
   return `${bundle}|${shim}|${resolved}`;

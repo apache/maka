@@ -169,15 +169,19 @@ test('DEV_EXECUTABLE carries the single-source TCC bundle suffix', async () => {
   assert.ok(DEV_EXECUTABLE.endsWith(TCC_BUNDLE_EXECUTABLE_SUFFIX));
 });
 
-test('probe bundle pattern stays wide: tail is a substring of the exact suffix', async () => {
-  const { devAppProcessPattern } = await import('./dev-app-runtime.mjs');
+test('probe bundle pattern stays wide: selects a prefix-less TCC line', async () => {
+  const { TCC_BUNDLE_PROBE_TAIL, devAppProcessPattern } = await import('./dev-app-runtime.mjs');
   const { TCC_BUNDLE_EXECUTABLE_SUFFIX } = await import('./dev-app-profile.mjs');
-  const wide = 'Maka Dev.app/Contents/MacOS/Electron';
-  assert.ok(TCC_BUNDLE_EXECUTABLE_SUFFIX.includes(wide));
-  // The probe pattern can still select a TCC line even when the argv lacks
-  // the per-worktree prefix (the wide literal matches the tail).
+  // The wide literal comes from the module (no third copy), and is a tail of
+  // the exact suffix — drift between the two is visible, not silent.
+  assert.ok(TCC_BUNDLE_EXECUTABLE_SUFFIX.endsWith(TCC_BUNDLE_PROBE_TAIL));
+  // The line that separates wide from narrow: a TCC process whose argv lacks
+  // the per-worktree prefix (translocation-shaped). A narrow pattern misses
+  // it; the wide one must still select it.
   assert.equal(
-    new RegExp(devAppProcessPattern()).test('/Users/dev/maka/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron /Users/dev/maka/apps/desktop'),
+    new RegExp(devAppProcessPattern()).test(
+      '/private/var/folders/abc/AppTranslocation/uuid/d/Maka Dev.app/Contents/MacOS/Electron /Users/dev/maka/apps/desktop',
+    ),
     true,
   );
 });
