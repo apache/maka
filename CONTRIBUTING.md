@@ -12,7 +12,7 @@ Project direction, governance, and material product decisions are discussed publ
 
 Every contribution has a human contributor of record who reviews the work, decides to submit it, and owns its accuracy, provenance, and licensing. Agents may commit and push freely; the final review and merge decision always belongs to a human.
 
-Each pull request states whether generative tooling contributed substantively, naming the tool if so; translation, wording edits, autocomplete, and spelling correction don't count. Automated messages must identify themselves. When AI authors a material part of a contribution, add a `Generated-by: <tool>` trailer to the final commit and keep it through squash or amend.
+Each pull request states whether generative tooling contributed substantively, naming the tool if so; translation, wording edits, autocomplete, and spelling correction don't count. Automated messages must identify themselves. When AI authors a material part of a contribution, add a `Generated-by: <tool>` trailer to each affected commit, and keep it in the final commit through squash or amend.
 
 ## Review
 

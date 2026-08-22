@@ -12,7 +12,7 @@
 
 每项贡献都有一名 human contributor of record：审阅工作、决定提交，并对准确性、来源和许可负责。Agent 可以自由 commit 和 push；最终的审查与合并决定始终由人做出。
 
-每个 PR 说明生成式工具是否有实质贡献，有则注明工具名称；翻译、措辞整理、自动补全和拼写修正不算。自动发送的消息必须表明身份。AI 创作了贡献中的实质部分时，在最终 commit 加上 `Generated-by: <tool>` trailer，并确保它在 squash 或 amend 后保留。
+每个 PR 说明生成式工具是否有实质贡献，有则注明工具名称；翻译、措辞整理、自动补全和拼写修正不算。自动发送的消息必须表明身份。AI 创作了贡献中的实质部分时，在每个受影响的 commit 加上 `Generated-by: <tool>` trailer，并确保它在 squash 或 amend 后保留于最终 commit。
 
 ## 审查
 
