@@ -19,7 +19,11 @@
 
 import { test } from 'node:test';
 import { expect } from './test-helpers.js';
-import { aggregateMessageContents } from '../events.js';
+import {
+  aggregateMessageContents,
+  decodeToolStepProgress,
+  encodeToolStepProgress,
+} from '../events.js';
 
 test('aggregates inline references against the combined display text', () => {
   expect(
@@ -50,4 +54,46 @@ test('preserves an explicit empty inline-reference marker while aggregating', ()
     text: 'plain',
     inlineReferences: [],
   });
+});
+
+test('round-trips bounded tool step progress through the shared wire codec', () => {
+  const encoded = encodeToolStepProgress({ current: 1, total: 2 });
+
+  expect(encoded).toBe('steps:1/2');
+  expect(decodeToolStepProgress(encoded!)).toEqual({ current: 1, total: 2 });
+  expect(
+    decodeToolStepProgress(
+      encodeToolStepProgress({
+        current: Number.MAX_SAFE_INTEGER,
+        total: Number.MAX_SAFE_INTEGER,
+      })!,
+    ),
+  ).toEqual({
+    current: Number.MAX_SAFE_INTEGER,
+    total: Number.MAX_SAFE_INTEGER,
+  });
+});
+
+test('rejects invalid tool step progress at both codec boundaries', () => {
+  for (const progress of [
+    { current: -1, total: 2 },
+    { current: 1, total: 0 },
+    { current: 3, total: 2 },
+    { current: 0.5, total: 2 },
+    { current: Number.MAX_SAFE_INTEGER + 1, total: Number.MAX_SAFE_INTEGER + 1 },
+  ]) {
+    expect(encodeToolStepProgress(progress)).toBe(undefined);
+  }
+
+  for (const chunk of [
+    'working',
+    'steps:-1/2',
+    'steps:1/0',
+    'steps:3/2',
+    'steps:0.5/2',
+    'steps:9007199254740992/9007199254740992',
+  ]) {
+    expect(decodeToolStepProgress(chunk)).toBe(undefined);
+  }
+  expect(decodeToolStepProgress({ kind: 'stdout', text: 'steps:1/2' })).toBe(undefined);
 });

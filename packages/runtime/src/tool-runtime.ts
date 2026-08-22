@@ -30,7 +30,7 @@ import {
   type SettleSandboxBoundaryRequest,
 } from '@maka/core/sandbox-boundary';
 import { serializedByteLength } from '@maka/core/serialized-byte-length';
-import { ToolOutcomeUnknownError } from '@maka/core/events';
+import { encodeToolStepProgress, ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
   SandboxBoundaryDecisionAckEvent,
   SandboxBoundaryRequestEvent,
@@ -1340,22 +1340,15 @@ export class ToolRuntime {
           abortSignal: ctx.abortSignal,
           emitOutput: output.emit,
           emitProgress: (current, total) => {
-            if (
-              !Number.isInteger(current) ||
-              !Number.isInteger(total) ||
-              current < 0 ||
-              total < 1 ||
-              current > total
-            ) {
-              return;
-            }
+            const chunk = encodeToolStepProgress({ current, total });
+            if (!chunk) return;
             queue.push({
               type: 'tool_progress',
               id: this.input.newId(),
               turnId,
               ts: this.input.now(),
               toolUseId,
-              chunk: `steps:${current}/${total}`,
+              chunk,
               ...activityIdentity,
             });
           },

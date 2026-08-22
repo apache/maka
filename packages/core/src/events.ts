@@ -580,6 +580,39 @@ export interface ToolProgressEvent extends BaseEvent, ToolActivityIdentity {
   chunk: string | { kind: 'stdout' | 'stderr'; text: string };
 }
 
+export interface ToolStepProgress {
+  current: number;
+  total: number;
+}
+
+const TOOL_STEP_PROGRESS_PATTERN = /^steps:(\d+)\/(\d+)$/;
+
+export function encodeToolStepProgress(progress: ToolStepProgress): string | undefined {
+  return isValidToolStepProgress(progress)
+    ? `steps:${progress.current}/${progress.total}`
+    : undefined;
+}
+
+export function decodeToolStepProgress(
+  chunk: ToolProgressEvent['chunk'],
+): ToolStepProgress | undefined {
+  if (typeof chunk !== 'string') return undefined;
+  const match = TOOL_STEP_PROGRESS_PATTERN.exec(chunk);
+  if (!match) return undefined;
+  const progress = { current: Number(match[1]), total: Number(match[2]) };
+  return isValidToolStepProgress(progress) ? progress : undefined;
+}
+
+function isValidToolStepProgress(progress: ToolStepProgress): boolean {
+  return (
+    Number.isSafeInteger(progress.current) &&
+    Number.isSafeInteger(progress.total) &&
+    progress.current >= 0 &&
+    progress.total >= 1 &&
+    progress.current <= progress.total
+  );
+}
+
 /**
  * Live-only open-facts for a tool that is still running (e.g. agent_spawn child ready).
  * Not a durable transcript commit and not model-visible function_response.

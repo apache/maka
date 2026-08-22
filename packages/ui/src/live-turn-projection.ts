@@ -17,7 +17,12 @@
  * under the License.
  */
 
-import type { MessageContent, ProviderRetryEvent, SessionEvent } from '@maka/core/events';
+import {
+  decodeToolStepProgress,
+  type MessageContent,
+  type ProviderRetryEvent,
+  type SessionEvent,
+} from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { materializeToolResultPreviewForActivity } from '@maka/core/tool-result-preview';
@@ -400,7 +405,7 @@ export function applyLiveTurnEvent(
     const base: ToolActivityItem = toolIndex >= 0
       ? step.tools[toolIndex]!
       : { toolUseId: event.toolUseId, toolName: 'Tool', status: 'running', args: undefined };
-    const progress = parseStepProgress(event.chunk);
+    const progress = decodeToolStepProgress(event.chunk);
     const tool: ToolActivityItem = {
       ...base,
       ...projectToolActivityIdentity(event),
@@ -511,20 +516,6 @@ function liveSteeringMessages(current: LiveTurnProjection): LiveSteeringProjecti
     ...(current.pendingSteering ?? []),
     ...current.steps.flatMap((step) => step.leadingSteering ?? []),
   ];
-}
-
-function parseStepProgress(
-  chunk: Extract<SessionEvent, { type: 'tool_progress' }>['chunk'],
-): ToolActivityItem['progress'] | undefined {
-  if (typeof chunk !== 'string') return undefined;
-  const match = /^steps:(\d+)\/(\d+)$/.exec(chunk);
-  if (!match) return undefined;
-  const current = Number(match[1]);
-  const total = Number(match[2]);
-  if (!Number.isInteger(current) || !Number.isInteger(total) || total < 1 || current > total) {
-    return undefined;
-  }
-  return { current, total };
 }
 
 function replaySafeDelta(

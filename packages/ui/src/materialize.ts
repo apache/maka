@@ -34,6 +34,7 @@ import type {
   ShellRunUpdate,
   ToolActivityKind,
   ToolResultContent,
+  ToolStepProgress,
 } from '@maka/core/events';
 import type { ToolActivityStatus } from '@maka/core/tool-result-status';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
@@ -99,7 +100,7 @@ export interface ToolActivityItem {
   result?: ToolResultContent;
   durationMs?: number;
   /** Live-only progress for a bounded multi-step tool invocation. */
-  progress?: { current: number; total: number };
+  progress?: ToolStepProgress;
   /**
    * Live streamed output buffer (PR-UI-12). Append-only from the
    * renderer's perspective — runtime side already enforces the
