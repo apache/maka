@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
+import { posix as pathPosix } from 'node:path';
 import type { IpcMain } from 'electron';
 import type { IPty } from 'node-pty';
 import { spawn as spawnPty } from 'node-pty';
@@ -777,8 +778,12 @@ function runtimeHostServiceManagementRemoteCommand(
 
 function runtimeHostManagedDeploymentCleanupRemoteCommand(operatorPath: string): string {
   const operator = quotePosix(operatorPath);
+  const deploymentRoot = quotePosix(pathPosix.dirname(operatorPath));
   const invocation =
-    `if [ ! -e ${operator} ]; then exit 0; fi; exec ${operator} __cleanup-managed-deployment`;
+    `if [ ! -e ${operator} ]; then ` +
+    `if [ ! -e ${deploymentRoot} ]; then exit 0; fi; ` +
+    `exec rmdir -- ${deploymentRoot}; fi; ` +
+    `exec ${operator} __cleanup-managed-deployment`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
 }
 

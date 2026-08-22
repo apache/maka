@@ -284,7 +284,7 @@ test('rejects a framed service result for a different action', async () => {
   await harness.terminal.close();
 });
 
-test('treats an absent operator as completed deployment cleanup', async () => {
+test('requires an absent operator deployment root to be absent or empty', async () => {
   const harness = createHarness('pending');
   const cleanup = harness.terminal.cleanupManagedDeployment({
     destination: 'operator@example.com',
@@ -293,6 +293,8 @@ test('treats an absent operator as completed deployment cleanup', async () => {
   await waitFor(() => harness.pty.hasDataListener());
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /if \[ ! -e/u);
+  assert.match(remoteCommand, /rmdir --/u);
+  assert.match(remoteCommand, /home\/operator\/\.local\/share\/maka/u);
   assert.match(remoteCommand, /__cleanup-managed-deployment/u);
   harness.pty.exit(0);
 
