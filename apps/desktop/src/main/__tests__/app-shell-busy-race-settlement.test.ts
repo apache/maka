@@ -110,6 +110,7 @@ function createActionsDeps() {
     newChatModel: null,
     pendingNewChatThinkingLevel: null,
     newChatPermissionChoice: undefined,
+    clearNewChatPermissionChoice: () => {},
     newChatCollaborationMode: 'agent' as const,
     newChatOrchestrationMode: 'default' as const,
     newTaskTarget: { profileId: 'local', hostId: 'host-local', projectId: null },

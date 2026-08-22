@@ -100,7 +100,14 @@ export interface RuntimeHostMakaSessionDriverInput {
   workspace?: WorkspaceTarget;
   llmConnectionSlug: string;
   model: string;
-  permissionMode?: PermissionMode;
+  /**
+   * The Host's configured chat default at launch, for display only.
+   *
+   * It is never sent on create — omitting the field is what lets the Host stay
+   * the authority — but a client that shows "the mode the next Session will
+   * start in" needs a value before any Session exists.
+   */
+  prospectivePermissionMode?: PermissionMode;
   orchestrationMode?: OrchestrationMode;
   newId?: () => string;
   now?: () => number;
@@ -152,17 +159,15 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #model: string;
   #llmConnectionSlug: string;
   #thinkingLevel: ThinkingLevel | undefined;
-  // Construction-time default a fresh Session is created with. Per-session
-  // elevations (the picker, a resumed Session's boundary) update
-  // `#permissionMode` only; `startNewSession` falls back to this so Full
-  // access never leaks into a fresh Session (#3020).
-  //
-  // `undefined` means the client has no claim on the starting mode and the
-  // Host resolves it from its Runtime Policy `chatDefaults`. That is a
-  // stronger guarantee than the old literal `ask`, not a weaker one: a
-  // fresh Session cannot inherit the previous one's elevation either way,
-  // and the mode it does start in is now the configured one.
-  readonly #defaultPermissionMode: PermissionMode | undefined;
+  // What a Session created right now would start in, for display only. Never
+  // sent on create: an omitted field is what makes the Host's `chatDefaults`
+  // the authority. Refreshed on `/new` because that default can change — and
+  // showing the previous Session's mode there is the one direction that can
+  // report Auto while the Host creates with full access.
+  #prospectivePermissionMode: PermissionMode | undefined;
+  // The user's explicit choice for the Session being created, before it
+  // exists. Cleared by `startNewSession` so a previous Session's elevation
+  // cannot leak into a fresh one (#3020).
   #permissionMode: PermissionMode | undefined;
   #activeBoundaryDisplayMode: PermissionMode | undefined;
   #orchestrationMode: OrchestrationMode;
@@ -206,8 +211,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     };
     this.#model = input.model;
     this.#llmConnectionSlug = input.llmConnectionSlug;
-    this.#defaultPermissionMode = input.permissionMode;
-    this.#permissionMode = this.#defaultPermissionMode;
+    this.#prospectivePermissionMode = input.prospectivePermissionMode;
     this.#orchestrationMode = input.orchestrationMode ?? 'default';
   }
 
@@ -228,7 +232,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     // An omitted mode stays omitted: the Host applies its configured default.
     // Substituting a literal `ask` here would make the CLI a second authority
     // over the starting boundary and silently override that default.
-    this.#permissionMode = input.permissionMode ?? this.#defaultPermissionMode;
+    this.#permissionMode = input.permissionMode;
     const session = await this.#createSession(input.name ?? DEFAULT_SESSION_NAME);
     return runtimeHostSessionSummary(session);
   }
@@ -515,7 +519,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#workspace = session.workspace;
     this.#adoptConfiguration(session);
     this.#activeBoundaryDisplayMode = executionBoundaryDisplayMode(boundary);
-    this.#permissionMode = boundary.kind === 'bypass' ? 'bypass' : 'ask';
     const attachedTurnId = opened.attachedTurnId ?? opened.channel.firstObservedTurnId;
     opened.channel.activate(attachedTurnId);
     return {
@@ -596,13 +599,14 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#sessionGeneration += 1;
     this.#channelGeneration += 1;
     this.#sessionId = null;
-    // A fresh Session starts at the construction-time default. Leaving a
-    // previous Session's elevation in `#permissionMode` would both misreport
-    // the mode and create the next Session with it (#3020). Full access stays
-    // an explicit per-session opt-in; `setPermissionMode` can still raise the
-    // mode before the first prompt creates the Session.
-    this.#permissionMode = this.#defaultPermissionMode;
+    // A fresh Session carries no client claim on its mode: leaving a previous
+    // Session's elevation here would both misreport the mode and create the
+    // next Session with it (#3020). Full access stays an explicit per-session
+    // opt-in; `setPermissionMode` can still raise it before the first prompt
+    // creates the Session.
+    this.#permissionMode = undefined;
     this.#activeBoundaryDisplayMode = undefined;
+    void this.#refreshProspectivePermissionMode();
     void this.#replaceChannel(undefined);
   }
 
@@ -749,7 +753,25 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   getPermissionMode(): PermissionMode | undefined {
-    return this.#activeBoundaryDisplayMode ?? this.#permissionMode;
+    return (
+      this.#activeBoundaryDisplayMode ?? this.#permissionMode ?? this.#prospectivePermissionMode
+    );
+  }
+
+  /**
+   * Re-read the Host's chat default after the Session it described is gone.
+   *
+   * Best effort on purpose: this only moves a label, and creation omits the
+   * field either way, so a failed refresh keeps the last authoritative reading
+   * rather than inventing one.
+   */
+  async #refreshProspectivePermissionMode(): Promise<void> {
+    try {
+      const policy = await this.#request('runtime.policy.query', {});
+      this.#prospectivePermissionMode = policy.policy.chatDefaults.permissionMode;
+    } catch {
+      // Keep the previous reading.
+    }
   }
 
   async #ensureSession(): Promise<string> {

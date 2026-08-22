@@ -111,6 +111,7 @@ function createActionsDeps() {
     newChatModel: null,
     pendingNewChatThinkingLevel: null,
     newChatPermissionChoice: undefined,
+    clearNewChatPermissionChoice: () => {},
     newChatCollaborationMode: 'agent' as const,
     newChatOrchestrationMode: 'default' as const,
     newTaskTarget: { profileId: 'local', hostId: 'host-local', projectId: null },
@@ -236,6 +237,50 @@ describe('composer first-send cleanup', () => {
     // later task. Only the Settings surface writes `chatDefaults`.
     assert.equal((createInput as { permissionMode?: unknown }).permissionMode, 'bypass');
     assert.equal(settingsUpdates, 0);
+  });
+
+  it('does not re-send a consumed permission choice on the next task', async () => {
+    const createInputs: unknown[] = [];
+    let cleared = 0;
+    const restoreWindow = installWindow({
+      newTasks: {
+        create: async (_target: unknown, input: unknown) => {
+          createInputs.push(input);
+          return { id: `session-${createInputs.length}` };
+        },
+      },
+      sessions: {
+        send: async () => ({
+          ok: true,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
+      },
+    });
+
+    try {
+      // The choice is keyed by Host/project target, not by draft, so task B on
+      // the same target sees whatever task A left behind. Consuming it on a
+      // successful create is what keeps a one-task elevation from becoming a
+      // standing one.
+      let choice: 'bypass' | undefined = 'bypass';
+      const deps = () => ({
+        ...createActionsDeps(),
+        newChatPermissionChoice: choice,
+        clearNewChatPermissionChoice: () => {
+          cleared += 1;
+          choice = undefined;
+        },
+      });
+      assert.equal(await createAppShellChatActions(deps()).send('task A'), true);
+      assert.equal(await createAppShellChatActions(deps()).send('task B'), true);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(cleared, 1);
+    assert.equal((createInputs[0] as { permissionMode?: unknown }).permissionMode, 'bypass');
+    assert.ok(!('permissionMode' in (createInputs[1] as Record<string, unknown>)));
   });
 
   it('creates the first session on the selected Runtime Host and project', async () => {

@@ -2126,9 +2126,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const newSession = () => {
     input.driver.startNewSession();
-    // A fresh session is not bound by the previous one's boundary; re-read the
-    // mode the next session will actually be created with.
-    permissionMode = input.driver.getPermissionMode?.() ?? permissionMode;
+    // A fresh session is not bound by the previous one's boundary. Falling back
+    // to the *current* label would keep the previous Session's mode, including
+    // Auto while a changed Host default creates with full access; the launch
+    // reading is the Host's value, so it is the safe floor when the driver has
+    // nothing newer.
+    permissionMode = input.driver.getPermissionMode?.() ?? input.permissionMode;
     attention.setBaseTitle(input.title);
     shellRunHydration.reset();
     // Fresh transcript for the fresh session; the next prompt creates it on disk.

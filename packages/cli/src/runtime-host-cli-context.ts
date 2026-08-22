@@ -56,20 +56,16 @@ import { resolveMakaClientDataRoot } from '@maka/storage';
  * Auto against a Host configured for full access would understate the
  * boundary, which is the one direction that must never happen.
  *
- * Falls back to `ask` when the policy cannot be read: an unreachable policy
- * must not stop the CLI from starting, and understating our own knowledge is
- * safe here — the Host still applies its own default to the Session it
- * creates.
+ * A failed query throws rather than resolving to `ask`. Understating the
+ * boundary is not the safe direction it looks like: creation omits the field
+ * either way, so a Host configured for Bypass would run the first prompt with
+ * full access while the CLI displayed Auto. If the Host's own policy cannot be
+ * read, the CLI has nothing true to show and should not start.
  */
 export async function readHostChatDefaultPermissionMode(
   connection: Pick<RuntimeHostConnection, 'request'>,
 ): Promise<ChatDefaultPermissionMode> {
-  try {
-    return (await connection.request('runtime.policy.query', {})).policy.chatDefaults
-      .permissionMode;
-  } catch {
-    return 'ask';
-  }
+  return (await connection.request('runtime.policy.query', {})).policy.chatDefaults.permissionMode;
 }
 
 export class RuntimeHostCliConflictError extends RuntimeHostPermanentReconnectError {

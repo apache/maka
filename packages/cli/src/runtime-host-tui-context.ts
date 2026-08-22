@@ -122,6 +122,7 @@ export async function createRuntimeHostTuiContext(
       cwd: input.cwd,
       llmConnectionSlug: target.connection.slug,
       model: target.model,
+      prospectivePermissionMode,
       executionLocation:
         connected.profile.kind === 'local' ? { kind: 'client_path' } : { kind: 'host' },
       ...(workspace ? { workspace } : {}),

@@ -371,7 +371,7 @@ describe('Runtime Host Maka Session driver', () => {
       cwd: '/repo',
       llmConnectionSlug: 'openai-main',
       model: 'gpt-5',
-      permissionMode: 'ask',
+      prospectivePermissionMode: 'ask',
       newId: () => `session-${++nextId}`,
     });
 
@@ -394,6 +394,10 @@ describe('Runtime Host Maka Session driver', () => {
 
     const creates = connection.requests.filter(({ operation }) => operation === 'session.create');
     assert.equal(creates.length, 2);
+    // The elevation does not leak, and the fresh Session carries no client
+    // claim at all: an omitted field is what leaves the starting mode to the
+    // Host's `chatDefaults`. Substituting the launch reading here would make
+    // the CLI a second authority over it.
     assert.deepEqual(creates[1]!.input, {
       sessionId: 'session-2',
       workspace: { kind: 'host_path', path: '/repo' },
@@ -403,7 +407,6 @@ describe('Runtime Host Maka Session driver', () => {
         connectionSlug: 'openai-main',
         model: 'gpt-5',
       },
-      permissionMode: 'ask',
     });
   });
 

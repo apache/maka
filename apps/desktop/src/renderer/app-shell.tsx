@@ -462,7 +462,7 @@ function AppShellContent({
   // removed — so there is no pending state here, only the registry refs.
   const queuedCollaborationModeBySession = useRef(new Map<string, boolean>());
   const queuedOrchestrationModeBySession = useRef(new Map<string, OrchestrationMode>());
-  const [newTaskPermissionChoice, setNewTaskPermissionChoice] =
+  const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
@@ -2212,6 +2212,7 @@ function AppShellContent({
     newChatModel: newChatModel ?? null,
     pendingNewChatThinkingLevel: newChatThinkingLevel ?? null,
     newChatPermissionChoice: newTaskPermissionChoice,
+    clearNewChatPermissionChoice: clearNewTaskPermissionChoice,
     newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
     newChatOrchestrationMode: newChatOrchestrationMode,
     newTaskTarget: newTask.target,
