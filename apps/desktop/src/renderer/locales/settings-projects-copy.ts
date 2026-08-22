@@ -116,6 +116,7 @@ export type SettingsProjectsCopy = {
     enableBeforeRotate: string;
     revokeCredential: string;
     revokeCredentialConfirm(name: string): string;
+    revokeActiveCredentialConfirmBody: string;
     accessActionFailed: string;
     back: string;
     remove: string;
@@ -278,6 +279,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       enableBeforeRotate: '请先启用这个 Runtime Host，再轮换当前 Desktop 的凭据。',
       revokeCredential: '撤销',
       revokeCredentialConfirm: (name: string) => `撤销 ${name} 的访问权限？`,
+      revokeActiveCredentialConfirmBody: '使用此凭据的客户端会立即断开连接，并可能中断正在进行的工作。',
       accessActionFailed: '无法管理访问权限',
       back: '返回',
       remove: '移除',
@@ -438,6 +440,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       enableBeforeRotate: 'Enable this Runtime Host before rotating this Desktop credential.',
       revokeCredential: 'Revoke',
       revokeCredentialConfirm: (name: string) => `Revoke access for ${name}?`,
+      revokeActiveCredentialConfirmBody: 'Clients using this credential disconnect immediately, which may interrupt active work.',
       accessActionFailed: 'Unable to manage access',
       back: 'Back',
       remove: 'Remove',
