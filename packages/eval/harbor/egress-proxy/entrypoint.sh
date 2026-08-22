@@ -57,5 +57,6 @@ exec mitmdump \
   --listen-host 0.0.0.0 \
   --listen-port 8080 \
   --set block_global=false \
+  --set rawtcp=false \
   --set confdir="$STATE_DIR" \
   --scripts /opt/maka-eval/egress_filter.py
