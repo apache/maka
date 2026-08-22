@@ -2786,7 +2786,7 @@ describe('Maka Pi TUI runner', () => {
           connectionName: 'OpenAI',
           providerType: 'openai',
           model: 'gpt-5.5',
-          displayName: 'GPT Standard',
+          displayName: 'GPT 5.5 Preview',
           isDefaultConnection: true,
         },
         {
@@ -2859,7 +2859,7 @@ describe('Maka Pi TUI runner', () => {
           connectionName: 'Aurora',
           providerType: 'openai',
           model: 'gpt-5.5',
-          displayName: 'GPT Standard',
+          displayName: 'GPT 5.5 Preview',
           isDefaultConnection: true,
         },
         {
@@ -2889,7 +2889,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => {
       const out = plainTerminalOutput(terminal.screenOutput());
       return (
-        out.includes('GPT Standard') && out.includes('GLM Max') && out.includes('text-unicorn')
+        out.includes('GPT 5.5 Preview') && out.includes('GLM Max') && out.includes('text-unicorn')
       );
     });
     assert.doesNotMatch(
@@ -2907,11 +2907,11 @@ describe('Maka Pi TUI runner', () => {
     // clears the search field in one event so the next criterion starts from
     // the full list again.
     const cases = [
-      { query: 'standard', keep: 'GPT Standard', drop: ['GLM Max', 'text-unicorn'] },
-      { query: 'aurora', keep: 'GPT Standard', drop: ['GLM Max', 'text-unicorn'] },
-      { query: 'alpha', keep: 'GPT Standard', drop: ['GLM Max', 'text-unicorn'] },
-      { query: 'zai', keep: 'GLM Max', drop: ['GPT Standard', 'text-unicorn'] },
-      { query: 'gemini', keep: 'text-unicorn', drop: ['GPT Standard', 'GLM Max'] },
+      { query: 'preview', keep: 'GPT 5.5 Preview', drop: ['GLM Max', 'text-unicorn'] },
+      { query: 'aurora', keep: 'GPT 5.5 Preview', drop: ['GLM Max', 'text-unicorn'] },
+      { query: 'alpha', keep: 'GPT 5.5 Preview', drop: ['GLM Max', 'text-unicorn'] },
+      { query: 'zai', keep: 'GLM Max', drop: ['GPT 5.5 Preview', 'text-unicorn'] },
+      { query: 'gemini', keep: 'text-unicorn', drop: ['GPT 5.5 Preview', 'GLM Max'] },
     ];
     for (const c of cases) {
       terminal.input(c.query);
@@ -2923,7 +2923,7 @@ describe('Maka Pi TUI runner', () => {
       await waitFor(() => {
         const out = plainTerminalOutput(terminal.screenOutput());
         return (
-          out.includes('GPT Standard') && out.includes('GLM Max') && out.includes('text-unicorn')
+          out.includes('GPT 5.5 Preview') && out.includes('GLM Max') && out.includes('text-unicorn')
         );
       });
     }
