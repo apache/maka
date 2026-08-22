@@ -74,6 +74,52 @@ test('each mode row is the control its field is, and none of them is on', () => 
   assert.equal(count(menu, 'aria-checked="true"'), 0, 'nothing on is nothing checked');
 });
 
+/** The Skills entry is the menu's only plain-menuitem row under these props. */
+function skillsRow(menu: string): string {
+  const rows = tagsWith(menu, 'role="menuitem"');
+  assert.equal(rows.length, 1, 'expected the Skills row and nothing else');
+  return rows[0] ?? '';
+}
+
+test('a refreshing skill catalog is not "no skills": the row stays put', () => {
+  // The host clears `mentionSkills` while it re-fetches the projection (a
+  // Plan toggle or model change does that with this menu open) but holds its
+  // settled verdict steady. Painting the transient `[]` as "no skills
+  // available" grows the row by a description line and grays it, then snaps
+  // back — the menu visibly jumps.
+  const menu = plusMenu({ ...base, mentionSkills: [], mentionSkillsUnavailable: false });
+  assert.equal(count(menu, 'Choose skills'), 1, 'the Skills row is rendered');
+  assert.equal(count(menu, 'No skills available'), 0, 'no transient empty-state line');
+  assert.equal(
+    skillsRow(menu).includes('aria-disabled="true"'),
+    false,
+    'the row does not gray out mid-refresh',
+  );
+});
+
+test('a settled empty skill catalog still says why the row is unavailable', () => {
+  for (const props of [
+    // A host that never clears the list mid-flight wires no verdict; the row
+    // falls back to the list itself.
+    { ...base, mentionSkills: [] },
+    { ...base, mentionSkills: [], mentionSkillsUnavailable: true },
+  ]) {
+    const menu = plusMenu(props);
+    assert.ok(count(menu, 'No skills available') > 0, 'the empty state says why');
+    assert.equal(skillsRow(menu).includes('aria-disabled="true"'), true);
+  }
+});
+
+test('a populated skill catalog renders the row enabled with no caveat', () => {
+  const menu = plusMenu({
+    ...base,
+    mentionSkills: [{ id: 'demo', name: 'Demo' }],
+  });
+  assert.equal(count(menu, 'Choose skills'), 1);
+  assert.equal(count(menu, 'No skills available'), 0);
+  assert.equal(skillsRow(menu).includes('aria-disabled="true"'), false);
+});
+
 test('Plan and an orchestration mode are both on at once', () => {
   const markup = render({ ...base, planModeActive: true, orchestrationMode: 'swarm' });
   const menu = markup.split('maka-composer-plus-menu')[1] ?? '';

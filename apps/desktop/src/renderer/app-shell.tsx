@@ -2074,7 +2074,7 @@ function AppShellContent({
   // Composer mention popups: `/` uses Runtime's session/project-aware,
   // host-compatible projection; `@` uses workspace file search. Keep the
   // resolved project path as a refresh key for new-chat project changes.
-  const { mentionSkills, searchMentionFiles } = useComposerMentions({
+  const { mentionSkills, mentionSkillsUnavailable, searchMentionFiles } = useComposerMentions({
     skills,
     sessionId: activeId,
     projectPath: activeId ? projectInfo?.projectPath : newTask.projectPath,
@@ -3213,6 +3213,7 @@ function AppShellContent({
                       : undefined
                   }
                   mentionSkills={mentionSkills}
+                  mentionSkillsUnavailable={mentionSkillsUnavailable}
                   slashCommands={desktopSlashCommands}
                   onSearchMentionFiles={searchMentionFiles}
                   pendingAttachments={pendingAttachments}
@@ -3609,6 +3610,7 @@ function AppShellContent({
                 sourceSession={activeSessionForView}
                 modelChoices={chatModelChoices}
                 mentionSkills={mentionSkills}
+                mentionSkillsUnavailable={mentionSkillsUnavailable}
                 onSearchMentionFiles={searchMentionFiles}
               />
             )}

@@ -22,6 +22,7 @@ export function useComposerMentions(options: {
   newTaskTarget?: DesktopNewTaskTarget;
 }): {
   mentionSkills: ReadonlyArray<{ ref?: string; id: string; name: string; description?: string }>;
+  mentionSkillsUnavailable: boolean;
   searchMentionFiles(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
 } {
   const {
@@ -34,6 +35,14 @@ export function useComposerMentions(options: {
     newTaskTarget,
   } = options;
   const [mentionSkills, setMentionSkills] = useState<InvocableSkillEntry[]>([]);
+  // The last SETTLED truth about the catalog, held across refreshes. The list
+  // itself is cleared while a refresh is in flight (fail-closed, for the `/`
+  // popup), so `length === 0` cannot tell "re-fetching" from "nothing to
+  // offer" — and the ＋ menu's Skills row repainting on that transient empty
+  // is a visible blink of the open menu on every mode, model or turn change.
+  // This flag only moves when a request resolves, so the row's presentation
+  // is stable until the catalog's emptiness actually changed.
+  const [mentionSkillsUnavailable, setMentionSkillsUnavailable] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,11 +68,15 @@ export function useComposerMentions(options: {
           : Promise.resolve([]);
       void request.then(
         (next) => {
-          if (!cancelled && version === requestVersion) setMentionSkills(next);
+          if (cancelled || version !== requestVersion) return;
+          setMentionSkills(next);
+          setMentionSkillsUnavailable(next.length === 0);
         },
         () => {
           // Fail soft: an unavailable projection leaves `/` with no suggestions.
           // Direct `/skill:<id>` input still reaches the same Runtime resolver.
+          if (cancelled || version !== requestVersion) return;
+          setMentionSkillsUnavailable(true);
         },
       );
     };
@@ -125,5 +138,5 @@ export function useComposerMentions(options: {
     ],
   );
 
-  return { mentionSkills, searchMentionFiles };
+  return { mentionSkills, mentionSkillsUnavailable, searchMentionFiles };
 }

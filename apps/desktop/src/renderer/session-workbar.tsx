@@ -685,6 +685,7 @@ export function SessionWorkbar(props: {
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
   mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
+  mentionSkillsUnavailable?: ComponentProps<typeof Composer>['mentionSkillsUnavailable'];
   onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
@@ -838,6 +839,7 @@ export function SessionWorkbar(props: {
                 sourceSession={props.sourceSession}
                 modelChoices={props.modelChoices ?? []}
                 mentionSkills={props.mentionSkills}
+                mentionSkillsUnavailable={props.mentionSkillsUnavailable}
                 onSearchMentionFiles={props.onSearchMentionFiles}
                 onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
                 onRemoveQuote={props.onRemoveQuote}

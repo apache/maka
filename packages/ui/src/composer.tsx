@@ -398,6 +398,18 @@ export const Composer = forwardRef<
      *   - `onSearchMentionFiles` powers the `@` popup.
      */
     mentionSkills?: ReadonlyArray<ComposerSkillOption>;
+    /**
+     * The host's SETTLED verdict on whether the catalog has anything to offer,
+     * held steady across refreshes. The host clears `mentionSkills` while
+     * re-fetching it (the `/` popup must stay fail-closed), so the list being
+     * empty cannot tell "refreshing" from "no skills" — and reading the
+     * transient `[]` as the latter disables the ＋ menu's Skills row and grows
+     * it by a description line for the length of the round trip, blinking the
+     * open menu's geometry on every mode or model change. Hosts that never
+     * clear the list mid-flight can omit this; the row then falls back to
+     * `mentionSkills.length === 0`.
+     */
+    mentionSkillsUnavailable?: boolean;
     slashCommands?: ReadonlyArray<ComposerSlashCommandOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
   }
@@ -1682,9 +1694,25 @@ export const Composer = forwardRef<
                         // a stray slash and popping an empty menu. Say why it is
                         // unavailable: the panel this replaced showed "no skills
                         // available", and a silent grey row answers nothing.
-                        isDisabled={props.disabled || props.mentionSkills.length === 0}
+                        //
+                        // Only a SETTLED empty catalog counts. The host clears
+                        // the list while re-fetching it (a Plan toggle or model
+                        // change does that with this menu open), and rendering
+                        // that transient `[]` as "no skills" grows this row by
+                        // a description line and back — the menu visibly jumps.
+                        // So the verdict is the host's settled flag when it
+                        // supplies one, and the row repaints only when the
+                        // catalog's emptiness actually changed.
+                        isDisabled={
+                          props.disabled
+                          || (props.mentionSkillsUnavailable
+                            ?? props.mentionSkills.length === 0)
+                        }
                         description={
-                          props.mentionSkills.length === 0 ? copy.noSkillsAvailable : undefined
+                          (props.mentionSkillsUnavailable
+                            ?? props.mentionSkills.length === 0)
+                            ? copy.noSkillsAvailable
+                            : undefined
                         }
                         onClick={openSkillMenu}
                       />

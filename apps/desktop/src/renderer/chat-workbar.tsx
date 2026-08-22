@@ -95,6 +95,7 @@ interface ChatWorkbarProps {
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
   mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
+  mentionSkillsUnavailable?: ComponentProps<typeof Composer>['mentionSkillsUnavailable'];
   onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
 }
 
@@ -162,6 +163,7 @@ export function ChatWorkbar(props: ChatWorkbarProps) {
             sourceSession={props.sourceSession}
             modelChoices={props.modelChoices}
             mentionSkills={props.mentionSkills}
+            mentionSkillsUnavailable={props.mentionSkillsUnavailable}
             onSearchMentionFiles={props.onSearchMentionFiles}
           />
         </Suspense>
