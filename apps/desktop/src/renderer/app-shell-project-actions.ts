@@ -58,7 +58,7 @@ export function createAppShellProjectActions(deps: {
   projectPickerRequestRef: RefBox<number>;
   rendererMountedRef: RefBox<boolean>;
   setProjectPickerPending: Dispatch<SetStateAction<boolean>>;
-  refreshDefaultProjectState(host?: DesktopRuntimeHostRef): Promise<ProjectRecord[]>;
+  refreshDefaultProjectState(host: DesktopRuntimeHostRef): Promise<ProjectRecord[]>;
   selectedProjectId: string | null | undefined;
   projects: readonly ProjectRecord[];
   projectCapabilities: DesktopProjectCapabilities;
@@ -94,17 +94,6 @@ export function createAppShellProjectActions(deps: {
     toastApi.error(title, description, undefined, sessionDiagnosticTarget);
   };
 
-  async function refreshDefaultProjectPresentation(host: DesktopRuntimeHostRef): Promise<void> {
-    let currentHost: DesktopRuntimeHostRef;
-    try {
-      currentHost = await window.maka.runtimeHostProfiles.getDefaultHost();
-    } catch {
-      return;
-    }
-    if (currentHost.profileId !== host.profileId || currentHost.hostId !== host.hostId) return;
-    await refreshDefaultProjectState(host);
-  }
-
   async function refreshProjects(): Promise<ProjectRecord[]> {
     return (
       await runOnDefaultRuntimeHost((host) => refreshDefaultProjectState(host))
@@ -121,7 +110,7 @@ export function createAppShellProjectActions(deps: {
       const info = await window.maka.app.resolveProjectGitInfo(path, host);
       if (!info.ok) throw new Error(copy.selectedPathUnreadable);
     }
-    await refreshDefaultProjectPresentation(host);
+    await refreshDefaultProjectState(host);
     if (notify) {
       onProjectSelected(sessionId);
       toastApi.success(copy.directorySwitchedTitle, project.name);
@@ -194,7 +183,7 @@ export function createAppShellProjectActions(deps: {
     try {
       await runOnDefaultRuntimeHost(async (host) => {
         await window.maka.projects.select(null, host);
-        await refreshDefaultProjectPresentation(host);
+        await refreshDefaultProjectState(host);
         onProjectSelected(sessionId);
       });
     } catch (error) {
@@ -236,7 +225,7 @@ export function createAppShellProjectActions(deps: {
           if (project) return selectProjectRecord(project, false, host);
           if (!projectCapabilities.selectNoProject) return false;
           await window.maka.projects.select(null, host);
-          await refreshDefaultProjectPresentation(host);
+          await refreshDefaultProjectState(host);
           onProjectSelected(sessionId);
           return true;
         })
@@ -259,7 +248,7 @@ export function createAppShellProjectActions(deps: {
           const result = await window.maka.projects.relink(projectId, host);
           if (!result.ok) return null;
           if (selectAfter) await selectProjectRecord(result.project, true, host);
-          else await refreshDefaultProjectPresentation(host);
+          else await refreshDefaultProjectState(host);
           return result.project;
         })
       ).value;
@@ -273,7 +262,7 @@ export function createAppShellProjectActions(deps: {
     try {
       await runOnDefaultRuntimeHost(async (host) => {
         await window.maka.projects.rename(projectId, name, host);
-        await refreshDefaultProjectPresentation(host);
+        await refreshDefaultProjectState(host);
       });
     } catch (error) {
       showDefaultProjectError(
@@ -288,7 +277,7 @@ export function createAppShellProjectActions(deps: {
     try {
       await runOnDefaultRuntimeHost(async (host) => {
         await window.maka.projects.archive(projectId, host);
-        await refreshDefaultProjectPresentation(host);
+        await refreshDefaultProjectState(host);
       });
     } catch (error) {
       showDefaultProjectError(
@@ -303,7 +292,7 @@ export function createAppShellProjectActions(deps: {
     try {
       await runOnDefaultRuntimeHost(async (host) => {
         await window.maka.projects.restore(projectId, host);
-        await refreshDefaultProjectPresentation(host);
+        await refreshDefaultProjectState(host);
       });
     } catch (error) {
       showDefaultProjectError(

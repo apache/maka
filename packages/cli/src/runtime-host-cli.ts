@@ -4,6 +4,7 @@ import {
   PROJECT_DIRECTORY_MAX_ROOTS,
   PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
 } from '@maka/runtime-host/protocol';
+import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
 
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };
 
@@ -33,15 +34,20 @@ export type RuntimeHostCliCommand =
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
       websocketPath?: string;
+      expectedTarget?: RuntimeHostManagedServiceTarget;
     }
   | {
       kind: 'runtime-host-service-manage';
-      action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'uninstall';
+      action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'logs' | 'uninstall';
       json: boolean;
+      framed?: true;
+      clientDataRoot?: string;
       rootPath?: string;
       projectDirectoryRoots?: { label: string; path: string }[];
       websocketPort?: number;
       websocketPath?: string;
+      expectedTarget?: RuntimeHostManagedServiceTarget;
+      retainManagedDeployment?: true;
     }
   | {
       kind: 'runtime-host-access-issue';
@@ -151,32 +157,57 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     action !== 'start' &&
     action !== 'stop' &&
     action !== 'restart' &&
+    action !== 'logs' &&
     action !== 'uninstall'
   ) {
     return error(
       action
         ? `Unexpected runtime-host service command: ${action}`
-        : 'runtime-host service requires install, status, start, stop, restart, or uninstall',
+        : 'runtime-host service requires install, status, start, stop, restart, logs, or uninstall',
     );
   }
 
+  let retainManagedDeployment = false;
+  let clientDataRoot: string | undefined;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: action === 'install',
+    allowFramed: true,
+    valueOptions: {
+      '--client-data-root': (value) => {
+        if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
+        if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
+        clientDataRoot = value;
+      },
+    },
+    ...(action === 'uninstall'
+      ? {
+          flagOptions: {
+            '--retain-managed-deployment': () => {
+              if (retainManagedDeployment) return error('Duplicate --retain-managed-deployment');
+              retainManagedDeployment = true;
+            },
+          },
+        }
+      : {}),
   });
   if ('kind' in options) return options;
   return {
     kind: 'runtime-host-service-manage',
     action,
     ...options,
+    ...(clientDataRoot ? { clientDataRoot } : {}),
+    ...(retainManagedDeployment ? { retainManagedDeployment: true } : {}),
   };
 }
 
 interface ManagedServiceOptions {
   readonly json: boolean;
+  readonly framed?: true;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
+  readonly expectedTarget?: RuntimeHostManagedServiceTarget;
 }
 
 function parseManagedServiceOptions(
@@ -185,17 +216,31 @@ function parseManagedServiceOptions(
     readonly valueOptions?: Readonly<Record<string, (value: string) => RuntimeHostCliError | void>>;
     readonly flagOptions?: Readonly<Record<string, () => RuntimeHostCliError | void>>;
     readonly allowConfiguration?: boolean;
+    readonly allowFramed?: boolean;
   } = {},
 ): ManagedServiceOptions | RuntimeHostCliError {
   let json = false;
+  let framed = false;
   let rootPath: string | undefined;
   let websocketPort: number | undefined;
   let websocketPath: string | undefined;
+  let expectedServiceId: string | undefined;
+  let expectedRootPath: string | undefined;
+  let expectedRootId: string | undefined;
   const projectDirectoryRoots: { label: string; path: string }[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--json') {
+      if (json) return error('Duplicate --json');
+      if (framed) return error('--json and --framed cannot be used together');
       json = true;
+      continue;
+    }
+    if (argument === '--framed') {
+      if (!input.allowFramed) return error(`Unexpected argument: ${argument}`);
+      if (framed) return error('Duplicate --framed');
+      if (json) return error('--json and --framed cannot be used together');
+      framed = true;
       continue;
     }
     if (Object.hasOwn(input.flagOptions ?? {}, argument ?? '')) {
@@ -203,7 +248,12 @@ function parseManagedServiceOptions(
       if (optionError) return optionError;
       continue;
     }
-    if (input.allowConfiguration === false) {
+    const isTargetOption =
+      argument === '--expected-service-id' ||
+      argument === '--expected-root-path' ||
+      argument === '--expected-root-id';
+    const isExplicitlyAllowedOption = Object.hasOwn(input.valueOptions ?? {}, argument ?? '');
+    if (input.allowConfiguration === false && !isTargetOption && !isExplicitlyAllowedOption) {
       return error(`Unexpected argument: ${argument ?? ''}`);
     }
     if (
@@ -211,6 +261,9 @@ function parseManagedServiceOptions(
       argument === '--websocket-port' ||
       argument === '--websocket-path' ||
       argument === '--project-root' ||
+      argument === '--expected-service-id' ||
+      argument === '--expected-root-path' ||
+      argument === '--expected-root-id' ||
       Object.hasOwn(input.valueOptions ?? {}, argument ?? '')
     ) {
       const parsed = optionValue(argv, index, argument ?? '');
@@ -218,6 +271,9 @@ function parseManagedServiceOptions(
       if (argument === '--root') rootPath = parsed;
       else if (argument === '--websocket-port') websocketPort = Number(parsed);
       else if (argument === '--websocket-path') websocketPath = parsed;
+      else if (argument === '--expected-service-id') expectedServiceId = parsed;
+      else if (argument === '--expected-root-path') expectedRootPath = parsed;
+      else if (argument === '--expected-root-id') expectedRootId = parsed;
       else if (argument === '--project-root') {
         const root = parseProjectRoot(parsed);
         if ('kind' in root) return root;
@@ -248,13 +304,50 @@ function parseManagedServiceOptions(
   if (websocketPath !== undefined && !isCanonicalRuntimeHostWebSocketPath(websocketPath)) {
     return error('--websocket-path must be a canonical absolute URL path');
   }
+  if (expectedServiceId !== undefined && !/^[a-f0-9]{64}$/u.test(expectedServiceId)) {
+    return error('--expected-service-id must be a Runtime Host managed service identity');
+  }
+  if (expectedRootId !== undefined && !/^[a-f0-9]{64}$/u.test(expectedRootId)) {
+    return error('--expected-root-id must be a Runtime Host State Root identity');
+  }
+  if (
+    expectedRootPath !== undefined &&
+    (expectedRootPath.length === 0 ||
+      Buffer.byteLength(expectedRootPath, 'utf8') > 4 * 1024 ||
+      /[\u0000-\u001f\u007f]/u.test(expectedRootPath))
+  ) {
+    return error('--expected-root-path is invalid');
+  }
+  const hasExpectedTarget =
+    expectedServiceId !== undefined ||
+    expectedRootPath !== undefined ||
+    expectedRootId !== undefined;
+  if (hasExpectedTarget && (!expectedServiceId || !expectedRootPath || !expectedRootId)) {
+    return error(
+      '--expected-service-id, --expected-root-path, and --expected-root-id must be provided together',
+    );
+  }
   return {
     json,
+    ...(framed ? { framed: true as const } : {}),
     ...(rootPath ? { rootPath } : {}),
     ...(projectDirectoryRoots.length > 0 ? { projectDirectoryRoots } : {}),
     ...(websocketPort === undefined ? {} : { websocketPort }),
     ...(websocketPath === undefined ? {} : { websocketPath }),
+    ...(expectedServiceId === undefined
+      ? {}
+      : {
+          expectedTarget: {
+            serviceId: expectedServiceId,
+            rootPath: expectedRootPath!,
+            rootId: expectedRootId!,
+          },
+        }),
   };
+}
+
+function isSafeAbsolutePath(value: string): boolean {
+  return isAbsolute(value) && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {

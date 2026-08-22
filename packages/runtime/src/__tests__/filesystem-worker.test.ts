@@ -1,5 +1,15 @@
 import { strict as assert } from 'node:assert';
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
@@ -35,7 +45,7 @@ describe('filesystem worker operations', () => {
     };
 
     const created = await executeFilesystemWorkerRequest(
-      requestFor(operation, {
+      await requestFor(operation, {
         enforcementPath: target,
         access: 'write',
         scope: 'exact',
@@ -46,7 +56,7 @@ describe('filesystem worker operations', () => {
     assert.equal(await readFile(target, 'utf8'), 'created');
 
     const conflict = await executeFilesystemWorkerRequest(
-      requestFor(operation, {
+      await requestFor(operation, {
         enforcementPath: target,
         access: 'write',
         scope: 'exact',
@@ -63,7 +73,7 @@ describe('filesystem worker operations', () => {
     await writeFile(target, 'before\n', 'utf8');
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         {
           kind: 'apply_patch',
           cwd: root,
@@ -96,7 +106,7 @@ describe('filesystem worker operations', () => {
     await symlink(target, link);
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'apply_patch', cwd: root, path: link, action: 'delete' },
         {
           enforcementPath: link,
@@ -112,13 +122,42 @@ describe('filesystem worker operations', () => {
     await assert.rejects(readFile(link, 'utf8'), { code: 'ENOENT' });
   });
 
+  test('refuses a directory delete with the structured is_directory code', async () => {
+    const root = await temporaryDirectory('maka-worker-delete-dir-');
+    const dir = join(root, 'subdir');
+    await mkdir(dir);
+
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        { kind: 'apply_patch', cwd: root, path: dir, action: 'delete' },
+        {
+          enforcementPath: dir,
+          access: 'write',
+          scope: 'exact',
+          targetType: 'directory',
+        },
+      ),
+    );
+
+    // The structured code survives classification — the model learns a
+    // directory was refused, not a generic filesystem failure (#2600).
+    assert.equal(response.ok, false);
+    if (!response.ok) {
+      assert.equal(response.error.code, 'is_directory');
+      assert.match(response.error.message, /directory/i);
+    }
+    // The directory is untouched at its original path.
+    const entries = await (await import('node:fs/promises')).readdir(root);
+    assert.deepEqual(entries, ['subdir']);
+  });
+
   test('fails Grep closed inside the Windows sandbox instead of approximating its contract', async () => {
     const root = await temporaryDirectory('maka-worker-grep-sandboxed-');
     const target = join(root, 'file.ts');
     await writeFile(target, 'const healthSignal = true;', 'utf8');
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         {
           kind: 'grep',
           cwd: root,
@@ -155,7 +194,7 @@ describe('filesystem worker operations', () => {
     let grepCwd: string | undefined;
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         {
           kind: 'grep',
           cwd: root,
@@ -198,7 +237,7 @@ describe('filesystem worker operations', () => {
       limit: 200,
       timeoutMs: 1_000,
     };
-    const request = requestFor(operation, {
+    const request = await requestFor(operation, {
       enforcementPath: target,
       access: 'read',
       scope: 'exact',
@@ -245,7 +284,7 @@ describe('filesystem worker operations', () => {
     await writeFile(target, ONE_PIXEL_PNG);
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'read', cwd: root, path: target, offset: 1, limit: 1 },
         { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'file' },
       ),
@@ -272,7 +311,7 @@ describe('filesystem worker operations', () => {
     await symlink(text, textLink);
 
     const imageResponse = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'read', cwd: root, path: imageLink },
         { enforcementPath: image, access: 'read', scope: 'exact', targetType: 'file' },
         image,
@@ -282,7 +321,7 @@ describe('filesystem worker operations', () => {
     if (imageResponse.ok) assert.equal(imageResponse.result.kind, 'read_image');
 
     const textResponse = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'read', cwd: root, path: textLink },
         { enforcementPath: text, access: 'read', scope: 'exact', targetType: 'file' },
         text,
@@ -300,7 +339,7 @@ describe('filesystem worker operations', () => {
     await writeFile(insidePath, 'inside', 'utf8');
 
     const readResponse = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'read', cwd: root, path: insidePath },
         { enforcementPath: insidePath, access: 'read', scope: 'exact', targetType: 'file' },
       ),
@@ -309,7 +348,7 @@ describe('filesystem worker operations', () => {
     if (readResponse.ok) assert.deepEqual(readResponse.result, { kind: 'read', content: 'inside' });
 
     const denied = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'write', cwd: root, path: outsidePath, content: 'blocked' },
         { enforcementPath: outsidePath, access: 'write', scope: 'exact', targetType: 'missing' },
         insidePath,
@@ -332,7 +371,7 @@ describe('filesystem worker operations', () => {
     await symlink(target, link);
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'write', cwd: root, path: link, content: 'blocked' },
         { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'missing' },
         link,
@@ -350,7 +389,7 @@ describe('filesystem worker operations', () => {
     await mkdir(target);
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'read', cwd: root, path: target },
         { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'file' },
       ),
@@ -370,7 +409,7 @@ describe('filesystem worker operations', () => {
     await symlink(replacement, link);
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'read', cwd: root, path: link },
         { enforcementPath: approved, access: 'read', scope: 'exact', targetType: 'file' },
         approved,
@@ -387,7 +426,7 @@ describe('filesystem worker operations', () => {
     await writeFile(target, before, 'utf8');
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         {
           kind: 'edit',
           cwd: root,
@@ -411,7 +450,7 @@ describe('filesystem worker operations', () => {
     await writeFile(target, '{\n  "a": 1\n}', 'utf8');
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'format_json', cwd: root, path: target, sortKeys: false },
         { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
       ),
@@ -430,7 +469,7 @@ describe('filesystem worker operations', () => {
     await writeFile(target, 'secret\n', { mode: 0o222 });
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'write', cwd: root, path: target, content: 'replacement\n' },
         { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
       ),
@@ -450,7 +489,7 @@ describe('filesystem worker operations', () => {
     await writeFile(target, ONE_PIXEL_PNG);
 
     const response = await executeFilesystemWorkerRequest(
-      requestFor(
+      await requestFor(
         { kind: 'write', cwd: root, path: target, content: 'not an image anymore\n' },
         { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
       ),
@@ -463,11 +502,11 @@ describe('filesystem worker operations', () => {
   });
 });
 
-function requestFor(
+async function requestFor(
   operation: FilesystemWorkerOperation,
   expectedTarget: FilesystemWorkerTarget,
   permissionPath = operation.path,
-): FilesystemWorkerRequest {
+): Promise<FilesystemWorkerRequest> {
   const operationBoundary: FilesystemWorkerRequest['operationBoundary'] = {
     filesystem: {
       entries: [
@@ -479,12 +518,30 @@ function requestFor(
       ],
     },
   };
+  // The real caller captures the target identity at T0; mirror that here so
+  // the worker's mandatory-identity check is satisfied for non-missing targets.
+  let resolvedTarget = expectedTarget;
+  if (expectedTarget.targetType !== 'missing' && !expectedTarget.identity) {
+    const follow = expectedTarget.targetType !== 'symlink';
+    try {
+      const metadata = follow
+        ? await stat(expectedTarget.enforcementPath, { bigint: true })
+        : await lstat(expectedTarget.enforcementPath, { bigint: true });
+      resolvedTarget = {
+        ...expectedTarget,
+        identity: { dev: String(metadata.dev), ino: String(metadata.ino) },
+      };
+    } catch {
+      // Target may not exist at request construction time (the test sets it up
+      // differently); leave identity absent and let the worker surface it.
+    }
+  }
   return {
     version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
     requestId: 'request-1',
     operation,
     operationBoundary,
-    expectedTarget,
+    expectedTarget: resolvedTarget,
   };
 }
 

@@ -1,20 +1,27 @@
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
+import { posix as pathPosix } from 'node:path';
 import type { IpcMain } from 'electron';
 import type { IPty } from 'node-pty';
 import { spawn as spawnPty } from 'node-pty';
 import {
-  decodeRuntimeHostSetupFrame,
   normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,
-  RUNTIME_HOST_SETUP_FRAME_PREFIX,
-  type RuntimeHostSetupFrame,
   type RuntimeHostSshProcess,
   type RuntimeHostSshProcessFactory,
   type RuntimeHostSshTunnel,
   type RuntimeHostSshTunnelInput,
 } from '@maka/runtime-host/client';
+import {
+  decodeRuntimeHostServiceManagementFrame,
+  decodeRuntimeHostSetupFrame,
+  RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
+  RUNTIME_HOST_SETUP_FRAME_PREFIX,
+  type RuntimeHostServiceManagementAction,
+  type RuntimeHostServiceManagementFrame,
+  type RuntimeHostSetupFrame,
+} from '@maka/runtime-host/operator';
 import type {
   DesktopRuntimeHostSshTerminalEvent,
   DesktopRuntimeHostSshTerminalSnapshot,
@@ -34,7 +41,9 @@ interface ActiveTerminal {
 const TERMINAL_REVEAL_DELAY_MS = 500;
 const TERMINAL_OUTPUT_MAX = 64 * 1024;
 const SETUP_FRAME_PENDING_MAX = 20 * 1024;
+const MANAGEMENT_FRAME_PENDING_MAX = 128 * 1024;
 const SETUP_TIMEOUT_MS = 10 * 60_000;
+const MANAGEMENT_TIMEOUT_MS = 2 * 60_000;
 const PROCESS_STOP_GRACE_MS = 2_000;
 
 export interface DesktopRuntimeHostSshSetupInput {
@@ -42,6 +51,30 @@ export interface DesktopRuntimeHostSshSetupInput {
   readonly sshPort?: number;
   readonly setupPackage: DesktopRuntimeHostSetupPackage;
   readonly principalId: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface DesktopRuntimeHostSshManagementInput {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly operatorPath: string;
+  readonly action: RuntimeHostServiceManagementAction;
+  readonly expectedTarget: {
+    readonly serviceId: string;
+    readonly rootPath: string;
+    readonly rootId: string;
+  };
+  readonly rootPath?: string;
+  readonly websocketPort?: number;
+  readonly websocketPath?: string;
+  readonly retainManagedDeployment?: boolean;
+  readonly signal?: AbortSignal;
+}
+
+export interface DesktopRuntimeHostSshCleanupInput {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly operatorPath: string;
   readonly signal?: AbortSignal;
 }
 
@@ -69,9 +102,14 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     onProgress: (frame: Extract<RuntimeHostSetupFrame, { kind: 'progress' }>) => void,
     onComplete?: (frame: RuntimeHostSetupCompleteFrame) => void,
   ): Promise<RuntimeHostSetupCompleteFrame>;
+  runServiceManagement(
+    input: DesktopRuntimeHostSshManagementInput,
+  ): Promise<RuntimeHostServiceManagementFrame>;
+  cleanupManagedDeployment(input: DesktopRuntimeHostSshCleanupInput): Promise<void>;
   close(): Promise<void>;
 } {
   let active: ActiveTerminal | undefined;
+  let closed = false;
   let revision = 0;
   let presentation: Exclude<DesktopRuntimeHostSshTerminalSnapshot, { kind: 'idle' }> | undefined;
   function dismissPresentation(terminal: ActiveTerminal): void {
@@ -89,9 +127,10 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       sessionId: terminal.sessionId,
     });
   }
-  function completePresentation(terminal: ActiveTerminal): void {
+  function completePresentation(terminal: ActiveTerminal, releaseProcess = false): void {
     if (active !== terminal || terminal.phase !== 'connecting') return;
     terminal.phase = 'connected';
+    if (releaseProcess) active = undefined;
     presentation = undefined;
     revision += 1;
     if (terminal.revealTimer !== undefined) {
@@ -112,6 +151,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     transformOutput: (data: string) => string = (data) => data,
     successfulExitCompletes = false,
   ): { readonly process: RuntimeHostSshProcess; readonly terminal: ActiveTerminal } => {
+    if (closed) throw new Error('Runtime Host SSH terminal is closed');
     if (active) throw new Error('Another Runtime Host SSH terminal is already active');
     const sessionId = randomUUID();
     const pty = (input.spawnPty ?? spawnPty)(executable, [...args], {
@@ -266,6 +306,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
 
   return {
     openSshTunnel: async (tunnelInput) => {
+      if (closed) throw new Error('Runtime Host SSH terminal is closed');
       const openSshTunnel = input.openSshTunnel ?? openRuntimeHostSshTunnel;
       if (tunnelInput.interaction !== 'terminal') return openSshTunnel(tunnelInput);
       const tunnel = await openSshTunnel(tunnelInput, { spawnProcess });
@@ -277,6 +318,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       return tunnel;
     },
     runSetup: async (setupInput, onProgress, onComplete) => {
+      if (closed) throw new Error('Runtime Host SSH terminal is closed');
       setupInput.signal?.throwIfAborted();
       const cancellation = cancellableUntilComplete(setupInput.signal);
       try {
@@ -294,12 +336,16 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           input.processStopGraceMs,
           dismissPresentation,
         );
-        const remoteCommand = runtimeHostSetupRemoteCommand(setupPackage, setupInput.principalId);
+        const remoteCommand = runtimeHostSetupRemoteCommand(setupPackage, setupInput);
         let complete: RuntimeHostSetupCompleteFrame | undefined;
         let setupFailure: Error | undefined;
         let setupTerminal: ActiveTerminal | undefined;
-        const filter = createSetupOutputFilter(
-          (frame) => {
+        const filter = createFramedOutputFilter({
+          prefix: RUNTIME_HOST_SETUP_FRAME_PREFIX,
+          pendingMaxBytes: SETUP_FRAME_PENDING_MAX,
+          decode: decodeRuntimeHostSetupFrame,
+          label: 'Remote Maka setup',
+          onFrame: (frame) => {
             if (frame.kind === 'progress') onProgress(frame);
             else if (frame.kind === 'complete') {
               if (!cancellation.commit()) return;
@@ -308,30 +354,13 @@ export function createDesktopRuntimeHostSshTerminal(input: {
               if (setupTerminal) completePresentation(setupTerminal);
             } else setupFailure = new Error(frame.error.message);
           },
-          (error) => {
+          onError: (error) => {
             setupFailure = error;
           },
-        );
+        });
         const { process, terminal } = startTerminalProcess(
           'ssh',
-          [
-            '-tt',
-            '-o',
-            'BatchMode=no',
-            '-o',
-            'ConnectTimeout=15',
-            '-o',
-            'ControlMaster=no',
-            '-o',
-            'ControlPath=none',
-            '-o',
-            'ClearAllForwardings=yes',
-            '-o',
-            'RemoteCommand=none',
-            ...(sshPort === undefined ? [] : ['-p', String(sshPort)]),
-            destination,
-            remoteCommand,
-          ],
+          sshRemoteCommandArgs(destination, sshPort, remoteCommand),
           filter.push,
         );
         setupTerminal = terminal;
@@ -360,7 +389,105 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         cancellation.close();
       }
     },
+    runServiceManagement: async (managementInput) => {
+      if (closed) throw new Error('Runtime Host SSH terminal is closed');
+      managementInput.signal?.throwIfAborted();
+      const destination = normalizeRuntimeHostSshDestination(managementInput.destination);
+      const sshPort = managementInput.sshPort === undefined
+        ? undefined
+        : requireSetupPort(managementInput.sshPort);
+      let frame: RuntimeHostServiceManagementFrame | undefined;
+      let frameFailure: Error | undefined;
+      let managementTerminal: ActiveTerminal | undefined;
+      const filter = createFramedOutputFilter({
+        prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
+        pendingMaxBytes: MANAGEMENT_FRAME_PENDING_MAX,
+        decode: decodeRuntimeHostServiceManagementFrame,
+        label: 'Remote Runtime Host service management',
+        onFrame: (next) => {
+          if (next.action !== managementInput.action) {
+            frameFailure = new Error(
+              `Remote Runtime Host service management returned ${next.action} for ${managementInput.action}`,
+            );
+            return;
+          }
+          if (frame) {
+            frameFailure = new Error(
+              'Remote Runtime Host service management returned multiple results',
+            );
+            return;
+          }
+          frame = next;
+          if (managementTerminal) completePresentation(managementTerminal);
+        },
+        onError: (error) => {
+          frameFailure = error;
+        },
+      });
+      const { process, terminal } = startTerminalProcess(
+        'ssh',
+        sshRemoteCommandArgs(
+          destination,
+          sshPort,
+          runtimeHostServiceManagementRemoteCommand(managementInput),
+        ),
+        filter.push,
+        true,
+      );
+      managementTerminal = terminal;
+      if (frame) completePresentation(terminal);
+      const result = await waitForTerminalProcess(process, {
+        signal: managementInput.signal,
+        timeoutMs: MANAGEMENT_TIMEOUT_MS,
+        timeoutMessage: 'Remote Runtime Host service management timed out',
+        stopGraceMs: input.processStopGraceMs,
+        onAbort: () => dismissPresentation(terminal),
+      });
+      filter.finish();
+      if (frameFailure) throw frameFailure;
+      if (!frame) {
+        throw new Error(
+          result.code === 0
+            ? 'Remote Runtime Host service management ended without a result'
+            : `Remote Runtime Host service management exited with code ${String(result.code)}`,
+        );
+      }
+      completePresentation(terminal);
+      return frame;
+    },
+    cleanupManagedDeployment: async (cleanupInput) => {
+      if (closed) throw new Error('Runtime Host SSH terminal is closed');
+      cleanupInput.signal?.throwIfAborted();
+      const destination = normalizeRuntimeHostSshDestination(cleanupInput.destination);
+      const sshPort = cleanupInput.sshPort === undefined
+        ? undefined
+        : requireSetupPort(cleanupInput.sshPort);
+      const { process, terminal } = startTerminalProcess(
+        'ssh',
+        sshRemoteCommandArgs(
+          destination,
+          sshPort,
+          runtimeHostManagedDeploymentCleanupRemoteCommand(cleanupInput.operatorPath),
+        ),
+        undefined,
+        true,
+      );
+      const result = await waitForTerminalProcess(process, {
+        signal: cleanupInput.signal,
+        timeoutMs: MANAGEMENT_TIMEOUT_MS,
+        timeoutMessage: 'Remote Runtime Host deployment cleanup timed out',
+        stopGraceMs: input.processStopGraceMs,
+        onAbort: () => dismissPresentation(terminal),
+      });
+      if (result.code !== 0) {
+        throw new Error(
+          `Remote Runtime Host deployment cleanup exited with code ${String(result.code)}`,
+        );
+      }
+      completePresentation(terminal);
+    },
     close: async () => {
+      closed = true;
       for (const channel of channels) input.ipcMain.removeHandler(channel);
       const terminal = active;
       if (!terminal) return;
@@ -398,10 +525,14 @@ function cancellableUntilComplete(signal: AbortSignal | undefined): {
   };
 }
 
-function createSetupOutputFilter(
-  onFrame: (frame: RuntimeHostSetupFrame) => void,
-  onError: (error: Error) => void,
-): { push(data: string): string; finish(): string } {
+function createFramedOutputFilter<Frame>(input: {
+  readonly prefix: string;
+  readonly pendingMaxBytes: number;
+  readonly decode: (line: string) => Frame | undefined;
+  readonly label: string;
+  readonly onFrame: (frame: Frame) => void;
+  readonly onError: (error: Error) => void;
+}): { push(data: string): string; finish(): string } {
   let pending = '';
   let discardReservedLine = false;
   const drain = (finished: boolean): string => {
@@ -417,17 +548,17 @@ function createSetupOutputFilter(
         discardReservedLine = false;
         continue;
       }
-      const marker = pending.indexOf(RUNTIME_HOST_SETUP_FRAME_PREFIX);
+      const marker = pending.indexOf(input.prefix);
       if (marker >= 0) {
         visible += pending.slice(0, marker);
         pending = pending.slice(marker);
         const newline = pending.indexOf('\n');
         if (newline < 0) {
           if (finished) {
-            onError(new Error('Remote Maka setup returned an incomplete result'));
+            input.onError(new Error(`${input.label} returned an incomplete result`));
             pending = '';
-          } else if (pending.length > SETUP_FRAME_PENDING_MAX) {
-            onError(new Error('Remote Maka setup returned an oversized result'));
+          } else if (pending.length > input.pendingMaxBytes) {
+            input.onError(new Error(`${input.label} returned an oversized result`));
             pending = '';
             discardReservedLine = true;
           }
@@ -435,9 +566,9 @@ function createSetupOutputFilter(
         }
         const line = pending.slice(0, newline + 1);
         pending = pending.slice(newline + 1);
-        const frame = decodeRuntimeHostSetupFrame(line);
-        if (frame) onFrame(frame);
-        else onError(new Error('Remote Maka setup returned an invalid result'));
+        const frame = input.decode(line);
+        if (frame) input.onFrame(frame);
+        else input.onError(new Error(`${input.label} returned an invalid result`));
         continue;
       }
       if (finished) {
@@ -445,7 +576,7 @@ function createSetupOutputFilter(
         pending = '';
         break;
       }
-      const retained = setupMarkerSuffixLength(pending);
+      const retained = markerSuffixLength(pending, input.prefix);
       visible += pending.slice(0, pending.length - retained);
       pending = pending.slice(pending.length - retained);
       break;
@@ -463,10 +594,10 @@ function createSetupOutputFilter(
   };
 }
 
-function setupMarkerSuffixLength(value: string): number {
-  const limit = Math.min(value.length, RUNTIME_HOST_SETUP_FRAME_PREFIX.length - 1);
+function markerSuffixLength(value: string, prefix: string): number {
+  const limit = Math.min(value.length, prefix.length - 1);
   for (let length = limit; length > 0; length -= 1) {
-    if (RUNTIME_HOST_SETUP_FRAME_PREFIX.startsWith(value.slice(-length))) return length;
+    if (prefix.startsWith(value.slice(-length))) return length;
   }
   return 0;
 }
@@ -610,30 +741,102 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
 
 function runtimeHostSetupRemoteCommand(
   setupPackage: PreparedSetupPackage,
-  principalId: string,
+  input: Pick<DesktopRuntimeHostSshSetupInput, 'principalId'>,
 ): string {
-  if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(principalId)) {
+  if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.principalId)) {
     throw new Error('Runtime Host setup principal is invalid');
   }
-  const setupArguments = [
-    'maka',
+  return runtimeHostPackageRemoteCommand(setupPackage, [
     'runtime-host',
     'setup',
     '--principal',
-    principalId,
+    input.principalId,
     '--preset',
     'desktop-client',
     '--defer-pairing-commit',
     '--json',
+  ]);
+}
+
+function runtimeHostServiceManagementRemoteCommand(
+  input: DesktopRuntimeHostSshManagementInput,
+): string {
+  const command = [
+    input.operatorPath,
+    input.action,
+    '--framed',
+    ...(input.rootPath ? ['--root', input.rootPath] : []),
+    ...(input.websocketPort === undefined
+      ? []
+      : ['--websocket-port', String(input.websocketPort)]),
+    ...(input.websocketPath ? ['--websocket-path', input.websocketPath] : []),
+    ...(input.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
+    ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
-  const setup = setupPackage.removeAfterSetup
-    ? `npx --yes --package ${quotePosix(setupPackage.specifier)} ${setupArguments}`
-    : `npx --yes --prefix "$maka_setup_prefix" --package ${quotePosix(setupPackage.specifier)} ${setupArguments}`;
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
+}
+
+function runtimeHostManagedDeploymentCleanupRemoteCommand(operatorPath: string): string {
+  const operator = quotePosix(operatorPath);
+  const deploymentRoot = quotePosix(pathPosix.dirname(operatorPath));
+  const invocation =
+    `if [ ! -e ${operator} ]; then ` +
+    `if [ ! -e ${deploymentRoot} ]; then exit 0; fi; ` +
+    `exec rmdir -- ${deploymentRoot}; fi; ` +
+    `exec ${operator} __cleanup-managed-deployment`;
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
+}
+
+function managedServiceTargetArgs(input: {
+  readonly serviceId: string;
+  readonly rootPath: string;
+  readonly rootId: string;
+}): string[] {
+  return [
+    '--expected-service-id', input.serviceId,
+    '--expected-root-path', input.rootPath,
+    '--expected-root-id', input.rootId,
+  ];
+}
+
+function runtimeHostPackageRemoteCommand(
+  setupPackage: PreparedSetupPackage,
+  args: readonly string[],
+): string {
+  const commandArgs = ['maka', ...args].map(quotePosix).join(' ');
+  const commandInvocation = setupPackage.removeAfterSetup
+    ? `npx --yes --package ${quotePosix(setupPackage.specifier)} ${commandArgs}`
+    : `npx --yes --prefix "$maka_command_prefix" --package ${quotePosix(setupPackage.specifier)} ${commandArgs}`;
   const command = setupPackage.removeAfterSetup
-    ? `cd "$HOME" || exit 1; maka_setup_exit=0; ${setup} || maka_setup_exit=$?; rm -f -- ${quotePosix(setupPackage.removeAfterSetup)}; exit "$maka_setup_exit"`
-    : `maka_setup_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_setup_prefix"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; cd "$maka_setup_prefix" || exit 1; ${setup}`;
+    ? `cd "$HOME" || exit 1; maka_command_exit=0; ${commandInvocation} || maka_command_exit=$?; rm -f -- ${quotePosix(setupPackage.removeAfterSetup)}; exit "$maka_command_exit"`
+    : `maka_command_prefix=$(mktemp -d) || exit 1; trap 'rm -rf -- "$maka_command_prefix"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; cd "$maka_command_prefix" || exit 1; ${commandInvocation}`;
   const loginCommand = `exec /bin/sh -c ${quotePosix(command)}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(loginCommand)}`;
+}
+
+function sshRemoteCommandArgs(
+  destination: string,
+  sshPort: number | undefined,
+  remoteCommand: string,
+): string[] {
+  return [
+    '-tt',
+    '-o',
+    'BatchMode=no',
+    '-o',
+    'ConnectTimeout=15',
+    '-o',
+    'ControlMaster=no',
+    '-o',
+    'ControlPath=none',
+    '-o',
+    'ClearAllForwardings=yes',
+    '-o',
+    'RemoteCommand=none',
+    ...(sshPort === undefined ? [] : ['-p', String(sshPort)]),
+    destination,
+    remoteCommand,
+  ];
 }
 
 function quotePosix(value: string): string {

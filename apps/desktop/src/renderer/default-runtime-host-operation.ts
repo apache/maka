@@ -14,14 +14,35 @@ class DefaultRuntimeHostOperationError extends Error {
 
 export async function runOnDefaultRuntimeHost<T>(
   operation: (host: DesktopRuntimeHostRef) => Promise<T>,
-): Promise<{ readonly value: T; readonly diagnosticTarget: DefaultRuntimeHostDiagnosticTarget }> {
+): Promise<{
+  readonly value: T;
+  readonly host: DesktopRuntimeHostRef;
+  readonly diagnosticTarget: DefaultRuntimeHostDiagnosticTarget;
+}> {
   const host = await window.maka.runtimeHostProfiles.getDefaultHost();
   const diagnosticTarget = { profileId: host.profileId };
   try {
-    return { value: await operation(host), diagnosticTarget };
+    return { value: await operation(host), host, diagnosticTarget };
   } catch (error) {
     throw new DefaultRuntimeHostOperationError(error, diagnosticTarget);
   }
+}
+
+export async function runIfDefaultRuntimeHostCurrent(
+  host: DesktopRuntimeHostRef,
+  operation: () => unknown | Promise<unknown>,
+): Promise<boolean> {
+  let currentHost: DesktopRuntimeHostRef;
+  try {
+    currentHost = await window.maka.runtimeHostProfiles.getDefaultHost();
+  } catch {
+    return false;
+  }
+  if (currentHost.profileId !== host.profileId || currentHost.hostId !== host.hostId) {
+    return false;
+  }
+  await operation();
+  return true;
 }
 
 export function defaultRuntimeHostDiagnosticTarget(

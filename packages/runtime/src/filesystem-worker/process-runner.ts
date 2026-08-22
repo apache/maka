@@ -38,6 +38,15 @@ export interface FilesystemWorkerProcessRunResult {
   timedOut: boolean;
   aborted: boolean;
   responseOverflow: boolean;
+  /**
+   * Whether the request was dispatched to the child process. True once Node's
+   * `'spawn'` event fires (the process actually started) AND stdin was fully
+   * written; false when the process never started or stdin was not yet
+   * delivered. Callers use this to tell a clean "never ran" failure from a
+   * "ran but the result was lost" failure — only the latter can have mutated
+   * anything on disk.
+   */
+  dispatched: boolean;
 }
 
 export type FilesystemWorkerProcessRunner = (
@@ -60,6 +69,7 @@ export async function runFilesystemWorkerProcess(
       timedOut: false,
       aborted: true,
       responseOverflow: false,
+      dispatched: false,
     };
   }
   let child: WorkerChildProcess;
@@ -93,6 +103,20 @@ async function observeWorker(
     let responseOverflow = false;
     let termination: 'timeout' | 'abort' | 'overflow' | undefined;
     let settled = false;
+    // Dispatched becomes true only after the child has actually started (the
+    // 'spawn' event fired) and the request has been written to its stdin.
+    // Before that point no filesystem mutation can have happened; afterwards a
+    // failure means the outcome on disk is genuinely unknown.
+    let dispatched = false;
+    let dispatchedSpawned = false;
+    let dispatchedStdin = false;
+    const maybeDispatched = (): void => {
+      if (dispatchedSpawned && dispatchedStdin) dispatched = true;
+    };
+    child.once('spawn', () => {
+      dispatchedSpawned = true;
+      maybeDispatched();
+    });
     child.stdout.on('data', (chunk: Buffer) => {
       if (responseOverflow) return;
       stdoutBytes += chunk.length;
@@ -118,23 +142,29 @@ async function observeWorker(
         ioDrainTimeoutMs,
       },
     );
-    void lifecycle.completion.then((outcome) => {
-      if (settled) return;
-      if (!outcome.ioDrained) {
-        rejectOnce(new Error('Filesystem worker output did not drain before lifecycle deadline'));
-        return;
-      }
-      settled = true;
-      cleanup();
-      resolvePromise({
-        exitCode: outcome.exitCode ?? 1,
-        stdout: responseOverflow ? '' : Buffer.concat(stdoutChunks).toString('utf8'),
-        stderrTail: stderrTail.toString('utf8'),
-        timedOut: termination === 'timeout',
-        aborted: termination === 'abort',
-        responseOverflow,
-      });
-    }, rejectOnce);
+    void lifecycle.completion.then(
+      (outcome) => {
+        if (settled) return;
+        if (!outcome.ioDrained) {
+          rejectOnce(
+            workerError('Filesystem worker output did not drain before lifecycle deadline'),
+          );
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolvePromise({
+          exitCode: outcome.exitCode ?? 1,
+          stdout: responseOverflow ? '' : Buffer.concat(stdoutChunks).toString('utf8'),
+          stderrTail: stderrTail.toString('utf8'),
+          timedOut: termination === 'timeout',
+          aborted: termination === 'abort',
+          responseOverflow,
+          dispatched,
+        });
+      },
+      (error: unknown) => rejectOnce(workerError(error)),
+    );
     const timeout = setTimeout(() => terminate('timeout'), timeoutMs);
     const abort = () => terminate('abort');
     if (input.abortSignal) {
@@ -148,10 +178,23 @@ async function observeWorker(
       settled = true;
       cleanup();
       lifecycle.forceKill();
-      reject(error);
+      reject(workerError(error));
       return;
     }
+    // The request has been queued to the child's stdin. If the 'spawn' event
+    // has already fired this completes dispatch; if it fires later the spawn
+    // listener flips the flag. Either way, after this line a subsequent
+    // failure means "the child may have run".
+    dispatchedStdin = true;
+    maybeDispatched();
     child.stdin.end(input.stdin);
+
+    /** Attach the current `dispatched` flag to an error so callers can classify it. */
+    function workerError(error: unknown): Error {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      Object.defineProperty(cause, 'dispatched', { value: dispatched, enumerable: true });
+      return cause;
+    }
 
     function terminate(reason: 'timeout' | 'abort' | 'overflow'): void {
       if (termination || settled) return;

@@ -1,14 +1,14 @@
-import { mkdir, readFile, realpath } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { connectRemoteRuntimeHost } from '@maka/runtime-host/client';
 import {
-  connectRemoteRuntimeHost,
   encodeRuntimeHostSetupFrame,
   RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
-} from '@maka/runtime-host/client';
+} from '@maka/runtime-host/operator';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
@@ -31,6 +31,7 @@ import {
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceResult,
+  type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
 
@@ -49,6 +50,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
+  readonly expectedTarget?: RuntimeHostManagedServiceTarget;
 }
 
 interface RuntimeHostSetupDeps {
@@ -119,6 +121,7 @@ async function runRuntimeHostSetupLocked(
     defaultRootPath: options.defaultRootPath,
     nodePath: process.execPath,
     cliPath: join(options.sourcePackageRoot, 'dist', 'cli.js'),
+    ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
   } as const;
   const status = await deps.manageService({ ...common, action: 'status' }, backend);
   await assertCompatibleExistingVersion(status, options.version);
@@ -126,6 +129,7 @@ async function runRuntimeHostSetupLocked(
   emit({ kind: 'progress', phase: 'installing_package' });
   const deployment = await deps.prepareDeployment({
     serviceId,
+    clientDataRoot: options.clientDataRoot,
     sourcePackageRoot: options.sourcePackageRoot,
     version: options.version,
   });
@@ -138,7 +142,6 @@ async function runRuntimeHostSetupLocked(
         ...common,
         action: 'install',
         cliPath: deployment.cliPath,
-        managedDeploymentRoot: deployment.root,
         ...(options.rootPath ? { rootPath: options.rootPath } : {}),
         ...(options.projectDirectoryRoots
           ? { projectDirectoryRoots: options.projectDirectoryRoots }
@@ -159,6 +162,7 @@ async function runRuntimeHostSetupLocked(
       'Managed Runtime Host service did not become ready',
     );
   }
+  await deployment.commit();
 
   emit({ kind: 'progress', phase: 'pairing_client' });
   let paired: Awaited<ReturnType<typeof prepareRuntimeHostAccessCredential>>;
@@ -191,10 +195,12 @@ async function runRuntimeHostSetupLocked(
       rootId: paired.rootId,
       credential: paired.credential,
     });
-    await deployment.commit().catch(() => undefined);
     emit({
       kind: 'complete',
       version: deployment.version,
+      serviceId,
+      operatorPath: deployment.operatorPath,
+      rootPath: config.rootPath,
       rootId: paired.rootId,
       endpoint,
       credentialId: paired.credentialId,
@@ -222,21 +228,18 @@ async function assertCompatibleExistingVersion(
   status: RuntimeHostManagedServiceResult,
   version: string,
 ): Promise<void> {
-  const cliPath = status.service.config?.launch.cliPath;
-  if (!cliPath) return;
-  let existingVersion: unknown;
-  try {
-    const packageRoot = dirname(dirname(await realpath(cliPath)));
-    existingVersion = (
-      JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as {
-        version?: unknown;
-      }
-    ).version;
-  } catch (error) {
+  if (!status.service.config) {
+    if (!status.service.installed) return;
+    throw new RuntimeHostSetupError(
+      'existing_installation_unknown',
+      'The installed Runtime Host configuration is unavailable; repair it before setup',
+    );
+  }
+  const existingVersion = status.service.installedVersion;
+  if (!existingVersion) {
     throw new RuntimeHostSetupError(
       'existing_installation_unknown',
       'The installed Runtime Host version could not be identified; repair it before setup',
-      { cause: error },
     );
   }
   if (

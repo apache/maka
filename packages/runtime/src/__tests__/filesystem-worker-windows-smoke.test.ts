@@ -86,10 +86,16 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
     // grant covers only this file object and never its parent directory.
     const target = join(workspace, 'inside.txt');
     await writeFile(target, 'seeded');
+    // A write mutation on an existing target must carry the identity captured
+    // at lock acquisition (#2600): lstat the file and supply { dev, ino },
+    // exactly as the boundary executor does in production.
+    const { stat } = await import('node:fs/promises');
+    const meta = await stat(target, { bigint: true });
     await client.execute({
       operation: { kind: 'write', path: target, content: 'windows-relay-ok' },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: { dev: String(meta.dev), ino: String(meta.ino) },
     });
     assert.equal(await readFile(target, 'utf8'), 'windows-relay-ok');
 

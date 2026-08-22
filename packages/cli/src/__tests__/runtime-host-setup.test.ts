@@ -1,13 +1,24 @@
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { execFile as execFileCallback } from 'node:child_process';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
 import {
   decodeRuntimeHostSetupFrame,
   encodeRuntimeHostSetupFrame,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
-} from '@maka/runtime-host/client';
+} from '@maka/runtime-host/operator';
 import {
   prepareRuntimeHostManagedPackageDeployment,
   resolveRuntimeHostManagedDeploymentRoot,
@@ -20,6 +31,8 @@ import {
   type RuntimeHostManagedServiceResult,
   type RuntimeHostServiceBackend,
 } from '../runtime-host-service-manager.js';
+
+const execFile = promisify(execFileCallback);
 
 test('managed setup converges on one exact package and verified Client pairing', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-'));
@@ -53,25 +66,18 @@ test('managed setup converges on one exact package and verified Client pairing',
   } as const;
   const overrides = {
     createBackend: () => unusedBackend(),
-    manageService: async (input: {
-      readonly action: string;
-      readonly cliPath: string;
-      readonly managedDeploymentRoot?: string;
-    }) => {
-      if (input.action === 'status') return serviceResult('status', config);
+    manageService: async (input: { readonly action: string; readonly cliPath: string }) => {
+      if (input.action === 'status') return serviceResult('status', config, '0.2.0');
       installCount += 1;
       installedCliPath = input.cliPath;
       config = {
         schemaVersion: 1,
-        ...(input.managedDeploymentRoot
-          ? { managedDeploymentRoot: input.managedDeploymentRoot }
-          : {}),
         rootPath: stateRoot,
         projectDirectoryRoots: [],
         websocket: { host: '127.0.0.1', port: 42_111, path: '/runtime-host' },
         launch: { nodePath: process.execPath, cliPath: input.cliPath },
       };
-      return serviceResult('install', config);
+      return serviceResult('install', config, '0.2.0');
     },
     prepareDeployment: (input: Parameters<typeof prepareRuntimeHostManagedPackageDeployment>[0]) =>
       prepareRuntimeHostManagedPackageDeployment(input, deploymentPathOptions),
@@ -123,7 +129,8 @@ test('managed setup converges on one exact package and verified Client pairing',
   assert.equal(installCount, 3);
   assert.equal(pairCount, 3);
   assert.deepEqual(revokedCredentialIds, ['credential-3']);
-  assert.ok(installedCliPath.startsWith(deploymentRoot));
+  const canonicalDeploymentRoot = await realpath(deploymentRoot);
+  assert.ok(installedCliPath.startsWith(canonicalDeploymentRoot));
   assert.equal(
     outputs.some((output) => output.includes('secret-')),
     false,
@@ -132,11 +139,18 @@ test('managed setup converges on one exact package and verified Client pairing',
   assert.equal(frames.filter((frame) => frame?.kind === 'complete').length, 2);
   const complete = frames.find((frame) => frame?.kind === 'complete');
   assert.equal(complete?.kind === 'complete' ? complete.credential : undefined, 'secret-1');
+  const operatorPath = complete?.kind === 'complete' ? complete.operatorPath : undefined;
+  assert.equal(operatorPath, join(canonicalDeploymentRoot, 'operator'));
+  const operator = await readFile(operatorPath!, 'utf8');
+  assert.match(operator, /versions\/0\.2\.0\/dist\/cli\.js/u);
+  assert.match(operator, /--client-data-root/u);
+  assert.equal(operator.includes(clientDataRoot), true);
 
-  assert.deepEqual(await readdir(join(deploymentRoot, 'versions')), ['0.2.0']);
+  assert.deepEqual(await readdir(join(canonicalDeploymentRoot, 'versions')), ['0.2.0']);
   assert.equal(
-    JSON.parse(await readFile(join(deploymentRoot, 'versions', '0.2.0', 'package.json'), 'utf8'))
-      .version,
+    JSON.parse(
+      await readFile(join(canonicalDeploymentRoot, 'versions', '0.2.0', 'package.json'), 'utf8'),
+    ).version,
     '0.2.0',
   );
 });
@@ -188,7 +202,7 @@ test('managed setup replaces one exact development package with another', async 
     platform: 'linux' as const,
   };
   const previousDeployment = await prepareRuntimeHostManagedPackageDeployment(
-    { serviceId, sourcePackageRoot: previousPackage, version: previousVersion },
+    { serviceId, clientDataRoot, sourcePackageRoot: previousPackage, version: previousVersion },
     deploymentPathOptions,
   );
   const previousConfig: RuntimeHostManagedServiceConfig = {
@@ -213,12 +227,18 @@ test('managed setup replaces one exact development package with another', async 
     {
       createBackend: () => unusedBackend(),
       manageService: async (input: { readonly action: string; readonly cliPath: string }) => {
-        if (input.action === 'status') return serviceResult('status', previousConfig);
+        if (input.action === 'status') {
+          return serviceResult('status', previousConfig, previousVersion);
+        }
         installedCliPath = input.cliPath;
-        return serviceResult('install', {
-          ...previousConfig,
-          launch: { ...previousConfig.launch, cliPath: input.cliPath },
-        });
+        return serviceResult(
+          'install',
+          {
+            ...previousConfig,
+            launch: { ...previousConfig.launch, cliPath: input.cliPath },
+          },
+          nextVersion,
+        );
       },
       prepareDeployment: (input) =>
         prepareRuntimeHostManagedPackageDeployment(input, deploymentPathOptions),
@@ -267,7 +287,7 @@ test('managed setup removes a newly copied package when service installation fai
     {
       createBackend: () => unusedBackend(),
       manageService: async (input: { readonly action: string }) => {
-        if (input.action === 'status') return serviceResult('status', null);
+        if (input.action === 'status') return serviceResult('status', null, null);
         throw new RuntimeHostServiceManagerError(
           'service_manager_operation_failed',
           `Injected service failure ${'x'.repeat(2_000)}`,
@@ -296,6 +316,54 @@ test('managed setup removes a newly copied package when service installation fai
   );
 });
 
+test('managed operator binds its Client Data Root and survives package cleanup interruption', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-operator-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const version = '0.2.0';
+  const sourcePackageRoot = await createReleasePackage(base, version);
+  const clientDataRoot = join(base, 'config', 'Maka');
+  const deployment = await prepareRuntimeHostManagedPackageDeployment(
+    {
+      serviceId: resolveRuntimeHostManagedServiceId(clientDataRoot),
+      clientDataRoot,
+      sourcePackageRoot,
+      version,
+    },
+    {
+      env: { XDG_DATA_HOME: join(base, 'data') },
+      homeDir: join(base, 'home'),
+      platform: 'linux',
+    },
+  );
+  await deployment.commit();
+
+  const invocationPath = join(base, 'operator-argv.json');
+  await writeFile(
+    deployment.cliPath,
+    `require('node:fs').writeFileSync(process.env.MAKA_TEST_OUTPUT, JSON.stringify(process.argv.slice(2)));\n`,
+  );
+  await execFile(deployment.operatorPath, ['status'], {
+    env: {
+      ...process.env,
+      XDG_CONFIG_HOME: join(base, 'different-config'),
+      MAKA_TEST_OUTPUT: invocationPath,
+    },
+  });
+  assert.deepEqual(JSON.parse(await readFile(invocationPath, 'utf8')), [
+    'runtime-host',
+    'service',
+    'status',
+    '--client-data-root',
+    clientDataRoot,
+  ]);
+
+  await rm(join(deployment.root, 'versions'), { recursive: true });
+  await execFile(deployment.operatorPath, ['__cleanup-managed-deployment']);
+  await assert.rejects(access(deployment.root));
+});
+
 async function createReleasePackage(base: string, version: string): Promise<string> {
   const root = join(base, `source-package-${version}`);
   await mkdir(join(root, 'dist'), { recursive: true });
@@ -312,6 +380,7 @@ async function createReleasePackage(base: string, version: string): Promise<stri
 function serviceResult(
   action: RuntimeHostManagedServiceResult['action'],
   config: RuntimeHostManagedServiceConfig | null,
+  installedVersion: string | null,
 ): RuntimeHostManagedServiceResult {
   return {
     schemaVersion: 1,
@@ -324,6 +393,7 @@ function serviceResult(
       state: config ? 'running' : 'not_installed',
       pid: config ? 42 : null,
       lastExitCode: null,
+      installedVersion,
       config,
     },
   };
@@ -337,6 +407,7 @@ function unusedBackend(): RuntimeHostServiceBackend {
     start: async () => assert.fail('Backend is not expected'),
     stop: async () => assert.fail('Backend is not expected'),
     restart: async () => assert.fail('Backend is not expected'),
+    logs: async () => assert.fail('Backend is not expected'),
     uninstall: async () => assert.fail('Backend is not expected'),
   };
 }

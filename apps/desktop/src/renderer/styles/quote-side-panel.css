@@ -78,14 +78,13 @@
   padding-bottom: var(--space-2);
 }
 
-.maka-session-workbar-panel[data-placement="right"]
-  .maka-quote-companion
-  .maka-composer-astryx {
-  --_chat-composer-radius: var(--radius-surface);
-
-  /* Let ChatComposer paint its own radius and elevation. Clipping this wrapper
-     hides the body's hover/focus shadow against the white side panel. */
-}
+/* `.maka-composer-astryx` is deliberately unstyled on this surface. Side Chat is
+   a branch of the main conversation, not a second one, so the composer resolves
+   `--radius-chat` here exactly as it does at full width and pairs with the
+   bubble; a side-only radius token forked the pair the moment the bubbles moved
+   to the primitive's default. The wrapper is also left unclipped — `overflow:
+   hidden` here would hide the body's hover/focus shadow against the white side
+   panel, and `session-workbar.spec.ts` asserts `overflow: visible`. */
 
 .maka-session-workbar-panel[data-placement="right"]
   .maka-quote-companion

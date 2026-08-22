@@ -109,8 +109,10 @@ export async function verifyPackagedWindowsApp(
     forbidPath,
     requireWindowsSandbox: requiresCurrentContract,
     requireDisclaimer: requiresCurrentContract,
+    bundledGitContract: requiresCurrentContract ? 'forbidden' : 'legacy-required',
   });
   if (requiresCurrentContract) await assertPackagedDependencyClosure(resources);
+  else await requirePath(join(resources, 'git', 'cmd', 'git.exe'));
 
   step('reading the executable architecture');
   const machine = await readMachine(executable);

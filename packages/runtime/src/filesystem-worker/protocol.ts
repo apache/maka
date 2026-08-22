@@ -1,11 +1,22 @@
 import { z } from 'zod';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 
-// v5 adds the provider-native single-file ApplyPatch operation.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 5 as const;
+// v6 adds the captured target identity (opaque decimal-string dev/ino) to
+// FilesystemWorkerTarget, so the worker can compare-and-swap against the
+// inode that was authorised at lock acquisition instead of only the path
+// string. The identity is carried as strings because bigint cannot cross the
+// JSON protocol boundary.
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 6 as const;
 
 const path = z.string().min(1).max(4096);
 const cwd = z.string().min(1).max(4096);
+
+// Opaque identity strings: `String(stats.dev)` / `String(stats.ino)`. Decimal
+// only so they survive JSON round-trips; compared for equality on the worker.
+const decimalString = z.string().regex(/^\d+$/);
+const FilesystemTargetIdentitySchema = z
+  .object({ dev: decimalString, ino: decimalString })
+  .strict();
 
 const OperationBoundarySchema = z
   .object({
@@ -42,8 +53,22 @@ export const FilesystemWorkerTargetSchema = z
     access: z.enum(['read', 'write']),
     scope: z.enum(['exact', 'subtree']),
     targetType: z.enum(['file', 'directory', 'symlink', 'other', 'missing']),
+    // Captured at lock acquisition (T0). Present (and required) for every
+    // targetType except 'missing'. The contract module (FilesystemTargetDescriptor)
+    // models this as a discriminated union; the wire schema keeps the field
+    // optional so it can omit it for missing targets, and the client that
+    // builds the request enforces the invariant.
+    identity: FilesystemTargetIdentitySchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((target, context) => {
+    if (target.targetType === 'missing' && target.identity !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A missing target cannot carry an identity.',
+      });
+    }
+  });
 
 export const FilesystemWorkerOperationSchema = z.union([
   z
@@ -175,6 +200,14 @@ export const FilesystemWorkerErrorCodeSchema = z.enum([
   'sandbox_denied',
   'filesystem_denied',
   'filesystem_error',
+  // The worker may have applied the mutation before it lost the ability to
+  // report back (e.g. it wrote the file then the post-write identity check
+  // found the on-path inode no longer matches the one it wrote). The host
+  // treats this as an unknown outcome on disk, not a clean failure.
+  'outcome_unknown',
+  // The entry-delete path refuses directories outright (#2600): a directory
+  // cannot be unlinked, only recursively removed — a different operation.
+  'is_directory',
 ]);
 
 export const FilesystemWorkerResponseSchema = z.discriminatedUnion('ok', [

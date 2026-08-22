@@ -175,11 +175,22 @@ test('Desktop packaging does not distribute the retired bundled Git runtime', ()
   );
 });
 
-test('platform package verifiers do not reintroduce retired Git presence checks', async () => {
-  for (const verifier of ['verify-windows-x64.mjs', 'verify-macos-arm64-dmg.mjs']) {
-    const source = await readFile(join(repoRoot, 'scripts', verifier), 'utf8');
-    assert.doesNotMatch(source, /requirePath\(join\(resources, ['"]git['"]/u);
-  }
+test('platform package verifiers keep Git checks out of current artifacts', async () => {
+  const windowsSource = await readFile(join(repoRoot, 'scripts', 'verify-windows-x64.mjs'), 'utf8');
+  assert.match(
+    windowsSource,
+    /bundledGitContract: requiresCurrentContract \? ['"]forbidden['"] : ['"]legacy-required['"]/u,
+  );
+  assert.match(
+    windowsSource,
+    /if \(requiresCurrentContract\) await assertPackagedDependencyClosure\(resources\);\s*else await requirePath\(join\(resources, ['"]git['"]/u,
+  );
+
+  const macosSource = await readFile(
+    join(repoRoot, 'scripts', 'verify-macos-arm64-dmg.mjs'),
+    'utf8',
+  );
+  assert.doesNotMatch(macosSource, /requirePath\(join\(resources, ['"]git['"]/u);
 });
 
 test('the packaged-app probe rejects a mismatched Runtime Host setup package', async () => {

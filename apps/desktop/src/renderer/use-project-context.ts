@@ -11,6 +11,10 @@ import {
   type RendererAppInfo,
   type SessionProjectInfoState,
 } from './app-shell-project-actions';
+import {
+  runIfDefaultRuntimeHostCurrent,
+  runOnDefaultRuntimeHost,
+} from './default-runtime-host-operation.js';
 
 type RefBox<T> = { current: T };
 
@@ -89,7 +93,7 @@ export function useAppShellProjectContext(options: {
   const defaultRefreshGenerationRef = useRef(0);
 
   const refreshDefaultProjectState = async (
-    host?: DesktopRuntimeHostRef,
+    host: DesktopRuntimeHostRef,
   ): Promise<ProjectRecord[]> => {
     const generation = ++defaultRefreshGenerationRef.current;
     const { snapshot, info } = await window.maka.projects.getDefaultContext(host);
@@ -100,21 +104,32 @@ export function useAppShellProjectContext(options: {
       return [];
     }
     const nextProjects = [...snapshot.projects];
-    setProjects(nextProjects);
-    setProjectCapabilities(snapshot.capabilities);
-    setAppInfo({
-      projectId: info.projectId,
-      projectPath: info.projectPath,
-      projectGit: info.projectGit,
+    let committed = false;
+    await runIfDefaultRuntimeHostCurrent(host, () => {
+      if (
+        !rendererMountedRef.current ||
+        generation !== defaultRefreshGenerationRef.current
+      ) {
+        return;
+      }
+      setProjects(nextProjects);
+      setProjectCapabilities(snapshot.capabilities);
+      setAppInfo({
+        projectId: info.projectId,
+        projectPath: info.projectPath,
+        projectGit: info.projectGit,
+      });
+      setSelectedProjectId(info.projectId);
+      committed = true;
     });
-    setSelectedProjectId(info.projectId);
-    return nextProjects;
+    return committed ? nextProjects : [];
   };
 
   useEffect(() => {
-    const refresh = () => void refreshDefaultProjectState().catch(() => {
-      // Project management failures surface at the next user action.
-    });
+    const refresh = () =>
+      void runOnDefaultRuntimeHost((host) => refreshDefaultProjectState(host)).catch(() => {
+        // Project management failures surface at the next user action.
+      });
     const unsubscribe = window.maka.projects.subscribeChanges(refresh);
     refresh();
     return () => {

@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
@@ -56,21 +65,29 @@ describe('filesystem worker client permission snapshots', () => {
     const link = join(workspace, 'link.txt');
     await writeFile(target, 'keep', 'utf8');
     await symlink(target, link);
+    // Capture the symlink entry's own identity (lstat, no follow) as the
+    // boundary executor does at T0; a write mutation on an existing target
+    // without it is rejected as path_changed.
+    const linkMeta = await lstat(link, { bigint: true });
     const { client, requests } = fakeClient();
 
     await client.execute({
       operation: { kind: 'apply_patch', path: link, action: 'delete' },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: { dev: String(linkMeta.dev), ino: String(linkMeta.ino) },
     });
 
     assert.equal(requests[0]?.operation.path, link);
-    assert.deepEqual(requests[0]?.expectedTarget, {
-      enforcementPath: link,
-      access: 'write',
-      scope: 'exact',
-      targetType: 'symlink',
-    });
+    const expectedTarget = requests[0]?.expectedTarget;
+    assert.equal(expectedTarget?.enforcementPath, link);
+    assert.equal(expectedTarget?.access, 'write');
+    assert.equal(expectedTarget?.scope, 'exact');
+    assert.equal(expectedTarget?.targetType, 'symlink');
+    // The symlink entry's own identity (lstat, no follow) is captured at T0 and
+    // forwarded; only its shape is stable, not its value.
+    assert.equal(typeof expectedTarget?.identity?.dev, 'string');
+    assert.equal(typeof expectedTarget?.identity?.ino, 'string');
   });
 
   for (const kind of ['bypass', 'external'] as const) {
@@ -508,6 +525,7 @@ function fakeClient(
         timedOut: false,
         aborted: false,
         responseOverflow: false,
+        dispatched: true,
       };
     },
   });
@@ -559,6 +577,197 @@ function hasArgTriple(
     (value, index) => value === first && argv[index + 1] === second && argv[index + 2] === third,
   );
 }
+
+describe('filesystem worker client dispatch classification', () => {
+  // The process-runner attaches a `dispatched` flag to its rejection so the
+  // client can tell a never-started spawn from a ran-but-result-lost failure.
+  // Only the latter can have written anything, so it gets a distinct reason.
+  function clientWithRejectingRunProcess(
+    reject: (input: FilesystemWorkerProcessRunInput) => Error,
+  ): FilesystemWorkerClient {
+    const sandboxManager = new SandboxManager([new MacosSeatbeltBackend()]);
+    return new FilesystemWorkerClient({
+      sandboxManager,
+      platform: 'darwin',
+      newId: () => 'request-1',
+      getLaunchSpec: async () => ({
+        ok: true,
+        spec: {
+          program: '/usr/bin/node',
+          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          env: {},
+          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
+        },
+      }),
+      runProcess: async (input) => {
+        throw reject(input);
+      },
+    });
+  }
+
+  function dispatchedError(message: string, dispatched: boolean): Error {
+    const error = new Error(message);
+    Object.defineProperty(error, 'dispatched', { value: dispatched, enumerable: true });
+    return error;
+  }
+
+  test('classifies a post-dispatch runProcess rejection as worker_io_incomplete', async () => {
+    const client = clientWithRejectingRunProcess(() =>
+      dispatchedError('Filesystem worker output did not drain before lifecycle deadline', true),
+    );
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path: '/tmp/maka-dispatch-incomplete.txt', content: 'x' },
+        cwd: '/tmp',
+        mode: 'ask',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'worker_io_incomplete');
+        assert.equal(error.dispatched, true);
+        return true;
+      },
+    );
+  });
+
+  test('classifies a never-dispatched runProcess rejection as spawn_failed', async () => {
+    const client = clientWithRejectingRunProcess(() => dispatchedError('spawn ENOENT', false));
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path: '/tmp/maka-dispatch-spawn.txt', content: 'x' },
+        cwd: '/tmp',
+        mode: 'ask',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'spawn_failed');
+        assert.equal(error.dispatched, false);
+        return true;
+      },
+    );
+  });
+
+  test('a rejection without a dispatched flag is treated as never-dispatched', async () => {
+    // spawn() itself throwing (before any 'spawn' event) carries no flag.
+    const client = clientWithRejectingRunProcess(() => new Error('spawn EACCES'));
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path: '/tmp/maka-dispatch-noflag.txt', content: 'x' },
+        cwd: '/tmp',
+        mode: 'ask',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'spawn_failed');
+        return true;
+      },
+    );
+  });
+
+  // The missing↔existing transitions while queued (#2600 P2-1): the client
+  // reconciles the T0 identity against the T1 reality the normaliser derived,
+  // so cooperative lock-ordered changes never surface as invalid_request.
+  test('drops a stale identity when the target vanished while queued (delete-then-rewrite)', async () => {
+    const workspace = await temporaryDirectory('maka-client-stale-identity-');
+    const target = join(workspace, 'file.txt');
+    await writeFile(target, 'original', 'utf8');
+    const stale = await lstat(target, { bigint: true });
+    // The cooperative delete already ran: the target is gone by T1.
+    await rm(target);
+
+    const requests: FilesystemWorkerRequest[] = [];
+    const sandboxManager = new SandboxManager([new MacosSeatbeltBackend()]);
+    const client = new FilesystemWorkerClient({
+      sandboxManager,
+      platform: 'darwin',
+      newId: () => 'request-1',
+      getLaunchSpec: async () => ({
+        ok: true,
+        spec: {
+          program: '/usr/bin/node',
+          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          env: {},
+          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
+        },
+      }),
+      runProcess: async (input) => {
+        const request = FilesystemWorkerRequestSchema.parse(JSON.parse(input.stdin));
+        requests.push(request);
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+            requestId: request.requestId,
+            ok: true,
+            result: { kind: 'write', ok: true, path: request.operation.path, bytes: 3 },
+          }),
+          stderrTail: '',
+          timedOut: false,
+          aborted: false,
+          responseOverflow: false,
+          dispatched: true,
+        };
+      },
+    });
+
+    // T0 captured an identity; by T1 the target is missing. The stale identity
+    // must be dropped — never sent on a missing target — so the write proceeds
+    // as a fresh exclusive create instead of failing invalid_request.
+    await client.execute({
+      operation: { kind: 'write', path: target, content: 'new' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: { dev: String(stale.dev), ino: String(stale.ino) },
+    });
+
+    assert.equal(requests[0]?.expectedTarget.targetType, 'missing');
+    assert.equal(requests[0]?.expectedTarget.identity, undefined);
+  });
+
+  test('rejects a write whose target was created while queued (never invalid_request)', async () => {
+    const workspace = await temporaryDirectory('maka-client-created-');
+    const target = join(workspace, 'file.txt');
+    // The target was approved as missing (no identity) and appeared by T1.
+    await writeFile(target, 'external-content', 'utf8');
+
+    const sandboxManager = new SandboxManager([new MacosSeatbeltBackend()]);
+    const client = new FilesystemWorkerClient({
+      sandboxManager,
+      platform: 'darwin',
+      newId: () => 'request-1',
+      getLaunchSpec: async () => ({
+        ok: true,
+        spec: {
+          program: '/usr/bin/node',
+          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          env: {},
+          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
+        },
+      }),
+      runProcess: async () => {
+        throw new Error('must not dispatch');
+      },
+    });
+
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path: target, content: 'new' },
+        cwd: workspace,
+        mode: 'ask',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'path_changed');
+        return true;
+      },
+    );
+    // The interloper's content was never touched.
+    assert.equal(await readFile(target, 'utf8'), 'external-content');
+  });
+});
 
 function isPathDenied(error: unknown): boolean {
   return error instanceof FilesystemWorkerClientError && error.reason === 'path_denied';

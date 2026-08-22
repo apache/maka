@@ -3,7 +3,7 @@ import type { IpcMain } from 'electron';
 import {
   parseRuntimeHostSetupEndpoint,
   type RuntimeHostSetupPhase,
-} from '@maka/runtime-host/client';
+} from '@maka/runtime-host/operator';
 import type {
   DesktopRuntimeHostOnboardingInput,
   DesktopRuntimeHostOnboardingSnapshot,
@@ -30,6 +30,9 @@ export function createDesktopRuntimeHostOnboarding(input: {
     onComplete: () => void,
   ) => Promise<{
     readonly rootId: string;
+    readonly rootPath: string;
+    readonly serviceId: string;
+    readonly operatorPath: string;
     readonly endpoint: string;
     readonly credential: string;
   }>;
@@ -127,6 +130,11 @@ export function createDesktopRuntimeHostOnboarding(input: {
           },
         },
         credential: complete.credential,
+        managedService: {
+          id: complete.serviceId,
+          rootPath: complete.rootPath,
+          operatorPath: complete.operatorPath,
+        },
       });
       return publish({
         kind: 'complete',

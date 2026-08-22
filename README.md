@@ -54,7 +54,7 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 - Declarative multi-arm experiments expanded into task × repetition × subject cells;
 - Immutable per-cell attempts with targeted infrastructure replacement and earliest-valid selection;
 - A small result kernel for score, normalized usage, attributable cost, duration, status, failure reason, and artifacts;
-- Maka subjects execute only through Runtime Host; external competitors use generic external subject adapters.
+- Maka subjects execute only through Runtime Host; external subjects use generic external subject adapters.
 
 ## Quick start
 
@@ -64,7 +64,7 @@ Apache Maka has not made an Apache release yet. Everything currently published f
 
 Once Apache releases exist, the official release is the source release published by the ASF and approved by the podling PPMC and the Incubator PMC. A package built from that source and distributed elsewhere, for example through a package registry or as a Desktop installer, is a convenience artifact rather than the release itself, and it is valid only when it is built from an approved source release. [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) holds the candidate contract, signing path, and verification steps.
 
-Until an approved source release exists, this README recommends no prebuilt download. Build and run Maka from source as described below. Desktop currently targets Apple Silicon Macs (`arm64`); Intel Macs, Windows, and Linux are not supported yet, and [Windows support](docs/windows-support.md) remains an unsigned preview rather than a supported release tier.
+Until an approved source release exists, this README recommends no prebuilt download. Build and run Maka from source as described below. Desktop currently targets Apple Silicon Macs (`arm64`); Intel Macs and Linux are not supported yet, and [Windows support](docs/windows-support.md) remains an unsigned preview rather than a supported release tier.
 
 ### Requirements
 

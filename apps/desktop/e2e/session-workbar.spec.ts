@@ -70,6 +70,32 @@ test('narrow right workbar keeps launcher shortcuts and side-chat send button in
   const composerCard = companion.locator('.maka-composer-astryx');
   // Keep ChatComposer's inner elevation visible.
   await expect(composerCard).toHaveCSS('overflow', 'visible');
+
+  // #3452: Side Chat is a branch of the main conversation, not a second
+  // conversation surface, so its dock rounds like the main dock. Both resolve
+  // Astryx's `--radius-chat`, the same token `ChatMessageBubble` defaults to —
+  // a side-only `--_chat-composer-radius` split the bubble from the dock the
+  // moment the bubbles moved back to that default. Compared against the main
+  // composer rather than a literal so an upstream token change moves both or
+  // fails here.
+  const composerRadii = await page.evaluate(() => {
+    const wrappers = [...document.querySelectorAll('.maka-composer-astryx')];
+    const inCompanion = (element: Element) => element.closest('.maka-quote-companion') !== null;
+    const effectiveRadius = (element: Element | undefined) => {
+      if (!element) return null;
+      const styles = getComputedStyle(element);
+      return (
+        styles.getPropertyValue('--_chat-composer-radius').trim() ||
+        styles.getPropertyValue('--radius-chat').trim()
+      );
+    };
+    return {
+      side: effectiveRadius(wrappers.find(inCompanion)),
+      main: effectiveRadius(wrappers.find((element) => !inCompanion(element))),
+    };
+  });
+  expect(composerRadii.side).toBeTruthy();
+  expect(composerRadii.side).toBe(composerRadii.main);
   // Match the long model-label pressure from the reported side-chat screenshot
   // without coupling the fixture's globally useful default model to this test.
   await companion.locator('.maka-composer-model-chip-text').evaluate((element) => {

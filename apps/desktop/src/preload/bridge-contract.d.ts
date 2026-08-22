@@ -83,7 +83,11 @@ import type {
   OperationInput,
   OperationOutput,
 } from '@maka/runtime-host/protocol';
-import type { AgentGraphEpochDirectory, RuntimeHostSetupPhase } from '@maka/runtime-host/client';
+import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
+import type {
+  RuntimeHostServiceManagementFrame,
+  RuntimeHostSetupPhase,
+} from '@maka/runtime-host/operator';
 import type {
   RendererRuntimeHostCommandOperation,
   RendererRuntimeHostQueryOperation,
@@ -219,6 +223,7 @@ export type AppUpdateInstallResult =
 
 export interface DesktopRuntimeHostProfileEntry {
   readonly profile: RuntimeHostProfile;
+  readonly managedService?: true;
   readonly enabled: boolean;
   readonly isDefault: boolean;
   readonly readiness: 'disabled' | 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
@@ -357,6 +362,26 @@ export type DesktopRuntimeHostOnboardingSnapshot =
       readonly profileId: string;
     };
 
+export type DesktopRuntimeHostManagementAction =
+  | 'status'
+  | 'start'
+  | 'restart'
+  | 'logs'
+  | 'install'
+  | 'uninstall';
+
+export type DesktopRuntimeHostManagementResult = Extract<
+  RuntimeHostServiceManagementFrame,
+  { kind: 'result' }
+>;
+
+export type DesktopRuntimeHostManagementResponse =
+  | RuntimeHostServiceManagementFrame
+  | {
+      readonly kind: 'uninstalled';
+      readonly retainedStateRoot: string;
+    };
+
 export interface DesktopProjectCapabilities {
   readonly chooseClientDirectory: boolean;
   readonly chooseHostDirectory: boolean;
@@ -462,6 +487,13 @@ export interface MakaBridge {
     cancel(): Promise<boolean>;
     reset(): Promise<void>;
     subscribe(handler: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void): () => void;
+  };
+
+  runtimeHostManagement: {
+    run(
+      profileId: string,
+      action: DesktopRuntimeHostManagementAction,
+    ): Promise<DesktopRuntimeHostManagementResponse>;
   };
 
   newTasks: {

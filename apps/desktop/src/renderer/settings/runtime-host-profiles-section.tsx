@@ -8,7 +8,10 @@ import {
   SegmentedControlItem,
   Switch,
 } from "@astryxdesign/core";
-import type { RuntimeHostRemoteTransport } from "@maka/runtime-host/client";
+import type {
+  RemoteRuntimeHostProfile,
+  RuntimeHostRemoteTransport,
+} from "@maka/runtime-host/client";
 import { isCanonicalRuntimeHostWebSocketPath } from "@maka/runtime-host/protocol";
 import {
   Badge,
@@ -26,6 +29,7 @@ import { PasswordInput } from "./password-input.js";
 import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.js";
 import { RuntimeHostOnboardingDialog } from './runtime-host-onboarding-dialog.js';
+import { RuntimeHostManagementDialog } from './runtime-host-management-dialog.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
 
@@ -57,6 +61,7 @@ export function RuntimeHostProfilesSection(props: {
   >();
   const [showAdd, setShowAdd] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [managedProfile, setManagedProfile] = useState<RemoteRuntimeHostProfile>();
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
@@ -241,7 +246,9 @@ export function RuntimeHostProfilesSection(props: {
               size="sm"
               label={copy.addComputer}
               isDisabled={switching}
-              onClick={() => setShowOnboarding(true)}
+              onClick={() => {
+                setShowOnboarding(true);
+              }}
             />
             <Button
               variant="secondary"
@@ -385,14 +392,23 @@ export function RuntimeHostProfilesSection(props: {
                     <MoreMenu
                       label={copy.moreActions(profile.name)}
                       size="sm"
-                      items={[{
-                        label: copy.remove,
-                        isDisabled:
-                          switching ||
-                          entry.enabled ||
-                          entry.isDefault,
-                        onClick: () => void remove(profile.id),
-                      }]}
+                      items={[
+                        ...(profile.transport.kind === "ssh" && entry.managedService
+                          ? [{
+                              label: copy.manage,
+                              isDisabled: switching,
+                              onClick: () => setManagedProfile(profile),
+                            }]
+                          : []),
+                        {
+                          label: copy.remove,
+                          isDisabled:
+                            switching ||
+                            entry.enabled ||
+                            entry.isDefault,
+                          onClick: () => void remove(profile.id),
+                        },
+                      ]}
                     />
                   </HStack>
                 }
@@ -409,6 +425,13 @@ export function RuntimeHostProfilesSection(props: {
           void reload();
         }}
         onRemoteHostAdded={props.onRemoteHostAdded}
+      />
+      <RuntimeHostManagementDialog
+        profile={managedProfile}
+        onClose={() => {
+          setManagedProfile(undefined);
+          void reload();
+        }}
       />
     </>
   );

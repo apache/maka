@@ -705,15 +705,33 @@ export async function assertPackagedResources(
     requirePath,
     forbidPath = assertMissing,
     requireWindowsSandbox = process.platform === 'win32',
+    // Current ASF artifacts must not carry Git. The Windows upgrade lane also
+    // verifies a previously released installer, whose historical contract did
+    // require the bundled distribution and its compliance files; keep that
+    // baseline explicit instead of judging old bytes by today's absence rule.
+    bundledGitContract = 'forbidden',
     // The upgrade-lifecycle check runs this against a previously released
     // build, which predates the disclaimer being packaged. Requiring it there
     // would fail a release that was correct when it shipped.
     requireDisclaimer = true,
   } = {},
 ) {
+  if (bundledGitContract !== 'forbidden' && bundledGitContract !== 'legacy-required') {
+    throw new Error(`Unknown bundled Git artifact contract: ${bundledGitContract}`);
+  }
+  const requiresLegacyBundledGit = bundledGitContract === 'legacy-required';
   const required = [
     'app.asar',
     'bundled-tools.json',
+    ...(requiresLegacyBundledGit
+      ? [
+          'bundled-git.json',
+          join('licenses', 'git', 'LICENSE.txt'),
+          join('licenses', 'git', 'SOURCE_OFFER.txt'),
+          join('licenses', 'dugite', 'LICENSE'),
+          join('licenses', 'git', 'NOTICE.txt'),
+        ]
+      : []),
     join('workers', 'filesystem-worker.js'),
     join('licenses', 'maka', 'LICENSE'),
     join('licenses', 'maka', 'NOTICE'),
@@ -741,10 +759,9 @@ export async function assertPackagedResources(
     await requirePath(join(resourcesPath, path));
   }
   const forbidden = [
-    'git',
-    'bundled-git.json',
-    join('licenses', 'dugite'),
-    join('licenses', 'git'),
+    ...(requiresLegacyBundledGit
+      ? []
+      : ['git', 'bundled-git.json', join('licenses', 'dugite'), join('licenses', 'git')]),
     join('tools', 'officecli'),
     join('licenses', 'officecli'),
     // cua-driver is gone from this repository, and these two forbids stay for the
