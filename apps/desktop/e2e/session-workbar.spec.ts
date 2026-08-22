@@ -65,9 +65,11 @@ async function waitForCompanionForkId(page: Page, sourceSessionId: string) {
 }
 
 async function setRightWorkbarWidth(page: Page, width: number) {
+  const layoutOwner = page.locator('.maka-workbar-layout-vars');
   const workbar = page.locator('.maka-session-workbar[data-placement="right"]');
+  await expect(layoutOwner).toHaveCount(1);
   await expect(workbar).toBeVisible();
-  await workbar.evaluate((element, nextWidth) => {
+  await layoutOwner.evaluate((element, nextWidth) => {
     (element as HTMLElement).style.setProperty(
       '--maka-session-workbar-width',
       `${nextWidth}px`,
@@ -116,6 +118,13 @@ test('narrow right workbar keeps launcher shortcuts and side-chat send button in
   const companion = page.locator('.maka-quote-companion');
   await expect(companion).toBeVisible();
   await setRightWorkbarWidth(page, 320);
+  const sideChatPanel = page
+    .locator('.maka-session-workbar-panel[data-overlay][data-placement="right"]')
+    .filter({ has: companion });
+  await expect(sideChatPanel).toBeVisible();
+  await expect
+    .poll(async () => (await sideChatPanel.boundingBox())?.width)
+    .toBeCloseTo(320, 0);
 
   const composerCard = companion.locator('.maka-composer-astryx');
   // Keep ChatComposer's inner elevation visible.

@@ -84,6 +84,16 @@
   flex-wrap: nowrap;
 }
 
+/* Astryx's footer-left slot sizes to max-content. Let that wrapper shrink so
+   the fixed send slot remains inside a minimum-width Workbar. */
+.maka-session-workbar-panel[data-placement="right"]
+  .maka-quote-companion
+  .maka-composer-astryx
+  div:has(> .maka-composer-left-controls) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .maka-session-workbar-panel[data-placement="right"]
   .maka-quote-companion
   .maka-model-selection-controls {
