@@ -517,6 +517,82 @@ test('submit treats explicit user uncertainty as clarification instead of a new 
   assert.deepEqual(created, []);
 });
 
+test('English target uncertainty uses clarification as the routing safety valve', async () => {
+  const submitted: string[] = [];
+  const sessions = port([
+    session('parser', { sessionName: 'Parser Cleanup', updatedAt: 20 }),
+    session('profile', { sessionName: 'Profile Settings', updatedAt: 30 }),
+  ]);
+  sessions.submit = async (target) => {
+    submitted.push(target.sessionId);
+    return { turnId: 'unexpected' };
+  };
+
+  const result = await createWorkHubController({ sessions }).submit({
+    requestId: 'english-uncertainty',
+    text: "I'm not sure which one this belongs to; continue the cleanup.",
+  });
+
+  assert.equal(result.kind, 'clarification');
+  assert.deepEqual(result.kind === 'clarification'
+    ? result.options.map((option) => option.target.sessionId)
+    : [], ['parser', 'profile']);
+  assert.deepEqual(submitted, []);
+});
+
+test('English routing matches whole words instead of substrings in another identity', async () => {
+  const submitted: string[] = [];
+  const created: string[] = [];
+  const sessions = port([
+    session('profile', { sessionName: 'Profile Settings' }),
+  ]);
+  sessions.create = async ({ name }) => {
+    created.push(name);
+    return session('parser-new', { sessionName: name });
+  };
+  sessions.submit = async (target) => {
+    submitted.push(target.sessionId);
+    return { turnId: 'turn-parser' };
+  };
+
+  const result = await createWorkHubController({ sessions }).submit({
+    requestId: 'english-word-boundary',
+    text: 'check the file parser',
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.equal(result.kind === 'submitted' ? result.evidence : undefined, 'new_session');
+  assert.deepEqual(created, ['check the file parser']);
+  assert.deepEqual(submitted, ['parser-new']);
+});
+
+test('English core evidence requires a distinctive word or multiple whole-word matches', async () => {
+  const submitted: string[] = [];
+  const sessions = port([
+    session('parser', {
+      sessionName: 'Parser Cleanup',
+      latestResult: 'Tokenizer regression isolated in parser recovery',
+    }),
+    session('profile', {
+      sessionName: 'Profile Settings',
+      latestResult: 'Account preferences are ready',
+    }),
+  ]);
+  sessions.submit = async (target) => {
+    submitted.push(target.sessionId);
+    return { turnId: 'turn-parser' };
+  };
+
+  const result = await createWorkHubController({ sessions }).submit({
+    requestId: 'english-core-evidence',
+    text: 'fix the parser tokenizer crash',
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.equal(result.kind === 'submitted' ? result.evidence : undefined, 'core_entity');
+  assert.deepEqual(submitted, ['parser']);
+});
+
 test('route correction stops the wrong Session and teaches a similar request', async () => {
   const submitted: string[] = [];
   const stopped: string[] = [];
@@ -737,6 +813,25 @@ test('submit treats a design question containing an action word as discussion', 
   assert.equal(created, false);
 });
 
+test('an executable English request may contain what without becoming discussion', async () => {
+  const created: string[] = [];
+  const sessions = port([]);
+  sessions.create = async ({ name }) => {
+    created.push(name);
+    return session('parser-fix', { sessionName: name });
+  };
+  sessions.submit = async () => ({ turnId: 'turn-parser-fix' });
+
+  const result = await createWorkHubController({ sessions }).submit({
+    requestId: 'english-what-object',
+    text: 'fix what is broken in the parser',
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.equal(result.kind === 'submitted' ? result.evidence : undefined, 'new_session');
+  assert.deepEqual(created, ['fix what is broken in the parser']);
+});
+
 test('submit creates an ordinary Session for a clear unmatched executable goal', async () => {
   const createdNames: string[] = [];
   const submitted: Array<{ sessionId: string; text: string }> = [];
@@ -790,6 +885,49 @@ test('explicit new-Session intent outranks generic evidence from existing work',
   assert.equal(result.kind, 'submitted');
   assert.equal(result.kind === 'submitted' ? result.evidence : undefined, 'new_session');
   assert.deepEqual(created, ['R2.3 新建工作验收']);
+});
+
+test('English explicit creation extracts the requested Session name', async () => {
+  const created: string[] = [];
+  const sessions = port([]);
+  sessions.create = async ({ name }) => {
+    created.push(name);
+    return session('parser-cleanup', { sessionName: name });
+  };
+  sessions.submit = async () => ({ turnId: 'turn-parser-cleanup' });
+
+  const result = await createWorkHubController({ sessions }).submit({
+    requestId: 'english-explicit-new',
+    text: 'Create a new session called Parser Cleanup.',
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.equal(result.kind === 'submitted' ? result.evidence : undefined, 'new_session');
+  assert.deepEqual(created, ['Parser Cleanup']);
+});
+
+test('English routing boilerplate does not make an old analysis look related', async () => {
+  const created: string[] = [];
+  const sessions = port([
+    session('login', {
+      sessionName: 'Login Refresh Token',
+      latestResult: 'Just analyze the risks and test cases; do not modify any files.',
+    }),
+  ]);
+  sessions.create = async ({ name }) => {
+    created.push(name);
+    return session('payment-new', { sessionName: name });
+  };
+  sessions.submit = async () => ({ turnId: 'turn-payment-new' });
+
+  const result = await createWorkHubController({ sessions }).submit({
+    requestId: 'english-boilerplate',
+    text: "Check payment callback duplicate delivery; just analyze the risks and test cases; don't modify any files.",
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.equal(result.kind === 'submitted' ? result.evidence : undefined, 'new_session');
+  assert.deepEqual(created, ['Check payment callback duplicate delivery']);
 });
 
 test('negated and deliberative creation language never creates a Session', async () => {

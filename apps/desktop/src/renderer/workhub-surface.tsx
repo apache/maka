@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChatMessage, ChatMessageBubble, ChatMessageList } from '@astryxdesign/core';
+import { Button } from '@astryxdesign/core/Button';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { ChatSurfaceLayout, Composer } from '@maka/ui';
 import type {
@@ -231,10 +232,18 @@ function WorkHubTurnView(props: {
               <p>{copy.chooseWork}</p>
               <div className="workhub-clarification" aria-label={copy.clarification}>
                 {turn.outcome.options.map((option) => (
-                  <button type="button" key={option.target.sessionId} disabled={props.pending} onClick={() => props.onChoose(option.target)}>
+                  <Button
+                    key={option.target.sessionId}
+                    label={`${option.sessionName}, ${option.projectName}`}
+                    variant="ghost"
+                    width="100%"
+                    isDisabled={props.pending}
+                    onClick={() => props.onChoose(option.target)}
+                    endContent={
+                      <small className="workhub-option-project">{option.projectName}</small>
+                    }>
                     <strong>{option.sessionName}</strong>
-                    <small>{option.projectName}</small>
-                  </button>
+                  </Button>
                 ))}
               </div>
             </>
@@ -290,13 +299,17 @@ function SubmittedWorkView(props: {
   return (
     <div className="workhub-submitted">
       <p>{copy.sentTo}</p>
-      <button type="button" onClick={() => props.onOpenSession(props.targetSessionId)}>
-        <span>
+      <Button
+        label={`${session?.sessionName ?? copy.sessionFallback}, ${state}`}
+        variant="ghost"
+        width="100%"
+        onClick={() => props.onOpenSession(props.targetSessionId)}
+        endContent={<span className="workhub-submitted-state">{state}</span>}>
+        <span className="workhub-submitted-session">
           <strong>{session?.sessionName ?? copy.sessionFallback}</strong>
           {session?.projectName ? <small>{session.projectName}</small> : null}
         </span>
-        <span>{state}</span>
-      </button>
+      </Button>
       {props.correctedFrom ? (
         <small className="workhub-correction-note">
           {copy.correctedFrom(props.correctedFrom.sessionName)}
@@ -307,15 +320,18 @@ function SubmittedWorkView(props: {
         <summary>{copy.correctTarget}</summary>
         <div>
           {props.correctionOptions.map((option) => (
-            <button
-              type="button"
+            <Button
               key={option.target.sessionId}
-              disabled={props.pending}
+              label={`${option.sessionName}, ${option.projectName}`}
+              variant="ghost"
+              width="100%"
+              isDisabled={props.pending}
               onClick={() => props.onCorrect(option.target)}
-            >
+              endContent={
+                <small className="workhub-option-project">{option.projectName}</small>
+              }>
               <strong>{option.sessionName}</strong>
-              <small>{option.projectName}</small>
-            </button>
+            </Button>
           ))}
         </div>
       </details>

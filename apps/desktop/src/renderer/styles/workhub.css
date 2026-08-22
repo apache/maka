@@ -159,7 +159,7 @@
 
 .workhub-clarification small,
 .workhub-submitted small,
-.workhub-submitted > button > span:last-child {
+.workhub-submitted-state {
   color: var(--color-text-secondary, var(--muted-foreground));
   font-size: var(--font-size-body-xs, 12px);
 }
@@ -173,7 +173,7 @@
   color: var(--color-text-secondary, var(--muted-foreground));
 }
 
-.workhub-submitted > button > span:first-child {
+.workhub-submitted-session {
   display: flex;
   min-width: 0;
   flex-direction: column;

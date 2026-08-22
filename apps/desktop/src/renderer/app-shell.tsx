@@ -55,6 +55,7 @@ import {
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
 import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
+import { Button } from '@astryxdesign/core/Button';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
@@ -3307,13 +3308,13 @@ function AppShellContent({
                     ) : null}
                     {navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
                     {workHubEnabled && navSelection.section === 'sessions' && activeId ? (
-                      <button
-                        type="button"
+                      <Button
                         className="workhub-return"
+                        label={uiLocale === 'zh' ? '返回 WorkHub' : 'Return to WorkHub'}
+                        variant="secondary"
+                        size="sm"
                         onClick={openWorkHub}
-                      >
-                        {uiLocale === 'zh' ? '返回 WorkHub' : 'Return to WorkHub'}
-                      </button>
+                      />
                     ) : null}
                     <ChatComposerRegion
                   workspacePicker={workspacePicker}

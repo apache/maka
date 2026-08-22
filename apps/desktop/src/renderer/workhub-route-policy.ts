@@ -35,12 +35,16 @@ export interface WorkHubRoutePolicy {
 }
 
 export function workHubNewSessionName(text: string): string {
-  const explicit = text.match(
+  const explicitChinese = text.match(
     /(?:标题|名称|名字)(?:为|叫|是|：|:)\s*[“”"']?([^,，。；;\n“”"']{2,48})/u,
   )?.[1]?.trim();
+  const explicitEnglish = text.match(
+    /\b(?:called|named|titled)\s+[“”"']?([^,，。；;.!?\n“”"']{2,48})/iu,
+  )?.[1]?.trim();
+  const explicit = explicitChinese ?? explicitEnglish;
   if (explicit) return explicit;
   const withoutCreationPrefix = text.trim().replace(
-    /^(?:请|帮我|麻烦)?(?:创建|新建|开一个|新开)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)?[，,:：\s]*/iu,
+    /^(?:(?:请|帮我|麻烦)?(?:创建|新建|开一个|新开)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)?|(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:create|start|open)\s+(?:a\s+)?(?:(?:brand[- ]new|new)\s+)?(?:ordinary\s+)?(?:session|work|task))(?:\s+(?:called|named|titled))?[，,:：\s-]*/iu,
     '',
   );
   const firstClause = withoutCreationPrefix.split(/[，。；;\n]/u)[0]?.trim();
@@ -53,8 +57,16 @@ interface RouteCorrection {
   sequence: number;
 }
 
-const MAX_RECENT_TARGETS = 8;
 const MAX_ROUTE_CORRECTIONS = 32;
+const MIN_EXACT_SESSION_NAME_LENGTH = 2;
+const MIN_CORRECTION_TERM_LENGTH = 3;
+// One four-character Han phrase is usually a meaningful entity rather than
+// grammar; Latin needs either two whole-word matches or one distinctive word.
+const MIN_STRONG_HAN_MATCH_LENGTH = 4;
+const MIN_STRONG_LATIN_MATCH_COUNT = 2;
+const MIN_STRONG_SINGLE_LATIN_LENGTH = 8;
+const MAX_UNCERTAINTY_OPTIONS = 5;
+const MAX_RELATED_CLARIFICATION_OPTIONS = 4;
 
 /**
  * Deep routing module for R2.3.
@@ -63,7 +75,8 @@ const MAX_ROUTE_CORRECTIONS = 32;
  * execution state, and recovery continue to come from the Session port.
  */
 export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
-  const recentTargets: WorkHubSessionTarget[] = [];
+  let currentFocus: WorkHubSessionTarget | undefined;
+  let previousFocus: WorkHubSessionTarget | undefined;
   const corrections: RouteCorrection[] = [];
   let correctionSequence = 0;
 
@@ -91,7 +104,7 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
               ? sessionName.length
               : 0,
         };
-      }).filter(({ matchLength }) => matchLength >= 2)
+      }).filter(({ matchLength }) => matchLength >= MIN_EXACT_SESSION_NAME_LENGTH)
         .sort((left, right) => right.matchLength - left.matchLength);
       if (exact[0] && exact[0].matchLength > (exact[1]?.matchLength ?? 0)) {
         return {
@@ -110,7 +123,7 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
             .filter((session) => !relatedIds.has(session.target.sessionId))
             .sort((left, right) => right.updatedAt - left.updatedAt),
         ];
-        return { kind: 'clarification', options: options.slice(0, 5) };
+        return { kind: 'clarification', options: options.slice(0, MAX_UNCERTAINTY_OPTIONS) };
       }
 
       const corrected = correctedTarget(text, sessions, corrections);
@@ -121,13 +134,13 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
       const previousReference = looksLikePreviousFocus(text);
       const currentReference = !previousReference && looksLikeRecentFocus(text);
       const focused = previousReference
-        ? recentTargets[1]
+        ? previousFocus
         : currentReference
-          ? recentTargets[0]
+          ? currentFocus
           : undefined;
       const strongEvidenceElsewhere = focused
-        ? related.some(({ session, longestMatch }) =>
-          session.target.sessionId !== focused.sessionId && longestMatch >= 4)
+        ? related.some(({ session, strongEvidence }) =>
+          session.target.sessionId !== focused.sessionId && strongEvidence)
         : false;
       const ambiguousEvidence = related.length > 1;
       if (
@@ -139,8 +152,8 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
 
       if (
         related[0] &&
-        related[0].longestMatch >= 4 &&
-        (related[1]?.longestMatch ?? 0) < 4
+        related[0].strongEvidence &&
+        !related[1]?.strongEvidence
       ) {
         return {
           kind: 'target',
@@ -150,23 +163,22 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
       }
 
       const weakNewTopic = related.length === 1 &&
-        related[0]!.longestMatch < 4 &&
+        !related[0]!.strongEvidence &&
         looksExecutable(text) &&
         !currentReference;
       if (related.length > 0 && !weakNewTopic) {
         return {
           kind: 'clarification',
-          options: related.slice(0, 4).map(({ session }) => session),
+          options: related.slice(0, MAX_RELATED_CLARIFICATION_OPTIONS)
+            .map(({ session }) => session),
         };
       }
       return looksExecutable(text) ? { kind: 'new_session' } : { kind: 'discussion' };
     },
     rememberTarget(target) {
-      const next = [
-        target,
-        ...recentTargets.filter((candidate) => candidate.sessionId !== target.sessionId),
-      ];
-      recentTargets.splice(0, recentTargets.length, ...next.slice(0, MAX_RECENT_TARGETS));
+      if (currentFocus?.sessionId === target.sessionId) return;
+      previousFocus = currentFocus;
+      currentFocus = target;
     },
     rememberCorrection(text, target) {
       correctionSequence += 1;
@@ -194,7 +206,7 @@ function correctedTarget(
         longestMatch: matches.reduce((longest, term) => Math.max(longest, term.length), 0),
       };
     })
-    .filter(({ longestMatch }) => longestMatch >= 3)
+    .filter(({ longestMatch }) => longestMatch >= MIN_CORRECTION_TERM_LENGTH)
     .sort((left, right) =>
       right.score - left.score || right.correction.sequence - left.correction.sequence);
   return ranked[0]?.correction.target;
@@ -217,7 +229,7 @@ function looksLikePreviousFocus(value: string): boolean {
 }
 
 function looksLikeTargetUncertainty(value: string): boolean {
-  return /(?:不确定(?:具体)?(?:是)?哪(?:一)?个|不知道(?:应该)?(?:选|继续|处理)哪(?:一)?个|可能是多个|哪个都可能)/iu.test(
+  return /(?:不确定(?:具体)?(?:是)?哪(?:一)?个|不知道(?:应该)?(?:选|继续|处理)哪(?:一)?个|可能是多个|哪个都可能|\b(?:i(?:'m| am)\s+)?not\s+sure\s+(?:which|where)|\b(?:i\s+)?(?:do\s+not|don't)\s+know\s+(?:which|where)|\b(?:could|might|may)\s+(?:be|belong\s+to)\s+(?:more\s+than\s+one|multiple)|\bwhich\s+(?:one|session|work|task)\b)/iu.test(
     value,
   );
 }
@@ -235,7 +247,7 @@ function looksExecutable(value: string): boolean {
   if (!action.test(value)) return false;
   const directRequest = /(?:请|帮我|麻烦|现在(?:就)?|开始|can you|could you|would you|please)/iu.test(value);
   if (directRequest) return true;
-  const designQuestion = /(?:[?？]\s*$|怎么|如何|为什么|是否|该不该|值不值得|\bhow\b|\bwhy\b|\bwhether\b|\bwhat\b)/iu.test(
+  const designQuestion = /(?:[?？]\s*$|怎么|如何|为什么|是否|该不该|值不值得|^\s*(?:how|why|whether|what\s+(?:is|are|was|were|should|would|could|do|does|did|can))\b)/iu.test(
     value,
   );
   return !designQuestion;
@@ -252,27 +264,47 @@ function looksLikeCreationDeliberation(value: string): boolean {
 const ROUTING_STOP_TERMS = new Set([
   '一下', '一个', '这个', '那个', '问题', '工作', '任务', '继续', '接着', '处理',
   '检查', '修改', '更新', '实现', '完成', '分析', '风险', '测试', '测试点', '文件',
-  'please', 'continue', 'work', 'task',
+  'a', 'an', 'and', 'any', 'but', 'check', 'code', 'continue', 'file', 'files',
+  'fix', 'for', 'handle', 'in', 'issue', 'just', 'modify', 'on', 'only', 'please',
+  'risk', 'risks', 'task', 'test', 'tests', 'the', 'this', 'to', 'update', 'user',
+  'with', 'work',
 ]);
+
+interface RelatedSession {
+  session: WorkHubSessionFacts;
+  score: number;
+  longestMatch: number;
+  strongEvidence: boolean;
+}
 
 function rankRelatedSessions(
   value: string,
   sessions: WorkHubSessionFacts[],
   originPromptBySessionId: ReadonlyMap<string, string | undefined>,
-): Array<{ session: WorkHubSessionFacts; score: number; longestMatch: number }> {
+): RelatedSession[] {
   const terms = routingTerms(value);
   return sessions
     .map((session) => {
-      const identity = normalizeIdentityText([
+      const identityText = [
         session.sessionName,
         originPromptBySessionId.get(session.target.sessionId) ?? '',
         session.latestResult ?? '',
-      ].join(' '));
-      const matches = terms.filter((term) => identity.includes(term));
+      ].join(' ');
+      const compactIdentity = normalizeIdentityText(identityText);
+      const latinIdentity = new Set(latinTokens(identityText));
+      const matches = terms.filter((term) => isLatinTerm(term)
+        ? latinIdentity.has(term)
+        : compactIdentity.includes(term));
+      const latinMatches = matches.filter(isLatinTerm);
+      const hanMatches = matches.filter((term) => !isLatinTerm(term));
       return {
         session,
         score: matches.reduce((total, term) => total + term.length, 0),
         longestMatch: matches.reduce((longest, term) => Math.max(longest, term.length), 0),
+        strongEvidence: hanMatches.some((term) =>
+          term.length >= MIN_STRONG_HAN_MATCH_LENGTH) ||
+          latinMatches.length >= MIN_STRONG_LATIN_MATCH_COUNT ||
+          latinMatches.some((term) => term.length >= MIN_STRONG_SINGLE_LATIN_LENGTH),
       };
     })
     .filter(({ score }) => score > 0)
@@ -282,10 +314,10 @@ function rankRelatedSessions(
 
 function routingTerms(value: string): string[] {
   const withoutBoilerplate = value.replace(
-    /(?:先|仍然|还是)?只(?:需要|要)?分析(?:风险(?:和|及|、)?测试点?)?|不(?:要|用|需要|需)?修改(?:任何)?文件|先不动代码|测试点|风险点|(?:但)?我?不确定(?:具体)?(?:是)?哪(?:一)?个/giu,
+    /(?:先|仍然|还是)?只(?:需要|要)?分析(?:风险(?:和|及|、)?测试点?)?|不(?:要|用|需要|需)?修改(?:任何)?文件|先不动代码|测试点|风险点|(?:但)?我?不确定(?:具体)?(?:是)?哪(?:一)?个|\b(?:just|only)\s+analy[sz]e\s+(?:the\s+)?risks?(?:\s+(?:and|with)\s+test\s+(?:points?|cases?))?|\b(?:do\s+not|don't)\s+(?:modify|change)\s+(?:any\s+)?files?|\b(?:do\s+not|don't)\s+touch\s+the\s+code\s+yet|\b(?:test\s+cases?|risk\s+points?)\b/giu,
     ' ',
   );
-  const latin = withoutBoilerplate.toLocaleLowerCase().match(/[a-z0-9_./-]{2,}/giu) ?? [];
+  const latin = latinTokens(withoutBoilerplate);
   const chineseRuns = withoutBoilerplate.match(/[\p{Script=Han}]{2,20}/gu) ?? [];
   const chinese = chineseRuns.flatMap((run) => {
     const stripped = run.replace(
@@ -306,4 +338,12 @@ function routingTerms(value: string): string[] {
   return [...new Set([...latin, ...chinese]
     .map(normalizeIdentityText)
     .filter((term) => term.length >= 2 && !ROUTING_STOP_TERMS.has(term)))];
+}
+
+function latinTokens(value: string): string[] {
+  return value.toLocaleLowerCase().match(/[a-z0-9]{2,}/giu) ?? [];
+}
+
+function isLatinTerm(value: string): boolean {
+  return /^[a-z0-9]+$/u.test(value);
 }
