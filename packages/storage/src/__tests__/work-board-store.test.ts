@@ -362,7 +362,10 @@ describe('Work Board store', () => {
         assert.ok(first.nextCursor.length < 512);
 
         const second = await store.list({ ...query, cursor: first.nextCursor });
-        assert.deepEqual(second.items.map((item) => item.id), [createdIds[0]]);
+        assert.deepEqual(
+          second.items.map((item) => item.id),
+          [createdIds[0]],
+        );
         assert.equal(second.nextCursor, undefined);
       } finally {
         store.close();
