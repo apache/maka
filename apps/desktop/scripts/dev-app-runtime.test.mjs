@@ -17,22 +17,16 @@
  * under the License.
  */
 // Two-worktree regression for the shared "Maka Dev" profile (#3359): the
-// single-instance lock is keyed on userData, so a running dev app from ANOTHER
-// worktree holds the lock for this profile too. Launching must fail fast with
-// the owner instead of being silently absorbed (exit-0 + `never-started`).
-//
-// The owner judgment is per-PROFILE. The profile is not on a process command
-// line: `--user-data-dir` is stripped from electronArgs and the bootstrap
-// applies `app.setPath('userData', env.userDataDir || DEV_USER_DATA_DIR)`.
-// So the chain is: command line -> worktree root -> that worktree's
-// `.maka-dev/dev-env.json` -> userDataDir. Plain `npm run dev` runs TWO live
-// processes (the node shim and the resolved Electron binary); both shapes are
-// covered, and both reach the shared profile through the bootstrap.
+// single-instance lock keys on userData, so another worktree's dev app holds
+// the lock for this profile too; launching must fail fast with the owner
+// instead of being silently absorbed. Owner is judged per-PROFILE: command
+// line -> worktree -> that worktree's dev-env.json -> userDataDir.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
 import {
+  DEV_USER_DATA_DIR,
   assertNoCrossWorktreeOwner,
   createSharedAppProbe,
   resolveProcessUserDataDir,
@@ -63,8 +57,12 @@ const otherEnvIsolated = JSON.stringify({
 function readEnvFixture(options = {}) {
   const { otherProfile = false } = options;
   return (path) => {
-    if (path.includes(`${OTHER}/apps/desktop/.maka-dev/dev-env.json`)) {
-      return otherProfile ? otherEnvIsolated : otherEnvDefault;
+    const isKnownMakaWorktree = path.startsWith('/Users/') || path.startsWith('/home/');
+    if (isKnownMakaWorktree && path.endsWith('/apps/desktop/.maka-dev/dev-env.json')) {
+      if (otherProfile && path.includes(`${OTHER}/apps/desktop/.maka-dev`)) {
+        return otherEnvIsolated;
+      }
+      return otherEnvDefault;
     }
     throw new Error(`unexpected env file read: ${path}`);
   };
@@ -87,7 +85,7 @@ test('worktreeFromCommandLine recovers the root from bundle, shim, and resolved 
 test('resolveProcessUserDataDir reads the profile from the worktree dev env file', () => {
   assert.equal(
     resolveProcessUserDataDir(`${OTHER_BUNDLE} --inspect=9229`, { readFile: readEnvFixture() }),
-    undefined, // env file has no explicit userDataDir -> default shared profile
+    DEV_USER_DATA_DIR, // env file has no explicit userDataDir -> shared default
   );
   assert.equal(
     resolveProcessUserDataDir(`${OTHER_BUNDLE} --inspect=9229`, {
@@ -188,13 +186,9 @@ test('an owner path that merely contains our suffix is still foreign', () => {
 });
 
 // --- production probe parsing chain ---------------------------------------
-// The probe runs `pgrep -f` for PIDs then `ps -o command=` for the command
-// lines; these tests stub `spawnSync` so the FULL chain is exercised.
-//
-// Real Darwin `pgrep`/`ps` output samples are still being collected from a
-// macOS machine (the review that found #3359 was reproduced there); the
-// fixtures below are replaced with those samples once available. Until then
-// the parsing contract is pinned by structure: PID column, then full argv.
+// Stubs spawnSync so the FULL pgrep -> ps -> parse chain is exercised.
+// Real Darwin output samples are still being collected (kabi's macOS review
+// found #3359); fixtures are replaced with them once available.
 test('the production probe resolves command lines through pgrep + ps', () => {
   const samples = {
     pgrep: '4242\n4243\n',
@@ -212,21 +206,47 @@ test('the production probe resolves command lines through pgrep + ps', () => {
 });
 
 
-test('worktree root recovery does not confuse prefix-sibling worktrees', () => {
+test('root recovery is exact: no prefix-sibling or marker-substring confusion', () => {
   assert.equal(worktreeFromCommandLine('/home/x/wt-3/apps/desktop --inspect'), '/home/x/wt-3');
   assert.equal(worktreeFromCommandLine('/home/x/wt-35/apps/desktop --inspect'), '/home/x/wt-35');
   assert.equal(worktreeFromCommandLine('/home/x/wt-3/apps/desktopish --inspect'), undefined);
-  // A deeper checkout nested under our own root is NOT our own worktree.
-  assert.equal(
-    worktreeFromCommandLine('/home/x/wt-3/sibling/apps/desktop --inspect'),
-    '/home/x/wt-3/sibling',
-  );
+  // A deeper checkout nested under our root is NOT ours.
+  const nested = '/home/x/wt-3/sibling/apps/desktop --inspect';
   assert.equal(
     sharedDevelopmentAppOwner({
       ownRoot: '/home/x/wt-3',
-      commandLines: ['/home/x/wt-3/sibling/apps/desktop --inspect'],
+      commandLines: [nested],
       readFile: readEnvFixture(),
     }),
-    '/home/x/wt-3/sibling/apps/desktop --inspect',
+    nested,
+  );
+});
+
+
+test('a foreign repo Electron without our dev-env.json is NOT an owner', () => {
+  const foreign = '/opt/elsewhere/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /opt/elsewhere/apps/desktop';
+  assert.equal(
+    sharedDevelopmentAppOwner({
+      ownRoot: OWN,
+      commandLines: [foreign],
+      readFile: readEnvFixture(),
+    }),
+    undefined,
+  );
+});
+
+test('a worktree root with a space cannot be recovered and is not misjudged', () => {
+  // argv text cannot delimit a space inside a path, so the root recovery
+  // fails conservatively: the process is not attributed to any worktree and
+  // therefore is not an owner (fail-safe, no false block).
+  const spaced = '/Users/me/My Workspace/apps/desktop --inspect=9229';
+  assert.equal(worktreeFromCommandLine(spaced), undefined);
+  assert.equal(
+    sharedDevelopmentAppOwner({
+      ownRoot: OWN,
+      commandLines: [spaced],
+      readFile: readEnvFixture(),
+    }),
+    undefined,
   );
 });

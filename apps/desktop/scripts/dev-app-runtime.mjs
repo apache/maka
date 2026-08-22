@@ -70,7 +70,7 @@ const WORKTREE_ID = createHash('sha256').update(REPO_ROOT).digest('hex').slice(0
 // would only mean that turning MAKA_DEV_TCC on silently switched the
 // developer's database. TCC isolation is provided by DEV_BUNDLE_ID, not by the
 // data root. An explicit `--user-data-dir=` still takes precedence.
-const DEV_USER_DATA_DIR = join(homedir(), 'Library', 'Application Support', 'Maka Dev');
+export const DEV_USER_DATA_DIR = join(homedir(), 'Library', 'Application Support', 'Maka Dev');
 
 /**
  * Per-worktree, and deliberately so. An ad-hoc signature designates a bare
@@ -98,9 +98,8 @@ const developmentExecutablePath = DEV_EXECUTABLE;
 
 export async function resolveMacosDevelopmentLaunch(env = process.env, argv = []) {
   if (!shouldUseMacosDevelopmentApp(process.platform, env)) return null;
-  // Resolve the profile BEFORE probing: the owner judgment is per-profile, and
-  // an explicit `--user-data-dir` already moves this launch off the shared
-  // "Maka Dev" lock, so owners of that other profile are unrelated (#3359).
+  // Judge by profile, not bundle: an explicit --user-data-dir already moves
+  // this launch off the shared lock, so owners of that profile are unrelated.
   const targetProfile = splitDevelopmentCliArgs(argv).userDataDir;
   const appPath = await prepareDevelopmentApp();
   // The shared "Maka Dev" userData root makes Electron's single-instance lock
@@ -160,9 +159,7 @@ export function sharedDevelopmentAppCommandLines(options = {}) {
 }
 
 function devAppProcessPattern() {
-  // Rough filter only: pgrep -f matches the full command line, so each shape
-  // is escaped and combined. The owner judgment below uses each process's own
-  // `--user-data-dir`, not this pattern — the pattern just narrows the scan.
+  // Rough filter; the owner judgment below does the real classification.
   const bundle = toProcessMatchPattern(join('Maka Dev.app', 'Contents', 'MacOS', 'Electron'));
   const plainBinary = toProcessMatchPattern(join('node_modules', '.bin', 'electron'));
   const plainApp = toProcessMatchPattern(join('Electron.app', 'Contents', 'MacOS', 'Electron'));
@@ -194,12 +191,10 @@ function probeWithSpawn(spawnImpl) {
   if (pids.status === 1) return [];
   const ids = String(pids.stdout).trim().split(/\s+/).filter(Boolean);
   if (ids.length === 0) return [];
-  // `pgrep -f` alone only yields PIDs. Printing the command line with pgrep
-  // has OPPOSITE flag semantics on the two platforms — Linux `-a` = full
-  // command line; BSD (macOS) `-a` = include ancestors, `-l` = full command
-  // line — so avoid that flag entirely and read the command line from
-  // `ps -o command=`, which prints the full argv on both. (`command=`
-  // strips the header line.)
+  // pgrep's command-line flag semantics are OPPOSITE on the two platforms —
+  // Linux -a = full command line; BSD (macOS) -a = include ancestors, -l =
+  // full command line. Avoid the flag: pgrep -f yields PIDs, ps -o command=
+  // prints the full argv on both.
   const ps = spawnImpl('ps', ['-p', ids.join(','), '-o', 'command=']);
   if (ps.status !== 0) {
     throw new Error(`ps failed for Maka app pids ${ids.join(',')} (exit ${ps.status})`);
@@ -216,52 +211,46 @@ function probeWithSpawn(spawnImpl) {
  * therefore not visible on the command line.
  */
 /**
- * The userData root a running dev process is using. The profile is NOT on the
- * command line: `--user-data-dir` is deliberately stripped from `electronArgs`
- * so the bootstrap's `app.setPath('userData', env.userDataDir || …)` stays
- * authoritative, and the value lives in that worktree's dev environment file.
- * So the chain is contractual, not textual: the command line reveals which
- * worktree the process belongs to, and that worktree's dev env file supplies
- * the profile. A process whose command line cannot be attributed to a worktree
- * is treated as using the shared default (the rough filter already restricted
- * candidates to dev-app shapes).
- *
- * Known and accepted (dev script): the env file is read at judgment time, not
- * at the process's start. A worktree that switches its dev env profile while
- * one of its dev apps is still running is attributed by the CURRENT file —
- * the same file a relaunch would read, so the decision stays consistent with
- * what a fresh launch would face. A TOCTOU where the file changed between the
- * running process's start and this read is possible and accepted here.
+ * The profile a running dev process uses is NOT on its command line
+ * (`--user-data-dir` is stripped from electronArgs so the bootstrap's
+ * app.setPath stays authoritative); it lives in that worktree's dev-env.json.
+ * We also do not read Electron's SingletonLock — its format is an internal,
+ * version-fragile contract — so the command line recovers the worktree root
+ * and the env file supplies the profile. Unattributable candidates count as
+ * the shared default (the rough filter already restricted them to dev shapes).
+ * Known and accepted for a dev script: the env file is read at judgment time,
+ * not process start; a profile switch while an app is still running attributes
+ * by the current file, consistent with what a relaunch would read.
  */
 export function resolveProcessUserDataDir(commandLine, options = {}) {
   const worktree = worktreeFromCommandLine(commandLine);
   if (!worktree) return undefined;
   const envFile = options.envFileFor ?? ((root) => join(root, 'apps', 'desktop', '.maka-dev', 'dev-env.json'));
   const read = options.readFile ?? readFileSync;
+  let published;
   try {
-    const published = JSON.parse(read(envFile(worktree), 'utf8'));
-    if (published.schemaVersion !== DEV_ENV_SCHEMA_VERSION) return undefined;
-    return published.userDataDir;
+    published = JSON.parse(read(envFile(worktree), 'utf8'));
   } catch {
+    // No dev-env.json in that worktree: the process is not a Maka dev app at
+    // all (it could be any other repo's Electron), so it never holds our
+    // profile lock — absence is "not a candidate", not "default profile".
     return undefined;
   }
+  if (published.schemaVersion !== DEV_ENV_SCHEMA_VERSION) return undefined;
+  return published.userDataDir ?? DEV_USER_DATA_DIR;
 }
 
 /**
- * Absolute root of the worktree a dev-app command line came from, by scanning
- * the argv tokens for a path that reaches into a repository checkout
- * (`/apps/desktop` or `/node_modules/`). The shim, the resolved Electron
- * binary, the bundle, and the positional desktop-dir argument all carry such
- * a token.
+ * Worktree root of a dev-app command line, from an argv token that reaches
+ * into a checkout (`/apps/desktop` or `/node_modules/`); the shim, resolved
+ * Electron, bundle and positional desktop-dir all carry one.
  */
 export function worktreeFromCommandLine(commandLine) {
   const tokens = commandLine.split(/\s+/);
   for (const token of tokens) {
     if (!token.startsWith('/')) continue;
-    // Boundary-check the marker so a sibling like `/apps/desktopish` or a
-    // worktree prefix like `/home/x/wt-1` never matches `/home/x/wt-12`'s
-    // token: the marker must be followed by a separator or the token end, and
-    // the slice is exact (no prefix `includes` anywhere).
+    // Marker must be followed by a separator or token end, so a sibling like
+    // `/apps/desktopish` or a prefix worktree (`wt-1` vs `wt-12`) never matches.
     const desktopMarker = token.indexOf('/apps/desktop');
     if (desktopMarker > 0 && (token[desktopMarker + 13] === '/' || desktopMarker + 13 === token.length)) {
       return token.slice(0, desktopMarker);
@@ -286,13 +275,11 @@ export function sharedDevelopmentAppOwner(options = {}) {
   const commandLines = options.commandLines ?? sharedDevelopmentAppCommandLines(options);
   const target = targetProfile ?? DEV_USER_DATA_DIR;
   return commandLines.find((line) => {
-    // Own worktree: any dev-app shape (bundle, node shim, resolved Electron
-    // binary) carries this worktree's absolute root in an argv token, so the
-    // same root-recovery used for the profile gives an exact comparison —
-    // `includes` would also swallow a deeper path that merely begins with our
-    // root (e.g. a sibling checkout nested under it).
+    // Exact root equality: any own shape carries our root in an argv token,
+    // and `includes` would swallow a deeper path that merely begins with it.
     if (worktreeFromCommandLine(line) === ownRoot) return false;
-    const profile = resolveProcessUserDataDir(line, options) ?? DEV_USER_DATA_DIR;
+    const profile = resolveProcessUserDataDir(line, options);
+    if (profile === undefined) return false; // not a Maka dev process
     return profile === target;
   });
 }
@@ -329,8 +316,8 @@ export async function quitMacosDevelopmentApp(options = {}) {
   const delay = options.delay ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
   if (platform !== 'darwin') return false;
   const stoppedBundle = signal('TERM', bundle);
-  // Plain dev runs as TWO live processes: the npm shim and the real Electron
-  // it spawned. Signal both, or the orphaned Electron keeps the profile lock.
+  // Plain dev is two live processes (shim + the Electron it spawned); signal
+  // both or the orphaned Electron keeps the profile lock.
   const stoppedPlainShim = signal('TERM', shim);
   const stoppedPlainReal = signal('TERM', real);
   if (!stoppedBundle && !stoppedPlainShim && !stoppedPlainReal) return false;
@@ -364,7 +351,6 @@ function plainDevAppIsRunning(options, probe) {
   return probe(shim) || probe(real);
 }
 
-/** The resolved native binary a plain dev actually runs (the npm shim's child). */
 function realElectronBinary() {
   return join(
     REPO_ROOT,
