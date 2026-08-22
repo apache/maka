@@ -40,6 +40,7 @@ import {
   ICON_SIZE,
   Blocks,
   BookOpen,
+  Check,
   Download,
   FolderOpen,
   Loader2,
@@ -334,6 +335,15 @@ export function SkillsModuleMain(props: {
 
   // ── Catalog rows (市场 / 内置): one job each — install. ──────────────
   function catalogInstallButton(key: string, name: string, installing: boolean, installed: boolean, onInstall?: () => void) {
+    const installIcon = installing
+      ? <Loader2 size={ICON_SIZE.chrome} aria-hidden="true" />
+      : installed
+        ? (
+          <span className="maka-skill-install-complete-icon">
+            <Check size={ICON_SIZE.chrome} aria-hidden="true" />
+          </span>
+        )
+        : <Download size={ICON_SIZE.chrome} aria-hidden="true" />;
     return (
       <IconButton
         key={key}
@@ -341,9 +351,9 @@ export function SkillsModuleMain(props: {
         size="sm"
         onClick={onInstall}
         isDisabled={installed || skillActionBusy || !onInstall}
-        label={copy.install.action(name)}
+        label={installed ? copy.install.installedAction(name) : copy.install.action(name)}
         tooltip={installed ? copy.install.installedTitle : copy.install.action(name)}
-        icon={installing ? <Loader2 size={ICON_SIZE.chrome} aria-hidden="true" /> : <Download size={ICON_SIZE.chrome} aria-hidden="true" />}
+        icon={installIcon}
       />
     );
   }
