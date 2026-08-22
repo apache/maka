@@ -301,6 +301,12 @@ export function createDesktopRuntimeHostProfileService(input: {
     await persistPairingIntents(new Map(pairingIntents).set(profileId, intent));
   };
 
+  const assertPairingComplete = (profileId: string): void => {
+    if (pairingIntents.has(profileId)) {
+      throw new Error('Resolve this Runtime Host\'s unfinished pairing before changing it');
+    }
+  };
+
   const snapshot = async (): Promise<DesktopRuntimeHostProfileSnapshot> => {
     const document = await catalog.read();
     const managedDocument = await managedServices.read();
@@ -831,6 +837,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           await enable(profileId);
           return snapshot();
         }
+        assertPairingComplete(profileId);
         if (preferences.defaultProfileId === profileId) {
           throw new Error("Choose another default Runtime Host before disabling this one");
         }
@@ -860,6 +867,7 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
           throw new Error("Local Runtime Host cannot be removed");
         }
+        assertPairingComplete(profileId);
         if (preferences.enabledRemoteProfileIds.includes(profileId)) {
           throw new Error("Disable a Runtime Host before removing it");
         }

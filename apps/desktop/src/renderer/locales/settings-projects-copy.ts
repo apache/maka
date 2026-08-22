@@ -114,6 +114,7 @@ export type SettingsProjectsCopy = {
     rotateCredentialConfirmBody: string;
     rotateCredentialConfirm: string;
     enableBeforeRotate: string;
+    startBeforeChangingAccess: string;
     revokeCredential: string;
     revokeCredentialConfirm(name: string): string;
     revokeCredentialConfirmBody: string;
@@ -277,6 +278,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       rotateCredentialConfirmBody: '轮换会重新连接这个 Runtime Host，并可能中断正在进行的工作。请先完成或暂停活跃任务。',
       rotateCredentialConfirm: '继续轮换',
       enableBeforeRotate: '请先启用这个 Runtime Host，再轮换当前 Desktop 的凭据。',
+      startBeforeChangingAccess: '请先启动 Runtime Host 服务，再修改访问权限。',
       revokeCredential: '撤销',
       revokeCredentialConfirm: (name: string) => `撤销 ${name} 的访问权限？`,
       revokeCredentialConfirmBody: '使用此凭据的客户端会立即断开连接，并可能中断正在进行的工作。',
@@ -438,6 +440,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       rotateCredentialConfirmBody: 'Rotation reconnects this Runtime Host and may interrupt active work. Finish or pause active tasks before continuing.',
       rotateCredentialConfirm: 'Continue rotation',
       enableBeforeRotate: 'Enable this Runtime Host before rotating this Desktop credential.',
+      startBeforeChangingAccess: 'Start the Runtime Host service before changing access.',
       revokeCredential: 'Revoke',
       revokeCredentialConfirm: (name: string) => `Revoke access for ${name}?`,
       revokeCredentialConfirmBody: 'Clients using this credential disconnect immediately, which may interrupt active work.',

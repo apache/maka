@@ -271,6 +271,11 @@ export function RuntimeHostManagementDialog(props: {
                       {copy.enableBeforeRotate}
                     </Text>
                   ) : null}
+                  {!serviceActive ? (
+                    <Text type="supporting" color="secondary">
+                      {copy.startBeforeChangingAccess}
+                    </Text>
+                  ) : null}
                   {confirmation?.kind === 'revoke' ? (
                     <Banner
                       status="warning"
@@ -317,7 +322,8 @@ export function RuntimeHostManagementDialog(props: {
                                   loading ||
                                   confirmation !== undefined ||
                                   credential.status === 'pending' ||
-                                  !access.canRotate
+                                  !access.canRotate ||
+                                  !serviceActive
                                 }
                                 onClick={() => setConfirmation({ kind: 'rotate' })}
                               />
@@ -326,7 +332,9 @@ export function RuntimeHostManagementDialog(props: {
                                 variant="secondary"
                                 size="sm"
                                 label={copy.revokeCredential}
-                                isDisabled={loading || confirmation !== undefined}
+                                isDisabled={
+                                  loading || confirmation !== undefined || !serviceActive
+                                }
                                 onClick={() => setConfirmation({ kind: 'revoke', credential })}
                               />
                             )}

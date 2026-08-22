@@ -24,6 +24,8 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import {
   changedProtocolFilesBetween,
+  compatibleProtocolFilesBetween,
+  COMPATIBLE_CHANGE_DIR,
   EPOCH_FILE,
   epochAtRevision,
   evaluateEpochCheck,
@@ -68,6 +70,63 @@ test('fails a protocol change whose epoch equals the current base parent', () =>
   assert.equal(verdict.ok, false);
   assert.match(verdict.reason, /still 27/);
   assert.match(verdict.reason, /operations\.ts/);
+});
+
+test('allows only files covered by a newly added compatible-change declaration', () => {
+  const changedProtocolFiles = [
+    'packages/runtime-host/src/protocol/access-authority.ts',
+    'packages/runtime-host/src/protocol/operations.ts',
+  ];
+  const compatible = evaluateEpochCheck({
+    baseEpoch: 27,
+    headEpoch: 27,
+    changedProtocolFiles,
+    compatibleProtocolFiles: changedProtocolFiles,
+  });
+  assert.equal(compatible.ok, true);
+
+  const incomplete = evaluateEpochCheck({
+    baseEpoch: 27,
+    headEpoch: 27,
+    changedProtocolFiles,
+    compatibleProtocolFiles: [changedProtocolFiles[0]],
+  });
+  assert.equal(incomplete.ok, false);
+  assert.match(incomplete.reason, /operations\.ts/);
+});
+
+test('reads newly added compatible-change declarations from the compared revision', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'maka-protocol-compatible-change-'));
+  const runGit = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+  const runInFixture = (file, args, options) =>
+    execFileSync(file, args, { ...options, cwd: repo, encoding: 'utf8' });
+  const protocolFile = 'packages/runtime-host/src/protocol/example.ts';
+
+  try {
+    runGit('init', '--initial-branch=main');
+    runGit('config', 'user.email', 'epoch-guard@example.invalid');
+    runGit('config', 'user.name', 'Epoch Guard Test');
+    mkdirSync(join(repo, dirname(protocolFile)), { recursive: true });
+    writeFileSync(join(repo, protocolFile), 'export const example = 1;\n');
+    runGit('add', '.');
+    runGit('commit', '-m', 'base');
+    runGit('tag', 'base');
+
+    writeFileSync(join(repo, protocolFile), 'export const example = 2;\n');
+    mkdirSync(join(repo, COMPATIBLE_CHANGE_DIR), { recursive: true });
+    writeFileSync(
+      join(repo, COMPATIBLE_CHANGE_DIR, 'example.json'),
+      JSON.stringify({ epoch: 27, files: [protocolFile], reason: 'Adds an optional operation' }),
+    );
+    runGit('add', '.');
+    runGit('commit', '-m', 'compatible extension');
+
+    assert.deepEqual(compatibleProtocolFilesBetween('base', 'HEAD', 27, runInFixture), [
+      protocolFile,
+    ]);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test('catches sibling same-number bumps against the synthetic merge first parent', () => {

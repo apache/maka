@@ -125,6 +125,8 @@ describe('Runtime Host operator commands', () => {
       assert.equal(resolved.operationGrants.includes('access.credential.prepare'), false);
       assert.equal(resolved.operationGrants.includes('access.credential.replace'), false);
       assert.equal(resolved.operationGrants.includes('access.credential.revoke'), false);
+      assert.equal(resolved.operationGrants.includes('access.credential.rotation.prepare'), false);
+      assert.equal(resolved.operationGrants.includes('access.credential.rotation.revoke'), false);
       assert.equal(resolved.operationGrants.includes('host.upgrade.prepare'), false);
       assert.equal(resolved.operationGrants.includes('turn.start'), true);
       assert.equal(resolved.operationGrants.includes('project.catalog.query'), true);
@@ -204,6 +206,8 @@ describe('Runtime Host operator commands', () => {
         'access.credential.prepare',
         'access.credential.replace',
         'access.credential.revoke',
+        'access.credential.rotation.prepare',
+        'access.credential.rotation.revoke',
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',
