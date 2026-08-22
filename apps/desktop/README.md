@@ -79,13 +79,33 @@ signature seal. Write access to this repository is therefore a deliberate trust
 assumption of the development workflow — a separate matter from who may claim
 the bundle's identity.
 
-The default profile is `~/Library/Application Support/Maka Dev-<worktree-id>`,
-which keeps development isolated from the packaged Maka profile; an explicit
-`--user-data-dir` takes precedence. Shutdown matches this worktree's own bundle
-path, so a concurrent worktree's app is unaffected. Because that lock is keyed
+The default profile is `~/Library/Application Support/Maka Dev`, which keeps
+development isolated from the packaged Maka profile and is shared by the plain
+dev build and the TCC dev build; an explicit `--user-data-dir` takes
+precedence. (The README previously also claimed the repository CLI
+(`npm run cli:dev`) shares it — unverified; the CLI entry does not go through
+the desktop dev launcher, so this claim is dropped until verified.) Shutdown
+matches this worktree's own processes — the TCC bundle, the npm shim, and the
+resolved Electron it spawns, all anchored to this worktree's path — so a
+concurrent worktree's app survives, and then holds the single-instance lock
+for the shared profile. Because that lock is keyed
 on the profile, a launch first reclaims any app left over from a hard-killed
-session — otherwise the stale app would absorb the new launch and keep showing
-its old, dead Vite URL.
+session of THIS worktree — otherwise the stale app would absorb the new launch
+and keep showing its old, dead Vite URL. A launch does NOT reclaim another
+worktree's running app: the shared data root confers no disposal rights over
+another developer's window, so launching while another worktree's Maka Dev app
+holds the lock fails immediately and names that app as the owner.
+
+Known race window (TOCTOU): the owner gate reads a process snapshot, and the
+profile lock is taken at spawn time, AFTER the gate. Two worktrees launching
+nearly simultaneously can therefore both pass the gate; the loser is then
+focused onto the winner's window or lands on `never-started`. On main the
+per-worktree TCC roots never collided (TCC(A) vs TCC(B) and TCC vs plain had
+separate locks), so the shared profile adds a NEW cross-shape absorption path
+where none existed; the gate narrows it to the spawn window but does not
+close it. Closing the window needs a profile-level atomic reservation or a
+post-spawn ownership handshake — tracked separately. This window is real; it
+is not "unlikely to happen".
 
 Known limitation: `dev-env.json` outlives the session, so launching from the
 Dock long after `npm run dev` has stopped points the app at a Vite URL that is

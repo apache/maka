@@ -32,7 +32,7 @@
     "typecheck:stories": "tsc -p tsconfig.storybook.json --noEmit",
     "pretest": "npm run build:workspace-deps",
     "test": "npm run clean:main && npm run build:main && node --test \"dist/main/**/*.test.js\"",
-    "test:dist": "node --test \"dist/main/**/*.test.js\"",
+    "test:dist": "node --test \"dist/main/**/*.test.js\" scripts/dev-app-runtime.test.mjs scripts/dev-app-profile.test.mjs",
     "e2e": "npm run build:with-deps && playwright test --config e2e/playwright.config.ts",
     "build:with-deps": "npm run build:workspace-deps && npm run build",
     "smoke:real-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs",
