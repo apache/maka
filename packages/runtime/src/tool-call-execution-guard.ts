@@ -44,14 +44,14 @@
  * and parses only the captured raw JSON. The resulting raw-stream tool name
  * and parsed value are the execution authority for that call.
  *
- * Not every real provider integration streams a call's arguments via
- * `tool-input-delta` at all: this project's Anthropic-compatible wire protocol
- * (verified against the real HTTP round-trip in
- * `computer-use-provider-protocol.test.ts`) can emit `tool-input-start`
- * immediately followed by `tool-input-end` with zero delta chunks between
- * them, carrying the actual arguments only in the trailing `tool-call` chunk's
- * already-parsed `input`. That is legitimate atomic delivery, not a truncation
- * — there is no partial byte stream for it to have been cut short from.
+ * Some provider-facing chunk sequences may contain `tool-input-start`
+ * immediately followed by `tool-input-end` with zero `tool-input-delta`
+ * chunks, with the actual arguments present only in the trailing `tool-call`
+ * projection. The focused guard and production-path regression suites exercise
+ * that zero-delta/atomic shape directly (`tool-call-execution-guard.test.ts`,
+ * `length-cutoff-tool-execution-repro.test.ts`, and `ai-sdk-backend.test.ts`).
+ * For this tracker, zero raw deltas therefore means there is no raw-byte
+ * completeness proof for that id, not that a partial byte stream was observed.
  * `resolveToolCallSafety` therefore omits an id that received no real
  * non-empty delta from `decisions` entirely.
  *
