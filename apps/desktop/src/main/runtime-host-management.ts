@@ -58,6 +58,7 @@ export function createDesktopRuntimeHostManagement(input: {
     | 'resolveManagedAccess'
     | 'rotateManagedCredential'
     | 'markManagedServiceUninstalling'
+    | 'markManagedServiceCleanupPending'
     | 'clearManagedServiceBinding'
   >;
   readonly runServiceManagement: (
@@ -95,7 +96,7 @@ export function createDesktopRuntimeHostManagement(input: {
     if (profile.transport.kind !== 'ssh') {
       throw new Error('This Runtime Host profile is not bound to a managed service');
     }
-    if (managed.state === 'uninstalling' && managementAction !== 'uninstall') {
+    if (managed.state !== 'active' && managementAction !== 'uninstall') {
       throw new Error('Finish uninstalling this Runtime Host service before managing it');
     }
     const managementInput: DesktopRuntimeHostSshManagementInput = {
@@ -129,15 +130,17 @@ export function createDesktopRuntimeHostManagement(input: {
         : response;
     }
 
-    const pending = managed.state === 'active'
-      ? await input.profiles.markManagedServiceUninstalling(managed)
-      : managed;
-    const response = await input.runServiceManagement({
-      ...managementInput,
-      retainManagedDeployment: true,
-    });
-    if (response.kind === 'error') return response;
-    assertUninstalled(response);
+    let pending = managed;
+    if (pending.state !== 'cleanup_pending') {
+      pending = await input.profiles.markManagedServiceUninstalling(pending);
+      const response = await input.runServiceManagement({
+        ...managementInput,
+        retainManagedDeployment: true,
+      });
+      if (response.kind === 'error') return response;
+      assertUninstalled(response);
+      pending = await input.profiles.markManagedServiceCleanupPending(pending);
+    }
     await input.cleanupManagedDeployment({
       destination: managementInput.destination,
       ...(managementInput.sshPort === undefined
@@ -155,7 +158,7 @@ export function createDesktopRuntimeHostManagement(input: {
     if (!managed) {
       throw new Error('This Runtime Host profile does not have managed credential access');
     }
-    if (managed.state === 'uninstalling') {
+    if (managed.state !== 'active') {
       throw new Error('Finish uninstalling this Runtime Host service before managing access');
     }
     if (managed.profile.transport.kind !== 'ssh') {

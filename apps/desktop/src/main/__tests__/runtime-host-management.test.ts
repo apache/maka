@@ -81,6 +81,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
         assert.equal(credential, replacement);
       },
       markManagedServiceUninstalling: async (binding) => binding,
+      markManagedServiceCleanupPending: async (binding) => binding,
       clearManagedServiceBinding: async () => undefined,
     },
     runServiceManagement: async () => assert.fail('service management is not expected'),
@@ -213,6 +214,10 @@ test('manages only the service identity bound by Desktop onboarding', async () =
         uninstallOrder.push('mark-uninstalling');
         return { ...binding, state: 'uninstalling' as const };
       },
+      markManagedServiceCleanupPending: async (binding) => {
+        uninstallOrder.push('mark-cleanup-pending');
+        return { ...binding, state: 'cleanup_pending' as const };
+      },
       clearManagedServiceBinding: async () => {
         cleared += 1;
         uninstallOrder.push('clear-binding');
@@ -284,6 +289,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
   assert.deepEqual(uninstallOrder, [
     'mark-uninstalling',
     'uninstall-service',
+    'mark-cleanup-pending',
     'cleanup-deployment',
     'clear-binding',
   ]);
@@ -295,7 +301,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
   assert.equal(handlers.size, 0);
 });
 
-test('retries the idempotent service uninstall before resuming deployment cleanup', async () => {
+test('resumes deployment cleanup without invoking the removed operator', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const profile = {
     id: 'office',
@@ -316,7 +322,7 @@ test('retries the idempotent service uninstall before resuming deployment cleanu
   };
   const calls: DesktopRuntimeHostSshManagementInput[] = [];
   let cleanups = 0;
-  let state: 'active' | 'uninstalling' = 'active';
+  let state: 'active' | 'uninstalling' | 'cleanup_pending' = 'active';
   let clearAttempts = 0;
   createDesktopRuntimeHostManagement({
     ipcMain: {
@@ -328,6 +334,10 @@ test('retries the idempotent service uninstall before resuming deployment cleanu
       resolveManagedAccess: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
         state = 'uninstalling';
+        return { ...binding, state };
+      },
+      markManagedServiceCleanupPending: async (binding) => {
+        state = 'cleanup_pending';
         return { ...binding, state };
       },
       clearManagedServiceBinding: async () => {
@@ -358,11 +368,11 @@ test('retries the idempotent service uninstall before resuming deployment cleanu
     kind: 'uninstalled',
     retainedStateRoot: service.rootPath,
   });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
   assert.equal(cleanups, 2);
 });
 
-test('records uninstall intent before invoking the remote service', async () => {
+test('rechecks uninstall intent before retrying the remote service', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let marked = false;
   createDesktopRuntimeHostManagement({
@@ -389,13 +399,14 @@ test('records uninstall intent before invoking the remote service', async () => 
           rootPath: '/srv/maka',
           operatorPath: '/home/operator/.local/share/maka/operator',
         },
-        state: 'active' as const,
+        state: 'uninstalling' as const,
       }),
       resolveManagedAccess: async () => undefined,
       markManagedServiceUninstalling: async (binding) => {
         marked = true;
         return { ...binding, state: 'uninstalling' as const };
       },
+      markManagedServiceCleanupPending: async () => assert.fail('uninstall was not confirmed'),
       clearManagedServiceBinding: async () => assert.fail('uninstall was not committed'),
       rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
     },

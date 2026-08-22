@@ -363,7 +363,7 @@ export function RuntimeHostManagementDialog(props: {
                     variant="destructive"
                     label={copy.revokeCredential}
                     isDisabled={loading}
-                    clickAction={revokeCredential}
+                    onClick={() => void revokeCredential()}
                   />
                 </>
               ) : confirmation?.kind === 'uninstall' ? (
@@ -378,10 +378,7 @@ export function RuntimeHostManagementDialog(props: {
                     variant="destructive"
                     label={copy.uninstallConfirm}
                     isDisabled={loading}
-                    clickAction={async () => {
-                      await run('uninstall');
-                      setConfirmation(undefined);
-                    }}
+                    onClick={() => void run('uninstall').then(() => setConfirmation(undefined))}
                   />
                 </>
               ) : confirmation?.kind === 'rotate' ? (
@@ -396,10 +393,7 @@ export function RuntimeHostManagementDialog(props: {
                     variant="primary"
                     label={copy.rotateCredentialConfirm}
                     isDisabled={loading}
-                    clickAction={async () => {
-                      await rotateCredential();
-                      setConfirmation(undefined);
-                    }}
+                    onClick={() => void rotateCredential().then(() => setConfirmation(undefined))}
                   />
                 </>
               ) : access ? (
@@ -418,7 +412,7 @@ export function RuntimeHostManagementDialog(props: {
                     variant="primary"
                     label={copy.refresh}
                     isDisabled={loading}
-                    clickAction={loadAccess}
+                    onClick={() => void loadAccess()}
                   />
                 </>
               ) : (
@@ -434,7 +428,7 @@ export function RuntimeHostManagementDialog(props: {
                       variant="secondary"
                       label={copy.repairService}
                       isDisabled={loading}
-                      clickAction={() => run('install')}
+                      onClick={() => void run('install')}
                     />
                   ) : null}
                   {profile && serviceInstalled && result?.accessManagementAvailable && !uninstalled ? (
@@ -442,7 +436,7 @@ export function RuntimeHostManagementDialog(props: {
                       variant="secondary"
                       label={copy.manageAccess}
                       isDisabled={loading}
-                      clickAction={loadAccess}
+                      onClick={() => void loadAccess()}
                     />
                   ) : null}
                   {result && profile && !uninstalled ? (
@@ -451,14 +445,14 @@ export function RuntimeHostManagementDialog(props: {
                         variant="secondary"
                         label={copy.refresh}
                         isDisabled={loading}
-                        clickAction={() => run('status')}
+                        onClick={() => void run('status')}
                       />
                       {serviceInstalled ? (
                         <Button
                           variant="secondary"
                           label={copy.showLogs}
                           isDisabled={loading}
-                          clickAction={() => run('logs')}
+                          onClick={() => void run('logs')}
                         />
                       ) : null}
                       {serviceInstalled && serviceActive ? (
@@ -466,14 +460,14 @@ export function RuntimeHostManagementDialog(props: {
                           variant="primary"
                           label={copy.restartService}
                           isDisabled={loading}
-                          clickAction={() => run('restart')}
+                          onClick={() => void run('restart')}
                         />
                       ) : serviceInstalled ? (
                         <Button
                           variant="primary"
                           label={copy.startService}
                           isDisabled={loading}
-                          clickAction={() => run('start')}
+                          onClick={() => void run('start')}
                         />
                       ) : null}
                     </>
