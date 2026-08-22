@@ -12,6 +12,7 @@ import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { SessionTerminalHydration } from './session-terminal-hydration';
+import { suppressTerminalQueryReplies } from './session-terminal-query';
 
 function terminalTheme(element: HTMLElement) {
   const styles = getComputedStyle(element);
@@ -77,6 +78,12 @@ export function SessionTerminalPanel(props: {
     terminal.open(host);
     terminalRef.current = terminal;
     fitRef.current = fit;
+
+    // Runtime Resource controls are durable, serialized operations. Terminal
+    // replies can therefore outlive short capability probes and be echoed into
+    // the next prompt. Do not route xterm-generated query replies through that
+    // input path; terminal setters and ordinary user input remain unaffected.
+    const terminalQueryReplies = suppressTerminalQueryReplies(terminal.parser);
 
     const writeEvent = (event: { sequence: number; data: string }) => {
       const live = hydration.accept(event);
@@ -170,6 +177,7 @@ export function SessionTerminalPanel(props: {
       unsubscribe();
       unsubscribeResync();
       inputSubscription.dispose();
+      terminalQueryReplies.dispose();
       void window.maka.shellRuns
         .detach({ sessionId: props.sessionId, ref: props.terminalRef! })
         .catch(() => {});
