@@ -61,6 +61,10 @@ import {
 import { dotForStatus } from '@maka/ui';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
+import {
+  SettingsStatusSummaryFilter,
+  type SettingsStatusSummaryOption,
+} from './settings-status-summary-filter';
 
 /**
  * PR-UI-8 — Permission Center read-only page. Consumes `window.maka.permissions.getSnapshot()`
@@ -88,6 +92,8 @@ const OS_PERMISSION_ICONS: Record<OsPermissionId, ComponentType<LucideProps>> = 
   automation: MousePointer2,
 };
 
+type PermissionStatusFilter = 'granted' | 'pending' | 'denied' | 'other';
+
 export function PermissionCenterPage() {
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
@@ -98,6 +104,7 @@ export function PermissionCenterPage() {
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [pendingPermAction, setPendingPermAction] = useState<string | null>(null);
+  const [permissionFilter, setPermissionFilter] = useState<PermissionStatusFilter | null>(null);
   const reportHostError = useRuntimeHostSettingsErrorReporter();
   const mountedRef = useMountedRef();
   const permissionActionGuard = useActionGuard<string>();
@@ -139,6 +146,14 @@ export function PermissionCenterPage() {
       document.removeEventListener('visibilitychange', refreshAfterSystemSettings);
     };
   }, []);
+
+  useEffect(() => {
+    if (!permissions) return;
+    setPermissionFilter((current) => {
+      if (!current) return current;
+      return permissionIdsForFilter(permissions, current).length > 0 ? current : null;
+    });
+  }, [permissions]);
 
   async function runPermissionAction(
     permId: OsPermissionId,
@@ -206,6 +221,15 @@ export function PermissionCenterPage() {
 
   const checkedAtMs = capabilities.checkedAt;
   const counts = summarizePermissionStatuses(permissions);
+  const visiblePermissionIds = permissionFilter
+    ? permissionIdsForFilter(permissions, permissionFilter)
+    : OS_PERMISSION_IDS;
+  const summaryFilters: Array<SettingsStatusSummaryOption<PermissionStatusFilter>> = [
+    { value: 'granted', label: copy.granted, count: counts.granted, tone: 'success' },
+    { value: 'pending', label: copy.pending, count: counts.pending, tone: 'warning' },
+    { value: 'denied', label: copy.denied, count: counts.denied, tone: 'destructive' },
+    { value: 'other', label: copy.other, count: counts.other, tone: 'neutral' },
+  ];
 
   return (
     <SettingsPage>
@@ -235,14 +259,15 @@ export function PermissionCenterPage() {
           </div>
         )}
       >
-        <p className="settingsHealthSummaryLine" role="group" aria-label={copy.summaryAria}>
-          <span data-tone="neutral">{copy.granted} {counts.granted}</span>
-          <span data-tone={counts.pending > 0 ? 'warning' : 'neutral'}>{copy.pending} {counts.pending}</span>
-          <span data-tone={counts.denied > 0 ? 'destructive' : 'neutral'}>{copy.denied} {counts.denied}</span>
-          <span data-tone="neutral">{copy.other} {counts.other}</span>
-        </p>
+        <SettingsStatusSummaryFilter<PermissionStatusFilter>
+          value={permissionFilter}
+          options={summaryFilters}
+          label={copy.summaryAria}
+          optionLabel={(option, selected) => copy.summaryFilterAria(option.label, option.count, selected)}
+          onChange={setPermissionFilter}
+        />
         <List hasDividers aria-label={copy.osListAria}>
-            {OS_PERMISSION_IDS.map((id) => (
+            {visiblePermissionIds.map((id) => (
               <OsPermissionRow
                 key={id}
                 snapshot={permissions.permissions[id]}
@@ -338,6 +363,18 @@ function summarizePermissionStatuses(snapshot: PermissionSnapshot): {
     }
   }
   return { granted, pending, denied, other };
+}
+
+function permissionIdsForFilter(
+  snapshot: PermissionSnapshot,
+  filter: PermissionStatusFilter,
+): OsPermissionId[] {
+  return OS_PERMISSION_IDS.filter((id) => {
+    const status = snapshot.permissions[id]?.status;
+    if (filter === 'pending') return status === 'not_determined';
+    if (filter === 'other') return status !== 'granted' && status !== 'not_determined' && status !== 'denied';
+    return status === filter;
+  });
 }
 
 function permissionActionFailureCopy(reason: string, message: string | undefined, copy: PermissionCenterCopy): string {
@@ -619,6 +656,7 @@ function OsPermissionRow(props: {
 
   return (
     <ListItem
+      data-permission-id={snapshot.id}
       data-state={snapshot.status}
       /* The plate keeps its class: a status-tinted rounded icon well is
          product artwork (it turns red when a permission is denied), not
