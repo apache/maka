@@ -104,6 +104,27 @@ async function loadPromptRailBeyondVirtualWindow(page: Page): Promise<void> {
     .toBeGreaterThan(100);
 }
 
+async function scrollTranscriptUntilTurn(page: Page, turnId: string): Promise<void> {
+  // One programmatic jump is not enough on a shown macOS window: a
+  // ResizeObserver can restore a top-of-transcript scroll anchor after we
+  // set scrollTop, and the virtualizer then keeps the head window. Re-apply
+  // the jump until the tail turn is actually mounted.
+  await expect.poll(async () => {
+    await scrollTranscriptTo(page, 'bottom');
+    await notifyTranscriptScrolled(page);
+    return page.evaluate((id) => {
+      const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+      const mounted = [...document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]')]
+        .map((turn) => turn.dataset.virtualTurnId ?? '');
+      return {
+        hasTurn: mounted.includes(id),
+        scrollTop: root ? Math.round(root.scrollTop) : -1,
+        lastMounted: mounted.at(-1) ?? null,
+      };
+    }, turnId);
+  }, { message: `the transcript mounts ${turnId} at the bottom` }).toMatchObject({ hasTurn: true });
+}
+
 test('every tick paints a bar with a real box', async ({ promptRailWindow: page }) => {
   // Measured over ALL ticks, not a sample: a helper that skips what it cannot
   // evaluate creates its blind spot exactly where a regression lives.
@@ -166,21 +187,46 @@ test('the pointer is always on a tick while it travels down the rail', async ({
   // pixel at a time rather than sampled between two ticks: a single midpoint
   // would pass on a rail whose gaps sat anywhere else.
   const travel = await page.evaluate(() => {
-    const bars = [...document.querySelectorAll('.maka-prompt-rail-tick-bar')];
-    if (bars.length < 2) throw new Error('the prompt rail needs at least two ticks');
-    const first = bars[0]!.getBoundingClientRect();
-    const last = bars[bars.length - 1]!.getBoundingClientRect();
+    const ticks = [...document.querySelectorAll('.maka-prompt-rail-tick')];
+    if (ticks.length < 2) throw new Error('the prompt rail needs at least two ticks');
+    const first = ticks[0]!.getBoundingClientRect();
+    const last = ticks[ticks.length - 1]!.getBoundingClientRect();
     const x = Math.round(first.left + first.width / 2);
-    const misses: number[] = [];
-    for (let y = Math.round(first.top + first.height / 2); y <= Math.round(last.top + last.height / 2); y += 1) {
+    const describe = (found: Element | null) =>
+      found instanceof Element
+        ? `${found.tagName.toLowerCase()}.${found.className.toString().trim().replace(/\s+/g, '.')}`
+        : 'null';
+    const probe = (y: number) => {
       const found = document.elementFromPoint(x, y);
-      if (!found?.closest('.maka-prompt-rail-tick')) misses.push(y);
+      return {
+        tick: Boolean(found?.closest('.maka-prompt-rail-tick')),
+        rail: Boolean(found?.closest('.maka-prompt-rail')),
+        hit: describe(found),
+      };
+    };
+    // The whole painted column must be user-reachable. Trimming a titlebar-
+    // covered prefix here would make this test certify only the surviving
+    // middle of a broken rail.
+    const startY = Math.round(first.top + first.height / 2);
+    const endY = Math.round(last.top + last.height / 2);
+    const misses: Array<{ y: number; hit: string }> = [];
+    for (let y = startY; y <= endY; y += 1) {
+      const found = probe(y);
+      if (!found.tick) misses.push({ y, hit: found.hit });
     }
-    return { misses: misses.length, span: Math.round(last.bottom - first.top) };
+    return {
+      insideViewport: startY >= 0 && endY < window.innerHeight,
+      misses: misses.length,
+      span: endY - startY,
+      sample: misses.slice(0, 3),
+    };
   });
 
   expect(travel.span).toBeGreaterThan(0);
-  expect(travel.misses).toBe(0);
+  expect(travel, `rail travel hits ${JSON.stringify(travel.sample)}`).toMatchObject({
+    insideViewport: true,
+    misses: 0,
+  });
 });
 
 test('the first click of a session lands on its prompt and holds', async ({
@@ -207,7 +253,9 @@ test('the first click of a session lands on its prompt and holds', async ({
   // opening scroll position its top is already above the scrollport, which
   // passes an upper-bound-only check without the jump doing anything at all.
   const targetTurnId = 'turn-prompt-rail-1';
-  await page.locator('.maka-prompt-rail-tick').first().click({ force: true });
+  // A normal Playwright click goes through Electron's native pointer path, so
+  // this assertion covers both titlebar reachability and the jump contract.
+  await page.locator('.maka-prompt-rail-tick').first().click();
 
   const landing = async () =>
     page.evaluate((turnId) => {
@@ -258,7 +306,7 @@ test('long transcripts keep a bounded mounted turn window', async ({
   })).toEqual({ list: 16, turn: 16 });
   expect(await count()).toBeGreaterThan(0);
   expect(await count()).toBeLessThanOrEqual(100);
-  await page.locator('.maka-prompt-rail-tick').first().click({ force: true });
+  await page.locator('.maka-prompt-rail-tick').first().click();
   await expect(page.locator('[data-turn-id="turn-prompt-rail-1"]')).toHaveCount(1);
   expect(await count()).toBeGreaterThan(0);
   expect(await count()).toBeLessThanOrEqual(100);
@@ -270,8 +318,7 @@ test('evicting a turn-owned sibling interaction hands focus back to the transcri
   const scroller = page.locator('[data-chat-scroll-container="true"][data-turn-window="ready"]');
   await scroller.waitFor();
   await loadPromptRailBeyondVirtualWindow(page);
-  await scrollTranscriptTo(page, 'bottom');
-  await expect(page.locator('[data-virtual-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
+  await scrollTranscriptUntilTurn(page, 'turn-prompt-rail-120');
   const retainedTurnId = await page.evaluate(() => {
     const turns = document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]');
     const turn = turns.item(turns.length - 1);
@@ -326,15 +373,26 @@ test('a tick is what the pointer lands on, not the scrollbar', async ({
   // `elementFromPoint`, not `hover()`: dispatched events cannot see occlusion,
   // and macOS's overlay scrollbar occludes without taking layout space.
   const hit = await page.evaluate(() => {
-    const tick = document.querySelector('.maka-prompt-rail-tick');
-    if (!tick) throw new Error('the prompt rail has no ticks');
+    const ticks = [...document.querySelectorAll('.maka-prompt-rail-tick')];
+    if (ticks.length === 0) throw new Error('the prompt rail has no ticks');
+    // Same X as every tick, so the overlay contract does not depend on which
+    // one we pick. The first tick's centre can sit under the titlebar overlay,
+    // where `elementFromPoint` is null and `?.closest(...) !== null` would
+    // false-pass. Probe the middle of the column, inside the viewport.
+    const tick = ticks[Math.floor(ticks.length / 2)]!;
     const box = tick.getBoundingClientRect();
-    const found = document.elementFromPoint(
-      Math.round(box.left + box.width / 2),
-      Math.round(box.top + box.height / 2),
-    );
-    return { insideRail: found?.closest('.maka-prompt-rail') !== null };
+    const x = Math.round(box.left + box.width / 2);
+    const y = Math.round(box.top + box.height / 2);
+    const found = document.elementFromPoint(x, y);
+    return {
+      insideRail: Boolean(found?.closest('.maka-prompt-rail')),
+      x,
+      y,
+      hit: found instanceof Element
+        ? `${found.tagName.toLowerCase()}.${found.className.toString().trim().replace(/\s+/g, '.')}`
+        : 'null',
+    };
   });
 
-  expect(hit.insideRail).toBe(true);
+  expect(hit, `tick center hit ${hit.hit} at ${hit.x},${hit.y}`).toMatchObject({ insideRail: true });
 });

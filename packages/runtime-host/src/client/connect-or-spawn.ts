@@ -37,7 +37,9 @@ import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
 const DEFAULT_BACKOFF_MIN_MS = 20;
 const DEFAULT_BACKOFF_MAX_MS = 250;
-const MIN_CANDIDATE_INTERVAL_MS = 250;
+const CANDIDATE_RETRY_MIN_MS = 1_000;
+const CANDIDATE_RETRY_MAX_MS = 5_000;
+const MAX_PENDING_CANDIDATE_REPORTS = 2;
 
 export interface ConnectOrSpawnRuntimeHostInput {
   rootPath: string;
@@ -197,6 +199,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   const startedAt = performance.now();
   const deadline = startedAt + deadlineMs;
   let nextCandidateAt = startedAt;
+  let candidateRetryMs = CANDIDATE_RETRY_MIN_MS;
   let backoffMs = DEFAULT_BACKOFF_MIN_MS;
   let sawUnresponsiveEndpoint = false;
   let startupFailure: CandidateStartupFailureReport | undefined;
@@ -266,6 +269,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       if (
         shouldLaunchCandidate(result) &&
         !isPermanentCandidateStartupFailure(startupFailure) &&
+        pendingCandidateReports < MAX_PENDING_CANDIDATE_REPORTS &&
         now >= nextCandidateAt
       ) {
         try {
@@ -316,7 +320,8 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         } catch {
           // A failed Candidate attempt is ordinary election evidence; discovery continues.
         }
-        nextCandidateAt = now + MIN_CANDIDATE_INTERVAL_MS;
+        nextCandidateAt = now + candidateRetryMs;
+        candidateRetryMs = Math.min(CANDIDATE_RETRY_MAX_MS, candidateRetryMs * 2);
       }
 
       const remaining = deadline - performance.now();

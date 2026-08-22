@@ -15,11 +15,13 @@ permissions:
   contents: read
 
 jobs:
-  # Planning and every selected Linux surface share one runner, so the core
-  # workflow consumes one automatic job without dropping affected coverage.
-  test:
+  # Planning and every selected Linux surface share one runner. The stable
+  # `test` check below joins this job with the platform-specific macOS lane.
+  test_linux:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    outputs:
+      e2e: ${{ steps.plan.outputs.e2e }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -200,3 +202,61 @@ jobs:
       - name: Validate installed CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'
         run: npm run release:cli:smoke
+
+  # macOS compositor, overlay scrollbars, and native titlebar hit testing do
+  # not exist under xvfb. Run the same Desktop suite in a shown macOS window
+  # whenever the shared planner selects the E2E surface.
+  e2e_macos:
+    needs: test_linux
+    if: needs.test_linux.outputs.e2e == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Restore Electron artifact cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/electron
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-
+      - run: npm ci
+      - name: Keep overlay scrollbars visible
+        run: defaults write -g AppleShowScrollBars -string Always
+      - name: Desktop e2e
+        run: npm --workspace @maka/desktop run e2e
+      - name: Alignment audit
+        run: node scripts/audit-alignment.mjs
+
+  # Keep one required status name. A selected macOS lane must pass; an
+  # unselected lane must be skipped, so either drift fails closed.
+  test:
+    needs: [test_linux, e2e_macos]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful platform lanes
+        env:
+          E2E_SELECTED: ${{ needs.test_linux.outputs.e2e }}
+          LINUX_RESULT: ${{ needs.test_linux.result }}
+          MACOS_RESULT: ${{ needs.e2e_macos.result }}
+        run: |
+          if [[ "$LINUX_RESULT" != "success" ]]; then
+            echo "Linux test lane failed: $LINUX_RESULT" >&2
+            exit 1
+          fi
+          expected_macos="skipped"
+          if [[ "$E2E_SELECTED" == "true" ]]; then
+            expected_macos="success"
+          fi
+          if [[ "$MACOS_RESULT" != "$expected_macos" ]]; then
+            echo "macOS E2E expected $expected_macos but was $MACOS_RESULT" >&2
+            exit 1
+          fi

@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron } from '@playwright/test';
 import { closeElectronApplication } from './electron-lifecycle.mjs';
-import { buildFixtureEnv, isCiLinuxDisplay } from './fixture-env.mjs';
+import { buildFixtureEnv, isCiIsolatedDisplay } from './fixture-env.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DESKTOP_DIR = join(ROOT, 'apps', 'desktop');
@@ -138,9 +138,9 @@ export async function withFixtureWindow(scenario, options, fn) {
     // ref's build from a temporary worktree through the same launcher.
     desktopDir = DESKTOP_DIR,
   } = options ?? {};
-  // xvfb throttles a hidden window's compositor to ~1fps; only that isolated
-  // display gets a visible window. Local hit tests stay accessory/Dock-hidden.
-  const ciVisible = isCiLinuxDisplay();
+  // Isolated CI displays throttle a hidden window; only those runners get a
+  // visible window. Local hit tests stay accessory/Dock-hidden.
+  const ciVisible = isCiIsolatedDisplay();
   const launchArgs = mapWindowInactive && !ciVisible ? inactiveWindowElectronArgs() : ['.'];
 
   const userDataDir = await mkdtemp(join(tmpdir(), 'maka-fixture-'));

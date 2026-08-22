@@ -15,7 +15,7 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
-import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
+import { buildFixtureEnv, isCiIsolatedDisplay } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
 
 const DESKTOP_ROOT = process.cwd();
@@ -347,9 +347,9 @@ async function withE2eWindow(
         locale,
         platform,
         scrollMotion,
-        // xvfb throttles a hidden window's compositor to ~1fps. Geometry
-        // fixtures opt in locally; every fixture is visible on isolated CI X.
-        showWindow: showWindow || isCiLinuxDisplay(),
+        // Isolated CI displays throttle a hidden window's compositor. Geometry
+        // fixtures opt in locally; every fixture is visible on those runners.
+        showWindow: showWindow || isCiIsolatedDisplay(),
       }),
     });
     app.on('console', (message) => {
@@ -358,7 +358,10 @@ async function withE2eWindow(
     });
     let page: Page;
     try {
-      page = await app.firstWindow();
+      // Runtime Host election is allowed 45 seconds. A fresh macOS runner can
+      // spend most of that budget starting its first Electron Candidate, so
+      // Playwright's 30-second default would fail before the product contract.
+      page = await app.firstWindow({ timeout: 60_000 });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const logs = mainLogs.length > 0 ? `\nElectron main console:\n${mainLogs.join('\n')}` : '';
