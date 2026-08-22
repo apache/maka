@@ -2876,6 +2876,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     transcript: {
       description: primaryGuidance.commands.transcript,
+      // The viewer is a full-screen overlay over the same TUI the turn paints
+      // into, so it is exactly the picker case 'refuse' exists for.
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
