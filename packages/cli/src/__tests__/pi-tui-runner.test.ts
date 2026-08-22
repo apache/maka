@@ -3272,7 +3272,9 @@ describe('Maka Pi TUI runner', () => {
   });
 
   test('restores switched session state from stored messages', async () => {
-    const terminal = new FakeTerminal();
+    // 120 cols: the status line fits every segment, so the usage segments this
+    // test asserts (ctx, cache) are not priority-dropped (#3421).
+    const terminal = new FakeTerminal(120);
     const driver = new SlashCommandDriver(
       [fakeSessionSummary('session-2', '/repo')],
       new Map([
