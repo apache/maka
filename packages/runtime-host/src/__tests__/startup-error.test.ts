@@ -43,12 +43,14 @@ test('keeps an unresponsive Host retryable and includes bounded diagnostics', ()
     candidateLaunches: 1,
     sawEndpointConnected: true,
     observations: {
+      totalResults: 6,
       notRegistered: 1,
       connectFailed: 0,
       handshakeFailed: 2,
       connected: 1,
       readyWaitFailed: 1,
       deadlineElapsed: 1,
+      otherResults: 1,
     },
     lastRegistration: {
       pid: 42,
@@ -63,7 +65,9 @@ test('keeps an unresponsive Host retryable and includes bounded diagnostics', ()
     },
   });
   assert.equal(error instanceof RuntimeHostPermanentReconnectError, false);
-  assert.match(error.message, /stopped responding/u);
+  assert.match(error.message, /did not become ready before the startup deadline/u);
+  assert.match(error.message, /retrying/u);
+  assert.match(error.message, /MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS/u);
   assert.match(error.message, /election diagnostic/u);
   assert.match(error.message, /"state":"recovering"/u);
   assert.match(error.message, /"startupAttemptId":"00000000/u);
@@ -76,12 +80,14 @@ test('includes bounded election evidence when startup times out before an endpoi
     candidateLaunches: 1,
     sawEndpointConnected: false,
     observations: {
+      totalResults: 4,
       notRegistered: 4,
       connectFailed: 0,
       handshakeFailed: 0,
       connected: 0,
       readyWaitFailed: 0,
       deadlineElapsed: 0,
+      otherResults: 0,
     },
     latestCandidate: {
       pid: 42,
@@ -90,7 +96,8 @@ test('includes bounded election evidence when startup times out before an endpoi
     },
   });
 
-  assert.match(error.message, /did not become ready/u);
+  assert.match(error.message, /became ready/u);
+  assert.match(error.message, /MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS/u);
   assert.match(error.message, /"sawEndpointConnected":false/u);
   assert.match(error.message, /"candidateLaunches":1/u);
 });

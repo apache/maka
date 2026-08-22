@@ -66,6 +66,7 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
   type ClientFrame,
 } from '../protocol/index.js';
 import {
@@ -135,6 +136,25 @@ export type GenericRuntimeHostCompositionFactory = RuntimeHostCompositionFactory
 export type GenericRuntimeHostCompositionSource = RuntimeHostCompositionSource<'interactive'>;
 // @ts-expect-error Runtime Host kernel options are concretely interactive.
 export type GenericRuntimeHostKernelOptions = RuntimeHostKernelOptions<'interactive'>;
+
+function diagnosticRegistration(state: 'ready' | 'draining') {
+  return {
+    kind: 'maka-runtime-host',
+    schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+    rootId: '00000000-0000-4000-8000-000000000003',
+    hostEpoch: '00000000-0000-4000-8000-000000000004',
+    endpoint: '\\\\.\\pipe\\maka-runtime-host-diagnostic',
+    protocolMin: CURRENT_PROTOCOL.min,
+    protocolMax: CURRENT_PROTOCOL.max,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    compositionId: KERNEL_COMPOSITION.descriptor.id,
+    compositionRevision: KERNEL_COMPOSITION.descriptor.revision,
+    lifecycleMode: 'ephemeral',
+    state,
+    pid: 4242,
+    createdAt: '2026-08-22T00:00:00.000Z',
+  } as const;
+}
 
 describe('non-serving Runtime Host kernel', () => {
   test('reports a recovery failure when the election produces no ready Host', async () => {
@@ -241,7 +261,11 @@ describe('non-serving Runtime Host kernel', () => {
           connectHost: async () => {
             connectCalls += 1;
             return connectCalls === 1
-              ? { kind: 'unavailable' as const, reason: 'not_registered' as const }
+              ? {
+                  kind: 'unavailable' as const,
+                  reason: 'not_registered' as const,
+                  endpointConnected: false,
+                }
               : { kind: 'election_deadline_elapsed' as const, endpointConnected: true };
           },
           launchCandidate: () => ({
@@ -262,12 +286,14 @@ describe('non-serving Runtime Host kernel', () => {
       assert.equal(result.diagnostic.candidateLaunches, 1);
       assert.equal(result.diagnostic.sawEndpointConnected, true);
       assert.deepEqual(result.diagnostic.observations, {
+        totalResults: 2,
         notRegistered: 1,
         connectFailed: 0,
         handshakeFailed: 0,
         connected: 0,
         readyWaitFailed: 0,
         deadlineElapsed: 1,
+        otherResults: 0,
       });
       assert.deepEqual(result.diagnostic.latestCandidate, {
         pid: 4242,
@@ -277,45 +303,170 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('counts a coalesced Candidate launch only once across repeated election requests', async () => {
+  test('keeps diagnostic observation buckets reconcilable for unclassified results', async () => {
     await withHostPaths(async (paths) => {
-      let launchRequests = 0;
-      const launch = {
-        spawned: Promise.resolve({
-          pid: 4242,
-          startupAttemptId: STARTUP_ATTEMPT_A,
-          exited: new Promise<never>(() => undefined),
-          startupFailure: new Promise<never>(() => undefined),
-        }),
-      };
+      let connectCalls = 0;
       const result = await connectOrSpawnRuntimeHostWithDependencies(
         {
           rootPath: paths.root,
           protocol: CURRENT_PROTOCOL,
           compositionId: KERNEL_COMPOSITION.descriptor.id,
           candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
-          electionDeadlineMs: 800,
+          electionDeadlineMs: 500,
         },
         {
           random: () => 0,
-          connectHost: async () => ({
-            kind: 'unavailable' as const,
-            reason: 'not_registered' as const,
-          }),
-          launchCandidate: () => {
-            launchRequests += 1;
-            return launch;
+          connectHost: async () => {
+            connectCalls += 1;
+            if (connectCalls === 1) {
+              return {
+                kind: 'draining' as const,
+                registration: diagnosticRegistration('draining'),
+              };
+            }
+            if (connectCalls === 2) {
+              return {
+                kind: 'unavailable' as const,
+                reason: 'invalid_registration' as const,
+                endpointConnected: false,
+              };
+            }
+            return { kind: 'election_deadline_elapsed' as const, endpointConnected: true };
           },
+          launchCandidate: () => ({ spawned: Promise.resolve({ pid: process.pid }) }),
         },
       );
 
-      assert.ok(launchRequests > 1);
       assert.equal(result.kind, 'failed');
       if (result.kind !== 'failed') return;
-      assert.equal(result.reason, 'startup_timeout');
-      assert.equal(result.diagnostic?.candidateLaunches, 1);
+      assert.equal(result.reason, 'host_unresponsive');
+      assert.deepEqual(result.diagnostic?.observations, {
+        totalResults: 3,
+        notRegistered: 0,
+        connectFailed: 0,
+        handshakeFailed: 0,
+        connected: 0,
+        readyWaitFailed: 0,
+        deadlineElapsed: 1,
+        otherResults: 2,
+      });
+      const observations = result.diagnostic?.observations;
+      assert.equal(
+        observations?.totalResults,
+        (observations?.notRegistered ?? 0) +
+          (observations?.connectFailed ?? 0) +
+          (observations?.handshakeFailed ?? 0) +
+          (observations?.connected ?? 0) +
+          (observations?.deadlineElapsed ?? 0) +
+          (observations?.otherResults ?? 0),
+      );
     });
   });
+
+  for (const handshakeResult of [
+    {
+      name: 'draining',
+      result: {
+        kind: 'draining' as const,
+        registration: diagnosticRegistration('draining'),
+      },
+    },
+    {
+      name: 'non-blocking incompatible',
+      result: {
+        kind: 'incompatible' as const,
+        registration: diagnosticRegistration('ready'),
+        handshake: {
+          kind: 'incompatible' as const,
+          hostEpoch: '00000000-0000-4000-8000-000000000004',
+          protocolMin: CURRENT_PROTOCOL.min,
+          protocolMax: CURRENT_PROTOCOL.max,
+          compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          compositionRevision: KERNEL_COMPOSITION.descriptor.revision,
+          state: 'ready' as const,
+          replacement: 'wait_for_idle_exit' as const,
+        },
+      },
+    },
+    {
+      name: 'registration root mismatch',
+      result: {
+        kind: 'unavailable' as const,
+        reason: 'root_mismatch' as const,
+        endpointConnected: false,
+        registration: diagnosticRegistration('ready'),
+      },
+      expectedEndpointConnected: false,
+    },
+    {
+      name: 'handshake root mismatch',
+      result: {
+        kind: 'unavailable' as const,
+        reason: 'root_mismatch' as const,
+        endpointConnected: true,
+        registration: diagnosticRegistration('ready'),
+      },
+      expectedEndpointConnected: true,
+    },
+    {
+      name: 'epoch mismatch',
+      result: {
+        kind: 'unavailable' as const,
+        reason: 'epoch_mismatch' as const,
+        endpointConnected: true,
+        registration: diagnosticRegistration('ready'),
+      },
+      expectedEndpointConnected: true,
+    },
+    {
+      name: 'composition mismatch',
+      result: {
+        kind: 'unavailable' as const,
+        reason: 'composition_mismatch' as const,
+        endpointConnected: true,
+        registration: diagnosticRegistration('ready'),
+      },
+      expectedEndpointConnected: true,
+    },
+  ]) {
+    test(`records ${handshakeResult.name} endpoint evidence exactly`, async () => {
+      await withHostPaths(async (paths) => {
+        const launch = {
+          spawned: Promise.resolve({
+            pid: 4242,
+            startupAttemptId: STARTUP_ATTEMPT_A,
+            exited: new Promise<never>(() => undefined),
+            startupFailure: new Promise<never>(() => undefined),
+          }),
+        };
+        const result = await connectOrSpawnRuntimeHostWithDependencies(
+          {
+            rootPath: paths.root,
+            protocol: CURRENT_PROTOCOL,
+            compositionId: KERNEL_COMPOSITION.descriptor.id,
+            candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+            electionDeadlineMs: 300,
+          },
+          {
+            random: () => 0,
+            connectHost: async () => handshakeResult.result,
+            launchCandidate: () => launch,
+          },
+        );
+
+        assert.equal(result.kind, 'failed');
+        if (result.kind !== 'failed') return;
+        assert.equal(result.reason, 'startup_timeout');
+        assert.equal(
+          result.diagnostic?.sawEndpointConnected,
+          'expectedEndpointConnected' in handshakeResult
+            ? handshakeResult.expectedEndpointConnected
+            : true,
+        );
+      });
+    });
+  }
 
   test('keeps one live Candidate in flight for the whole election', async () => {
     await withHostPaths(async (paths) => {
@@ -342,7 +493,10 @@ describe('non-serving Runtime Host kernel', () => {
         },
       );
 
-      assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+      assert.equal(result.kind, 'failed');
+      if (result.kind !== 'failed') return;
+      assert.equal(result.reason, 'startup_timeout');
+      assert.equal(result.diagnostic?.candidateLaunches, 1);
       assert.equal(launches, 1);
     });
   });
@@ -377,7 +531,10 @@ describe('non-serving Runtime Host kernel', () => {
         },
       );
 
-      assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+      assert.equal(result.kind, 'failed');
+      if (result.kind !== 'failed') return;
+      assert.equal(result.reason, 'startup_timeout');
+      assert.equal(result.diagnostic?.candidateLaunches, 2);
       assert.equal(launches, 2);
     });
   });
@@ -409,7 +566,10 @@ describe('non-serving Runtime Host kernel', () => {
         },
       );
 
-      assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+      assert.equal(result.kind, 'failed');
+      if (result.kind !== 'failed') return;
+      assert.equal(result.reason, 'startup_timeout');
+      assert.equal(result.diagnostic?.candidateLaunches, 2);
       assert.equal(launches, 2);
     });
   });

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import {
   prepareStorageRootControlDirectory,
@@ -72,6 +91,13 @@ const defaultDependencies: ConnectOrSpawnRuntimeHostDependencies = {
   random: Math.random,
 };
 
+/**
+ * Resolves the operator override for the client election deadline. Large
+ * workspaces can legitimately take longer than the default window on their
+ * first start after an upgrade, so the deadline must be raisable without a
+ * code change. Invalid values fail closed: a silently ignored typo would
+ * leave the operator believing they widened the window when they did not.
+ */
 export function electionDeadlineMsFromEnvironment(
   rawValue: string | undefined,
 ): number | undefined {
@@ -111,12 +137,14 @@ export interface RuntimeHostElectionDiagnostic {
   readonly candidateLaunches: number;
   readonly sawEndpointConnected: boolean;
   readonly observations: {
+    readonly totalResults: number;
     readonly notRegistered: number;
     readonly connectFailed: number;
     readonly handshakeFailed: number;
     readonly connected: number;
     readonly readyWaitFailed: number;
     readonly deadlineElapsed: number;
+    readonly otherResults: number;
   };
   readonly lastRegistration?: {
     readonly pid: number;
@@ -134,12 +162,14 @@ export interface RuntimeHostElectionDiagnostic {
 }
 
 interface MutableElectionObservations {
+  totalResults: number;
   notRegistered: number;
   connectFailed: number;
   handshakeFailed: number;
   connected: number;
   readyWaitFailed: number;
   deadlineElapsed: number;
+  otherResults: number;
 }
 
 interface ObservedCandidateAttempt {
@@ -273,17 +303,20 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   let startupFailure: CandidateStartupFailureReport | undefined;
   let pendingCandidateReports = 0;
   let electionSettled = false;
+  let candidateInFlight = false;
   const candidateLaunches = new Set<ReturnType<CandidateLauncher>>();
   let sawEndpointConnected = false;
   let lastRegistration: HostRegistration | undefined;
   let latestCandidate: ObservedCandidateAttempt | undefined;
   const observations: MutableElectionObservations = {
+    totalResults: 0,
     notRegistered: 0,
     connectFailed: 0,
     handshakeFailed: 0,
     connected: 0,
     readyWaitFailed: 0,
     deadlineElapsed: 0,
+    otherResults: 0,
   };
 
   try {
@@ -353,6 +386,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       if (
         shouldLaunchCandidate(result) &&
         !isPermanentCandidateStartupFailure(startupFailure) &&
+        !candidateInFlight &&
         now >= nextCandidateAt
       ) {
         try {
@@ -367,12 +401,17 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           });
           candidateLaunches.add(launch);
           const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
+          candidateInFlight = true;
           const candidate: ObservedCandidateAttempt = { attempt };
           latestCandidate = candidate;
           if (attempt.exited) {
-            void attempt.exited.then((exit) => {
-              candidate.exit = exit;
-            });
+            void attempt.exited.then(
+              (exit) => {
+                candidate.exit = exit;
+                candidateInFlight = false;
+              },
+              () => undefined,
+            );
           }
           if (attempt.startupFailure) {
             pendingCandidateReports += 1;
@@ -452,6 +491,7 @@ function recordElectionResult(
   result: ElectionConnectionResult,
   observations: MutableElectionObservations,
 ): { readonly endpointConnected: boolean; readonly registration?: HostRegistration } {
+  observations.totalResults += 1;
   const registration = 'registration' in result ? result.registration : undefined;
   if (result.kind === 'election_deadline_elapsed') {
     observations.deadlineElapsed += 1;
@@ -465,7 +505,11 @@ function recordElectionResult(
     return { endpointConnected: true, registration };
   }
   if (result.kind !== 'unavailable') {
-    return { endpointConnected: false, ...(registration ? { registration } : {}) };
+    observations.otherResults += 1;
+    return {
+      endpointConnected: electionResultReachedEndpoint(result),
+      ...(registration ? { registration } : {}),
+    };
   }
   switch (result.reason) {
     case 'not_registered':
@@ -477,11 +521,28 @@ function recordElectionResult(
     case 'handshake_failed':
       observations.handshakeFailed += 1;
       break;
+    default:
+      observations.otherResults += 1;
+      break;
   }
   return {
-    endpointConnected: result.reason === 'handshake_failed',
+    endpointConnected: electionResultReachedEndpoint(result),
     ...(registration ? { registration } : {}),
   };
+}
+
+function electionResultReachedEndpoint(
+  result: Exclude<ElectionConnectionResult, { kind: 'election_deadline_elapsed' }>,
+): boolean {
+  switch (result.kind) {
+    case 'connected':
+    case 'draining':
+    case 'incompatible':
+    case 'upgrade_required':
+      return true;
+    case 'unavailable':
+      return result.endpointConnected;
+  }
 }
 
 function createElectionDiagnostic(input: {

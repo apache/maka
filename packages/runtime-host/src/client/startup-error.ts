@@ -71,11 +71,11 @@ export function runtimeHostStartupError(
       );
     case 'startup_timeout':
       return new Error(
-        `Runtime Host did not become ready before the startup deadline${electionDiagnosticSuffix(diagnostic)}`,
+        `No Runtime Host became ready before the startup deadline elapsed${electionDiagnosticSuffix(diagnostic)}. Retry; if this workspace needs longer to open (large workspaces can after an upgrade), set MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS to allow more time.`,
       );
     case 'host_unresponsive':
       return new Error(
-        `Runtime Host stopped responding during startup${electionDiagnosticSuffix(diagnostic)}`,
+        `A Runtime Host was found but did not become ready before the startup deadline elapsed${electionDiagnosticSuffix(diagnostic)}. It may still be opening this workspace (large workspaces can need longer right after an upgrade); retrying once it settles usually succeeds, or set MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS to allow more time.`,
       );
   }
 }
