@@ -54,6 +54,7 @@ try {
     baseUrl: payload.baseUrl,
     execution: payload.execution,
     signal: abort.signal,
+    abortPolicy: 'preserve_environment',
     hostSettlementTimeoutMs: payload.hostSettlementTimeoutMs,
   });
 } finally {
