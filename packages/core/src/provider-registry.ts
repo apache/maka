@@ -129,7 +129,7 @@ if (xiaomi.id !== 'xiaomi' || !xiaomi.api) {
 }
 const xiaomiModelIds = toolCallingModelIds('Xiaomi', GENERATED_MODELS_DEV_METADATA.xiaomi, [
   'mimo-v2.5',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.xiaomi[id]?.lifecycle !== 'deprecated');
 // Keep the bootstrap snapshot limited to the two documented MiMo chat models. The remote
 // /models response becomes authoritative as soon as the user saves a working plan credential.
 const xiaomiTokenPlanModelIds = ['mimo-v2.5-pro', 'mimo-v2.5'] as const;
@@ -181,14 +181,14 @@ if (nvidia.id !== 'nvidia')
 if (!nvidia.api) throw new Error('models.dev NVIDIA provider facts are missing api');
 const nvidiaModelIds = toolCallingModelIds('NVIDIA', GENERATED_MODELS_DEV_METADATA.nvidia, [
   'nvidia/nemotron-3-super-120b-a12b',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.nvidia[id]?.lifecycle !== 'deprecated');
 
 const mistral = GENERATED_MODELS_DEV_PROVIDER_FACTS.mistral;
 if (mistral.id !== 'mistral')
   throw new Error('models.dev Mistral provider facts are missing stable id mistral');
 const mistralModelIds = toolCallingModelIds('Mistral', GENERATED_MODELS_DEV_METADATA.mistral, [
   'mistral-large-latest',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.mistral[id]?.lifecycle !== 'deprecated');
 const cohere = GENERATED_MODELS_DEV_PROVIDER_FACTS.cohere;
 if (cohere.id !== 'cohere')
   throw new Error('models.dev Cohere provider facts are missing stable id cohere');
@@ -422,7 +422,7 @@ const togetherModelIds = toolCallingModelIds(
   'Together AI',
   GENERATED_MODELS_DEV_METADATA.togetherai,
   ['MiniMaxAI/MiniMax-M3'],
-);
+).filter((id) => GENERATED_MODELS_DEV_METADATA.togetherai[id]?.lifecycle !== 'deprecated');
 const deepinfra = GENERATED_MODELS_DEV_PROVIDER_FACTS.deepinfra;
 if (deepinfra.id !== 'deepinfra') {
   throw new Error('models.dev DeepInfra provider facts are missing stable id deepinfra');
@@ -431,7 +431,7 @@ const deepinfraModelIds = toolCallingModelIds(
   'DeepInfra',
   GENERATED_MODELS_DEV_METADATA.deepinfra,
   ['moonshotai/Kimi-K2.7-Code', 'moonshotai/Kimi-K2.6'],
-);
+).filter((id) => GENERATED_MODELS_DEV_METADATA.deepinfra[id]?.lifecycle !== 'deprecated');
 const groq = GENERATED_MODELS_DEV_PROVIDER_FACTS.groq;
 if (groq.id !== 'groq') {
   throw new Error('models.dev Groq provider facts are missing stable id groq');
@@ -827,7 +827,7 @@ const providerRegistry = {
     baseUrl: 'https://api.openai.com/v1',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
-    fallbackModels: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-5'],
+    fallbackModels: ['gpt-4o-mini', 'gpt-4o', 'gpt-5'],
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai', applyPatchProtocol: 'openai-structured' },

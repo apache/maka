@@ -144,14 +144,14 @@ describe('retired provider contract', () => {
   });
 });
 
-// Discovery keeps only the fallback set, and the catalog marks whatever it
-// returns available and default-capable, so a deprecated id in `fallbackModels`
-// is offered as a usable choice. Six providers still carry such ids on main —
-// `openai` writes its list by hand, the rest build it through
-// `toolCallingModelIds`, which does not filter lifecycle. Converging all of
-// them changes which models users are offered and is tracked in #3355; this
-// list is the recorded boundary, so a provider that regresses into it fails
-// here rather than passing unnoticed.
+// A deprecated id in `fallbackModels` is offered as a usable choice: the
+// catalog marks whatever the list contains available and default-capable, and
+// `fallbackModels[0]` is what a new connection defaults to and what the
+// connection test probes. `toolCallingModelIds` filters on tool-calling
+// capability only, so each derivation drops deprecated ids at its call site;
+// `openai` writes its list by hand. Removal is from the offer only — an id a
+// user already chose still sends, and live discovery still returns whatever
+// the endpoint serves (#3355).
 // Not every catalog provider has a models.dev snapshot (custom and
 // compatible-endpoint types have none), so the lookup is widened rather than
 // keyed on the registry's own union.
@@ -163,15 +163,6 @@ const snapshotFor = (type: string) =>
     >
   )[type];
 
-const PROVIDERS_WITH_DEPRECATED_FALLBACKS = new Set([
-  'openai',
-  'xiaomi',
-  'mistral',
-  'togetherai',
-  'nvidia',
-  'deepinfra',
-]);
-
 describe('provider catalog contract — fallback lifecycle', () => {
   it('keeps deprecated snapshot models out of fallback lists', () => {
     const regressed = [];
@@ -181,25 +172,10 @@ describe('provider catalog contract — fallback lifecycle', () => {
       const deprecated = (PROVIDER_REGISTRY[type].fallbackModels ?? []).filter(
         (id) => snapshot[id]?.lifecycle === 'deprecated',
       );
-      if (deprecated.length > 0 && !PROVIDERS_WITH_DEPRECATED_FALLBACKS.has(type)) {
+      if (deprecated.length > 0) {
         regressed.push(`${type}: ${deprecated.join(', ')}`);
       }
     }
     assert.deepEqual(regressed, []);
-  });
-
-  it('holds the recorded boundary to exactly the providers that predate it', () => {
-    const offenders = CATALOG_PROVIDER_TYPES.filter((type) => {
-      const snapshot = snapshotFor(type);
-      return (
-        snapshot !== undefined &&
-        (PROVIDER_REGISTRY[type].fallbackModels ?? []).some(
-          (id) => snapshot[id]?.lifecycle === 'deprecated',
-        )
-      );
-    });
-    // Fails when a listed provider is cleaned up and the entry is left behind,
-    // so the boundary shrinks as the tracked work lands instead of going stale.
-    assert.deepEqual([...offenders].sort(), [...PROVIDERS_WITH_DEPRECATED_FALLBACKS].sort());
   });
 });
