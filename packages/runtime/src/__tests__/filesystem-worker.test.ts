@@ -543,9 +543,9 @@ describe('filesystem worker operations', () => {
 
 async function requestFor(
   operation: FilesystemWorkerOperation,
-  expectedTarget: Omit<FilesystemWorkerTarget, 't0'>,
+  expectedTarget: Omit<FilesystemWorkerTarget, 'identity'>,
   permissionPath = operation.path,
-  t0?: FilesystemWorkerTarget['t0'],
+  identity?: FilesystemWorkerTarget['identity'],
 ): Promise<FilesystemWorkerRequest> {
   const operationBoundary: FilesystemWorkerRequest['operationBoundary'] = {
     filesystem: {
@@ -562,17 +562,15 @@ async function requestFor(
   // the worker's mandatory-identity check is satisfied for non-missing targets.
   let resolvedTarget: FilesystemWorkerTarget = {
     ...expectedTarget,
-    // t0 is always replaced below; the placeholder keeps the type total.
-    t0: 'existing',
+    // Always replaced below; the placeholder keeps the type total.
+    identity: 'unchecked',
   };
-  if (t0 !== undefined) {
-    // The test chose the T0 marker explicitly (e.g. 'unchecked'); keep the
-    // target exactly as given.
-    resolvedTarget = { ...expectedTarget, t0 };
+  if (identity !== undefined) {
+    // The test chose the identity contract explicitly (e.g. 'unchecked' or a
+    // stale inode); keep the target exactly as given.
+    resolvedTarget = { ...expectedTarget, identity };
   } else if (expectedTarget.targetType === 'missing') {
-    resolvedTarget = { ...expectedTarget, t0: 'missing' };
-  } else if (expectedTarget.identity) {
-    resolvedTarget = { ...expectedTarget, t0: 'existing' };
+    resolvedTarget = { ...expectedTarget, identity: 'missing' };
   } else {
     const follow = expectedTarget.targetType !== 'symlink';
     try {
@@ -581,13 +579,12 @@ async function requestFor(
         : await lstat(expectedTarget.enforcementPath, { bigint: true });
       resolvedTarget = {
         ...expectedTarget,
-        t0: 'existing',
         identity: { dev: String(metadata.dev), ino: String(metadata.ino) },
       };
     } catch {
       // Target may not exist at request construction time (the test sets it up
-      // differently); leave identity absent and let the worker surface it.
-      resolvedTarget = { ...expectedTarget, t0: 'existing' };
+      // differently); fall back to 'missing' so the worker's own checks decide.
+      resolvedTarget = { ...expectedTarget, identity: 'missing' };
     }
   }
   return {

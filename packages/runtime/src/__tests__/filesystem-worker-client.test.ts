@@ -86,8 +86,10 @@ describe('filesystem worker client permission snapshots', () => {
     assert.equal(expectedTarget?.targetType, 'symlink');
     // The symlink entry's own identity (lstat, no follow) is captured at T0 and
     // forwarded; only its shape is stable, not its value.
-    assert.equal(typeof expectedTarget?.identity?.dev, 'string');
-    assert.equal(typeof expectedTarget?.identity?.ino, 'string');
+    assert.equal(typeof expectedTarget?.identity, 'object');
+    const forwarded = expectedTarget?.identity as { dev: string; ino: string };
+    assert.equal(typeof forwarded.dev, 'string');
+    assert.equal(typeof forwarded.ino, 'string');
   });
 
   for (const kind of ['bypass', 'external'] as const) {
@@ -741,7 +743,10 @@ describe('filesystem worker client dispatch classification', () => {
     });
 
     assert.equal(requests[0]?.expectedTarget.targetType, 'missing');
-    assert.equal(requests[0]?.expectedTarget.identity, undefined);
+    // The stale identity is never sent on a missing target; the wire's
+    // required identity contract reports 'missing' (nothing to compare),
+    // which lets the worker proceed as a fresh exclusive create.
+    assert.equal(requests[0]?.expectedTarget.identity, 'missing');
   });
 
   test('rejects a write whose target was created while queued (never invalid_request)', async () => {

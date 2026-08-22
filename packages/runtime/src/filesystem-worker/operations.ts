@@ -159,7 +159,8 @@ export async function executeFilesystemOperation(
       // appeared in the gap is `path_changed`, never truncated.
       const handle = await openStableTarget({
         path,
-        approvedIdentity: expectedTarget?.identity,
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
         targetType: expectedTarget?.targetType,
       });
       try {
@@ -211,7 +212,8 @@ export async function executeFilesystemOperation(
         else
           await compareAndDeleteEntry({
             path,
-            approvedIdentity: expectedTarget?.identity,
+            approvedIdentity:
+              typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
           });
         return { kind: 'apply_patch', ok: true, path };
       }
@@ -226,7 +228,8 @@ export async function executeFilesystemOperation(
       // rejected patch propagates before any truncation, so the file is intact.
       const handle = await openStableTarget({
         path,
-        approvedIdentity: expectedTarget?.identity,
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
         targetType: expectedTarget?.targetType,
       });
       try {
@@ -250,7 +253,8 @@ export async function executeFilesystemOperation(
       );
       const handle = await openStableTarget({
         path,
-        approvedIdentity: expectedTarget?.identity,
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
         targetType: expectedTarget?.targetType,
       });
       try {
@@ -297,7 +301,8 @@ export async function executeFilesystemOperation(
       );
       const handle = await openStableTarget({
         path,
-        approvedIdentity: expectedTarget?.identity,
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
         targetType: expectedTarget?.targetType,
       });
       try {
@@ -489,42 +494,34 @@ async function assertTargetUnchanged(
   // while the call waited for the lock has a different inode even when its
   // canonical path and type still match.
   //
-  // The T0 marker on the wire distinguishes the two ways a non-missing WRITE
-  // target can arrive without a concrete identity (#3484):
-  // - t0 'missing': T0 saw no target but T1 does — something created it while
+  // The wire carries one required three-state identity contract (#3484):
+  // - { dev, ino }: CAS against the on-disk inode.
+  // - 'missing': T0 saw no target but T1 does — something created it while
   //   this call waited. Writing would clobber content the caller never saw.
-  // - t0 'existing' without identity: a buggy caller that captured a T0 but
-  //   failed to send it — fail loudly rather than degrading to "no check", so
-  //   the queue-window defence cannot silently collapse.
-  // - t0 'unchecked': the caller deliberately does not participate in CAS.
+  // - 'unchecked': the caller deliberately does not participate in CAS.
   //   Reads never mutate and are exempt either way.
   if (access === 'write' && expected.targetType !== 'missing') {
-    if (expected.t0 === 'missing') {
+    if (expected.identity === 'missing') {
       throw operationError(
         'path_changed',
         'The target was created while this call waited for the lock; re-read before writing.',
       );
     }
-    if (expected.t0 === 'existing' && !expected.identity) {
-      throw operationError(
-        'invalid_request',
-        'A non-missing filesystem target must carry an identity for CAS.',
-      );
+    if (typeof expected.identity === 'object') {
+      const metadata = noFollowFinalSymlink
+        ? await fs.lstat(enforcementPath, { bigint: true })
+        : await fs.stat(enforcementPath, { bigint: true });
+      if (
+        String(metadata.dev) !== expected.identity.dev ||
+        String(metadata.ino) !== expected.identity.ino
+      ) {
+        throw operationError(
+          'path_changed',
+          'The approved filesystem target changed before execution.',
+        );
+      }
     }
-  }
-  if (expected.identity) {
-    const metadata = noFollowFinalSymlink
-      ? await fs.lstat(enforcementPath, { bigint: true })
-      : await fs.stat(enforcementPath, { bigint: true });
-    if (
-      String(metadata.dev) !== expected.identity.dev ||
-      String(metadata.ino) !== expected.identity.ino
-    ) {
-      throw operationError(
-        'path_changed',
-        'The approved filesystem target changed before execution.',
-      );
-    }
+    // identity === 'unchecked': nothing to compare, nothing to fail.
   }
 }
 

@@ -29,7 +29,8 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 
 function requestFor(
   operation: FilesystemWorkerRequest['operation'],
-  expectedTarget: Omit<FilesystemWorkerTarget, 't0'>,
+  expectedTarget: Omit<FilesystemWorkerTarget, 'identity'>,
+  identity: FilesystemWorkerTarget['identity'] = 'missing',
 ): FilesystemWorkerRequest {
   return {
     version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -40,12 +41,7 @@ function requestFor(
         entries: [{ path: expectedTarget.enforcementPath, access: 'write', scope: 'exact' }],
       },
     },
-    expectedTarget: {
-      ...expectedTarget,
-      // These tests always CAS against a captured identity or an approved
-      // missing target; neither is an unchecked caller.
-      t0: expectedTarget.identity ? 'existing' : 'missing',
-    },
+    expectedTarget: { ...expectedTarget, identity },
   };
 }
 
@@ -72,7 +68,8 @@ describe('filesystem worker target identity CAS', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'write', cwd, path: target, content: 'new' },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
       ),
     );
 
@@ -95,7 +92,8 @@ describe('filesystem worker target identity CAS', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'write', cwd, path: target, content: 'updated' },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
       ),
     );
 
@@ -120,7 +118,8 @@ describe('filesystem worker target identity CAS', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'apply_patch', cwd, path: target, action: 'delete' },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
       ),
     );
 
@@ -144,7 +143,8 @@ describe('filesystem worker target identity CAS', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'edit', cwd, path: target, oldString: 'old', newString: 'new' },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
       ),
     );
 
@@ -191,7 +191,8 @@ describe('filesystem worker target identity CAS', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'write', cwd, path: target, content: 'new' },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
       ),
     );
 

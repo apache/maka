@@ -190,10 +190,10 @@ export class FilesystemWorkerClient {
 
     const access = operationAccess(parsedOperation.data.kind);
     const entryMode = operationUsesDirectoryEntry(parsedOperation.data);
-    // t0 is derived below from the caller's explicit expectedIdentity and
-    // added to the wire request; the normalised target itself has no T0
-    // marker, so the declared type omits it.
-    const target: Omit<FilesystemWorkerTarget, 't0'> & { writableAncestor?: string } =
+    // The wire identity contract is derived below from the caller's explicit
+    // expectedIdentity; the normalised target itself has no identity field,
+    // so the declared type omits it.
+    const target: Omit<FilesystemWorkerTarget, 'identity'> & { writableAncestor?: string } =
       await (entryMode
         ? normalizeDirectoryEntryTarget({
             path: parsedOperation.data.path,
@@ -320,16 +320,14 @@ export class FilesystemWorkerClient {
         access,
         scope: target.scope,
         targetType: target.targetType,
-        // What T0 observed, carried explicitly so the worker can tell "created
-        // while queued" (missing) from "caller has no CAS snapshot"
-        // (unchecked) — the two were conflated on this wire and cost #3484.
-        t0:
-          input.expectedIdentity === 'unchecked'
-            ? 'unchecked'
-            : input.expectedIdentity === 'missing'
-              ? 'missing'
-              : 'existing',
-        ...(identity ? { identity } : {}),
+        // The execution-time identity contract. A concrete identity is only
+        // carried when the target still exists at T1; a target that vanished
+        // while queued (or was never there) is 'missing', and a caller that
+        // does not participate in CAS says 'unchecked' (#3484).
+        identity:
+          typeof input.expectedIdentity === 'object'
+            ? (identity ?? 'missing')
+            : input.expectedIdentity,
       },
     } as const;
     const requestJson = JSON.stringify(request);
@@ -673,7 +671,7 @@ async function normalizeDirectoryEntryTarget(input: {
   path: string;
   cwd: string;
   access: 'read' | 'write';
-}): Promise<Omit<FilesystemWorkerTarget, 't0'> & { writableAncestor?: string }> {
+}): Promise<Omit<FilesystemWorkerTarget, 'identity'> & { writableAncestor?: string }> {
   const target = await resolveCanonicalDirectoryEntryTarget(input.cwd, input.path);
   let targetType: FilesystemWorkerTarget['targetType'];
   try {

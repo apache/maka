@@ -53,29 +53,22 @@ export const FilesystemWorkerTargetSchema = z
     access: z.enum(['read', 'write']),
     scope: z.enum(['exact', 'subtree']),
     targetType: z.enum(['file', 'directory', 'symlink', 'other', 'missing']),
-    // What the caller observed about the target at lock acquisition (T0):
-    // - 'existing' — an identity was captured and must be CAS'd at T1.
-    // - 'missing'  — T0 saw no target; a T1-existing target was created while
-    //   the call waited and must fail.
-    // - 'unchecked' — the caller does not participate in CAS (no T0 snapshot);
-    //   the write proceeds without an identity comparison.
-    t0: z.enum(['existing', 'missing', 'unchecked']),
-    // The concrete T0 identity (dev/ino). Present exactly when t0 is
-    // 'existing'; the client building the request enforces the invariant.
-    identity: FilesystemTargetIdentitySchema.optional(),
+    // The execution-time identity contract, one required field (no separate
+    // T0 marker — a single three-state shape mirrors the client input, so an
+    // illegal combination cannot be expressed on the wire):
+    // - { dev, ino }: the T0 identity the worker must CAS against at T1.
+    // - 'missing': T0 saw no target; a target present at execution time was
+    //   created while the call waited and must fail.
+    // - 'unchecked': the caller does not participate in CAS; the write
+    //   proceeds without an identity comparison.
+    identity: FilesystemTargetIdentitySchema.or(z.literal('missing')).or(z.literal('unchecked')),
   })
   .strict()
   .superRefine((target, context) => {
-    if (target.targetType === 'missing' && target.identity !== undefined) {
+    if (target.targetType === 'missing' && typeof target.identity === 'object') {
       context.addIssue({
         code: 'custom',
         message: 'A missing target cannot carry an identity.',
-      });
-    }
-    if (target.t0 !== 'existing' && target.identity !== undefined) {
-      context.addIssue({
-        code: 'custom',
-        message: 'An identity requires t0 to be "existing".',
       });
     }
   });
