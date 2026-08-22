@@ -39,7 +39,7 @@ import { deriveBranchBanner } from '../src/renderer/branch-banner';
 import { deriveSessionRevisionNavigation } from '../src/renderer/session-revisions';
 import { deriveSessionRail } from '../src/renderer/session-rail';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
-import { GoalDialog } from '../src/renderer/goal-dialog';
+import { GoalDialog } from '../src/renderer/features/goals/testing';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
@@ -1126,7 +1126,28 @@ export const GoalDialogOpen: Story = {
   render: () => (
     <>
       <ComposedShell />
-      <GoalDialog sessionId="session-1" onClose={noop} />
+      <GoalDialog
+        sessionId="session-1"
+        onArm={async () => ({
+          kind: 'armed',
+          goal: {
+            id: 'storybook-goal',
+            revision: 1,
+            sessionId: 'storybook-session',
+            condition: 'Ship the Storybook example',
+            status: 'active',
+            setAt: Date.now(),
+            iterations: 0,
+            maxIterations: 25,
+            consecutiveNoProgress: 0,
+            blockCap: 8,
+            tokensAtStart: 0,
+            tokensNow: 0,
+            tokensBaselinePending: false,
+          },
+        })}
+        onClose={noop}
+      />
     </>
   ),
 };

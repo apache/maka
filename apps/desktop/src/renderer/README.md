@@ -41,6 +41,10 @@ shell logic split by one concern (e.g. `app-shell-session-events.ts`,
 `app-shell-overlays.tsx`). Keep a slice to one concern; if it grows, split along
 the same seam.
 
+Autonomous Goal state, controls, dialog lifecycle, and Desktop I/O live under
+`features/goals`; AppShell supplies the active Session boundary and consumes
+the feature's host, commands, and selectors.
+
 `settings/` holds the settings pages and the `SettingsModal` shell — one page per `SettingsSection` (defined in `@maka/core`); the models/providers page is `ProvidersPanel`. Plus the `provider-*` files and the shared `settings-rows` / `settings-skeleton` / `settings-surface` helpers.
 
 ## Styles & tokens
