@@ -1,4 +1,5 @@
 import {
+  classifyConnectionModelInventory,
   PROVIDER_DEFAULTS,
   type ProviderType,
 } from '@maka/core/llm-connections';
@@ -99,7 +100,7 @@ export async function synchronizeRuntimeHostAccountConnection(
   const catalog = await client.loadConnectionCatalog();
   if (catalog.defaultTarget !== null) return;
   const updated = findRuntimeHostAccountConnection(catalog, providerType);
-  const modelId = updated?.enabledModelIds[0];
+  const modelId = updated && firstAccountDefaultModelId(updated);
   if (!updated || !modelId) return;
   const selected = await client.setDefaultConnectionTarget(catalog.revision, {
     connectionId: updated.connectionId,
@@ -108,6 +109,28 @@ export async function synchronizeRuntimeHostAccountConnection(
   if (selected.kind !== 'committed') {
     throw new Error(`Unable to select account default: ${selected.kind}`);
   }
+}
+
+/**
+ * The model this account's first default should name.
+ *
+ * An account Connection is created before anyone can ask the account what it
+ * has — the OAuth login path holds no credential at that point — so its enabled
+ * ids start as the provider's curated fallback list, in the order this build
+ * ships them. Taking the first one names a model the account may never serve,
+ * and every later operation that falls back to the default then fails on a
+ * model the user never chose.
+ *
+ * A live response is the better-informed opinion about which of those ids to
+ * open on, so it picks the order. It does not pick the set: an id the response
+ * omitted stays enabled, because a `/models` answer that cannot see a model is
+ * not evidence the account cannot run it (`authorizeConnectionModel`).
+ */
+function firstAccountDefaultModelId(connection: ConnectionCatalogEntry): string | undefined {
+  const enabled = connection.enabledModelIds;
+  if (classifyConnectionModelInventory(connection) !== 'live') return enabled[0];
+  const live = new Set((connection.models ?? []).map(({ id }) => id));
+  return enabled.find((id) => live.has(id)) ?? enabled[0];
 }
 
 export async function setRuntimeHostAccountCredential(

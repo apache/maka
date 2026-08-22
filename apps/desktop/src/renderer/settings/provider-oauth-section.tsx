@@ -13,10 +13,12 @@ import {
   useOAuthLoginFlow,
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
-  type OAuthLoginFlowBridge,
   type SubscriptionSnapshot,
 } from './use-oauth-login-flow';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 
 export type OAuthCardId = 'codex' | 'github-copilot' | 'xai';
@@ -231,42 +233,85 @@ function SubscriptionLoginPanel(props: {
 
 function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void> }) {
   const host = useRuntimeHostSettingsTarget();
-  const copy = getProviderSettingsCopy(useUiLocale()).oauthSection;
-  // The shared login-flow controller owns the snapshot refresh, the
-  // synchronous one-shot pending guard, and the unmount safety; Copilot
-  // rides it through the direct account flow (one bridge call per action,
-  // no browser handoff, no logout confirm) instead of owning a separate
-  // pending-action state machine here (#1042).
+  const locale = useUiLocale();
+  const copy = getProviderSettingsCopy(locale).oauthSection;
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
+  const mountedRef = useMountedRef();
+  // The Host owns the device grant, so the panel drives the same browser-
+  // assisted controller as Codex and xAI: one attempt at a time, superseded
+  // and cancelled by the Host, with the user code arriving as the state hint.
+  // Sign-in is always offered, exactly as Codex and xAI are: the Host owns the
+  // enrollment gate and refuses the start with `experimental_disabled`, so the
+  // renderer must not carry a second copy of that decision.
   const flow = useOAuthLoginFlow({
-    bridge: {
-      getAccountState: () => window.maka.githubCopilotSubscription.getAccountState(host),
-      logout: () => window.maka.githubCopilotSubscription.logout(host),
-    } as OAuthLoginFlowBridge,
+    bridge: runtimeHostOAuthLoginBridge(window.maka.githubCopilotSubscription, host),
     display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
     onLoginSuccess: props.onLoginSuccess,
-    direct: {
-      login: () => window.maka.githubCopilotSubscription.connectExistingLogin(host),
-      refreshTokens: () => window.maka.githubCopilotSubscription.refreshTokens(host),
-    },
   });
-  const refreshTokens = flow.refreshTokens;
-  const loggedIn = flow.state?.runtimeState === 'authenticated' || flow.state?.runtimeState === 'refreshing';
+  // Importing a credential this machine already holds is one main-process call
+  // with no browser handoff, so it runs beside the controller rather than
+  // through its authRequestId lifecycle. It is the secondary route to the same
+  // Connection: the device grant is the primary one.
+  const [importing, setImporting] = useState(false);
+  const loggedIn = flow.isLoggedIn;
+  const actionBusy = flow.actionBusy || importing;
+
+  const importLocalCredential = async () => {
+    if (actionBusy) return;
+    setImporting(true);
+    try {
+      const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
+      if (!mountedRef.current) return;
+      if (!result.ok) {
+        reportHostError(
+          copy.copilotActionFailed,
+          subscriptionResultMessage(result.message, copy.copilotActionFailed, locale),
+        );
+      }
+      await flow.refresh();
+      if (result.ok && mountedRef.current) await props.onLoginSuccess();
+    } catch (error) {
+      if (mountedRef.current) {
+        reportHostError(copy.copilotActionFailed, subscriptionActionErrorMessage(error, locale));
+      }
+    } finally {
+      if (mountedRef.current) setImporting(false);
+    }
+  };
+
   return (
     <VStack gap={3} data-status={flow.runtimeState}>
       <Text type="body">
-        {loggedIn
-          ? copy.copilotImported
-          : flow.state?.runtimeState === 'refresh_failed' || flow.state?.runtimeState === 'storage_failed'
-            ? flow.state.errorMessage
-            : copy.copilotSetup}
+        {loggedIn ? copy.copilotImported : (flow.errorMessage ?? copy.copilotSetup)}
       </Text>
+      {flow.stateHint && (
+        <Text type="supporting" color="secondary" data-testid="github-copilot-device-code">
+          {copy.deviceCode} {flow.stateHint}
+        </Text>
+      )}
       <HStack gap={2} hAlign="end">
-        <Button variant="primary" onClick={() => void flow.startLogin()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'login' ? copy.importing : loggedIn ? copy.reimport : copy.importCredential} />
-        {loggedIn && (
+        {!loggedIn ? (
           <>
-            <Button variant="secondary" onClick={() => void refreshTokens?.()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'refresh' ? copy.verifying : copy.reverify} />
-            <Button variant="ghost" onClick={() => void flow.logout()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'logout' ? copy.removing : copy.removeLocal} />
+            <Button
+              variant="primary"
+              onClick={() => void flow.startLogin()}
+              isDisabled={actionBusy}
+              label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.copilotSignIn}
+            />
+            <Button
+              variant="secondary"
+              onClick={() => void importLocalCredential()}
+              isDisabled={actionBusy}
+              label={importing ? copy.importing : copy.importCredential}
+            />
           </>
+        ) : (
+          <Button
+            variant="ghost"
+            onClick={() => void flow.logout()}
+            isDisabled={actionBusy}
+            label={flow.pendingAction === 'logout' ? copy.loggingOut : copy.logout}
+          />
         )}
       </HStack>
     </VStack>

@@ -155,17 +155,21 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
   }
 });
 
-test('OAuth enrollment honors the Codex opt-out flag over the real endpoint', {
+test('OAuth enrollment refuses providers this install has not enabled', {
   timeout: 30_000,
 }, async () => {
-  const cases = [['openai-codex', { MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL: '0' }]] as const;
+  const cases = [
+    ['openai-codex', { MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL: '0' }],
+    // GitHub Copilot is opt-in: an install that says nothing gets no sign-in.
+    ['github-copilot', {}],
+  ] as const;
   for (const [provider, environment] of cases) {
     await assertProviderDisabledOverUds(provider, environment);
   }
 });
 
 async function assertProviderDisabledOverUds(
-  provider: 'openai-codex',
+  provider: 'openai-codex' | 'github-copilot',
   environment: Readonly<Record<string, string | undefined>>,
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), `maka-oauth-disabled-${provider}-`));

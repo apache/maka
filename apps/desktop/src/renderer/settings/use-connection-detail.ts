@@ -47,6 +47,12 @@ import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 export interface OAuthLoginService {
   bridge: OAuthLoginFlowBridge;
   display: { name: string; shortName: string };
+  /**
+   * The provider's device page asks the user to type a one-time code, so the
+   * surface driving this login has to show it. xAI's verification URL carries
+   * the code itself, which is why it is the one flow that does not.
+   */
+  showsDeviceCode?: boolean;
 }
 
 export function oauthLoginServiceFor(
@@ -58,11 +64,21 @@ export function oauthLoginServiceFor(
       return {
         bridge: runtimeHostOAuthLoginBridge(window.maka.openAiCodex, host),
         display: { name: 'OpenAI Codex', shortName: 'Codex' },
+        showsDeviceCode: true,
       };
     case 'xai-oauth':
       return {
         bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host),
         display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
+      };
+    // Copilot re-login is the same Host-owned device grant the catalog drives;
+    // importing a local `gh` credential stays a catalog action, so an expired
+    // connection is re-authorized here exactly like every other OAuth account.
+    case 'github-copilot':
+      return {
+        bridge: runtimeHostOAuthLoginBridge(window.maka.githubCopilotSubscription, host),
+        display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
+        showsDeviceCode: true,
       };
     default:
       return null;
@@ -128,7 +144,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const oauthLoginService = needsOAuth && !retired
     ? oauthLoginServiceFor(connection.providerType, host)
     : null;
-  const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);
   const probesCredential = supportsApiKey || needsOAuth;
@@ -732,7 +747,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     supportsApiKey,
     needsOAuth,
     retired,
-    usesGitHubCopilotLogin,
     oauthLoginService,
     supportsRemoteDiscovery,
     credentialProbePending,

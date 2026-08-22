@@ -100,4 +100,132 @@ describe('synchronizeRuntimeHostAccountConnection', () => {
 
     assert.equal(selectCalls(), 0);
   });
+
+  it("opens on a model the account's live list reported", async () => {
+    // The Connection is created before a credential exists, so its enabled ids
+    // are the curated fallback guess in the order this build ships them. The
+    // first of those may be a model the account never serves.
+    const { client, selected } = discoveringAccountClient(
+      ['fallback-only', 'gpt-5-codex'],
+      [{ id: 'gpt-5-codex' }, { id: 'gpt-5-codex-mini' }],
+    );
+
+    await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
+
+    assert.deepEqual(selected(), { connectionId: CONNECTION_ID, modelId: 'gpt-5-codex' });
+  });
+
+  it('keeps every enabled id the live response omitted', async () => {
+    // Ordering only. A `/models` answer that cannot see a model is not evidence
+    // the account cannot run it, so nothing is pruned and nothing is rewritten.
+    const { client, catalog, updateCalls } = discoveringAccountClient(
+      ['fallback-only', 'gpt-5-codex'],
+      [{ id: 'gpt-5-codex' }],
+    );
+
+    await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
+
+    assert.deepEqual(catalog().connections[0]?.enabledModelIds, ['fallback-only', 'gpt-5-codex']);
+    assert.equal(updateCalls(), 0);
+  });
+
+  it('opens on the first enabled id when no live response arrived', async () => {
+    const { client, selected } = discoveringAccountClient(
+      ['fallback-only', 'gpt-5-codex'],
+      [{ id: 'gpt-5-codex' }],
+      'fallback',
+    );
+
+    await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
+
+    assert.deepEqual(selected(), { connectionId: CONNECTION_ID, modelId: 'fallback-only' });
+  });
+
+  it('opens on the first enabled id when the live list shares none of them', async () => {
+    const { client, selected } = discoveringAccountClient(
+      ['fallback-only'],
+      [{ id: 'gpt-5-codex' }],
+    );
+
+    await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
+
+    assert.deepEqual(selected(), { connectionId: CONNECTION_ID, modelId: 'fallback-only' });
+  });
 });
+
+/** A client whose discovery commits an inventory, so a live list exists. */
+function discoveringAccountClient(
+  enabledModelIds: readonly string[],
+  models: readonly { id: string }[],
+  modelSource: 'fetched' | 'fallback' = 'fetched',
+): {
+  readonly client: RuntimeHostAccountConnectionClient;
+  catalog(): ConnectionCatalogSnapshot;
+  selected(): ConnectionTarget | null | undefined;
+  updateCalls(): number;
+} {
+  let catalog: ConnectionCatalogSnapshot = {
+    ...catalogWithoutDefault(),
+    connections: [
+      {
+        ...catalogWithoutDefault().connections[0]!,
+        enabledModelIds: [...enabledModelIds],
+        models: [...models],
+        modelSource,
+      },
+    ],
+  };
+  let selected: ConnectionTarget | null | undefined;
+  let updates = 0;
+  const client = {
+    loadConnectionCatalog: async (): Promise<ConnectionCatalogSnapshot> => catalog,
+    fetchConnectionModels: async () => ({
+      kind: 'committed' as const,
+      catalogRevision: catalog.revision,
+      connection: {
+        connectionId: CONNECTION_ID,
+        revision: catalog.connections[0]?.revision ?? 1,
+      },
+      modelCount: models.length,
+      source: modelSource,
+      fetchedAt: 1,
+    }),
+    updateConnection: async (
+      expected: { connectionId: string; revision: number },
+      changes: { enabledModelIds?: string[] },
+    ) => {
+      updates += 1;
+      const current = catalog.connections[0]!;
+      assert.deepEqual(expected, {
+        connectionId: current.connectionId,
+        revision: current.revision,
+      });
+      const updated = {
+        ...current,
+        ...(changes.enabledModelIds ? { enabledModelIds: changes.enabledModelIds } : {}),
+        revision: current.revision + 1,
+      };
+      catalog = { ...catalog, revision: catalog.revision + 1, connections: [updated] };
+      return {
+        kind: 'committed' as const,
+        catalogRevision: catalog.revision,
+        connection: { connectionId: updated.connectionId, revision: updated.revision },
+      };
+    },
+    setDefaultConnectionTarget: async (
+      expectedCatalogRevision: number,
+      target: ConnectionTarget | null,
+    ) => {
+      assert.equal(expectedCatalogRevision, catalog.revision);
+      selected = target;
+      catalog = { ...catalog, revision: catalog.revision + 1, defaultTarget: target };
+      return { kind: 'committed' as const, catalogRevision: catalog.revision };
+    },
+  } as unknown as RuntimeHostAccountConnectionClient;
+  return {
+    client,
+    catalog: () => catalog,
+    selected: () => selected,
+    updateCalls: () => updates,
+  };
+}

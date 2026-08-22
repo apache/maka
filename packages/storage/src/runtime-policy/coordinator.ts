@@ -1562,5 +1562,9 @@ function requiresNetworkProxyCredential(networkProxy: RuntimePolicy['networkProx
 function isInteractiveOAuthLoginProvider(
   providerType: ProviderType,
 ): providerType is InteractiveOAuthLoginProvider {
-  return providerType === 'openai-codex' || providerType === 'xai-oauth';
+  return (
+    providerType === 'openai-codex' ||
+    providerType === 'xai-oauth' ||
+    providerType === 'github-copilot'
+  );
 }

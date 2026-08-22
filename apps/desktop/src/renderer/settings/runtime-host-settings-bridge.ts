@@ -28,7 +28,10 @@ export function runtimeHostConnectionsBridge(
 }
 
 export function runtimeHostOAuthLoginBridge(
-  bridge: typeof window.maka.openAiCodex | typeof window.maka.xaiOAuth,
+  bridge:
+    | typeof window.maka.openAiCodex
+    | typeof window.maka.xaiOAuth
+    | typeof window.maka.githubCopilotSubscription,
   host: DesktopRuntimeHostRef,
 ): OAuthLoginFlowBridge {
   return {

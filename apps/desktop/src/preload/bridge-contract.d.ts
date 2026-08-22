@@ -928,7 +928,6 @@ export interface MakaBridge {
     >;
   };
   openAiCodex: {
-    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
     getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
@@ -971,9 +970,30 @@ export interface MakaBridge {
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    getAuthUrl(
+      host?: DesktopRuntimeHostRef,
+    ): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    openAuthUrl(
+      authRequestId: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<SubscriptionActionResult>;
+    completeAuthorization(
+      authRequestId: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<SubscriptionActionResult>;
+    cancelAuthorization(
+      authRequestId?: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<{ ok: true }>;
     getAccountState(host?: DesktopRuntimeHostRef): Promise<{
       provider: 'github-copilot';
-      runtimeState: 'not_logged_in' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';
+      runtimeState:
+        | 'not_logged_in'
+        | 'authorizing'
+        | 'authenticated'
+        | 'refreshing'
+        | 'refresh_failed'
+        | 'storage_failed';
       errorMessage?: string;
     }>;
     refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
