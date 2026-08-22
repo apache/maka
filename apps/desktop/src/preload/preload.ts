@@ -54,6 +54,9 @@ import type {
   DesktopAppInfo,
   DesktopSessionTracePage,
   DesktopSessionUsageSummary,
+  AppIconImportResult,
+  AppIconRemoveResult,
+  AppIconSelectResult,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import {
@@ -85,6 +88,8 @@ import type {
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import type {
+  AppIcon,
+  AppIconChoice,
   AppSettings,
   SettingsTestResult,
   UpdateAppSettingsInput,
@@ -2733,6 +2738,18 @@ const makaBridge = {
   app: {
     info(host?: DesktopRuntimeHostRef): Promise<DesktopAppInfo> {
       return invokeSelectedRuntimeHost(host, 'app:info');
+    },
+    iconPreviews(): Promise<ReadonlyArray<{ id: AppIconChoice; dataUrl: string; removable?: boolean }>> {
+      return ipcRenderer.invoke('app:iconPreviews');
+    },
+    selectIcon(icon: AppIconChoice): Promise<AppIconSelectResult> {
+      return ipcRenderer.invoke('app:selectIcon', icon);
+    },
+    importIcon(): Promise<AppIconImportResult> {
+      return ipcRenderer.invoke('app:importIcon');
+    },
+    removeIcon(icon: AppIconChoice): Promise<AppIconRemoveResult> {
+      return ipcRenderer.invoke('app:removeIcon', icon);
     },
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void {
       const listener = (_event: Electron.IpcRendererEvent, status: AppUpdateStatus) => handler(status);

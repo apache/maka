@@ -16,8 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
-import type { ThemePalette, ThemePreference } from '@maka/core/settings';
+import type { AppIcon, ThemePalette, ThemePreference } from '@maka/core/settings';
 
 import type { UiCatalog, UiLocale, UiLocalePreference } from '@maka/core/ui-locale';
 
@@ -60,6 +59,8 @@ export type SettingsPreferencesCopy = {
     themeHelp: string;
     palette: string;
     paletteHelp: string;
+    appIcon: string;
+    appIconHelp: string;
     pets: string;
     petsHelp: string;
   };
@@ -71,6 +72,23 @@ export type SettingsPreferencesCopy = {
     paletteLabels: Record<ThemePalette, string>;
     paletteHelp: Record<ThemePalette, string>;
     paletteGroups: { editor: string; product: string };
+    appIconLabels: Record<AppIcon, string>;
+    appIconHelp: Record<AppIcon, string>;
+    appIconGroups: Record<'mascot' | 'blue' | 'contrast' | 'pencil' | 'mountain' | 'custom', string>;
+    appIconCustom: string;
+    appIconCustomHelp: string;
+    appIconImport: string;
+    appIconImporting: string;
+    appIconImportHelp: string;
+    appIconRemove: string;
+    appIconImportError: string;
+    appIconRemoveFailed: string;
+    appIconSelectFailed: string;
+    appIconImportFailed: Record<
+      'too_large' | 'too_many_pixels' | 'unsupported_format' | 'unreadable' | 'too_small' | 'write_failed',
+      string
+    >;
+    appIconUnavailable: string;
   };
   pets: {
     import: string;
@@ -231,6 +249,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       network: '网络', networkHelp: 'AI 模型请求走的网络通道。',
       theme: '主题', themeHelp: '界面跟随系统，还是固定浅色或深色。',
       palette: '调色板', paletteHelp: '强调色与画布色调；切换会立即生效并保存在本地。',
+      appIcon: '应用图标', appIconHelp: 'Dock、任务栏和切换器里显示的 Maka 图标；切换会立即生效。',
       pets: '自定义宠物', petsHelp: '管理你自己导入的 PetPack。Maka 不预装、也不默认启用任何宠物。',
     },
     appearance: {
@@ -239,6 +258,30 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       paletteLabels: { default: '默认', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: '珊瑚', azure: '湖蓝', forest: '森林', dusk: '暮光', sand: '沙金', mono: '极简灰' },
       paletteHelp: { default: 'Maka 品牌蓝强调色', onedark: '编辑器经典深色', 'catppuccin-mocha': '紫调柔和深色', 'tokyo-night': '深蓝主题', nord: '北欧冷色', coral: '暖粉 / 珊瑚强调色', azure: '湖蓝强调色，干净冷静', forest: '深苔绿与暖蜂蜜强调色', dusk: '深紫罗兰与冷调画布', sand: '琥珀沙金与暖奶白', mono: '纯灰阶，无彩色干扰' },
       paletteGroups: { editor: '编辑器主题', product: '产品色调' },
+      appIconLabels: { default: '经典', mono: '单色', 'sky': '原色天蓝', 'cyan': '青蓝', 'ice': '冰蓝渐变', 'pale-inverted': '淡底深标', 'ink': '墨黑', 'paper': '纸白', 'graphite': '石墨', 'pencil-kraft': '铅笔・牛皮纸', 'pencil-sky': '铅笔・天蓝', 'pencil-navy': '铅笔・深蓝', 'alpine': '晴空雪山', 'dusk': '黄昏', 'night': '夜山', 'forest': '苍绿' },
+      appIconHelp: { default: 'Maka 默认品牌图标', mono: '灰阶版本，Dock 里更安静', 'sky': '几何 M 标，品牌蓝', 'cyan': '偏青的蓝', 'ice': '由浅到深的蓝色渐变', 'pale-inverted': '淡蓝底配深蓝标', 'ink': '黑底白标，对比最强', 'paper': '白底黑标', 'graphite': '白底黑标，笔尖为灰', 'pencil-kraft': '铅笔意象，牛皮纸底', 'pencil-sky': '铅笔意象，天蓝底', 'pencil-navy': '铅笔意象，深蓝底', 'alpine': '雪顶山峰，晴空底', 'dusk': '雪顶山峰，黄昏底', 'night': '雪顶山峰，夜色底', 'forest': '雪顶山峰，苍绿底' },
+      appIconGroups: {
+        mascot: '拟人', blue: '蓝色系', contrast: '黑白', pencil: '铅笔', mountain: '高山',
+        custom: '自定义',
+      },
+      appIconCustom: '导入的图标',
+      appIconCustomHelp: '你自己导入的图片',
+      appIconImport: '导入图标…',
+      appIconImporting: '正在导入…',
+      appIconImportHelp: '方形 PNG 最好；四周留约 10% 透明边，Dock 里才会和其它应用一样大。',
+      appIconRemove: '删除',
+      appIconImportError: '导入图标失败',
+      appIconRemoveFailed: '删除图标失败',
+      appIconSelectFailed: '切换图标失败',
+      appIconImportFailed: {
+        too_large: '文件太大，换一张小一点的图片',
+        too_many_pixels: '图片尺寸太大，最多 4096×4096',
+        unsupported_format: '只支持 PNG 和 JPEG',
+        unreadable: '这个文件读不出图像',
+        too_small: '图片太小，至少需要 128×128',
+        write_failed: '无法保存导入的图标',
+      },
+      appIconUnavailable: '无法载入应用图标',
     },
     pets: {
       import: '导入 PetPack', importing: '正在导入…', loading: '正在载入自定义宠物…',
@@ -287,10 +330,11 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       network: 'Network', networkHelp: 'The network path AI model requests take.',
       theme: 'Theme', themeHelp: 'Follow the system appearance, or stay on light or dark.',
       palette: 'Color palette', paletteHelp: 'Accent and canvas colors. Changes apply immediately and are saved locally.',
+      appIcon: 'App icon', appIconHelp: 'The Maka icon shown in the dock, taskbar, and app switcher. Changes apply immediately.',
       pets: 'Custom pets', petsHelp: 'Manage PetPacks you import yourself. Maka does not bundle or enable any pet by default.',
     },
     appearance: {
-      saveFailed: 'Could not save appearance settings', theme: 'Theme', palette: 'Color palette', themeOptions: { light: { label: 'Light', help: 'Always use the light interface.' }, dark: { label: 'Dark', help: 'Always use the dark interface.' }, auto: { label: 'Follow system', help: 'Match the current system appearance.' } }, paletteLabels: { default: 'Default', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: 'Coral', azure: 'Azure', forest: 'Forest', dusk: 'Dusk', sand: 'Sand', mono: 'Monochrome' }, paletteHelp: { default: 'Maka brand-blue accent', onedark: 'Classic dark editor theme', 'catppuccin-mocha': 'Soft purple dark theme', 'tokyo-night': 'Deep-blue editor theme', nord: 'Cool Nordic colors', coral: 'Warm pink and coral accent', azure: 'Clean, calm blue accent', forest: 'Deep moss and warm honey', dusk: 'Deep violet on a cool canvas', sand: 'Amber sand and warm ivory', mono: 'Pure grayscale without color distraction' }, paletteGroups: { editor: 'Editor themes', product: 'Product colors' },
+      saveFailed: 'Could not save appearance settings', theme: 'Theme', palette: 'Color palette', themeOptions: { light: { label: 'Light', help: 'Always use the light interface.' }, dark: { label: 'Dark', help: 'Always use the dark interface.' }, auto: { label: 'Follow system', help: 'Match the current system appearance.' } }, paletteLabels: { default: 'Default', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: 'Coral', azure: 'Azure', forest: 'Forest', dusk: 'Dusk', sand: 'Sand', mono: 'Monochrome' }, paletteHelp: { default: 'Maka brand-blue accent', onedark: 'Classic dark editor theme', 'catppuccin-mocha': 'Soft purple dark theme', 'tokyo-night': 'Deep-blue editor theme', nord: 'Cool Nordic colors', coral: 'Warm pink and coral accent', azure: 'Clean, calm blue accent', forest: 'Deep moss and warm honey', dusk: 'Deep violet on a cool canvas', sand: 'Amber sand and warm ivory', mono: 'Pure grayscale without color distraction' }, paletteGroups: { editor: 'Editor themes', product: 'Product colors' }, appIconLabels: { default: 'Classic', mono: 'Monochrome', 'sky': 'Sky', 'cyan': 'Cyan', 'ice': 'Ice', 'pale-inverted': 'Inverted', 'ink': 'Ink', 'paper': 'Paper', 'graphite': 'Graphite', 'pencil-kraft': 'Pencil, kraft', 'pencil-sky': 'Pencil, sky', 'pencil-navy': 'Pencil, navy', 'alpine': 'Alpine', 'dusk': 'Dusk', 'night': 'Night', 'forest': 'Forest' }, appIconHelp: { default: 'The default Maka mark', mono: 'Grayscale, for a quieter dock', 'sky': 'The geometric M mark in brand blue', 'cyan': 'Blue leaning to cyan', 'ice': 'A pale-to-deep blue gradient', 'pale-inverted': 'A deep blue mark on a pale field', 'ink': 'White on black, the highest contrast', 'paper': 'Black on white', 'graphite': 'Black on white with a grey tip', 'pencil-kraft': 'The pencil reading, on kraft paper', 'pencil-sky': 'The pencil reading, on sky blue', 'pencil-navy': 'The pencil reading, on deep navy', 'alpine': 'A snow-capped peak under clear sky', 'dusk': 'A snow-capped peak at dusk', 'night': 'A snow-capped peak at night', 'forest': 'A snow-capped peak in green' }, appIconGroups: { mascot: 'Mascot', blue: 'Blues', contrast: 'Black & white', pencil: 'Pencil', mountain: 'Mountain', custom: 'Imported' }, appIconCustom: 'Imported icon', appIconCustomHelp: 'An image you imported', appIconImport: 'Import icon…', appIconImporting: 'Importing…', appIconImportHelp: 'A square PNG works best. Leave about 10% transparent margin so it sits the same size as other apps in the dock.', appIconRemove: 'Remove', appIconImportError: 'Could not import the icon', appIconRemoveFailed: 'Could not remove the icon', appIconSelectFailed: 'Could not switch the icon', appIconImportFailed: { too_large: 'That file is too large; pick a smaller image', too_many_pixels: 'That image is too large; 4096×4096 is the maximum', unsupported_format: 'Only PNG and JPEG are supported', unreadable: 'No image could be read from that file', too_small: 'That image is too small; 128×128 is the minimum', write_failed: 'Could not store the imported icon' }, appIconUnavailable: 'Could not load the app icons',
     },
     pets: {
       import: 'Import PetPack', importing: 'Importing…', loading: 'Loading custom pets…',

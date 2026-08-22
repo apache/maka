@@ -67,6 +67,10 @@ import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-
  * text has to source that text where the UI does.
  */
 const DAILY_REVIEW_DEFAULT_MODEL_LABEL = getDailyReviewSettingsCopy('zh').defaultModel;
+/** A 1×1 transparent PNG: the picker needs a valid data URL, not real art. */
+const STORY_ICON_PREVIEW =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
 const STORY_PLATFORM = 'darwin' as const;
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -683,6 +687,33 @@ const makaBridge = {
         '/Users/storybook-fixture-user/Library/Application Support/Maka/workspaces/infra-observability-platform-desktop',
     }),
     openPath: async () => ({ ok: true as const, opened: '/Users/storybook' }),
+    // The 外观 page mounts the app-icon picker as soon as it opens. Without
+    // these the story throws on mount rather than degrading: calling a bridge
+    // method the fixture does not define is a synchronous TypeError, which the
+    // effect's own `.catch()` never sees.
+    //
+    // The set deliberately spans one shipped icon per group plus an imported
+    // one, so the smoke covers the group headings and the remove affordance
+    // rather than an empty picker.
+    iconPreviews: async () => [
+      { id: 'default' as const, dataUrl: STORY_ICON_PREVIEW },
+      { id: 'mono' as const, dataUrl: STORY_ICON_PREVIEW },
+      { id: 'sky' as const, dataUrl: STORY_ICON_PREVIEW },
+      { id: 'ink' as const, dataUrl: STORY_ICON_PREVIEW },
+      { id: 'pencil-kraft' as const, dataUrl: STORY_ICON_PREVIEW },
+      { id: 'alpine' as const, dataUrl: STORY_ICON_PREVIEW },
+      {
+        id: `custom:${'a'.repeat(32)}` as const,
+        dataUrl: STORY_ICON_PREVIEW,
+        removable: true,
+      },
+    ],
+    selectIcon: async (icon: Parameters<typeof window.maka.app.selectIcon>[0]) => ({
+      ok: true as const,
+      selection: icon,
+    }),
+    importIcon: async () => ({ ok: false as const, reason: 'cancelled' as const }),
+    removeIcon: async () => ({ ok: true as const, selection: 'default' as const }),
     // About mounts update status + subscribe on open (Settings → 关于).
     updateStatus: async () => ({ state: 'idle' as const, currentVersion: '0.9.0-dev' }),
     subscribeUpdateStatus: () => () => undefined,
