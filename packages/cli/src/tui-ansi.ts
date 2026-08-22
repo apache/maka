@@ -91,38 +91,68 @@ function buildAnsi() {
 }
 
 function detectColorLevel(): 0 | 1 | 2 | 3 {
-  return detectColorLevelFromEnv({
-    NO_COLOR: process.env.NO_COLOR,
-    TERM: process.env.TERM,
-    COLORTERM: process.env.COLORTERM,
-  });
+  return detectColorLevelFromEnv(
+    {
+      NO_COLOR: process.env.NO_COLOR,
+      TERM: process.env.TERM,
+      COLORTERM: process.env.COLORTERM,
+    },
+    // Only a tty.WriteStream can answer; piped output leaves this undefined.
+    process.stdout.getColorDepth?.(),
+  );
 }
 
 /**
- * Pure color level detection from an env snapshot.
- * - 0: no color (NO_COLOR non-empty, or TERM is dumb/empty)
+ * Pure color level detection from an env snapshot and the terminal's own
+ * reported depth.
+ * - 0: no color (NO_COLOR non-empty, TERM is dumb, or nothing reports color)
  * - 1: 16-color (basic ANSI)
- * - 2: 256-color (TERM contains 256color)
- * - 3: 24-bit truecolor (COLORTERM=truecolor/24bit or TERM ends with -truecolor)
+ * - 2: 256-color
+ * - 3: 24-bit truecolor (COLORTERM=truecolor/24bit, TERM ending -truecolor, or
+ *   a terminal reporting 24-bit depth)
  *
  * Benchmark: codex `supports-color` 3-level; pi `theme.ts` 256 fallback.
+ *
+ * `TERM` alone cannot answer this. Native Windows shells (PowerShell, cmd) set
+ * no `TERM` at all on consoles that do support truecolor, so treating an unset
+ * `TERM` as colorless made the whole TUI monochrome there while WSL and Git
+ * Bash stayed coloured (#3536). `supports-color` avoids that by returning on
+ * `process.platform === 'win32'` before it ever reads `TERM`; Node's
+ * `getColorDepth()` already implements that same Windows build check, so this
+ * asks the terminal rather than maintaining a second copy of the ladder.
+ *
+ * `depth` is the value from `tty.WriteStream.getColorDepth()`: 1 (none), 4
+ * (16), 8 (256) or 24 (16m). It is undefined when stdout is not a terminal,
+ * which leaves the pre-existing `TERM` ladder as the fallback.
  */
-function detectColorLevelFromEnv(env: {
-  NO_COLOR?: string;
-  TERM?: string;
-  COLORTERM?: string;
-}): 0 | 1 | 2 | 3 {
+export function detectColorLevelFromEnv(
+  env: {
+    NO_COLOR?: string;
+    TERM?: string;
+    COLORTERM?: string;
+  },
+  depth: number | undefined,
+): 0 | 1 | 2 | 3 {
   // NO_COLOR spec — a non-empty value disables all color.
   // (NO_COLOR= with an empty string does NOT disable color per the spec.)
   if (env.NO_COLOR && env.NO_COLOR.length > 0) return 0;
   // TERM=dumb is explicitly colorless.
   const term = env.TERM ?? '';
-  if (term === 'dumb' || term === '') return 0;
-  // COLORTERM=truecolor → 24-bit.
+  if (term === 'dumb') return 0;
+  // An explicit declaration outranks the reported depth: the terminal is
+  // telling us something it knows and the capability probe may not.
   const colorterm = env.COLORTERM ?? '';
   if (colorterm === 'truecolor' || colorterm === '24bit') return 3;
   // Known truecolor terminals by TERM name.
-  if (/\-(truecolor|24bit)$/.test(term)) return 3;
+  if (/-(truecolor|24bit)$/.test(term)) return 3;
+  if (depth !== undefined) {
+    if (depth >= 24) return 3;
+    if (depth >= 8) return 2;
+    if (depth >= 4) return 1;
+    return 0;
+  }
+  // No terminal to ask (piped output). Fall back to the env ladder.
+  if (term === '') return 0;
   // 256-color: most modern terminals set this explicitly.
   if (/256color|256-color/.test(term)) {
     return 2;
