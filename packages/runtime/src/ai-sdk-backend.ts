@@ -2625,6 +2625,7 @@ export class AiSdkBackend implements AgentBackend {
                   attempt: nextAttempt,
                   maxAttempts,
                   delayMs,
+                  remainingMs: delayMs,
                   reason,
                 } satisfies ProviderRetryEvent);
                 await this.providerRetrySleep(delayMs, turnAbortController.signal);

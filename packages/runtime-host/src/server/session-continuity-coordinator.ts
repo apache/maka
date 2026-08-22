@@ -1861,6 +1861,7 @@ function withProviderRetry(
           attempt: event.attempt,
           maxAttempts: event.maxAttempts,
           delayMs: event.delayMs,
+          ts: event.ts,
           reason: event.reason,
         }
       : {
