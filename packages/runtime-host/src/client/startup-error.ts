@@ -47,8 +47,12 @@ export function runtimeHostStartupError(reason: RuntimeHostStartupFailureReason)
         'This workspace belongs to a different Runtime Host composition. Diagnostic code: COMPOSITION_MISMATCH.',
       );
     case 'startup_timeout':
-      return new Error('Runtime Host did not become ready before the startup deadline');
+      return new Error(
+        'No Runtime Host became ready before the startup deadline elapsed. Retry; if this workspace needs longer to open (large workspaces can after an upgrade), set MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS to allow more time.',
+      );
     case 'host_unresponsive':
-      return new Error('Runtime Host stopped responding during startup');
+      return new Error(
+        'A Runtime Host was found but did not become ready before the startup deadline elapsed. It may still be opening this workspace (large workspaces can need longer right after an upgrade); retrying once it settles usually succeeds, or set MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS to allow more time.',
+      );
   }
 }

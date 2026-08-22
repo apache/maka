@@ -523,11 +523,11 @@ test('keeps Local explicitly usable without routing default work away from an un
     },
   );
 
-  await assert.rejects(manager.enable(remoteTarget('offline')), /stopped responding/);
+  await assert.rejects(manager.enable(remoteTarget('offline')), /did not become ready/);
   manager.setDefaultProfile('offline');
   await assert.rejects(
     manager.handleBotIncomingMessage({ text: 'default' } as BotIncomingMessage),
-    /stopped responding/,
+    /did not become ready/,
   );
 
   assert.equal(local.botMessages, 0);

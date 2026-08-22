@@ -38,6 +38,7 @@ const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
 const DEFAULT_BACKOFF_MIN_MS = 20;
 const DEFAULT_BACKOFF_MAX_MS = 250;
 const MIN_CANDIDATE_INTERVAL_MS = 250;
+export const ELECTION_DEADLINE_MS_ENV_VAR = 'MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS';
 
 export interface ConnectOrSpawnRuntimeHostInput {
   rootPath: string;
@@ -56,12 +57,34 @@ export interface ConnectOrSpawnRuntimeHostInput {
 interface ConnectOrSpawnRuntimeHostDependencies {
   launchCandidate: CandidateLauncher;
   random(): number;
+  /** Defaults to `process.env`; injected so tests never mutate the real environment. */
+  env?: NodeJS.ProcessEnv;
 }
 
 const defaultDependencies: ConnectOrSpawnRuntimeHostDependencies = {
   launchCandidate: launchDetachedRuntimeHostCandidate,
   random: Math.random,
 };
+
+/**
+ * Resolves the operator override for the client election deadline. Large
+ * workspaces can legitimately take longer than the default window on their
+ * first start after an upgrade, so the deadline must be raisable without a
+ * code change. Invalid values fail closed: a silently ignored typo would leave
+ * the operator believing they widened the window when they did not.
+ */
+export function electionDeadlineMsFromEnvironment(
+  rawValue: string | undefined,
+): number | undefined {
+  if (rawValue === undefined || rawValue.trim() === '') return undefined;
+  const parsed = Number(rawValue);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > 120_000) {
+    throw new RangeError(
+      `${ELECTION_DEADLINE_MS_ENV_VAR} must be an integer between 1 and 120000 milliseconds`,
+    );
+  }
+  return parsed;
+}
 
 export type ConnectOrSpawnRuntimeHostResult =
   | {
@@ -173,7 +196,12 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   input: ConnectOrSpawnRuntimeHostInput,
   dependencies: ConnectOrSpawnRuntimeHostDependencies,
 ): Promise<ConnectOrSpawnRuntimeHostResult> {
-  const deadlineMs = input.electionDeadlineMs ?? DEFAULT_ELECTION_DEADLINE_MS;
+  const deadlineMs =
+    input.electionDeadlineMs ??
+    electionDeadlineMsFromEnvironment(
+      (dependencies.env ?? process.env)[ELECTION_DEADLINE_MS_ENV_VAR],
+    ) ??
+    DEFAULT_ELECTION_DEADLINE_MS;
   if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0 || deadlineMs > 120_000) {
     throw new RangeError('electionDeadlineMs must be an integer between 1 and 120000');
   }

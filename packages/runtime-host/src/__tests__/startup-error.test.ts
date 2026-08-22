@@ -20,7 +20,18 @@ test('presents migration blockers with a permanent previous-release recovery pat
 test('keeps an unresponsive Host retryable', () => {
   const error = runtimeHostStartupError('host_unresponsive');
   assert.equal(error instanceof RuntimeHostPermanentReconnectError, false);
-  assert.match(error.message, /stopped responding/u);
+  assert.match(error.message, /did not become ready before the startup deadline/u);
+});
+
+test('tells both timeout reasons how to widen the election window', () => {
+  assert.match(
+    runtimeHostStartupError('host_unresponsive').message,
+    /MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS/u,
+  );
+  assert.match(
+    runtimeHostStartupError('startup_timeout').message,
+    /MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS/u,
+  );
 });
 
 test('keeps internal startup failures retryable', () => {
