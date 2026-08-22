@@ -23,6 +23,7 @@ export function useComposerMentions(options: {
 }): {
   mentionSkills: ReadonlyArray<{ ref?: string; id: string; name: string; description?: string }>;
   mentionSkillsUnavailable: boolean;
+  mentionSkillsLoading: boolean;
   searchMentionFiles(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
 } {
   const {
@@ -34,26 +35,32 @@ export function useComposerMentions(options: {
     newSessionPermissionMode,
     newTaskTarget,
   } = options;
-  const [mentionSkills, setMentionSkills] = useState<InvocableSkillEntry[]>([]);
-  // The last SETTLED truth about the catalog, held across refreshes. The list
-  // itself is cleared while a refresh is in flight (fail-closed, for the `/`
-  // popup), so `length === 0` cannot tell "re-fetching" from "nothing to
-  // offer" — and the ＋ menu's Skills row repainting on that transient empty
-  // is a visible blink of the open menu on every mode, model or turn change.
-  // This flag only moves when a request resolves, so the row's presentation
-  // is stable until the catalog's emptiness actually changed.
-  const [mentionSkillsUnavailable, setMentionSkillsUnavailable] = useState(false);
+  // One explicit representation of the Skill catalog — in flight, settled
+  // empty, or settled populated — held as a single value so a refresh can
+  // never tear its facets apart.
+  //
+  // `skills` is the live, fail-closed list the `/` popup reads: it is cleared
+  // the moment a refresh starts, because a visible popup must never advertise
+  // a Skill the new backend surface may not carry. That clear is exactly why
+  // `length === 0` cannot tell "re-fetching" from "nothing to offer", so the
+  // ＋ menu's Skills row renders from `settled` — the last RESOLVED verdict,
+  // held across refreshes — and repaints only when the catalog's emptiness
+  // actually changed. `loading` gates interaction: while a request is in
+  // flight (including the very first, before anything has settled), a click
+  // on the row must have no side effect — the held presentation is the OLD
+  // catalog's look, not a promise the current one can honor.
+  const [catalog, setCatalog] = useState<{
+    loading: boolean;
+    settled?: 'empty' | 'populated';
+    skills: InvocableSkillEntry[];
+  }>({ loading: true, skills: [] });
 
   useEffect(() => {
     let cancelled = false;
     let requestVersion = 0;
-    // Do not briefly advertise the previous session/project's Skills while the
-    // authoritative projection is being refreshed. The same fail-closed reset
-    // applies when a model/mode/plan or MCP event changes the backend surface:
-    // a visible popup must never retain a now-unavailable Skill.
     const refresh = () => {
       const version = ++requestVersion;
-      setMentionSkills([]);
+      setCatalog((previous) => ({ loading: true, settled: previous.settled, skills: [] }));
       const context = {
         ...(newSessionModel ?? {}),
         collaborationMode: newSessionCollaborationMode ?? 'agent',
@@ -69,14 +76,17 @@ export function useComposerMentions(options: {
       void request.then(
         (next) => {
           if (cancelled || version !== requestVersion) return;
-          setMentionSkills(next);
-          setMentionSkillsUnavailable(next.length === 0);
+          setCatalog({
+            loading: false,
+            settled: next.length === 0 ? 'empty' : 'populated',
+            skills: next,
+          });
         },
         () => {
           // Fail soft: an unavailable projection leaves `/` with no suggestions.
           // Direct `/skill:<id>` input still reaches the same Runtime resolver.
           if (cancelled || version !== requestVersion) return;
-          setMentionSkillsUnavailable(true);
+          setCatalog({ loading: false, settled: 'empty', skills: [] });
         },
       );
     };
@@ -138,5 +148,10 @@ export function useComposerMentions(options: {
     ],
   );
 
-  return { mentionSkills, mentionSkillsUnavailable, searchMentionFiles };
+  return {
+    mentionSkills: catalog.skills,
+    mentionSkillsUnavailable: catalog.settled === 'empty',
+    mentionSkillsLoading: catalog.loading,
+    searchMentionFiles,
+  };
 }

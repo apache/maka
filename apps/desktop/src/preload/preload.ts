@@ -2951,4 +2951,52 @@ const makaBridge = {
   },
 } satisfies MakaBridge;
 
+// E2E-only IPC latches. Real users never get these: the preload mirrors the
+// main process's isolated-E2E gate (startup-context.ts) — MAKA_E2E alone is
+// not enough without the throwaway profile dir. An armed latch holds the next
+// call (or every call) to one bridge method until the test releases it, so
+// Playwright gets a deterministic in-flight window instead of racing the fake
+// backend's near-instant replies. The wrappers must be installed BEFORE
+// exposeInMainWorld: the bridge is cloned into the main world at expose time,
+// and the exposed clone is sealed against later patching.
+if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
+  type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list';
+  const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
+  const releases = new Map<LatchKey, () => void>();
+  const wrapLatched = <Args extends unknown[], Result>(
+    call: (...args: Args) => Promise<Result>,
+    key: LatchKey,
+  ) => async (...args: Args): Promise<Result> => {
+    const gate = gates.get(key);
+    if (gate) {
+      if (gate.oneShot) gates.delete(key);
+      await gate.promise;
+    }
+    return call(...args);
+  };
+  makaBridge.newTasks.listInvocableSkills = wrapLatched(
+    makaBridge.newTasks.listInvocableSkills.bind(makaBridge.newTasks),
+    'newTasks.listInvocableSkills',
+  );
+  makaBridge.sessions.list = wrapLatched(
+    makaBridge.sessions.list.bind(makaBridge.sessions),
+    'sessions.list',
+  );
+  contextBridge.exposeInMainWorld('makaE2eLatch', {
+    arm(key: LatchKey, options?: { oneShot?: boolean }) {
+      let release: () => void = () => {};
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      gates.set(key, { promise, oneShot: options?.oneShot === true });
+      releases.set(key, release);
+    },
+    release(key: LatchKey) {
+      releases.get(key)?.();
+      releases.delete(key);
+      gates.delete(key);
+    },
+  });
+}
+
 contextBridge.exposeInMainWorld('maka', makaBridge);

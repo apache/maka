@@ -118,6 +118,37 @@ test('a populated skill catalog renders the row enabled with no caveat', () => {
   assert.equal(count(menu, 'Choose skills'), 1);
   assert.equal(count(menu, 'No skills available'), 0);
   assert.equal(skillsRow(menu).includes('aria-disabled="true"'), false);
+  assert.equal(menu.includes('maka-composer-skills-loading'), false);
+});
+
+test('a loading catalog holds the row still and marks the held state', () => {
+  // Mid-refresh the row keeps the previous catalog's look (here: populated),
+  // and the loading class is the observable contract that a click acts as a
+  // no-op rather than writing a stray `/` against the fail-closed list.
+  const menu = plusMenu({
+    ...base,
+    mentionSkills: [],
+    mentionSkillsUnavailable: false,
+    mentionSkillsLoading: true,
+  });
+  assert.equal(count(menu, 'No skills available'), 0, 'geometry does not grow mid-refresh');
+  assert.equal(skillsRow(menu).includes('aria-disabled="true"'), false);
+  assert.equal(
+    skillsRow(menu).includes('maka-composer-skills-loading'),
+    true,
+    'the loading state is observable on the row',
+  );
+});
+
+test('a loading refresh from a settled-empty catalog holds the empty look', () => {
+  const menu = plusMenu({
+    ...base,
+    mentionSkills: [],
+    mentionSkillsUnavailable: true,
+    mentionSkillsLoading: true,
+  });
+  assert.ok(count(menu, 'No skills available') > 0, 'the settled caveat stays put');
+  assert.equal(skillsRow(menu).includes('aria-disabled="true"'), true);
 });
 
 test('Plan and an orchestration mode are both on at once', () => {

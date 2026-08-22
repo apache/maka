@@ -408,6 +408,17 @@ export const Composer = forwardRef<
      * `mentionSkills.length === 0`.
      */
     mentionSkillsUnavailable?: boolean;
+    /**
+     * True while the host is re-fetching `mentionSkills`. The row's LOOK is
+     * governed by `mentionSkillsUnavailable` and does not move during a
+     * refresh; this flag governs what a click DOES. Mid-refresh the enabled
+     * look is a held presentation of the previous catalog, not a promise the
+     * current one can honor — acting on it would write a stray `/` into the
+     * draft and pop an empty menu — so the row ignores clicks (and stops
+     * closing the menu, so the click can simply be retried) until the catalog
+     * settles.
+     */
+    mentionSkillsLoading?: boolean;
     slashCommands?: ReadonlyArray<ComposerSlashCommandOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
   }
@@ -1715,7 +1726,24 @@ export const Composer = forwardRef<
                             ? copy.noSkillsAvailable
                             : undefined
                         }
-                        onClick={openSkillMenu}
+                        // Mid-refresh the row LOOKS like the previous catalog
+                        // but cannot act for the current one: opening the `/`
+                        // menu now would write a stray slash against a list
+                        // that is fail-closed empty. A loading click is a
+                        // complete no-op — nothing typed, menu left open — so
+                        // the same click a beat later simply works. The class
+                        // is the observable contract for that state.
+                        className={
+                          props.mentionSkillsLoading === true
+                            ? 'maka-composer-skills-loading'
+                            : undefined
+                        }
+                        hasCloseOnSelect={props.mentionSkillsLoading !== true}
+                        onClick={
+                          props.mentionSkillsLoading === true
+                            ? undefined
+                            : openSkillMenu
+                        }
                       />
                     ) : null}
                     {props.onSetGoal ? (

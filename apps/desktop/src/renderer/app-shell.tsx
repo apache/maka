@@ -433,6 +433,12 @@ function AppShellContent({
   // MatrixA/fix-plan-click-flicker removed.
   const [, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
   const [, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
+  // The rows stay interactive while a commit runs, so a click landing in that
+  // window is the user updating their mind — not noise to drop. Each map holds
+  // only the LATEST ask per session; the in-flight commit's finally block
+  // applies it if the settled state does not already satisfy it.
+  const queuedCollaborationModeBySession = useRef(new Map<string, boolean>());
+  const queuedOrchestrationModeBySession = useRef(new Map<string, OrchestrationMode>());
   const [newTaskPermissionChoice, setNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
@@ -1050,7 +1056,15 @@ function AppShellContent({
       sessionId,
       collaborationModeChangeRegistry.keysRef,
       setPendingCollaborationModeBySession,
-    )) return false;
+    )) {
+      // A commit is in flight and the rows stay interactive (no pending
+      // repaint), so this click is the user updating their mind, not noise.
+      // Latest intent wins: remember only the newest value and let the
+      // in-flight commit's finally block apply it, so a quick "on, then off"
+      // finishes as "off".
+      queuedCollaborationModeBySession.current.set(sessionId, active);
+      return true;
+    }
 
     try {
       const planState = await window.maka.sessions.getPlanState(sessionId);
@@ -1104,6 +1118,19 @@ function AppShellContent({
         collaborationModeChangeRegistry.keysRef,
         setPendingCollaborationModeBySession,
       );
+      // Whatever the user last asked for while this commit ran is the state
+      // they expect to land on. Read the settled mode through the ref — the
+      // closure's projection predates this commit — and only re-apply when
+      // the intent is not already satisfied.
+      const queued = queuedCollaborationModeBySession.current.get(sessionId);
+      queuedCollaborationModeBySession.current.delete(sessionId);
+      if (queued !== undefined) {
+        const settledActive = (
+          sessionsRef.current.find((session) => session.id === sessionId)?.collaborationMode
+          ?? 'agent'
+        ) === 'plan';
+        if (queued !== settledActive) void applyPlanMode(queued, sessionId);
+      }
     }
   }
 
@@ -1122,7 +1149,13 @@ function AppShellContent({
       sessionId,
       orchestrationModeChangeRegistry.keysRef,
       setPendingOrchestrationModeBySession,
-    )) return false;
+    )) {
+      // Same latest-intent contract as applyPlanMode: the rows stay
+      // interactive while a commit runs, so keep the newest ask and apply it
+      // from the in-flight commit's finally block.
+      queuedOrchestrationModeBySession.current.set(sessionId, mode);
+      return true;
+    }
 
     try {
       const next = await window.maka.sessions.setOrchestrationMode(sessionId, mode);
@@ -1144,6 +1177,14 @@ function AppShellContent({
         orchestrationModeChangeRegistry.keysRef,
         setPendingOrchestrationModeBySession,
       );
+      const queued = queuedOrchestrationModeBySession.current.get(sessionId);
+      queuedOrchestrationModeBySession.current.delete(sessionId);
+      if (queued !== undefined) {
+        const settled = sessionsRef.current.find(
+          (session) => session.id === sessionId,
+        )?.orchestrationMode ?? 'default';
+        if (queued !== settled) void applyOrchestrationMode(queued, sessionId);
+      }
     }
   }
 
@@ -2078,7 +2119,7 @@ function AppShellContent({
   // Composer mention popups: `/` uses Runtime's session/project-aware,
   // host-compatible projection; `@` uses workspace file search. Keep the
   // resolved project path as a refresh key for new-chat project changes.
-  const { mentionSkills, mentionSkillsUnavailable, searchMentionFiles } = useComposerMentions({
+  const { mentionSkills, mentionSkillsUnavailable, mentionSkillsLoading, searchMentionFiles } = useComposerMentions({
     skills,
     sessionId: activeId,
     projectPath: activeId ? projectInfo?.projectPath : newTask.projectPath,
@@ -3218,6 +3259,7 @@ function AppShellContent({
                   }
                   mentionSkills={mentionSkills}
                   mentionSkillsUnavailable={mentionSkillsUnavailable}
+                  mentionSkillsLoading={mentionSkillsLoading}
                   slashCommands={desktopSlashCommands}
                   onSearchMentionFiles={searchMentionFiles}
                   pendingAttachments={pendingAttachments}
@@ -3605,6 +3647,7 @@ function AppShellContent({
                 modelChoices={chatModelChoices}
                 mentionSkills={mentionSkills}
                 mentionSkillsUnavailable={mentionSkillsUnavailable}
+                mentionSkillsLoading={mentionSkillsLoading}
                 onSearchMentionFiles={searchMentionFiles}
               />
             )}
