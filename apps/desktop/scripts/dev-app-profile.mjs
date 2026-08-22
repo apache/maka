@@ -28,9 +28,11 @@
 // values. Three literals are known: our own worktree root, the target
 // profile, and the Maka dev markers themselves (`Maka Dev.app`,
 // `/apps/desktop`). A line that carries a Maka marker and no explicit
-// --user-data-dir holds the SHARED DEFAULT lock — this is space-bearing-root
-// agnostic and env-file independent, and it excludes foreign Electron apps,
-// which carry neither marker.
+// --user-data-dir holds the SHARED DEFAULT lock, EXCEPT the TCC shape whose
+// profile is read from its worktree's dev-env.json (the switch is stripped
+// there). Space-bearing roots are matched as literals. The marker does NOT
+// exclude foreign monorepo Electron apps (`apps/desktop` is a Turborepo/Nx
+// standard layout) — that known trade is documented at hasMakaDevMarker.
 //
 // Failure costs are NOT symmetric, and the expensive direction is
 // MISSING another worktree's process: that fails to block and our launch is
@@ -86,12 +88,14 @@ export function hasMakaDevMarker(commandLine) {
  * shared default "Maka Dev" profile).
  *
  * Truth table:
- *  - a known Maka marker is present AND `--user-data-dir=<target>` appears
- *    as a literal (bounded per the target's shape)          → true
- *  - a marker is present and some OTHER --user-data-dir appears → false
- *  - a marker is present, no switch, target is the default     → true
- *  - a marker is present, no switch, target is NOT the default → false
- *  - no marker at all                                          → false
+ *  - no marker at all                                             → false
+ *  - TCC shape (bundle marker): profile read from the worktree's
+ *    dev-env.json; env missing = UNKNOWN → blocks every target          → env
+ *  - plain shape, `--user-data-dir=<target>` literal (bounded)
+ *    appears                                                           → true
+ *  - plain shape, marker present, some OTHER --user-data-dir appears    → false
+ *  - plain shape, marker present, no switch, target is the default      → true
+ *  - plain shape, marker present, no switch, target is NOT the default  → false
  *
  * The explicit-value boundary is uniform: `--user-data-dir=<target>` must be
  * followed by whitespace or the line end. A longer real value appends a

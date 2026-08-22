@@ -258,6 +258,42 @@ export function sharedDevelopmentAppOwner(options = {}) {
  * `never-started` report from the local monitor — indistinguishable from a
  * normal launch unless the owner is named (#3359).
  */
+/**
+ * Post-spawn recheck (F18): the preflight gate reads a process snapshot, but
+ * the lock is taken at spawn time AFTER the gate — two near-simultaneous
+ * launches can both pass, and the loser is silently absorbed (its child exits
+ * 0 / the TCC bundle never appears or appears-then-exits). On those terminal
+ * paths re-probe the shared profile for the target: a foreign holder present
+ * means this launch was absorbed — surface the owner instead of a quiet exit.
+ * (The winner may itself have exited between pgrep and ps; then there is no
+ * absorbable window left and returning undefined is correct.)
+ */
+export function recheckAfterAbsence(options = {}) {
+  const owner = sharedDevelopmentAppOwner({
+    ...(options.targetProfile ? { targetProfile: options.targetProfile } : {}),
+    ...(options.commandLines ? { commandLines: options.commandLines } : {}),
+    ...(options.probe ? { probe: options.probe } : {}),
+    ...(options.readFile ? { readFile: options.readFile } : {}),
+  });
+  if (owner === undefined) return;
+  throw new Error(
+    `Another worktree's Maka Dev app holds the shared "Maka Dev" profile and absorbed this launch: ${owner}. ` +
+      'Quit it (Cmd-Q) or stop it before launching this worktree.',
+  );
+}
+
+/**
+ * Quiet variant for the monitor paths: prints the absorbed-launch conflict
+ * instead of throwing (the monitor's outcome is consumed asynchronously).
+ */
+function recheckAfterAbsenceQuiet(targetProfile) {
+  try {
+    recheckAfterAbsence({ targetProfile });
+  } catch (error) {
+    console.error(error.message);
+  }
+}
+
 export function assertNoCrossWorktreeOwner(options = {}) {
   const owner = options.owner ?? sharedDevelopmentAppOwner(options);
   if (owner === undefined) return;
@@ -523,6 +559,16 @@ export async function startDevelopmentApp(options = {}) {
       stdio: 'inherit',
       env: viteUrl ? { ...process.env, VITE_DEV_SERVER_URL: viteUrl } : process.env,
     });
+    // Post-spawn recheck: an exit-0 without our app appearing means the lock
+    // was absorbed by a foreign holder — name it instead of exiting quietly.
+    child.once('exit', (code) => {
+      if (code !== 0) return;
+      try {
+        recheckAfterAbsence({ targetProfile });
+      } catch (error) {
+        console.error(error.message);
+      }
+    });
     return { child, isMacosBundle: false, stop: () => terminateProcessTree(child) };
   }
 
@@ -577,6 +623,7 @@ function terminateProcessTree(child) {
  */
 export async function monitorDevelopmentApp(options = {}) {
   const isRunning = options.isRunning ?? isDevelopmentAppRunning;
+  const recheck = options.recheckAfterAbsence ?? recheckAfterAbsenceQuiet;
   const delay = options.delay ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
   const stopped = options.stopped ?? (() => false);
   const pollMs = options.pollMs ?? 250;
@@ -587,11 +634,17 @@ export async function monitorDevelopmentApp(options = {}) {
     if (isRunning()) appeared = true;
     else await delay(pollMs);
   }
-  if (!appeared) return 'never-started';
+  if (!appeared) {
+    recheck({ targetProfile: options.targetProfile });
+    return 'never-started';
+  }
   while (!stopped()) {
     await delay(pollMs);
     if (stopped()) break;
-    if (!isRunning()) return 'exited';
+    if (!isRunning()) {
+      recheck({ targetProfile: options.targetProfile });
+      return 'exited';
+    }
   }
   return 'stopped';
 }

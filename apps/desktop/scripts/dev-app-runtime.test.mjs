@@ -185,3 +185,32 @@ test('probe bundle pattern stays wide: selects a prefix-less TCC line', async ()
     true,
   );
 });
+
+test('recheckAfterAbsence: foreign holder on the target profile is reported', async () => {
+  const { recheckAfterAbsence } = await import('./dev-app-runtime.mjs');
+  const foreign = '/Users/other/codebase/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron /Users/other/codebase/apps/desktop';
+  // foreign present on the shared default → conflict
+  assert.throws(() => recheckAfterAbsence({ commandLines: [foreign] }), /absorbed this launch/);
+  // nothing on the profile → no conflict
+  assert.doesNotThrow(() => recheckAfterAbsence({ commandLines: [] }));
+});
+
+test('TCC monitor rechecks on BOTH terminal paths (never-started and appeared→exited)', async () => {
+  const { monitorDevelopmentApp } = await import('./dev-app-runtime.mjs');
+  // Appeared briefly, then exited (the loser shape that a
+  // never-started-only implementation would miss).
+  const appearedThenExited = (() => {
+    let calls = 0;
+    return () => { calls += 1; return calls < 3; };
+  })();
+  const rechecks = [];
+  const recheck = (input) => { rechecks.push(input.targetProfile); };
+  const outcome = await monitorDevelopmentApp({
+    isRunning: appearedThenExited,
+    recheckAfterAbsence: recheck,
+    pollMs: 1,
+    startupAttempts: 10,
+  });
+  assert.equal(outcome, 'exited');
+  assert.equal(rechecks.length, 1);
+});
