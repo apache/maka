@@ -41,12 +41,34 @@ import {
 } from '@maka/runtime-host/protocol';
 import {
   createRuntimeHostMakaSessionDriver,
+  runtimeHostSessionSummary,
   type RuntimeHostMakaSessionDriverInput,
 } from '../runtime-host-session-driver.js';
 import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
+  test('maps authoritative live Turn ids into Session summaries', () => {
+    assert.deepEqual(
+      runtimeHostSessionSummary(
+        sessionProjection({
+          status: 'running',
+          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1', 'turn-2'] },
+        }),
+      ).runningTurnIds,
+      ['turn-1', 'turn-2'],
+    );
+    const knownEmpty = runtimeHostSessionSummary(
+      sessionProjection({ liveRunState: { schemaVersion: 1, runningTurnIds: [] } }),
+    );
+    assert.equal(Object.hasOwn(knownEmpty, 'runningTurnIds'), true);
+    assert.deepEqual(knownEmpty.runningTurnIds, []);
+    assert.equal(
+      Object.hasOwn(runtimeHostSessionSummary(sessionProjection()), 'runningTurnIds'),
+      false,
+    );
+  });
+
   test('keeps remote Session paths out of Client filesystem policy', async () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: new FakeConnection([]).value,

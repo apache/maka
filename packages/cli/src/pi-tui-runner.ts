@@ -108,6 +108,7 @@ import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
+import { sessionStatusBadge } from './tui-session-status.js';
 import {
   AttentionController,
   DISABLE_FOCUS_REPORTING,
@@ -2036,18 +2037,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           : projectedSessions;
       const items: SelectItem[] = visibleSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
+        const statusBadge = sessionStatusBadge(session, locale);
+        const statusDetail = statusBadge ? ` · ${statusBadge}` : '';
         const location =
           sessionListScope === 'all' && session.cwd ? ` ${basename(session.cwd)}` : '';
         const childDetail = session.subagentRuntime
-          ? ` subagent:${session.subagentRuntime.profile} ${session.status}`
+          ? ` subagent:${session.subagentRuntime.profile}`
           : '';
         return {
           value: session.id,
           label: `${depth > 0 ? `${'  '.repeat(depth - 1)}↳ ` : ''}${session.name || session.id}`,
           description:
             state?.available === false
-              ? `${shortSessionId(session.id)} ${state.reason}`
-              : `${shortSessionId(session.id)}${location}${childDetail} ${session.llmConnectionSlug} ${session.model}`,
+              ? `${shortSessionId(session.id)}${statusDetail} ${state.reason}`
+              : `${shortSessionId(session.id)}${statusDetail}${location}${childDetail} ${session.llmConnectionSlug} ${session.model}`,
         };
       });
       // Foreign sessions are cwd-scoped; show them in both scope views (they
