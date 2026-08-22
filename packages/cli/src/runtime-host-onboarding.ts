@@ -92,6 +92,7 @@ export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapsho
         connectionName: connection.name,
         providerType: connection.providerType,
         model,
+        displayName: modelsById.get(model)?.displayName,
         isDefaultConnection: catalog.defaultTarget?.connectionId === connection.connectionId,
         contextWindow: modelsById.get(model)?.contextWindow,
       });
