@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   isSafeWorkBoardId,
   type WorkBoardItem,
@@ -52,7 +53,11 @@ export function workBoardFilterFingerprint(value: WorkBoardListQuery): string {
       : value.scope.kind === 'project'
         ? `project:${[...(value.projectIds ?? [value.scope.projectId])].sort().join('|')}`
         : 'inbox';
-  return `${value.includeArchived ? 'archived-included' : 'active-only'}:${scope}`;
+  // Cursors bind to the complete normalized filter without copying an unbounded
+  // project alias set into the public cursor payload.
+  return createHash('sha256')
+    .update(`${value.includeArchived ? 'archived-included' : 'active-only'}:${scope}`)
+    .digest('base64url');
 }
 
 export function encodeWorkBoardCursor(item: WorkBoardItem, filterFingerprint: string): string {

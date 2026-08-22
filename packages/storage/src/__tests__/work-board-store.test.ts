@@ -331,6 +331,45 @@ describe('Work Board store', () => {
     });
   });
 
+  test('paginates across an unbounded relinked project identity set', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        const projectIds = Array.from(
+          { length: 15 },
+          (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+        );
+        const createdIds: string[] = [];
+        for (let index = 0; index < 101; index += 1) {
+          const item = await store.create(
+            itemInput({
+              title: `aliased-project-${index}`,
+              scope: { kind: 'project', projectId: projectIds[index % projectIds.length]! },
+            }),
+            1_000 + index,
+          );
+          createdIds.push(item.id);
+        }
+
+        const query = {
+          limit: 100,
+          scope: { kind: 'project' as const, projectId: projectIds[0]! },
+          projectIds,
+        };
+        const first = await store.list(query);
+        assert.equal(first.items.length, 100);
+        assert.ok(first.nextCursor);
+        assert.ok(first.nextCursor.length < 512);
+
+        const second = await store.list({ ...query, cursor: first.nextCursor });
+        assert.deepEqual(second.items.map((item) => item.id), [createdIds[0]]);
+        assert.equal(second.nextCursor, undefined);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   test('keeps mutation timestamps monotonic when now moves backwards', async () => {
     await withTempRoot(async (root) => {
       const store = createWorkBoardStore(root);
