@@ -40,6 +40,63 @@
   max-width: var(--maka-chat-measure);
 }
 
+.maka-composer-queue {
+  width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-6))));
+  max-width: var(--maka-chat-measure);
+  margin: 0 auto var(--space-1);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-2);
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-1);
+  border-radius: var(--radius-control);
+  background: var(--background-elevated);
+  box-shadow: inset 0 0 0 var(--border-width-hairline) var(--border);
+}
+
+.maka-composer-queue-list {
+  min-width: 0;
+  flex: 1 1 auto;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.maka-composer-queue-row {
+  min-width: 0;
+  min-height: var(--h-control-sm);
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-1);
+  color: var(--foreground-secondary);
+}
+
+.maka-composer-queue-kind {
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+  white-space: nowrap;
+}
+
+.maka-composer-queue-text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  font: var(--maka-text-label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-composer-follow-up-mode {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 640px) {
+  .maka-composer-queue {
+    width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-3))));
+  }
+}
+
 /* Row-flow, not the old stacked column: image thumbnails and file/quote
    chips share one wrapping row. `width: 100%` is what makes the wrap real:
    as a flex item of Astryx's drawer content this group would otherwise size

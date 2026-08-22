@@ -2331,6 +2331,17 @@ test("projects Host queue revisions and newly delivered steering messages", asyn
     target.events.map((event) => event.type),
     ["queue_update", "steering_message", "queue_update"],
   );
+  assert.deepEqual(target.events[0], {
+    type: "queue_update",
+    id: "host-queue:host-1:1",
+    turnId: "turn-1",
+    ts: 90,
+    queueRevision: 1,
+    steering: ["Change direction"],
+    followup: [],
+    steeringEntries: [queued],
+    followupEntries: [],
+  });
   assert.deepEqual(target.events[1], {
     type: "steering_message",
     id: "host-queue:host-1:2:entry-1",

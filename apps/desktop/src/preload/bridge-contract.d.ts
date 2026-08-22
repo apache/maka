@@ -42,6 +42,7 @@ import type { HealthSnapshot } from '@maka/core/health';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   ActiveInteractionRequestEvent,
+  MessageContent,
   SessionCommand,
   SessionEvent,
   ShellRunUpdate,
@@ -630,6 +631,7 @@ export interface MakaBridge {
             displayText?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
+            retainedAttachments?: import('@maka/core/events').AttachmentRef[];
             turnOrchestration?: TurnOrchestration;
             quotes?: import('@maka/core/events').QuoteRef[];
             workspaceFileReferences?: Array<
@@ -657,6 +659,26 @@ export interface MakaBridge {
     >;
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
+    enqueue(
+      sessionId: string,
+      placement: 'current_turn' | 'next_turn',
+      command: {
+        text: string;
+        displayText?: string;
+        attachmentItems?: RendererIngestInput[];
+        retainedAttachments?: import('@maka/core/events').AttachmentRef[];
+        quotes?: import('@maka/core/events').QuoteRef[];
+        workspaceFileReferences?: Array<
+          Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
+        >;
+      },
+    ): Promise<{
+      kind: 'queued' | 'started';
+      turnId?: string;
+      attachments: import('@maka/core/events').AttachmentRef[];
+      inlineReferences: import('@maka/core/events').InlineReference[];
+    }>;
+    retractQueue(sessionId: string): Promise<MessageContent>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;
     subscribeActiveInteractions(

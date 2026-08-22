@@ -35,7 +35,9 @@ import { useMountedRef } from './use-mounted-ref.js';
 import {
   ICON_SIZE,
   ArrowUp,
+  CornerDownRight,
   FileText,
+  ListEnd,
   ListTodo,
   Network,
   Pencil,
@@ -73,7 +75,12 @@ import {
   type ComposerTextPort,
 } from './chat-input-behavior.js';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
-import type { AttachmentRef, QuoteRef } from '@maka/core/events';
+import type {
+  AttachmentRef,
+  FollowUpMode,
+  MessageQueueEntryProjection,
+  QuoteRef,
+} from '@maka/core/events';
 import type { PermissionMode } from '@maka/core/permission';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ProviderType } from '@maka/core/llm-connections';
@@ -85,6 +92,8 @@ import {
   ChatComposerInput,
   IconButton,
   Lightbox,
+  SegmentedControl,
+  SegmentedControlItem,
   Token,
   Tooltip,
   useChatPasteAsToken,
@@ -113,6 +122,7 @@ import {
   workspaceFileReferencePositions,
   type WorkspaceFileReferencePosition,
 } from './inline-reference.js';
+import { ComposerMessageQueue } from './composer-message-queue.js';
 
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
@@ -205,6 +215,7 @@ export interface ComposerHandle {
 
 export interface ComposerSendMetadata {
   workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
+  followUpMode?: FollowUpMode;
 }
 
 type ComposerImportActionId = 'pick' | 'attach';
@@ -239,6 +250,13 @@ export const Composer = forwardRef<
     continuing?: boolean;
     /** True while the current streaming session is processing a stop request. */
     stopPending?: boolean;
+    followUpMode?: FollowUpMode;
+    queuedMessages?: {
+      steering: readonly MessageQueueEntryProjection[];
+      followup: readonly MessageQueueEntryProjection[];
+    };
+    onFollowUpModeChange?(mode: FollowUpMode): void;
+    onRetractQueued?(): void | Promise<void>;
     /** Runtime-only key used to keep unsent drafts isolated per session. */
     draftKey?: string;
     /** Optional host persistence for reload-safe draft scopes. */
@@ -1109,7 +1127,7 @@ export const Composer = forwardRef<
     [],
   );
 
-  async function sendCurrent() {
+  async function sendCurrent(followUpMode?: FollowUpMode) {
     if (
       props.disabled
       || props.sendBlocked
@@ -1128,10 +1146,11 @@ export const Composer = forwardRef<
     setSendPending(true);
     let sent: boolean | void;
     try {
-      sent = await props.onSend(
-        text,
-        workspaceFileReferences.length > 0 ? { workspaceFileReferences } : undefined,
-      );
+      const metadata: ComposerSendMetadata = {
+        ...(workspaceFileReferences.length > 0 ? { workspaceFileReferences } : {}),
+        ...(followUpMode ? { followUpMode } : {}),
+      };
+      sent = await props.onSend(text, Object.keys(metadata).length > 0 ? metadata : undefined);
     } finally {
       sendPendingRef.current = false;
       if (composerMountedRef.current) setSendPending(false);
@@ -1161,7 +1180,7 @@ export const Composer = forwardRef<
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    void sendCurrent();
+    void sendCurrent(props.streaming ? props.followUpMode : undefined);
   }
 
   async function runImportAction(actionId: ComposerImportActionId, action: (() => void | Promise<void>) | undefined) {
@@ -1218,18 +1237,22 @@ export const Composer = forwardRef<
       if (handleArrowKey(event)) return;
     }
     if (event.key !== 'Enter') return;
-    // Shift+Enter / Alt+Enter insert a line break instead of sending. We have
-    // to insert it ourselves rather than fall through: ChatComposerInput's own
-    // Enter branch only exempts Shift, so a bare `return` here would hand it
-    // Alt+Enter as a submit — and that path clears the editor even when it
-    // sends nothing, silently dropping the draft.
-    if (event.shiftKey || event.altKey) {
+    // Alt+Enter always inserts a line break. During a running turn, Shift+Enter
+    // sends once using the opposite Queue/Steer mode.
+    if (event.altKey || (event.shiftKey && !props.streaming)) {
       event.preventDefault();
       document.execCommand('insertLineBreak');
       return;
     }
     event.preventDefault();
-    void sendCurrent();
+    const selectedMode = props.followUpMode ?? 'queue';
+    const submitMode =
+      props.streaming && event.shiftKey
+        ? selectedMode === 'queue' ? 'steer' : 'queue'
+        : props.streaming
+          ? selectedMode
+          : undefined;
+    void sendCurrent(submitMode);
   }
 
   function onInputChange(next: string) {
@@ -1310,6 +1333,10 @@ export const Composer = forwardRef<
   // returns to Send (the host reads that as steering). Stop is not lost in that
   // window: Esc interrupts from the input, which is where the hands already are.
   const stopShown = props.streaming === true && !text.trim();
+  const queueCount =
+    (props.queuedMessages?.steering.length ?? 0) +
+    (props.queuedMessages?.followup.length ?? 0);
+  const selectedFollowUpMode = props.followUpMode ?? 'queue';
   const modelChipLabel = props.modelLabel?.trim() || copy.selectModel;
   // Mid-turn the model and thinking menus stay mounted but locked, each
   // carrying the reason in its own words (model vs thinking level) — the
@@ -1513,6 +1540,13 @@ export const Composer = forwardRef<
           />
         </div>
       )}
+      {!props.hidden && queueCount > 0 ? (
+        <ComposerMessageQueue
+          queuedMessages={props.queuedMessages!}
+          copy={copy}
+          onRetractQueued={props.onRetractQueued}
+        />
+      ) : null}
       <form
         ref={formRef}
         className="maka-composer composer"
@@ -1974,7 +2008,28 @@ export const Composer = forwardRef<
             </div>
           )}
           sendActions={(
-            <div className="maka-composer-right-controls" />
+            <div className="maka-composer-right-controls">
+              {props.streaming && props.onFollowUpModeChange ? (
+                <SegmentedControl
+                  value={selectedFollowUpMode}
+                  onChange={(value) => props.onFollowUpModeChange?.(value as FollowUpMode)}
+                  label={copy.followUpModeLabel}
+                  size="sm"
+                  className="maka-composer-follow-up-mode"
+                >
+                  <SegmentedControlItem
+                    value="queue"
+                    label={copy.queueLabel}
+                    icon={<ListEnd size={14} aria-hidden="true" />}
+                  />
+                  <SegmentedControlItem
+                    value="steer"
+                    label={copy.steerLabel}
+                    icon={<CornerDownRight size={14} aria-hidden="true" />}
+                  />
+                </SegmentedControl>
+              ) : null}
+            </div>
           )}
           sendButton={stopShown ? (
             <IconButton
@@ -1996,11 +2051,29 @@ export const Composer = forwardRef<
               variant="primary"
               type="submit"
               isDisabled={sendDisabled}
-              label={props.streaming ? copy.steerLabel : copy.sendLabel}
+              label={
+                props.streaming
+                  ? selectedFollowUpMode === 'queue'
+                    ? copy.queueLabel
+                    : copy.steerLabel
+                  : copy.sendLabel
+              }
               aria-busy={sendPending ? 'true' : undefined}
               data-pending={sendPending ? 'true' : undefined}
-              tooltip={props.streaming ? copy.steerLabel : sendTitle}
-              icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
+              tooltip={
+                props.streaming
+                  ? selectedFollowUpMode === 'queue'
+                    ? copy.queueTooltip
+                    : copy.steerTooltip
+                  : sendTitle
+              }
+              icon={
+                props.streaming
+                  ? selectedFollowUpMode === 'queue'
+                    ? <ListEnd size={ICON_SIZE.chrome} aria-hidden="true" />
+                    : <CornerDownRight size={ICON_SIZE.chrome} aria-hidden="true" />
+                  : <ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />
+              }
             />
           )}
         />

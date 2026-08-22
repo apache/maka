@@ -144,6 +144,7 @@ packages/ui/src/chat-surface-layout.tsx
 packages/ui/src/chat-turn.tsx
 packages/ui/src/chat-view.tsx
 packages/ui/src/components.tsx
+packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
 packages/ui/src/icons.tsx

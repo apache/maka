@@ -23,7 +23,10 @@ import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 
 type PreflightItem = {
   size: number;
-  source: { type: 'approval'; approvalId: string } | { type: 'file'; file: { size: number } };
+  source:
+    | { type: 'approval'; approvalId: string }
+    | { type: 'file'; file: { size: number } }
+    | { type: 'retained' };
 };
 
 /**

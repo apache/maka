@@ -26,7 +26,8 @@ import type {
 import type { QuoteRef } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import { isCanonicalStorageRef } from '@maka/core/events';
+import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import { isAttachmentRef, isCanonicalStorageRef, type AttachmentRef } from '@maka/core/events';
 
 import { isOrchestrationMode, isTurnOrchestrationSource } from '@maka/core/orchestration';
 
@@ -56,6 +57,7 @@ interface NormalizedSendSessionCommand {
   displayText?: string;
   skillIds?: string[];
   attachmentItems?: unknown;
+  retainedAttachments?: AttachmentRef[];
   turnOrchestration?: TurnOrchestration;
   quotes?: QuoteRef[];
   workspaceFileReferences?: WorkspaceFileReferencePosition[];
@@ -177,6 +179,7 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     ...(displayText !== undefined ? { displayText } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),
+    ...normalizeOptionalRetainedAttachments(value.retainedAttachments),
     ...(value.turnOrchestration !== undefined
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
@@ -186,6 +189,22 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
       displayText ?? text,
     ),
   };
+}
+
+function normalizeOptionalRetainedAttachments(
+  input: unknown,
+): { retainedAttachments?: AttachmentRef[] } {
+  if (input === undefined) return {};
+  if (
+    !Array.isArray(input) ||
+    input.length > MAX_ATTACHMENT_COUNT ||
+    !input.every(isAttachmentRef)
+  ) {
+    throw new Error('Invalid retained attachments');
+  }
+  return input.length > 0
+    ? { retainedAttachments: input.map((attachment) => structuredClone(attachment)) }
+    : {};
 }
 
 function normalizeOptionalWorkspaceFileReferences(

@@ -32,6 +32,7 @@ import {
   type InteractionQueues,
 } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
+import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import {
   isNoRealConnectionEvent,
   noRealConnectionReasonFromEvent,
@@ -82,6 +83,7 @@ export function createAppShellSessionEventHandlers(options: {
   refreshSessions: () => Promise<unknown>;
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
+  setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
@@ -103,6 +105,7 @@ export function createAppShellSessionEventHandlers(options: {
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
+    setMessageQueueBySession,
     onInteractionChanged,
     onExecutionBoundaryChanged,
     showModelSetupToast,
@@ -273,6 +276,42 @@ export function createAppShellSessionEventHandlers(options: {
     updateLiveTurn(sessionId, [...pending, event]);
 
     switch (event.type) {
+      case 'queue_update':
+        setMessageQueueBySession?.((current) => {
+          if (event.steering.length === 0 && event.followup.length === 0) {
+            if (!(sessionId in current)) return current;
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+          }
+          return {
+            ...current,
+            [sessionId]: {
+              ...(event.queueRevision !== undefined
+                ? { queueRevision: event.queueRevision }
+                : {}),
+              steering:
+                event.steeringEntries?.map((entry) => structuredClone(entry)) ??
+                event.steering.map((text, index) => ({
+                  entryId: `legacy-steering-${index}`,
+                  messageId: `legacy-steering-${index}`,
+                  content: { text },
+                  placement: 'current_turn' as const,
+                  state: 'queued' as const,
+                })),
+              followup:
+                event.followupEntries?.map((entry) => structuredClone(entry)) ??
+                event.followup.map((text, index) => ({
+                  entryId: `legacy-followup-${index}`,
+                  messageId: `legacy-followup-${index}`,
+                  content: { text },
+                  placement: 'next_turn' as const,
+                  state: 'queued' as const,
+                })),
+            },
+          };
+        });
+        break;
       case 'text_complete':
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);
         break;

@@ -101,6 +101,50 @@ test('projects typed linked Session ids without rewriting opaque tool data', () 
   );
 });
 
+test('projects queued Session attachments into the Desktop host namespace', () => {
+  const host = { hostId: 'remote-root' };
+  const projected = projectDesktopSessionEvent(host, {
+    type: 'queue_update',
+    id: 'event-queue',
+    turnId: 'turn-1',
+    ts: 3,
+    queueRevision: 2,
+    steering: [],
+    followup: ['inspect this'],
+    steeringEntries: [],
+    followupEntries: [{
+      entryId: 'entry-1',
+      messageId: 'message-1',
+      content: {
+        text: 'inspect this',
+        attachments: [{
+          kind: 'other',
+          name: 'notes.txt',
+          mimeType: 'text/plain',
+          bytes: 5,
+          ref: {
+            kind: 'session_file',
+            sessionId: 'session-1',
+            relativePath: 'artifact-1',
+          },
+        }],
+      },
+      placement: 'next_turn',
+      state: 'queued',
+    }],
+  });
+
+  assert.deepEqual(
+    (projected as Extract<SessionEvent, { type: 'queue_update' }>).followupEntries?.[0]
+      ?.content.attachments?.[0].ref,
+    {
+      kind: 'session_file',
+      sessionId: JSON.stringify(['remote-root', 'session-1']),
+      relativePath: 'artifact-1',
+    },
+  );
+});
+
 function summary(id: string): SessionSummary {
   return {
     id,

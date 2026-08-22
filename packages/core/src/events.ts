@@ -1034,6 +1034,18 @@ export interface SteeringMessageEvent extends BaseEvent {
  */
 export type QueueEnqueueOutcome = { kind: 'queued' } | { kind: 'fallback' };
 
+export type MessageQueuePlacement = 'current_turn' | 'next_turn';
+export type MessageQueueEntryState = 'queued' | 'in_flight';
+export type FollowUpMode = 'queue' | 'steer';
+
+export interface MessageQueueEntryProjection {
+  entryId: string;
+  messageId: string;
+  content: MessageContent;
+  placement: MessageQueuePlacement;
+  state: MessageQueueEntryState;
+}
+
 /**
  * Authoritative queue snapshot pushed into the active turn's event stream
  * whenever either pending queue changes (enqueue, step-boundary consumption, or
@@ -1041,8 +1053,11 @@ export type QueueEnqueueOutcome = { kind: 'queued' } | { kind: 'fallback' };
  */
 export interface QueueUpdateEvent extends BaseEvent {
   type: 'queue_update';
+  queueRevision?: number;
   steering: string[];
   followup: string[];
+  steeringEntries?: MessageQueueEntryProjection[];
+  followupEntries?: MessageQueueEntryProjection[];
 }
 
 export type ProviderRetryReason =

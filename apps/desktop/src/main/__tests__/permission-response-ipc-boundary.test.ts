@@ -134,6 +134,19 @@ describe('permission response IPC boundary', () => {
         displayText: 'review @packages/ui/src/chat turn.tsx',
         skillIds: ['weekly-report', 'project:maka:writer'],
         attachmentItems: [{ approvalId: 'a', name: 'n' }],
+        retainedAttachments: [
+          {
+            kind: 'other',
+            name: 'notes.txt',
+            mimeType: 'text/plain',
+            bytes: 5,
+            ref: {
+              kind: 'session_file',
+              sessionId: 'session-1',
+              relativePath: 'attachments/notes.txt',
+            },
+          },
+        ],
         turnOrchestration: { mode: 'swarm', source: 'slash_command', ignored: true },
         quotes: [
           { text: 'the excerpt', label: '  Assistant  ', sourceTurnId: 'turn-9', extra: true },
@@ -155,6 +168,19 @@ describe('permission response IPC boundary', () => {
         displayText: 'review @packages/ui/src/chat turn.tsx',
         skillIds: ['weekly-report', 'project:maka:writer'],
         attachmentItems: [{ approvalId: 'a', name: 'n' }],
+        retainedAttachments: [
+          {
+            kind: 'other',
+            name: 'notes.txt',
+            mimeType: 'text/plain',
+            bytes: 5,
+            ref: {
+              kind: 'session_file',
+              sessionId: 'session-1',
+              relativePath: 'attachments/notes.txt',
+            },
+          },
+        ],
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         quotes: [{ text: 'the excerpt', label: 'Assistant', sourceTurnId: 'turn-9' }],
         workspaceFileReferences: [
@@ -178,6 +204,7 @@ describe('permission response IPC boundary', () => {
       null,
       { type: 'send', text: '' },
       { type: 'send', text: 'x'.repeat(128_001) },
+      { type: 'send', text: 'ok', retainedAttachments: [{ name: 'broken' }] },
       { type: 'send', text: 'hello', turnId: 1 },
       { type: 'send', text: 'hello', skillIds: ['/bad'] },
       { type: 'send', text: 'hello', turnOrchestration: { mode: 'swarm', source: 'prompt' } },

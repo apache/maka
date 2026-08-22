@@ -19,8 +19,10 @@
 
 import { randomUUID } from "node:crypto";
 import type { IpcMainInvokeEvent } from "electron";
+import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
+import { aggregateMessageContents } from '@maka/core/events';
 import {
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -71,6 +73,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "queryTurnResume"
   | "readExecutionBoundary"
   | "regenerateTurn"
+  | "retractQueue"
   | "setSessionReadMarker"
   | "startTurn"
   | "startTurnResume"
@@ -208,7 +211,10 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (!session)
         throw new Error(`Runtime Host Session not found: ${sessionId}`);
       const turnId = command.turnId ?? newId();
-      let attachments: AttachmentRef[] = [];
+      let attachments = retainedAttachmentsForSession(
+        sessionId,
+        command.retainedAttachments ?? [],
+      );
       if (command.attachmentItems !== undefined) {
         const files = await resolveIngestItems({
           senderId: event.sender.id,
@@ -216,17 +222,23 @@ export function registerRuntimeHostSessionExecutionIpc(
           approvals: deps.attachmentApprovals,
           stat: deps.stat,
         });
-        attachments = await resolveAttachmentRefs({
-          files,
-          resizeImage: deps.resizeImage,
-          snapshot: ({ name, mimeType, content }) =>
-            deps.client.ingestAttachment({
-              sessionId,
-              name,
-              mimeType,
-              content,
-            }),
-        });
+        attachments = [
+          ...attachments,
+          ...(await resolveAttachmentRefs({
+            files,
+            resizeImage: deps.resizeImage,
+            snapshot: ({ name, mimeType, content }) =>
+              deps.client.ingestAttachment({
+                sessionId,
+                name,
+                mimeType,
+                content,
+              }),
+          })),
+        ];
+      }
+      if (attachments.length > MAX_ATTACHMENT_COUNT) {
+        throw new Error("Too many attachments");
       }
       const displayText =
         command.displayText ??
@@ -342,6 +354,98 @@ export function registerRuntimeHostSessionExecutionIpc(
       return { kind: "queued" as const };
     },
   );
+  ipcMain.handle(
+    "sessions:enqueue",
+    async (event, sessionId: string, placement: unknown, value: unknown) => {
+      if (placement !== "current_turn" && placement !== "next_turn") {
+        throw new Error("Invalid message placement");
+      }
+      const command = normalizeSessionSendCommand({
+        ...(value && typeof value === "object" ? value : {}),
+        type: "send",
+        turnId: newId(),
+      });
+      if (!command) throw new Error("Invalid queued message");
+      if ((command.skillIds?.length ?? 0) > 0 || command.turnOrchestration) {
+        throw new Error("Queued control input is not available");
+      }
+      const session = await deps.client.getSession(sessionId);
+      if (!session) {
+        throw new Error(`Runtime Host Session not found: ${sessionId}`);
+      }
+      let attachments = retainedAttachmentsForSession(
+        sessionId,
+        command.retainedAttachments ?? [],
+      );
+      if (command.attachmentItems !== undefined) {
+        const files = await resolveIngestItems({
+          senderId: event.sender.id,
+          items: command.attachmentItems,
+          approvals: deps.attachmentApprovals,
+          stat: deps.stat,
+        });
+        attachments = [
+          ...attachments,
+          ...(await resolveAttachmentRefs({
+            files,
+            resizeImage: deps.resizeImage,
+            snapshot: ({ name, mimeType, content }) =>
+              deps.client.ingestAttachment({
+                sessionId,
+                name,
+                mimeType,
+                content,
+              }),
+          })),
+        ];
+      }
+      if (attachments.length > MAX_ATTACHMENT_COUNT) {
+        throw new Error("Too many attachments");
+      }
+      const displayText = command.displayText ?? command.text;
+      const inlineReferences = mergeWorkspaceFileInlineReferences({
+        displayText,
+        workspaceFileReferences: command.workspaceFileReferences,
+      });
+      const result = await deps.client.submitMessage({
+        sessionId,
+        messageId: newId(),
+        placement,
+        content: {
+          text: command.text,
+          ...(command.displayText !== undefined
+            ? { displayText: command.displayText }
+            : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.quotes ? { quotes: command.quotes } : {}),
+          inlineReferences,
+        },
+      });
+      if (result.disposition === "turn_started") {
+        deps.emitSessionsChanged("status-change", sessionId, {
+          turnId: result.turnId,
+        });
+        return {
+          kind: "started" as const,
+          turnId: result.turnId,
+          attachments,
+          inlineReferences,
+        };
+      }
+      return {
+        kind: "queued" as const,
+        attachments,
+        inlineReferences,
+      };
+    },
+  );
+  ipcMain.handle("sessions:retractQueue", async (_event, sessionId: string) => {
+    const result = await deps.client.retractQueue({
+      sessionId,
+      retractId: newId(),
+    });
+    return aggregateMessageContents(result.retracted.map((entry) => entry.content));
+  });
   ipcMain.handle("sessions:stop", async (_event, sessionId: string) =>
     stopSession(sessionId),
   );
@@ -528,6 +632,24 @@ function normalizeTranscriptRangeRequest(input: unknown): DesktopTranscriptRange
     anchorSequence: anchorSequence as number | null,
     maxBytes: maxBytes as number,
   };
+}
+
+function retainedAttachmentsForSession(
+  sessionId: string,
+  attachments: readonly AttachmentRef[],
+): AttachmentRef[] {
+  return attachments.map((attachment) => {
+    if (attachment.ref.kind === "external_file") {
+      throw new Error("External file attachments must be selected again");
+    }
+    if (
+      attachment.ref.kind === "session_file" &&
+      attachment.ref.sessionId !== sessionId
+    ) {
+      throw new Error("Retained attachment belongs to another Session");
+    }
+    return structuredClone(attachment);
+  });
 }
 
 function createRuntimeHostSessionStop(

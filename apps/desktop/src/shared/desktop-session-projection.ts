@@ -142,6 +142,26 @@ export function projectDesktopSessionEvent(
       return { ...event, content: projectDesktopToolResultContent(host, event.content) };
     case 'steering_message':
       return { ...event, content: projectMessageContent(host, event.content) };
+    case 'queue_update':
+      return {
+        ...event,
+        ...(event.steeringEntries
+          ? {
+              steeringEntries: event.steeringEntries.map((entry) => ({
+                ...entry,
+                content: projectMessageContent(host, entry.content),
+              })),
+            }
+          : {}),
+        ...(event.followupEntries
+          ? {
+              followupEntries: event.followupEntries.map((entry) => ({
+                ...entry,
+                content: projectMessageContent(host, entry.content),
+              })),
+            }
+          : {}),
+      };
     default:
       return event;
   }

@@ -679,6 +679,122 @@ test("keeps the busy failure for a Skill send instead of degrading it to steerin
   assert.deepEqual(submits, []);
 });
 
+test("queues explicit Desktop follow-ups and retracts their full content", async () => {
+  const submits: unknown[] = [];
+  let sequence = 0;
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "followup", queueRevision: 4 };
+        },
+        retractQueue: async (input) => ({
+          queueRevision: 5,
+          retracted: [
+            {
+              entryId: "entry-1",
+              messageId: "message-1",
+              content: {
+                text: "first",
+                quotes: [{ text: "context" }],
+              },
+              placement: "next_turn",
+              state: "retracted",
+            },
+            {
+              entryId: "entry-2",
+              messageId: "message-2",
+              content: { text: "second" },
+              placement: "next_turn",
+              state: "retracted",
+            },
+          ],
+        }),
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => `id-${++sequence}`,
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke("sessions:enqueue", "session-1", "next_turn", {
+      text: "do this next",
+      quotes: [{ text: "quoted context" }],
+      retainedAttachments: [
+        {
+          kind: "other",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          bytes: 5,
+          ref: {
+            kind: "session_file",
+            sessionId: "session-1",
+            relativePath: "attachments/notes.txt",
+          },
+        },
+      ],
+    }),
+    {
+      kind: "queued",
+      attachments: [
+        {
+          kind: "other",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          bytes: 5,
+          ref: {
+            kind: "session_file",
+            sessionId: "session-1",
+            relativePath: "attachments/notes.txt",
+          },
+        },
+      ],
+      inlineReferences: [],
+    },
+  );
+  assert.deepEqual(submits, [
+    {
+      sessionId: "session-1",
+      messageId: "id-2",
+      content: {
+        text: "do this next",
+        attachments: [
+          {
+            kind: "other",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            bytes: 5,
+            ref: {
+              kind: "session_file",
+              sessionId: "session-1",
+              relativePath: "attachments/notes.txt",
+            },
+          },
+        ],
+        quotes: [{ text: "quoted context" }],
+        inlineReferences: [],
+      },
+      placement: "next_turn",
+    },
+  ]);
+  assert.deepEqual(
+    await ipc.invoke("sessions:retractQueue", "session-1"),
+    {
+      text: "first\n\nsecond",
+      quotes: [{ text: "context" }],
+    },
+  );
+});
+
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
@@ -770,6 +886,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,
+    retractQueue: unavailable,
     setSessionReadMarker: unavailable,
     startTurn: unavailable,
     startTurnResume: unavailable,

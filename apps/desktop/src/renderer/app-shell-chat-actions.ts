@@ -20,7 +20,7 @@
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
-import type { InlineReference, QuoteRef } from '@maka/core/events';
+import type { AttachmentRef, InlineReference, QuoteRef } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { StoredMessage } from '@maka/core/session';
@@ -65,14 +65,21 @@ export type PendingAttachment = {
    *  so a set previewUrl always means "renderable" — anything else keeps the
    *  named file card. */
   previewUrl?: string;
-  source: { type: 'approval'; approvalId: string; name: string } | { type: 'file'; file: File };
+  source:
+    | { type: 'approval'; approvalId: string; name: string }
+    | { type: 'file'; file: File }
+    | { type: 'retained'; attachment: AttachmentRef };
 };
 
 /** Stable identity for a staged attachment across preview-URL merges. The
  *  drawer list is re-derived when a preview lands, so submitted items must
  *  be matched by their source — never by object reference. */
 export function pendingAttachmentSourceKey(attachment: PendingAttachment): unknown {
-  return attachment.source.type === 'approval' ? `approval:${attachment.source.approvalId}` : attachment.source.file;
+  if (attachment.source.type === 'approval') {
+    return `approval:${attachment.source.approvalId}`;
+  }
+  if (attachment.source.type === 'file') return attachment.source.file;
+  return `retained:${JSON.stringify(attachment.source.attachment)}`;
 }
 
 export interface WorkspaceFileReferencePosition {
@@ -141,14 +148,27 @@ export interface AppShellChatActions {
 export function toRendererIngestItems(
   pending: readonly PendingAttachment[],
 ): RendererIngestInput[] {
-  return pending.map((p) =>
-    p.source.type === 'approval'
-      ? {
-          approvalId: p.source.approvalId,
-          name: p.source.name,
-          ...(p.mimeType ? { mimeType: p.mimeType } : {}),
-        }
-      : { file: p.source.file },
+  return pending.flatMap((p) => {
+    if (p.source.type === 'retained') return [];
+    return [
+      p.source.type === 'approval'
+        ? {
+            approvalId: p.source.approvalId,
+            name: p.source.name,
+            ...(p.mimeType ? { mimeType: p.mimeType } : {}),
+          }
+        : { file: p.source.file },
+    ];
+  });
+}
+
+export function retainedAttachmentRefs(
+  pending: readonly PendingAttachment[],
+): AttachmentRef[] {
+  return pending.flatMap((item) =>
+    item.source.type === 'retained'
+      ? [structuredClone(item.source.attachment)]
+      : [],
   );
 }
 
@@ -444,13 +464,20 @@ export function createAppShellChatActions(deps: {
           pending && pending.length > 0
             ? toRendererIngestItems(pending)
             : undefined;
+        const retainedAttachments =
+          pending && pending.length > 0
+            ? retainedAttachmentRefs(pending)
+            : undefined;
         const sendResult = await window.maka.sessions.send(session.id, {
           type: 'send',
           turnId,
           text,
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-          ...(attachmentItems ? { attachmentItems } : {}),
+          ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
+          ...(retainedAttachments && retainedAttachments.length > 0
+            ? { retainedAttachments }
+            : {}),
           ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
           ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
             ? { workspaceFileReferences: [...options.workspaceFileReferences] }
@@ -527,13 +554,20 @@ export function createAppShellChatActions(deps: {
         pending && pending.length > 0
           ? toRendererIngestItems(pending)
           : undefined;
+      const retainedAttachments =
+        pending && pending.length > 0
+          ? retainedAttachmentRefs(pending)
+          : undefined;
       const sendResult = await window.maka.sessions.send(sessionId, {
         type: 'send',
         turnId,
         text,
         ...(options.displayText ? { displayText: options.displayText } : {}),
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-        ...(attachmentItems ? { attachmentItems } : {}),
+        ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
+        ...(retainedAttachments && retainedAttachments.length > 0
+          ? { retainedAttachments }
+          : {}),
         ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
         ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
           ? { workspaceFileReferences: [...options.workspaceFileReferences] }

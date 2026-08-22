@@ -30,7 +30,7 @@ import {
 } from 'react';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import type { ProjectRecord } from '@maka/core/project';
-import type { QuoteRef } from '@maka/core/events';
+import type { FollowUpMode, InlineReference, QuoteRef } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
@@ -112,6 +112,11 @@ import { NEW_TASK_PENDING_KEY } from './app-shell-pending-attachments';
 import { sideChatTitleFromPrompt } from './side-chat-command';
 import { parseDesktopSlashCommand } from './desktop-slash-command';
 import {
+  hasActiveTurnAtSubmit,
+  mergeWorkspaceReferences,
+  resolveFollowUpModeAtSubmit,
+} from './follow-up-submit-routing';
+import {
   applyCompanionForkVisibilityEvent,
   reconcileCompanionForkVisibility,
 } from './quote-companion-visibility';
@@ -188,6 +193,8 @@ import {
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
 import {
   createAppShellChatActions,
+  retainedAttachmentRefs,
+  toRendererIngestItems,
   type WorkspaceFileReferencePosition,
 } from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
@@ -413,6 +420,7 @@ function AppShellContent({
     confirmLiveTurn,
     setShellRunUpdatesBySession,
     setInteractionBySession,
+    setMessageQueueBySession,
     setSessionEventHealthBySession,
     setPendingPermissionModeBySession,
     setPendingSessionModelBySession,
@@ -434,6 +442,7 @@ function AppShellContent({
     pendingAttachments,
     pickAttachments,
     attachFilePaths,
+    restoreAttachments,
     removeAttachment,
     clearSubmittedAttachments,
   } = useAppShellComposerAttachments({
@@ -445,9 +454,11 @@ function AppShellContent({
     addQuote,
     removeQuote,
     clearQuotes,
+    restoreQuotes,
   } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
   // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
+  const [followUpMode, setFollowUpMode] = useState<FollowUpMode>('queue');
   // What a new chat will start with, held the way the Session holds it: a
   // Plan toggle and one orchestration value, not one fused choice.
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
@@ -490,6 +501,7 @@ function AppShellContent({
     messageRetryPendingBySession,
     stopPendingBySession,
     interactionBySession,
+    messageQueueBySession,
     pendingPermissionModeBySession,
     pendingSessionModelBySession,
     streamingSessionIds,
@@ -731,6 +743,7 @@ function AppShellContent({
   const [paletteOpen, openPalette, closePalette] = useCommandPalette();
   const [viewMode, setViewMode] = useState<SessionViewMode>(() => readSessionListViewMode());
   const composerRef = useRef<ComposerHandle>(null);
+  const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
   // The rail's toggle has to reach Astryx's resizable state, not just this
   // boolean — see the prop's note on SessionListPanel. The sidenav is mounted
   // for the whole shell, so the handle is always live by the time it is called.
@@ -876,6 +889,7 @@ function AppShellContent({
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeSession = sessions.find((session) => session.id === activeId);
+  const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   const activeDesktopSession = activeSession;
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
@@ -2279,6 +2293,50 @@ function AppShellContent({
     }
   }
 
+  async function enqueueFollowUp(
+    sessionId: string,
+    text: string,
+    mode: FollowUpMode,
+    metadata?: ComposerSendMetadata,
+  ): Promise<boolean> {
+    const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
+    const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+    const attachmentItems = pending ? toRendererIngestItems(pending) : [];
+    const retainedAttachments = pending ? retainedAttachmentRefs(pending) : [];
+    try {
+      const result = await window.maka.sessions.enqueue(
+        sessionId,
+        mode === 'steer' ? 'current_turn' : 'next_turn',
+        {
+          text,
+          ...(attachmentItems.length > 0 ? { attachmentItems } : {}),
+          ...(retainedAttachments.length > 0 ? { retainedAttachments } : {}),
+          ...(quotes ? { quotes: [...quotes] } : {}),
+          ...(metadata?.workspaceFileReferences?.length
+            ? { workspaceFileReferences: [...metadata.workspaceFileReferences] }
+            : {}),
+        },
+      );
+      if (pending) clearSubmittedAttachments(pending);
+      if (quotes) clearQuotes();
+      if (result.kind === 'started') {
+        await refreshMessages(sessionId);
+        await refreshSessions();
+      }
+      return true;
+    } catch (error) {
+      if (activeIdRef.current === sessionId) {
+        const copy = getDesktopConversationCopy(uiLocale).actions;
+        showSessionError(
+          sessionId,
+          copy.operationFailedTitle,
+          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+        );
+      }
+      return false;
+    }
+  }
+
   async function sendWithAttachments(
     text: string,
     metadata?: ComposerSendMetadata,
@@ -2288,11 +2346,34 @@ function AppShellContent({
       revision && activeIdRef.current === revision.draftSessionId,
     );
     const slashCommand = parseDesktopSlashCommand(text);
-    // The composer has one submit; mid-turn it means steering, and this is
-    // where that reading lives. Slash commands are exempt because they are
-    // control instructions to the shell, not text for the running turn.
-    if (!slashCommand && (turnActive || activeStreamingLive)) {
-      return steerWithText(text);
+    // Read the synchronous live-turn store at submit time. React's rendered
+    // `streaming` prop can lag one commit behind a just-started turn, which
+    // previously sent a second root turn and surfaced duplicate session_busy
+    // errors during burst input.
+    const sessionId = activeIdRef.current;
+    const workspaceFileReferences = mergeWorkspaceReferences(
+      text,
+      metadata?.workspaceFileReferences,
+      sessionId ? retractedWorkspaceReferencesRef.current[sessionId] : undefined,
+    );
+    const liveTurn = sessionId ? liveTurnBySessionRef.current[sessionId] : undefined;
+    const runningTurnIds = sessionId
+      ? sessionsRef.current.find((session) => session.id === sessionId)?.runningTurnIds
+      : undefined;
+    const followUpAtSubmit = !slashCommand
+      ? resolveFollowUpModeAtSubmit({
+          requestedMode: metadata?.followUpMode,
+          defaultMode: followUpMode,
+          hasActiveTurn: hasActiveTurnAtSubmit({ liveTurn, runningTurnIds }),
+        })
+      : undefined;
+    if (sessionId && followUpAtSubmit) {
+      const queued = await enqueueFollowUp(sessionId, text, followUpAtSubmit, {
+        ...metadata,
+        workspaceFileReferences,
+      });
+      if (queued) delete retractedWorkspaceReferencesRef.current[sessionId];
+      return queued;
     }
     if (
       revisionSend &&
@@ -2451,12 +2532,15 @@ function AppShellContent({
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
       ...(quotes ? { quotes } : {}),
-      ...(metadata?.workspaceFileReferences?.length
-        ? { workspaceFileReferences: metadata.workspaceFileReferences }
+      ...(workspaceFileReferences.length > 0
+        ? { workspaceFileReferences }
         : {}),
     });
     if (ok !== false && pending) clearSubmittedAttachments(pending);
     if (ok !== false && quotes) clearQuotes();
+    if (ok !== false && sessionId) {
+      delete retractedWorkspaceReferencesRef.current[sessionId];
+    }
     if (ok !== false && revisionSend) {
       if (expectedRevisionDraft) {
         completeTurnRevisionCopyAttempt(expectedRevisionDraft);
@@ -2470,22 +2554,41 @@ function AppShellContent({
     return ok;
   }
 
-  async function steerWithText(text: string): Promise<boolean> {
+  async function retractQueuedMessages(): Promise<void> {
     const sessionId = activeIdRef.current;
-    if (!sessionId || !text.trim()) return false;
+    if (!sessionId) return;
     try {
-      const outcome = await window.maka.sessions.steer(sessionId, text.trim());
-      return outcome.kind === 'queued';
+      const content = await window.maka.sessions.retractQueue(sessionId);
+      setMessageQueueBySession((current) => {
+        if (!(sessionId in current)) return current;
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      });
+      if (activeIdRef.current !== sessionId) return;
+      const displayText = content.displayText ?? content.text;
+      const before = composerRef.current?.getText() ?? '';
+      composerRef.current?.appendDraft?.(sessionId, displayText);
+      const after = composerRef.current?.getText() ?? displayText;
+      const insertionStart = Math.max(0, after.lastIndexOf(displayText, before.length + 2));
+      retractedWorkspaceReferencesRef.current[sessionId] = (
+        content.inlineReferences ?? []
+      ).flatMap((reference) =>
+        reference.kind === 'workspace_file'
+          ? [{ ...reference, start: insertionStart + reference.start }]
+          : [],
+      );
+      restoreAttachments(content.attachments ?? []);
+      restoreQuotes(content.quotes ?? []);
+      window.requestAnimationFrame(() => composerRef.current?.focus());
     } catch (error) {
-      if (activeIdRef.current === sessionId) {
-        const copy = getDesktopConversationCopy(uiLocale).actions;
-        showSessionError(
-          sessionId,
-          copy.operationFailedTitle,
-          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
-        );
-      }
-      return false;
+      if (activeIdRef.current !== sessionId) return;
+      const copy = getDesktopConversationCopy(uiLocale).actions;
+      showSessionError(
+        sessionId,
+        copy.operationFailedTitle,
+        localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+      );
     }
   }
 
@@ -2515,6 +2618,7 @@ function AppShellContent({
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
+    setMessageQueueBySession,
     displayBatch: sessionDisplayBatch,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
@@ -3304,6 +3408,10 @@ function AppShellContent({
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendOwningItsTarget}
                   onStop={stop}
+                  followUpMode={followUpMode}
+                  queuedMessages={activeMessageQueue}
+                  onFollowUpModeChange={setFollowUpMode}
+                  onRetractQueued={activeId ? retractQueuedMessages : undefined}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
                       ? {

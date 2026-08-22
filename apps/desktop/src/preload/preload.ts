@@ -99,6 +99,7 @@ import type { HealthSnapshot } from '@maka/core/health';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   ActiveInteractionRequestEvent,
+  MessageContent,
   SessionCommand,
   SessionEvent,
   ShellRunUpdate,
@@ -1442,6 +1443,7 @@ const makaBridge = {
             displayText?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
+            retainedAttachments?: AttachmentRef[];
             turnOrchestration?: TurnOrchestration;
             quotes?: QuoteRef[];
             workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
@@ -1498,6 +1500,50 @@ const makaBridge = {
     },
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {
       return invokeSessionRuntimeHost('sessions:steer', sessionId, text);
+    },
+    async enqueue(
+      sessionId: string,
+      placement: 'current_turn' | 'next_turn',
+      command: {
+        text: string;
+        displayText?: string;
+        attachmentItems?: RendererIngestInput[];
+        retainedAttachments?: AttachmentRef[];
+        quotes?: QuoteRef[];
+        workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
+      },
+    ): Promise<{
+      kind: 'queued' | 'started';
+      turnId?: string;
+      attachments: AttachmentRef[];
+      inlineReferences: InlineReference[];
+    }> {
+      const session = await runtimeHostSessionRef(sessionId);
+      const attachmentItems = command.attachmentItems
+        ? await encodeIngestItems(command.attachmentItems)
+        : undefined;
+      const result = await ipcRenderer.invoke(
+        'sessions:enqueue',
+        session.scope,
+        session.sessionId,
+        placement,
+        {
+          ...command,
+          ...(attachmentItems ? { attachmentItems } : {}),
+        },
+      ) as {
+        kind: 'queued' | 'started';
+        turnId?: string;
+        attachments: AttachmentRef[];
+        inlineReferences: InlineReference[];
+      };
+      return {
+        ...result,
+        attachments: projectDesktopAttachmentRefs(session.scope, result.attachments),
+      };
+    },
+    retractQueue(sessionId: string): Promise<MessageContent> {
+      return invokeSessionRuntimeHost('sessions:retractQueue', sessionId);
     },
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel> {
       return invokeSessionRuntimeHost('sessions:readExecutionBoundary', sessionId);

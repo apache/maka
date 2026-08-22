@@ -19,6 +19,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { attachmentKindFromMimeType, guessMimeFromName } from '@maka/core/attachments';
+import type { AttachmentRef } from '@maka/core/events';
 import { useUiLocale } from '@maka/ui';
 import { pendingAttachmentSourceKey, type PendingAttachment } from './app-shell-chat-actions.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
@@ -61,6 +62,17 @@ function fileToPending(file: File): PendingAttachment {
     kind: attachmentKindFromMimeType(mimeType ?? '', file.name),
     size: file.size,
     source: { type: 'file', file },
+  };
+}
+
+function retainedToPending(attachment: AttachmentRef): PendingAttachment {
+  return {
+    stagingKey: crypto.randomUUID(),
+    displayName: attachment.name,
+    mimeType: attachment.mimeType,
+    kind: attachment.kind,
+    size: attachment.bytes,
+    source: { type: 'retained', attachment: structuredClone(attachment) },
   };
 }
 
@@ -161,6 +173,7 @@ export function useAppShellComposerAttachments(options: {
           else releasePreviewUrl(url);
           continue;
         }
+        if (item.source.type === 'retained') continue;
         const preview = await window.maka.attachments.previewApproval(item.source.approvalId);
         if (!preview.ok) continue;
         const url = `data:${preview.mimeType};base64,${preview.base64}`;
@@ -201,6 +214,14 @@ export function useAppShellComposerAttachments(options: {
     void loadPreviewsSequentially(staged);
   }
 
+  function restoreAttachments(attachments: readonly AttachmentRef[]): void {
+    if (attachments.length === 0) return;
+    const ownerKey = options.draftKey;
+    const staged = attachments.map(retainedToPending);
+    setPendingByKey((map) => appendPending(map, ownerKey, staged));
+    for (const item of staged) stagedKeysRef.current.add(item.stagingKey);
+  }
+
   function removeAttachment(index: number): void {
     const ownerKey = options.draftKey;
     setPendingByKey((map) => removePending(map, ownerKey, index));
@@ -221,6 +242,7 @@ export function useAppShellComposerAttachments(options: {
     pendingAttachments,
     pickAttachments,
     attachFilePaths,
+    restoreAttachments,
     removeAttachment,
     clearSubmittedAttachments,
     clearAllAttachments,

@@ -158,6 +158,31 @@ test('a completing send clears the attachments it submitted', async () => {
   assert.equal(probe.latest().pendingAttachments.length, 0);
 });
 
+test('retracted queue attachments can be restored and submitted without re-ingest', async () => {
+  const probe = await mountProbe((options) =>
+    useAppShellComposerAttachments({ ...options, toastApi: { error() {} } }),
+  );
+
+  await probe.render('session-1');
+  await act(() =>
+    probe.latest().restoreAttachments([
+      {
+        kind: 'other',
+        name: 'notes.txt',
+        mimeType: 'text/plain',
+        bytes: 5,
+        ref: {
+          kind: 'session_file',
+          sessionId: 'session-1',
+          relativePath: 'attachments/notes.txt',
+        },
+      },
+    ]),
+  );
+
+  assert.equal(probe.latest().pendingAttachments[0]?.source.type, 'retained');
+});
+
 test('files chosen in the native dialog land in the composer now on screen', async () => {
   const probe = await mountProbe((options) =>
     useAppShellComposerAttachments({ ...options, toastApi: { error() {} } }),
