@@ -17,17 +17,33 @@
   under the License.
 -->
 
-# Apache Maka (Incubating)
+<h1 align="center">
+  <img src="apps/desktop/assets/icon.png" alt="Maka" width="72" valign="middle" /> Apache Maka
+</h1>
 
-[![CI](https://github.com/apache/maka/actions/workflows/ci.yml/badge.svg)](https://github.com/apache/maka/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
-[![docs](https://img.shields.io/badge/docs-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue?logo=googletranslate&logoColor=white)](./README.zh-CN.md)
+<p align="center"><sub>Incubating at The Apache Software Foundation</sub></p>
+
+<p align="center">
+  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=4C8DFF" alt="GitHub stars" /></a>
+  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/github/downloads/apache/maka/total?style=flat&label=downloads&color=4C8DFF" alt="GitHub downloads" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
+  <img src="https://img.shields.io/badge/macOS-arm64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+  <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows unsigned preview" />
+  <img src="https://img.shields.io/badge/Linux-soon-D0D4DA?style=flat&logo=linux&logoColor=6B7280" alt="Linux not yet supported" />
+</p>
+
+<p align="center">
+  <sub><a href="./README.zh-CN.md">简体中文</a></sub>
+</p>
+
+<p align="center">
+  <strong>A local-first Agent workspace built for real work.</strong><br/>
+  Maka inspects projects, runs tools under a sandbox boundary, and records
+  model messages and tool calls as recoverable execution facts — on your
+  machine, through one Runtime Host.
+</p>
 
 ![Maka — Your work. Your agent.](./.github/assets/maka-hero.en.png)
-
-**A local-first Agent workspace built for real work.**
-
-Maka does more than answer questions. With controlled permissions, it can inspect projects, execute tools, produce artifacts, and preserve model messages and tool calls as recoverable execution facts. Desktop, the terminal TUI, the non-interactive CLI, and Maka evaluation subjects all execute through Runtime Host.
 
 > [!NOTE]
 > Apache Maka (Incubating) is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF. [DISCLAIMER-WIP](./DISCLAIMER-WIP) records the issues the project is currently aware of.
@@ -83,7 +99,7 @@ Apache Maka has not made an Apache release yet. Everything currently published f
 
 Once Apache releases exist, the official release is the source release published by the ASF and approved by the podling PPMC and the Incubator PMC. A package built from that source and distributed elsewhere, for example through a package registry or as a Desktop installer, is a convenience artifact rather than the release itself, and it is valid only when it is built from an approved source release. [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) holds the candidate contract, signing path, and verification steps.
 
-Until an approved source release exists, this README recommends no prebuilt download. Build and run Maka from source as described below. Desktop currently targets Apple Silicon Macs (`arm64`); Intel Macs and Linux are not supported yet, and [Windows support](docs/windows-support.md) remains an unsigned preview rather than a supported release tier.
+Until an approved source release exists, this README recommends no prebuilt download. Build and run Maka from source as described below. Desktop currently targets Apple Silicon Macs (`arm64`). Intel Macs and Linux are not supported yet. [Windows](docs/windows-support.md) is an unsigned preview, not a supported release tier.
 
 ### Requirements
 
@@ -206,7 +222,7 @@ Current boundaries that matter:
 - Sessions, messages, execution ledgers, workflows, usage, Automations, and Daily Review live in `runtime.sqlite`;
 - Runtime Policy credentials, including Connection API/OAuth material, request headers, web-search keys, and proxy passwords, live in local plaintext `credential-vault.json`, behind the OS account boundary, with POSIX directory mode `0700` and file mode `0600` enforced;
 - Runtime Host client profile access credentials are separate and live under `<Electron userData>/runtime-host-client/credentials.json`. Pre-existing Electron `safeStorage` credential/token files are not imported; affected users must re-authenticate;
-- Renderer does not receive plaintext credentials. File writes, Shell, and dangerous tool calls pass through the permission engine;
+- Renderer does not receive plaintext credentials. File writes, Shell, and other tools that cross the sandbox boundary raise a boundary expansion request instead of running unchecked;
 - Eval does not construct Runtime or read Runtime storage. Maka subjects connect to an existing Runtime Host.
 
 Read [SECURITY.md](./SECURITY.md) for security reporting and policy, and [docs/README.md](./docs/README.md) for current privacy and sandbox contracts.

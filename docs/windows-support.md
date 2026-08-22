@@ -19,7 +19,7 @@
 
 # Windows support baseline
 
-Windows is an active enablement target, not a fully supported Maka platform yet. The CLI and Electron desktop application can run from source, and release workflows produce a verified unsigned Windows x64 preview. The x64 package includes an AppContainer sandbox for restricted managed execution, and automatic updates are verified end to end in CI on the unsigned preview channel; signing, the complete adversarial sandbox matrix, and computer-use guarantees remain incomplete. Progress is tracked in [GitHub issue #2142](https://github.com/maka-agent/maka-agent/issues/2142).
+Windows is an active enablement target, not a fully supported Maka platform yet. The CLI and Electron desktop application can run from source, and release workflows produce a verified unsigned Windows x64 preview. The x64 package includes an AppContainer sandbox for restricted managed execution, and automatic updates are verified end to end in CI on the unsigned preview channel; signing, the complete adversarial sandbox matrix, and computer-use guarantees remain incomplete. Progress is tracked in [GitHub issue #2142](https://github.com/apache/maka/issues/2142).
 
 ## Install the Windows x64 preview
 

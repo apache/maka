@@ -17,17 +17,31 @@
   under the License.
 -->
 
-# Apache Maka (Incubating)
+<h1 align="center">
+  <img src="apps/desktop/assets/icon.png" alt="Maka" width="72" valign="middle" /> Apache Maka
+</h1>
 
-[![CI](https://github.com/apache/maka/actions/workflows/ci.yml/badge.svg)](https://github.com/apache/maka/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
-[![docs](https://img.shields.io/badge/docs-English-blue?logo=googletranslate&logoColor=white)](./README.md)
+<p align="center"><sub>正在 Apache 软件基金会孵化</sub></p>
+
+<p align="center">
+  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=4C8DFF" alt="GitHub stars" /></a>
+  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/github/downloads/apache/maka/total?style=flat&label=downloads&color=4C8DFF" alt="GitHub downloads" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
+  <img src="https://img.shields.io/badge/macOS-arm64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+  <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows 未签名预览" />
+  <img src="https://img.shields.io/badge/Linux-soon-D0D4DA?style=flat&logo=linux&logoColor=6B7280" alt="Linux 尚未支持" />
+</p>
+
+<p align="center">
+  <sub><a href="./README.md">English</a></sub>
+</p>
+
+<p align="center">
+  <strong>一个为真实工作而生的本地优先 Agent 工作台。</strong><br/>
+  Maka 在沙箱边界下阅读项目、执行工具，并把模型消息和工具调用保存为可恢复的运行事实——数据在本机，执行走同一个 Runtime Host。
+</p>
 
 ![Maka——你的工作，你的 Agent。](./.github/assets/maka-hero.zh-CN.png)
-
-**一个为真实工作而生的本地优先 Agent 工作台。**
-
-Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具、生成产物，并把模型消息和工具调用保存为可恢复的运行事实。桌面应用、终端 TUI、非交互 CLI 和 Maka 评测 subject 都通过 Runtime Host 执行。
 
 > [!NOTE]
 > Apache Maka (Incubating) 是一个正在 Apache 软件基金会（ASF）孵化的项目，由 Apache Incubator PMC 提供 sponsor。所有新接受的项目都必须经过孵化，直到进一步审查表明其基础设施、沟通方式和决策流程已经稳定到与其他成功的 ASF 项目一致的程度。孵化状态并不必然反映代码的完成度或稳定性，但它确实表明该项目尚未得到 ASF 的完全认可。项目当前已知的问题记录在 [DISCLAIMER-WIP](./DISCLAIMER-WIP)（以英文原文为准）。
@@ -73,7 +87,7 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 - 声明式多臂 Experiment 展开为 task × repetition × subject cell；
 - 每个 cell 使用 immutable attempt，基础设施失败只替换该 cell，并选择最早有效 attempt；
 - 通用结果只包含 score、normalized usage、可归因 cost、duration、status/failure reason 与 artifacts；
-- Maka subject 只通过 Runtime Host 执行，外部竞品使用 generic external subject adapter。
+- Maka subject 只通过 Runtime Host 执行，外部 subject 使用 generic external subject adapter。
 
 ## 快速开始
 
@@ -83,7 +97,7 @@ Apache Maka 目前还没有发布过 Apache release。当前从本仓库或包�
 
 在 Apache release 出现之后，官方 release 指的是由 ASF 发布、并经 podling PPMC 和 Incubator PMC 批准的源码 release。由该源码构建并通过其他渠道分发的包，例如包管理器中的包或 Desktop 安装程序，属于 convenience artifact，本身不是 release，并且只有在由获批源码 release 构建时才有效。候选契约、签名路径和验包步骤见 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
-在获批源码 release 出现之前，本 README 不推荐任何预构建下载，请按下文从源码构建并运行 Maka。Desktop 目前面向 Apple Silicon Mac（`arm64`），暂不支持 Intel Mac、Windows 和 Linux，[Windows 支持](docs/windows-support.md)仍属于未签名预览，不是正式支持的平台。
+在获批源码 release 出现之前，本 README 不推荐任何预构建下载，请按下文从源码构建并运行 Maka。Desktop 目前面向 Apple Silicon Mac（`arm64`）。暂不支持 Intel Mac 和 Linux。[Windows](docs/windows-support.md) 是未签名预览，不是正式支持的发布层级。
 
 ### 环境要求
 
@@ -205,7 +219,7 @@ Maka 默认把 workspace 数据放在 Electron `userData` 下：
 - 会话、消息、执行 ledger、workflow、usage、Automations 和 Daily Review 都保存在 `runtime.sqlite`；
 - Runtime Policy 凭据（包括 Connection API/OAuth 信息、请求头、Web Search key 和代理密码）保存在本地 plaintext `credential-vault.json`，依赖 OS 账号边界，并在 POSIX 上强制目录 `0700`、文件 `0600`；
 - Runtime Host client profile 的访问凭据单独保存在 `<Electron userData>/runtime-host-client/credentials.json`；历史 Electron `safeStorage` 凭据/token 文件不会被导入，仅保留这些历史副本的用户需要重新登录；
-- Renderer 不接收明文凭据；文件写入、Shell 和危险工具调用需要经过 permission engine；
+- Renderer 不接收明文凭据；文件写入、Shell 以及其他越出沙箱边界的工具会发起边界扩张请求，而不是直接执行；
 - Eval 不构造 Runtime，也不读取 Runtime storage；Maka subject 连接已有 Runtime Host。
 
 安全问题请阅读 [SECURITY.md](./SECURITY.md)，当前隐私和 sandbox contract 见 [docs/README.md](./docs/README.md)。
