@@ -49,6 +49,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { DEV_USER_DATA_DIR, holdsProfile, isOwnDevApp } from './dev-app-profile.mjs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -66,12 +67,6 @@ const SOURCE_APP = join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'Electron
 const WORKTREE_ID = createHash('sha256').update(REPO_ROOT).digest('hex').slice(0, 12);
 // Deliberately NOT worktree-scoped, unlike the bundle identifier above: the
 // profile is what `app.setName('Maka Dev')` already yields on the plain
-// `npm run dev` path and what `npm run cli:dev` writes to, so scoping it here
-// would only mean that turning MAKA_DEV_TCC on silently switched the
-// developer's database. TCC isolation is provided by DEV_BUNDLE_ID, not by the
-// data root. An explicit `--user-data-dir=` still takes precedence.
-const DEV_USER_DATA_DIR = join(homedir(), 'Library', 'Application Support', 'Maka Dev');
-
 /**
  * Per-worktree, and deliberately so. An ad-hoc signature designates a bare
  * `cdhash`, and TCC keys its rows on the bundle identifier — so a shared
@@ -96,16 +91,35 @@ const DEV_ENV_SCHEMA_VERSION = 1;
 export const developmentAppPath = DEV_APP;
 const developmentExecutablePath = DEV_EXECUTABLE;
 
-export async function resolveMacosDevelopmentLaunch(env = process.env) {
+export async function resolveMacosDevelopmentLaunch(env = process.env, argv = []) {
   if (!shouldUseMacosDevelopmentApp(process.platform, env)) return null;
+  // Judge by profile: an explicit --user-data-dir already moves this launch
+  // off the shared lock, so owners of that other profile are unrelated.
+  const targetProfile = splitDevelopmentCliArgs(argv).userDataDir;
   const appPath = await prepareDevelopmentApp();
+  warnAboutLegacyTccDataRoot();
   // The shared "Maka Dev" userData root makes Electron's single-instance lock
   // cross-worktree: another worktree's app would absorb this launch through
   // it. Fail fast with the owner instead of silently being absorbed (#3359).
-  assertNoCrossWorktreeOwner();
+  assertNoCrossWorktreeOwner({ targetProfile });
   // A leftover app would absorb this launch through the single-instance lock.
   await ensureNoRunningDevelopmentApp();
   return createMacosDevelopmentLaunch(appPath, developmentLogFile);
+}
+
+/**
+ * The TCC bundle previously wrote per-worktree userData roots
+ * (`Maka Dev-<WORKTREE_ID>`); sharing the profile means this launch reads the
+ * common `Maka Dev` root, so sessions and settings that lived in the legacy
+ * directory are no longer read. They are NOT deleted — say where they are.
+ */
+function warnAboutLegacyTccDataRoot() {
+  const legacy = join(homedir(), 'Library', 'Application Support', `Maka Dev-${WORKTREE_ID}`);
+  if (legacy === DEV_USER_DATA_DIR || !existsSync(legacy)) return;
+  console.warn(
+    `[maka-dev] shared profile: your earlier TCC data (sessions, settings) lives in ${legacy} ` +
+      'and is no longer read. It is not deleted — copy it back if needed, or remove it.',
+  );
 }
 
 /**
@@ -161,7 +175,21 @@ export function createSharedAppProbe(spawnImpl = spawnSync) {
 }
 
 function defaultSharedAppProbe() {
+  // pgrep does not exist on Windows; the owner gate is a macOS/Posix dev
+  // concept (no pgrep, and the shared-lock shape differs). Windows dev keeps
+  // running without the gate — documented limitation, not an error.
+  if (process.platform === 'win32') return [];
   return probeWithSpawn(spawnSync);
+}
+
+export function devAppProcessPattern() {
+  // Rough filter over every shape that can hold the shared "Maka Dev" lock:
+  // the TCC bundle, the plain dev npm shim, and the resolved Electron binary
+  // it spawns. Each shape is regex-escaped; pgrep -f matches the whole line.
+  const bundle = toProcessMatchPattern(join('Maka Dev.app', 'Contents', 'MacOS', 'Electron'));
+  const shim = toProcessMatchPattern(join('node_modules', '.bin', 'electron'));
+  const resolved = toProcessMatchPattern(join('Electron.app', 'Contents', 'MacOS', 'Electron'));
+  return `${bundle}|${shim}|${resolved}`;
 }
 
 function probeWithSpawn(spawnImpl) {
@@ -169,7 +197,7 @@ function probeWithSpawn(spawnImpl) {
   // Linux -a = full command line; BSD (macOS) -a = include ancestors, -l =
   // full command line. Avoid the flag: pgrep -f yields PIDs, and ps -o
   // command= prints the full argv on both. (`command=` strips the header.)
-  const pattern = toProcessMatchPattern(join('Maka Dev.app', 'Contents', 'MacOS', 'Electron'));
+  const pattern = devAppProcessPattern();
   const pids = spawnImpl('pgrep', ['-f', pattern]);
   // 0 = matches, 1 = no match. Anything else is a usage or pattern error and
   // must not be read as "nothing was running".
@@ -197,9 +225,16 @@ function probeWithSpawn(spawnImpl) {
  * rights). Returns the owner's command line for the error message.
  */
 export function sharedDevelopmentAppOwner(options = {}) {
-  const own = options.ownExecutable ?? DEV_EXECUTABLE;
+  const ownRoot = options.ownRoot ?? REPO_ROOT;
+  const targetProfile = options.targetProfile; // undefined = shared default
   const commandLines = options.commandLines ?? sharedDevelopmentAppCommandLines(options);
-  return commandLines.find((line) => !line.startsWith(own));
+  return commandLines.find((line) => {
+    // Own process first; the expensive failure direction is MISSING another
+    // worktree's holder (our launch is absorbed), not misjudging our own
+    // (one blocked launch). Same principle as dev-app-profile.mjs.
+    if (isOwnDevApp(line, ownRoot)) return false;
+    return holdsProfile(line, targetProfile, options);
+  });
 }
 
 /**
@@ -224,15 +259,24 @@ export function assertNoCrossWorktreeOwner(options = {}) {
  */
 export async function quitMacosDevelopmentApp(options = {}) {
   const platform = options.platform ?? process.platform;
-  const executable = options.executable ?? DEV_EXECUTABLE;
+  const bundle = options.executable ?? DEV_EXECUTABLE;
+  const shim = options.plainExecutable ?? resolveElectronBinary();
+  const real = options.realPlainExecutable ?? realElectronBinary();
   const graceMs = options.graceMs ?? 3_000;
   const signal = options.signal ?? sendSignalToExecutable;
   const delay = options.delay ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
   if (platform !== 'darwin') return false;
-  if (!signal('TERM', executable)) return false;
+  const stoppedBundle = signal('TERM', bundle);
+  // Plain dev is two live processes (shim + the Electron it spawned); signal
+  // both or the orphaned Electron keeps the profile lock.
+  const stoppedShim = signal('TERM', shim);
+  const stoppedReal = signal('TERM', real);
+  if (!stoppedBundle && !stoppedShim && !stoppedReal) return false;
   // Main-process cleanup runs on before-quit and can outlive a plain SIGTERM.
   await delay(graceMs);
-  signal('KILL', executable);
+  if (stoppedBundle) signal('KILL', bundle);
+  if (stoppedShim) signal('KILL', shim);
+  if (stoppedReal) signal('KILL', real);
   return true;
 }
 
@@ -247,12 +291,31 @@ function sendSignalToExecutable(name, executable) {
 }
 
 export function isDevelopmentAppRunning(options = {}) {
-  const executable = options.executable ?? DEV_EXECUTABLE;
+  const bundle = options.executable ?? DEV_EXECUTABLE;
+  const shim = options.plainExecutable ?? resolveElectronBinary();
+  const real = options.realPlainExecutable ?? realElectronBinary();
   const probe = options.probe ?? defaultLivenessProbe;
-  return probe(executable);
+  // Own dev app in either shape: the npm shim, the Electron it spawned, or
+  // the TCC bundle. All three hold the shared profile lock.
+  return probe(bundle) || probe(shim) || probe(real);
+}
+
+/** The resolved native binary a plain dev actually runs (the npm shim's child). */
+function realElectronBinary() {
+  return join(
+    REPO_ROOT,
+    'node_modules',
+    'electron',
+    'dist',
+    'Electron.app',
+    'Contents',
+    'MacOS',
+    'Electron',
+  );
 }
 
 function defaultLivenessProbe(executable) {
+  if (process.platform === 'win32') return false;
   const status = spawnSync('pgrep', ['-f', toProcessMatchPattern(executable)]).status;
   if (status !== 0 && status !== 1) {
     throw new Error(`pgrep failed for ${executable} (exit ${status})`);
@@ -421,8 +484,15 @@ export async function startDevelopmentApp(options = {}) {
   // Read before preparing: a rebuild republishes the runtime directory and
   // takes the previous environment file with it.
   const viteUrl = options.viteUrl ?? readPublishedViteUrl();
-  const launch = await resolveMacosDevelopmentLaunch();
+  const launch = await resolveMacosDevelopmentLaunch(process.env, argv);
   if (!launch) {
+    // The plain shape uses the same shared profile, so the same owner gate
+    // applies before we spawn — otherwise another worktree's app (TCC or
+    // plain) would absorb this launch through the single-instance lock.
+    const targetProfile = splitDevelopmentCliArgs(argv).userDataDir;
+    assertNoCrossWorktreeOwner({ targetProfile });
+    // A leftover own dev app would absorb this launch through the lock.
+    await ensureNoRunningDevelopmentApp();
     const child = spawn(resolveElectronBinary(), [DESKTOP_DIR, ...argv], {
       cwd: DESKTOP_DIR,
       stdio: 'inherit',

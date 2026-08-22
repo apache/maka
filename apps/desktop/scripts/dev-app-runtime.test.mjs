@@ -66,3 +66,73 @@ test('ps output lines are the command lines', () => {
   );
   assert.deepEqual(sharedDevelopmentAppCommandLines({ probe }), lines);
 });
+
+test('sharedDevelopmentAppOwner uses the profile authority', async () => {
+  const { sharedDevelopmentAppOwner } = await import('./dev-app-runtime.mjs');
+  const ownRoot = '/Users/me/codebase';
+  const other = '/Users/other/codebase/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron';
+  const envFor = (path) => {
+    if (path.endsWith('/apps/desktop/.maka-dev/dev-env.json')) {
+      return JSON.stringify({ schemaVersion: 1, env: {}, userDataDir: undefined, electronArgs: [] });
+    }
+    throw new Error(`unexpected env read: ${path}`);
+  };
+  const own = `${ownRoot}/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron --inspect`;
+  assert.equal(sharedDevelopmentAppOwner({ ownRoot, commandLines: [own, `${other} --inspect`], readFile: envFor }), `${other} --inspect`);
+  assert.equal(sharedDevelopmentAppOwner({ ownRoot, commandLines: [own] }), undefined);
+  // explicit isolated profile is not the shared default owner
+  assert.equal(
+    sharedDevelopmentAppOwner({
+      ownRoot,
+      targetProfile: '/Users/other/Isolated',
+      commandLines: [`${other} --inspect`],
+      readFile: envFor,
+    }),
+    undefined,
+  );
+});
+
+test('devAppProcessPattern selects every shape that can hold the lock', async () => {
+  const { devAppProcessPattern } = await import('./dev-app-runtime.mjs');
+  const pattern = new RegExp(devAppProcessPattern());
+  // kabi's five real-shape lines: TCC bundle, plain shim, resolved Electron,
+  // space-rooted bundle, foreign project (no maka marker, but .bin/electron
+  // still appears — the rough filter DOES select it; owner judgment later
+  // excludes it via hasMakaDevMarker).
+  assert.equal(pattern.test('/Users/dev/maka/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron /Users/dev/maka/apps/desktop'), true);
+  assert.equal(pattern.test('node /tmp/maka-work/node_modules/.bin/electron /tmp/maka-work/review-fixtures/electron-argv --user-data-dir=/tmp/Maka Profile With Spaces --no-sandbox'), true);
+  assert.equal(pattern.test('/tmp/maka-work/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /tmp/maka-work/review-fixtures/electron-argv'), true);
+  assert.equal(pattern.test('/Users/dev/Dropbox (Personal)/maka/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron /Users/dev/Dropbox (Personal)/maka/apps/desktop'), true);
+  assert.equal(pattern.test('/Users/dev/some-other-app/node_modules/.bin/electron /Users/dev/some-other-app'), true);
+  assert.equal(pattern.test('/usr/bin/something --headless'), false);
+});
+
+test('owner gate resolves a foreign plain holder through the REAL probe chain', async () => {
+  const { createSharedAppProbe, sharedDevelopmentAppOwner } = await import('./dev-app-runtime.mjs');
+  // Real-shape ps lines (kabi format): a foreign PLAIN dev (maka-layout shim
+  // + its resolved Electron child, both alive) plus our own TCC bundle.
+  const foreignShim = 'node /Users/dev/maka/node_modules/.bin/electron /Users/dev/maka/apps/desktop';
+  const foreignReal = '/Users/dev/maka/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /Users/dev/maka/apps/desktop';
+  const own = '/Users/me/codebase/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron /Users/me/codebase/apps/desktop';
+  // Stub spawnSync ONLY. The pgrep pattern argument must be the production
+  // devAppProcessPattern (the stub asserts it, so it cannot silently change),
+  // and ps returns only lines that pattern actually selects.
+  const { devAppProcessPattern } = await import('./dev-app-runtime.mjs');
+  const pattern = new RegExp(devAppProcessPattern());
+  const selected = [foreignShim, foreignReal, own].filter((line) => pattern.test(line));
+  const probe = (command, args) => {
+    if (command === 'pgrep') {
+      assert.equal(args[1], devAppProcessPattern());
+      return { status: 0, stdout: Buffer.from(selected.map((_, i) => String(9847 + i)).join('\n') + '\n') };
+    }
+    if (command === 'ps') return { status: 0, stdout: Buffer.from(`${selected.join('\n')}\n`) };
+    throw new Error(`unexpected ${command}`);
+  };
+  const owner = sharedDevelopmentAppOwner({
+    ownRoot: '/Users/me/codebase', // matches the own line, so exclusion is real
+    probe: createSharedAppProbe(probe),
+  });
+  // Our own process is excluded; the foreign plain holder (no switch, maka
+  // marker via /apps/desktop) is the shared-default owner.
+  assert.equal(owner, foreignShim);
+});
