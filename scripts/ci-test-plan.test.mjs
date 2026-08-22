@@ -322,6 +322,13 @@ test('the sandbox lane pairs its path filter with a nightly run', () => {
   assert.match(workflow, /\n {2}schedule:/u);
 });
 
+test('the packaged Windows gate owns Runtime Host candidate election changes', () => {
+  const workflow = readWorkflow('release-windows-check.yml');
+
+  assert.match(workflow, /'packages\/runtime-host\/src\/client\/connect-or-spawn\.ts'/u);
+  assert.match(workflow, /'packages\/runtime-host\/src\/client\/launcher\.ts'/u);
+});
+
 test('specialized platform workflows stay reachable without pull requests', () => {
   const cli = readWorkflow('cli-package-validation.yml');
   const baseline = readWorkflow('windows-baseline.yml');

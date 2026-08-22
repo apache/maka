@@ -43,6 +43,8 @@ on:
       # MAKA_UPDATE_TEST_FEED to it — is only observable on this path.
       - 'apps/desktop/src/main/app-update-service.ts'
       - 'apps/desktop/src/main/runtime-host-boot.ts'
+      - 'packages/runtime-host/src/client/connect-or-spawn.ts'
+      - 'packages/runtime-host/src/client/launcher.ts'
       - 'scripts/prepare-windows-upgrade-baseline.mjs'
       - 'scripts/windows-upgrade-baseline.json'
       - 'scripts/verify-packaged-app.mjs'

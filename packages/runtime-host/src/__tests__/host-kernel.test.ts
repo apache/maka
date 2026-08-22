@@ -221,6 +221,103 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('keeps one live Candidate in flight for the whole election', async () => {
+    await withHostPaths(async (paths) => {
+      let launches = 0;
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 500,
+        },
+        {
+          random: () => 0,
+          launchCandidate: () => {
+            launches += 1;
+            return {
+              spawned: Promise.resolve({
+                pid: 4242,
+                exited: new Promise<never>(() => undefined),
+              }),
+            };
+          },
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+      assert.equal(launches, 1);
+    });
+  });
+
+  test('launches one successor after the exact in-flight Candidate exits', async () => {
+    await withHostPaths(async (paths) => {
+      let launches = 0;
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 700,
+        },
+        {
+          random: () => 0,
+          launchCandidate: () => {
+            launches += 1;
+            return {
+              spawned: Promise.resolve({
+                pid: 4241 + launches,
+                exited:
+                  launches === 1
+                    ? new Promise((resolve) => {
+                        setTimeout(() => resolve({ code: 2, signal: null }), 25);
+                      })
+                    : new Promise<never>(() => undefined),
+              }),
+            };
+          },
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+      assert.equal(launches, 2);
+    });
+  });
+
+  test('retries after a Candidate spawn is rejected before an attempt exists', async () => {
+    await withHostPaths(async (paths) => {
+      let launches = 0;
+      const result = await connectOrSpawnRuntimeHostWithDependencies(
+        {
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          compositionId: KERNEL_COMPOSITION.descriptor.id,
+          candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
+          electionDeadlineMs: 700,
+        },
+        {
+          random: () => 0,
+          launchCandidate: () => {
+            launches += 1;
+            return launches === 1
+              ? { spawned: Promise.reject(new Error('spawn refused')) }
+              : {
+                  spawned: Promise.resolve({
+                    pid: 4242,
+                    exited: new Promise<never>(() => undefined),
+                  }),
+                };
+          },
+        },
+      );
+
+      assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+      assert.equal(launches, 2);
+    });
+  });
+
   test('publishes the diagnostic from the Candidate failure selected by the election', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
@@ -295,6 +392,7 @@ describe('non-serving Runtime Host kernel', () => {
               return {
                 spawned: Promise.resolve({
                   pid: process.pid,
+                  exited: Promise.resolve({ code: 2, signal: null }),
                   startupFailure: new Promise((resolve) => {
                     reportBlocker = resolve;
                   }),
@@ -1310,12 +1408,7 @@ describe('non-serving Runtime Host kernel', () => {
         paths.resources.trackPid(pid),
       );
       await waitForSuccessfulExit(parent, 'Electron connect parent');
-      assert.ok(launched.candidatePids.includes(launched.pid));
-      for (const pid of launched.candidatePids) {
-        if (pid === launched.pid) continue;
-        await waitForProcessExit(pid);
-        paths.resources.forgetPid(pid);
-      }
+      assert.deepEqual(launched.candidatePids, [launched.pid]);
 
       const connected = await retryConnect(paths, CURRENT_PROTOCOL);
       assert.equal(connected.kind, 'connected');
@@ -2349,6 +2442,24 @@ describe('non-serving Runtime Host kernel', () => {
           error instanceof Error &&
           'code' in error &&
           (error as NodeJS.ErrnoException).code === 'ENOENT',
+      );
+    });
+  });
+
+  test('detached launcher exposes exact Candidate process settlement', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const attempt = await launchDetachedRuntimeHostCandidate({
+        rootPath: paths.root,
+        expectedRootId: capability.rootId,
+        entrypoint: new URL('./fixtures/owned-candidate-exit.js', import.meta.url),
+        env: { MAKA_TEST_EXIT_CODE: '1' },
+      }).spawned;
+
+      assert.ok(attempt.exited);
+      assert.deepEqual(
+        await withTimeout(attempt.exited, 2_000, 'detached Candidate did not exit'),
+        { code: 1, signal: null },
       );
     });
   });

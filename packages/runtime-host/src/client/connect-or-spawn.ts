@@ -249,6 +249,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   let startupFailure: CandidateStartupFailureReport | undefined;
   let pendingCandidateReports = 0;
   let electionSettled = false;
+  let candidateInFlight = false;
 
   try {
     while (performance.now() < deadline) {
@@ -313,6 +314,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       if (
         shouldLaunchCandidate(result) &&
         !isPermanentCandidateStartupFailure(startupFailure) &&
+        !candidateInFlight &&
         now >= nextCandidateAt
       ) {
         try {
@@ -326,6 +328,15 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             ...(input.generation === undefined ? {} : { generation: input.generation }),
           });
           const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
+          candidateInFlight = true;
+          if (attempt.exited) {
+            void attempt.exited.then(
+              () => {
+                candidateInFlight = false;
+              },
+              () => undefined,
+            );
+          }
           if (attempt.startupFailure) {
             pendingCandidateReports += 1;
             void attempt.startupFailure
