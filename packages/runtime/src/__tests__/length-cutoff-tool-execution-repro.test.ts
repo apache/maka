@@ -179,13 +179,7 @@ function hangingProviderStream(
   });
 }
 
-type UnifiedFinishReason =
-  | 'length'
-  | 'stop'
-  | 'tool-calls'
-  | 'content-filter'
-  | 'error'
-  | 'other';
+type UnifiedFinishReason = 'length' | 'stop' | 'tool-calls' | 'content-filter' | 'error' | 'other';
 
 type FinishReason = {
   unified: UnifiedFinishReason;
@@ -324,14 +318,11 @@ async function executionCountFor(
 ): Promise<number> {
   let executions = 0;
   const model = twoStepModel(toolCallChunks(delivery, finishReason));
-  await runModel(
-    model,
-    [
-      writeTool(() => {
-        executions += 1;
-      }),
-    ],
-  ).catch(() => []);
+  await runModel(model, [
+    writeTool(() => {
+      executions += 1;
+    }),
+  ]).catch(() => []);
   return executions;
 }
 
@@ -358,14 +349,11 @@ describe('tool execution safety (real production path)', () => {
   test('missing terminal event executes zero times', async () => {
     let executions = 0;
     const chunks = toolCallChunks('incremental', { unified: 'stop', raw: 'stop' }).slice(0, -1);
-    await runModel(
-      twoStepModel(chunks),
-      [
-        writeTool(() => {
-          executions += 1;
-        }),
-      ],
-    ).catch(() => []);
+    await runModel(twoStepModel(chunks), [
+      writeTool(() => {
+        executions += 1;
+      }),
+    ]).catch(() => []);
     assert.equal(executions, 0);
   });
 
@@ -381,14 +369,11 @@ describe('tool execution safety (real production path)', () => {
         usage: ZERO_USAGE,
       },
     ]);
-    await runModel(
-      model,
-      [
-        writeTool(() => {
-          executions += 1;
-        }),
-      ],
-    ).catch(() => []);
+    await runModel(model, [
+      writeTool(() => {
+        executions += 1;
+      }),
+    ]).catch(() => []);
     assert.equal(executions, 0);
   });
 
@@ -485,19 +470,20 @@ describe('tool execution safety (real production path)', () => {
   test('raw evidence for call_1 cannot authorize a resolved call_2', async () => {
     let executions = 0;
     const model = twoStepModel(
-      toolCallChunks('incremental', { unified: 'stop', raw: 'stop' }, {
-        rawId: 'call_1',
-        resolvedId: 'call_2',
-      }),
+      toolCallChunks(
+        'incremental',
+        { unified: 'stop', raw: 'stop' },
+        {
+          rawId: 'call_1',
+          resolvedId: 'call_2',
+        },
+      ),
     );
-    await runModel(
-      model,
-      [
-        writeTool(() => {
-          executions += 1;
-        }),
-      ],
-    ).catch(() => []);
+    await runModel(model, [
+      writeTool(() => {
+        executions += 1;
+      }),
+    ]).catch(() => []);
     assert.equal(executions, 0);
   });
 
@@ -551,12 +537,16 @@ describe('tool execution safety (real production path)', () => {
     let writeExecutions = 0;
     let shellExecutions = 0;
     const model = twoStepModel(
-      toolCallChunks('incremental', { unified: 'stop', raw: 'stop' }, {
-        rawToolName: 'Write',
-        resolvedToolName: 'Shell',
-        rawInput: { path: 'notes.md', content: 'hello' },
-        projectedInput: { command: 'echo hi' },
-      }),
+      toolCallChunks(
+        'incremental',
+        { unified: 'stop', raw: 'stop' },
+        {
+          rawToolName: 'Write',
+          resolvedToolName: 'Shell',
+          rawInput: { path: 'notes.md', content: 'hello' },
+          projectedInput: { command: 'echo hi' },
+        },
+      ),
     );
     await runModel(model, [
       writeTool(() => {
@@ -574,10 +564,14 @@ describe('tool execution safety (real production path)', () => {
     let receivedInput: unknown;
     let executions = 0;
     const model = twoStepModel(
-      toolCallChunks('incremental', { unified: 'stop', raw: 'stop' }, {
-        rawInput: { path: 'safe.md', content: 'hello' },
-        projectedInput: { path: 'evil.md', content: 'hello' },
-      }),
+      toolCallChunks(
+        'incremental',
+        { unified: 'stop', raw: 'stop' },
+        {
+          rawInput: { path: 'safe.md', content: 'hello' },
+          projectedInput: { path: 'evil.md', content: 'hello' },
+        },
+      ),
     );
     await runModel(model, [
       writeTool((input) => {
@@ -593,9 +587,13 @@ describe('tool execution safety (real production path)', () => {
     let receivedInput: unknown;
     let executions = 0;
     const model = twoStepModel(
-      toolCallChunks('incremental', { unified: 'stop', raw: 'stop' }, {
-        rawInput: { path: 'notes.md', content: 'hello' },
-      }),
+      toolCallChunks(
+        'incremental',
+        { unified: 'stop', raw: 'stop' },
+        {
+          rawInput: { path: 'notes.md', content: 'hello' },
+        },
+      ),
     );
     await runModel(model, [
       writeTool((input) => {
