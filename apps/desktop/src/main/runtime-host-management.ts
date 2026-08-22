@@ -129,16 +129,15 @@ export function createDesktopRuntimeHostManagement(input: {
         : response;
     }
 
-    let pending = managed;
-    if (managed.state === 'active') {
-      const response = await input.runServiceManagement({
-        ...managementInput,
-        retainManagedDeployment: true,
-      });
-      if (response.kind === 'error') return response;
-      assertUninstalled(response);
-      pending = await input.profiles.markManagedServiceUninstalling(managed);
-    }
+    const pending = managed.state === 'active'
+      ? await input.profiles.markManagedServiceUninstalling(managed)
+      : managed;
+    const response = await input.runServiceManagement({
+      ...managementInput,
+      retainManagedDeployment: true,
+    });
+    if (response.kind === 'error') return response;
+    assertUninstalled(response);
     await input.cleanupManagedDeployment({
       destination: managementInput.destination,
       ...(managementInput.sshPort === undefined

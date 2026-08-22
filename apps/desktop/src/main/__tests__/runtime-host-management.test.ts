@@ -282,8 +282,8 @@ test('manages only the service identity bound by Desktop onboarding', async () =
   await run({}, 'office', 'uninstall');
   assert.equal(cleared, 1);
   assert.deepEqual(uninstallOrder, [
-    'uninstall-service',
     'mark-uninstalling',
+    'uninstall-service',
     'cleanup-deployment',
     'clear-binding',
   ]);
@@ -295,7 +295,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
   assert.equal(handlers.size, 0);
 });
 
-test('resumes deployment cleanup without repeating the committed service uninstall', async () => {
+test('retries the idempotent service uninstall before resuming deployment cleanup', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const profile = {
     id: 'office',
@@ -358,11 +358,11 @@ test('resumes deployment cleanup without repeating the committed service uninsta
     kind: 'uninstalled',
     retainedStateRoot: service.rootPath,
   });
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.equal(cleanups, 2);
 });
 
-test('does not commit uninstall until the remote service confirms it is removed', async () => {
+test('records uninstall intent before invoking the remote service', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let marked = false;
   createDesktopRuntimeHostManagement({
@@ -416,7 +416,7 @@ test('does not commit uninstall until the remote service confirms it is removed'
     run({}, 'office', 'uninstall') as Promise<unknown>,
     /did not confirm/u,
   );
-  assert.equal(marked, false);
+  assert.equal(marked, true);
 });
 
 function serviceResult(
