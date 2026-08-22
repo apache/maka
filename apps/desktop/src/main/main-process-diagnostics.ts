@@ -108,6 +108,7 @@ type RuntimeHostDiagnosticsClient = {
 export interface DesktopDiagnosticsDeps {
   readonly environment: () => DesktopDiagnosticEnvironment;
   readonly mainLogs: () => readonly string[];
+  readonly runtimeHostProcessLogs?: () => readonly string[];
   readonly resolveActiveRuntimeHost: () => RuntimeHostDiagnosticsClient | undefined;
   readonly resolveRuntimeHost: (scope: DesktopTargetScope) => RuntimeHostDiagnosticsClient | undefined;
   readonly writeClipboard: (value: string) => void;
@@ -115,6 +116,10 @@ export interface DesktopDiagnosticsDeps {
 
 export const mainProcessLogBuffer = new DiagnosticLogBuffer({
   maxBytes: MAIN_PROCESS_DIAGNOSTIC_LOG_MAX_BYTES,
+});
+export const runtimeHostProcessLogBuffer = new DiagnosticLogBuffer({
+  maxBytes: 16 * 1024,
+  maxEntries: 4,
 });
 
 let logCaptureInstalled = false;
@@ -344,6 +349,8 @@ export async function copyDesktopDiagnosticReport(
       deps.mainLogs(),
       runtimeHost,
       runtimeExecution,
+      undefined,
+      deps.runtimeHostProcessLogs?.() ?? [],
     ),
   );
 }
@@ -355,6 +362,7 @@ export function formatDesktopDiagnosticReport(
   runtimeHost: RuntimeHostDiagnosticRead,
   runtimeExecution: RuntimeHostExecutionDiagnosticRead | undefined = undefined,
   capturedAt = new Date(),
+  runtimeHostProcessLogs: readonly string[] = [],
 ): string {
   const lines = ['Maka Desktop diagnostic report', `Captured at: ${capturedAt.toISOString()}`];
   const rendererContext =
@@ -388,6 +396,11 @@ export function formatDesktopDiagnosticReport(
     '',
     `Recent main-process logs (${mainLogs.length})`,
     ...(mainLogs.length > 0 ? mainLogs : ['<none captured>']),
+    '',
+    `Recent local Runtime Host process exits (${runtimeHostProcessLogs.length})`,
+    ...(runtimeHostProcessLogs.length > 0
+      ? runtimeHostProcessLogs
+      : ['<none captured>']),
   );
 
   lines.push('', 'Runtime Host');

@@ -17,24 +17,10 @@
  * under the License.
  */
 
-import { launchDetachedRuntimeHostCandidate } from '../../client/launcher.js';
-
-const [rootPath, expectedRootId, stderrMarkerPath] = process.argv.slice(2);
-if (!rootPath || !expectedRootId) {
-  throw new Error('usage: detached-launcher <root> <expected-root-id>');
+if (process.env.MAKA_TEST_STDERR_EXACT_LIMIT === '1') {
+  process.stderr.write('x'.repeat(4 * 1024));
+  process.exitCode = 24;
+} else {
+  process.stderr.write(`${'x'.repeat(5_000)}\ntoken=fixture-secret\n`);
+  process.exitCode = 23;
 }
-const candidateEntrypoint = new URL(
-  stderrMarkerPath ? './stderr-after-launcher-exit.js' : './kernel-candidate.js',
-  import.meta.url,
-);
-
-const attempt = await launchDetachedRuntimeHostCandidate({
-  rootPath,
-  expectedRootId,
-  entrypoint: candidateEntrypoint,
-  idleGraceMs: 10_000,
-  ...(stderrMarkerPath
-    ? { env: { MAKA_TEST_STDERR_AFTER_PARENT_EXIT_MARKER: stderrMarkerPath } }
-    : {}),
-}).spawned;
-process.send?.({ type: 'launched', pid: attempt.pid });

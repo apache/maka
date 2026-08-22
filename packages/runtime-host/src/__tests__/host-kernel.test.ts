@@ -314,7 +314,10 @@ describe('non-serving Runtime Host kernel', () => {
 
       assert.equal(result.kind, 'connected');
       assert.ok(launches >= 2);
-      if (result.kind === 'connected') await result.connection.close();
+      if (result.kind === 'connected') {
+        assert.equal(result.spawnedProcess?.pid, result.registration.pid);
+        await result.connection.close();
+      }
     });
   });
 
@@ -1292,6 +1295,28 @@ describe('non-serving Runtime Host kernel', () => {
       } finally {
         await rm(callerCwd, { recursive: true, force: true });
       }
+    });
+  });
+
+  test('a detached Candidate survives writing stderr after its launcher exits', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const markerPath = join(paths.base, 'stderr-after-launcher-exit');
+      const launcher = paths.resources.trackChild(
+        fork(
+          new URL('./fixtures/detached-launcher.js', import.meta.url),
+          [paths.root, capability.rootId, markerPath],
+          { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+        ),
+      );
+      const launchedPid = paths.resources.trackPid(await waitForLaunch(launcher));
+      await waitForExit(launcher);
+
+      assert.equal(await waitForFileText(markerPath), 'alive');
+      assert.equal(isProcessAlive(launchedPid), true);
+      terminateProcess(launchedPid);
+      await waitForProcessExit(launchedPid);
+      paths.resources.forgetPid(launchedPid);
     });
   });
 
@@ -2353,6 +2378,48 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('detached launcher preserves a bounded stderr tail with process exit evidence', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const attempt = await launchDetachedRuntimeHostCandidate({
+        rootPath: paths.root,
+        expectedRootId: capability.rootId,
+        entrypoint: new URL('./fixtures/candidate-stderr-exit.js', import.meta.url),
+      }).spawned;
+      paths.resources.trackPid(attempt.pid);
+      assert.ok(attempt.exited);
+
+      const exit = await withTimeout(attempt.exited, 2_000, 'Candidate exit was not observed');
+      paths.resources.forgetPid(attempt.pid);
+      assert.equal(exit.code, 23);
+      assert.equal(exit.signal, null);
+      assert.equal(exit.stderrTruncated, true);
+      assert.ok(Buffer.byteLength(exit.stderr, 'utf8') <= 4 * 1024);
+      assert.match(exit.stderr, /token=fixture-secret/);
+    });
+  });
+
+  test('detached launcher does not mark an exact-limit stderr payload as truncated', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const attempt = await launchDetachedRuntimeHostCandidate({
+        rootPath: paths.root,
+        expectedRootId: capability.rootId,
+        entrypoint: new URL('./fixtures/candidate-stderr-exit.js', import.meta.url),
+        env: { MAKA_TEST_STDERR_EXACT_LIMIT: '1' },
+      }).spawned;
+      paths.resources.trackPid(attempt.pid);
+      assert.ok(attempt.exited);
+
+      const exit = await withTimeout(attempt.exited, 2_000, 'Candidate exit was not observed');
+      paths.resources.forgetPid(attempt.pid);
+      assert.equal(exit.code, 24);
+      assert.equal(exit.signal, null);
+      assert.equal(exit.stderrTruncated, false);
+      assert.equal(Buffer.byteLength(exit.stderr, 'utf8'), 4 * 1024);
+    });
+  });
+
   test('Candidate refuses a replacement root without initializing or owning it', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
@@ -2864,6 +2931,16 @@ function waitForChildExitResult(
 function waitForExit(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   return new Promise((resolve) => child.once('exit', () => resolve()));
+}
+
+async function waitForFileText(path: string, timeoutMs = 5_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await readFile(path, 'utf8').catch(() => undefined);
+    if (value !== undefined) return value;
+    await sleep(20);
+  }
+  throw new Error(`File was not written before timeout: ${path}`);
 }
 
 function waitForSuccessfulExit(child: ChildProcess, label: string): Promise<void> {
