@@ -28,6 +28,7 @@ import { convertArrayToReadableStream, MockLanguageModelV4 } from 'ai/test';
 import { z } from 'zod';
 
 import { ModelAdapter } from '../model-adapter.js';
+import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import type { ModelMessage } from '../model-protocol.js';
 import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
@@ -38,6 +39,55 @@ const ZERO_USAGE: LanguageModelV4Usage = {
 };
 
 describe('OpenAI Responses ModelAdapter continuation', () => {
+  test('maps streamed reasoning summaries into Maka thinking events', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const summary = 'Inspect the failing path before changing code.';
+    const answer = 'The path is verified.';
+    const fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(openAiReasoningSummaryStream(summary, answer), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as typeof globalThis.fetch;
+    const connection = {
+      slug: 'responses-relay',
+      providerType: 'openai-responses-compatible' as const,
+      baseUrl: 'https://relay.example/v1',
+      defaultModel: 'gpt-5.6-sol',
+    };
+    const adapter = new ModelAdapter({
+      sessionId: 'session-1',
+      connection,
+      apiKey: 'test-key',
+      modelId: 'gpt-5.6-sol',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      providerOptions: buildProviderOptions(connection, 'gpt-5.6-sol'),
+      newId: () => 'id',
+      now: () => 0,
+    });
+    const model = adapter.resolveModel();
+    const result = await adapter.startStream({
+      model,
+      messages: [{ role: 'user', content: 'inspect it' }],
+      tools: {},
+      activeTools: [],
+      onStreamActivity: () => {},
+      abortSignal: new AbortController().signal,
+      repairToolCall: async () => null,
+    });
+    let thinking = '';
+    let text = '';
+    for await (const event of result.events) {
+      if (event.kind === 'thinking') thinking += event.text;
+      if (event.kind === 'text') text += event.text;
+    }
+
+    assert.deepEqual(requestBody?.reasoning, { effort: 'medium', summary: 'auto' });
+    assert.equal(thinking, summary);
+    assert.equal(text, answer);
+  });
+
   test('preserves retryable WebSocket failures through the AI SDK stream boundary', async () => {
     const transportError = Object.assign(new Error('closed before completion'), {
       name: 'OpenAiResponsesTransportError',
@@ -218,6 +268,113 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
     assert.equal(baseline, undefined);
   });
 });
+
+function openAiReasoningSummaryStream(summary: string, answer: string): string {
+  const reasoningId = 'rs_1';
+  const messageId = 'msg_1';
+  const events: Array<Record<string, unknown>> = [
+    {
+      type: 'response.created',
+      response: {
+        id: 'resp-1',
+        object: 'response',
+        created_at: 0,
+        model: 'gpt-5.6-sol',
+        status: 'in_progress',
+        output: [],
+      },
+    },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: {
+        type: 'reasoning',
+        id: reasoningId,
+        status: 'in_progress',
+        content: [],
+        summary: [],
+      },
+    },
+    {
+      type: 'response.reasoning_summary_part.added',
+      item_id: reasoningId,
+      output_index: 0,
+      summary_index: 0,
+      part: { type: 'summary_text', text: '' },
+    },
+    {
+      type: 'response.reasoning_summary_text.delta',
+      item_id: reasoningId,
+      output_index: 0,
+      summary_index: 0,
+      delta: summary,
+    },
+    {
+      type: 'response.reasoning_summary_part.done',
+      item_id: reasoningId,
+      output_index: 0,
+      summary_index: 0,
+      part: { type: 'summary_text', text: summary },
+    },
+    {
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: {
+        type: 'reasoning',
+        id: reasoningId,
+        status: 'completed',
+        content: [],
+        summary: [{ type: 'summary_text', text: summary }],
+      },
+    },
+    {
+      type: 'response.output_item.added',
+      output_index: 1,
+      item: {
+        type: 'message',
+        id: messageId,
+        status: 'in_progress',
+        role: 'assistant',
+        content: [],
+      },
+    },
+    {
+      type: 'response.output_text.delta',
+      content_index: 0,
+      delta: answer,
+      item_id: messageId,
+      output_index: 1,
+    },
+    {
+      type: 'response.output_item.done',
+      output_index: 1,
+      item: {
+        type: 'message',
+        id: messageId,
+        status: 'completed',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: answer, annotations: [] }],
+      },
+    },
+    {
+      type: 'response.completed',
+      response: {
+        id: 'resp-1',
+        object: 'response',
+        created_at: 0,
+        model: 'gpt-5.6-sol',
+        status: 'completed',
+        output: [],
+        usage: {
+          input_tokens: 1,
+          output_tokens: 2,
+          output_tokens_details: { reasoning_tokens: 1 },
+        },
+      },
+    },
+  ];
+  return `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`;
+}
 
 function firstReasoningToolStep(): LanguageModelV4StreamPart[] {
   const reasoningMetadata = { openai: { itemId: 'reasoning-1' } };
