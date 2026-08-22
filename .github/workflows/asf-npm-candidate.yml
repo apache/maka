@@ -2,11 +2,6 @@ name: Prepare ASF npm candidate
 
 on:
   workflow_dispatch:
-    inputs:
-      source_reference_tag:
-        description: Exact ASF source candidate tag (v<version>-incubating-rc<positive-integer>)
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -21,7 +16,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      source_commit: ${{ steps.source.outputs.source_commit }}
       version: ${{ steps.source.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,7 +28,7 @@ jobs:
         env:
           RELEASE_REF: ${{ github.ref }}
           RELEASE_REPOSITORY: ${{ github.repository }}
-          SOURCE_REFERENCE_TAG: ${{ inputs.source_reference_tag }}
+          SOURCE_REFERENCE_TAG: ${{ github.ref_name }}
         run: |
           if [[ "$RELEASE_REPOSITORY" != "apache/maka" ]]; then
             echo "ASF npm candidates must run in apache/maka; found $RELEASE_REPOSITORY" >&2
@@ -48,11 +42,10 @@ jobs:
           git fetch --force --no-tags origin \
             "refs/tags/$SOURCE_REFERENCE_TAG:refs/tags/$SOURCE_REFERENCE_TAG"
           test "$(git cat-file -t "refs/tags/$SOURCE_REFERENCE_TAG")" = tag
-          source_commit="$(git rev-parse "refs/tags/$SOURCE_REFERENCE_TAG^{commit}")"
-          test "$source_commit" = "$GITHUB_SHA"
+          tag_commit="$(git rev-parse "refs/tags/$SOURCE_REFERENCE_TAG^{commit}")"
+          test "$tag_commit" = "$GITHUB_SHA"
           git fetch --no-tags origin main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$source_commit" origin/main
-          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           echo "version=$release_version" >> "$GITHUB_OUTPUT"
 
   validate:
@@ -62,7 +55,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/cli-package-validation.yml
     with:
-      source_commit: ${{ needs.resolve.outputs.source_commit }}
+      source_commit: ${{ github.sha }}
 
   handoff:
     name: Record unsigned ASF npm candidate
@@ -81,7 +74,7 @@ jobs:
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.resolve.outputs.source_commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -96,8 +89,8 @@ jobs:
       - name: Bind the npm candidate to the source reference
         env:
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
-          SOURCE_REFERENCE_TAG: ${{ inputs.source_reference_tag }}
-          SOURCE_COMMIT: ${{ needs.resolve.outputs.source_commit }}
+          SOURCE_REFERENCE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -113,8 +106,8 @@ jobs:
             "packages/cli/release/maka-agent-${RELEASE_VERSION}.tgz.asf-candidate.json"
       - name: Revalidate the live source reference
         env:
-          SOURCE_REFERENCE_TAG: ${{ inputs.source_reference_tag }}
-          SOURCE_COMMIT: ${{ needs.resolve.outputs.source_commit }}
+          SOURCE_REFERENCE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
         run: |
           git fetch --force --no-tags origin \
             "refs/tags/$SOURCE_REFERENCE_TAG:refs/tags/$SOURCE_REFERENCE_TAG"
@@ -125,7 +118,7 @@ jobs:
       - name: Upload the unsigned ASF npm candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: apache-maka-npm-${{ inputs.source_reference_tag }}-${{ needs.resolve.outputs.source_commit }}-unsigned
+          name: apache-maka-npm-${{ github.ref_name }}-${{ github.sha }}-unsigned
           path: |
             packages/cli/release/*.tgz
             packages/cli/release/*.tgz.sha256
@@ -137,9 +130,9 @@ jobs:
       - name: Record Release Manager handoff
         env:
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
-          SOURCE_REFERENCE_TAG: ${{ inputs.source_reference_tag }}
-          SOURCE_COMMIT: ${{ needs.resolve.outputs.source_commit }}
-          RUNBOOK_URL: https://github.com/${{ github.repository }}/blob/${{ needs.resolve.outputs.source_commit }}/.github/ASF_NPM_RELEASE.md
+          SOURCE_REFERENCE_TAG: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          RUNBOOK_URL: https://github.com/${{ github.repository }}/blob/${{ github.sha }}/.github/ASF_NPM_RELEASE.md
         run: |
           {
             echo "## Unsigned ASF npm convenience candidate"

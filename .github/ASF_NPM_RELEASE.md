@@ -46,8 +46,7 @@ version=0.1.11
 rc=1
 source_reference_tag="v${version}-incubating-rc${rc}"
 gh workflow run asf-npm-candidate.yml \
-  --ref "$source_reference_tag" \
-  -f source_reference_tag="$source_reference_tag"
+  --ref "$source_reference_tag"
 ```
 
 The workflow rejects a fork repository, a lightweight tag, a tag/version/RC

@@ -14,16 +14,15 @@ const validationWorkflow = readFileSync(
 
 test('ASF npm candidate workflow binds one validated tarball to the source RC without publishing', () => {
   assert.match(workflow, /^permissions:\n  contents: read$/mu);
-  assert.match(workflow, /source_reference_tag:\n\s+description:/u);
-  assert.doesNotMatch(workflow, /^\s+(?:version|rc_number):$/mu);
   assert.ok(workflow.includes('if [[ "$RELEASE_REPOSITORY" != "apache/maka" ]]'));
   assert.match(workflow, /RELEASE_REPOSITORY: \$\{\{ github\.repository \}\}/u);
+  assert.match(workflow, /SOURCE_REFERENCE_TAG: \$\{\{ github\.ref_name \}\}/u);
   assert.ok(workflow.includes('if [[ "$RELEASE_REF" != "refs/tags/$SOURCE_REFERENCE_TAG" ]]'));
   assert.ok(workflow.includes('git cat-file -t "refs/tags/$SOURCE_REFERENCE_TAG"'));
   assert.ok(workflow.includes('git rev-parse "refs/tags/$SOURCE_REFERENCE_TAG^{commit}"'));
   assert.match(
     workflow,
-    /uses: \.\/\.github\/workflows\/cli-package-validation\.yml[\s\S]*?source_commit: \$\{\{ needs\.resolve\.outputs\.source_commit \}\}/u,
+    /uses: \.\/\.github\/workflows\/cli-package-validation\.yml[\s\S]*?source_commit: \$\{\{ github\.sha \}\}/u,
   );
   assert.match(validationWorkflow, /release_candidate_run_attempt:/u);
   assert.doesNotMatch(validationWorkflow, /\.tgz\.sha512/u);
