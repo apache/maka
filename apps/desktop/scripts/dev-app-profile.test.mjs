@@ -89,8 +89,11 @@ test('holdsProfile: TCC profile comes from the worktree dev-env.json (sol P1)', 
   assert.equal(holdsProfile(TCC_BUNDLE, undefined, { readFile: envFor({ isolated: true }) }), false);
   // Space-bearing root works the same (literal recovery).
   assert.equal(holdsProfile(SPACED_ROOT, undefined, { readFile: envFor() }), true);
-  // env missing (abnormal): err toward the shared default (see-MORE).
+  // env missing (abnormal): profile is UNKNOWN — blocks every target
+  // (see-MORE), never folded into a specific profile (would silently miss an
+  // explicit holder and get absorbed).
   assert.equal(holdsProfile(TCC_BUNDLE, undefined, { readFile: () => { throw new Error('no env'); } }), true);
+  assert.equal(holdsProfile(TCC_BUNDLE, '/Users/dev/Library/Application Support/Isolated Dev', { readFile: () => { throw new Error('no env'); } }), true);
 });
 
 test('holdsProfile: captured lines against the shared default', () => {

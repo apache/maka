@@ -49,6 +49,12 @@ export const DEV_USER_DATA_DIR = join(
   'Maka Dev',
 );
 export const DEV_ENV_SCHEMA_VERSION = 1;
+// Single source for the TCC bundle executable suffix: dev-app-runtime.mjs
+// imports it for both the probe pattern and the owner judgment, so the
+// construction (:DESKTOP_DIR) and the literal recovery (worktreeRootFromBundle)
+// can never disagree.
+export const TCC_BUNDLE_EXECUTABLE_SUFFIX =
+  '/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron';
 
 /**
  * Known Maka dev markers; a hit means the process is one of ours.
@@ -103,9 +109,10 @@ export function holdsProfile(commandLine, target, options = {}) {
     const root = worktreeRootFromBundle(commandLine);
     const env = root ? readDevEnvUserDataDir(root, options) : undefined;
     // env missing = abnormal (the launcher writes it before every launch);
-    // err toward the shared default (see-MORE direction), never fold unknown
-    // into a specific profile.
-    return env === undefined ? wanted === DEV_USER_DATA_DIR : env === wanted;
+    // the profile is then UNKNOWN — never folded into default (that would
+    // silently miss an explicit-profile holder and get absorbed). Unknown
+    // blocks every target (see-MORE direction), like the plain no-marker case.
+    return env === undefined ? true : env === wanted;
   }
   if (hasUserDataDirSwitch(commandLine)) {
     return explicitSwitchLiteral(commandLine, wanted);
@@ -121,7 +128,7 @@ export function holdsProfile(commandLine, target, options = {}) {
  * (Personal)) or inside `Maka Dev.app` are matched together and never split.
  */
 export function worktreeRootFromBundle(commandLine) {
-  const marker = '/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron';
+  const marker = TCC_BUNDLE_EXECUTABLE_SUFFIX;
   const at = commandLine.indexOf(marker);
   return at > 0 ? commandLine.slice(0, at) : undefined;
 }

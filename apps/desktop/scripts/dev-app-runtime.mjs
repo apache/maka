@@ -49,7 +49,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { DEV_USER_DATA_DIR, holdsProfile, isOwnDevApp } from './dev-app-profile.mjs';
+import { DEV_USER_DATA_DIR, DEV_ENV_SCHEMA_VERSION, TCC_BUNDLE_EXECUTABLE_SUFFIX, holdsProfile, isOwnDevApp } from './dev-app-profile.mjs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -59,7 +59,7 @@ const DEV_RUNTIME_DIR = join(DESKTOP_DIR, '.maka-dev');
 const STAGING_DIR = join(DESKTOP_DIR, '.maka-dev.staging');
 const DEV_APP = join(DEV_RUNTIME_DIR, 'Maka Dev.app');
 const STAGING_APP = join(STAGING_DIR, 'Maka Dev.app');
-const DEV_EXECUTABLE = join(DEV_APP, 'Contents', 'MacOS', 'Electron');
+export const DEV_EXECUTABLE = join(DEV_APP, 'Contents', 'MacOS', 'Electron');
 const DEV_ENV_FILE = join(DEV_RUNTIME_DIR, 'dev-env.json');
 const MARKER = join(DEV_RUNTIME_DIR, 'runtime.json');
 const ELECTRON_PACKAGE = join(REPO_ROOT, 'node_modules', 'electron', 'package.json');
@@ -86,7 +86,6 @@ const WORKTREE_ID = createHash('sha256').update(REPO_ROOT).digest('hex').slice(0
  */
 const DEV_BUNDLE_ID = `com.maka.dev.${WORKTREE_ID}`;
 const RUNTIME_SCHEMA_VERSION = 7;
-const DEV_ENV_SCHEMA_VERSION = 1;
 
 export const developmentAppPath = DEV_APP;
 const developmentExecutablePath = DEV_EXECUTABLE;
@@ -186,7 +185,9 @@ export function devAppProcessPattern() {
   // Rough filter over every shape that can hold the shared "Maka Dev" lock:
   // the TCC bundle, the plain dev npm shim, and the resolved Electron binary
   // it spawns. Each shape is regex-escaped; pgrep -f matches the whole line.
-  const bundle = toProcessMatchPattern(join('Maka Dev.app', 'Contents', 'MacOS', 'Electron'));
+  // The bundle suffix is the single source from dev-app-profile.mjs so the
+  // probe pattern and the owner judgment can never disagree.
+  const bundle = toProcessMatchPattern(TCC_BUNDLE_EXECUTABLE_SUFFIX);
   const shim = toProcessMatchPattern(join('node_modules', '.bin', 'electron'));
   const resolved = toProcessMatchPattern(join('Electron.app', 'Contents', 'MacOS', 'Electron'));
   return `${bundle}|${shim}|${resolved}`;
@@ -233,7 +234,7 @@ export function sharedDevelopmentAppOwner(options = {}) {
     // worktree's holder (our launch is absorbed), not misjudging our own
     // (one blocked launch). Same principle as dev-app-profile.mjs.
     if (isOwnDevApp(line, ownRoot)) return false;
-    return holdsProfile(line, targetProfile);
+    return holdsProfile(line, targetProfile, options);
   });
 }
 

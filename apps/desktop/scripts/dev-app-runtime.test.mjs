@@ -162,3 +162,9 @@ test('plain liveness is macOS-only; off-darwin probes only the bundle', async ()
   );
   assert.equal(calls2.length, 3); // all three shapes probed on darwin
 });
+
+test('DEV_EXECUTABLE carries the single-source TCC bundle suffix', async () => {
+  const { DEV_EXECUTABLE } = await import('./dev-app-runtime.mjs');
+  const { TCC_BUNDLE_EXECUTABLE_SUFFIX } = await import('./dev-app-profile.mjs');
+  assert.ok(DEV_EXECUTABLE.endsWith(TCC_BUNDLE_EXECUTABLE_SUFFIX));
+});
