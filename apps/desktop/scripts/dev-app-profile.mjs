@@ -39,6 +39,7 @@
 // launch (annoying, recoverable). The design therefore errs toward seeing
 // MORE holders, never fewer.
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 export const DEV_USER_DATA_DIR = join(
@@ -47,6 +48,7 @@ export const DEV_USER_DATA_DIR = join(
   'Application Support',
   'Maka Dev',
 );
+export const DEV_ENV_SCHEMA_VERSION = 1;
 
 /**
  * Known Maka dev markers; a hit means the process is one of ours.
@@ -58,6 +60,13 @@ export const DEV_USER_DATA_DIR = join(
  * construction. (The two captured real plain lines ran against a fixture
  * dir, not DESKTOP_DIR — the structural argument is what makes the marker
  * reliable despite that.)
+ *
+ * KNOWN LIMITATION of this marker (a tested trade, not an accident):
+ * `apps/desktop` is also the standard layout of Turborepo / Nx monorepos,
+ * so a foreign monorepo's Electron dev without an explicit
+ * `--user-data-dir` is seen as a holder of our shared lock. That errs on
+ * the "see MORE holders" side (a launch may be conservatively blocked,
+ * never silently absorbed); it cannot be tightened from flat argv.
  */
 export function hasMakaDevMarker(commandLine) {
   return (
@@ -84,13 +93,50 @@ export function hasMakaDevMarker(commandLine) {
  * a value equal to `target + space + more` remains undecidable from flat
  * argv — accepted, on the "see MORE holders" side.
  */
-export function holdsProfile(commandLine, target) {
+export function holdsProfile(commandLine, target, options = {}) {
   const wanted = target ?? DEV_USER_DATA_DIR;
   if (!hasMakaDevMarker(commandLine)) return false;
+  // TCC bundle: the profile is NOT on the command line — splitDevelopmentCliArgs
+  // strips --user-data-dir into dev-env.json (the switch would be overridden
+  // by the bootstrap's setPath). Read that worktree's dev-env.json instead.
+  if (commandLine.includes('Maka Dev.app')) {
+    const root = worktreeRootFromBundle(commandLine);
+    const env = root ? readDevEnvUserDataDir(root, options) : undefined;
+    // env missing = abnormal (the launcher writes it before every launch);
+    // err toward the shared default (see-MORE direction), never fold unknown
+    // into a specific profile.
+    return env === undefined ? wanted === DEV_USER_DATA_DIR : env === wanted;
+  }
   if (hasUserDataDirSwitch(commandLine)) {
     return explicitSwitchLiteral(commandLine, wanted);
   }
   return wanted === DEV_USER_DATA_DIR;
+}
+
+/**
+ * Worktree root of a TCC bundle command line, by known-literal matching:
+ * argv[0] is the bundle executable, and the bundle path ends with the known
+ * literal `/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron`, so
+ * everything before it IS the root — spaces inside the root (Dropbox
+ * (Personal)) or inside `Maka Dev.app` are matched together and never split.
+ */
+export function worktreeRootFromBundle(commandLine) {
+  const marker = '/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron';
+  const at = commandLine.indexOf(marker);
+  return at > 0 ? commandLine.slice(0, at) : undefined;
+}
+
+function readDevEnvUserDataDir(worktree, options) {
+  const envFile = options.envFileFor ?? ((root) => join(root, 'apps', 'desktop', '.maka-dev', 'dev-env.json'));
+  const read = options.readFile ?? readFileSync;
+  let published;
+  try {
+    published = JSON.parse(read(envFile(worktree), 'utf8'));
+  } catch {
+    return undefined;
+  }
+  if (published.schemaVersion !== DEV_ENV_SCHEMA_VERSION) return undefined;
+  return published.userDataDir ?? DEV_USER_DATA_DIR;
 }
 
 function explicitSwitchLiteral(commandLine, wanted) {
@@ -119,4 +165,3 @@ export function isOwnDevApp(commandLine, ownRoot) {
     commandLine.includes(`${ownRoot}/node_modules/`)
   );
 }
-

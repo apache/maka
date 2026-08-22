@@ -248,7 +248,10 @@ export function assertNoCrossWorktreeOwner(options = {}) {
   if (owner === undefined) return;
   throw new Error(
     `Another worktree's Maka Dev app is running and holds the shared "Maka Dev" profile: ${owner}. ` +
-      'Quit it (Cmd-Q) or stop it before launching this worktree.',
+      'Quit it (Cmd-Q) or stop it before launching this worktree. ' +
+      'If the named process does not look like Maka, it may be another project with an ' +
+      'apps/desktop layout running Electron without an explicit --user-data-dir — the ' +
+      'judgment errs toward blocking (see dev-app-profile.mjs).',
   );
 }
 
