@@ -237,7 +237,12 @@ export function sharedDevelopmentAppOwner(options = {}) {
     // worktree's holder (our launch is absorbed), not misjudging our own
     // (one blocked launch). Same principle as dev-app-profile.mjs.
     if (isOwnDevApp(line, ownRoot)) return false;
-    return holdsProfile(line, targetProfile, options);
+    // Forward only what holdsProfile accepts (readFile, envFileFor) — same
+    // rule as ensureNoRunningDevelopmentApp below: no whole-object passthrough.
+    return holdsProfile(line, targetProfile, {
+      ...(options.readFile ? { readFile: options.readFile } : {}),
+      ...(options.envFileFor ? { envFileFor: options.envFileFor } : {}),
+    });
   });
 }
 
@@ -353,7 +358,7 @@ export async function ensureNoRunningDevelopmentApp(options = {}) {
   // Forward each callee only what it accepts. Passing this whole object through
   // would make `delay` double as the SIGTERM grace period, and would let a
   // caller that stubs `probe` still fall through to a real `pkill`.
-  const liveness = { executable: options.executable, probe: options.probe };
+  const liveness = { executable: options.executable, probe: options.probe, platform: options.platform };
   const shutdown = {
     platform: options.platform,
     executable: options.executable,
