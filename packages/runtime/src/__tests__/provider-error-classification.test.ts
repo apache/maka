@@ -158,29 +158,41 @@ describe('Provider error classification', () => {
   });
 
   test('classifies provider capacity errors and retries with backoff', () => {
-    const capacity = Object.assign(
-      new Error('The model is currently at capacity due to high demand.'),
-      {
+    const capacity = () =>
+      Object.assign(new Error('The model is currently at capacity due to high demand.'), {
         name: 'AI_APICallError',
         data: { error: { code: 'resource-exhausted' } },
-      },
-    );
+      });
 
-    assert.equal(classifyError(capacity), 'ProviderCapacity');
-    assert.deepEqual(providerRetryMetadata(capacity), { retryable: true });
+    assert.equal(classifyError(capacity()), 'ProviderCapacity');
+    assert.deepEqual(providerRetryMetadata(capacity()), { retryable: true });
     assert.deepEqual(
       providerRetryMetadata(
-        Object.assign(capacity, {
+        Object.assign(capacity(), {
           responseHeaders: { 'retry-after': '12' },
         }),
       ),
       { retryable: true, retryAfterMs: 12_000 },
+    );
+    assert.deepEqual(
+      providerRetryMetadata(
+        Object.assign(capacity(), {
+          responseHeaders: { 'retry-after': 'not-a-delay' },
+        }),
+      ),
+      { retryable: true },
     );
 
     const topLevelCode = Object.assign(new Error('The model is currently at capacity'), {
       code: 'resource-exhausted',
     });
     assert.equal(classifyError(topLevelCode), 'ProviderCapacity');
+
+    const ambiguousQuotaCode = Object.assign(new Error('resource exhausted'), {
+      name: 'AI_APICallError',
+      data: { error: { code: 'resource_exhausted' } },
+    });
+    assert.notEqual(classifyError(ambiguousQuotaCode), 'ProviderCapacity');
   });
 
   test('classifies context overflow by predicate, carrier shape, and evidence precedence', () => {
