@@ -1735,6 +1735,14 @@ export const ProjectsCachedHostRevalidation: Story = {
       ) !== null,
       'Project Host interaction boundary did not remain inert',
     );
+    const boundary = canvasElement.querySelector<HTMLElement>(
+      '.settingsRuntimeHostInteractionBoundary[inert][aria-busy="true"]',
+    );
+    const mutedProjectContent = boundary?.firstElementChild;
+    if (!(mutedProjectContent instanceof HTMLElement)) {
+      throw new Error('Project Host interaction boundary did not contain visible content');
+    }
+    await expect(getComputedStyle(mutedProjectContent).opacity).toBe('0.5');
     await expect(cachedProjectsSnapshotRead).not.toHaveBeenCalled();
     await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
   },
