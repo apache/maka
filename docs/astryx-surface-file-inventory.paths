@@ -132,6 +132,8 @@ apps/desktop/src/renderer/styles/shell-layout.css
 apps/desktop/src/renderer/styles/sidebar.css
 apps/desktop/src/renderer/styles/task-ledger.css
 apps/desktop/src/renderer/styles/theme-glass.css
+apps/desktop/src/renderer/styles/work-board.css
+apps/desktop/src/renderer/work-board-panel.tsx
 packages/ui/src/astryx-chat-reasoning.tsx
 packages/ui/src/astryx-i18n.tsx
 packages/ui/src/attachment-kinds.tsx

@@ -49,6 +49,8 @@ function SessionWorkbarFallback() {
 
 interface ChatWorkbarProps {
   activeId: string;
+  projectId?: string | null;
+  projectAliases?: readonly string[];
   rightCollapsed: boolean;
   bottomOpen: boolean;
   hidden: boolean;
@@ -134,6 +136,8 @@ export function ChatWorkbar(props: ChatWorkbarProps) {
           <SessionWorkbar
             key={props.activeId}
             sessionId={props.activeId}
+            projectId={props.projectId}
+            projectAliases={props.projectAliases}
             hidden={props.hidden}
             onDismissPanel={props.onDismissPanel}
             panelsState={props.panelsState}

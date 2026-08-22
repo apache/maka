@@ -33,6 +33,7 @@ import {
 import {
   ICON_SIZE,
   Activity,
+  Clipboard,
   FolderOpen,
   GitBranch,
   Globe,
@@ -68,6 +69,7 @@ import {
 } from './session-workbar-tabs';
 import { useSessionTasks } from './use-session-tasks';
 import { WorkbarToggle } from './app-shell-chrome-actions';
+import { WorkBoardPanel } from './work-board-panel';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import type {
   CompanionQuoteTarget,
@@ -164,6 +166,8 @@ function tabLabel(
         : copy.terminal;
     case 'tasks':
       return copy.tasks;
+    case 'work-board':
+      return copy.workBoard;
     case 'browser':
       return copy.browser;
     case 'files':
@@ -200,6 +204,8 @@ function tabIcon(tab: SessionWorkbarTab, active: boolean): ReactNode {
         ? Terminal
         : tab.kind === 'tasks'
           ? ListTodo
+          : tab.kind === 'work-board'
+            ? Clipboard
           : tab.kind === 'browser'
             ? Globe
             : tab.kind === 'files'
@@ -606,6 +612,12 @@ function WorkbarLauncher(props: {
       icon: ListTodo,
     },
     {
+      kind: 'work-board',
+      label: copy.workBoard,
+      description: copy.launcher.workBoard,
+      icon: Clipboard,
+    },
+    {
       kind: 'inspector',
       label: copy.inspector,
       description: copy.launcher.inspector,
@@ -643,6 +655,8 @@ function WorkbarLauncher(props: {
 
 export function SessionWorkbar(props: {
   sessionId: string;
+  projectId?: string | null;
+  projectAliases?: readonly string[];
   hidden: boolean;
   onDismissPanel: (placement: SessionWorkbarPlacement) => void;
   panelsState: SessionWorkbarPanelsState;
@@ -795,6 +809,13 @@ export function SessionWorkbar(props: {
               loading={sessionTasks.loading}
               error={sessionTasks.error}
               onRetry={sessionTasks.retry}
+            />
+          );
+        } else if (tab.kind === 'work-board') {
+          content = (
+            <WorkBoardPanel
+              projectId={props.projectId ?? null}
+              projectAliases={props.projectAliases}
             />
           );
         } else if (tab.kind === 'browser') {
