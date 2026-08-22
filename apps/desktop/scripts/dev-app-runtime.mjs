@@ -99,6 +99,10 @@ const developmentExecutablePath = DEV_EXECUTABLE;
 export async function resolveMacosDevelopmentLaunch(env = process.env) {
   if (!shouldUseMacosDevelopmentApp(process.platform, env)) return null;
   const appPath = await prepareDevelopmentApp();
+  // The shared "Maka Dev" userData root makes Electron's single-instance lock
+  // cross-worktree: another worktree's app would absorb this launch through
+  // it. Fail fast with the owner instead of silently being absorbed (#3359).
+  assertNoCrossWorktreeOwner();
   // A leftover app would absorb this launch through the single-instance lock.
   await ensureNoRunningDevelopmentApp();
   return createMacosDevelopmentLaunch(appPath, developmentLogFile);
@@ -137,6 +141,61 @@ export const developmentLogFile = join(DEV_RUNTIME_DIR, 'app.log');
  */
 export function toProcessMatchPattern(executable) {
   return executable.replace(/[.[\]{}()*+?^$|\\]/g, '\\$&');
+}
+
+/**
+ * Command lines of every running "Maka Dev" app — any worktree's. The
+ * packaged app is `Maka.app` and never matches; each dev bundle carries the
+ * `Maka Dev.app/Contents/MacOS/Electron` suffix on its command line.
+ */
+export function sharedDevelopmentAppCommandLines(options = {}) {
+  const probe = options.probe ?? defaultSharedAppProbe;
+  return probe();
+}
+
+function defaultSharedAppProbe() {
+  const pattern = toProcessMatchPattern(join('Maka Dev.app', 'Contents', 'MacOS', 'Electron'));
+  const status = spawnSync('pgrep', ['-af', pattern]);
+  // 0 = matches, 1 = no match. Anything else is a usage or pattern error and
+  // must not be read as "nothing was running".
+  if (status.status !== 0 && status.status !== 1) {
+    throw new Error(`pgrep failed for the shared Maka Dev app (exit ${status.status})`);
+  }
+  return status.status === 1
+    ? []
+    : String(status.stdout)
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => line.replace(/^\d+\s+/, ''));
+}
+
+/**
+ * The first running `Maka Dev` app that is NOT this worktree's own bundle, or
+ * undefined when every running dev app is ours. Electron's single-instance
+ * lock is keyed on the shared userData root, so an app from another worktree
+ * holds the lock for this profile too — and this script must not dispose of
+ * another worktree's window (data root sharing does not confer disposal
+ * rights). Returns the owner's command line for the error message.
+ */
+export function sharedDevelopmentAppOwner(options = {}) {
+  const own = options.ownExecutable ?? DEV_EXECUTABLE;
+  const commandLines = options.commandLines ?? sharedDevelopmentAppCommandLines(options);
+  return commandLines.find((line) => !line.startsWith(own));
+}
+
+/**
+ * Fail fast when another worktree's dev app holds the shared profile's
+ * single-instance lock. The absorbed-launch failure mode is exit-0 plus a
+ * `never-started` report from the local monitor — indistinguishable from a
+ * normal launch unless the owner is named (#3359).
+ */
+export function assertNoCrossWorktreeOwner(options = {}) {
+  const owner = options.owner ?? sharedDevelopmentAppOwner(options);
+  if (owner === undefined) return;
+  throw new Error(
+    `Another worktree's Maka Dev app is running and holds the shared "Maka Dev" profile: ${owner}. ` +
+      'Quit it (Cmd-Q) or stop it before launching this worktree.',
+  );
 }
 
 /**

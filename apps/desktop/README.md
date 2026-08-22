@@ -86,8 +86,11 @@ an explicit `--user-data-dir` takes precedence. Shutdown matches this worktree's
 own bundle path, so a concurrent worktree's app survives — and then holds the
 single-instance lock for the shared profile. Because that lock is keyed
 on the profile, a launch first reclaims any app left over from a hard-killed
-session — otherwise the stale app would absorb the new launch and keep showing
-its old, dead Vite URL.
+session of THIS worktree — otherwise the stale app would absorb the new launch
+and keep showing its old, dead Vite URL. A launch does NOT reclaim another
+worktree's running app: the shared data root confers no disposal rights over
+another developer's window, so launching while another worktree's Maka Dev app
+holds the lock fails immediately and names that app as the owner.
 
 Known limitation: `dev-env.json` outlives the session, so launching from the
 Dock long after `npm run dev` has stopped points the app at a Vite URL that is
