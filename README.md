@@ -64,24 +64,7 @@ Apache Maka has not made an Apache release yet. Everything currently published f
 
 Once Apache releases exist, the official release is the source release published by the ASF and approved by the podling PPMC and the Incubator PMC. A package built from that source and distributed elsewhere, for example through a package registry or as a Desktop installer, is a convenience artifact rather than the release itself, and it is valid only when it is built from an approved source release. [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) holds the candidate contract, signing path, and verification steps.
 
-### Download Desktop for macOS
-
-The signed and notarized Desktop app is available from [GitHub Releases](https://github.com/apache/maka/releases/latest) for Apple Silicon Macs only (`arm64`).
-
-1. Download `Maka-<version>-mac-arm64.dmg`;
-2. Open the DMG and drag Maka to Applications;
-3. Install `ripgrep` with `brew install ripgrep` to enable Runtime's `Grep` tool;
-4. Launch Maka and configure your own model connection under `Settings → Models`.
-
-Computer Use is not included in this first public build. Intel Macs, Windows, and Linux packages are not supported yet.
-
-### Windows x64 preview
-
-Windows is still an unsigned preview, not a supported release tier. When a release includes Windows
-assets, follow the [Windows preview installation and verification guide](docs/windows-support.md#install-the-windows-x64-preview)
-before running `Maka-<version>-win-x64.exe`. SmartScreen will identify the installer as coming from
-an unknown publisher; do not bypass that warning unless the downloaded SHA-256 matches the checksum
-published with the same release.
+Until an approved source release exists, this README recommends no prebuilt download. Build and run Maka from source as described below. Desktop currently targets Apple Silicon Macs (`arm64`); Intel Macs, Windows, and Linux are not supported yet, and [Windows support](docs/windows-support.md) remains an unsigned preview rather than a supported release tier.
 
 ### Requirements
 

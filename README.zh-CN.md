@@ -64,23 +64,7 @@ Apache Maka 目前还没有发布过 Apache release。当前从本仓库或包�
 
 在 Apache release 出现之后，官方 release 指的是由 ASF 发布、并经 podling PPMC 和 Incubator PMC 批准的源码 release。由该源码构建并通过其他渠道分发的包，例如包管理器中的包或 Desktop 安装程序，属于 convenience artifact，本身不是 release，并且只有在由获批源码 release 构建时才有效。候选契约、签名路径和验包步骤见 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
-### 下载 macOS 桌面版
-
-已签名并完成 Apple 公证的桌面应用可从 [GitHub Releases](https://github.com/apache/maka/releases/latest) 下载，目前仅支持 Apple Silicon Mac（`arm64`）。
-
-1. 下载 `Maka-<version>-mac-arm64.dmg`；
-2. 打开 DMG，将 Maka 拖入“应用程序”；
-3. 执行 `brew install ripgrep`，启用 Runtime 的 `Grep` 工具；
-4. 启动 Maka，在`设置 → 模型`中配置自己的模型连接。
-
-首个公开版本不包含 Computer Use，暂不支持 Intel Mac、Windows 和 Linux 安装包。
-
-### Windows x64 预览版
-
-Windows 目前仍是未签名预览版，不属于正式支持的平台。当某个 release 包含 Windows 资产时，
-请先阅读 [Windows 预览版安装与校验指南](docs/windows-support.md#安装-windows-x64-预览版)，再运行
-`Maka-<version>-win-x64.exe`。SmartScreen 会将安装包显示为未知发布者；只有从同一 release 下载
-并确认 SHA-256 与发布的校验文件一致后，才应选择绕过该提示。
+在获批源码 release 出现之前，本 README 不推荐任何预构建下载，请按下文从源码构建并运行 Maka。Desktop 目前面向 Apple Silicon Mac（`arm64`），暂不支持 Intel Mac、Windows 和 Linux，[Windows 支持](docs/windows-support.md)仍属于未签名预览，不是正式支持的平台。
 
 ### 环境要求
 
