@@ -444,7 +444,10 @@ function recordElectionResult(
     return { endpointConnected: true, registration };
   }
   if (result.kind !== 'unavailable') {
-    return { endpointConnected: false, ...(registration ? { registration } : {}) };
+    return {
+      endpointConnected: electionResultReachedEndpoint(result),
+      ...(registration ? { registration } : {}),
+    };
   }
   switch (result.reason) {
     case 'not_registered':
@@ -458,9 +461,23 @@ function recordElectionResult(
       break;
   }
   return {
-    endpointConnected: result.reason === 'handshake_failed',
+    endpointConnected: electionResultReachedEndpoint(result),
     ...(registration ? { registration } : {}),
   };
+}
+
+function electionResultReachedEndpoint(
+  result: Exclude<ElectionConnectionResult, { kind: 'election_deadline_elapsed' }>,
+): boolean {
+  switch (result.kind) {
+    case 'connected':
+    case 'draining':
+    case 'incompatible':
+    case 'upgrade_required':
+      return true;
+    case 'unavailable':
+      return result.endpointConnected;
+  }
 }
 
 function createElectionDiagnostic(input: {

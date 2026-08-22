@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 
+// This isolates Runtime Host election under Node. The packaged Electron boundary
+// remains owned by Release Windows check and must not be inferred from this output.
 const defaults = {
   iterations: 20,
   parallel: 4,
@@ -11,7 +13,7 @@ const defaults = {
   settleTimeoutMs: 10_000,
 };
 
-export function parseWindowsRuntimeHostStartupStressOptions(argv) {
+export function parseWindowsRuntimeHostNodeStartupStressOptions(argv) {
   if (argv[0] !== undefined && !argv[0].startsWith('--')) {
     if (argv.length > 5) throw new Error('Too many positional stress options');
     if (argv[4] !== undefined && argv[4] !== 'keep-failures') {
@@ -62,10 +64,10 @@ export function parseWindowsRuntimeHostStartupStressOptions(argv) {
   return options;
 }
 
-export async function stressWindowsRuntimeHostStartup(
+export async function stressWindowsRuntimeHostNodeStartup(
   options,
   {
-    runIteration = runWindowsRuntimeHostStartupIteration,
+    runIteration = runWindowsRuntimeHostNodeStartupIteration,
     write = (record) => console.log(JSON.stringify(record)),
   } = {},
 ) {
@@ -78,7 +80,10 @@ export async function stressWindowsRuntimeHostStartup(
         const iteration = nextIteration;
         nextIteration += 1;
         if (iteration >= options.iterations) return;
-        const result = await runIteration(iteration + 1, options);
+        const result = {
+          ...(await runIteration(iteration + 1, options)),
+          candidateRuntime: 'node',
+        };
         results[iteration] = result;
         write(result);
       }
@@ -87,6 +92,7 @@ export async function stressWindowsRuntimeHostStartup(
   const failures = results.filter((result) => result.kind !== 'connected');
   const summary = {
     kind: 'summary',
+    candidateRuntime: 'node',
     iterations: results.length,
     connected: results.length - failures.length,
     failed: failures.length,
@@ -95,7 +101,7 @@ export async function stressWindowsRuntimeHostStartup(
   return { results, summary };
 }
 
-export async function runWindowsRuntimeHostStartupIteration(
+export async function runWindowsRuntimeHostNodeStartupIteration(
   iteration,
   options,
   { loadModules = loadRuntimeHostModules } = {},
@@ -240,9 +246,9 @@ async function within(operation, timeoutMs) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.platform !== 'win32') {
-    throw new Error('Runtime Host startup stress requires Windows.');
+    throw new Error('Node Runtime Host startup stress requires Windows.');
   }
-  const options = parseWindowsRuntimeHostStartupStressOptions(process.argv.slice(2));
-  const { summary } = await stressWindowsRuntimeHostStartup(options);
+  const options = parseWindowsRuntimeHostNodeStartupStressOptions(process.argv.slice(2));
+  const { summary } = await stressWindowsRuntimeHostNodeStartup(options);
   if (summary.failed > 0) process.exitCode = 1;
 }
