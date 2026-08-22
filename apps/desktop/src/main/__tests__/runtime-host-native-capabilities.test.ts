@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import { type CuDispatchBackend } from '@maka/runtime/computer-use-types';
+import { buildMcpTools, type McpToolProvider } from '@maka/runtime/mcp-tools';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
@@ -144,6 +145,155 @@ test('publishes every production Desktop-owned tool schema through the protocol'
       registrationId: 'registration-1',
       offers: provider.offers(),
     }),
+  );
+});
+
+test('publishes and invokes an MCP tool backed by an AI SDK JSON Schema', async () => {
+  let invocation: { args: Record<string, unknown>; cwd: string } | undefined;
+  let accepted = false;
+  const mcpProvider: McpToolProvider = {
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [
+        {
+          binding: 'fixture-binding' as never,
+          descriptor: {
+            serverId: 'fixture',
+            name: 'lookup',
+            inputSchema: {
+              type: 'object',
+              properties: { query: { type: 'string' } },
+              required: ['query'],
+              additionalProperties: false,
+            },
+          },
+        },
+      ],
+    }),
+    async callTool(_binding, args, options) {
+      invocation = { args, cwd: options.context.cwd };
+      return { content: [{ type: 'text', text: 'found' }] };
+    },
+  };
+  const [mcpTool] = buildMcpTools(mcpProvider, { executionLocation: 'remote' });
+  assert.ok(mcpTool);
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
+    additionalGroups: () => [
+      {
+        offerId: 'desktop_mcp',
+        label: 'MCP',
+        description: 'MCP tools',
+        invalidToolPolicy: 'omit',
+        tools: [mcpTool],
+      },
+    ],
+  });
+
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-1',
+      offers: provider.offers(),
+    }),
+  );
+  await assert.rejects(
+    () =>
+      call(
+        provider,
+        capabilityFrame({
+          offerId: 'desktop_mcp',
+          serverId: 'desktop_mcp',
+          toolName: mcpTool.name,
+          arguments: {},
+        }),
+        () => {
+          accepted = true;
+        },
+      ),
+    /Invalid arguments for tool/u,
+  );
+  assert.equal(accepted, false);
+  assert.equal(invocation, undefined);
+  assert.deepEqual(
+    await call(
+      provider,
+      capabilityFrame({
+        offerId: 'desktop_mcp',
+        serverId: 'desktop_mcp',
+        toolName: mcpTool.name,
+        arguments: { query: 'maka' },
+      }),
+      () => {
+        accepted = true;
+      },
+    ),
+    { content: [{ type: 'text', text: 'found' }] },
+  );
+  assert.deepEqual(invocation, {
+    args: { query: 'maka' },
+    cwd: '/workspace',
+  });
+  assert.equal(accepted, true);
+});
+
+test('omits optional MCP tools that would exceed one offer\'s tool limit', () => {
+  const diagnostics: Error[] = [];
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [],
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        {
+          offerId: 'desktop_mcp',
+          label: 'MCP',
+          description: 'MCP tools',
+          invalidToolPolicy: 'omit',
+          tools: Array.from({ length: 65 }, (_, index) =>
+            tool(`mcp_tool_${index + 1}`, z.object({}), async () => 'ok'),
+          ),
+        },
+      ],
+    },
+    { onInvalidTool: (error) => diagnostics.push(error) },
+  );
+
+  assert.deepEqual(
+    provider.offers()[0]?.tools.map(({ name }) => name),
+    Array.from({ length: 64 }, (_, index) => `mcp_tool_${index + 1}`),
+  );
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0]?.message ?? '', /desktop_mcp\/mcp_tool_65/u);
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({ registrationId: 'registration-1', offers: provider.offers() }),
+  );
+});
+
+test('omits optional MCP tools that would exceed the complete manifest byte limit', () => {
+  const diagnostics: Error[] = [];
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [],
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        optionalMcpGroup('desktop_mcp_first', 'mcp_first', 28 * 1024),
+        optionalMcpGroup('desktop_mcp_second', 'mcp_second', 28 * 1024),
+      ],
+    },
+    { onInvalidTool: (error) => diagnostics.push(error) },
+  );
+
+  assert.deepEqual(provider.offers().map(({ offerId }) => offerId), ['desktop_mcp_first']);
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0]?.message ?? '', /desktop_mcp_second\/mcp_second/u);
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({ registrationId: 'registration-1', offers: provider.offers() }),
   );
 });
 
@@ -524,6 +674,31 @@ function tool<P, R>(
     description: `${name} description`,
     parameters,
     impl,
+  };
+}
+
+function optionalMcpGroup(offerId: string, name: string, schemaDescriptionLength: number) {
+  return {
+    offerId,
+    label: 'MCP',
+    description: 'MCP tools',
+    invalidToolPolicy: 'omit' as const,
+    tools: [
+      {
+        name,
+        displayName: name,
+        description: `${name} description`,
+        parameters: {
+          jsonSchema: {
+            type: 'object',
+            description: 'x'.repeat(schemaDescriptionLength),
+          },
+        },
+        async impl() {
+          return 'ok';
+        },
+      } as MakaTool,
+    ],
   };
 }
 

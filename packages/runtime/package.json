@@ -111,6 +111,7 @@
     "./tool-result-archive-capability": "./dist/tool-result-archive-capability.js",
     "./tool-result-archive-resource": "./dist/tool-result-archive-resource.js",
     "./tool-runtime": "./dist/tool-runtime.js",
+    "./json-schema-validation": "./dist/json-schema-validation.js",
     "./web-fetch-tool": "./dist/web-fetch-tool.js",
     "./web-search-tool": "./dist/web-search-tool.js",
     "./xai-oauth-enrollment": "./dist/xai-oauth-enrollment.js"

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { access, readFile, rm } from 'node:fs/promises';
+import { access, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runCommand } from './package-windows-x64.mjs';
@@ -7,6 +7,8 @@ import { parseProductReleaseVersion } from './release-version.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
+const rootManifestPath = join(repoRoot, 'package.json');
+const desktopManifestPath = join(desktopRoot, 'package.json');
 
 /**
  * The version the auto-update harness serves as "newer than the candidate".
@@ -51,7 +53,7 @@ export async function packageWindowsAutoupdateNext({
     throw new Error('The auto-update installer build requires a Windows x64 host.');
   }
 
-  const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
+  const manifest = JSON.parse(await readFile(desktopManifestPath, 'utf8'));
   const nextVersion = bumpedAutoupdateVersion(manifest.version);
   const outputDirectory = join(desktopRoot, 'release-autoupdate-next');
   const exeName = `Maka-${nextVersion}-win-x64.exe`;
@@ -65,22 +67,45 @@ export async function packageWindowsAutoupdateNext({
   await access(join(desktopRoot, 'release', 'win-unpacked'));
 
   await rm(outputDirectory, { recursive: true, force: true });
-  await run('npm', [
-    '--workspace',
-    '@maka/desktop',
-    'exec',
-    '--',
-    'electron-builder',
-    '--config',
-    'electron-builder.config.mjs',
-    '--win',
-    'nsis',
-    '--x64',
-    '--publish',
-    'never',
-    `-c.extraMetadata.version=${nextVersion}`,
-    '-c.directories.output=release-autoupdate-next',
+  // electron-builder requires the root and Desktop manifests to have the same
+  // version. `extraMetadata` only changes the packaged app manifest, so
+  // temporarily update both source manifests for the build and restore them
+  // even when electron-builder fails.
+  const [originalRootManifest, originalDesktopManifest] = await Promise.all([
+    readFile(rootManifestPath),
+    readFile(desktopManifestPath),
   ]);
+  const bumpedRootManifest = JSON.parse(originalRootManifest);
+  const bumpedDesktopManifest = JSON.parse(originalDesktopManifest);
+  bumpedRootManifest.version = nextVersion;
+  bumpedDesktopManifest.version = nextVersion;
+  try {
+    await Promise.all([
+      writeFile(rootManifestPath, `${JSON.stringify(bumpedRootManifest, null, 2)}\n`),
+      writeFile(desktopManifestPath, `${JSON.stringify(bumpedDesktopManifest, null, 2)}\n`),
+    ]);
+    await run('npm', [
+      '--workspace',
+      '@maka/desktop',
+      'exec',
+      '--',
+      'electron-builder',
+      '--config',
+      'electron-builder.config.mjs',
+      '--win',
+      'nsis',
+      '--x64',
+      '--publish',
+      'never',
+      `-c.extraMetadata.version=${nextVersion}`,
+      '-c.directories.output=release-autoupdate-next',
+    ]);
+  } finally {
+    await Promise.all([
+      writeFile(rootManifestPath, originalRootManifest),
+      writeFile(desktopManifestPath, originalDesktopManifest),
+    ]);
+  }
 
   // Assert the properties the harness depends on, not just process exit 0.
   await access(exePath);
