@@ -427,8 +427,12 @@ function AppShellContent({
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
   const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
   const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
-  const [pendingCollaborationModeBySession, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
-  const [pendingOrchestrationModeBySession, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
+  // Write-only: the pending-action helpers need a store, but nothing renders
+  // from these — a mode toggle's guard is the registry ref, and painting the
+  // round trip (disable/dim, then restore) is exactly the ＋ menu blink that
+  // MatrixA/fix-plan-click-flicker removed.
+  const [, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
+  const [, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
   const [newTaskPermissionChoice, setNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
@@ -3292,26 +3296,16 @@ function AppShellContent({
                       : undefined
                   }
                   planModeActive={activePlanMode}
-                  planModePending={activeId
-                    ? pendingCollaborationModeBySession[activeId] === true
-                    : false}
-                  planModeDisabledReason={
-                    activeId && pendingCollaborationModeBySession[activeId] === true
-                      ? shellCopy.modeChanging
-                      : modeChangeDisabledReason
-                  }
+                  // No pending-keyed disable while a toggle commits: the
+                  // pending registries already swallow re-entrant toggles, and
+                  // a reason here would gray the row mid-click — the blink
+                  // this control had. The rows repaint when the write lands.
+                  planModeDisabledReason={modeChangeDisabledReason}
                   onPlanModeChange={(active) => {
                     void setPlanMode(active);
                   }}
                   orchestrationMode={activeOrchestrationMode}
-                  orchestrationModePending={activeId
-                    ? pendingOrchestrationModeBySession[activeId] === true
-                    : false}
-                  orchestrationModeDisabledReason={
-                    activeId && pendingOrchestrationModeBySession[activeId] === true
-                      ? shellCopy.modeChanging
-                      : modeChangeDisabledReason
-                  }
+                  orchestrationModeDisabledReason={modeChangeDisabledReason}
                   onOrchestrationModeChange={(mode) => {
                     void setOrchestrationMode(mode);
                   }}

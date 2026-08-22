@@ -346,7 +346,6 @@ export const Composer = forwardRef<
      * as a resting mode the user must leave by hand.
      */
     planModeActive?: boolean;
-    planModePending?: boolean;
     planModeDisabledReason?: string;
     onPlanModeChange?(active: boolean): void | Promise<void>;
     /**
@@ -366,7 +365,6 @@ export const Composer = forwardRef<
      * neither control writes the other's field.
      */
     orchestrationMode?: OrchestrationMode;
-    orchestrationModePending?: boolean;
     orchestrationModeDisabledReason?: string;
     onOrchestrationModeChange?(mode: OrchestrationMode): void | Promise<void>;
     /**
@@ -1363,15 +1361,18 @@ export const Composer = forwardRef<
   ];
   /** A host that passes no handler cannot be in a mode this control can leave. */
   const planModeActive = props.onPlanModeChange !== undefined && props.planModeActive === true;
+  // Deliberately NOT disabled while the host commits a toggle. The host
+  // already drops re-entrant toggles itself, so a disable during its short
+  // IPC round trip carries no protection — it only dims the row (and the
+  // footer mark) to half opacity and back on every click, a visible blink
+  // in the very menu the user is looking at.
   const planModeDisabled =
     props.disabled === true
-    || props.planModePending === true
     || Boolean(props.planModeDisabledReason);
   const orchestrationMode: OrchestrationMode =
     props.onOrchestrationModeChange ? props.orchestrationMode ?? 'default' : 'default';
   const orchestrationModeDisabled =
     props.disabled === true
-    || props.orchestrationModePending === true
     || Boolean(props.orchestrationModeDisabledReason);
   /**
    * The marks at the tail of the footer's left controls are the resting
