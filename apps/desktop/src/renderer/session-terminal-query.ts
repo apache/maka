@@ -71,6 +71,10 @@ export function isDeviceAttributesQuery(params: TerminalParams): boolean {
   return firstParamIs(params, 0);
 }
 
+export function isXtVersionQuery(params: TerminalParams): boolean {
+  return firstParamIs(params, 0);
+}
+
 export function isDeviceStatusQuery(params: TerminalParams): boolean {
   return firstParamIs(params, 5) || firstParamIs(params, 6);
 }
@@ -95,7 +99,7 @@ export function isWindowReportQuery(params: TerminalParams): boolean {
  * has restored canonical echo, making the reply visible at the next prompt.
  *
  * These handlers cover every response-generating query implemented by xterm:
- * color reports, device attributes/status, mode/window reports, and DECRQSS.
+ * color reports, device attributes/status, XTVERSION, mode/window reports, and DECRQSS.
  * Setters and other terminal control sequences continue to xterm's handlers.
  * Mixed OSC color payloads are intercepted in full, then their setter-only
  * portions are written back so xterm applies them without emitting replies.
@@ -113,6 +117,7 @@ export function suppressTerminalQueryReplies(terminal: TerminalQueryTarget): IDi
     ),
     parser.registerCsiHandler({ final: 'c' }, isDeviceAttributesQuery),
     parser.registerCsiHandler({ prefix: '>', final: 'c' }, isDeviceAttributesQuery),
+    parser.registerCsiHandler({ prefix: '>', final: 'q' }, isXtVersionQuery),
     parser.registerCsiHandler({ final: 'n' }, isDeviceStatusQuery),
     parser.registerCsiHandler({ prefix: '?', final: 'n' }, isPrivateDeviceStatusQuery),
     parser.registerCsiHandler({ intermediates: '$', final: 'p' }, () => true),

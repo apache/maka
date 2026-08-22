@@ -7,6 +7,7 @@ import {
   isDeviceStatusQuery,
   isPrivateDeviceStatusQuery,
   isWindowReportQuery,
+  isXtVersionQuery,
   suppressTerminalQueryReplies,
 } from '../../renderer/session-terminal-query.js';
 
@@ -46,6 +47,10 @@ test('recognizes device attribute and status reports by their first parameter', 
   assert.equal(isPrivateDeviceStatusQuery([6, 1]), true);
   assert.equal(isPrivateDeviceStatusQuery([5, 0]), false);
   assert.equal(isPrivateDeviceStatusQuery([[6]]), false);
+
+  assert.equal(isXtVersionQuery([0]), true);
+  assert.equal(isXtVersionQuery([0, 1]), true);
+  assert.equal(isXtVersionQuery([1]), false);
 });
 
 test('recognizes window reports without intercepting window commands', () => {
@@ -126,10 +131,17 @@ test('registers and disposes every xterm response-generating query handler', () 
 
   const queryReplies = suppressTerminalQueryReplies(terminal);
 
-  assert.equal(registered.length, 12);
+  assert.equal(registered.length, 13);
   assert.deepEqual(
     registered.filter(({ kind }) => kind === 'osc').map(({ id }) => id),
     [4, 10, 11, 12],
+  );
+  assert.equal(
+    registered.some(
+      ({ kind, id }) =>
+        kind === 'csi' && JSON.stringify(id) === JSON.stringify({ prefix: '>', final: 'q' }),
+    ),
+    true,
   );
   assert.equal(
     registered.some(
