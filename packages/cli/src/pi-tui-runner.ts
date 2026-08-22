@@ -1504,18 +1504,41 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // non-destructive and inherits the branch's resume guarantees.
   const rewindToTurn = async (turnId: string) => {
     resolvedInteractionIds.clear();
-    const result = await input.driver.rewindToTurn(turnId);
-    await applySwitchResult(result);
-    // Refill the editor with the discarded turn's prompt so the user can edit
-    // and resend it. The picker only arms when the editor is neutral (empty
-    // draft, no autocomplete), so overwriting the text loses no in-progress work.
-    editor.setText(result.prompt);
-    state.entries.push({
+    // Synchronous feedback before the first await: branching + switching takes
+    // several serialized runtime-host round trips, and control-busy renders
+    // nothing in the TUI body, so without this notice the picker's Enter looks
+    // dead until the branch lands (#3383). replaceTranscript wipes it on
+    // success; the catch removes it on failure so only the error stays.
+    const pendingNotice: (typeof state.entries)[number] = {
       kind: 'notice',
       level: 'info',
-      text: '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。',
-    });
+      text: '正在回退到该轮之前…',
+    };
+    state.entries.push(pendingNotice);
     requestRender();
+    try {
+      const result = await input.driver.rewindToTurn(turnId);
+      await applySwitchResult(result);
+      // Refill the editor with the discarded turn's prompt so the user can edit
+      // and resend it — unless the user typed into the editor while the switch
+      // was in flight. The picker's neutral-editor guarantee only holds at open
+      // time, so a non-empty draft here is newer user work and wins; the prompt
+      // stays recoverable from the editor history (submitPrompt added it).
+      const refill = editor.getText().trim().length === 0;
+      if (refill) editor.setText(result.prompt);
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: refill
+          ? '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。'
+          : '已回退到该轮之前（分支为新任务，原任务保留）。输入框已有未发送内容，未回填该轮 prompt（可按 ↑ 从输入历史找回）。',
+      });
+      requestRender();
+    } catch (error) {
+      const index = state.entries.indexOf(pendingNotice);
+      if (index >= 0) state.entries.splice(index, 1);
+      throw error;
+    }
   };
 
   const showBottomPicker = (picker: Component): OverlayHandle =>
@@ -2088,6 +2111,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       'Rewind',
       items,
       (item) => {
+        // runControl drops the action silently when busy is already held (e.g.
+        // a Goal auto-continuation started while the picker was open). The
+        // overlay is already closed at this point, so say so instead of
+        // leaving a dead Enter — same contract as /goal's busy guard.
+        if (busy) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: '无法回退：当前有正在进行的操作 — 请等待其完成，或中断（Esc）后重试。',
+          });
+          requestRender();
+          return;
+        }
         void runControl(() => rewindToTurn(item.value));
       },
       {
