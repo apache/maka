@@ -70,7 +70,7 @@ const WORKTREE_ID = createHash('sha256').update(REPO_ROOT).digest('hex').slice(0
 // would only mean that turning MAKA_DEV_TCC on silently switched the
 // developer's database. TCC isolation is provided by DEV_BUNDLE_ID, not by the
 // data root. An explicit `--user-data-dir=` still takes precedence.
-export const DEV_USER_DATA_DIR = join(homedir(), 'Library', 'Application Support', 'Maka Dev');
+const DEV_USER_DATA_DIR = join(homedir(), 'Library', 'Application Support', 'Maka Dev');
 
 /**
  * Per-worktree, and deliberately so. An ad-hoc signature designates a bare
@@ -96,16 +96,13 @@ const DEV_ENV_SCHEMA_VERSION = 1;
 export const developmentAppPath = DEV_APP;
 const developmentExecutablePath = DEV_EXECUTABLE;
 
-export async function resolveMacosDevelopmentLaunch(env = process.env, argv = []) {
+export async function resolveMacosDevelopmentLaunch(env = process.env) {
   if (!shouldUseMacosDevelopmentApp(process.platform, env)) return null;
-  // Judge by profile, not bundle: an explicit --user-data-dir already moves
-  // this launch off the shared lock, so owners of that profile are unrelated.
-  const targetProfile = splitDevelopmentCliArgs(argv).userDataDir;
   const appPath = await prepareDevelopmentApp();
   // The shared "Maka Dev" userData root makes Electron's single-instance lock
   // cross-worktree: another worktree's app would absorb this launch through
   // it. Fail fast with the owner instead of silently being absorbed (#3359).
-  assertNoCrossWorktreeOwner({ targetProfile });
+  assertNoCrossWorktreeOwner();
   // A leftover app would absorb this launch through the single-instance lock.
   await ensureNoRunningDevelopmentApp();
   return createMacosDevelopmentLaunch(appPath, developmentLogFile);
@@ -147,29 +144,16 @@ export function toProcessMatchPattern(executable) {
 }
 
 /**
- * Command lines of every running dev app — any worktree's. Two shapes both
- * hold the shared "Maka Dev" profile lock: the opt-in TCC bundle
- * (`Maka Dev.app/Contents/MacOS/Electron`) and a plain `npm run dev`
- * Electron (`node_modules/.bin/electron` or `Electron.app/.../Electron`),
- * which reaches the same profile via the bootstrap's `app.setPath`.
+ * Command lines of every running "Maka Dev" app — any worktree's. The
+ * packaged app is `Maka.app` and never matches; each dev bundle carries the
+ * `Maka Dev.app/Contents/MacOS/Electron` suffix on its command line.
  */
 export function sharedDevelopmentAppCommandLines(options = {}) {
   const probe = options.probe ?? defaultSharedAppProbe;
   return probe();
 }
 
-function devAppProcessPattern() {
-  // Rough filter; the owner judgment below does the real classification.
-  const bundle = toProcessMatchPattern(join('Maka Dev.app', 'Contents', 'MacOS', 'Electron'));
-  const plainBinary = toProcessMatchPattern(join('node_modules', '.bin', 'electron'));
-  const plainApp = toProcessMatchPattern(join('Electron.app', 'Contents', 'MacOS', 'Electron'));
-  return `${bundle}|${plainBinary}|${plainApp}`;
-}
-
-/**
- * Injectable probe factory: the production default shells out to `pgrep` then
- * `ps`, and tests substitute a fake spawn to exercise the parsing chain.
- */
+/** Injectable probe factory; tests substitute a fake spawn to exercise the chain. */
 export function createSharedAppProbe(spawnImpl = spawnSync) {
   return function sharedAppProbe() {
     return probeWithSpawn(spawnImpl);
@@ -181,7 +165,11 @@ function defaultSharedAppProbe() {
 }
 
 function probeWithSpawn(spawnImpl) {
-  const pattern = devAppProcessPattern();
+  // pgrep's command-line flag semantics are OPPOSITE on the two platforms —
+  // Linux -a = full command line; BSD (macOS) -a = include ancestors, -l =
+  // full command line. Avoid the flag: pgrep -f yields PIDs, and ps -o
+  // command= prints the full argv on both. (`command=` strips the header.)
+  const pattern = toProcessMatchPattern(join('Maka Dev.app', 'Contents', 'MacOS', 'Electron'));
   const pids = spawnImpl('pgrep', ['-f', pattern]);
   // 0 = matches, 1 = no match. Anything else is a usage or pattern error and
   // must not be read as "nothing was running".
@@ -191,74 +179,13 @@ function probeWithSpawn(spawnImpl) {
   if (pids.status === 1) return [];
   const ids = String(pids.stdout).trim().split(/\s+/).filter(Boolean);
   if (ids.length === 0) return [];
-  // pgrep's command-line flag semantics are OPPOSITE on the two platforms —
-  // Linux -a = full command line; BSD (macOS) -a = include ancestors, -l =
-  // full command line. Avoid the flag: pgrep -f yields PIDs, ps -o command=
-  // prints the full argv on both.
   const ps = spawnImpl('ps', ['-p', ids.join(','), '-o', 'command=']);
-  if (ps.status !== 0) {
+  // ps exits 1 when none of the requested PIDs exist — e.g. the app quit
+  // between pgrep and ps. That is "nothing running" here, same as pgrep 1.
+  if (ps.status !== 0 && ps.status !== 1) {
     throw new Error(`ps failed for Maka app pids ${ids.join(',')} (exit ${ps.status})`);
   }
-  return String(ps.stdout).split('\n').filter(Boolean);
-}
-
-/**
- * The userData root a running dev process is using, read from its own
- * command line. A process without the switch runs on the default shared
- * "Maka Dev" profile: the switch is deliberately stripped from `electronArgs`
- * so the bootstrap's `app.setPath('userData', env.userDataDir ||
- * DEV_USER_DATA_DIR)` stays authoritative, and the default profile is
- * therefore not visible on the command line.
- */
-/**
- * The profile a running dev process uses is NOT on its command line
- * (`--user-data-dir` is stripped from electronArgs so the bootstrap's
- * app.setPath stays authoritative); it lives in that worktree's dev-env.json.
- * We also do not read Electron's SingletonLock — its format is an internal,
- * version-fragile contract — so the command line recovers the worktree root
- * and the env file supplies the profile. Unattributable candidates count as
- * the shared default (the rough filter already restricted them to dev shapes).
- * Known and accepted for a dev script: the env file is read at judgment time,
- * not process start; a profile switch while an app is still running attributes
- * by the current file, consistent with what a relaunch would read.
- */
-export function resolveProcessUserDataDir(commandLine, options = {}) {
-  const worktree = worktreeFromCommandLine(commandLine);
-  if (!worktree) return undefined;
-  const envFile = options.envFileFor ?? ((root) => join(root, 'apps', 'desktop', '.maka-dev', 'dev-env.json'));
-  const read = options.readFile ?? readFileSync;
-  let published;
-  try {
-    published = JSON.parse(read(envFile(worktree), 'utf8'));
-  } catch {
-    // No dev-env.json in that worktree: the process is not a Maka dev app at
-    // all (it could be any other repo's Electron), so it never holds our
-    // profile lock — absence is "not a candidate", not "default profile".
-    return undefined;
-  }
-  if (published.schemaVersion !== DEV_ENV_SCHEMA_VERSION) return undefined;
-  return published.userDataDir ?? DEV_USER_DATA_DIR;
-}
-
-/**
- * Worktree root of a dev-app command line, from an argv token that reaches
- * into a checkout (`/apps/desktop` or `/node_modules/`); the shim, resolved
- * Electron, bundle and positional desktop-dir all carry one.
- */
-export function worktreeFromCommandLine(commandLine) {
-  const tokens = commandLine.split(/\s+/);
-  for (const token of tokens) {
-    if (!token.startsWith('/')) continue;
-    // Marker must be followed by a separator or token end, so a sibling like
-    // `/apps/desktopish` or a prefix worktree (`wt-1` vs `wt-12`) never matches.
-    const desktopMarker = token.indexOf('/apps/desktop');
-    if (desktopMarker > 0 && (token[desktopMarker + 13] === '/' || desktopMarker + 13 === token.length)) {
-      return token.slice(0, desktopMarker);
-    }
-    const modulesMarker = token.indexOf('/node_modules/');
-    if (modulesMarker > 0) return token.slice(0, modulesMarker);
-  }
-  return undefined;
+  return ps.status === 1 ? [] : String(ps.stdout).split('\n').filter(Boolean);
 }
 
 /**
@@ -270,18 +197,9 @@ export function worktreeFromCommandLine(commandLine) {
  * rights). Returns the owner's command line for the error message.
  */
 export function sharedDevelopmentAppOwner(options = {}) {
-  const ownRoot = options.ownRoot ?? REPO_ROOT;
-  const targetProfile = options.targetProfile; // undefined = shared default
+  const own = options.ownExecutable ?? DEV_EXECUTABLE;
   const commandLines = options.commandLines ?? sharedDevelopmentAppCommandLines(options);
-  const target = targetProfile ?? DEV_USER_DATA_DIR;
-  return commandLines.find((line) => {
-    // Exact root equality: any own shape carries our root in an argv token,
-    // and `includes` would swallow a deeper path that merely begins with it.
-    if (worktreeFromCommandLine(line) === ownRoot) return false;
-    const profile = resolveProcessUserDataDir(line, options);
-    if (profile === undefined) return false; // not a Maka dev process
-    return profile === target;
-  });
+  return commandLines.find((line) => !line.startsWith(own));
 }
 
 /**
@@ -300,32 +218,21 @@ export function assertNoCrossWorktreeOwner(options = {}) {
 }
 
 /**
- * Terminates this worktree's development app. Both shapes are matched by
- * their own-worktree paths (the per-worktree bundle, and the worktree's own
- * `node_modules/.bin/electron` for a plain `npm run dev`), so matching stays
- * precise without tracking a pid: concurrent worktrees own different paths
- * and are unaffected.
+ * Terminates this worktree's development app. The bundle path is unique per
+ * worktree, so matching on it is precise without tracking a pid: concurrent
+ * worktrees own different bundles and are unaffected.
  */
 export async function quitMacosDevelopmentApp(options = {}) {
   const platform = options.platform ?? process.platform;
-  const bundle = options.executable ?? DEV_EXECUTABLE;
-  const shim = options.plainExecutable ?? resolveElectronBinary();
-  const real = options.realPlainExecutable ?? realElectronBinary();
+  const executable = options.executable ?? DEV_EXECUTABLE;
   const graceMs = options.graceMs ?? 3_000;
   const signal = options.signal ?? sendSignalToExecutable;
   const delay = options.delay ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
   if (platform !== 'darwin') return false;
-  const stoppedBundle = signal('TERM', bundle);
-  // Plain dev is two live processes (shim + the Electron it spawned); signal
-  // both or the orphaned Electron keeps the profile lock.
-  const stoppedPlainShim = signal('TERM', shim);
-  const stoppedPlainReal = signal('TERM', real);
-  if (!stoppedBundle && !stoppedPlainShim && !stoppedPlainReal) return false;
+  if (!signal('TERM', executable)) return false;
   // Main-process cleanup runs on before-quit and can outlive a plain SIGTERM.
   await delay(graceMs);
-  if (stoppedBundle) signal('KILL', bundle);
-  if (stoppedPlainShim) signal('KILL', shim);
-  if (stoppedPlainReal) signal('KILL', real);
+  signal('KILL', executable);
   return true;
 }
 
@@ -340,28 +247,9 @@ function sendSignalToExecutable(name, executable) {
 }
 
 export function isDevelopmentAppRunning(options = {}) {
-  const bundle = options.executable ?? DEV_EXECUTABLE;
+  const executable = options.executable ?? DEV_EXECUTABLE;
   const probe = options.probe ?? defaultLivenessProbe;
-  return probe(bundle) || plainDevAppIsRunning(options, probe);
-}
-
-function plainDevAppIsRunning(options, probe) {
-  const shim = options.plainExecutable ?? resolveElectronBinary();
-  const real = options.realPlainExecutable ?? realElectronBinary();
-  return probe(shim) || probe(real);
-}
-
-function realElectronBinary() {
-  return join(
-    REPO_ROOT,
-    'node_modules',
-    'electron',
-    'dist',
-    'Electron.app',
-    'Contents',
-    'MacOS',
-    'Electron',
-  );
+  return probe(executable);
 }
 
 function defaultLivenessProbe(executable) {
@@ -533,7 +421,7 @@ export async function startDevelopmentApp(options = {}) {
   // Read before preparing: a rebuild republishes the runtime directory and
   // takes the previous environment file with it.
   const viteUrl = options.viteUrl ?? readPublishedViteUrl();
-  const launch = await resolveMacosDevelopmentLaunch(process.env, argv);
+  const launch = await resolveMacosDevelopmentLaunch();
   if (!launch) {
     const child = spawn(resolveElectronBinary(), [DESKTOP_DIR, ...argv], {
       cwd: DESKTOP_DIR,
