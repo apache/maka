@@ -49,6 +49,11 @@
   background: var(--agents-layout-bg);
   border-inline-end-color: transparent;
   border-inline-end-width: 0;
+  /* The collapse material fusion below eases the rail between its column's
+     material and the plate's. The transition lives on the BASE rule so both
+     directions animate — a state-scoped transition drops the moment its own
+     selector stops matching, which would leave the expand leg jumping. */
+  transition: background-color var(--duration-large) var(--ease-out-strong);
 }
 
 
@@ -83,6 +88,9 @@
   width: calc(100% - var(--agents-content-area-gap));
   height: calc(100% - 2 * var(--agents-content-area-gap));
   margin: var(--agents-content-area-gap) var(--agents-content-area-gap) var(--agents-content-area-gap) 0;
+  /* Collapse fusion eases the plate's dock/undock with the rail's width —
+     see the base-rule note on the sidenav transition above. */
+  transition: margin-block-start var(--duration-large) var(--ease-out-strong);
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -114,6 +122,8 @@
   background: var(--agents-content-area-bg);
   padding-top: var(--maka-plate-titlebar-clearance);
   box-sizing: border-box;
+  /* Collapse fusion eases the top corners docking flush — same note. */
+  transition: border-radius var(--duration-large) var(--ease-out-strong);
 }
 
 /* Same top clear for the sidebar column so list/nav content sits below the
@@ -174,6 +184,40 @@
    reading the expanded value while the column sat collapsed. */
 .appFrame[data-sidebar-state='collapsed'] {
   --maka-sidenav-width: var(--spacing-12);
+}
+
+/* Codex-style top-left fusion for the collapsed rail.
+
+   The macOS traffic-light cluster is ~54px wide (x 17..71: discs 14px on
+   20px centres — main-window.ts, #2144 measured) but the collapsed rail is
+   48px, so the yellow disc straddled the rail/plate seam and the green disc
+   sat on the plate's own top-left corner. No position fits the cluster
+   inside a 48px rail, so instead the seam is removed from under it.
+
+   Collapsed, the rail puts on the PLATE's material and the plate docks
+   flush under the titlebar (top margin and both top corners to zero), so
+   the whole band around the lights is one continuous surface — the crossing
+   is invisible because both sides of it now carry the same paint. Expanded
+   state keeps the floating-plate design, untouched.
+
+   This is the deliberate successor to the repaint #2187 removed. That rule
+   wore --color-background-surface, which light mode happened to share with
+   the plate — and dark mode did not, leaving the rail a third tone under
+   the light cluster. The fusion wears the plate's OWN token instead, so
+   light and dark both read as one surface by construction (verified live
+   against the shipping window in both palettes: rail and plate report the
+   same painted RGBA bytes when collapsed). */
+.appFrame[data-sidebar-state='collapsed'] .maka-shell-astryx .astryx-app-shell-sidenav {
+  background: var(--agents-content-area-bg);
+}
+
+.appFrame[data-sidebar-state='collapsed'] .maka-shell-astryx .maka-panel-detail {
+  margin-block-start: 0;
+}
+
+.appFrame[data-sidebar-state='collapsed'] .maka-shell-astryx .mainColumn {
+  border-start-start-radius: 0;
+  border-start-end-radius: 0;
 }
 
 .maka-shell-astryx .maka-sidenav-motion:has([data-resizing]) {
