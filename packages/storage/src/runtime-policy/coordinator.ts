@@ -49,6 +49,7 @@ import {
   type SavedRequestHeaders,
   type SetCredentialInput,
   type MigrateSystemSeedInput,
+  type MigrateFallbackInventoryInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
@@ -318,6 +319,10 @@ export class RuntimePolicyCoordinator {
 
   migrateSystemSeed(input: MigrateSystemSeedInput) {
     return this.inLane((root) => this.catalog.migrateSystemSeed(root, input));
+  }
+
+  migrateFallbackInventory(input: MigrateFallbackInventoryInput) {
+    return this.inLane((root) => this.catalog.migrateFallbackInventory(root, input));
   }
 
   setCredential(rawInput: SetCredentialInput) {

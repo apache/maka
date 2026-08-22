@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import {
   OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
+  PROVIDER_DEFAULTS,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
@@ -74,6 +75,20 @@ export async function ensureBootstrapRuntimePolicy(input: {
       });
     } catch (error) {
       input.onDeferredError?.(error);
+    }
+    for (const [providerType, definition] of Object.entries(PROVIDER_DEFAULTS)) {
+      if (
+        definition.modelDiscovery.kind !== 'fallback' ||
+        providerType === 'opencode-free'
+      ) continue;
+      try {
+        await input.stores.connectionCatalog.migrateFallbackInventory({
+          providerType: providerType as ProviderType,
+          modelIds: definition.fallbackModels,
+        });
+      } catch (error) {
+        input.onDeferredError?.(error);
+      }
     }
   }
   if (!resuming) {

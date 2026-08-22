@@ -45,6 +45,7 @@ import {
   type RemoveCatalogConnectionInput,
   type SetDefaultConnectionTargetInput,
   type MigrateSystemSeedInput,
+  type MigrateFallbackInventoryInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
 import {
@@ -384,6 +385,46 @@ export class ConnectionCatalogDocumentOwner {
       target.connectionId === previous.connectionId &&
       !input.enabledModelIds.includes(target.modelId)
         ? { connectionId: previous.connectionId, modelId: input.defaultModelId }
+        : target;
+    const next = this.nextDocument(current, connections, defaultTarget);
+    await this.write(root, next);
+    return committed(next);
+  }
+
+  async migrateFallbackInventory(
+    root: string,
+    input: MigrateFallbackInventoryInput,
+  ): Promise<ConnectionCatalogMutationResult> {
+    const current = await this.read(root);
+    const allowed = new Set(input.modelIds);
+    const connections = current.connections.map((connection) => {
+      if (connection.providerType !== input.providerType) return connection;
+      const filteredEnabledModelIds = connection.enabledModelIds.filter((id) => allowed.has(id));
+      const enabledModelIds =
+        filteredEnabledModelIds.length > 0 ? filteredEnabledModelIds : input.modelIds.slice(0, 1);
+      const models = connection.models.filter((model) => allowed.has(model.id));
+      if (
+        enabledModelIds.length === connection.enabledModelIds.length &&
+        models.length === connection.models.length
+      ) {
+        return connection;
+      }
+      return {
+        ...connection,
+        revision: nextRevision(connection.revision),
+        enabledModelIds,
+        models,
+      };
+    });
+    const changed = connections.some((connection, index) => connection !== current.connections[index]);
+    if (!changed) return committed(current);
+    const target = current.defaultTarget;
+    const migrated = connections.find((connection) => connection.connectionId === target?.connectionId);
+    const defaultTarget =
+      target && migrated && !migrated.enabledModelIds.includes(target.modelId)
+        ? migrated.enabledModelIds[0]
+          ? { connectionId: migrated.connectionId, modelId: migrated.enabledModelIds[0] }
+          : null
         : target;
     const next = this.nextDocument(current, connections, defaultTarget);
     await this.write(root, next);

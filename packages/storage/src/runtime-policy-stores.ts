@@ -31,6 +31,7 @@ import type {
   RuntimePolicySnapshot,
   SetCredentialInput,
   MigrateSystemSeedInput,
+  MigrateFallbackInventoryInput,
   SetDefaultConnectionTargetInput,
   UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
@@ -108,6 +109,7 @@ export interface ConnectionCatalogWriter extends ConnectionCatalogReader {
     input: SetDefaultConnectionTargetInput,
   ): Promise<ConnectionCatalogMutationResult>;
   migrateSystemSeed(input: MigrateSystemSeedInput): Promise<ConnectionCatalogMutationResult>;
+  migrateFallbackInventory(input: MigrateFallbackInventoryInput): Promise<ConnectionCatalogMutationResult>;
 }
 
 export interface CredentialVaultReader {
@@ -222,6 +224,7 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       remove: (input) => coordinator.removeConnection(input),
       setDefaultTarget: (input) => coordinator.setDefaultTarget(input),
       migrateSystemSeed: (input) => coordinator.migrateSystemSeed(input),
+      migrateFallbackInventory: (input) => coordinator.migrateFallbackInventory(input),
     },
     credentialVault: {
       getSnapshot: () => coordinator.getVaultSnapshot(),

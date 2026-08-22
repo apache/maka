@@ -58,6 +58,39 @@ test('a fresh Host starts with one anonymous runnable target', async () => {
   });
 });
 
+test('reconciles retired models for providers without model discovery', async () => {
+  await withFixture(async ({ root, stores }) => {
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'ark',
+        name: 'Ark',
+        providerType: 'volcengine-ark',
+        enabled: true,
+        enabledModelIds: ['doubao-seed-2-0-pro-260215'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    const connection = created.snapshot.connections[0]!;
+    const updated = await stores.connectionCatalog.update({
+      expected: { connectionId: connection.connectionId, revision: connection.revision },
+      changes: {
+        name: connection.name,
+        enabled: true,
+        enabledModelIds: [...connection.enabledModelIds, 'retired-model'],
+      },
+    });
+    assert.equal(updated.kind, 'committed');
+
+    await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });
+
+    const migrated = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ slug }) => slug === 'ark',
+    );
+    assert.deepEqual(migrated?.enabledModelIds, ['doubao-seed-2-0-pro-260215']);
+  });
+});
+
 test('bootstrap resumes after interruption and prefers the supported environment key', async () => {
   await withFixture(async ({ root, stores }) => {
     const created = await stores.connectionCatalog.create({
