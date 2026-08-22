@@ -308,11 +308,6 @@ export interface MigrateSystemSeedInput {
   readonly legacyEnabledModelIds: readonly (readonly string[])[];
   readonly enabledModelIds: readonly string[];
   readonly defaultModelId: string;
-}
-
-export interface MigrateFallbackInventoryInput {
-  readonly providerType: ProviderType;
-  readonly modelIds: readonly string[];
   readonly retiredModelIds: readonly string[];
 }
 

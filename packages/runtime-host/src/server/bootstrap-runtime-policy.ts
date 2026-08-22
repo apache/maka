@@ -71,14 +71,6 @@ export async function ensureBootstrapRuntimePolicy(input: {
         legacyEnabledModelIds: LEGACY_OPENCODE_FREE_SEEDS,
         enabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
         defaultModelId: OPENCODE_FREE_DEFAULT_MODEL,
-      });
-    } catch (error) {
-      input.onDeferredError?.(error);
-    }
-    try {
-      await input.stores.connectionCatalog.migrateFallbackInventory({
-        providerType: 'opencode-free',
-        modelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
         retiredModelIds: retiredOpencodeFreeModelIds(),
       });
     } catch (error) {
