@@ -5,6 +5,7 @@ import {
   decodeProviderType,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
+  normalizeCatalogConnectionBaseUrl,
   RuntimePolicyDomainDecodeError,
   type ConnectionVersionBasis,
   type ModelDiscoverySource,
@@ -67,6 +68,12 @@ export interface ConnectionTestRunInput {
 export interface ConnectionOnboardingVerifyInput {
   readonly providerType: ProviderType;
   readonly apiKey: string | null;
+  /**
+   * Endpoint override for providers whose registry entry carries none (the
+   * custom relays). Always present on the wire, like `apiKey`: `null` means
+   * "use the registry default or the existing connection's persisted URL".
+   */
+  readonly baseUrl: string | null;
 }
 
 export interface ConnectionOnboardingSaveInput extends ConnectionOnboardingVerifyInput {
@@ -77,7 +84,11 @@ export type ConnectionOnboardingVerifyResult =
   | { readonly kind: 'verified'; readonly models: readonly ModelInfo[] }
   | {
       readonly kind: 'rejected';
-      readonly reason: 'provider_unsupported' | 'credential_not_configured' | 'slug_conflict';
+      readonly reason:
+        | 'provider_unsupported'
+        | 'credential_not_configured'
+        | 'base_url_not_configured'
+        | 'slug_conflict';
     }
   | { readonly kind: 'failed'; readonly errorClass: ConnectionEffectFailureClass };
 
@@ -88,6 +99,7 @@ export type ConnectionOnboardingSaveResult =
       readonly reason:
         | 'provider_unsupported'
         | 'credential_not_configured'
+        | 'base_url_not_configured'
         | 'slug_conflict'
         | 'model_unavailable';
     }
@@ -198,11 +210,13 @@ export function decodeConnectionOnboardingSaveInput(value: unknown): ConnectionO
   const input = requireExactRecord(value, 'connection onboarding save input', [
     'providerType',
     'apiKey',
+    'baseUrl',
     'enabledModelIds',
   ]);
   const verified = decodeConnectionOnboardingVerifyInput({
     providerType: input.providerType,
     apiKey: input.apiKey,
+    baseUrl: input.baseUrl,
   });
   if (
     !Array.isArray(input.enabledModelIds) ||
@@ -243,6 +257,7 @@ export function decodeConnectionOnboardingSaveResult(
     rejected.kind !== 'rejected' ||
     (rejected.reason !== 'provider_unsupported' &&
       rejected.reason !== 'credential_not_configured' &&
+      rejected.reason !== 'base_url_not_configured' &&
       rejected.reason !== 'slug_conflict' &&
       rejected.reason !== 'model_unavailable')
   ) {
@@ -257,13 +272,24 @@ export function decodeConnectionOnboardingVerifyInput(
   const input = requireExactRecord(value, 'connection onboarding verification input', [
     'providerType',
     'apiKey',
+    'baseUrl',
   ]);
+  const providerType = decodeDomain(() => decodeProviderType(input.providerType));
   return {
-    providerType: decodeDomain(() => decodeProviderType(input.providerType)),
+    providerType,
     apiKey:
       input.apiKey === null
         ? null
         : requireString(input.apiKey, 'connection onboarding API key', 64 * 1024),
+    // The shared catalog normalizer owns the URL rules (http/https, no
+    // credentials/query/fragment, 2048-byte cap) and collapses a value equal
+    // to the provider default back to null, so the wire never carries a
+    // redundant override.
+    baseUrl:
+      input.baseUrl === null
+        ? null
+        : (decodeDomain(() => normalizeCatalogConnectionBaseUrl(input.baseUrl, providerType)) ??
+          null),
   };
 }
 
@@ -299,6 +325,7 @@ export function decodeConnectionOnboardingVerifyResult(
     rejected.kind !== 'rejected' ||
     (rejected.reason !== 'provider_unsupported' &&
       rejected.reason !== 'credential_not_configured' &&
+      rejected.reason !== 'base_url_not_configured' &&
       rejected.reason !== 'slug_conflict')
   ) {
     throw invalidProtocolFrame('Invalid connection onboarding rejection');

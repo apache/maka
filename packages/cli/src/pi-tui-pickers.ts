@@ -816,7 +816,7 @@ function padLine(text: string, width: number): string {
   return `${trimmed}${' '.repeat(Math.max(0, safeWidth - visibleWidth(trimmed)))}`;
 }
 
-export type OnboardingWizardPhase = 'search' | 'key' | 'models' | 'success';
+export type OnboardingWizardPhase = 'search' | 'baseUrl' | 'key' | 'models' | 'success';
 
 export type OnboardingWizardStatus =
   | { kind: 'prompt' }
@@ -828,6 +828,10 @@ export interface OnboardingWizardInput {
   providers: readonly OnboardingProviderEntry[];
   /** search→key: the user picked a provider. The runner records it for verify/save. */
   onPickProvider: (providerType: ProviderType) => void;
+  /** baseUrl submit (only for `requiresBaseUrl` providers). Empty means "reuse
+   *   the existing connection's persisted endpoint"; the wizard has already
+   *   rejected an empty value for a provider with no connection. */
+  onSubmitBaseUrl: (baseUrl: string) => void;
   /** key submit. The value may be empty — an existing connection reuses the stored
    *   secret, while a new required-key provider is rejected by verify. */
   onSubmitKey: (apiKey: string) => void;
@@ -857,6 +861,7 @@ export class OnboardingWizard implements Component {
   private picked: OnboardingProviderEntry | undefined;
   private status: OnboardingWizardStatus = { kind: 'prompt' };
   private readonly searchEditor: Editor;
+  private readonly baseUrlEditor: Editor;
   private readonly keyEditor: Editor;
   private readonly modelsSearchEditor: Editor;
   private filtered: readonly OnboardingProviderEntry[];
@@ -882,6 +887,14 @@ export class OnboardingWizard implements Component {
     // place. SelectList has no setItems, so rebuild it; the next render picks
     // the new instance up.
     this.searchEditor.onChange = (text) => this.applyQuery(text);
+    this.baseUrlEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
+    // A fixed typo should not keep showing the old failure.
+    this.baseUrlEditor.onChange = () => {
+      if (this.phase === 'baseUrl' && this.status.kind === 'error') {
+        this.status = { kind: 'prompt' };
+      }
+    };
+    this.baseUrlEditor.onSubmit = (value) => this.submitBaseUrl(value);
     this.keyEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
     // Allow a blank submit: an existing connection reuses the stored secret; the
     // host's verify rejects a blank key for a new required-key provider.
@@ -909,8 +922,11 @@ export class OnboardingWizard implements Component {
 
   private enterKeyPhase(provider: OnboardingProviderEntry): void {
     this.picked = provider;
-    this.phase = 'key';
+    // A relay has no registry endpoint, so the wizard must collect one
+    // before the key — the deferred phase-2 step from #1254 (#3405).
+    this.phase = provider.requiresBaseUrl ? 'baseUrl' : 'key';
     this.status = { kind: 'prompt' };
+    this.baseUrlEditor.setText('');
     this.keyEditor.setText('');
     this.keyEditor.disableSubmit = false;
     this.searchEditor.setText('');
@@ -923,6 +939,45 @@ export class OnboardingWizard implements Component {
     this.modelScroll = 0;
     this.modelsSearchEditor.setText('');
     this.input.onPickProvider(provider.providerType);
+  }
+
+  private submitBaseUrl(value: string): void {
+    if (!this.picked || this.phase !== 'baseUrl') return;
+    const trimmed = value.trim();
+    const error = this.validateBaseUrl(trimmed);
+    if (error) {
+      this.status = { kind: 'error', text: error };
+      return;
+    }
+    this.input.onSubmitBaseUrl(trimmed);
+    this.phase = 'key';
+    this.status = { kind: 'prompt' };
+  }
+
+  /**
+   * Mirrors the rules the Host's catalog normalizer enforces, so the common
+   * mistakes fail here with a readable message instead of surfacing as a
+   * protocol decode error after Enter on the key step.
+   */
+  private validateBaseUrl(trimmed: string): string | null {
+    if (!trimmed) {
+      return this.picked?.hasConnection ? null : '需要填写 Base URL';
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return 'Base URL 不是有效的 URL';
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return 'Base URL 必须使用 http 或 https';
+    }
+    if (parsed.username || parsed.password) return 'Base URL 不能包含账号密码';
+    if (trimmed.includes('?') || trimmed.includes('#')) return 'Base URL 不能包含查询串或片段';
+    if (new TextEncoder().encode(parsed.toString()).byteLength > 2_048) {
+      return 'Base URL 不能超过 2048 字节';
+    }
+    return null;
   }
 
   private applyQuery(text: string): void {
@@ -1009,15 +1064,23 @@ export class OnboardingWizard implements Component {
 
   invalidate(): void {
     this.searchEditor.invalidate();
+    this.baseUrlEditor.invalidate();
     this.keyEditor.invalidate();
     this.modelsSearchEditor.invalidate();
     this.list.invalidate();
+  }
+
+  /** Step label: relays have four steps (the base-URL one), the rest three. */
+  private step(position: number): string {
+    return `${position}/${this.picked?.requiresBaseUrl ? 4 : 3}`;
   }
 
   handleInput(data: string): void {
     switch (this.phase) {
       case 'search':
         return this.handleSearchInput(data);
+      case 'baseUrl':
+        return this.handleBaseUrlInput(data);
       case 'key':
         return this.handleKeyInput(data);
       case 'models':
@@ -1025,6 +1088,22 @@ export class OnboardingWizard implements Component {
       case 'success':
         return this.handleSuccessInput(data);
     }
+  }
+
+  private handleBaseUrlInput(data: string): void {
+    if (matchesKey(data, Key.ctrl('c'))) {
+      this.input.onCancel();
+      return;
+    }
+    if (matchesKey(data, Key.escape)) {
+      this.phase = 'search';
+      this.picked = undefined;
+      this.status = { kind: 'prompt' };
+      this.baseUrlEditor.setText('');
+      this.input.onBack();
+      return;
+    }
+    this.baseUrlEditor.handleInput(data);
   }
 
   private handleSearchInput(data: string): void {
@@ -1056,8 +1135,14 @@ export class OnboardingWizard implements Component {
       return;
     }
     if (matchesKey(data, Key.escape)) {
-      this.phase = 'search';
-      this.picked = undefined;
+      // One level back: a relay returns to its base-URL step, everything
+      // else to the provider search.
+      if (this.picked?.requiresBaseUrl) {
+        this.phase = 'baseUrl';
+      } else {
+        this.phase = 'search';
+        this.picked = undefined;
+      }
       this.status = { kind: 'prompt' };
       this.keyEditor.setText('');
       this.keyEditor.disableSubmit = false;
@@ -1154,6 +1239,8 @@ export class OnboardingWizard implements Component {
     switch (this.phase) {
       case 'search':
         return this.renderSearch(safeWidth);
+      case 'baseUrl':
+        return this.renderBaseUrl(safeWidth);
       case 'key':
         return this.renderKey(safeWidth);
       case 'models':
@@ -1163,13 +1250,37 @@ export class OnboardingWizard implements Component {
     }
   }
 
+  private renderBaseUrl(width: number): string[] {
+    this.searchEditor.focused = false;
+    this.baseUrlEditor.focused = true;
+    this.keyEditor.focused = false;
+    this.modelsSearchEditor.focused = false;
+    const label = this.picked?.label ?? '';
+    const hint = this.picked?.hasConnection
+      ? '留空复用已保存的 Base URL，或输入新地址替换 · Esc 返回选择服务商'
+      : '输入中转站的 Base URL（http/https）· Esc 返回选择服务商';
+    return [
+      padLine(`Set Up Provider ${ansi.dim(`· ${this.step(2)}`)} ${ansi.accent(label)}`, width),
+      padLine(ansi.dim(hint), width),
+      padLine('', width),
+      ...this.renderFieldRow(this.baseUrlEditor, 'Base URL', width),
+      padLine('', width),
+      padLine(
+        this.status.kind === 'error' ? ansi.red(`✗ ${this.status.text}`) : ansi.dim('Enter 继续'),
+        width,
+      ),
+      padLine(ansi.accent('-'.repeat(width)), width),
+    ];
+  }
+
   private renderSearch(width: number): string[] {
     this.searchEditor.focused = true;
+    this.baseUrlEditor.focused = false;
     this.keyEditor.focused = false;
     this.modelsSearchEditor.focused = false;
     return [
       padLine(
-        `Set Up Provider ${ansi.dim('· 1/3')} ${ansi.accent(String(this.filtered.length))}`,
+        `Set Up Provider ${ansi.dim(`· ${this.step(1)}`)} ${ansi.accent(String(this.filtered.length))}`,
         width,
       ),
       padLine(ansi.dim('搜索服务商，↑↓ 选择 · Enter 确认 · Esc 取消'), width),
@@ -1185,14 +1296,19 @@ export class OnboardingWizard implements Component {
 
   private renderKey(width: number): string[] {
     this.searchEditor.focused = false;
+    this.baseUrlEditor.focused = false;
     this.keyEditor.focused = this.status.kind === 'prompt' || this.status.kind === 'error';
     this.modelsSearchEditor.focused = false;
     const label = this.picked?.label ?? '';
+    const backTarget = this.picked?.requiresBaseUrl ? 'Esc 返回 Base URL' : 'Esc 返回选择服务商';
     const hint = this.picked?.hasConnection
-      ? '留空复用已保存的 key，或输入新 key 轮换 · Esc 返回选择服务商'
-      : '输入 API key · 仅本机存储 · Esc 返回选择服务商';
+      ? `留空复用已保存的 key，或输入新 key 轮换 · ${backTarget}`
+      : `输入 API key · 仅本机存储 · ${backTarget}`;
     return [
-      padLine(`Set Up Provider ${ansi.dim('· 2/3')} ${ansi.accent(label)}`, width),
+      padLine(
+        `Set Up Provider ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 3 : 2)}`)} ${ansi.accent(label)}`,
+        width,
+      ),
       padLine(ansi.dim(hint), width),
       padLine('', width),
       ...this.renderFieldRow(this.keyEditor, 'API key', width),
@@ -1217,11 +1333,15 @@ export class OnboardingWizard implements Component {
 
   private renderModels(width: number): string[] {
     this.searchEditor.focused = false;
+    this.baseUrlEditor.focused = false;
     this.keyEditor.focused = false;
     this.modelsSearchEditor.focused = this.status.kind !== 'saving';
     const label = this.picked?.label ?? '';
     const lines = [
-      padLine(`Set Up Provider ${ansi.dim('· 3/3')} ${ansi.accent(label)}`, width),
+      padLine(
+        `Set Up Provider ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 4 : 3)}`)} ${ansi.accent(label)}`,
+        width,
+      ),
       padLine(ansi.dim('搜索模型，↑↓ 选择 · Space 切换 · Enter 保存 · Esc 返回'), width),
       padLine('', width),
       ...this.renderFieldRow(this.modelsSearchEditor, '搜索', width),
@@ -1263,6 +1383,7 @@ export class OnboardingWizard implements Component {
 
   private renderSuccess(width: number): string[] {
     this.searchEditor.focused = false;
+    this.baseUrlEditor.focused = false;
     this.keyEditor.focused = false;
     this.modelsSearchEditor.focused = false;
     const label = this.picked?.label ?? '';
