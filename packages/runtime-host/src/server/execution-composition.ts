@@ -605,9 +605,27 @@ export async function createExecutionRuntimeHostComposition(
     backends.register(
       'ai-sdk',
       dependencies.primaryBackendFactory ??
-        ((backendContext) =>
-          createHostAiSdkBackend({
+        (async (backendContext) => {
+          const memoryExtractionEnabled =
+            !backendContext.tools &&
+            !backendContext.header.subagentParent &&
+            backendContext.header.collaborationMode !== 'plan' &&
+            hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction !==
+              false &&
+            memoryExtraction !== undefined;
+          let workspaceIdentity;
+          if (memoryExtractionEnabled) {
+            try {
+              workspaceIdentity = (
+                await resolveWorkspaceIdentity({ path: backendContext.workspaceRoot })
+              ).workspaceIdentity;
+            } catch {
+              // Long-term memory is optional and fail-open. Never fall back to a path Scope.
+            }
+          }
+          return createHostAiSdkBackend({
             context: backendContext,
+            ...(workspaceIdentity ? { workspaceIdentity } : {}),
             runtimePolicy: runtimePolicyStores,
             oauthCredentials,
             createRunComposer: createInteractiveRunComposerFactory({
@@ -631,10 +649,7 @@ export async function createExecutionRuntimeHostComposition(
               childTools: childAgentTools.childTools,
               worktreePatchWriteBackAvailable: true,
             }),
-            ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction ===
-            false
-              ? {}
-              : { memoryExtraction }),
+            ...(memoryExtractionEnabled && workspaceIdentity ? { memoryExtraction } : {}),
             artifacts: openedArtifactStore,
             executionArtifacts,
             usage: openedUsageStores,
@@ -644,7 +659,8 @@ export async function createExecutionRuntimeHostComposition(
             ),
             runtimeCommitSink: stores.runtimeEventStore,
             requestDrain: context.requestDrain,
-          })),
+          });
+        }),
     );
     const runtimeAuthority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),
