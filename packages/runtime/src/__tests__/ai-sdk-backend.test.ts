@@ -1154,6 +1154,108 @@ describe('AiSdkBackend model history', () => {
     assert.equal(JSON.stringify(contextEvent).includes('/tmp/maka'), false);
   });
 
+  test('fails before provider dispatch when sandbox context cannot be rendered', async () => {
+    const model = completionModel();
+    const traces: RunTraceEvent[] = [];
+    const snapshot = sandboxSnapshot();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      sandboxDiagnosticsSnapshot: {
+        ...snapshot,
+        profile: { ...snapshot.profile, cwd: '/tmp/invalid\nworkspace' },
+      },
+      recordRunTrace: (event) => traces.push(event),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+
+    await collectEvents(
+      backend.send({ turnId: 'turn-invalid-sandbox-context', text: 'current user', context: [] }),
+      events,
+    );
+
+    assert.equal(model.doStreamCalls.length, 0);
+    assert.ok(events.some((event) => event.type === 'error'));
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    assert.equal(
+      traces.some((event) => event.type === 'sandbox_context_resolved'),
+      false,
+    );
+    assert.ok(
+      traces.some(
+        (event) =>
+          event.type === 'model_stream_failed' &&
+          event.data?.errorClass === 'SandboxDiagnosticsResolutionError',
+      ),
+    );
+    await backend.dispose();
+  });
+
+  test('Stop interrupts a stalled per-turn sandbox diagnostics resolver', async () => {
+    const model = completionModel();
+    const traces: RunTraceEvent[] = [];
+    let markResolverEntered!: () => void;
+    const resolverEntered = new Promise<void>((resolve) => {
+      markResolverEntered = resolve;
+    });
+    let releaseResolver!: () => void;
+    const stalledResolver = new Promise<SandboxDiagnosticsSnapshot>((resolve) => {
+      releaseResolver = () => resolve(sandboxSnapshot());
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      resolveSandboxDiagnosticsSnapshot: async () => {
+        markResolverEntered();
+        return await stalledResolver;
+      },
+      recordRunTrace: (event) => traces.push(event),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+    const consuming = collectEvents(
+      backend.send({ turnId: 'turn-stalled-sandbox', text: 'current user', context: [] }),
+      events,
+    );
+
+    await resolverEntered;
+    await backend.stop('user_stop');
+    await consuming;
+    releaseResolver();
+
+    assert.equal(model.doStreamCalls.length, 0);
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'abort')?.reason, 'user_stop');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'user_stop');
+    assert.equal(
+      traces.some(
+        (event) =>
+          event.type === 'model_stream_failed' &&
+          event.data?.errorClass === 'SandboxDiagnosticsResolutionError',
+      ),
+      false,
+    );
+    await backend.dispose();
+  });
+
   test('records structured sandbox failure metadata on tool failure traces', async () => {
     const traces: RunTraceEvent[] = [];
     const messages: ToolResultMessage[] = [];
@@ -1490,6 +1592,7 @@ describe('AiSdkBackend model history', () => {
       modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [],
+      sandboxDiagnosticsSnapshot: sandboxSnapshot(),
       newId: idGenerator(),
       now: monotonicClock(),
     });
@@ -1517,9 +1620,13 @@ describe('AiSdkBackend model history', () => {
       }),
     );
 
-    assert.deepEqual(compactPrompt(model), [
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    assert.match(JSON.stringify(prompt[0]), /<sandbox_context>/u);
+    assert.match(JSON.stringify(prompt[0]), /Profile: workspace-write/u);
+    assert.deepEqual(prompt.slice(1), [
       { role: 'user', content: [{ type: 'text', text: 'original user' }] },
     ]);
+    assert.equal(JSON.stringify(prompt).match(/original user/gu)?.length, 1);
   });
 
   test('continuation replays the original user after diagnostic terminal errors with no StoredMessage context', async () => {

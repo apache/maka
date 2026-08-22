@@ -709,8 +709,17 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
-  /** Active profile and enforcement capability snapshot for this session backend. */
+  /** Static embedding/test fallback used only when the per-turn resolver is absent. */
   sandboxDiagnosticsSnapshot?: SandboxDiagnosticsSnapshot;
+  /**
+   * Resolves the authoritative sandbox snapshot once for each turn and takes
+   * precedence over sandboxDiagnosticsSnapshot. The Backend races the returned
+   * promise with this Turn's abort even when the resolver cannot cancel its own
+   * underlying read.
+   */
+  resolveSandboxDiagnosticsSnapshot?: (input: {
+    abortSignal: AbortSignal;
+  }) => Promise<SandboxDiagnosticsSnapshot | undefined>;
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
   planTraceContext?: {
     mode: 'agent' | 'plan';
@@ -965,6 +974,32 @@ function sleepForProviderRetry(delayMs: number, signal: AbortSignal): Promise<vo
       reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
     }
   });
+}
+
+function raceWithTurnAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      cleanup();
+      reject(turnAbortError());
+    };
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function turnAbortError(): Error {
+  return Object.assign(new Error('aborted'), { name: 'AbortError' });
 }
 
 // ============================================================================
@@ -1608,10 +1643,55 @@ export class AiSdkBackend implements AgentBackend {
         });
       }
     }
-    if (this.input.sandboxDiagnosticsSnapshot) {
-      trace.sandboxContextResolved(
-        toSandboxRunTraceProjection(this.input.sandboxDiagnosticsSnapshot),
-      );
+    let sandboxDiagnosticsSnapshot: SandboxDiagnosticsSnapshot | undefined;
+    let sandboxPrompt: string | undefined;
+    try {
+      sandboxDiagnosticsSnapshot = this.input.resolveSandboxDiagnosticsSnapshot
+        ? await raceWithTurnAbort(
+            this.input.resolveSandboxDiagnosticsSnapshot({
+              abortSignal: turnAbortController.signal,
+            }),
+            turnAbortController.signal,
+          )
+        : this.input.sandboxDiagnosticsSnapshot;
+      sandboxPrompt = sandboxDiagnosticsSnapshot
+        ? renderSandboxTurnTailPrompt(sandboxDiagnosticsSnapshot)
+        : undefined;
+    } catch (err) {
+      if (scope.aborted || turnAbortController.signal.aborted) {
+        queue.push({
+          type: 'abort',
+          id: this.newId(),
+          turnId,
+          ts: this.now(),
+          reason: 'user_stop',
+        } satisfies AbortEvent);
+        queue.push({
+          type: 'complete',
+          id: this.newId(),
+          turnId,
+          ts: this.now(),
+          stopReason: 'user_stop',
+        } satisfies CompleteEvent);
+        queue.close();
+        yield* this.drain(queue);
+        return;
+      }
+      trace.modelStreamFailed('SandboxDiagnosticsResolutionError', err);
+      queue.push(this.makeErrorEvent(turnId, err));
+      queue.push({
+        type: 'complete',
+        id: this.newId(),
+        turnId,
+        ts: this.now(),
+        stopReason: 'error',
+      } satisfies CompleteEvent);
+      queue.close();
+      yield* this.drain(queue);
+      return;
+    }
+    if (sandboxDiagnosticsSnapshot) {
+      trace.sandboxContextResolved(toSandboxRunTraceProjection(sandboxDiagnosticsSnapshot));
     }
     const providerRequestTracker = this.createProviderRequestTracker({
       turnId,
@@ -1714,6 +1794,11 @@ export class AiSdkBackend implements AgentBackend {
         await this.resolveSystemPrompt(scope),
         scope.orchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
         scope.orchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
+        // A safe continuation deliberately has no new user message. Keep its
+        // replay byte-for-byte intact and carry only the current authority fact
+        // in the effective system envelope; ordinary volatile turn-tail facts
+        // remain excluded from continuation.
+        input.continuation ? sandboxPrompt : undefined,
       ]);
     } catch (err) {
       trace.modelStreamFailed(this.modelAdapter.classifyError(err), err);
@@ -1864,9 +1949,7 @@ export class AiSdkBackend implements AgentBackend {
           : joinPromptFragments([
               await this.resolveTurnTailPrompt(turnId),
               await this.resolveShellRunContextSummary(),
-              this.input.sandboxDiagnosticsSnapshot
-                ? renderSandboxTurnTailPrompt(this.input.sandboxDiagnosticsSnapshot)
-                : undefined,
+              sandboxPrompt,
             ]);
         const currentUserContent = input.continuation
           ? undefined
