@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Context, FiberState, Service, type Plugin } from '../plugin-kernel.js';
@@ -452,6 +471,85 @@ test('Fiber cleanup exhausts Effects before reporting disposer failures', async 
   await root.fiber.dispose();
 });
 
+test('Service loss preserves consumer cleanup failure on the owning Fiber', async () => {
+  const root = new Context();
+  const removeService = root.provide('fixture', { value: 'ready' });
+  let activations = 0;
+  const consumer = root.plugin(
+    Object.assign(
+      () => {
+        activations += 1;
+        return () => {
+          throw new Error('cleanup boom');
+        };
+      },
+      { inject: ['fixture'] },
+    ),
+  );
+  await consumer.await();
+  assert.equal(consumer.state, FiberState.ACTIVE);
+
+  await removeService();
+
+  assert.equal(consumer.state, FiberState.FAILED);
+  const error = await consumer.await().then(
+    () => undefined,
+    (reason: unknown) => reason,
+  );
+  assert.ok(error instanceof AggregateError);
+  const fiberCleanup = error.errors[0];
+  assert.ok(fiberCleanup instanceof AggregateError);
+  const effectCleanup = fiberCleanup.errors[0];
+  assert.ok(effectCleanup instanceof AggregateError);
+  assert.match(String(effectCleanup.errors[0]), /cleanup boom/u);
+
+  root.provide('fixture', { value: 'replacement' });
+  await assert.rejects(consumer.await(), AggregateError);
+  assert.equal(consumer.state, FiberState.FAILED);
+  assert.equal(activations, 1);
+  await root.fiber.dispose();
+});
+
+test('Fiber owns derived Context views, child Fibers, and their Effects', async () => {
+  const root = new Context();
+  const lifecycle: string[] = [];
+  let accountA!: Context;
+  let accountB!: Context;
+  let child!: ReturnType<Context['plugin']>;
+
+  const owner = root.plugin((ctx) => {
+    accountA = ctx.extend({ account: 'a' });
+    accountB = ctx.extend({ account: 'b' });
+    accountA.effect(() => () => lifecycle.push('account-a'), 'account-a');
+    accountB.effect(() => () => lifecycle.push('account-b'), 'account-b');
+    child = accountB.plugin(() => undefined);
+  });
+  await owner.await();
+  await child.await();
+
+  assert.equal(owner.context.fiber, owner);
+  assert.equal(accountA.fiber, owner);
+  assert.equal(accountB.fiber, owner);
+  assert.equal(child.parent, owner);
+  assert.throws(
+    () => child.deriveContext(accountA),
+    /Cannot derive a Context view from another Fiber/u,
+  );
+  assert.throws(
+    () => child.mount(accountB, () => undefined),
+    /Cannot mount a child through a Context owned by another Fiber/u,
+  );
+  assert.deepEqual(
+    owner.getEffects().map(({ label }) => label),
+    ['account-a', 'account-b'],
+  );
+
+  await owner.dispose();
+  assert.equal(child.state, FiberState.DISPOSED);
+  assert.deepEqual(lifecycle, ['account-b', 'account-a']);
+  await root.fiber.dispose();
+});
+
 test('concurrent Effect disposal shares the same completion task', async () => {
   const root = new Context();
   let release!: () => void;
@@ -501,6 +599,23 @@ test('child accessors cannot shadow metadata inherited from parent Contexts', as
     /Context property already exists: inheritedMeta/u,
   );
   assert.equal(Reflect.get(child, 'inheritedMeta'), 'visible');
+  await root.fiber.dispose();
+});
+
+test('Context metadata cannot replace Fiber ownership or environment topology', async () => {
+  const root = new Context();
+
+  for (const field of ['fiber', 'parent', 'root', 'logger']) {
+    assert.throws(
+      () => root.extend({ [field]: undefined }),
+      new RegExp(`Context metadata cannot overwrite owned field: ${field}`, 'u'),
+    );
+  }
+
+  const child = root.extend({ account: 'fixture' });
+  assert.equal(child.fiber, root.fiber);
+  assert.equal(child.parent, root);
+  assert.equal(child.root, root);
   await root.fiber.dispose();
 });
 
