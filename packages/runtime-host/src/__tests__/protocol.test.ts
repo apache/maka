@@ -286,7 +286,7 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  test('decodes only privacy-normalized bounded subscription live frames', () => {
+  test('decodes bounded live frames carrying tool args and result content', () => {
     const envelope = {
       kind: 'subscription.session_event' as const,
       hostEpoch: 'epoch-1',
@@ -310,6 +310,12 @@ describe('Runtime Host bootstrap protocol', () => {
       },
       {
         ...identity,
+        type: 'tool_start',
+        toolName: 'read',
+        args: { path: '/repo/README.md' },
+      },
+      {
+        ...identity,
         type: 'tool_output_delta',
         seq: 0,
         stream: 'stdout',
@@ -319,6 +325,19 @@ describe('Runtime Host bootstrap protocol', () => {
       },
       { ...identity, type: 'tool_progress', chunk: 'working' },
       { ...identity, type: 'tool_result', status: 'completed', durationMs: 3 },
+      {
+        ...identity,
+        type: 'tool_result',
+        status: 'completed',
+        durationMs: 3,
+        content: { kind: 'text', text: 'settled output' },
+      },
+      {
+        ...identity,
+        type: 'tool_result',
+        status: 'completed',
+        contentBytes: 100_000,
+      },
       {
         ...identity,
         type: 'tool_result',
@@ -344,9 +363,10 @@ describe('Runtime Host bootstrap protocol', () => {
     for (const event of [
       {
         ...identity,
-        type: 'tool_start',
-        toolName: 'read',
-        args: { path: '/private' },
+        type: 'tool_result',
+        status: 'completed',
+        content: { kind: 'text', text: 'both fields' },
+        contentBytes: 100_000,
       },
       {
         ...identity,

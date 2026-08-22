@@ -649,6 +649,12 @@ export interface ToolResultEvent extends BaseEvent, ToolActivityIdentity {
   isError: boolean;
   content: ToolResultContent;
   durationMs?: number;
+  /**
+   * Live-broadcast only: the serialized byte size of a result whose content
+   * exceeded the live frame budget and was omitted (content is an empty
+   * placeholder in that case). Runtime-emitted events never set this.
+   */
+  contentBytes?: number;
 }
 
 type ShellRunResultMetadata = {

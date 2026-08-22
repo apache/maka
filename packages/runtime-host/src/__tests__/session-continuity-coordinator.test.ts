@@ -33,6 +33,8 @@ import {
 import {
   decodeSubscriptionFrame,
   SESSION_LIVE_DELTA_MAX_BYTES,
+  SESSION_LIVE_TOOL_ARGS_MAX_BYTES,
+  SESSION_LIVE_TOOL_RESULT_MAX_BYTES,
 } from '../protocol/session-continuity.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import {
@@ -1829,6 +1831,138 @@ test('tool_result clears retained tool_result_preview so a later open does not s
   coordinator.close();
 });
 
+test('broadcasts tool_start args in the live frame', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_start',
+    id: 'start-1',
+    turnId: 'turn-1',
+    ts: 1,
+    toolUseId: 'tool-1',
+    toolName: 'Read',
+    args: { path: '/repo/README.md' },
+  });
+  await waitFor(() => sink.frames.length === 1);
+
+  const [frame] = sink.frames;
+  assert.equal(frame?.kind, 'subscription.session_event');
+  if (frame?.kind !== 'subscription.session_event') return;
+  assert.deepEqual(frame.event, {
+    type: 'tool_start',
+    id: 'start-1',
+    turnId: 'turn-1',
+    ts: 1,
+    toolUseId: 'tool-1',
+    toolName: 'Read',
+    args: { path: '/repo/README.md' },
+  });
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('broadcasts the tool result content in the live frame', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_result',
+    id: 'result-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    isError: false,
+    durationMs: 7,
+    content: { kind: 'text', text: 'settled output' },
+  });
+  await waitFor(() => sink.frames.length === 1);
+
+  const [frame] = sink.frames;
+  assert.equal(frame?.kind, 'subscription.session_event');
+  if (frame?.kind !== 'subscription.session_event') return;
+  assert.deepEqual(frame.event, {
+    type: 'tool_result',
+    id: 'result-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    status: 'completed',
+    durationMs: 7,
+    content: { kind: 'text', text: 'settled output' },
+  });
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('omits oversized live args and result content, keeping the content byte size', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  const oversizedArgs = { command: `run ${'x'.repeat(SESSION_LIVE_TOOL_ARGS_MAX_BYTES)}` };
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_start',
+    id: 'start-1',
+    turnId: 'turn-1',
+    ts: 1,
+    toolUseId: 'tool-1',
+    toolName: 'Bash',
+    args: oversizedArgs,
+  });
+  const oversizedText = 'y'.repeat(SESSION_LIVE_TOOL_RESULT_MAX_BYTES + 1024);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_result',
+    id: 'result-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    isError: false,
+    content: { kind: 'text', text: oversizedText },
+  });
+  await waitFor(() => sink.frames.length === 2);
+
+  const [startFrame, resultFrame] = sink.frames;
+  if (startFrame?.kind !== 'subscription.session_event') throw new Error('expected event frame');
+  if (startFrame.event.type !== 'tool_start') throw new Error('expected tool_start');
+  assert.equal(startFrame.event.args, undefined);
+
+  if (resultFrame?.kind !== 'subscription.session_event') throw new Error('expected event frame');
+  if (resultFrame.event.type !== 'tool_result') throw new Error('expected tool_result');
+  assert.equal(resultFrame.event.content, undefined);
+  assert.equal(
+    resultFrame.event.contentBytes,
+    Buffer.byteLength(JSON.stringify({ kind: 'text', text: oversizedText }), 'utf8'),
+  );
+  // The whole frame must stay decodable under the subscription frame cap.
+  assert.doesNotThrow(() => decodeSubscriptionFrame(JSON.parse(JSON.stringify(resultFrame))));
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
 test('publishes only the minimal sandbox failure reason from a tool result', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
@@ -1866,6 +2000,11 @@ test('publishes only the minimal sandbox failure reason from a tool result', asy
     toolUseId: 'tool-1',
     status: 'errored',
     sandboxFailureReason: 'sandbox_boundary_required',
+    content: {
+      kind: 'text',
+      text: 'sensitive tool output',
+      sandboxFailure: { reason: 'sandbox_boundary_required' },
+    },
   });
 
   connection.abort(opened.subscriptionId);

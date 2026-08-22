@@ -193,7 +193,15 @@ function renderExpandedToolBlock(entry: MakaPiToolEntry, width: number): string[
     }
     lines.push(...renderToolStreams(entry.outputDeltas.values(), width));
   }
-  if (entry.result || entry.output) {
+  if (entry.resultBytes !== undefined && !plainResultText(entry)) {
+    lines.push(
+      ...renderIndented(
+        ansi.dim(`Result too large to show live: ${entry.resultBytes} bytes`),
+        width,
+        2,
+      ),
+    );
+  } else if (entry.result || entry.output) {
     lines.push(...renderToolResult(entry, width));
   }
   if (
@@ -258,6 +266,11 @@ function pipeOutputLineCount(output: { stdout?: string; stderr?: string }): numb
 
 function compactToolSummary(entry: MakaPiToolEntry): CompactToolSummary | undefined {
   const result = entry.result;
+  // An oversized live result carried only its byte size (#3521): show the
+  // truthful size rather than the empty placeholder's `no output`.
+  if (entry.resultBytes !== undefined && !plainResultText(entry)) {
+    return { text: `${entry.resultBytes} bytes`, protect: true };
+  }
   if (result?.kind === 'shell_run') {
     if (entry.toolName === 'WriteStdin') {
       return { text: formatPtyControlOperation(result.operation, entry.input) };

@@ -262,6 +262,88 @@ test('does not replay settled transcript steps when the active step reaches term
   );
 });
 
+test('projects live tool events with their args and settled content', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+    [],
+  );
+  const identity = { id: 'event-1', turnId: 'turn-1', ts: 1, toolUseId: 'tool-1' };
+
+  const started = projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: { type: 'tool_start', ...identity, toolName: 'Read', args: { path: '/repo/a.md' } },
+  }).events;
+  assert.deepEqual(started, [
+    {
+      type: 'tool_start',
+      ...identity,
+      toolName: 'Read',
+      args: { path: '/repo/a.md' },
+    },
+  ]);
+
+  const settled = projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 2,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'tool_result',
+      ...identity,
+      status: 'completed',
+      durationMs: 5,
+      content: { kind: 'text', text: 'file body' },
+    },
+  }).events;
+  assert.deepEqual(settled, [
+    {
+      type: 'tool_result',
+      ...identity,
+      isError: false,
+      durationMs: 5,
+      content: { kind: 'text', text: 'file body' },
+    },
+  ]);
+});
+
+test('projects an oversized live tool result as an empty body with its byte size', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+    [],
+  );
+  const identity = { id: 'event-1', turnId: 'turn-1', ts: 1, toolUseId: 'tool-1' };
+
+  const settled = projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: { type: 'tool_result', ...identity, status: 'completed', contentBytes: 100_000 },
+  }).events;
+  assert.deepEqual(settled, [
+    {
+      type: 'tool_result',
+      ...identity,
+      isError: false,
+      content: { kind: 'text', text: '' },
+      contentBytes: 100_000,
+    },
+  ]);
+});
+
 function deltaFrame(
   sequence: number,
   startOffset: number,

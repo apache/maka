@@ -182,6 +182,12 @@ export type MakaPiTranscriptEntry =
       output?: string;
       /** In-memory revision for render-cache invalidation when a result is replaced. */
       resultVersion: number;
+      /**
+       * Serialized size of a settled result whose content exceeded the live
+       * frame budget and was omitted (#3521). Cleared when real content lands
+       * (live or via the terminal reconcile).
+       */
+      resultBytes?: number;
       progress: BoundedChunkBuffer<string>;
       outputDeltas: BoundedChunkBuffer<MakaPiToolOutputDelta>;
       durationMs?: number;
@@ -406,6 +412,7 @@ export function reconcileToolsWithStoredMessages(
     entry.input = structuredClone(durable.input);
     entry.result = durable.result ? structuredClone(durable.result) : undefined;
     entry.output = durable.output;
+    delete entry.resultBytes;
     entry.durationMs = durable.durationMs;
     entry.status = durable.status;
     entry.hidden = durable.hidden;
@@ -634,6 +641,7 @@ export function applyMakaSessionEventToTranscript(
           result: event.content,
           output: formatToolResultContent(event.content),
           resultVersion: 1,
+          ...(event.contentBytes === undefined ? {} : { resultBytes: event.contentBytes }),
           durationMs: event.durationMs,
           status: event.isError ? 'error' : 'done',
           expanded: state.expandAllTools,
@@ -681,6 +689,8 @@ export function applyMakaSessionEventToTranscript(
           tool.status = toolResultTranscriptStatus(event.content, event.isError);
           tool.result = event.content;
           tool.output = formatToolResultContent(event.content);
+          if (event.contentBytes === undefined) delete tool.resultBytes;
+          else tool.resultBytes = event.contentBytes;
           tool.durationMs = event.durationMs;
           tool.resultVersion += 1;
         }
@@ -696,6 +706,7 @@ export function applyMakaSessionEventToTranscript(
           result: event.content,
           output: formatToolResultContent(event.content),
           resultVersion: 1,
+          ...(event.contentBytes === undefined ? {} : { resultBytes: event.contentBytes }),
           durationMs: event.durationMs,
           status: toolResultTranscriptStatus(event.content, event.isError),
           expanded: state.expandAllTools,

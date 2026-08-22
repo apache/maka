@@ -91,7 +91,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 39 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 40 as const;
+// 40: Live tool_start/tool_result frames carry bounded args and settled
+// content so a transcript can render the final card at settle time (#3521).
 // 39: Client Capability tool descriptors carry trusted activity semantics and
 // invocations can stream bounded progress frames.
 // 38: `execute` is no longer a permission mode. Frame decoders reject it, so a

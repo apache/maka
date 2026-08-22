@@ -492,7 +492,7 @@ function projectToolEvent(
       type: 'tool_start',
       ...base,
       toolName: event.toolName,
-      args: undefined,
+      args: event.args,
       ...(event.operationId ? { operationId: event.operationId } : {}),
       ...(event.activityKind ? { activityKind: event.activityKind } : {}),
       ...(event.displayName ? { displayName: event.displayName } : {}),
@@ -525,15 +525,22 @@ function projectToolEvent(
     type: 'tool_result',
     ...base,
     isError: event.status === 'errored',
-    content: {
-      kind: 'text',
-      text: '',
-      ...(event.sandboxFailureReason
-        ? { sandboxFailure: { reason: event.sandboxFailureReason } }
-        : {}),
-    },
+    // Settled content arrives with the live frame (#3521). An oversized result
+    // omits it (contentBytes carries the size); keep the empty-body
+    // placeholder — plus the normalized sandbox-failure signal — for that case.
+    content:
+      event.content === undefined
+        ? {
+            kind: 'text',
+            text: '',
+            ...(event.sandboxFailureReason
+              ? { sandboxFailure: { reason: event.sandboxFailureReason } }
+              : {}),
+          }
+        : structuredClone(event.content),
     ...(event.operationId ? { operationId: event.operationId } : {}),
     ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
+    ...(event.contentBytes === undefined ? {} : { contentBytes: event.contentBytes }),
   };
 }
 

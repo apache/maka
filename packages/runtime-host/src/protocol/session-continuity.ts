@@ -18,7 +18,11 @@
  */
 
 import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
-import type { SandboxBoundaryFailureSignal, ToolResultPreviewContent } from '@maka/core/events';
+import type {
+  SandboxBoundaryFailureSignal,
+  ToolResultContent,
+  ToolResultPreviewContent,
+} from '@maka/core/events';
 import { decodeToolResultPreviewContent } from '@maka/core/tool-result-preview';
 import type { ToolActivityKind } from '@maka/core/events';
 import type { SessionStatus } from '@maka/core/session';
@@ -29,6 +33,7 @@ import {
   requireExactRecord,
   requireId,
   requireRecord,
+  requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { decodeSessionStatus } from './session-status.js';
@@ -55,6 +60,17 @@ export const SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES = 56 * 1024;
 // Leave transport headroom for the response envelope and request correlation.
 export const SUBSCRIPTION_OPEN_RESULT_MAX_BYTES = 92 * 1024;
 export const SESSION_LIVE_DELTA_MAX_BYTES = 16 * 1024;
+/**
+ * Live tool events carry the tool's args and settled result content so a
+ * transcript can render the final card the moment it settles — terminal
+ * scrollback cannot be rewritten later, so a post-hoc backfill arrives too
+ * late (#3521). Each field is included only while its serialized form fits
+ * this budget, keeping the whole frame under SESSION_SUBSCRIPTION_FRAME_MAX_BYTES;
+ * oversized content degrades to its byte size (`contentBytes`), oversized args
+ * are simply omitted.
+ */
+export const SESSION_LIVE_TOOL_ARGS_MAX_BYTES = 16 * 1024;
+export const SESSION_LIVE_TOOL_RESULT_MAX_BYTES = 48 * 1024;
 // Core emits at most 8,192 UTF-16 code units per tool output event. A code unit
 // needs at most three UTF-8 bytes (an astral pair needs four bytes total).
 export const SESSION_TOOL_OUTPUT_DELTA_MAX_BYTES = 3 * TOOL_OUTPUT_DELTA_MAX_CHARS;
@@ -164,6 +180,8 @@ export type SessionToolEvent =
       activityKind?: ToolActivityKind;
       displayName?: string;
       stepId?: string;
+      /** Invocation arguments; omitted when their serialized form exceeds SESSION_LIVE_TOOL_ARGS_MAX_BYTES. */
+      args?: unknown;
     })
   | (SessionToolEventIdentity & {
       type: 'tool_output_delta';
@@ -183,6 +201,13 @@ export type SessionToolEvent =
       status: 'completed' | 'errored';
       sandboxFailureReason?: SandboxBoundaryFailureSignal['reason'];
       durationMs?: number;
+      /**
+       * Settled result content; present whenever its serialized form fits
+       * SESSION_LIVE_TOOL_RESULT_MAX_BYTES. Mutually exclusive with contentBytes.
+       */
+      content?: ToolResultContent;
+      /** Serialized byte size of an oversized result whose content was omitted. */
+      contentBytes?: number;
     })
   | (SessionToolEventIdentity & {
       type: 'tool_result_preview';
@@ -710,6 +735,17 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
   };
 }
 
+/**
+ * Lenient live result-content validation: the durable transcript decodes the
+ * same union by envelope shape, and every kind renders through the client's
+ * own narrowing, so the wire only pins the discriminant.
+ */
+function decodeLiveToolResultContent(value: unknown): ToolResultContent {
+  const record = requireRecord(value, 'Session tool result content');
+  requireUtf8String(record.kind, 'Session tool result content kind', SESSION_TOOL_NAME_MAX_BYTES);
+  return record as unknown as ToolResultContent;
+}
+
 function decodeSessionToolEvent(value: unknown): SessionToolEvent {
   const record = requireRecord(value, 'Session tool event');
   const identity = {
@@ -730,6 +766,7 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'activityKind',
       'displayName',
       'stepId',
+      'args',
     ];
     assertAllowedKeys(record, 'Session tool start event', allowed);
     assertRequiredKeys(record, 'Session tool start event', [
@@ -764,6 +801,9 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
             ),
           }),
       ...(record.stepId === undefined ? {} : { stepId: requireEntityId(record.stepId, 'stepId') }),
+      // Args arrive as parsed JSON, so any value here is already a plain JSON
+      // value; the producer bounds the serialized size before framing.
+      ...(record.args === undefined ? {} : { args: record.args }),
     };
   }
   if (record.type === 'tool_output_delta') {
@@ -829,6 +869,8 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'status',
       'sandboxFailureReason',
       'durationMs',
+      'content',
+      'contentBytes',
     ];
     assertAllowedKeys(record, 'Session tool result event', allowed);
     assertRequiredKeys(record, 'Session tool result event', [
@@ -845,6 +887,9 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
     if (record.status === 'completed' && record.sandboxFailureReason !== undefined) {
       throw invalidProtocolFrame('Completed Session tool result cannot carry a sandbox failure');
     }
+    if (record.content !== undefined && record.contentBytes !== undefined) {
+      throw invalidProtocolFrame('Session tool result cannot carry both content and contentBytes');
+    }
     return {
       type: record.type,
       ...identity,
@@ -860,6 +905,12 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
         : {
             durationMs: requireCount(record.durationMs, 'Session tool result duration'),
           }),
+      ...(record.content === undefined
+        ? {}
+        : { content: decodeLiveToolResultContent(record.content) }),
+      ...(record.contentBytes === undefined
+        ? {}
+        : { contentBytes: requireCount(record.contentBytes, 'Session tool result content size') }),
     };
   }
   if (record.type === 'tool_result_preview') {

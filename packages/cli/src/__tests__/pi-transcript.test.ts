@@ -351,6 +351,88 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(state.entries.at(-1)?.kind, 'notice');
   });
 
+  test('shows the byte size of an oversized live tool result instead of no output', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'big-1',
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'big-1',
+        isError: false,
+        durationMs: 2500,
+        content: { kind: 'text', text: '' },
+        contentBytes: 100_000,
+      }),
+    );
+
+    const compact = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(compact, /100000 bytes/);
+    assert.doesNotMatch(compact, /no output/);
+
+    assert.equal(toggleAllToolExpansion(state), true);
+    const expanded = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(expanded, /too large to show live: 100000 bytes/);
+  });
+
+  test('the terminal reconcile replaces an oversized placeholder with the durable content', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'big-1',
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'big-1',
+        isError: false,
+        content: { kind: 'text', text: '' },
+        contentBytes: 100_000,
+      }),
+    );
+
+    assert.equal(
+      reconcileToolsWithStoredMessages(state, 'turn-1', [
+        {
+          type: 'tool_call',
+          id: 'big-1',
+          turnId: 'turn-1',
+          ts: 1,
+          toolName: 'Bash',
+          args: { command: 'npm test' },
+        },
+        {
+          type: 'tool_result',
+          id: 'big-1-result',
+          turnId: 'turn-1',
+          ts: 2,
+          toolUseId: 'big-1',
+          isError: false,
+          content: { kind: 'text', text: 'all 3 suites passed' },
+        },
+      ]),
+      true,
+    );
+
+    const row = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(row, /all 3 suites passed|1 line · 19 bytes/);
+    assert.doesNotMatch(row, /100000 bytes/);
+  });
+
   test('removes a live poll card that the durable transcript folds into its Bash parent', () => {
     const state = createMakaPiTranscriptState();
     for (const tool of [

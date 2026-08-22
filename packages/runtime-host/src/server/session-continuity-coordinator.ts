@@ -19,11 +19,13 @@
 
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import type { SessionEvent, ShellRunUpdate } from '@maka/core/events';
+import type { SessionEvent, ShellRunUpdate, ToolResultContent } from '@maka/core/events';
 import {
   encodeProtocolMessage,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
   SESSION_LIVE_DELTA_MAX_BYTES,
+  SESSION_LIVE_TOOL_ARGS_MAX_BYTES,
+  SESSION_LIVE_TOOL_RESULT_MAX_BYTES,
   SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES,
   SESSION_RUNTIME_RESOURCE_CHANGES_MAX,
   SESSION_SUBSCRIPTION_FRAME_MAX_BYTES,
@@ -1949,6 +1951,7 @@ function projectToolEvent(
           ? {}
           : { displayName: boundedUtf8(event.displayName, SESSION_TOOL_NAME_MAX_BYTES) }),
         ...(event.stepId === undefined ? {} : { stepId: event.stepId }),
+        ...boundedLiveToolArgs(event.args),
       };
     case 'tool_output_delta':
       return {
@@ -1979,6 +1982,7 @@ function projectToolEvent(
           ? { sandboxFailureReason: event.content.sandboxFailure.reason }
           : {}),
         ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
+        ...boundedLiveToolResult(event.content),
       };
     case 'tool_result_preview':
       return {
@@ -2001,6 +2005,44 @@ function boundedUtf8(value: string, maxBytes: number): string {
     bytes += characterBytes;
   }
   return bounded;
+}
+
+/**
+ * Live tool args ride the broadcast only while their serialized form fits the
+ * per-field budget; an oversized payload (a large WriteStdin paste) is omitted
+ * — the card renders without an input summary until the durable transcript
+ * fills it, matching the pre-#3521 placeholder behavior for that rare case.
+ */
+function boundedLiveToolArgs(args: unknown): { args?: unknown } {
+  if (args === undefined) return {};
+  const bytes = serializedUtf8Bytes(args);
+  if (bytes === undefined || bytes > SESSION_LIVE_TOOL_ARGS_MAX_BYTES) return {};
+  return { args: structuredClone(args) };
+}
+
+/**
+ * The settled content is the whole point of the live result frame (#3521): a
+ * transcript renders the final card at settle time, before it can scroll into
+ * immutable terminal scrollback. Oversized results degrade to their byte size
+ * (`contentBytes`) so the row stays truthful; the durable transcript remains
+ * the path to their full body.
+ */
+function boundedLiveToolResult(content: ToolResultContent): {
+  content?: ToolResultContent;
+  contentBytes?: number;
+} {
+  const bytes = serializedUtf8Bytes(content);
+  if (bytes === undefined) return {};
+  if (bytes > SESSION_LIVE_TOOL_RESULT_MAX_BYTES) return { contentBytes: bytes };
+  return { content: structuredClone(content) };
+}
+
+function serializedUtf8Bytes(value: unknown): number | undefined {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), 'utf8');
+  } catch {
+    return undefined;
+  }
 }
 
 function signal(): { readonly promise: Promise<void>; resolve(): void } {
