@@ -59,12 +59,7 @@ import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { openStorageWriterComposition } from '@maka/storage';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
-import {
-  openManagedWorkspaceOwner,
-  type ManagedWorkspaceFilesystemWorker,
-  type ManagedWorkspaceOwner,
-  type VerifiedGitRuntimeInput,
-} from '@maka/storage/managed-workspace-owner';
+import { type ManagedWorkspaceFilesystemWorker } from '@maka/storage/managed-workspace-owner';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import {
   bindHostChildAgentBackend,
@@ -168,7 +163,6 @@ export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition 
 }
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
-  readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
@@ -215,7 +209,6 @@ export async function createExecutionRuntimeHostComposition(
   let unsubscribeTaskLedger: (() => void) | undefined;
   let unsubscribeTranscriptChanges: (() => void) | undefined;
   let unsubscribeUsageChanges: (() => void) | undefined;
-  let managedWorkspaceOwner: ManagedWorkspaceOwner | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
   try {
@@ -299,22 +292,8 @@ export async function createExecutionRuntimeHostComposition(
     const managedFilesystemWorker = filesystemWorker
       ? adaptManagedWorkspaceFilesystemWorker(filesystemWorker)
       : undefined;
-    if (options.managedWorkspaceGitRuntime) {
-      if (!managedFilesystemWorker) {
-        throw new RuntimeHostWorkspaceExecutionError(
-          'filesystem_worker_unavailable',
-          'Managed workspace execution requires the sandboxed filesystem worker',
-        );
-      }
-      managedWorkspaceOwner = await openManagedWorkspaceOwner({
-        rootOwner: context.owner,
-        gitRuntime: options.managedWorkspaceGitRuntime,
-        filesystemWorker: managedFilesystemWorker,
-      });
-    }
     workspaceExecution = createRuntimeHostWorkspaceExecutionComposition({
       ...(managedFilesystemWorker ? { filesystemWorker: managedFilesystemWorker } : {}),
-      ...(managedWorkspaceOwner ? { managedOwner: managedWorkspaceOwner } : {}),
     });
     const taskLedger = new HostTaskLedgerCoordinator(
       taskLedgerStore,
@@ -1595,7 +1574,6 @@ export async function createExecutionRuntimeHostComposition(
     goalExecutions?.beginDrain();
     try {
       await workspaceExecution?.close();
-      if (!workspaceExecution) await managedWorkspaceOwner?.close();
     } catch (closeError) {
       errors.push(closeError);
     }

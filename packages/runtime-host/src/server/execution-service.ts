@@ -1,5 +1,4 @@
 import { resolveStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
-import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
 import {
   createExecutionRuntimeHostCompositionSource,
   type ExecutionRuntimeHostCompositionDependencies,
@@ -12,7 +11,6 @@ import type { PublishedProjectDirectoryRoot } from './project-directory-authorit
 
 export interface ExecutionRuntimeHostServiceOptions {
   readonly rootPath: string;
-  readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
   readonly handshakeTimeoutMs?: number;
   readonly shutdownGraceMs?: number;

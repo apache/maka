@@ -1,4 +1,3 @@
-import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
 import type { PublishedProjectDirectoryRoot } from './project-directory-authority.js';
 import {
   createExecutionRuntimeHostComposition,
@@ -11,7 +10,6 @@ import {
 } from './host-composition.js';
 
 export interface ExecutionRuntimeHostCompositionSourceOptions {
-  readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
 }
 
@@ -27,9 +25,6 @@ export async function createExecutionRuntimeHostCompositionSource(
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<RuntimeHostCompositionSource> {
   const compositionOptions = {
-    ...(options.managedWorkspaceGitRuntime
-      ? { managedWorkspaceGitRuntime: options.managedWorkspaceGitRuntime }
-      : {}),
     ...(options.projectDirectoryRoots
       ? { projectDirectoryRoots: options.projectDirectoryRoots }
       : {}),

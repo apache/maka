@@ -1,4 +1,3 @@
-import type { VerifiedGitRuntimeInput } from '@maka/storage/managed-workspace-owner';
 import {
   startInteractiveRuntimeHostCandidate,
   type InteractiveRuntimeHostCandidateOptions,
@@ -11,10 +10,7 @@ import {
 
 export type ExecutionRuntimeHostCandidateResult = InteractiveRuntimeHostCandidateResult;
 
-export interface ExecutionRuntimeHostCandidateOptions
-  extends InteractiveRuntimeHostCandidateOptions {
-  readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
-}
+export type ExecutionRuntimeHostCandidateOptions = InteractiveRuntimeHostCandidateOptions;
 
 export type ExecutionRuntimeHostCandidateDependencies = ExecutionRuntimeHostCompositionDependencies;
 
@@ -22,6 +18,6 @@ export async function startExecutionRuntimeHostCandidate(
   options: ExecutionRuntimeHostCandidateOptions,
   dependencies: ExecutionRuntimeHostCandidateDependencies = {},
 ): Promise<ExecutionRuntimeHostCandidateResult> {
-  const composition = await createExecutionRuntimeHostCompositionSource(options, dependencies);
+  const composition = await createExecutionRuntimeHostCompositionSource({}, dependencies);
   return startInteractiveRuntimeHostCandidate(options, composition);
 }
