@@ -30,6 +30,10 @@ import {
   type AccessCredentialReplaceResult,
   type AccessCredentialRevokeInput,
   type AccessCredentialRevokeResult,
+  type AccessCredentialRotationPrepareInput,
+  type AccessCredentialRotationPrepareResult,
+  type AccessCredentialRotationRevokeInput,
+  type AccessCredentialRotationRevokeResult,
 } from '../protocol/index.js';
 import {
   createRuntimeHostConnectionAuthority,
@@ -68,6 +72,12 @@ export interface RuntimeHostAccessAuthority {
   replace(input: AccessCredentialReplaceInput): Promise<AccessCredentialReplaceResult>;
   prepare(input: AccessCredentialPrepareInput): Promise<AccessCredentialPrepareResult>;
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult>;
+  prepareRotation(
+    input: AccessCredentialRotationPrepareInput,
+  ): Promise<AccessCredentialRotationPrepareResult>;
+  revokeRotation(
+    input: AccessCredentialRotationRevokeInput,
+  ): Promise<AccessCredentialRotationRevokeResult>;
   finalize(credentialId: string): Promise<AccessCredentialFinalizeResult>;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
   close(): Promise<void>;
@@ -149,7 +159,12 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   }
 
   prepare(input: AccessCredentialPrepareInput): Promise<AccessCredentialPrepareResult> {
-    if (!('replacementOfCredentialId' in input)) return this.#issue(input, 'prepare');
+    return this.#issue(input, 'prepare');
+  }
+
+  prepareRotation(
+    input: AccessCredentialRotationPrepareInput,
+  ): Promise<AccessCredentialRotationPrepareResult> {
     return this.#mutate(async () => {
       const current = this.#file.credentials.find(
         (credential) =>
@@ -252,55 +267,65 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
 
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult> {
     return this.#mutate(async () => {
-      if ('requiredActiveCredentialId' in input) {
-        const requiredActiveCredential = this.#file.credentials.find(
-          (credential) => credential.credentialId === input.requiredActiveCredentialId,
-        );
-        if (!requiredActiveCredential || requiredActiveCredential.status !== 'active') {
-          throw new RuntimeHostAccessInputError(
-            'The required credential is no longer active on this Runtime Host',
-          );
-        }
-        if (input.credentialId === input.requiredActiveCredentialId) {
-          throw new RuntimeHostAccessInputError('A credential cannot revoke itself');
-        }
-      }
-      const index = this.#file.credentials.findIndex(
-        (credential) => credential.credentialId === input.credentialId,
-      );
-      if (index === -1 || this.#file.credentials[index]?.status === 'revoked') {
-        return { credentialId: input.credentialId, revoked: false };
-      }
-      const current = this.#file.credentials[index]!;
-      const pendingForPrincipal =
-        current.status === 'active'
-          ? this.#file.credentials.filter(
-              (credential) =>
-                credential.status === 'pending' &&
-                credential.principalKind === current.principalKind &&
-                credential.principalId === current.principalId,
-            )
-          : [];
-      const credentials =
-        current.status === 'pending'
-          ? this.#file.credentials.filter((credential) => credential !== current)
-          : this.#file.credentials
-              .filter((credential) => !pendingForPrincipal.includes(credential))
-              .map((credential) =>
-                credential === current
-                  ? {
-                      ...credential,
-                      status: 'revoked' as const,
-                      revokedAt: new Date().toISOString(),
-                    }
-                  : credential,
-              );
-      await this.#commit(
-        createAccessCredentialFile(credentials),
-        [current, ...pendingForPrincipal].map((credential) => credential.credentialId),
-      );
-      return { credentialId: input.credentialId, revoked: true };
+      return this.#revoke(input.credentialId);
     });
+  }
+
+  revokeRotation(
+    input: AccessCredentialRotationRevokeInput,
+  ): Promise<AccessCredentialRotationRevokeResult> {
+    return this.#mutate(async () => {
+      const requiredActiveCredential = this.#file.credentials.find(
+        (credential) => credential.credentialId === input.requiredActiveCredentialId,
+      );
+      if (!requiredActiveCredential || requiredActiveCredential.status !== 'active') {
+        throw new RuntimeHostAccessInputError(
+          'The required credential is no longer active on this Runtime Host',
+        );
+      }
+      if (input.credentialId === input.requiredActiveCredentialId) {
+        throw new RuntimeHostAccessInputError('A credential cannot revoke itself');
+      }
+      return this.#revoke(input.credentialId);
+    });
+  }
+
+  async #revoke(credentialId: string): Promise<AccessCredentialRevokeResult> {
+    const index = this.#file.credentials.findIndex(
+      (credential) => credential.credentialId === credentialId,
+    );
+    if (index === -1 || this.#file.credentials[index]?.status === 'revoked') {
+      return { credentialId, revoked: false };
+    }
+    const current = this.#file.credentials[index]!;
+    const pendingForPrincipal =
+      current.status === 'active'
+        ? this.#file.credentials.filter(
+            (credential) =>
+              credential.status === 'pending' &&
+              credential.principalKind === current.principalKind &&
+              credential.principalId === current.principalId,
+          )
+        : [];
+    const credentials =
+      current.status === 'pending'
+        ? this.#file.credentials.filter((credential) => credential !== current)
+        : this.#file.credentials
+            .filter((credential) => !pendingForPrincipal.includes(credential))
+            .map((credential) =>
+              credential === current
+                ? {
+                    ...credential,
+                    status: 'revoked' as const,
+                    revokedAt: new Date().toISOString(),
+                  }
+                : credential,
+            );
+    await this.#commit(
+      createAccessCredentialFile(credentials),
+      [current, ...pendingForPrincipal].map((credential) => credential.credentialId),
+    );
+    return { credentialId, revoked: true };
   }
 
   finalize(credentialId: string): Promise<AccessCredentialFinalizeResult> {
@@ -520,6 +545,25 @@ export async function prepareAccessCredential(
   }
 }
 
+export async function prepareAccessCredentialRotation(
+  authority: RuntimeHostAccessAuthority | undefined,
+  input: AccessCredentialRotationPrepareInput,
+): Promise<OperationOutcome<'access.credential.rotation.prepare'>> {
+  if (!authority) return unavailable('rotation.prepare');
+  try {
+    return { ok: true, result: await authority.prepareRotation(input) };
+  } catch (error) {
+    if (error instanceof RuntimeHostAccessInputError) {
+      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+    }
+    return accessPersistenceFailure(
+      error,
+      'Access credential rotation preparation outcome is unknown',
+      'Access credential rotation could not begin',
+    );
+  }
+}
+
 export async function revokeAccessCredential(
   authority: RuntimeHostAccessAuthority | undefined,
   input: AccessCredentialRevokeInput,
@@ -534,6 +578,25 @@ export async function revokeAccessCredential(
     return accessPersistenceFailure(
       error,
       'Access credential revocation outcome is unknown',
+      'Access credential could not be revoked',
+    );
+  }
+}
+
+export async function revokeAccessCredentialRotation(
+  authority: RuntimeHostAccessAuthority | undefined,
+  input: AccessCredentialRotationRevokeInput,
+): Promise<OperationOutcome<'access.credential.rotation.revoke'>> {
+  if (!authority) return unavailable('rotation.revoke');
+  try {
+    return { ok: true, result: await authority.revokeRotation(input) };
+  } catch (error) {
+    if (error instanceof RuntimeHostAccessInputError) {
+      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+    }
+    return accessPersistenceFailure(
+      error,
+      'Access credential rotation revocation outcome is unknown',
       'Access credential could not be revoked',
     );
   }
@@ -578,14 +641,29 @@ function unavailable(operation: 'issue'): OperationOutcome<'access.credential.is
 function unavailable(operation: 'replace'): OperationOutcome<'access.credential.replace'>;
 function unavailable(operation: 'prepare'): OperationOutcome<'access.credential.prepare'>;
 function unavailable(operation: 'revoke'): OperationOutcome<'access.credential.revoke'>;
+function unavailable(
+  operation: 'rotation.prepare',
+): OperationOutcome<'access.credential.rotation.prepare'>;
+function unavailable(
+  operation: 'rotation.revoke',
+): OperationOutcome<'access.credential.rotation.revoke'>;
 function unavailable(operation: 'finalize'): OperationOutcome<'access.credential.finalize'>;
 function unavailable(
-  _operation: 'issue' | 'replace' | 'prepare' | 'revoke' | 'finalize',
+  _operation:
+    | 'issue'
+    | 'replace'
+    | 'prepare'
+    | 'revoke'
+    | 'rotation.prepare'
+    | 'rotation.revoke'
+    | 'finalize',
 ):
   | OperationOutcome<'access.credential.issue'>
   | OperationOutcome<'access.credential.replace'>
   | OperationOutcome<'access.credential.prepare'>
   | OperationOutcome<'access.credential.revoke'>
+  | OperationOutcome<'access.credential.rotation.prepare'>
+  | OperationOutcome<'access.credential.rotation.revoke'>
   | OperationOutcome<'access.credential.finalize'> {
   return {
     ok: false,

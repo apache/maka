@@ -164,6 +164,47 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 38);
   });
 
+  test('adds credential rotation without changing existing credential inputs', () => {
+    const issueInput = {
+      principalKind: 'remote_owner',
+      principalId: 'desktop:test',
+      operationGrants: ['host.status'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    };
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput(issueInput),
+      issueInput,
+    );
+    assert.throws(() =>
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput({
+        replacementOfCredentialId: 'credential-current',
+      }),
+    );
+    assert.throws(() =>
+      HOST_OPERATION_SPECS['access.credential.revoke'].decodeInput({
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      }),
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.rotation.prepare'].decodeInput({
+        replacementOfCredentialId: 'credential-current',
+      }),
+      { replacementOfCredentialId: 'credential-current' },
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.rotation.revoke'].decodeInput({
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      }),
+      {
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      },
+    );
+  });
+
   test('selects the highest mutually supported protocol and rejects a gap', () => {
     assert.equal(negotiateProtocol({ min: 0, max: 0 }, { min: 0, max: 0 }), 0);
     assert.equal(negotiateProtocol({ min: 1, max: 3 }, { min: 2, max: 4 }), 3);

@@ -18,13 +18,7 @@
  */
 
 import { invalidProtocolFrame } from './errors.js';
-import {
-  requireExactRecord,
-  requireId,
-  requireRecord,
-  requireString,
-  requireUtf8String,
-} from './codec.js';
+import { requireExactRecord, requireId, requireString, requireUtf8String } from './codec.js';
 import { defineOperation } from './operation-spec.js';
 import type { OperationKey } from './operations.js';
 
@@ -62,17 +56,25 @@ export interface AccessCredentialIssueResult {
 
 export type AccessCredentialReplaceInput = AccessCredentialIssueInput;
 export type AccessCredentialReplaceResult = AccessCredentialIssueResult;
-export type AccessCredentialPrepareInput =
-  | AccessCredentialIssueInput
-  | { readonly replacementOfCredentialId: string };
+export type AccessCredentialPrepareInput = AccessCredentialIssueInput;
 export type AccessCredentialPrepareResult = AccessCredentialIssueResult;
 
-export type AccessCredentialRevokeInput =
-  | { readonly credentialId: string }
-  | {
-      readonly credentialId: string;
-      readonly requiredActiveCredentialId: string;
-    };
+export interface AccessCredentialRevokeInput {
+  readonly credentialId: string;
+}
+
+export interface AccessCredentialRotationPrepareInput {
+  readonly replacementOfCredentialId: string;
+}
+
+export type AccessCredentialRotationPrepareResult = AccessCredentialPrepareResult;
+
+export interface AccessCredentialRotationRevokeInput {
+  readonly credentialId: string;
+  readonly requiredActiveCredentialId: string;
+}
+
+export type AccessCredentialRotationRevokeResult = AccessCredentialRevokeResult;
 
 export interface AccessCredentialRevokeResult {
   readonly credentialId: string;
@@ -113,7 +115,7 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
     mode: 'command',
     availability: 'ready',
     errors: ACCESS_ERRORS,
-    decodeInput: decodeAccessCredentialPrepareInput,
+    decodeInput: decodeAccessCredentialIssueInput,
     decodeOutput: decodeAccessCredentialIssueResult,
   }),
   'access.credential.revoke': defineOperation<
@@ -125,6 +127,28 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
     availability: 'ready',
     errors: ACCESS_ERRORS,
     decodeInput: decodeAccessCredentialRevokeInput,
+    decodeOutput: decodeAccessCredentialRevokeResult,
+  }),
+  'access.credential.rotation.prepare': defineOperation<
+    AccessCredentialRotationPrepareInput,
+    AccessCredentialRotationPrepareResult,
+    (typeof ACCESS_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCESS_ERRORS,
+    decodeInput: decodeAccessCredentialRotationPrepareInput,
+    decodeOutput: decodeAccessCredentialIssueResult,
+  }),
+  'access.credential.rotation.revoke': defineOperation<
+    AccessCredentialRotationRevokeInput,
+    AccessCredentialRotationRevokeResult,
+    (typeof ACCESS_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCESS_ERRORS,
+    decodeInput: decodeAccessCredentialRotationRevokeInput,
     decodeOutput: decodeAccessCredentialRevokeResult,
   }),
   'access.credential.finalize': defineOperation<
@@ -184,22 +208,6 @@ export function decodeAccessCredentialIssueResult(value: unknown): AccessCredent
   };
 }
 
-export function decodeAccessCredentialPrepareInput(value: unknown): AccessCredentialPrepareInput {
-  const record = requireRecord(value, 'access credential prepare input');
-  if (Object.hasOwn(record, 'replacementOfCredentialId')) {
-    const replacement = requireExactRecord(record, 'access credential replacement input', [
-      'replacementOfCredentialId',
-    ]);
-    return {
-      replacementOfCredentialId: requireId(
-        replacement.replacementOfCredentialId,
-        'replacementOfCredentialId',
-      ),
-    };
-  }
-  return decodeAccessCredentialIssueInput(record);
-}
-
 function principalKind(value: unknown): AccessCredentialPrincipalKind {
   if (value !== 'remote_owner' && value !== 'capability_provider') {
     throw invalidProtocolFrame('Invalid access credential principalKind');
@@ -208,22 +216,38 @@ function principalKind(value: unknown): AccessCredentialPrincipalKind {
 }
 
 export function decodeAccessCredentialRevokeInput(value: unknown): AccessCredentialRevokeInput {
-  const record = requireRecord(value, 'access credential revoke input');
-  if (Object.hasOwn(record, 'requiredActiveCredentialId')) {
-    const guarded = requireExactRecord(record, 'guarded access credential revoke input', [
-      'credentialId',
+  const record = requireExactRecord(value, 'access credential revoke input', ['credentialId']);
+  return { credentialId: requireId(record.credentialId, 'credentialId') };
+}
+
+export function decodeAccessCredentialRotationPrepareInput(
+  value: unknown,
+): AccessCredentialRotationPrepareInput {
+  const record = requireExactRecord(value, 'access credential rotation prepare input', [
+    'replacementOfCredentialId',
+  ]);
+  return {
+    replacementOfCredentialId: requireId(
+      record.replacementOfCredentialId,
+      'replacementOfCredentialId',
+    ),
+  };
+}
+
+export function decodeAccessCredentialRotationRevokeInput(
+  value: unknown,
+): AccessCredentialRotationRevokeInput {
+  const record = requireExactRecord(value, 'access credential rotation revoke input', [
+    'credentialId',
+    'requiredActiveCredentialId',
+  ]);
+  return {
+    credentialId: requireId(record.credentialId, 'credentialId'),
+    requiredActiveCredentialId: requireId(
+      record.requiredActiveCredentialId,
       'requiredActiveCredentialId',
-    ]);
-    return {
-      credentialId: requireId(guarded.credentialId, 'credentialId'),
-      requiredActiveCredentialId: requireId(
-        guarded.requiredActiveCredentialId,
-        'requiredActiveCredentialId',
-      ),
-    };
-  }
-  const unguarded = requireExactRecord(record, 'access credential revoke input', ['credentialId']);
-  return { credentialId: requireId(unguarded.credentialId, 'credentialId') };
+    ),
+  };
 }
 
 export function decodeAccessCredentialRevokeResult(value: unknown): AccessCredentialRevokeResult {

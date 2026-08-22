@@ -61,8 +61,10 @@ import {
   issueAccessCredential,
   finalizeAccessCredential,
   prepareAccessCredential,
+  prepareAccessCredentialRotation,
   replaceAccessCredential,
   revokeAccessCredential,
+  revokeAccessCredentialRotation,
   type RuntimeHostAccessAuthority,
 } from './access-authority.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
@@ -660,6 +662,14 @@ export class RuntimeHostKernel {
         'access.credential.revoke': async (input) =>
           this.#settleAccessCredentialMutation(
             revokeAccessCredential(this.#options.accessAuthority, input),
+          ),
+        'access.credential.rotation.prepare': async (input) =>
+          this.#settleAccessCredentialMutation(
+            prepareAccessCredentialRotation(this.#options.accessAuthority, input),
+          ),
+        'access.credential.rotation.revoke': async (input) =>
+          this.#settleAccessCredentialMutation(
+            revokeAccessCredentialRotation(this.#options.accessAuthority, input),
           ),
         'access.credential.finalize': async (_input, context) =>
           this.#settleAccessCredentialMutation(

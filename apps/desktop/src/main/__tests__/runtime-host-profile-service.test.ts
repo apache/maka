@@ -678,6 +678,54 @@ test("reactivates the previous credential after a pre-rebind rotation crash", as
   );
 });
 
+test("does not let unfinished pairing recovery override a later disable", async () => {
+  const root = await clientRoot();
+  const credentials = createClientRuntimeHostCredentialStore(root);
+  const credentialStore = {
+    getSecret: credentials.getSecret.bind(credentials),
+    setSecret: credentials.setSecret.bind(credentials),
+    deleteSecret: async () => {
+      throw new Error("credential cleanup failed");
+    },
+  };
+  const catalog = createClientRuntimeHostProfileCatalog(root, credentialStore);
+  await catalog.create(MANAGED_PROFILE, "old-token");
+  await createDesktopRuntimeHostManagedServiceStore(root).save(
+    MANAGED_PROFILE,
+    MANAGED_SERVICE,
+  );
+  await writeFile(
+    join(root, "runtime-host-profile-selection.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+      enabledRemoteProfileIds: [MANAGED_PROFILE.id],
+    })}\n`,
+  );
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog, credentialStore });
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    credentialStore,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+  const access = await service.resolveManagedAccess(MANAGED_PROFILE.id);
+  assert.ok(access);
+
+  await service.rotateManagedCredential(access, "new-token");
+
+  assert.equal((await service.getSnapshot()).pairingRecoveryPending, true);
+  await assert.rejects(
+    () => service.setEnabled(MANAGED_PROFILE.id, false),
+    /unfinished pairing/u,
+  );
+});
+
 test("keeps managed service recovery when a failed pairing profile cannot be removed", async () => {
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);

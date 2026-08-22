@@ -26,7 +26,7 @@ import {
   isOperationKey,
   REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  type AccessCredentialRevokeInput,
+  type AccessCredentialRotationRevokeInput,
   type AccessCredentialPrincipalKind,
   type OperationKey,
 } from '@maka/runtime-host/protocol';
@@ -189,7 +189,7 @@ async function prepareRuntimeHostAccessCredentialReplacement(
 ): Promise<IssuedRuntimeHostAccessCredential> {
   const connection = await connectLocalOwner(options.rootPath, options.expectedRootId);
   try {
-    const result = await connection.request('access.credential.prepare', {
+    const result = await connection.request('access.credential.rotation.prepare', {
       replacementOfCredentialId,
     });
     const credential = await consumeAccessCredentialDelivery(
@@ -332,12 +332,12 @@ function mutableCredentialMetadata(credentials: readonly RuntimeHostAccessCreden
 
 export async function revokeRuntimeHostAccessCredential(
   options: RuntimeHostAccessRevokeOptions,
-  guardedInput?: Extract<AccessCredentialRevokeInput, { requiredActiveCredentialId: string }>,
+  guardedInput?: AccessCredentialRotationRevokeInput,
 ) {
   const connection = await connectLocalOwner(options.rootPath, options.expectedRootId);
   try {
     return await connection.request(
-      'access.credential.revoke',
+      guardedInput ? 'access.credential.rotation.revoke' : 'access.credential.revoke',
       guardedInput ?? { credentialId: options.credentialId },
     );
   } finally {

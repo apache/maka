@@ -607,7 +607,7 @@ test('credential rotation preserves authority and cannot outlive its active sour
       canPublishClientCapabilities: true,
       canUseHostPaths: false,
     });
-    const replacement = await authority.prepare({
+    const replacement = await authority.prepareRotation({
       replacementOfCredentialId: source.credentialId,
     });
     assert.deepEqual(replacement.operationGrants, source.operationGrants);
@@ -617,7 +617,7 @@ test('credential rotation preserves authority and cannot outlive its active sour
     await authority.revoke({ credentialId: source.credentialId });
     await assert.rejects(authority.finalize(replacement.credentialId), /no longer active/u);
     await assert.rejects(
-      authority.prepare({ replacementOfCredentialId: source.credentialId }),
+      authority.prepareRotation({ replacementOfCredentialId: source.credentialId }),
       /no longer active/u,
     );
   } finally {
@@ -645,14 +645,14 @@ test('guarded credential revocation requires its active credential', async () =>
       canUseHostPaths: false,
     });
     assert.deepEqual(
-      await authority.revoke({
+      await authority.revokeRotation({
         credentialId: 'already-absent',
         requiredActiveCredentialId: desktop.credentialId,
       }),
       { credentialId: 'already-absent', revoked: false },
     );
     await assert.rejects(
-      authority.revoke({
+      authority.revokeRotation({
         credentialId: desktop.credentialId,
         requiredActiveCredentialId: desktop.credentialId,
       }),
@@ -660,7 +660,7 @@ test('guarded credential revocation requires its active credential', async () =>
     );
     await authority.revoke({ credentialId: desktop.credentialId });
     await assert.rejects(
-      authority.revoke({
+      authority.revokeRotation({
         credentialId: target.credentialId,
         requiredActiveCredentialId: desktop.credentialId,
       }),
