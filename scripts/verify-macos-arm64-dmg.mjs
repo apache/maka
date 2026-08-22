@@ -56,6 +56,9 @@ export async function smokePackagedFilesystemWorker(
       access: 'write',
       scope: 'exact',
       targetType: 'missing',
+      // Protocol v7 requires the three-state identity; a write to a target
+      // approved as missing carries 'missing' (#3484 / #3487).
+      identity: 'missing',
     },
   };
 

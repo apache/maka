@@ -206,6 +206,32 @@ describe('filesystem worker target identity CAS', () => {
     assert.equal(await readFile(target, 'utf8'), 'created');
   });
 
+  test('a write to a missing target reports a creation diff (#3487 P1)', async () => {
+    const cwd = await temporaryDirectory('maka-identity-missing-write-');
+    const target = join(cwd, 'brand-new.txt');
+
+    // The truthy 'missing' identity string used to make the "approved
+    // missing" truthiness test fail, collapsing the diff into unknown and
+    // hiding new-file changes from review. The write must report the creation
+    // diff (`--- /dev/null`) instead.
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'write', cwd, path: target, content: 'created\n' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'missing' },
+      ),
+    );
+
+    assert.equal(response.ok, true);
+    assert.equal(response.result.kind, 'write');
+    if (response.result.kind !== 'write') return;
+    assert.ok(
+      response.result.diff?.includes('--- /dev/null'),
+      'a created file must carry a creation diff with --- /dev/null',
+    );
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(target, 'utf8'), 'created\n');
+  });
+
   test('reports path_changed when the target is replaced before the write (pre-write CAS)', async () => {
     const cwd = await temporaryDirectory('maka-identity-prewrite-');
     const target = join(cwd, 'file.txt');

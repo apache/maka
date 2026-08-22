@@ -793,6 +793,93 @@ describe('filesystem worker client dispatch classification', () => {
     // The interloper's content was never touched.
     assert.equal(await readFile(target, 'utf8'), 'external-content');
   });
+
+  test('lets an unchecked caller write an existing target without a CAS identity (#3484)', async () => {
+    const workspace = await temporaryDirectory('maka-client-unchecked-');
+    const target = join(workspace, 'file.txt');
+    // The target already exists; the caller has no T0 snapshot to compare
+    // (e.g. a verification script that owns the path itself).
+    await writeFile(target, 'existing', 'utf8');
+
+    const { client, requests } = fakeClient();
+    await client.execute({
+      operation: { kind: 'write', path: target, content: 'new' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+
+    const expectedTarget = requests[0]?.expectedTarget;
+    assert.equal(expectedTarget?.targetType, 'file');
+    assert.equal(expectedTarget?.identity, 'unchecked');
+  });
+
+  test('marks a T0-missing create as missing on the wire, not unchecked (#3484)', async () => {
+    const workspace = await temporaryDirectory('maka-client-t0missing-');
+    const target = join(workspace, 'new.txt');
+
+    const { client, requests } = fakeClient();
+    await client.execute({
+      operation: { kind: 'write', path: target, content: 'new' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'missing',
+    });
+
+    const expectedTarget = requests[0]?.expectedTarget;
+    assert.equal(expectedTarget?.targetType, 'missing');
+    assert.equal(expectedTarget?.identity, 'missing');
+  });
+
+  test('a read without expectedIdentity sends unchecked automatically (#3487)', async () => {
+    const workspace = await temporaryDirectory('maka-client-read-auto-');
+    const target = join(workspace, 'file.txt');
+    await writeFile(target, 'content', 'utf8');
+
+    const { client, requests } = fakeClient();
+    await client.execute({
+      operation: { kind: 'read', path: target },
+      cwd: workspace,
+      mode: 'ask',
+      // No expectedIdentity: reads never participate in CAS, and the client
+      // must not reject or silently omit the wire field — a plain-JavaScript
+      // caller that bypasses TypeScript has no way to get this wrong.
+    });
+
+    assert.equal(requests[0]?.expectedTarget.identity, 'unchecked');
+  });
+
+  test('a write without expectedIdentity is rejected at runtime (#3487)', async () => {
+    const workspace = await temporaryDirectory('maka-client-write-required-');
+    const target = join(workspace, 'file.txt');
+    await writeFile(target, 'existing', 'utf8');
+
+    const client = new FilesystemWorkerClient({
+      sandboxManager: new SandboxManager([new MacosSeatbeltBackend()]),
+      platform: 'darwin',
+      getLaunchSpec: async () => ({
+        ok: false,
+        reason: 'worker_bundle_unavailable',
+        message: 'unused',
+      }),
+      runProcess: async () => {
+        throw new Error('must not dispatch');
+      },
+    });
+
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path: target, content: 'new' },
+        cwd: workspace,
+        mode: 'ask',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'invalid_request');
+        return true;
+      },
+    );
+  });
 });
 
 function isPathDenied(error: unknown): boolean {

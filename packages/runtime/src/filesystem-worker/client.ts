@@ -79,8 +79,16 @@ export interface FilesystemWorkerExecuteInput {
   /** Explicit embedding policy. Mode-based defaults are compiled only when omitted. */
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
-  /** Required: the caller's T0 observation, see `FilesystemWorkerExpectedIdentity`. */
-  expectedIdentity: FilesystemWorkerExpectedIdentity;
+  /**
+   * The caller's T0 observation, see `FilesystemWorkerExpectedIdentity`.
+   *
+   * REQUIRED for write operations: the client throws at runtime when a write
+   * arrives without one, so a JavaScript caller (which TypeScript cannot
+   * guard) fails loudly instead of silently skipping the queue-window CAS.
+   * Reads never participate in CAS: the client sends 'unchecked' for them
+   * automatically, so read callers have no way to get this wrong.
+   */
+  expectedIdentity?: FilesystemWorkerExpectedIdentity;
 }
 
 export type FilesystemWorkerClientErrorReason =
@@ -190,6 +198,21 @@ export class FilesystemWorkerClient {
     if (!parsedOperation.success) throw clientError('invalid_operation', 'validation', requestId);
 
     const access = operationAccess(parsedOperation.data.kind);
+    // Reads never participate in CAS: the client sends 'unchecked' for them
+    // automatically, so read callers (including plain-JavaScript verifiers
+    // that bypass TypeScript) have no way to get the identity wrong.
+    // Writes require an explicit T0 state, enforced at runtime: a caller that
+    // omits it fails loudly here instead of silently skipping the
+    // queue-window CAS (#3487, maintainer review).
+    const writeIdentity = access === 'write' ? input.expectedIdentity : 'unchecked';
+    if (access === 'write' && writeIdentity === undefined) {
+      throw clientError(
+        'invalid_request',
+        'validation',
+        requestId,
+        'A write operation requires an explicit expectedIdentity: {dev, ino}, "missing", or "unchecked".',
+      );
+    }
     const entryMode = operationUsesDirectoryEntry(parsedOperation.data);
     // The wire identity contract is derived below from the caller's explicit
     // expectedIdentity; the normalised target itself has no identity field,
@@ -231,10 +254,8 @@ export class FilesystemWorkerClient {
     //   T0 snapshot, so nothing can be compared (#3484).
     const targetExistsAtT1 = target.targetType !== 'missing';
     const identity =
-      targetExistsAtT1 && typeof input.expectedIdentity === 'object'
-        ? input.expectedIdentity
-        : undefined;
-    if (targetExistsAtT1 && access === 'write' && input.expectedIdentity === 'missing') {
+      targetExistsAtT1 && typeof writeIdentity === 'object' ? writeIdentity : undefined;
+    if (targetExistsAtT1 && access === 'write' && writeIdentity === 'missing') {
       throw clientError(
         'path_changed',
         'validation',
@@ -323,12 +344,9 @@ export class FilesystemWorkerClient {
         targetType: target.targetType,
         // The execution-time identity contract. A concrete identity is only
         // carried when the target still exists at T1; a target that vanished
-        // while queued (or was never there) is 'missing', and a caller that
-        // does not participate in CAS says 'unchecked' (#3484).
-        identity:
-          typeof input.expectedIdentity === 'object'
-            ? (identity ?? 'missing')
-            : input.expectedIdentity,
+        // while queued (or was never there) is 'missing'; reads always say
+        // 'unchecked' (the client generates it, callers cannot get it wrong).
+        identity: typeof writeIdentity === 'object' ? (identity ?? 'missing') : writeIdentity,
       },
     } as const;
     const requestJson = JSON.stringify(request);

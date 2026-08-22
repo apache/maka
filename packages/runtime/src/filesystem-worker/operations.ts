@@ -161,8 +161,11 @@ export async function executeFilesystemOperation(
       try {
         // Read-before-write (for the diff): only through the pinned descriptor.
         // An approved-missing target was just created by 'wx', so it is new.
+        // The wire identity is three-state (#3484): 'missing' is a truthy
+        // string, so a truthiness test can no longer stand in for "the target
+        // was approved as missing" — targetType is the authority here.
         let previous: 'new' | 'unknown' | string;
-        if (!expectedTarget?.identity) {
+        if (expectedTarget?.targetType === 'missing') {
           previous = 'new';
         } else {
           try {
