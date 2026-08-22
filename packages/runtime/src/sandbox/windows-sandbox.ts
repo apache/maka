@@ -13,7 +13,12 @@ import { join } from 'node:path';
 
 import { isCanonicalWindowsPath } from '@maka/core/windows-path';
 
-import type { SandboxBackend, SandboxTransformRequest, SandboxTransformResult } from './types.js';
+import type {
+  SandboxBackend,
+  SandboxCapabilityProbeResult,
+  SandboxTransformRequest,
+  SandboxTransformResult,
+} from './types.js';
 import { compileWindowsSandboxPolicy } from './windows-profile.js';
 
 /**
@@ -100,6 +105,48 @@ export class WindowsBrokerSandboxBackend implements SandboxBackend {
       profile.fileSystem.kind === 'restricted' &&
       profile.network.kind === 'restricted'
     );
+  }
+
+  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult {
+    const preference = request.preference ?? 'auto';
+    const platform = request.platform ?? process.platform;
+    if (platform !== 'win32') {
+      return failure(
+        'unsupported_platform',
+        'Windows broker backend requires win32.',
+        platform,
+        preference,
+      );
+    }
+    if (!this.isAvailable(platform)) {
+      return failure(
+        'backend_not_available',
+        'Windows sandbox broker client is not available.',
+        platform,
+        preference,
+      );
+    }
+    const configurationError = validateConfiguration(this.options);
+    if (configurationError) {
+      return failure('invalid_request', configurationError, platform, preference);
+    }
+    try {
+      compileWindowsSandboxPolicy(request.command);
+    } catch (error) {
+      return failure(
+        'invalid_request',
+        error instanceof Error ? error.message : String(error),
+        platform,
+        preference,
+      );
+    }
+    return {
+      ok: true,
+      executable: this.options.clientPath,
+      sandboxType: 'windows',
+      requiresSandbox: true,
+      preference,
+    };
   }
 
   transform(request: SandboxTransformRequest): SandboxTransformResult {
@@ -248,7 +295,7 @@ function failure(
   message: string,
   platform: string,
   preference: 'auto' | 'require' | 'forbid',
-): SandboxTransformResult {
+): Extract<SandboxTransformResult, { ok: false }> {
   return {
     ok: false,
     reason,

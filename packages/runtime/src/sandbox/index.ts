@@ -67,6 +67,7 @@ export type {
 } from './macos-seatbelt.js';
 export type {
   SandboxBackend,
+  SandboxCapabilityProbeResult,
   SandboxCommand,
   SandboxExecRequest,
   SandboxPathContext,

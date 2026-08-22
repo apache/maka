@@ -13,6 +13,7 @@ import { SandboxManager } from '../sandbox/sandbox-manager.js';
 import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
 import type {
   SandboxBackend,
+  SandboxCapabilityProbeResult,
   SandboxTransformRequest,
   SandboxTransformResult,
 } from '../sandbox/types.js';
@@ -20,6 +21,16 @@ import type {
 class FakeMacosBackend implements SandboxBackend {
   readonly type = 'macos-seatbelt' as const;
   calls: SandboxTransformRequest[] = [];
+
+  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult {
+    return {
+      ok: true,
+      executable: '/usr/bin/sandbox-exec',
+      sandboxType: 'macos-seatbelt',
+      requiresSandbox: true,
+      preference: request.preference ?? 'auto',
+    };
+  }
 
   transform(request: SandboxTransformRequest): SandboxTransformResult {
     this.calls.push(request);
@@ -217,6 +228,27 @@ describe('SandboxManager.selectInitial', () => {
     assert.equal(external.ok && external.sandboxType, 'none');
     assert.equal(disabled.ok && disabled.sandboxType, 'none');
     assert.equal(forbid.ok && forbid.sandboxType, 'none');
+  });
+});
+
+describe('SandboxManager.probe', () => {
+  it('uses the side-effect-free backend probe without transforming execution', () => {
+    const backend = new FakeMacosBackend();
+    const manager = new SandboxManager([backend]);
+
+    const result = manager.probe({
+      command: command(createWorkspaceWritePermissionProfile()),
+      platform: 'darwin',
+    });
+
+    assert.deepEqual(result, {
+      ok: true,
+      executable: '/usr/bin/sandbox-exec',
+      sandboxType: 'macos-seatbelt',
+      requiresSandbox: true,
+      preference: 'auto',
+    });
+    assert.equal(backend.calls.length, 0);
   });
 });
 

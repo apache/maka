@@ -51,6 +51,40 @@ test('writes broker manifests to exclusive per-process temporary files', async (
   }
 });
 
+test('probes the Windows broker without materializing a one-shot manifest', () => {
+  let manifestWrites = 0;
+  const clientPath = String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`;
+  const backend = new WindowsBrokerSandboxBackend({
+    clientPath,
+    isAvailable: () => true,
+    writeManifest: () => {
+      manifestWrites += 1;
+      return String.raw`C:\Users\user\AppData\Local\Temp\request.json`;
+    },
+  });
+
+  const result = backend.probe({
+    platform: 'win32',
+    command: {
+      program: String.raw`C:\Windows\System32\cmd.exe`,
+      args: ['/d', '/c', 'exit 0'],
+      cwd: String.raw`C:\work\repo`,
+      env: { SystemRoot: String.raw`C:\Windows` },
+      profile: createWorkspaceWritePermissionProfile(),
+      pathContext: { workspaceRoots: [String.raw`C:\work\repo`] },
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    executable: clientPath,
+    sandboxType: 'windows',
+    requiresSandbox: true,
+    preference: 'auto',
+  });
+  assert.equal(manifestWrites, 0);
+});
+
 test('transforms a Windows managed profile into a broker-client invocation', () => {
   let written: WindowsBrokerManifest | undefined;
   const backend = new WindowsBrokerSandboxBackend({
