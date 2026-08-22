@@ -91,10 +91,17 @@ export function registerRuntimeHostPermissionsIpc(
       computerUse: deps.getComputerUseCapabilityInput(),
       now,
     });
+    // The catalog projects `defaultModel` onto exactly one connection (the
+    // default target): with a default configured somewhere, other enabled
+    // connections carry an empty `defaultModel` by construction, and their
+    // signal must say "not the default source", not "misconfigured".
+    const workspaceHasDefaultTarget = connections.some((connection) =>
+      Boolean(connection.defaultModel),
+    );
     const connectionSignals = (
       await Promise.all(
         connections.map(async (connection) => [
-          healthSignalFromConnection(connection, now),
+          healthSignalFromConnection(connection, now, { workspaceHasDefaultTarget }),
           healthSignalFromConnectionRuntime(
             connection,
             await latestRuntimeProbe(deps.client, connection),

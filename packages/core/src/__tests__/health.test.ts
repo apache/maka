@@ -43,6 +43,59 @@ describe('HealthSignal contract', () => {
     expect(result.source).toBe('connection_test');
   });
 
+  test('a missing default model warns only when the workspace has no default target', () => {
+    // The catalog projects `defaultModel` onto exactly one connection (the
+    // default target). With a default configured elsewhere, an enabled
+    // connection with an empty `defaultModel` is the documented normal
+    // state — informational, never send-blocking, and never a prompt to
+    // find a per-connection setting that deliberately does not exist.
+    const nonDefault = healthSignalFromConnection(
+      connection({ defaultModel: '', enabledModelIds: ['glm-4.7'] }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    expect(nonDefault.status).toBe('info');
+    expect(nonDefault.blocksSend).toBe(false);
+
+    // With NO default anywhere, a new chat cannot start: that is the
+    // actionable, send-blocking configuration gap.
+    const noDefaultAnywhere = healthSignalFromConnection(
+      connection({ defaultModel: '' }),
+      20,
+      { workspaceHasDefaultTarget: false },
+    );
+    expect(noDefaultAnywhere.status).toBe('warning');
+    expect(noDefaultAnywhere.blocksSend).toBe(true);
+
+    // The informational note must not paper over real per-connection
+    // blockers: failing validation still wins on a non-default connection…
+    const reauth = healthSignalFromConnection(
+      connection({ defaultModel: '', enabledModelIds: ['glm-4.7'], lastTestStatus: 'needs_reauth' }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    expect(reauth.status).toBe('error');
+    expect(reauth.blocksSend).toBe(true);
+
+    // …and a connection with no enabled models cannot claim that explicit
+    // selection works — there is nothing to select.
+    const emptyInventory = healthSignalFromConnection(
+      connection({ defaultModel: '', enabledModelIds: [] }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    expect(emptyInventory.status).toBe('warning');
+    expect(emptyInventory.blocksSend).toBe(false);
+
+    // The default target itself keeps its validation-layer signals.
+    const configured = healthSignalFromConnection(
+      connection({ lastTestStatus: 'verified', lastTestAt: '2026-05-22T07:30:00.000Z' }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    expect(configured.status).toBe('ok');
+  });
+
   test('LLM runtime probe is separate from credential validation', () => {
     const unknown = healthSignalFromConnectionRuntime(
       connection({ lastTestStatus: 'verified' }),
