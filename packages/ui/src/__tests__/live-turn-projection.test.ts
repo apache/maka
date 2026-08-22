@@ -152,7 +152,7 @@ describe('applyLiveTurnEvent', () => {
       delayMs: 4_000,
       reason: 'rate_limit',
     });
-    assert.deepEqual(scheduled?.providerRetry, {
+    assert.deepEqual(scheduled?.providerRetry?.event, {
       type: 'provider_retry',
       id: 'retry-1',
       turnId: 'turn-1',
@@ -163,6 +163,9 @@ describe('applyLiveTurnEvent', () => {
       delayMs: 4_000,
       reason: 'rate_limit',
     });
+    // Receipt is stamped on the client clock so the countdown ticks in one
+    // clock domain, immune to skew against a remote Runtime Host.
+    assert.equal(typeof scheduled?.providerRetry?.receivedAtMs, 'number');
 
     const started = applyLiveTurnEvent(scheduled, {
       type: 'provider_retry',
@@ -174,7 +177,7 @@ describe('applyLiveTurnEvent', () => {
       maxAttempts: 10,
       reason: 'rate_limit',
     });
-    assert.equal(started?.providerRetry?.phase, 'started');
+    assert.equal(started?.providerRetry?.event.phase, 'started');
 
     const streamed = applyLiveTurnEvent(started, {
       type: 'text_delta',

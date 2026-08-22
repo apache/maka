@@ -33,9 +33,9 @@ import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token
 import {
   type AttachmentRef,
   type InlineReference,
-  type ProviderRetryEvent,
   type QuoteRef,
 } from '@maka/core/events';
+import { type LiveProviderRetry } from './live-turn-projection.js';
 import {
   finalAssistantReplyText,
   type TurnTimelineItem,
@@ -399,7 +399,7 @@ export const TurnView = memo(function TurnView(props: {
      * looks abandoned and the user most needs to see it is still working.
      */
     runningStatus?: boolean;
-    providerRetry?: ProviderRetryEvent;
+    providerRetry?: LiveProviderRetry;
     initialLiveContent?: ReadonlyMap<string, string>;
   };
   /**
@@ -1020,29 +1020,31 @@ export function TurnRunningStatus(props: { startedAt?: number }) {
   );
 }
 
-export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }) {
+export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const { retry } = props;
+  const { event: retry, receivedAtMs } = props.retry;
   const rootRef = useRef<HTMLDivElement>(null);
   // Undefined until an effect measures it — the same determinism contract as
   // the elapsed clock above: frozen fixtures keep the provider's original
-  // delay; live, the banner counts down from the event's timestamp so a long
-  // provider-mandated wait (a subscription quota window can be hours) shows
-  // progress instead of a frozen number.
+  // delay; live, the banner counts down against the CLIENT-local receipt time
+  // (a single clock domain — the event's `ts` belongs to the possibly remote
+  // Runtime Host clock), taking its length from the skew-free `remainingMs`
+  // duration when the emitter provided one.
   const [nowMs, setNowMs] = useState<number | undefined>(undefined);
   useEffect(() => {
     if (retry.phase !== 'scheduled' || !isTimeDrivenMotionEnabled(rootRef.current)) return;
     setNowMs(Date.now());
     const tick = window.setInterval(() => setNowMs(Date.now()), ELAPSED_TICK_MS);
     return () => window.clearInterval(tick);
-  }, [retry.phase, retry.ts]);
+  }, [retry.phase, retry.id, receivedAtMs]);
+  const grantedMs = retry.phase === 'scheduled' ? (retry.remainingMs ?? retry.delayMs) : 0;
   const remainingMs =
     retry.phase !== 'scheduled'
       ? 0
       : nowMs === undefined
-        ? retry.delayMs
-        : Math.max(0, retry.delayMs - (nowMs - retry.ts));
-  const title =
+        ? grantedMs
+        : Math.max(0, grantedMs - (nowMs - receivedAtMs));
+  const titleText =
     retry.phase === 'scheduled'
       ? copy.providerRetryScheduled(
           Math.max(1, Math.ceil(remainingMs / 1_000)),
@@ -1050,6 +1052,12 @@ export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }
           retry.maxAttempts,
         )
       : copy.providerRetryStarted(retry.attempt, retry.maxAttempts);
+  // The banner is a role="status" live region: a title that changes every
+  // second would be announced every second — for hours during a quota wait.
+  // The ticking text is aria-hidden; the region exposes a stable label that
+  // follows the running-turn indicator's pattern (the row's accessible name
+  // is the whole status, the moving text is decoration).
+  const scheduledA11y = retry.phase === 'scheduled';
   return (
     <Banner
       ref={rootRef}
@@ -1057,8 +1065,19 @@ export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }
       container="section"
       role="status"
       className="maka-turn-provider-retry"
-      title={title}
-      description={copy.providerRetryReason[props.retry.reason]}
+      {...(scheduledA11y
+        ? {
+            'aria-label': `${copy.providerRetryReason[retry.reason]} · ${copy.providerRetryWaiting(retry.attempt, retry.maxAttempts)}`,
+          }
+        : {})}
+      title={scheduledA11y ? <span aria-hidden="true">{titleText}</span> : titleText}
+      description={
+        scheduledA11y ? (
+          <span aria-hidden="true">{copy.providerRetryReason[retry.reason]}</span>
+        ) : (
+          copy.providerRetryReason[retry.reason]
+        )
+      }
     />
   );
 }

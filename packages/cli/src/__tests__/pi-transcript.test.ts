@@ -2927,52 +2927,80 @@ describe('transcript entry render memoization', () => {
     assert.match(rendered, /\(2s · 2 lines\)/);
   });
 
-  test('provider retry activity strip counts down from the event timestamp', (t) => {
+  test('provider retry activity strip counts down in the client clock domain', (t) => {
     // #3393: a subscription quota window can hand the runtime an hours-long
-    // Retry-After; the strip must count down from the event's `ts` instead of
-    // pinning the original delay for the whole sleep.
+    // Retry-After. The strip stamps the client-local receipt time when the
+    // event lands and ticks down from it, so the display never mixes the
+    // (possibly remote) Runtime Host clock with the client clock.
     const start = 1_700_000_000_000;
     t.mock.timers.enable({ apis: ['Date'], now: start });
-    const scheduled = {
-      type: 'provider_retry',
-      id: 'retry-1',
-      turnId: 'turn-1',
-      ts: start,
-      phase: 'scheduled',
-      attempt: 2,
-      maxAttempts: 10,
-      delayMs: 16_083_000,
-      reason: 'rate_limit',
-    } as const;
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'provider_retry',
+        phase: 'scheduled',
+        attempt: 2,
+        maxAttempts: 10,
+        delayMs: 16_083_000,
+        reason: 'rate_limit',
+      }),
+    );
+    // Receipt is stamped on the client clock at application time.
+    assert.equal(state.providerRetry?.receivedAtMs, start);
+
+    const strip = () =>
+      stripAnsi(renderMakaPiActivityStrip({ ...meta(), providerRetry: state.providerRetry }, 120));
 
     // Hours-long waits render as a humanized duration, not a raw second count.
-    assert.match(
-      stripAnsi(renderMakaPiActivityStrip({ ...meta(), providerRetry: scheduled }, 120)),
-      /Retrying in 4h 28m 3s \(2\/10\)/,
-    );
+    assert.match(strip(), /Retrying in 4h 28m 3s \(2\/10\)/);
 
     // Elapsed time ticks the countdown down; zero-value units are omitted.
     t.mock.timers.setTime(start + 63_000);
-    assert.match(
-      stripAnsi(renderMakaPiActivityStrip({ ...meta(), providerRetry: scheduled }, 120)),
-      /Retrying in 4h 27m \(2\/10\)/,
-    );
+    assert.match(strip(), /Retrying in 4h 27m \(2\/10\)/);
 
     // An elapsed wait floors at 0s; the countdown never goes negative.
     t.mock.timers.setTime(start + 17_000_000);
+    assert.match(strip(), /Retrying in 0s \(2\/10\)/);
+  });
+
+  test('provider retry strip counts down from the host-authoritative remainingMs', (t) => {
+    // A host re-projection mid-wait (reconnect) sends the recomputed
+    // remainingMs duration; the strip counts THAT down from receipt instead
+    // of restarting at the full delay.
+    const start = 1_700_000_000_000;
+    t.mock.timers.enable({ apis: ['Date'], now: start });
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'provider_retry',
+        phase: 'scheduled',
+        attempt: 2,
+        maxAttempts: 10,
+        delayMs: 16_083_000,
+        remainingMs: 61_000,
+        reason: 'rate_limit',
+      }),
+    );
     assert.match(
-      stripAnsi(renderMakaPiActivityStrip({ ...meta(), providerRetry: scheduled }, 120)),
-      /Retrying in 0s \(2\/10\)/,
+      stripAnsi(renderMakaPiActivityStrip({ ...meta(), providerRetry: state.providerRetry }, 120)),
+      /Retrying in 1m 1s \(2\/10\)/,
     );
 
     // The started phase carries no countdown at all.
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'provider_retry',
+        phase: 'started',
+        attempt: 2,
+        maxAttempts: 10,
+        reason: 'rate_limit',
+      }),
+    );
     assert.match(
-      stripAnsi(
-        renderMakaPiActivityStrip(
-          { ...meta(), providerRetry: { ...scheduled, phase: 'started' } },
-          120,
-        ),
-      ),
+      stripAnsi(renderMakaPiActivityStrip({ ...meta(), providerRetry: state.providerRetry }, 120)),
       /^Retrying \(2\/10\)$/,
     );
   });

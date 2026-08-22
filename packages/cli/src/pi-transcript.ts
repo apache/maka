@@ -103,10 +103,22 @@ export interface MakaPiTranscriptState {
    */
   pendingFallback: Array<{ text: string; enqueue: 'steer' | 'queue' }>;
   /** Current non-durable provider retry progress for the activity strip. */
-  providerRetry?: ProviderRetryEvent;
+  providerRetry?: ProviderRetryCountdown;
 }
 
 export type MakaPiPendingInteraction = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+
+/**
+ * A provider retry event plus the CLIENT-local time it was applied. Counting
+ * down from `receivedAtMs` keeps the whole countdown in one clock domain —
+ * the event's own `ts` is stamped on the (possibly remote) Runtime Host
+ * clock, so subtracting it from a client clock would skew the display by the
+ * clock offset between the two machines.
+ */
+export interface ProviderRetryCountdown {
+  event: ProviderRetryEvent;
+  receivedAtMs: number;
+}
 
 export interface MakaPiRenderGeometry {
   /**
@@ -196,7 +208,7 @@ export interface MakaPiTranscriptMetadata {
   modelContextWindow?: number;
   /** Elapsed milliseconds of the running agent turn, for the activity strip. */
   turnElapsedMs?: number;
-  providerRetry?: ProviderRetryEvent;
+  providerRetry?: ProviderRetryCountdown;
   /** Resolved locale for primary TUI guidance. Defaults to English for direct embeddings. */
   uiLocale?: UiLocale;
   /**
@@ -762,7 +774,7 @@ export function applyMakaSessionEventToTranscript(
       break;
 
     case 'provider_retry':
-      state.providerRetry = event;
+      state.providerRetry = { event, receivedAtMs: Date.now() };
       break;
 
     case 'token_usage': {
@@ -1402,10 +1414,10 @@ export function renderMakaPiActivityStrip(
 ): string {
   const safeWidth = Math.max(1, width);
   if (metadata.providerRetry) {
-    const retry = metadata.providerRetry;
+    const { event: retry, receivedAtMs } = metadata.providerRetry;
     const text =
       retry.phase === 'scheduled'
-        ? `Retrying in ${formatRetryCountdown(retry)} (${retry.attempt}/${retry.maxAttempts})`
+        ? `Retrying in ${formatRetryCountdown(retry, receivedAtMs)} (${retry.attempt}/${retry.maxAttempts})`
         : `Retrying (${retry.attempt}/${retry.maxAttempts})`;
     return fitLine(ansi.dim(text), safeWidth);
   }
@@ -1414,14 +1426,17 @@ export function renderMakaPiActivityStrip(
 }
 
 /**
- * Remaining wait for a scheduled provider retry, measured from the event's own
- * timestamp so the strip counts down on the 1s ticker instead of pinning the
- * original delay for the whole sleep. Long provider-mandated waits (a
- * subscription quota window can be hours) render as `4h 28m 3s` via the shared
- * duration formatter rather than a raw five-digit second count.
+ * Remaining wait for a scheduled provider retry, ticked against the client's
+ * own receipt time so the strip counts down on the 1s heartbeat instead of
+ * pinning the original delay for the whole sleep. `remainingMs` — when the
+ * emitter provided one — is a duration and therefore already skew-free; the
+ * full delay is the fallback. Long provider-mandated waits (a subscription
+ * quota window can be hours) render as `4h 28m 3s` via the shared duration
+ * formatter rather than a raw five-digit second count.
  */
-function formatRetryCountdown(retry: ProviderRetryScheduledEvent): string {
-  const remainingMs = Math.max(0, retry.delayMs - (Date.now() - retry.ts));
+function formatRetryCountdown(retry: ProviderRetryScheduledEvent, receivedAtMs: number): string {
+  const grantedMs = retry.remainingMs ?? retry.delayMs;
+  const remainingMs = Math.max(0, grantedMs - (Date.now() - receivedAtMs));
   return formatElapsedDuration(remainingMs);
 }
 
