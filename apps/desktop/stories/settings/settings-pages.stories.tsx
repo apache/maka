@@ -1528,6 +1528,8 @@ export const HealthCenter: Story = {
       expect(errorFilter).toHaveAttribute('aria-pressed', 'true');
       expect(canvas.getByText('OpenAI Review')).toBeInTheDocument();
       expect(canvas.queryByText('Z.AI Live')).not.toBeInTheDocument();
+      expect(canvas.getByText('全部健康信号中，1/6 条会阻塞发送')).toBeInTheDocument();
+      expect(canvas.getByText('全部健康信号中，1/6 条会阻塞能力')).toBeInTheDocument();
     });
     await userEvent.click(errorFilter);
     await waitFor(() => {

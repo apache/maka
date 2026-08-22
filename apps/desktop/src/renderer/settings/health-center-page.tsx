@@ -162,15 +162,17 @@ export function HealthCenterPage() {
         <Banner
           status="error"
           role="status"
-          title={copy.blockers.send(blocksSendCount)}
-          description={blocksCapabilityCount > 0 ? copy.blockers.capability(blocksCapabilityCount) : undefined}
+          title={copy.blockers.send(blocksSendCount, snapshot.signals.length)}
+          description={blocksCapabilityCount > 0
+            ? copy.blockers.capability(blocksCapabilityCount, snapshot.signals.length)
+            : undefined}
         />
       )}
       {blocksSendCount === 0 && blocksCapabilityCount > 0 && (
         <Banner
           status="warning"
           role="status"
-          title={copy.blockers.capability(blocksCapabilityCount)}
+          title={copy.blockers.capability(blocksCapabilityCount, snapshot.signals.length)}
         />
       )}
 
