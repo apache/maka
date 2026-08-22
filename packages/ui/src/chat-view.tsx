@@ -483,7 +483,6 @@ export function ChatView(props: {
             owns. */}
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
-          gap={4}
           emptyState={conversationItems.length === 0 ? emptyContent : undefined}
         >
           {conversationItems.length > 0 ? (
@@ -588,7 +587,6 @@ export function ChatView(props: {
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
           data-turn-source-count={turns.length}
-          gap={4}
           isStreaming={streamingActive}
           emptyState={showEmptyState ? emptyContent : undefined}
         >
