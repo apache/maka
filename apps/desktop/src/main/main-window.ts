@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { AppSettings } from '@maka/core/settings';
+import { desktopAssetPath } from './desktop-assets.js';
 import { isExternalUrl } from './external-link-guard.js';
 import { readSavedBounds, writeSavedBounds, SAFE_MIN_HEIGHT, SAFE_MIN_WIDTH, type SavedBounds } from './window-state.js';
 import { BrowserViewController } from './browser/controller.js';
@@ -268,7 +269,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       // / window title bar; .icns / .ico packaging will come with the
       // installer build pass. The asset path resolves from the built
       // dist/main/main.js (two levels up to apps/desktop, then assets).
-      icon: join(import.meta.dirname, '..', '..', 'assets', 'icon.png'),
+      icon: desktopAssetPath({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath }, 'assets', 'icon.png'),
       // PR-WINDOW-TITLEBAR-0: hide the native title bar so the renderer
       // chrome can extend to the top edge on every platform. macOS keeps
       // `hiddenInset` + traffic-light buttons (top-left); Windows uses

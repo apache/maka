@@ -16,6 +16,7 @@
  * config drifting against upstream.
  */
 export interface AstryxCopy {
+  appShell: { mobileNavigation: string; skipToContent: string };
   banner: { collapse: string; expand: string };
   breadcrumbs: { label: string };
   calendar: {
@@ -85,6 +86,7 @@ export interface AstryxCopy {
 }
 
 export const ASTRYX_COPY_ZH: AstryxCopy = {
+  appShell: { mobileNavigation: '移动端导航', skipToContent: '跳到主要内容' },
   banner: { collapse: '收起', expand: '展开' },
   breadcrumbs: { label: '面包屑导航' },
   calendar: {

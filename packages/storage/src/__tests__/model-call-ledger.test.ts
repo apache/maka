@@ -2,18 +2,22 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import {
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
 import {
   createSqliteModelCallLedger,
   ModelCallLedgerClosedError,
-  repairPendingModelCallProjections,
+  ModelCallLedgerPublicationError,
   type ModelCallLedger,
 } from '../model-call-ledger.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
+import { createSqliteAgentRunStore } from '../agent-run-store.js';
 
 const NOW = 1_750_000_000_000;
 
@@ -55,13 +59,68 @@ async function withLedger(run: (ledger: ModelCallLedger, root: string) => Promis
   }
 }
 
+function appendAuthorityEvent(
+  root: string,
+  sequence: number,
+  value: ModelCallAttempt | { readonly schemaVersion: number },
+  sessionId = 'session-1',
+  runId = 'run-1',
+): void {
+  const lease = acquireOperationalStateDatabase(root);
+  try {
+    lease.transaction('write', () => {
+      lease.database
+        .prepare(`
+          INSERT OR IGNORE INTO core_agent_runs(session_id, run_id, created_at, record_json)
+          VALUES (?, ?, ?, '{}')
+        `)
+        .run(sessionId, runId, NOW - 1_000);
+      lease.database
+        .prepare(`
+          INSERT INTO core_agent_run_events(
+            session_id, run_id, sequence, event_id, event_type, event_ts, record_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          sessionId,
+          runId,
+          sequence,
+          `event-${sessionId}-${runId}-${sequence}`,
+          MODEL_CALL_ATTEMPT_EVENT_TYPE,
+          NOW - 500 + sequence,
+          JSON.stringify({
+            id: `event-${sessionId}-${runId}-${sequence}`,
+            type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
+            ts: NOW - 500 + sequence,
+            sessionId,
+            runId,
+            turnId: 'turn-1',
+            data: value,
+          }),
+        );
+      lease.database
+        .prepare(`
+          UPDATE core_agent_runs
+          SET latest_model_call_sequence = ?
+          WHERE session_id = ? AND run_id = ?
+        `)
+        .run(sequence, sessionId, runId);
+    });
+  } finally {
+    lease.close();
+  }
+}
+
 describe('canonical model call ledger', () => {
   test('reads back what it recorded, bounded to the queried window', async () => {
-    await withLedger(async (ledger) => {
-      await ledger.record(attempt({ attemptId: 'inside', completedAt: NOW - 500 }));
-      await ledger.record(
+    await withLedger(async (ledger, root) => {
+      appendAuthorityEvent(root, 0, attempt({ attemptId: 'inside', completedAt: NOW - 500 }));
+      appendAuthorityEvent(
+        root,
+        1,
         attempt({ attemptId: 'before', startedAt: NOW - 10_500, completedAt: NOW - 10_000 }),
       );
+      await ledger.catchUpProjection();
 
       const page = ledger.read({ from: NOW - 1_000, to: NOW });
       assert.deepEqual(
@@ -76,7 +135,9 @@ describe('canonical model call ledger', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-reopen-'));
     const first = createSqliteModelCallLedger(root);
     try {
-      await first.record(
+      appendAuthorityEvent(
+        root,
+        0,
         attempt({
           callKind: 'history_compact',
           historyCompactRoute: 'provider_native',
@@ -94,6 +155,7 @@ describe('canonical model call ledger', () => {
           retryable: false,
         }),
       );
+      await first.catchUpProjection();
       await first.close();
 
       const reopened = createSqliteModelCallLedger(root);
@@ -114,11 +176,59 @@ describe('canonical model call ledger', () => {
     }
   });
 
+  test('migration deletes legacy repair intent without losing discoverable authority', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-migrate-'));
+    const first = createSqliteModelCallLedger(root);
+    appendAuthorityEvent(root, 0, attempt({ attemptId: 'pre-checkpoint' }));
+    await first.close();
+
+    const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+    database.exec(`
+      DROP TABLE usage_model_call_projection_checkpoints;
+      CREATE TABLE usage_model_call_reprojection (
+        session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        marked_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, run_id)
+      );
+      INSERT INTO usage_model_call_reprojection VALUES ('session-1', 'run-1', 1);
+      UPDATE operational_schema_migrations SET version = 4 WHERE scope = 'usage';
+    `);
+    database.close();
+
+    const migrated = createSqliteModelCallLedger(root);
+    try {
+      await migrated.catchUpProjection();
+      assert.deepEqual(
+        migrated.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
+        ['pre-checkpoint'],
+      );
+      const lease = acquireOperationalStateDatabase(root);
+      try {
+        assert.equal(
+          lease.database
+            .prepare(
+              "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name = 'usage_model_call_reprojection'",
+            )
+            .get()?.count,
+          0,
+        );
+      } finally {
+        lease.close();
+      }
+    } finally {
+      await migrated.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('a late settlement replaces the provisional record under the same attempt id', async () => {
     // The abort path records provisionally without usage; a `finish` arriving
     // afterwards settles the same attempt. Two rows would double-count it.
-    await withLedger(async (ledger) => {
-      await ledger.record(
+    await withLedger(async (ledger, root) => {
+      appendAuthorityEvent(
+        root,
+        0,
         attempt({
           status: 'aborted',
           usageBasis: 'missing',
@@ -126,7 +236,8 @@ describe('canonical model call ledger', () => {
           outputTokens: undefined,
         }),
       );
-      await ledger.record(attempt({ status: 'completed', usageBasis: 'reported' }));
+      appendAuthorityEvent(root, 1, attempt({ status: 'completed', usageBasis: 'reported' }));
+      await ledger.catchUpProjection();
 
       const page = ledger.read({ from: 0, to: NOW });
       assert.equal(page.attempts.length, 1);
@@ -135,19 +246,19 @@ describe('canonical model call ledger', () => {
     });
   });
 
-  test('rejects a record that does not satisfy the canonical schema', async () => {
-    await withLedger(async (ledger) => {
-      await assert.rejects(
-        () => ledger.record(attempt({ costBasis: 'unpriced', costUsd: 0.004 })),
-        /unpriced record carries a cost/,
-      );
+  test('reports an authority record that does not satisfy the canonical schema', async () => {
+    await withLedger(async (ledger, root) => {
+      appendAuthorityEvent(root, 0, attempt({ costBasis: 'unpriced', costUsd: 0.004 }));
+      const result = await ledger.catchUpProjection();
+      assert.equal(result.unreadableEvents, 1);
       assert.equal(ledger.read({ from: 0, to: NOW }).attempts.length, 0);
     });
   });
 
   test('one unreadable row is reported rather than failing the whole query', async () => {
     await withLedger(async (ledger, root) => {
-      await ledger.record(attempt({ attemptId: 'good' }));
+      appendAuthorityEvent(root, 0, attempt({ attemptId: 'good' }));
+      await ledger.catchUpProjection();
       const lease = acquireOperationalStateDatabase(root);
       try {
         lease.transaction('write', () => {
@@ -170,128 +281,201 @@ describe('canonical model call ledger', () => {
     });
   });
 
-  test('reads and writes after close report the lifecycle rather than corrupting state', async () => {
+  test('a Session-scoped read excludes another Session records and corruption', async () => {
+    await withLedger(async (ledger, root) => {
+      appendAuthorityEvent(
+        root,
+        0,
+        attempt({ attemptId: 'session-a-call', sessionId: 'session-a', runId: 'run-a' }),
+        'session-a',
+        'run-a',
+      );
+      appendAuthorityEvent(
+        root,
+        0,
+        attempt({ attemptId: 'session-b-call', sessionId: 'session-b', runId: 'run-b' }),
+        'session-b',
+        'run-b',
+      );
+      await ledger.catchUpProjection();
+      const lease = acquireOperationalStateDatabase(root);
+      try {
+        lease.transaction('write', () => {
+          lease.database
+            .prepare(
+              `INSERT INTO usage_model_call_attempts(
+                attempt_id, completed_at, record_json, session_id
+              ) VALUES (?, ?, ?, ?)`,
+            )
+            .run('session-b-corrupt', NOW - 400, '{', 'session-b');
+        });
+      } finally {
+        lease.close();
+      }
+
+      const page = ledger.read({ from: 0, to: NOW }, 'session-a');
+      assert.deepEqual(
+        page.attempts.map((row) => row.attemptId),
+        ['session-a-call'],
+      );
+      assert.equal(page.unreadableRecords, 0);
+    });
+  });
+
+  test('reads and catch-up after close report the lifecycle rather than corrupting state', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-model-call-ledger-'));
     const ledger = createSqliteModelCallLedger(root);
-    await ledger.record(attempt());
+    appendAuthorityEvent(root, 0, attempt());
     await ledger.close();
 
-    await assert.rejects(
-      () => ledger.record(attempt({ attemptId: 'after' })),
-      ModelCallLedgerClosedError,
-    );
+    await assert.rejects(() => ledger.catchUpProjection(), ModelCallLedgerClosedError);
     assert.throws(() => ledger.read({ from: 0, to: NOW }), ModelCallLedgerClosedError);
     await rm(root, { recursive: true, force: true });
   });
 });
 
-describe('re-projecting a run the read model fell behind on', () => {
-  const runEvents = (attempts: readonly ModelCallAttempt[]) => [
-    { type: 'model_stream_started', data: {} },
-    ...attempts.map((attempt) => ({
-      type: 'model_call_attempt_recorded',
-      data: { ...attempt } as Record<string, unknown>,
-    })),
-  ];
-
-  function target(ledger: ModelCallLedger) {
-    return {
-      record: (attempt: ModelCallAttempt) => ledger.record(attempt),
-      pending: () => ledger.pendingReprojections(),
-      clear: (sessionId: string, runId: string) =>
-        ledger.clearPendingReprojection(sessionId, runId),
-    };
-  }
-
-  test('a call the authority holds but the table missed is recovered, not lost', async () => {
-    await withLedger(async (ledger) => {
-      // The AgentRun append committed and the table write failed: the marker is
-      // all that survived, and the record has to come back from the stream.
-      const committed = attempt({ attemptId: 'missed' });
-      await ledger.markRunPendingReprojection('session-1', 'run-1');
-      assert.equal(ledger.read({ from: 0, to: NOW }).attempts.length, 0);
-
-      const result = await repairPendingModelCallProjections({
-        ledger: target(ledger),
-        readRunEvents: async () => runEvents([committed]),
+describe('catching the read model up from the AgentRun authority', () => {
+  test('consumes the high-water published by the real AgentRun append path', async () => {
+    await withLedger(async (ledger, root) => {
+      const runStore = createSqliteAgentRunStore(root);
+      const header: AgentRunHeader = {
+        runId: 'run-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        status: 'created',
+        backendKind: 'fake',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+        cwd: '/tmp/cwd',
+        permissionMode: 'ask',
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      await runStore.createRun(header);
+      await runStore.appendEvent('session-1', 'run-1', {
+        id: 'attempt-real-append',
+        type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
+        ts: NOW,
+        sessionId: 'session-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        data: { ...attempt({ attemptId: 'real-append' }) },
       });
+      runStore.close?.();
 
-      assert.deepEqual(result, { repaired: 1, remaining: 0, unreadableEvents: 0 });
+      await ledger.catchUpProjection({ sessionId: 'session-1' });
+
+      assert.deepEqual(
+        ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
+        ['real-append'],
+      );
+    });
+  });
+
+  test('recovers an authority append even when no repair marker was written', async () => {
+    await withLedger(async (ledger, root) => {
+      appendAuthorityEvent(root, 0, attempt({ attemptId: 'missed' }));
+
+      const result = await ledger.catchUpProjection({ sessionId: 'session-1' });
+
+      assert.deepEqual(result, {
+        changedSessionIds: ['session-1'],
+        pendingRuns: 0,
+        unreadableEvents: 0,
+      });
       assert.deepEqual(
         ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
         ['missed'],
       );
-      assert.deepEqual(ledger.pendingReprojections(), []);
     });
   });
 
-  test('re-projecting a run the table already holds changes nothing', async () => {
-    await withLedger(async (ledger) => {
-      const committed = attempt({ attemptId: 'already-there' });
-      await ledger.record(committed);
-      await ledger.markRunPendingReprojection('session-1', 'run-1');
+  test('a later authority append remains discoverable after an earlier catch-up', async () => {
+    await withLedger(async (ledger, root) => {
+      appendAuthorityEvent(root, 0, attempt({ attemptId: 'old' }));
+      await ledger.catchUpProjection({ sessionId: 'session-1', runId: 'run-1' });
 
-      await repairPendingModelCallProjections({
-        ledger: target(ledger),
-        readRunEvents: async () => runEvents([committed, committed]),
-      });
+      appendAuthorityEvent(root, 1, attempt({ attemptId: 'new' }));
+      const result = await ledger.catchUpProjection({ sessionId: 'session-1' });
 
-      assert.equal(ledger.read({ from: 0, to: NOW }).attempts.length, 1);
+      assert.equal(result.pendingRuns, 0);
+      assert.deepEqual(
+        ledger
+          .read({ from: 0, to: NOW })
+          .attempts.map((row) => row.attemptId)
+          .sort(),
+        ['new', 'old'],
+      );
     });
   });
 
-  test('a run whose authority read fails keeps its marker and is reported', async () => {
-    await withLedger(async (ledger) => {
-      await ledger.markRunPendingReprojection('session-1', 'run-1');
+  test('persists corrupt authority evidence without pinning later events', async () => {
+    await withLedger(async (ledger, root) => {
+      appendAuthorityEvent(root, 0, { schemaVersion: 1 });
+      appendAuthorityEvent(root, 1, attempt({ attemptId: 'good' }));
 
-      const result = await repairPendingModelCallProjections({
-        ledger: target(ledger),
-        readRunEvents: async () => {
-          throw new Error('authority unavailable');
-        },
-      });
+      const first = await ledger.catchUpProjection({ sessionId: 'session-1' });
+      const second = await ledger.catchUpProjection({ sessionId: 'session-1' });
 
-      assert.deepEqual(result, { repaired: 0, remaining: 1, unreadableEvents: 0 });
-      assert.equal(ledger.pendingReprojections().length, 1);
-    });
-  });
-
-  test('an undecodable authority event keeps durable incomplete evidence', async () => {
-    await withLedger(async (ledger) => {
-      await ledger.markRunPendingReprojection('session-1', 'run-1');
-
-      const result = await repairPendingModelCallProjections({
-        ledger: target(ledger),
-        readRunEvents: async () => [
-          { type: 'model_call_attempt_recorded', data: { schemaVersion: 1 } },
-          ...runEvents([attempt({ attemptId: 'good' })]),
-        ],
-      });
-
-      assert.equal(result.unreadableEvents, 1);
-      assert.equal(result.repaired, 0);
-      assert.equal(result.remaining, 1);
-      assert.equal(ledger.pendingReprojections().length, 1);
-    });
-  });
-
-  test('an undecodable event does not block the rest of its run', async () => {
-    await withLedger(async (ledger) => {
-      await ledger.markRunPendingReprojection('session-1', 'run-1');
-
-      await repairPendingModelCallProjections({
-        ledger: target(ledger),
-        readRunEvents: async () => [
-          { type: 'model_call_attempt_recorded', data: { schemaVersion: 1 } },
-          ...runEvents([attempt({ attemptId: 'good' })]),
-        ],
-      });
-
+      assert.equal(first.unreadableEvents, 1);
+      assert.equal(first.pendingRuns, 0);
+      assert.equal(second.unreadableEvents, 1);
+      assert.deepEqual(second.changedSessionIds, []);
       assert.deepEqual(
         ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
         ['good'],
       );
-      assert.equal(ledger.pendingReprojections().length, 1);
+    });
+  });
+
+  test('reports a run as pending until a bounded catch-up reaches its high-water mark', async () => {
+    await withLedger(async (ledger, root) => {
+      appendAuthorityEvent(root, 0, attempt({ attemptId: 'first' }));
+      appendAuthorityEvent(root, 1, attempt({ attemptId: 'second' }));
+
+      const first = await ledger.catchUpProjection({
+        sessionId: 'session-1',
+        eventsPerRun: 1,
+      });
+      const second = await ledger.catchUpProjection({
+        sessionId: 'session-1',
+        eventsPerRun: 1,
+      });
+
+      assert.equal(first.pendingRuns, 1);
+      assert.equal(second.pendingRuns, 0);
+      assert.equal(ledger.read({ from: 0, to: NOW }).attempts.length, 2);
+    });
+  });
+
+  test('does not advance the checkpoint when projection storage fails', async () => {
+    await withLedger(async (ledger, root) => {
+      appendAuthorityEvent(root, 0, attempt({ attemptId: 'retry-after-storage-failure' }));
+      const lease = acquireOperationalStateDatabase(root);
+      try {
+        lease.transaction('write', () => {
+          lease.database.exec(`
+            CREATE TRIGGER reject_model_call_projection
+            BEFORE INSERT ON usage_model_call_attempts
+            BEGIN
+              SELECT RAISE(ABORT, 'projection unavailable');
+            END;
+          `);
+        });
+        await assert.rejects(() => ledger.catchUpProjection(), ModelCallLedgerPublicationError);
+        lease.transaction('write', () => {
+          lease.database.exec('DROP TRIGGER reject_model_call_projection');
+        });
+      } finally {
+        lease.close();
+      }
+
+      const recovered = await ledger.catchUpProjection();
+      assert.equal(recovered.pendingRuns, 0);
+      assert.deepEqual(
+        ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
+        ['retry-after-storage-failure'],
+      );
     });
   });
 });

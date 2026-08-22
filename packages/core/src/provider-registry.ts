@@ -6,11 +6,6 @@ import {
 } from './model-metadata.generated.js';
 
 export const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
-export const OPENCODE_FREE_DEFAULT_ENABLED_MODELS = [
-  OPENCODE_FREE_DEFAULT_MODEL,
-  'mimo-v2.5-free',
-  'deepseek-v4-flash-free',
-] as const;
 
 export type ProviderCategory = 'oauth' | 'domestic' | 'overseas' | 'local' | 'custom';
 export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregators' | 'local';
@@ -62,7 +57,7 @@ export type ProviderModelDiscovery =
       path?: string;
       query?: Readonly<Record<string, string>>;
       responseShape?: 'array-or-data';
-      filter?: 'fallback-models' | 'language-models' | 'tool-capable';
+      filter?: 'language-models' | 'tool-capable';
     }
   | {
       kind: 'fireworks';
@@ -94,6 +89,13 @@ export interface ProviderDefaults {
   retired?: true;
   /** User-declared per-model capabilities are authoritative for this provider. */
   relayModelProfiles?: boolean;
+  /**
+   * Models with dated evidence of persistent breakage whose failure shape the
+   * send itself cannot surface (e.g. empty completions that still bill).
+   * Vetoed in `authorizeConnectionModel` and omitted from catalog offers —
+   * the one exception to "the user's selection is the authorization".
+   */
+  brokenModelIds?: readonly string[];
   modelDiscovery: ProviderModelDiscovery;
   category: ProviderCategory;
   catalogGroup?: ProviderCatalogGroup;
@@ -605,25 +607,39 @@ const opencodeGoModelIds = toolCallingModelIds(
   ['minimax-m3'],
 ).filter((id) => GENERATED_MODELS_DEV_METADATA['opencode-go'][id]?.lifecycle !== 'deprecated');
 // opencode-free is Maka's first-class free anonymous default. It shares the
-// OpenCode Zen endpoint and model ids, but exposes only the active free
-// (cost.input === 0) models from the models.dev opencode snapshot. The
-// snapshot carries no cost field, so the free set is pinned here; each id is
-// validated against the opencode snapshot for active + tool-capable, mirroring
-// the bootstrap validation every other opencode plan entry performs.
-const opencodeFreeModelIds = [
-  OPENCODE_FREE_DEFAULT_MODEL,
-  'mimo-v2.5-free',
-  'big-pickle',
-  'deepseek-v4-flash-free',
-] as const;
-for (const id of opencodeFreeModelIds) {
-  const model = GENERATED_MODELS_DEV_METADATA.opencode[id];
-  if (!model?.capabilities?.functionCalling || model.lifecycle === 'deprecated') {
-    throw new Error(
-      `models.dev opencode snapshot is missing an active tool-capable free model ${id} for opencode-free`,
-    );
-  }
+// OpenCode Zen endpoint and model ids, exposing the active tool-capable
+// models the models.dev snapshot marks `isFree` (zero input cost). Deriving
+// the set from the snapshot lets routine metadata refreshes rotate free
+// models in and out instead of letting a hardcoded pin rot (#3409).
+//
+// Persistently broken free models, excluded with dated evidence. Deny-only:
+// a stale entry hides at most one healthy model, the opposite failure mode of
+// the allow-list pin this replaced. Entries should be re-probed on snapshot
+// refreshes and removed once the model produces content again.
+// 2026-08-21 muse-spark-1.2-contributor-free: anonymous completions return
+// 200 with an empty message and bill the full token budget (4 consecutive
+// probes, max_tokens 8–200) — a failure shape that even "the send settles it"
+// cannot surface, which is why these ids are also vetoed in
+// `authorizeConnectionModel` rather than merely dropped from this derivation.
+const OPENCODE_FREE_BROKEN_MODEL_IDS = new Set(['muse-spark-1.2-contributor-free']);
+const opencodeFreeModelIds = toolCallingModelIds(
+  'OpenCode Free',
+  Object.fromEntries(
+    Object.entries(GENERATED_MODELS_DEV_METADATA.opencode).filter(
+      ([id, model]) =>
+        model.isFree === true &&
+        model.lifecycle !== 'deprecated' &&
+        !OPENCODE_FREE_BROKEN_MODEL_IDS.has(id),
+    ),
+  ),
+  [OPENCODE_FREE_DEFAULT_MODEL],
+);
+if (opencodeFreeModelIds[0] !== OPENCODE_FREE_DEFAULT_MODEL) {
+  throw new Error(
+    `models.dev opencode snapshot no longer serves ${OPENCODE_FREE_DEFAULT_MODEL} as an active tool-capable free model; pick a new OPENCODE_FREE_DEFAULT_MODEL`,
+  );
 }
+export const OPENCODE_FREE_DEFAULT_ENABLED_MODELS: readonly string[] = opencodeFreeModelIds;
 const githubCopilot = GENERATED_MODELS_DEV_PROVIDER_FACTS['github-copilot'];
 if (githubCopilot.id !== 'github-copilot') {
   throw new Error('models.dev GitHub Copilot provider facts are missing stable id github-copilot');
@@ -777,7 +793,7 @@ const providerRegistry = {
     modelDiscovery: {
       kind: 'fallback',
       reason:
-        'Agent Plan inference data plane does not expose a model-list endpoint for its dedicated API key',
+        'Agent Plan model discovery is a control-plane API that requires AK/SK signing; the plan API key reaches only the inference data plane',
     },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -1220,7 +1236,7 @@ const providerRegistry = {
       replayAssistantReasoningAs: 'reasoning',
       replayAssistantReasoningDetails: true,
     },
-    modelDiscovery: { kind: 'protocol', auth: 'none', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol', auth: 'none' },
     category: 'overseas',
     catalogGroup: 'aggregators',
     catalogBadge: 'Gateway',
@@ -1276,13 +1292,14 @@ const providerRegistry = {
     backendKind: 'ai-sdk',
     fallbackModels: [...opencodeFreeModelIds],
     defaultEnabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+    brokenModelIds: [...OPENCODE_FREE_BROKEN_MODEL_IDS],
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: {
       kind: 'fallback',
       reason:
-        'OpenCode Free anonymous access serves a fixed set of free models; the inference endpoint has no anonymous model-list contract.',
+        'The anonymous /models listing describes the full Zen catalog with no cost facts; which models are FREE is a models.dev fact, so the derived candidates are the inventory and the send settles availability.',
     },
     category: 'overseas',
     catalogGroup: 'plans',
@@ -1346,7 +1363,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
     catalogBadge: 'API',
@@ -1482,7 +1499,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', path: '/v1/models', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol', path: '/v1/models' },
     category: 'overseas',
     catalogGroup: 'api',
     catalogBadge: 'API',
@@ -1501,7 +1518,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
     catalogBadge: 'API',
@@ -1520,7 +1537,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'aggregators',
     catalogBadge: '聚合',
@@ -1539,7 +1556,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
     catalogBadge: 'API',

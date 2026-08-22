@@ -4,6 +4,24 @@ import { Button, MoreMenu, RelativeTime } from '@maka/ui';
 import { memoryOriginLabel } from './memory-settings-labels';
 import type { MemorySettingsCopy } from '../locales/settings-memory-copy';
 
+function memoryEntryActionIdentity(
+  entry: LocalMemoryState['activeEntries'][number],
+  copy: MemorySettingsCopy,
+): string {
+  const title = entry.title.length > 80 ? `${entry.title.slice(0, 79)}…` : entry.title;
+  const timestamp = entry.createdAt ?? entry.updatedAt;
+  const stableContext = timestamp === undefined
+    ? entry.content.replace(/\s+/g, ' ').trim().slice(0, 48)
+    : new Date(timestamp).toLocaleString(copy.intlLocale);
+  return [
+    title,
+    memoryOriginLabel(entry.origin, copy),
+    stableContext || undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' · ');
+}
+
 export function MemoryEntryList(props: {
   title: string;
   copy: MemorySettingsCopy;
@@ -35,6 +53,7 @@ export function MemoryEntryList(props: {
             const statusActionLabel = props.archived
               ? props.copy.text.restoreAction
               : props.copy.text.archiveAction;
+            const entryIdentity = memoryEntryActionIdentity(entry, props.copy);
             return (
               <li key={entry.id}>
                 <article className="settingsMemoryEntryRow">
@@ -52,19 +71,21 @@ export function MemoryEntryList(props: {
                 </small>
                 <p>{entry.content}</p>
                 {(props.onCopyReference || props.onFocusDraft || props.onStatusChange) && (
-                  <div className="settingsMemoryEntryActions" role="group" aria-label={props.copy.entryActionsAria(entry.title)}>
+                  <div className="settingsMemoryEntryActions" role="group" aria-label={props.copy.entryActionsAria(entryIdentity)}>
                     {props.onStatusChange && (
                       <Button
                         variant="ghost"
                         size="sm"
                         isDisabled={props.busy}
                         onClick={() => void props.onStatusChange?.(entry, props.archived ? 'active' : 'archived')}
-                        label={statusActionLabel}
-                      />
+                        label={props.copy.entryActionAria(statusActionLabel, entryIdentity)}
+                      >
+                        {statusActionLabel}
+                      </Button>
                     )}
                     {(props.onCopyReference || props.onFocusDraft) && (
                       <MoreMenu
-                        label={props.copy.entryActionsAria(entry.title)}
+                        label={props.copy.entryActionsAria(entryIdentity)}
                         size="sm"
                         items={[
                           ...(props.onCopyReference

@@ -152,6 +152,64 @@ test('gives each answer in a steered turn its own stable element', async () => {
   assert.equal(settledAnswers[1]?.isSameNode(answers[1]), true, 'the second answer keeps its element');
 });
 
+test('uses human conversation context instead of raw ids in action names', async () => {
+  const { container, root } = domRoot();
+  const turn = {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'completed' as const,
+    turnId: '019f-secret-turn-id',
+    user: {
+      id: '019f-secret-message-id',
+      role: 'user' as const,
+      text: 'Summarize the accessibility findings',
+      ts: 1,
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView
+          turn={turn}
+          footerActions={[{ id: 'copy', label: 'Copy', enabled: true }]}
+          onEditUserMessage={() => undefined}
+        />
+      </LocaleProvider>,
+    );
+  });
+
+  const actionNames = [...container.querySelectorAll('[aria-label]')]
+    .map((element) => element.getAttribute('aria-label'))
+    .filter((label): label is string => label !== null);
+  assert.ok(actionNames.some((label) => label.startsWith(
+    'Copy message: Summarize the accessibility findings',
+  )));
+  assert.ok(actionNames.some((label) => label.startsWith(
+    'Edit & resend message: Summarize the accessibility findings',
+  )));
+  assert.ok(actionNames.some((label) => label.startsWith(
+    'Response actions: Summarize the accessibility findings',
+  )));
+  assert.ok(actionNames.some((label) => label.startsWith(
+    'Copy response: Summarize the accessibility findings',
+  )));
+  assert.equal(
+    container.querySelector('[data-message-id="019f-secret-message-id"]') !== null,
+    true,
+    'the real message identity remains available as machine data',
+  );
+  assert.equal(
+    actionNames.some((label) => label.includes('019f-secret')),
+    false,
+    'raw storage identities stay out of spoken action names',
+  );
+  assert.equal(
+    actionNames.some((label) => /\bmessage \d+\b/i.test(label)),
+    false,
+    'message actions do not claim a turn-local ordinal',
+  );
+});
+
 /**
  * The live handoff announces itself exactly once, when the answer enters its
  * settled phase. A bubble replayed from history mounts already past the

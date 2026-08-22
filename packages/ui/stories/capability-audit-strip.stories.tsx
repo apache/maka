@@ -71,9 +71,13 @@ function report(input: Partial<CapabilityAuditReport['summary']>): CapabilityAud
  */
 function ModulePage(props: { children: React.ReactNode }) {
   return (
-    <main className="maka-main detailPane maka-module-main agents-chat-panel" data-page-shell="layout">
+    <section
+      className="maka-main detailPane maka-module-main agents-chat-panel"
+      data-page-shell="layout"
+      aria-label="Capability audit module content"
+    >
       <div className="maka-module-page-panel">{props.children}</div>
-    </main>
+    </section>
   );
 }
 

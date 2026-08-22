@@ -1,5 +1,8 @@
-import { useMemo, type ReactNode } from 'react';
-import { InternationalizationProvider } from '@astryxdesign/core/i18n';
+import { useContext, useMemo, type ReactNode } from 'react';
+import {
+  InternationalizationContext,
+  InternationalizationProvider,
+} from '@astryxdesign/core/i18n';
 import type { Overrides } from '@astryxdesign/core/i18n';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { ASTRYX_COPY_ZH } from './astryx-copy.js';
@@ -38,16 +41,30 @@ export function AstryxLocaleProvider({
   overrides?: Record<string, string>;
 }) {
   const locale = useUiLocale();
+  const ambient = useContext(InternationalizationContext);
   // Referentially stable per locale: the provider memoises its context value
   // on the overrides object, so a fresh map every render would re-render
   // every Astryx i18n consumer on every AppShell render.
   const overrides = useMemo(() => {
     const base = astryxMessageOverrides(locale)?.[locale];
-    if (!scopedOverrides) return base ? { [locale]: base } : undefined;
-    return { [locale]: { ...base, ...scopedOverrides } };
-  }, [locale, scopedOverrides]);
+    const inherited = ambient.locale === locale
+      ? ambient.overrides?.[locale]
+      : undefined;
+    const merged = { ...base, ...inherited, ...scopedOverrides };
+    if (Object.keys(merged).length === 0) return undefined;
+    return {
+      ...(ambient.locale === locale ? ambient.overrides : undefined),
+      [locale]: merged,
+    };
+  }, [ambient.locale, ambient.overrides, locale, scopedOverrides]);
+  const inheritAmbient = ambient.locale === locale;
   return (
-    <InternationalizationProvider locale={locale} overrides={overrides}>
+    <InternationalizationProvider
+      locale={locale}
+      messages={inheritAmbient ? ambient.messages : undefined}
+      dir={inheritAmbient ? ambient.direction : undefined}
+      overrides={overrides}
+    >
       {children}
     </InternationalizationProvider>
   );
@@ -91,6 +108,11 @@ export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined 
       '@astryx.selector.placeholder': form.selectPlaceholder,
       '@astryx.selector.clearLabel': form.clear,
       '@astryx.numberInput.clearLabel': form.clear,
+
+      // App shell — the skip link is always the first focusable control, so an
+      // untranslated fallback pollutes every Chinese Computer Use observation.
+      '@astryx.appShell.mobileNavigation': astryx.appShell.mobileNavigation,
+      '@astryx.appShell.skipToContent': astryx.appShell.skipToContent,
 
       // Chat — the transcript, composer and scroll affordances Astryx owns
       // since #1795 moved the chat surfaces onto ChatLayout.

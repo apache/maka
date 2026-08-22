@@ -61,10 +61,14 @@ export function prepareConnectionOnboardingIntent(
   }
   const definition = PROVIDER_DEFAULTS[providerType];
   const discovery = decode(() => normalizeConnectionModelDiscoveryResult(input.discovery));
-  if (discovery.source !== 'fetched' || discovery.models.length === 0) {
+  // Non-empty is the requirement; `source` is write provenance, not a
+  // quality bar. A provider without a model-list endpoint runs discovery by
+  // replaying the array this build shipped, and that inventory onboards a
+  // connection exactly as well (#1584).
+  if (discovery.models.length === 0) {
     throw codecError(
       source === 'persisted' ? 'invalid_document' : 'invalid_connection_input',
-      'Onboarding requires a non-empty fetched model inventory',
+      'Onboarding requires a non-empty model inventory',
     );
   }
   const normalized = decode(() =>

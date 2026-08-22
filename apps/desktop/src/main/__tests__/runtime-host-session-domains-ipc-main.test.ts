@@ -625,6 +625,7 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
   handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'task' });
   handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'deep_research' });
   handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'plan' });
+  handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'usage' });
   handle.sessionDomainChanged({
     sessionId: 'session-1',
     domain: 'runtime_resource',
@@ -656,6 +657,10 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
     },
     {
       channel: 'plan-mode:changed',
+      payload: { sessionId: 'session-1' },
+    },
+    {
+      channel: 'usage:changed',
       payload: { sessionId: 'session-1' },
     },
     {
@@ -695,6 +700,10 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
     },
     {
       channel: 'plan-mode:changed',
+      payload: { sessionId: 'session-1' },
+    },
+    {
+      channel: 'usage:changed',
       payload: { sessionId: 'session-1' },
     },
     {

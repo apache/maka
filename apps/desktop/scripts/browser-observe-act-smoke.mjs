@@ -67,6 +67,22 @@ function findRef(snapshot, needle) {
   return null;
 }
 
+async function waitForPageValue(read, expected, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  let actual;
+  do {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    actual = await read(remainingMs);
+    if (actual === expected) return actual;
+    const pollDelayMs = Math.min(20, deadline - Date.now());
+    if (pollDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, pollDelayMs));
+    }
+  } while (Date.now() < deadline);
+  return actual;
+}
+
 async function runSmoke() {
   // Loopback fixture server, OS-assigned port — deterministic, no network.
   const server = createServer((_req, res) => {
@@ -104,7 +120,8 @@ async function runSmoke() {
     const controller2 = new BrowserViewController(win, 'smoke-backstop', () => {});
     check(
       'security backstop installs once per partition (no listener pileup)',
-      partition.listenerCount('will-download') === downloadListenersBefore,
+      downloadListenersBefore === 1 &&
+        partition.listenerCount('will-download') === downloadListenersBefore,
       `${downloadListenersBefore} -> ${partition.listenerCount('will-download')}`,
     );
     await controller2.dispose();
@@ -137,21 +154,6 @@ async function runSmoke() {
       log(`--- snapshot dump ---\n${snapshot}\n--- end snapshot ---`);
       throw new Error('snapshot did not expose the expected numbered refs');
     }
-
-    // ACT by numbered ref: type into [queryRef], then click [submitRef].
-    const fill = await page.fillText(queryRef, 'hello');
-    check('fillText verifies the typed value by ref', fill.verified === true && fill.actual === 'hello', `actual=${JSON.stringify(fill.actual)}`);
-
-    const clicked = await page.click(submitRef);
-    check('click resolves a single match by ref', clicked.matches_n === 1, `matches_n=${clicked.matches_n}`);
-
-    // VERIFY the act landed in the real DOM.
-    const out = await page.evaluate('document.getElementById("out").textContent');
-    check('the click handler wrote clicked:hello', out === 'clicked:hello', `out=${JSON.stringify(out)}`);
-
-    // EXTRACT: real HTML → markdown (mirrors browser_extract).
-    const markdown = htmlToMarkdown(String(await page.evaluate('document.body.outerHTML')));
-    check('extract markdown reflects the page text', markdown.includes('clicked:hello'));
 
     // ── Visible-lease, end to end through BrowserSession + the real host ──────
     // Exercises the wiring the fake-host unit tests can't: controller
@@ -218,23 +220,45 @@ async function runSmoke() {
       takeover: 'mutate',
     });
     setTimeout(() => leaseManager.get('leaseS').setViewport({ x: 0, y: 0, width: 1024, height: 768 }), 30);
-    let raceLanded = true;
+    let raceLanded = false;
     try {
-      await racingType;
+      const result = await racingType;
+      raceLanded = result.verified === true && result.actual === 'leased';
     } catch {
       raceLanded = false;
     }
-    check('visible-lease waits out a modal-close viewport restore so an approved mutate lands', raceLanded);
+    check('visible-lease waits out a modal-close viewport restore and verifies the typed value', raceLanded);
 
     // With the viewport back, a click drives the real DOM.
-    await withBrowserPage('leaseS', 'click', (lease) => lease.click(leaseSubmit), { takeover: 'mutate' });
-    const leaseOut = await withBrowserPage(
-      'leaseS',
-      'read',
-      (lease) => lease.evaluate('document.getElementById("out").textContent'),
-      { takeover: 'observe' },
+    const leaseClick = await withBrowserPage('leaseS', 'click', (lease) => lease.click(leaseSubmit), {
+      takeover: 'mutate',
+    });
+    check(
+      'visible-lease click resolves a single match by ref',
+      leaseClick.matches_n === 1,
+      `matches_n=${leaseClick.matches_n}`,
+    );
+    const leaseOut = await waitForPageValue(
+      (remainingMs) =>
+        withBrowserPage(
+          'leaseS',
+          'read',
+          (lease) => lease.evaluate('document.getElementById("out").textContent'),
+          { takeover: 'observe', timeoutMs: remainingMs },
+        ),
+      'clicked:leased',
     );
     check('visible-lease allows + lands a click once shown with a viewport', leaseOut === 'clicked:leased');
+
+    // EXTRACT through the same production session path.
+    const leaseHtml = await withBrowserPage(
+      'leaseS',
+      'extract',
+      (lease) => lease.evaluate('document.body.outerHTML'),
+      { takeover: 'observe' },
+    );
+    const markdown = htmlToMarkdown(String(leaseHtml));
+    check('extract markdown reflects the page effect', markdown.includes('clicked:leased'));
 
     // Throttling tracks shown-ness (the P2 fix): a shown view runs full-speed so
     // native clicks composite, and HIDING it restores background throttling so a

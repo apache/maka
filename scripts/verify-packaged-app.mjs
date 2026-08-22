@@ -346,10 +346,24 @@ export async function stopChild(child) {
   }
 }
 
-export function makePtyProbe(shellFile, shellArgs) {
+export function makePtyProbe(shellFile, shellArgs, runtimeHostSetupPackage) {
   return String.raw`
 const { createRequire } = require('node:module');
 const requireFromApp = createRequire(process.argv[1]);
+const appManifest = requireFromApp('./package.json');
+const expectedRuntimeHostSetupPackage = ${JSON.stringify(runtimeHostSetupPackage)};
+if (
+  expectedRuntimeHostSetupPackage !== undefined &&
+  appManifest.runtimeHostSetupPackage !== expectedRuntimeHostSetupPackage
+) {
+  console.error(
+    'Packaged Runtime Host setup package mismatch: expected ' +
+      expectedRuntimeHostSetupPackage +
+      ', found ' +
+      JSON.stringify(appManifest.runtimeHostSetupPackage),
+  );
+  process.exit(1);
+}
 const pty = requireFromApp('node-pty');
 const child = pty.spawn(${JSON.stringify(shellFile)}, ${JSON.stringify(shellArgs)}, {
   name: 'xterm-color',

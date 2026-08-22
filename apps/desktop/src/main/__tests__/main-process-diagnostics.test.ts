@@ -206,15 +206,6 @@ test('copies bounded evidence for the exact failed Turn', async () => {
             message: 'No endpoints accepted the request',
           },
         ],
-        totals: {
-          durationMs: 3_501,
-          modelAttempts: 1,
-          retries: 0,
-          compactions: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          unpricedAttempts: 1,
-        },
         failure: {
           code: 'model_call_failed',
           message: 'No endpoints accepted the request',

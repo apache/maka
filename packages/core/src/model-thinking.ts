@@ -17,7 +17,6 @@
  * per-model supported set, so the UI and runtime share one source of truth.
  */
 
-import { isRelayProviderType } from './llm-connections.js';
 import type { ProviderType } from './llm-connections.js';
 import { lookupModelMetadata } from './model-metadata.js';
 
@@ -102,22 +101,35 @@ export function deriveThinkingChoices(
 }
 
 /**
- * One model behind an OpenAI-compatible relay (Chat Completions or Responses),
- * as declared by the user:
- * the facts neither the relay's /models report nor built-in metadata can be
- * trusted to know. Every field is independent, and every ABSENT field means
- * "Auto" — the /models report and the metadata chain decide. The single
- * exception in shape, not spirit, is `vision: false`: an explicit DISABLE
- * that overrides Auto, because the runtime would otherwise believe a vision
- * report the relay may emit regardless.
+ * One model as declared by the user: the facts no other source can be trusted
+ * to know. Every field is independent, and every ABSENT field means "Auto" —
+ * the provider's /models report and the metadata chain decide. The single
+ * exception in shape, not spirit, is `vision: false`: an explicit DISABLE that
+ * overrides Auto, because the runtime would otherwise believe a vision report
+ * the provider may emit regardless.
  *
- * Profiles live on the connection as a first-class typed field
- * (`relayModelProfiles`, keyed by model id): relay models are unknown to
- * `model-metadata.ts` and a catalog refresh rewrites `models[]` rows, so
- * declarations sit next to the user-edited connection fields. Two invariants
- * are enforced at the store boundaries — profiles exist only for custom OpenAI
- * relay connections, and only for models in `enabledModelIds`
- * (disabling a model deletes its profile).
+ * Declarations live on the connection as a first-class typed field
+ * (`relayModelProfiles`, keyed by model id) rather than on the `models[]` rows
+ * a catalog refresh rewrites, so they sit next to the user-edited connection
+ * fields and survive it.
+ *
+ * The name is historical, and the table now splits by FIELD rather than by
+ * provider. `contextWindow` and `vision` state facts about a model: a relay's
+ * models are unknown to `model-metadata.ts`, but so is any model newer than
+ * the bundled snapshot on any provider, and a provider without a model-list
+ * endpoint cannot describe one either. Confining those to relays left the user
+ * no way to state a context window Maka had no other way to learn (#1584).
+ *
+ * `thinkingLevels` and `serviceTier` stay relay-only: they name wire features
+ * (`reasoning_effort` tiers, priority processing) that only the
+ * OpenAI-compatible relays accept. `assertProfileFieldsFitProvider` in the
+ * catalog codec is the write seam that enforces it, so reads here do not
+ * re-derive it; `supportsRelayFastServiceTier` below is a narrower read-side
+ * question — which relay MODELS carry the tier.
+ *
+ * One invariant is still enforced at the store boundaries: declarations exist
+ * only for models in `enabledModelIds` (disabling a model deletes its
+ * declaration).
  */
 export interface RelayModelProfile {
   readonly thinkingLevels?: readonly ThinkingLevel[];
@@ -226,10 +238,9 @@ export interface ConnectionThinkingContext {
 }
 
 /**
- * The one gated read seam for relay profiles. Profiles are an
- * `openai-compatible` feature — on every other provider the metadata chain
- * is the truth — and thinking, vision, and context window reads all enter
- * through here so the gate cannot leak. Entries ride through
+ * The one read seam for user declarations: thinking, vision, and context
+ * window reads all enter through here, so the precedence of a declaration over
+ * the metadata chain is decided in exactly one place. Entries ride through
  * `normalizeRelayModelProfile` so even a hand-edited local file degrades to
  * Auto instead of trusting a malformed field.
  */
@@ -237,7 +248,6 @@ export function relayModelProfile(
   connection: ConnectionThinkingContext,
   modelId: string,
 ): RelayModelProfile | undefined {
-  if (!isRelayProviderType(connection.providerType)) return undefined;
   return normalizeRelayModelProfile(connection.relayModelProfiles?.[modelId]);
 }
 

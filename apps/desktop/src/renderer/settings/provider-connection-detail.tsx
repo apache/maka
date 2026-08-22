@@ -12,6 +12,7 @@ import {
   VStack,
 } from '@astryxdesign/core';
 import { isRelayProviderType, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { hasModelMetadata } from '@maka/core/model-metadata';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   THINKING_LEVELS,
@@ -33,6 +34,7 @@ import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { providerDisplay } from './provider-display';
+import { AddModelDialog } from './provider-add-model-dialog';
 import { EnabledModelManager } from './provider-enabled-model-manager';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
@@ -146,6 +148,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     savedBaseUrl,
     save,
     updateEnabledModels,
+    addDeclaredModel,
     relayProfileDraft,
     hasRelayProfileChanges,
     setDraftThinkingLevels,
@@ -158,22 +161,34 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
-  // Capability switches only exist for custom OpenAI relays: built-in
-  // providers declare their thinking support in model metadata, a custom
-  // relay's backing model is unknown until the user says what it can do. The
-  // declaration is per model — a relay can front both a reasoner and a plain
-  // instruct model.
-  const showsCapabilities = isRelayProviderType(connection.providerType);
+  // A model gets capability switches when Maka cannot describe it otherwise.
+  // On a custom OpenAI relay that is every model: the id is whatever the
+  // operator chose, so even one that collides with a known name may front
+  // something else entirely. Elsewhere it is the models the bundled metadata
+  // has never heard of — a model newer than this build, or one the user typed
+  // in on a provider whose key cannot call a model-list endpoint, which no
+  // refresh will ever describe (#1584).
+  //
+  // A model that already carries a declaration always keeps its row, or a
+  // stale declaration would be uneditable and unclearable.
+  const isRelay = isRelayProviderType(connection.providerType);
   // Rows are the enabled models, exactly — the store prunes a model's profile
   // the moment it is disabled, so no declaration can ever belong to a row
   // this list does not show. The editor edits the per-model draft; 保存
   // commits the whole table in one write.
-  const capabilityModelIds = enabledModelIds;
+  const capabilityModelIds = enabledModelIds.filter(
+    (modelId) =>
+      isRelay ||
+      relayProfileDraft[modelId] !== undefined ||
+      !hasModelMetadata(connection.providerType, modelId),
+  );
+  const showsCapabilities = capabilityModelIds.length > 0;
   // One row is a form at a time, the way the settings-sidebar template does it.
   // Opening a row discards the other's draft: leaving an abandoned draft in
   // state meant it reappeared when the user came back to that row, and — until
   // `save` became per-field — rode along with the next save.
   const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | 'headers' | 'body' | null>(null);
+  const [addModelOpen, setAddModelOpen] = useState(false);
   const [savedHeaderNames, setSavedHeaderNames] = useState<readonly string[]>([]);
   const [headerDrafts, setHeaderDrafts] = useState<RequestHeaderDraft[]>([]);
   const savedBodyText = formatRequestBodyOverlay(connection.requestBodyOverlay);
@@ -516,10 +531,31 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             would pass a MouseEvent as `opts`. */}
         <HStack gap={2} vAlign="center" wrap="wrap">
           <Button variant="secondary" isDisabled={allActionsBusy || !hasUsableCredential} clickAction={() => runTest()} label={copy.testConnection} />
+          {/* Both, wherever refresh exists. Refresh is the fast path and stays
+              first, but having a model-list endpoint does not mean the endpoint
+              answers for this account: a self-hosted gateway on
+              `openai-compatible` may not serve /models at all, and a provider's
+              list can lag a model the account already has. Making the two
+              alternatives left those users with no way in (#1584). */}
           {supportsRemoteDiscovery && (
             <Button variant="ghost" isDisabled={allActionsBusy || !hasUsableCredential} clickAction={() => refreshModels()} label={copy.updateModels} />
           )}
+          <Button variant="ghost" isDisabled={allActionsBusy} clickAction={() => setAddModelOpen(true)} label={copy.addModel} />
         </HStack>
+        <AddModelDialog
+          isOpen={addModelOpen}
+          /* The catalog, not just the selection: `models` is usually a proper
+             superset of what the user enabled. Checking only the selection lets
+             a listed-but-unchecked id through, and the dialog then requires a
+             hand-typed context window that overrides the one Maka already
+             knows. */
+          existingModelIds={[...enabledModelIds, ...(connection.models ?? []).map(({ id }) => id)]}
+          /* A write started after the dialog opened would make the store drop
+             this submission silently, taking the typed id with it. */
+          isSubmitDisabled={allActionsBusy}
+          onOpenChange={setAddModelOpen}
+          onSubmit={addDeclaredModel}
+        />
       </DetailSection>
       )}
       {showsCapabilities && !retired && (
@@ -563,6 +599,12 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                         left, one compact control on the right (the 模型功能
                         row language). A CheckboxList wall was the reason this
                         section looked like a form from a different app. */}
+                    {/* Relay-only, like 快速模式 below: a declared level encodes
+                        into `reasoning_effort`, a wire field only the
+                        OpenAI-compatible relays accept. The catalog codec
+                        refuses to persist one elsewhere, so offering the
+                        control would promise an edit that cannot be saved. */}
+                    {isRelay && (
                     <CapabilityRow label={copy.thinkingEffort} description={copy.thinkingEffortHelp}>
                       {/* DropdownMenu, not MultiSelector: levels have a
                           canonical order (low → max) that must not shuffle —
@@ -604,6 +646,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                         ))}
                       </DropdownMenu>
                     </CapabilityRow>
+                    )}
                     <CapabilityRow label={copy.visionInput} description={copy.visionInputHelp}>
                       <Selector
                         label={`${copy.visionInput} — ${modelId}`}

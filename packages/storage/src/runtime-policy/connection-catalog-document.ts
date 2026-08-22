@@ -25,6 +25,7 @@ import {
   type CreateCatalogConnectionInput,
   type RemoveCatalogConnectionInput,
   type SetDefaultConnectionTargetInput,
+  type MigrateSystemSeedInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
 import {
@@ -310,6 +311,66 @@ export class ConnectionCatalogDocumentOwner {
     return committed(next);
   }
 
+  /**
+   * Built-in seed evolution as ONE atomic catalog mutation. A row whose
+   * `enabledModelIds` still exactly match a historical system seed is provably
+   * system-owned: it follows the current seed, its static inventory is
+   * re-derived from the current build, and a default target the migration
+   * removes is retargeted inside the same document write — so no restart can
+   * observe enabled ids without their inventory, or a nulled default awaiting
+   * a second write. Any other inventory (including a reordering) is a user
+   * selection and is never touched; an already-null default stays null.
+   */
+  async migrateSystemSeed(
+    root: string,
+    input: MigrateSystemSeedInput,
+  ): Promise<ConnectionCatalogMutationResult> {
+    if (!input.enabledModelIds.includes(input.defaultModelId)) {
+      throw codecError('invalid_connection_input', 'Seed default must be in the seed selection');
+    }
+    const current = await this.read(root);
+    const index = current.connections.findIndex(
+      (item) => item.slug === input.slug && item.providerType === input.providerType,
+    );
+    const previous = current.connections[index];
+    const sameIds = (left: readonly string[], right: readonly string[]) =>
+      left.length === right.length && left.every((id, position) => id === right[position]);
+    if (
+      !previous ||
+      sameIds(previous.enabledModelIds, input.enabledModelIds) ||
+      !input.legacyEnabledModelIds.some((seed) => sameIds(previous.enabledModelIds, seed))
+    ) {
+      return committed(current);
+    }
+    const fallbackModels = fallbackInventory(previous.providerType);
+    const {
+      lastTest: _lastTest,
+      modelSource: _modelSource,
+      modelsFetchedAt: _modelsFetchedAt,
+      ...retained
+    } = previous;
+    const connections = [...current.connections];
+    connections[index] = {
+      ...retained,
+      revision: nextRevision(previous.revision),
+      enabledModelIds: [...input.enabledModelIds],
+      models: fallbackModels,
+      ...(fallbackModels.length > 0
+        ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
+        : {}),
+    };
+    const target = current.defaultTarget;
+    const defaultTarget =
+      target !== null &&
+      target.connectionId === previous.connectionId &&
+      !input.enabledModelIds.includes(target.modelId)
+        ? { connectionId: previous.connectionId, modelId: input.defaultModelId }
+        : target;
+    const next = this.nextDocument(current, connections, defaultTarget);
+    await this.write(root, next);
+    return committed(next);
+  }
+
   async setDefaultTarget(
     root: string,
     rawInput: SetDefaultConnectionTargetInput,
@@ -360,25 +421,19 @@ export class ConnectionCatalogDocumentOwner {
       current.defaultTarget?.connectionId === previous.connectionId
         ? current.defaultTarget
         : undefined;
-    const reconciled =
-      result.source === 'fetched'
-        ? reconcileConnectionAfterModelFetch(
-            {
-              defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0],
-              enabledModelIds: previous.enabledModelIds,
-              // An entry always carries a `models` array, so "has an inventory"
-              // has to be read off its contents: empty means this connection has
-              // never had a list to pick from and discovery may seed one. A
-              // non-empty one means an empty selection is the user's answer.
-              hasModelInventory: previous.models.length > 0,
-            },
-            result.models,
-            { aliases: modelIdAliasesForProvider(previous.providerType) },
-          )
-        : {
-            defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0] ?? '',
-            enabledModelIds: previous.enabledModelIds,
-          };
+    const reconciled = reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0],
+        enabledModelIds: previous.enabledModelIds,
+        // An entry always carries a `models` array, so "has an inventory" has
+        // to be read off its contents: empty means this connection has never
+        // had a list to pick from and discovery may seed one. A non-empty one
+        // means an empty selection is the user's answer.
+        hasModelInventory: previous.models.length > 0,
+      },
+      result.models,
+      { aliases: modelIdAliasesForProvider(previous.providerType) },
+    );
     // Discovery MOVES a target: a provider's model rename carries the default
     // across by alias. A default outside the selection the reconciler just
     // decided is its own bug — fail closed where it is still attributable.
@@ -391,10 +446,10 @@ export class ConnectionCatalogDocumentOwner {
         'Model discovery reconciled a default outside its own selection',
       );
     }
-    // A refresh is a new enabledModelIds authority on the same endpoint:
-    // profiles keyed by a model the refresh dropped would violate the
-    // subset invariant, and this write path bypasses the canonical decoder,
-    // so prune here or the persisted document is un-loadable on next read.
+    // A refresh only ever migrates a renamed id now, but that rename still
+    // rekeys the selection, and this write path bypasses the canonical
+    // decoder — so prune here or the persisted document is un-loadable on
+    // next read.
     const relayModelProfiles = pruneRelayModelProfiles(
       previous.relayModelProfiles,
       reconciled.enabledModelIds,
@@ -450,10 +505,14 @@ export class ConnectionCatalogDocumentOwner {
       );
     }
     const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
-    if (result.source !== 'fetched' || result.models.length === 0) {
+    // Non-empty is the requirement; `source` is write provenance, not a
+    // quality bar. A provider without a model-list endpoint runs discovery by
+    // replaying the array this build shipped, and that inventory onboards a
+    // connection exactly as well (#1584).
+    if (result.models.length === 0) {
       throw codecError(
         'invalid_connection_input',
-        'Onboarding requires a non-empty fetched model inventory',
+        'Onboarding requires a non-empty model inventory',
       );
     }
     const changes = decodeConnectionInput(() =>
@@ -469,30 +528,41 @@ export class ConnectionCatalogDocumentOwner {
         providerType,
       ),
     );
-    const available = new Set(result.models.map(({ id }) => id));
-    if (
-      changes.enabledModelIds.length === 0 ||
-      changes.enabledModelIds.some((modelId) => !available.has(modelId))
-    ) {
-      throw codecError(
-        'invalid_connection_input',
-        'Onboarding enabled models must come from the fetched inventory',
-      );
+    if (changes.enabledModelIds.length === 0) {
+      throw codecError('invalid_connection_input', 'Onboarding must enable a model');
     }
+    // Onboarding offers what discovery returned, so a model the user declared
+    // by hand is one the wizard never showed. Not being re-picked in a list it
+    // was absent from is not a decision to drop it (#1584).
+    const offered = new Set(result.models.map(({ id }) => id));
+    const undisplayed = (previous?.enabledModelIds ?? []).filter(
+      (modelId) => !offered.has(modelId) && !changes.enabledModelIds.includes(modelId),
+    );
+    const enabledModelIds = [...changes.enabledModelIds, ...undisplayed];
+    // Onboarding installs a new enabledModelIds authority, so a profile keyed
+    // by a model it dropped would violate the subset invariant. Like the
+    // refresh path above, this one bypasses the canonical decoder, so pruning
+    // has to happen here or the document is un-loadable on next read.
+    const relayModelProfiles = previous
+      ? pruneRelayModelProfiles(previous.relayModelProfiles, enabledModelIds)
+      : undefined;
+    const base: ConnectionCatalogEntry = previous ?? {
+      connectionId,
+      revision: 0,
+      slug,
+      name: definition.label,
+      providerType,
+      enabled: false,
+      enabledModelIds: [],
+      models: [],
+    };
+    const { relayModelProfiles: _staleProfiles, ...baseWithoutProfiles } = base;
     const finalized: ConnectionCatalogEntry = {
-      ...(previous ?? {
-        connectionId,
-        revision: 0,
-        slug,
-        name: definition.label,
-        providerType,
-        enabled: false,
-        enabledModelIds: [],
-        models: [],
-      }),
+      ...baseWithoutProfiles,
+      ...(relayModelProfiles ? { relayModelProfiles } : {}),
       revision: previous ? nextRevision(previous.revision) : 1,
       enabled: true,
-      enabledModelIds: changes.enabledModelIds,
+      enabledModelIds,
       models: result.models,
       modelSource: result.source,
       modelsFetchedAt: result.fetchedAt,
@@ -504,7 +574,7 @@ export class ConnectionCatalogDocumentOwner {
     };
     if (
       previous?.enabled &&
-      sameStringArray(previous.enabledModelIds, changes.enabledModelIds) &&
+      sameStringArray(previous.enabledModelIds, enabledModelIds) &&
       isDeepStrictEqual(previous.models, result.models) &&
       previous.modelSource === result.source &&
       previous.modelsFetchedAt === result.fetchedAt &&

@@ -461,7 +461,11 @@ export function ChatView(props: {
       <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
     );
     return (
-      <main className="maka-main agents-chat-panel agents-chat-view-root">
+      <section
+        className="maka-main agents-chat-panel agents-chat-view-root"
+        role="region"
+        aria-label={conversationCopy.empty.surfaceAriaLabel}
+      >
         {/* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d 2026-06-23): the
             browser-style session tab + the duplicate "新建对话" plus
             button were removed. The session name lives in the sidebar;
@@ -490,7 +494,7 @@ export function ChatView(props: {
             </>
           ) : null}
         </ChatMessageList>
-      </main>
+      </section>
     );
   }
 
@@ -533,7 +537,11 @@ export function ChatView(props: {
         );
 
   return (
-    <main className="maka-main agents-chat-panel agents-chat-view-root">
+    <section
+      className="maka-main agents-chat-panel agents-chat-view-root"
+      role="region"
+      aria-label={copy.conversationAriaLabel(props.activeSession.name)}
+    >
       {props.returnToLatest ? (
         <div className="maka-transcript-history-controls">
           <Button
@@ -739,7 +747,7 @@ export function ChatView(props: {
           )
         ) : null}
       </div>
-    </main>
+    </section>
   );
 }
 

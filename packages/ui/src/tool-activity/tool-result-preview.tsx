@@ -63,11 +63,15 @@ export function ToolOutputSurface(props: {
   body?: string;
   attention?: 'error' | 'warning';
   actions?: ReactNode;
+  actionIdentity?: string;
   children: ReactNode;
 }) {
   const copyText = getToolActivityCopy(useUiLocale()).copy;
   const feedback = useClipboardCopyFeedback();
   const command = props.heading?.trim() ? props.heading : undefined;
+  const actionIdentity =
+    props.actionIdentity?.trim() ||
+    redactSecrets(command ?? '').trim().slice(0, 80);
   const copyPayload = [command, props.body].filter(Boolean).join('\n');
   // Each surface owns its own feedback hook, so the key never has to
   // distinguish one surface from another — it only has to be stable across
@@ -106,7 +110,7 @@ export function ToolOutputSurface(props: {
               // it would compete with the thing being copied. `label` is the
               // accessible name in this mode.
               isIconOnly
-              label={label}
+              label={copyText.actionAriaLabel(label, actionIdentity)}
               aria-busy={phase === 'pending' ? 'true' : undefined}
               isDisabled={phase === 'pending'}
               onClick={() => void feedback.copy(copyKey, copyPayload)}
@@ -129,6 +133,7 @@ export function ToolResultPreview(props: {
   args?: unknown;
   shellRunSource?: 'owned' | 'unavailable';
   fileDiffActions?: ReactNode;
+  actionIdentity?: string;
 }) {
   const { content } = props;
   const locale = useUiLocale();
@@ -139,6 +144,7 @@ export function ToolResultPreview(props: {
         diff={content.diff}
         paths={content.paths}
         actions={props.fileDiffActions}
+        actionIdentity={props.actionIdentity}
       />
     );
   }
@@ -171,13 +177,20 @@ export function ToolResultPreview(props: {
         failureMessage={content.failureMessage}
         output={isShellOutput(content.output) ? content.output : undefined}
         sandboxBlocked={isSandboxDeniedToolResult(content)}
+        actionIdentity={props.actionIdentity}
       />
     );
   }
 
   if (content.kind === 'shell_run') {
     if (props.toolName === 'WriteStdin') return <PtyControlPreview result={content} args={props.args} />;
-    return <ShellRunPreview result={content} source={props.shellRunSource} />;
+    return (
+      <ShellRunPreview
+        result={content}
+        source={props.shellRunSource}
+        actionIdentity={props.actionIdentity}
+      />
+    );
   }
 
   if (content.kind === 'explore_agent') {
@@ -196,6 +209,7 @@ export function ToolResultPreview(props: {
         <ToolCodeBlock
           code={formatUserVisibleToolText(quiet.body, locale)}
           title={quiet.headline ? formatUserVisibleToolText(quiet.headline, locale) : undefined}
+          actionIdentity={props.actionIdentity}
         />
       </div>
     );
@@ -207,7 +221,7 @@ export function ToolResultPreview(props: {
     const code = capped > 0 ? `${body}\n\n${copy.hiddenLines(capped)}` : body;
     return (
       <div data-kind="text">
-        <ToolCodeBlock code={code} />
+        <ToolCodeBlock code={code} actionIdentity={props.actionIdentity} />
       </div>
     );
   }
@@ -217,13 +231,16 @@ export function ToolResultPreview(props: {
   if (content.kind === 'file_write') {
     return (
       <div data-kind={content.kind}>
-        <ToolCodeBlock code={`Wrote ${content.bytes} bytes to ${content.path}`} />
+        <ToolCodeBlock
+          code={`Wrote ${content.bytes} bytes to ${content.path}`}
+          actionIdentity={props.actionIdentity}
+        />
       </div>
     );
   }
   return (
     <div data-kind={content.kind}>
-      <ToolCodeBlock code={`[${content.kind}]`} />
+      <ToolCodeBlock code={`[${content.kind}]`} actionIdentity={props.actionIdentity} />
     </div>
   );
 }
@@ -312,6 +329,7 @@ function FileDiffPreview(props: {
   diff: string;
   paths: string[];
   actions?: ReactNode;
+  actionIdentity?: string;
 }) {
   const copy = getToolActivityCopy(useUiLocale()).result;
   // Apply UI-level redaction then cap the displayed lines. Both are
@@ -325,6 +343,7 @@ function FileDiffPreview(props: {
       heading={props.paths.length > 0 ? props.paths.join(', ') : undefined}
       body={body}
       actions={props.actions}
+      actionIdentity={props.actionIdentity}
     >
       <DiffCodePreview diff={body} paths={props.paths} />
       {capped > 0 && (
@@ -342,6 +361,7 @@ function TerminalPreview(props: {
   failureMessage?: string;
   output?: ShellOutput;
   sandboxBlocked?: boolean;
+  actionIdentity?: string;
 }) {
   const activityCopy = getToolActivityCopy(useUiLocale());
   const copy = activityCopy.result;
@@ -356,6 +376,7 @@ function TerminalPreview(props: {
       heading={safeCmd}
       body={props.output ? shellOutputText(props.output, copy) : undefined}
       attention={props.sandboxBlocked ? 'warning' : succeeded ? undefined : 'error'}
+      actionIdentity={props.actionIdentity}
     >
       {props.output ? (
         <ShellOutputBody output={props.output} failed={!succeeded} />
@@ -393,6 +414,7 @@ function TerminalPreview(props: {
 function ShellRunPreview(props: {
   result: Extract<ToolResultContent, { kind: 'shell_run' }>;
   source?: 'owned' | 'unavailable';
+  actionIdentity?: string;
 }) {
   const locale = useUiLocale();
   const copy = getToolActivityCopy(locale).result;
@@ -430,6 +452,7 @@ function ShellRunPreview(props: {
       heading={safeCmd}
       body={pipeOutput ? shellOutputText(pipeOutput, copy) : undefined}
       attention={attention ? (sandboxBlocked ? 'warning' : 'error') : undefined}
+      actionIdentity={props.actionIdentity}
     >
       <p className={TOOL_OUTPUT_NOTE_CLASS}>
         {statusLabel}

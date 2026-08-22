@@ -37,6 +37,7 @@ const PRICING_QUERY_ERRORS = [...QUERY_ERRORS, 'invalid_request'] as const;
 const MUTATION_ERRORS = [...QUERY_ERRORS, 'invalid_request', 'commit_outcome_unknown'] as const;
 const LLM_USAGE_QUERY_FIELDS = new Set([
   'range',
+  'sessionId',
   'connectionSlug',
   'providerId',
   'modelId',
@@ -646,6 +647,7 @@ function decodeLlmUsageQuery(value: unknown): LlmUsageQuery {
   if (!Object.hasOwn(query, 'range')) throw invalidProtocolFrame('Invalid usage query fields');
   return {
     range: decodeUsageRange(query.range),
+    ...optionalQueryText(query, 'sessionId'),
     ...optionalQueryText(query, 'connectionSlug'),
     ...optionalQueryText(query, 'providerId'),
     ...optionalQueryText(query, 'modelId'),

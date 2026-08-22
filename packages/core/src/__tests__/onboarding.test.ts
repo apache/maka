@@ -54,15 +54,18 @@ describe('deriveOnboardingState', () => {
         { 'missing-model': true },
         { kind: 'needs_model', connectionSlug: 'missing-model' },
       ],
+      // A catalog that lists nothing, or lists other models, no longer routes
+      // the user anywhere: they picked `stale`, and only the provider can say
+      // whether it serves it (#1584). Sending is the way to find out.
       [
         realConnection({ slug: 'empty-models', defaultModel: 'stale', models: [] }),
         { 'empty-models': true },
-        { kind: 'needs_model', connectionSlug: 'empty-models' },
+        { kind: 'ready_empty', connectionSlug: 'empty-models', model: 'stale' },
       ],
       [
         realConnection({ slug: 'stale-model', defaultModel: 'stale', models: [{ id: 'fresh' }] }),
         { 'stale-model': true },
-        { kind: 'needs_model', connectionSlug: 'stale-model' },
+        { kind: 'ready_empty', connectionSlug: 'stale-model', model: 'stale' },
       ],
       [
         realConnection({
@@ -81,7 +84,14 @@ describe('deriveOnboardingState', () => {
 
   it('preserves readiness priority across broken and ready alternatives', () => {
     const missingSecret = realConnection({ slug: 'current' });
-    const brokenAlternative = realConnection({ slug: 'broken-alt', models: [] });
+    // Broken by having nothing chosen at all — an empty catalog is no longer a
+    // fault, so it cannot stand in for one here.
+    const brokenAlternative = realConnection({
+      slug: 'broken-alt',
+      defaultModel: '',
+      enabledModelIds: [],
+      models: [],
+    });
     assert.deepEqual(
       derive({
         connections: [missingSecret, brokenAlternative],

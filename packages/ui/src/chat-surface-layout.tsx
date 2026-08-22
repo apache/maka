@@ -1,5 +1,6 @@
-import type { ComponentProps } from 'react';
+import { useMemo, type ComponentProps } from 'react';
 import { ChatLayout } from '@astryxdesign/core/Chat';
+import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { cn } from './utils.js';
 
 /**
@@ -12,6 +13,7 @@ import { cn } from './utils.js';
  */
 export type ChatSurfaceLayoutProps = ComponentProps<typeof ChatLayout> & {
   conversationKey?: string | number;
+  scrollToBottomLabel?: string;
 };
 
 /**
@@ -36,9 +38,19 @@ export function ChatSurfaceLayout({
   className,
   density = 'balanced',
   conversationKey,
+  scrollToBottomLabel,
   ...props
 }: ChatSurfaceLayoutProps) {
-  return (
+  const astryxOverrides = useMemo(
+    () =>
+      scrollToBottomLabel
+        ? {
+            '@astryx.chatLayoutScrollButton.scrollToBottom': scrollToBottomLabel,
+          }
+        : undefined,
+    [scrollToBottomLabel],
+  );
+  const layout = (
     <ChatLayout
       {...props}
       conversationKey={conversationKey}
@@ -46,5 +58,10 @@ export function ChatSurfaceLayout({
       className={cn('maka-chat-layout', className)}
       data-chat-scroll-container="true"
     />
+  );
+  return astryxOverrides ? (
+    <AstryxLocaleProvider overrides={astryxOverrides}>{layout}</AstryxLocaleProvider>
+  ) : (
+    layout
   );
 }

@@ -52,6 +52,7 @@ apps/desktop/src/renderer/settings/permission-center-page.tsx
 apps/desktop/src/renderer/settings/personalization-settings-section.tsx
 apps/desktop/src/renderer/settings/projects-settings-page.tsx
 apps/desktop/src/renderer/settings/provider-add-form.tsx
+apps/desktop/src/renderer/settings/provider-add-model-dialog.tsx
 apps/desktop/src/renderer/settings/provider-brand-marks.tsx
 apps/desktop/src/renderer/settings/provider-catalog-page.tsx
 apps/desktop/src/renderer/settings/provider-connection-detail.tsx

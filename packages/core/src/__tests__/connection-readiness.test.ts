@@ -119,7 +119,27 @@ describe('isConnectionReady — model capability gate', () => {
     });
   });
 
-  it('treats an enumerated fallback model list as the local send gate', () => {
+  it('does not let a live list veto a model the user enabled', () => {
+    // A live list is the best observation Maka has and still only an
+    // observation: it ages, it can arrive filtered, and it answers for the
+    // moment it was fetched. The request goes out and the provider answers for
+    // its own account — an error from there beats one Maka invents (#1584).
+    const verdict = isConnectionReady({
+      connection: connection({
+        defaultModel: 'custom-chat',
+        models: [{ id: 'relay-static-model' }],
+        modelSource: 'fetched',
+      }),
+      hasSecret: true,
+    });
+
+    assert.deepEqual(verdict, { ready: true, model: 'custom-chat' });
+  });
+
+  it('does not let a seed list veto a default model', () => {
+    // The same connection before its first discovery run: `models` is the
+    // array this build shipped, which is not evidence about the account. The
+    // request goes out and the provider answers for itself (#1584).
     const verdict = isConnectionReady({
       connection: connection({
         defaultModel: 'custom-chat',
@@ -129,7 +149,47 @@ describe('isConnectionReady — model capability gate', () => {
       hasSecret: true,
     });
 
-    assert.deepEqual(verdict, { ready: false, reason: 'model_not_enabled' });
+    assert.deepEqual(verdict, { ready: true, model: 'custom-chat' });
+  });
+
+  it('admits an enabled model a snapshot provider never listed', () => {
+    // `modelSource: 'fetched'` is the real persisted state here, and that is
+    // the whole point: `volcengine-agent-plan` has no model-list endpoint, so
+    // its discovery run replays the array this build shipped and honestly
+    // records that a run happened. Provenance is not content — only
+    // `providerSupportsModelDiscovery && fetched` means a provider enumerated
+    // this account, and reading the flag alone let a release snapshot veto the
+    // model an Ark plan actually serves (#1584).
+    const verdict = isConnectionReady({
+      connection: connection({
+        providerType: 'volcengine-agent-plan',
+        defaultModel: 'deepseek-v4-pro-beta',
+        enabledModelIds: ['deepseek-v4-pro-beta'],
+        models: [{ id: 'doubao-seed-2.1-turbo' }],
+        modelSource: 'fetched',
+      }),
+      hasSecret: true,
+    });
+
+    assert.deepEqual(verdict, { ready: true, model: 'deepseek-v4-pro-beta' });
+  });
+
+  it('still rejects a snapshot model the snapshot itself marks image-only', () => {
+    // Capabilities are facts wherever they came from; only inventory claims
+    // lose their authority when the list is a shipped snapshot. Guards against
+    // folding the capability check back inside the inventory gate.
+    const verdict = isConnectionReady({
+      connection: connection({
+        providerType: 'volcengine-agent-plan',
+        defaultModel: 'doubao-seedream',
+        enabledModelIds: ['doubao-seedream'],
+        models: [{ id: 'doubao-seedream', capabilities: { imageGeneration: true, chat: false } }],
+        modelSource: 'fetched',
+      }),
+      hasSecret: true,
+    });
+
+    assert.deepEqual(verdict, { ready: false, reason: 'model_not_chat_capable' });
   });
 
   it('returns the normalized requested model id', () => {

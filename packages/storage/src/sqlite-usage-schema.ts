@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_USAGE_SCHEMA_VERSION = 3;
+export const SQLITE_USAGE_SCHEMA_VERSION = 5;
 
 export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -8,7 +8,8 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
       storage_key TEXT PRIMARY KEY,
       id TEXT NOT NULL,
       ts INTEGER NOT NULL CHECK (ts >= 0),
-      record_json TEXT NOT NULL
+      record_json TEXT NOT NULL,
+      session_id TEXT
     );
 
     CREATE INDEX IF NOT EXISTS usage_llm_calls_ts
@@ -30,21 +31,25 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS usage_model_call_attempts (
       attempt_id TEXT PRIMARY KEY,
       completed_at INTEGER NOT NULL CHECK (completed_at >= 0),
-      record_json TEXT NOT NULL
+      record_json TEXT NOT NULL,
+      session_id TEXT
     );
 
     CREATE INDEX IF NOT EXISTS usage_model_call_attempts_completed_at
       ON usage_model_call_attempts(completed_at DESC, attempt_id);
 
-    -- Runs whose attempts are committed to the AgentRun stream but may not have
-    -- reached the table above. The marker is an optimization, not the
-    -- correctness argument: the stream holds every record, so a full
-    -- re-projection recovers a run even when its marker was never written.
-    CREATE TABLE IF NOT EXISTS usage_model_call_reprojection (
+    -- The AgentRun sequence is the projection's sole progress authority. A run
+    -- is behind exactly when its latest model-call event is newer than this
+    -- checkpoint; unreadable evidence is retained without pinning later calls.
+    CREATE TABLE IF NOT EXISTS usage_model_call_projection_checkpoints (
       session_id TEXT NOT NULL,
       run_id TEXT NOT NULL,
-      marked_at INTEGER NOT NULL CHECK (marked_at >= 0),
-      PRIMARY KEY (session_id, run_id)
+      applied_through_sequence INTEGER NOT NULL CHECK (applied_through_sequence >= 0),
+      unreadable_events INTEGER NOT NULL DEFAULT 0 CHECK (unreadable_events >= 0),
+      PRIMARY KEY (session_id, run_id),
+      FOREIGN KEY (session_id, run_id)
+        REFERENCES core_agent_runs(session_id, run_id)
+        ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS usage_pricing_authority (
@@ -60,4 +65,28 @@ export function migrateSqliteUsageDatabase(db: DatabaseSync): void {
       record_json TEXT NOT NULL
     );
   `);
+  db.exec('DROP TABLE IF EXISTS usage_model_call_reprojection');
+  ensureColumn(db, 'usage_llm_calls', 'session_id', 'TEXT');
+  ensureColumn(db, 'usage_model_call_attempts', 'session_id', 'TEXT');
+  db.exec(`
+    UPDATE usage_llm_calls
+    SET session_id = json_extract(record_json, '$.sessionId')
+    WHERE session_id IS NULL AND json_valid(record_json);
+
+    UPDATE usage_model_call_attempts
+    SET session_id = json_extract(record_json, '$.sessionId')
+    WHERE session_id IS NULL AND json_valid(record_json);
+
+    CREATE INDEX IF NOT EXISTS usage_llm_calls_session_ts
+      ON usage_llm_calls(session_id, ts DESC, id);
+
+    CREATE INDEX IF NOT EXISTS usage_model_call_attempts_session_completed_at
+      ON usage_model_call_attempts(session_id, completed_at DESC, attempt_id);
+  `);
+}
+
+function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>;
+  if (columns.some((candidate) => candidate.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }

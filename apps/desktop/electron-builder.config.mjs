@@ -1,19 +1,22 @@
-const runtimeHostSetupPackage = process.env.MAKA_RUNTIME_HOST_SETUP_PACKAGE?.trim();
-if (
-  runtimeHostSetupPackage !== undefined &&
-  !/^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(runtimeHostSetupPackage)
-) {
-  throw new Error('MAKA_RUNTIME_HOST_SETUP_PACKAGE must name an exact Maka CLI version');
+import { readFileSync } from 'node:fs';
+import { resolveProductManifestIdentity } from '../../scripts/product-release-identity.mjs';
+
+function readManifest(relativePath) {
+  return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
 }
+
+const { runtimeHostSetupPackage } = resolveProductManifestIdentity({
+  rootManifest: readManifest('../../package.json'),
+  desktopManifest: readManifest('./package.json'),
+  cliManifest: readManifest('../../packages/cli/package.json'),
+});
 
 export default {
   appId: 'com.maka.desktop',
   productName: 'Maka',
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
-  ...(runtimeHostSetupPackage
-    ? { extraMetadata: { runtimeHostSetupPackage } }
-    : {}),
+  extraMetadata: { runtimeHostSetupPackage },
   directories: {
     output: 'release',
   },
@@ -55,6 +58,14 @@ export default {
     {
       from: 'bundled-tools.json',
       to: 'bundled-tools.json',
+    },
+    {
+      // The app icon is read at runtime by the BrowserWindow `icon` option, and
+      // `files` above does not carry `assets/`. Electron reports the missing
+      // file as an empty image rather than an error, so without this the
+      // packaged app just draws no window icon.
+      from: 'assets',
+      to: 'assets',
     },
     {
       // Menu bar status item art. Without this the packaged app resolves an
@@ -203,8 +214,8 @@ export default {
   publish: [
     {
       provider: 'github',
-      owner: 'Maka-Agent',
-      repo: 'maka-agent',
+      owner: 'apache',
+      repo: 'maka',
     },
   ],
 };

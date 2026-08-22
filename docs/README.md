@@ -53,6 +53,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 
 ### Release operations
 
+- [CLI/TUI distribution contract](./cli-distribution.md)
 - [CLI npm release](./cli-npm-release.md) ([中文](./cli-npm-release.zh-CN.md))
 
 ### Security and privacy

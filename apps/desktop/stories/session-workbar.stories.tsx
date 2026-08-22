@@ -8,6 +8,10 @@ import type { Task } from '@maka/core/task-ledger';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
+import type {
+  DesktopSessionUsageSummary,
+  MakaBridge,
+} from '../src/preload/bridge-contract';
 import { SessionWorkbar } from '../src/renderer/session-workbar';
 import {
   createSessionWorkbarPanelsState,
@@ -316,16 +320,6 @@ const populatedTrace: SessionTrace = {
           checkpointId: 'checkpoint-9',
         },
       ],
-      totals: {
-        durationMs: 8_400,
-        modelAttempts: 2,
-        retries: 1,
-        compactions: 1,
-        inputTokens: 62_400,
-        outputTokens: 480,
-        costUsd: 0.0182,
-        unpricedAttempts: 1,
-      },
     },
     {
       turnId: 'turn-2',
@@ -355,15 +349,6 @@ const populatedTrace: SessionTrace = {
           message: 'sandbox denied the write',
         },
       ],
-      totals: {
-        durationMs: 4_500,
-        modelAttempts: 0,
-        retries: 0,
-        compactions: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        unpricedAttempts: 0,
-      },
       failure: { code: 'tool_failed', message: 'sandbox denied the write' },
     },
     {
@@ -407,32 +392,13 @@ const populatedTrace: SessionTrace = {
           ],
         },
       ],
-      totals: {
-        durationMs: 3_600,
-        modelAttempts: 1,
-        retries: 0,
-        compactions: 0,
-        inputTokens: 18_900,
-        outputTokens: 260,
-        costUsd: 0.0061,
-        unpricedAttempts: 0,
-      },
     },
   ],
-  totals: {
-    durationMs: 16_500,
-    modelAttempts: 3,
-    retries: 1,
-    compactions: 1,
-    inputTokens: 81_300,
-    outputTokens: 740,
-    costUsd: 0.0243,
-    unpricedAttempts: 1,
-  },
   coverage: {
     modelCalls: 'partial',
-    turnsMissingModelCalls: ['turn-2'],
+    turnsMissingModelCalls: [{ runId: 'run-2', turnId: 'turn-2' }],
     unreadableRecords: 1,
+    oversizedRuns: 0,
     turnsWithFewerModelCallsThanSteps: [],
   },
 };
@@ -506,20 +472,88 @@ const emptyTrace: SessionTrace = {
   schemaVersion: 1,
   sessionId: SESSION_ID,
   turns: [],
-  totals: {
-    durationMs: 0,
-    modelAttempts: 0,
-    retries: 0,
-    compactions: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    unpricedAttempts: 0,
-  },
   coverage: {
     modelCalls: 'none',
     turnsMissingModelCalls: [],
     unreadableRecords: 0,
+    oversizedRuns: 0,
     turnsWithFewerModelCallsThanSteps: [],
+  },
+};
+
+const olderTrace: SessionTrace = {
+  ...emptyTrace,
+  turns: [
+    {
+      turnId: 'turn-older',
+      runId: 'run-older',
+      startedAt: NOW - 60_000,
+      endedAt: NOW - 60_000,
+      durationMs: 0,
+      steps: [],
+    },
+  ],
+};
+
+const emptyUsageSummary: DesktopSessionUsageSummary = {
+  range: { from: NOW, to: NOW },
+  totalRequests: 0,
+  totalCostUsd: 0,
+  totalTokens: {
+    input: 0,
+    output: 0,
+    cacheMiss: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    reasoning: 0,
+    total: 0,
+  },
+  cacheHitRequests: 0,
+  cacheCreateRequests: 0,
+  errorRequests: 0,
+  provenance: {
+    coverage: {
+      attempts: 0,
+      pricedAttempts: 0,
+      unpricedAttempts: 0,
+      usageReportedAttempts: 0,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 0,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
+  },
+};
+
+const populatedUsageSummary: DesktopSessionUsageSummary = {
+  range: { from: NOW, to: NOW + 43_600 },
+  totalRequests: 3,
+  totalCostUsd: 0.0243,
+  totalTokens: {
+    input: 81_300,
+    output: 740,
+    cacheMiss: 7_200,
+    cacheRead: 74_100,
+    cacheWrite: 0,
+    reasoning: 120,
+    total: 82_040,
+  },
+  cacheHitRequests: 2,
+  cacheCreateRequests: 0,
+  errorRequests: 1,
+  provenance: {
+    coverage: {
+      attempts: 3,
+      pricedAttempts: 2,
+      unpricedAttempts: 1,
+      usageReportedAttempts: 2,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 1,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 1,
+    pendingRepairs: 0,
   },
 };
 
@@ -537,6 +571,7 @@ function bridge(options: {
   tasks?: Task[];
   tasksFail?: boolean;
   trace?: SessionTrace;
+  traceNextCursor?: string;
   traceFail?: boolean;
   /** The context snapshot the composition block reads (#2323). */
   context?: ContextDiagnosticsResult;
@@ -571,15 +606,34 @@ function bridge(options: {
       saveArtifactAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
     },
     inspector: {
-      trace: async () =>
+      trace: async (_sessionId, cursor) =>
         options.traceFail
-          ? { ok: false, error: { message: '追踪读取失败：无法读取运行记录' } }
-          : { ok: true, data: options.trace ?? emptyTrace },
+          ? {
+              ok: false,
+              error: { code: 'TRACE_READ_FAILED', message: '追踪读取失败：无法读取运行记录' },
+            }
+          : {
+              ok: true,
+              data: cursor
+                ? { trace: olderTrace, nextCursor: null }
+                : {
+                    trace: options.trace ?? emptyTrace,
+                    nextCursor: options.traceNextCursor ?? null,
+                  },
+            },
+      summary: async () => ({
+        ok: true,
+        data:
+          options.trace && options.trace.turns.length > 0
+            ? populatedUsageSummary
+            : emptyUsageSummary,
+      }),
+      subscribeUsageChanges: unsubscribe,
       context: async () => ({
         ok: true,
         data: options.context ?? { status: 'unavailable', reason: 'no_completed_request' },
       }),
-    },
+    } satisfies MakaBridge['inspector'],
     gitReview: {
       read: async () => ({
         ok: true,
@@ -761,6 +815,20 @@ export const Files: Story = {
 // raises when records are missing.
 export const Trace: Story = {
   decorators: [bridge({ trace: populatedTrace, context: populatedContext })],
+  render: () => <Workbar tab="inspector" />,
+};
+
+// Real path: the first bounded page of a longer trace. The continuation control
+// sits before the ascending timeline because earlier records are inserted at
+// that edge, not after the newest turn.
+export const TraceMoreHistory: Story = {
+  decorators: [
+    bridge({
+      trace: populatedTrace,
+      traceNextCursor: 'older-session-trace-page',
+      context: populatedContext,
+    }),
+  ],
   render: () => <Workbar tab="inspector" />,
 };
 

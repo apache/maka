@@ -31,6 +31,8 @@ import type {
   DesktopRuntimeHostRef,
   DesktopProjectSnapshot,
   DesktopAppInfo,
+  DesktopSessionTracePage,
+  DesktopSessionUsageSummary,
 } from './bridge-contract.js';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import {
@@ -128,7 +130,6 @@ import {
 } from '@maka/core/web-search';
 import {
   isSessionTrace,
-  type SessionTrace,
 } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import {
@@ -804,56 +805,42 @@ async function mutateScheduledTask(
   return result.task;
 }
 
-async function loadSessionTrace(sessionId: string): Promise<SessionTrace> {
+async function loadSessionTracePage(
+  sessionId: string,
+  cursor?: string,
+): Promise<DesktopSessionTracePage> {
   const session = await runtimeHostSessionRef(sessionId);
   const host = scopedRuntimeHost(session.scope);
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const first = await host.query('execution.inspect.query', {
-      kind: 'session_trace_start',
-      sessionId: session.sessionId,
-    });
-    if (first.kind !== 'session_trace_page') throw new Error('Invalid Session trace page');
-    const turns = [...first.turns];
-    const offsets = new Set<number>([0]);
-    let nextOffset = first.nextOffset;
-    let retry = false;
-    while (nextOffset !== null) {
-      if (offsets.has(nextOffset)) throw new Error('Session trace repeated a page offset');
-      offsets.add(nextOffset);
-      const next = await host.query('execution.inspect.query', {
-        kind: 'session_trace_continue',
-        sessionId: session.sessionId,
-        revision: first.revision,
-        offset: nextOffset,
-      });
-      if (next.kind === 'session_trace_revision_changed') {
-        retry = true;
-        break;
-      }
-      if (
-        next.kind !== 'session_trace_page' ||
-        next.revision !== first.revision ||
-        next.offset !== nextOffset ||
-        JSON.stringify(next.totals) !== JSON.stringify(first.totals) ||
-        JSON.stringify(next.coverage) !== JSON.stringify(first.coverage)
-      ) {
-        throw new Error('Invalid Session trace continuation');
-      }
-      turns.push(...next.turns);
-      nextOffset = next.nextOffset;
-    }
-    if (retry) continue;
-    const trace = {
-      schemaVersion: first.schemaVersion,
-      sessionId,
-      turns,
-      totals: first.totals,
-      coverage: first.coverage,
-    };
-    if (!isSessionTrace(trace)) throw new Error('Invalid Session trace projection');
-    return trace;
-  }
-  throw new Error('Session trace kept changing while Desktop read it');
+  const page = await host.query(
+    'execution.inspect.query',
+    cursor
+      ? {
+          kind: 'session_trace_continue',
+          sessionId: session.sessionId,
+          cursor,
+        }
+      : { kind: 'session_trace_start', sessionId: session.sessionId },
+  );
+  if (page.kind !== 'session_trace_page') throw new Error('Invalid Session trace page');
+  const trace = {
+    schemaVersion: page.schemaVersion,
+    sessionId,
+    turns: [...page.turns],
+    coverage: page.coverage,
+  };
+  if (!isSessionTrace(trace)) throw new Error('Invalid Session trace projection');
+  return { trace, nextCursor: page.nextCursor };
+}
+
+async function loadSessionUsageSummary(
+  sessionId: string,
+): Promise<Result<DesktopSessionUsageSummary>> {
+  const session = await runtimeHostSessionRef(sessionId);
+  return ipcRenderer.invoke(
+    'usage:summary',
+    session.scope,
+    { range: 'all', sessionId: session.sessionId },
+  ) as Promise<Result<DesktopSessionUsageSummary>>;
 }
 
 async function updateDailyReviewConfig(
@@ -2395,8 +2382,20 @@ const makaBridge = {
   },
   inspector: {
     /** Read-only per-session causal trace (#1625). Never writes runtime state. */
-    trace(sessionId: string): Promise<Result<SessionTrace>> {
-      return bridgeResult(() => loadSessionTrace(sessionId), 'INSPECTOR_TRACE_FAILED');
+    trace(sessionId: string, cursor?: string): Promise<Result<DesktopSessionTracePage>> {
+      return bridgeResult(() => loadSessionTracePage(sessionId, cursor), 'INSPECTOR_TRACE_FAILED');
+    },
+    summary(sessionId: string): Promise<Result<DesktopSessionUsageSummary>> {
+      return loadSessionUsageSummary(sessionId);
+    },
+    subscribeUsageChanges(sessionId: string, handler: () => void): () => void {
+      const session = parseDesktopSessionKey(sessionId);
+      return subscribeEveryRuntimeHostEvent(
+        'usage:changed',
+        (scope, event: { sessionId: string }) => {
+          if (scope.hostId === session.hostId && event.sessionId === session.sessionId) handler();
+        },
+      );
     },
     /**
      * What the session's context is made of right now (#2323).

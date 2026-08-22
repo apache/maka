@@ -29,6 +29,7 @@ import {
   type RequestHeaderUpdate,
   type SavedRequestHeaders,
   type SetCredentialInput,
+  type MigrateSystemSeedInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
@@ -294,6 +295,10 @@ export class RuntimePolicyCoordinator {
 
   setDefaultTarget(input: SetDefaultConnectionTargetInput) {
     return this.inLane((root) => this.catalog.setDefaultTarget(root, input));
+  }
+
+  migrateSystemSeed(input: MigrateSystemSeedInput) {
+    return this.inLane((root) => this.catalog.migrateSystemSeed(root, input));
   }
 
   setCredential(rawInput: SetCredentialInput) {
@@ -1408,10 +1413,12 @@ function isCanonicalConnectionTestModel(
   modelId: string,
 ): boolean {
   const basis = connectionTestModelBasis(connection);
-  const inCanonicalModels = basis.models.some((model) => model.id === modelId);
-  return basis.modelSource === 'fetched'
-    ? inCanonicalModels
-    : inCanonicalModels || basis.enabledModelIds.includes(modelId);
+  // Either source admits: testing a discovered model before enabling it is the
+  // point of the button, and the user's own selection is authorization no
+  // catalog overrules (#1584).
+  return (
+    basis.models.some((model) => model.id === modelId) || basis.enabledModelIds.includes(modelId)
+  );
 }
 
 function canonicalEffectiveEndpoint(connection: ConnectionCatalogEntry): string {

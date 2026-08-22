@@ -122,8 +122,6 @@ async function validateInstalledProduct(root) {
       : join(prefix, 'lib/node_modules/maka-agent');
   const baseEnvironment = isolatedEnvironment(join(root, 'home'));
   const maka = process.platform === 'win32' ? join(prefix, 'maka.cmd') : join(prefix, 'bin/maka');
-  const makaAgent =
-    process.platform === 'win32' ? join(prefix, 'maka-agent.cmd') : join(prefix, 'bin/maka-agent');
   const cliEntrypoint = join(packageRoot, 'dist/cli.js');
   const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
   const crossSpawnModule = await importInstalled(packageRoot, 'node_modules/cross-spawn/index.js');
@@ -138,10 +136,6 @@ async function validateInstalledProduct(root) {
     throw new Error(`Installed CLI reports ${version}; package manifest is ${manifest.version}`);
   }
   assertOutput(runSync(crossSpawn.sync, maka, ['--help'], baseEnvironment, root), 'Usage: maka');
-  assertOutput(
-    runSync(crossSpawn.sync, makaAgent, ['--help'], baseEnvironment, root),
-    'Usage: maka',
-  );
   assertOutput(
     runSync(crossSpawn.sync, maka, ['eval', '--help'], baseEnvironment, root),
     'usage: maka eval run',

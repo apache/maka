@@ -602,41 +602,6 @@
   gap: var(--space-2);
 }
 
-/* Every other section head is text against text, where baselines are the
-   right join. This one holds a boxed input, and a control box baseline-aligned
-   against a 16px title always sits a pixel or two wrong. */
-.maka-inspector-timeline-head {
-  align-items: center;
-}
-
-/* The failure count, doing double duty as the filter that isolates them. It
-   is stated in the exception ink it reports on, and pressing it tints the
-   ground rather than adding a second control to the line. */
-.maka-inspector-failed-filter {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  padding: 0 var(--space-1-5);
-  border-radius: var(--radius-pill);
-  font: var(--maka-text-body);
-  color: var(--destructive-text);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.maka-inspector-failed-filter[aria-pressed='true'] {
-  background: var(--muted);
-}
-
-/* The query field sits at the far end of the title line and shrinks before it
-   pushes. Its width is left to the component: a `flex-basis` here resolves
-   against the field's own inner axis and squares it off. */
-.maka-inspector-search {
-  margin-left: auto;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
 /* Astryx's own heading tier, not a shrunk one. The properties panel in the
    Astryx IDE template is the reference for this whole surface: a level-3
    heading over body-sized facts and room to breathe — an inspector is read,

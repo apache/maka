@@ -2,12 +2,10 @@ import type {
   ContextDiagnosticsResult,
   ContextDiagnosticsSegment,
 } from '@maka/runtime-host/protocol';
-import type {
-  SessionTrace,
-  TraceModelAttempt,
-  TraceModelCallStep,
-  TurnTrace,
-} from '@maka/core/session-trace';
+import type { UsageSummaryV2 } from '@maka/core/usage-stats/types';
+import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
+
+type SessionUsageSummary = UsageSummaryV2 & { readonly provenance?: UsageProvenance };
 
 /**
  * Overview view model for the Inspector panel's summary sections.
@@ -125,18 +123,37 @@ export interface InspectorOverviewModel {
   cacheHitRate?: number;
 }
 
+export function estimatedSessionCost(
+  summary: (UsageSummaryV2 & { readonly provenance: UsageProvenance }) | undefined,
+): number | undefined {
+  if (!summary) return undefined;
+  if (summary.provenance.coverage.pricedAttempts > 0) return summary.totalCostUsd;
+  // Legacy records never stored a cost basis. A non-zero amount is still a
+  // useful estimate, but zero cannot distinguish a genuinely free call from
+  // one whose price was never resolved.
+  return summary.provenance.legacyRecords > 0 && summary.totalCostUsd > 0
+    ? summary.totalCostUsd
+    : undefined;
+}
+
+export function hasUnavailableSessionUsage(
+  summary: UsageSummaryV2 & { readonly provenance: UsageProvenance },
+): boolean {
+  return summary.provenance.unreadableRecords > 0 || summary.provenance.pendingRepairs > 0;
+}
+
 /**
  * The overview reads two owners, and keeps them apart.
  *
- * The trace answers what happened and what it cost. The context snapshot
- * answers what the context holds right now — its own Host operation, the one
- * `/context` prints (#1580, #2323). Neither is derived from the other, so a
- * session with a trace and no snapshot still shows its history, and a snapshot
- * with no trace still sizes the window.
+ * The trace answers what happened. The Session-scoped usage summary answers
+ * what all recorded calls cost, independently of which trace pages are loaded.
+ * The context snapshot answers what the context holds right now — its own Host
+ * operation, the one `/context` prints (#1580, #2323). None is derived from
+ * another, so one unavailable source cannot falsify the others.
  */
 export function deriveInspectorOverviewModel(
-  trace: SessionTrace | undefined,
   diagnostics?: ContextDiagnosticsResult,
+  usage?: SessionUsageSummary,
 ): InspectorOverviewModel {
   // Both halves of the context block come from the SAME snapshot. They used to
   // be picked separately — the bar from the latest trace attempt that carried a
@@ -145,16 +162,7 @@ export function deriveInspectorOverviewModel(
   // contents. One source cannot disagree with itself (#2323).
   const composition = compositionState(diagnostics);
   const context = contextBudget(diagnostics);
-  if (!trace || trace.turns.length === 0) {
-    return {
-      ...(context ? { context } : {}),
-      ...(composition ? { composition } : {}),
-    };
-  }
-
-  const modelSteps = trace.turns.flatMap(modelCallSteps);
-  const cacheHitRate = sessionCacheHitRate(modelSteps.flatMap((step) => step.attempts));
-
+  const cacheHitRate = usageCacheHitRate(usage);
   return {
     ...(context ? { context } : {}),
     ...(composition ? { composition } : {}),
@@ -162,28 +170,16 @@ export function deriveInspectorOverviewModel(
   };
 }
 
-function modelCallSteps(turn: TurnTrace): TraceModelCallStep[] {
-  return turn.steps.filter((step): step is TraceModelCallStep => step.kind === 'model_call');
-}
-
-/**
- * Summed over the attempts that reported input, and undefined when none did:
- * a rate over nothing is unknown, not zero, the same way "did not report" and
- * "reported none" stay apart in the ledger (#1679).
- *
- * An input-reported attempt without a cache figure reads as a miss, because
- * the providers that cache always count the hits.
- *
- * Each attempt's cache read is clamped to its own prompt, the same way the
- * context bar clamps it: a provider can report more cache than prompt — the
- * runtime's Google mapping guards against exactly that — and a share of a
- * prompt over 100% is not a fact, it is corruption wearing a percent sign.
- */
-function sessionCacheHitRate(attempts: readonly TraceModelAttempt[]): number | undefined {
-  const input = attempts.filter((attempt) => attempt.inputTokens !== undefined);
-  const inputTokens = sum(input, (attempt) => attempt.inputTokens);
-  if (inputTokens === 0) return undefined;
-  return sum(input, (attempt) => Math.min(attempt.cacheReadInputTokens ?? 0, attempt.inputTokens!)) / inputTokens;
+function usageCacheHitRate(usage: SessionUsageSummary | undefined): number | undefined {
+  if (!usage || usage.totalTokens.input === 0) return undefined;
+  if (
+    usage.provenance &&
+    (usage.provenance.coverage.usagePartialAttempts > 0 ||
+      usage.provenance.coverage.usageMissingAttempts > 0)
+  ) {
+    return undefined;
+  }
+  return usage.totalTokens.cacheRead / usage.totalTokens.input;
 }
 
 /**
@@ -291,8 +287,4 @@ function compositionState(
  */
 function estimateTokens(bytes: number): number {
   return Math.ceil(bytes / 4);
-}
-
-function sum(attempts: readonly TraceModelAttempt[], pick: (attempt: TraceModelAttempt) => number | undefined): number {
-  return attempts.reduce((carry, attempt) => carry + (pick(attempt) ?? 0), 0);
 }

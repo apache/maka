@@ -16,6 +16,12 @@ export interface ModelMetadata {
   knowledgeCutoff?: string;
   structuredOutput?: boolean;
   lastUpdated?: string;
+  /**
+   * models.dev prices the model at zero input cost. Marks free-tier
+   * candidates (e.g. opencode-free); display names are not a contract for
+   * this, several free models carry no "Free" suffix.
+   */
+  isFree?: boolean;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
   /**
@@ -40,6 +46,15 @@ const GENERATED_METADATA_PROVIDER_ALIASES: Partial<Record<ProviderType, Provider
 
 function generatedMetadataProviderType(providerType: ProviderType): ProviderType {
   return GENERATED_METADATA_PROVIDER_ALIASES[providerType] ?? providerType;
+}
+
+/**
+ * Whether the bundled metadata describes this model at all. `lookupModelMetadata`
+ * answers "no" with an empty object, and callers were reading that sentinel by
+ * hand; the question they mean to ask is this one.
+ */
+export function hasModelMetadata(providerType: ProviderType, modelId: string): boolean {
+  return Object.keys(lookupModelMetadata(providerType, modelId)).length > 0;
 }
 
 export function lookupModelMetadata(providerType: ProviderType, modelId: string): ModelMetadata {

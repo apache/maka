@@ -1,4 +1,4 @@
-import { effectiveBaseUrl } from '@maka/core/llm-connections';
+import { authorizeConnectionModel, effectiveBaseUrl } from '@maka/core/llm-connections';
 import { readRuntimeHostConnectionCatalog } from './catalog-reader.js';
 import type { RuntimeHostConnection } from './connection.js';
 import { abortable } from './wait-for-ready.js';
@@ -44,6 +44,12 @@ export async function configureHostedExecutionTarget(
     changed = true;
   }
 
+  // Best-effort: a fetch here is how the target picks up wire metadata for a
+  // model the catalog has not described yet, so it is worth trying. It is not
+  // worth failing over. A provider with no model-list endpoint refuses the
+  // operation outright, one whose list lags simply returns the same array, and
+  // in both cases the user's selection still authorizes the model — the
+  // admission check below is what decides.
   if (endpointChanged || !target.models.some((model) => model.id === input.model)) {
     const fetched = await abortable(
       () =>
@@ -52,10 +58,7 @@ export async function configureHostedExecutionTarget(
         }),
       signal,
     );
-    if (fetched.kind !== 'committed') {
-      throw new Error(`Runtime Host model discovery did not commit: ${fetched.kind}`);
-    }
-    changed = true;
+    if (fetched.kind === 'committed') changed = true;
   }
 
   const after = await abortable(() => readRuntimeHostConnectionCatalog(connection), signal);
@@ -65,8 +68,7 @@ export async function configureHostedExecutionTarget(
   if (
     !configured?.enabled ||
     canonicalBaseUrl(effectiveBaseUrl(configured)) !== baseUrl ||
-    !configured.enabledModelIds.includes(input.model) ||
-    !configured.models.some((model) => model.id === input.model)
+    !authorizeConnectionModel(configured, input.model)
   ) {
     throw new Error('Runtime Host did not admit the requested model target');
   }

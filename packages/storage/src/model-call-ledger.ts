@@ -1,8 +1,9 @@
 import {
   decodeModelCallAttempt,
-  modelCallAttemptsFromRunEvents,
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
   type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
+import type { DatabaseSync } from 'node:sqlite';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
@@ -21,14 +22,11 @@ import {
  * — a failed upsert, a crash between the two — and that is recoverable: the
  * authority still holds every record, so re-projecting the run restores it.
  *
- * Recovery is driven by {@link ModelCallLedgerWriter.markRunPendingReprojection},
- * which is written *before* the projection is attempted, so it is an intent
- * record rather than an error record: a crash at any point after it still
- * leaves a run the repair finds. The honest limit is the window between the
- * authority append and the marker — a process that dies inside it leaves a
- * committed record this table will not learn about, because nothing sweeps the
- * whole stream. Closing that needs a full re-projection pass over every run,
- * which is not implemented here.
+ * Recovery compares the AgentRun stream's durable sequence with this
+ * projection's applied-through checkpoint. There is no second "dirty" fact to
+ * race with the authority: any committed event beyond the checkpoint remains
+ * discoverable until it has been projected in the same transaction that
+ * advances the checkpoint.
  *
  * Deliberately separate from `usage_llm_calls`. That table is a frozen
  * historical projection with no way to express `usageBasis` or `costBasis`, so
@@ -44,7 +42,10 @@ export interface ModelCallLedgerReader {
    * cost is now unknown, and a total that silently omits them overstates what
    * the ledger knows. One corrupt row must not fail the query (#1638).
    */
-  read(range: { readonly from: number; readonly to: number }): ModelCallLedgerPage;
+  read(
+    range: { readonly from: number; readonly to: number },
+    sessionId?: string,
+  ): ModelCallLedgerPage;
 }
 
 export interface ModelCallLedgerPage {
@@ -52,22 +53,26 @@ export interface ModelCallLedgerPage {
   readonly unreadableRecords: number;
 }
 
-export interface PendingReprojection {
-  readonly sessionId: string;
-  readonly runId: string;
-  readonly markedAt: number;
+export interface CatchUpModelCallProjectionInput {
+  readonly sessionId?: string;
+  readonly runId?: string;
+  /** Bounds the number of lagging runs processed in one pass. */
+  readonly limit?: number;
+  /** Bounds authority events processed for each run in one pass. */
+  readonly eventsPerRun?: number;
+}
+
+export interface CatchUpModelCallProjectionResult {
+  readonly changedSessionIds: readonly string[];
+  readonly pendingRuns: number;
+  readonly unreadableEvents: number;
 }
 
 export interface ModelCallLedgerWriter extends ModelCallLedgerReader {
-  /** Projects one attempt already committed to the authority. Idempotent. */
-  record(attempt: ModelCallAttempt): Promise<void>;
-  /**
-   * Records that a run's committed attempts may not be fully projected here.
-   * Best-effort: losing the marker costs a targeted repair, not the records.
-   */
-  markRunPendingReprojection(sessionId: string, runId: string): Promise<void>;
-  pendingReprojections(): PendingReprojection[];
-  clearPendingReprojection(sessionId: string, runId: string): Promise<void>;
+  /** Advances the read model from the AgentRun authority's durable sequence. */
+  catchUpProjection(
+    input?: CatchUpModelCallProjectionInput,
+  ): Promise<CatchUpModelCallProjectionResult>;
 }
 
 export interface ModelCallLedger extends ModelCallLedgerWriter {
@@ -106,87 +111,57 @@ class SqliteModelCallLedger implements ModelCallLedger {
     this.#lease = acquireOperationalStateDatabase(workspaceRoot);
   }
 
-  record(attempt: ModelCallAttempt): Promise<void> {
-    let admitted: ModelCallAttempt;
-    try {
-      admitted = decodeModelCallAttempt(attempt);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-    if (this.#state !== 'open') return Promise.reject(new ModelCallLedgerClosedError());
-    // Last write wins on `attemptId`: an abort records provisionally and a late
-    // `finish` settles the same attempt, so the settled record must replace the
-    // provisional one rather than duplicate it.
-    return this.write(() => {
-      this.#lease.database
-        .prepare(`
-          INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json)
-          VALUES (?, ?, ?)
-          ON CONFLICT(attempt_id) DO UPDATE SET
-            completed_at = excluded.completed_at,
-            record_json = excluded.record_json
-        `)
-        .run(admitted.attemptId, admitted.completedAt, JSON.stringify(admitted));
-    });
-  }
-
-  private write(operation: () => void): Promise<void> {
+  private write<T>(operation: () => T): Promise<T> {
     const accepted = this.#queue.then(() => {
       try {
-        this.#lease.transaction('write', operation);
+        return this.#lease.transaction('write', operation);
       } catch (cause) {
         throw new ModelCallLedgerPublicationError(false, { cause });
       }
     });
-    this.#queue = accepted.catch(() => undefined);
+    this.#queue = accepted.then(
+      () => undefined,
+      () => undefined,
+    );
     return accepted;
   }
 
-  markRunPendingReprojection(sessionId: string, runId: string): Promise<void> {
+  catchUpProjection(
+    input: CatchUpModelCallProjectionInput = {},
+  ): Promise<CatchUpModelCallProjectionResult> {
     if (this.#state !== 'open') return Promise.reject(new ModelCallLedgerClosedError());
-    return this.write(() => {
-      this.#lease.database
-        .prepare(`
-          INSERT INTO usage_model_call_reprojection(session_id, run_id, marked_at)
-          VALUES (?, ?, ?)
-          ON CONFLICT(session_id, run_id) DO NOTHING
-        `)
-        .run(sessionId, runId, Date.now());
-    });
+    if (input.runId !== undefined && input.sessionId === undefined) {
+      return Promise.reject(new Error('A run-scoped projection catch-up requires sessionId'));
+    }
+    const limit = positiveInteger(input.limit, 16, 'projection catch-up limit');
+    const eventsPerRun = positiveInteger(
+      input.eventsPerRun,
+      512,
+      'projection catch-up event limit',
+    );
+    return this.write(() =>
+      catchUpModelCallProjection(this.#lease.database, input, limit, eventsPerRun),
+    );
   }
 
-  pendingReprojections(): PendingReprojection[] {
+  read(
+    range: { readonly from: number; readonly to: number },
+    sessionId?: string,
+  ): ModelCallLedgerPage {
     if (this.#state !== 'open') throw new ModelCallLedgerClosedError();
     const rows = this.#lease.database
       .prepare(
-        'SELECT session_id, run_id, marked_at FROM usage_model_call_reprojection ORDER BY marked_at ASC',
+        sessionId
+          ? `SELECT record_json FROM usage_model_call_attempts
+             WHERE session_id = ? AND completed_at >= ? AND completed_at <= ?
+             ORDER BY completed_at ASC, attempt_id ASC`
+          : `SELECT record_json FROM usage_model_call_attempts
+             WHERE completed_at >= ? AND completed_at <= ?
+             ORDER BY completed_at ASC, attempt_id ASC`,
       )
-      .all() as Array<{ session_id: string; run_id: string; marked_at: number }>;
-    return rows.map((row) => ({
-      sessionId: row.session_id,
-      runId: row.run_id,
-      markedAt: row.marked_at,
-    }));
-  }
-
-  clearPendingReprojection(sessionId: string, runId: string): Promise<void> {
-    if (this.#state !== 'open') return Promise.reject(new ModelCallLedgerClosedError());
-    return this.write(() => {
-      this.#lease.database
-        .prepare('DELETE FROM usage_model_call_reprojection WHERE session_id = ? AND run_id = ?')
-        .run(sessionId, runId);
-    });
-  }
-
-  read(range: { readonly from: number; readonly to: number }): ModelCallLedgerPage {
-    if (this.#state !== 'open') throw new ModelCallLedgerClosedError();
-    const rows = this.#lease.database
-      .prepare(`
-        SELECT record_json FROM usage_model_call_attempts
-        WHERE completed_at >= ? AND completed_at <= ?
-        ORDER BY completed_at ASC, attempt_id ASC
-      `)
-      .all(range.from, range.to) as Array<{ record_json: string }>;
+      .all(...(sessionId ? [sessionId, range.from, range.to] : [range.from, range.to])) as Array<{
+      record_json: string;
+    }>;
     const attempts: ModelCallAttempt[] = [];
     let unreadableRecords = 0;
     for (const row of rows) {
@@ -216,81 +191,159 @@ class SqliteModelCallLedger implements ModelCallLedger {
   }
 }
 
-/**
- * The write surface a repair needs. Named as a port rather than typed to the
- * store itself so the Host can pass its lease-bound facade and an embedded host
- * can pass the store directly, without either shape leaking into the other.
- */
-export interface ModelCallProjectionTarget {
-  record(attempt: ModelCallAttempt): Promise<void>;
-  pending(): PendingReprojection[] | Promise<PendingReprojection[]>;
-  clear(sessionId: string, runId: string): Promise<void>;
+function positiveInteger(value: number | undefined, fallback: number, label: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved <= 0) throw new Error(`Invalid ${label}`);
+  return resolved;
 }
 
-export interface RepairModelCallProjectionsInput {
-  readonly ledger: ModelCallProjectionTarget;
-  /**
-   * The authority read. Returns the AgentRun events of one run, from which the
-   * committed attempts are re-derived.
-   */
-  readonly readRunEvents: (
-    sessionId: string,
-    runId: string,
-  ) => Promise<readonly { readonly type: string; readonly data?: Record<string, unknown> }[]>;
-  /** Bounds one pass so a repair cannot stall a Usage query indefinitely. */
-  readonly limit?: number;
+function writeModelCallAttempt(db: DatabaseSync, attempt: ModelCallAttempt): void {
+  db.prepare(`
+      INSERT INTO usage_model_call_attempts(attempt_id, completed_at, record_json, session_id)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(attempt_id) DO UPDATE SET
+        completed_at = excluded.completed_at,
+        record_json = excluded.record_json,
+        session_id = excluded.session_id
+      WHERE completed_at IS NOT excluded.completed_at
+         OR record_json IS NOT excluded.record_json
+         OR session_id IS NOT excluded.session_id
+    `).run(attempt.attemptId, attempt.completedAt, JSON.stringify(attempt), attempt.sessionId);
 }
 
-export interface RepairModelCallProjectionsResult {
-  /** Runs re-projected and cleared in this pass. */
-  readonly repaired: number;
-  /** Runs still marked afterwards — whatever this pass could not fix. */
-  readonly remaining: number;
-  /**
-   * Authority events that could not be decoded into an attempt. Real calls
-   * whose cost is now unknown: clearing the marker without carrying this count
-   * would drop them out of the totals and out of the pending count at once,
-   * leaving nothing to say they existed.
-   */
-  readonly unreadableEvents: number;
+interface LaggingRunRow {
+  readonly session_id: string;
+  readonly run_id: string;
+  readonly high_water: number;
+  readonly applied_through: number;
 }
 
-/**
- * Re-derives marked runs from the authority and folds them back into the read
- * model, then clears their markers.
- *
- * Idempotent by construction: the upsert key is `attemptId`, so re-projecting a
- * run the table already holds changes nothing. A run whose authority read fails
- * keeps its marker and is retried on a later pass — the records are not lost,
- * only the projection is behind, which {@link RepairModelCallProjectionsResult}
- * reports so a caller can qualify the answer it serves.
- */
-export async function repairPendingModelCallProjections(
-  input: RepairModelCallProjectionsInput,
-): Promise<RepairModelCallProjectionsResult> {
-  let pending: readonly PendingReprojection[];
-  try {
-    pending = await input.ledger.pending();
-  } catch {
-    return { repaired: 0, remaining: 0, unreadableEvents: 0 };
-  }
-  if (pending.length === 0) return { repaired: 0, remaining: 0, unreadableEvents: 0 };
+function catchUpModelCallProjection(
+  db: DatabaseSync,
+  input: CatchUpModelCallProjectionInput,
+  limit: number,
+  eventsPerRun: number,
+): CatchUpModelCallProjectionResult {
+  const scope = projectionScope(input);
+  const lagging = db
+    .prepare(`
+      WITH source AS (
+        SELECT session_id, run_id, latest_model_call_sequence AS high_water
+        FROM core_agent_runs
+        WHERE latest_model_call_sequence IS NOT NULL${scope.sourceWhere}
+      )
+      SELECT source.session_id, source.run_id, source.high_water,
+             COALESCE(checkpoint.applied_through_sequence, -1) AS applied_through
+      FROM source
+      LEFT JOIN usage_model_call_projection_checkpoints AS checkpoint
+        ON checkpoint.session_id = source.session_id
+       AND checkpoint.run_id = source.run_id
+      WHERE source.high_water > COALESCE(checkpoint.applied_through_sequence, -1)
+      ORDER BY source.session_id, source.run_id
+      LIMIT ?
+    `)
+    .all(...scope.parameters, limit) as unknown as LaggingRunRow[];
 
-  const batch = pending.slice(0, input.limit ?? pending.length);
-  let repaired = 0;
-  let unreadableEvents = 0;
-  for (const entry of batch) {
-    try {
-      const events = await input.readRunEvents(entry.sessionId, entry.runId);
-      const decoded = modelCallAttemptsFromRunEvents(events);
-      for (const attempt of decoded.attempts) await input.ledger.record(attempt);
-      unreadableEvents += decoded.unreadableEvents;
-      if (decoded.unreadableEvents > 0) continue;
-      await input.ledger.clear(entry.sessionId, entry.runId);
-      repaired += 1;
-    } catch {
-      // Keep the marker. The authority still holds this run's records.
+  const changedSessionIds = new Set<string>();
+  for (const run of lagging) {
+    const rows = db
+      .prepare(`
+        SELECT sequence, record_json
+        FROM core_agent_run_events
+        WHERE session_id = ? AND run_id = ? AND event_type = ?
+          AND sequence > ? AND sequence <= ?
+        ORDER BY sequence ASC
+        LIMIT ?
+      `)
+      .all(
+        run.session_id,
+        run.run_id,
+        MODEL_CALL_ATTEMPT_EVENT_TYPE,
+        run.applied_through,
+        run.high_water,
+        eventsPerRun,
+      ) as Array<{ sequence: number; record_json: string }>;
+    if (rows.length === 0) continue;
+
+    let unreadableEvents = 0;
+    for (const row of rows) {
+      let attempt: ModelCallAttempt;
+      try {
+        const event = JSON.parse(row.record_json) as { readonly data?: unknown };
+        attempt = decodeModelCallAttempt(event.data);
+        if (attempt.sessionId !== run.session_id || attempt.runId !== run.run_id) {
+          throw new Error('Model-call attempt identity disagrees with its AgentRun envelope');
+        }
+      } catch {
+        unreadableEvents += 1;
+        continue;
+      }
+      // Projection storage failures must roll the transaction back. Treating
+      // one as corrupt authority would advance the checkpoint past a valid,
+      // still-unprojected billed call.
+      writeModelCallAttempt(db, attempt);
     }
+    const appliedThrough = rows.at(-1)?.sequence;
+    if (appliedThrough === undefined) continue;
+    db.prepare(`
+      INSERT INTO usage_model_call_projection_checkpoints(
+        session_id, run_id, applied_through_sequence, unreadable_events
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(session_id, run_id) DO UPDATE SET
+        applied_through_sequence = excluded.applied_through_sequence,
+        unreadable_events = usage_model_call_projection_checkpoints.unreadable_events
+          + excluded.unreadable_events
+    `).run(run.session_id, run.run_id, appliedThrough, unreadableEvents);
+    changedSessionIds.add(run.session_id);
   }
-  return { repaired, remaining: pending.length - repaired, unreadableEvents };
+
+  const pendingRuns = Number(
+    db
+      .prepare(`
+        WITH source AS (
+          SELECT session_id, run_id, latest_model_call_sequence AS high_water
+          FROM core_agent_runs
+          WHERE latest_model_call_sequence IS NOT NULL${scope.sourceWhere}
+        )
+        SELECT COUNT(*) AS count
+        FROM source
+        LEFT JOIN usage_model_call_projection_checkpoints AS checkpoint
+          ON checkpoint.session_id = source.session_id
+         AND checkpoint.run_id = source.run_id
+        WHERE source.high_water > COALESCE(checkpoint.applied_through_sequence, -1)
+      `)
+      .get(...scope.parameters)?.count ?? 0,
+  );
+  const unreadableEvents = Number(
+    db
+      .prepare(`
+        SELECT COALESCE(SUM(unreadable_events), 0) AS count
+        FROM usage_model_call_projection_checkpoints
+        WHERE 1 = 1${scope.checkpointWhere}
+      `)
+      .get(...scope.parameters)?.count ?? 0,
+  );
+  return { changedSessionIds: [...changedSessionIds], pendingRuns, unreadableEvents };
+}
+
+function projectionScope(input: CatchUpModelCallProjectionInput): {
+  readonly sourceWhere: string;
+  readonly checkpointWhere: string;
+  readonly parameters: readonly string[];
+} {
+  if (input.runId !== undefined) {
+    return {
+      sourceWhere: ' AND session_id = ? AND run_id = ?',
+      checkpointWhere: ' AND session_id = ? AND run_id = ?',
+      parameters: [input.sessionId!, input.runId],
+    };
+  }
+  if (input.sessionId !== undefined) {
+    return {
+      sourceWhere: ' AND session_id = ?',
+      checkpointWhere: ' AND session_id = ?',
+      parameters: [input.sessionId],
+    };
+  }
+  return { sourceWhere: '', checkpointWhere: '', parameters: [] };
 }

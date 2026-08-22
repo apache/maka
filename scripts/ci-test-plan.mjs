@@ -16,6 +16,37 @@ const FULL_SUITE_FILES = new Set([
   'scripts/run-workspace-tests-parallel.mjs',
 ]);
 
+const RELEASE_CONTRACT_FILES = new Set([
+  'apps/desktop/build/entitlements.mac.inherit.plist',
+  'apps/desktop/build/entitlements.mac.plist',
+  'apps/desktop/bundled-git.json',
+  'apps/desktop/bundled-tools.json',
+  'apps/desktop/electron-builder.config.mjs',
+  'apps/desktop/package.json',
+  '.github/workflows/cli-package-validation.yml',
+  '.github/workflows/release-cli-finalize.yml',
+  '.github/workflows/release-cli-stage.yml',
+  '.github/workflows/release.yml',
+  'scripts/package-macos-arm64.mjs',
+  'scripts/package-macos-arm64-cli.mjs',
+  'scripts/package-windows-autoupdate-next.mjs',
+  'scripts/package-windows-x64.mjs',
+  'scripts/prepare-bundled-git-source.mjs',
+  'scripts/prepare-bundled-git.mjs',
+  'scripts/prepare-windows-upgrade-baseline.mjs',
+  'scripts/prepare-windows-upgrade-baseline.test.mjs',
+  'scripts/product-release.test.mjs',
+  'scripts/release-eval-smoke-sitecustomize.py',
+  'scripts/release-version.mjs',
+  'scripts/verify-macos-arm64-cli.mjs',
+  'scripts/verify-macos-arm64-dmg.mjs',
+  'scripts/verify-packaged-app.mjs',
+  'scripts/verify-windows-autoupdate.mjs',
+  'scripts/verify-windows-installer-lifecycle.mjs',
+  'scripts/verify-windows-x64.mjs',
+  'scripts/windows-upgrade-baseline.json',
+]);
+
 const TYPECHECK_ONLY_FILES = new Set([
   'biome.jsonc',
   'components.json',
@@ -61,18 +92,33 @@ function isCliPackagePath(path) {
   );
 }
 
+function isReleaseContractPath(path) {
+  return (
+    RELEASE_CONTRACT_FILES.has(path) ||
+    path.startsWith('scripts/product-release-') ||
+    path.startsWith('scripts/release-cli-')
+  );
+}
+
 const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host']);
 
 // Scripts the Electron e2e job runs. Editing one of these changes what that
 // job verifies, so it has to re-run — a unit test on the runner is not
 // evidence that the run it drives still works.
-const E2E_DRIVING_SCRIPTS = new Set(['scripts/audit-alignment.mjs']);
+const E2E_DRIVING_SCRIPTS = new Set([
+  'apps/desktop/scripts/browser-observe-act-smoke.mjs',
+  'scripts/audit-alignment.mjs',
+  'scripts/ax-tree-audit.mjs',
+]);
 
 // Scripts / paths that can break the built Storybook catalog. Product stories
 // mount the UI package and desktop renderer, so runtime export/render changes
 // there belong to this surface even when no story file changes. Main-process
 // and e2e-only desktop changes stay outside it.
-const STORYBOOK_DRIVING_SCRIPTS = new Set(['scripts/storybook-visual-smoke.mjs']);
+const STORYBOOK_DRIVING_SCRIPTS = new Set([
+  'scripts/ax-tree-audit.mjs',
+  'scripts/storybook-visual-smoke.mjs',
+]);
 
 // .storybook/preview.tsx imports THEME_PALETTES from this module. Narrower
 // than "any packages/core change".
@@ -251,6 +297,7 @@ export function planTests(changedFiles, options = {}) {
       code: true,
       e2e: true,
       full: true,
+      releaseContract: true,
       runtimeSandbox: graph.dirs.includes('packages/cli'),
       // A complete functional suite is still the default release/main gate.
       // Stress multipliers and native child-process lock probes run only when
@@ -306,16 +353,18 @@ export function planTests(changedFiles, options = {}) {
   const workspaces = reverseDependencyClosure(directWorkspaces, graph);
   const storageStress = files.some((path) => STORAGE_STRESS_FILES.has(path));
 
+  const cliPackage = files.some((path) => isCliPackagePath(path));
   return {
     asfSource: files.some((path) => ASF_SOURCE_FILES.has(path)),
     astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
-    cliPackage: files.some((path) => isCliPackagePath(path)),
+    cliPackage,
     code,
     // Electron E2E + alignment audit (same job). Product desktop/ui sources and
     // e2e drivers only — a storage/runtime change must not drag cold Electron
     // boots, and packages/ui unit-test-only PRs must not either.
     e2e: files.some((path) => isE2eProductPath(path)),
     full: false,
+    releaseContract: cliPackage || files.some((path) => isReleaseContractPath(path)),
     // packages/cli/src/__tests__/runtime-host-session-driver.test.ts executes real sandboxed
     // shell tools, so the bubblewrap + user-namespace setup is required whenever
     // the cli workspace runs in the dependency closure, not only for direct
@@ -340,6 +389,7 @@ export function formatGitHubOutputs(plan) {
     `e2e=${plan.e2e}`,
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
+    `release_contract=${plan.releaseContract}`,
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,
     `standard_workspaces=${plan.standardWorkspaces.join(',')}`,

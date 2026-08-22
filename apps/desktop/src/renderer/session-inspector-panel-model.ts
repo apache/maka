@@ -1,9 +1,7 @@
 import {
-  emptyTraceTotals,
   type SessionTrace,
   type TraceModelCallStep,
   type TraceStep,
-  type TraceTotals,
 } from '@maka/core/session-trace';
 import { pricingModelKey } from '@maka/core/usage-stats/pricing';
 /**
@@ -42,11 +40,11 @@ export interface InspectorStepRow {
 }
 
 export interface InspectorTurnRow {
+  runId: string;
   turnId: string;
-  /** 1-based position in the session's turn order — the display name. */
-  index: number;
+  startedAt: number;
   durationMs: number;
-  totals: TraceTotals;
+  costUsd?: number;
   failed: boolean;
   failureCode?: string;
   steps: InspectorStepRow[];
@@ -57,11 +55,11 @@ export interface InspectorCoverageNotice {
   turnsMissing: number;
   turnsShort: number;
   unreadableRecords: number;
+  oversizedRuns: number;
 }
 
 export interface InspectorPanelModel {
   turns: InspectorTurnRow[];
-  totals: TraceTotals;
   /**
    * Present only when the trace itself reports a gap. A notice that always
    * shows is a notice nobody reads.
@@ -72,28 +70,41 @@ export interface InspectorPanelModel {
 }
 
 export function deriveInspectorPanelModel(trace: SessionTrace | undefined): InspectorPanelModel {
-  if (!trace) return { turns: [], totals: emptyTraceTotals(), empty: true };
+  if (!trace) return { turns: [], empty: true };
 
-  const turns = trace.turns.map<InspectorTurnRow>((turn, index) => ({
-    turnId: turn.turnId,
-    index: index + 1,
-    durationMs: turn.durationMs,
-    totals: turn.totals,
-    failed: turn.failure !== undefined,
-    ...(turn.failure?.code !== undefined ? { failureCode: turn.failure.code } : {}),
-    steps: turn.steps.map((step) => toStepRow(step, turn.failure?.attributedToStepId)),
-  }));
+  const turns = trace.turns.map<InspectorTurnRow>((turn) => {
+    const costUsd = deriveTurnCostUsd(turn.steps);
+    return {
+      runId: turn.runId,
+      turnId: turn.turnId,
+      startedAt: turn.startedAt,
+      durationMs: turn.durationMs,
+      ...(costUsd !== undefined ? { costUsd } : {}),
+      failed: turn.failure !== undefined,
+      ...(turn.failure?.code !== undefined ? { failureCode: turn.failure.code } : {}),
+      steps: turn.steps.map((step) => toStepRow(step, turn.failure?.attributedToStepId)),
+    };
+  });
 
   const coverage = coverageNotice(trace);
   return {
     turns,
-    totals: trace.totals,
     ...(coverage ? { coverage } : {}),
     // A session whose every record failed to decode has no turns *and* a gap to
     // report. Calling that empty would hide exactly what this panel exists to
     // surface, so a reported gap is never "nothing to trace".
     empty: turns.length === 0 && coverage === undefined,
   };
+}
+
+function deriveTurnCostUsd(steps: readonly TraceStep[]): number | undefined {
+  let total: number | undefined;
+  for (const step of steps) {
+    if (step.kind === 'model_call' && step.costUsd !== undefined) {
+      total = (total ?? 0) + step.costUsd;
+    }
+  }
+  return total;
 }
 
 function toStepRow(step: TraceStep, attributedToStepId: string | undefined): InspectorStepRow {
@@ -174,5 +185,6 @@ function coverageNotice(trace: SessionTrace): InspectorCoverageNotice | undefine
     turnsMissing: coverage.turnsMissingModelCalls.length,
     turnsShort: coverage.turnsWithFewerModelCallsThanSteps.length,
     unreadableRecords: coverage.unreadableRecords,
+    oversizedRuns: coverage.oversizedRuns,
   };
 }

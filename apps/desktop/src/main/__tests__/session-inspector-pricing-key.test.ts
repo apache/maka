@@ -4,19 +4,8 @@ import {
   SESSION_TRACE_SCHEMA_VERSION,
   type SessionTrace,
   type TraceModelAttempt,
-  type TraceTotals,
 } from '@maka/core/session-trace';
 import { deriveInspectorPanelModel } from '../../renderer/session-inspector-panel-model.js';
-
-const TOTALS: TraceTotals = {
-  durationMs: 10,
-  modelAttempts: 1,
-  retries: 0,
-  compactions: 0,
-  inputTokens: 1,
-  outputTokens: 1,
-  unpricedAttempts: 1,
-};
 
 describe('Session Inspector Pricing key', () => {
   test('uses the canonical provider rather than the connection slug for an unpriced call', () => {
@@ -76,20 +65,13 @@ function traceWithAttempt(modelAttempt: TraceModelAttempt): SessionTrace {
             ...(modelAttempt.costBasis === 'priced' ? { costUsd: 0.01 } : {}),
           },
         ],
-        totals: {
-          ...TOTALS,
-          ...(modelAttempt.costBasis === 'priced' ? { costUsd: 0.01, unpricedAttempts: 0 } : {}),
-        },
       },
     ],
-    totals: {
-      ...TOTALS,
-      ...(modelAttempt.costBasis === 'priced' ? { costUsd: 0.01, unpricedAttempts: 0 } : {}),
-    },
     coverage: {
       modelCalls: 'no_known_gap',
       turnsMissingModelCalls: [],
       unreadableRecords: 0,
+      oversizedRuns: 0,
       turnsWithFewerModelCallsThanSteps: [],
     },
   };

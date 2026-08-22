@@ -119,6 +119,52 @@ describe('model-call usage projection', () => {
     assert.equal(summary.totalTokens.total, 0);
   });
 
+  test('does not let one malformed cache reading inflate the Session cache total', () => {
+    const summary = projectModelCallUsageSummary(
+      [
+        attempt({
+          attemptId: 'malformed-cache',
+          inputTokens: 100,
+          cacheReadInputTokens: 200,
+        }),
+        attempt({
+          attemptId: 'cache-miss',
+          inputTokens: 100,
+          cacheReadInputTokens: 0,
+        }),
+      ],
+      { range: 'all' },
+      NOW,
+    );
+
+    assert.equal(summary.totalTokens.input, 200);
+    assert.equal(summary.totalTokens.cacheRead, 100);
+  });
+
+  test('preserves provider cache-only evidence without inventing an input total', () => {
+    const cacheOnly = attempt({
+      attemptId: 'cache-only',
+      usageBasis: 'partial',
+      inputTokens: undefined,
+      outputTokens: undefined,
+      cacheReadInputTokens: 10,
+    });
+    const summary = projectModelCallUsageSummary([cacheOnly], { range: 'all' }, NOW);
+
+    assert.equal(summary.totalTokens.input, 0);
+    assert.equal(summary.totalTokens.cacheRead, 10);
+    assert.equal(summary.cacheHitRequests, 1);
+    assert.equal(summary.coverage.usagePartialAttempts, 1);
+
+    const bucket = projectModelCallUsageBuckets([cacheOnly], { range: 'all' }, 'provider', NOW)[0];
+    assert.equal(bucket?.inputTokens, 0);
+    assert.equal(bucket?.cacheReadTokens, 10);
+
+    const log = projectModelCallUsageLogs([cacheOnly], { range: 'all' }, NOW).rows[0];
+    assert.equal(log?.inputTokens, 0);
+    assert.equal(log?.cacheReadTokens, 10);
+  });
+
   test('a replayed attemptId is counted once', () => {
     const row = attempt({ attemptId: 'dup' });
     const summary = projectModelCallUsageSummary([row, row], { range: 'all' }, NOW);
@@ -126,21 +172,26 @@ describe('model-call usage projection', () => {
     assert.equal(Math.round(summary.totalCostUsd * 1000) / 1000, 0.004);
   });
 
-  test('filters by range, provider, model, and status', () => {
+  test('filters by Session, range, provider, model, and status', () => {
     const rows = [
       attempt({ attemptId: 'recent' }),
       attempt({ attemptId: 'old', completedAt: NOW - 40 * 86_400_000 }),
       attempt({ attemptId: 'other-provider', providerId: 'openai', modelId: 'gpt-x' }),
       attempt({ attemptId: 'failed', status: 'failed' }),
+      attempt({ attemptId: 'other-session', sessionId: 'session-2' }),
     ];
-    assert.equal(selectModelCallAttempts(rows, { range: '24h' }, NOW).rows.length, 3);
+    assert.equal(selectModelCallAttempts(rows, { range: '24h' }, NOW).rows.length, 4);
+    assert.equal(
+      selectModelCallAttempts(rows, { range: 'all', sessionId: 'session-1' }, NOW).rows.length,
+      4,
+    );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', providerId: 'openai' }, NOW).rows.length,
       1,
     );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', modelId: 'claude-opus-5' }, NOW).rows.length,
-      3,
+      4,
     );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', status: 'error' }, NOW).rows.length,
@@ -148,7 +199,7 @@ describe('model-call usage projection', () => {
     );
     assert.equal(
       selectModelCallAttempts(rows, { range: 'all', status: 'all' }, NOW).rows.length,
-      4,
+      5,
     );
   });
 

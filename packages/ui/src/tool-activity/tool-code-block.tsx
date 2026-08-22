@@ -1,5 +1,8 @@
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { CodeBlock } from '@astryxdesign/core';
+import { AstryxLocaleProvider } from '../astryx-i18n.js';
+import { useUiLocale } from '../locale-context.js';
+import { getToolActivityCopy } from './copy.js';
 
 /** Quiet code/text well for tool resultDetail. */
 export function ToolCodeBlock(props: {
@@ -7,9 +10,16 @@ export function ToolCodeBlock(props: {
   language?: string;
   title?: string;
   maxHeight?: string | number;
+  actionIdentity?: string;
 }) {
+  const copy = getToolActivityCopy(useUiLocale()).copy;
+  const actionIdentity = props.actionIdentity?.trim();
+  const scopedOverrides = useMemo(() => actionIdentity ? {
+    '@astryx.codeBlock.copyCode': copy.actionAriaLabel(copy.idle, actionIdentity),
+    '@astryx.codeBlock.copied': copy.actionAriaLabel(copy.copied, actionIdentity),
+  } : undefined, [actionIdentity, copy]);
   if (!props.code) return null;
-  return (
+  const codeBlock = (
     <CodeBlock
       code={props.code}
       language={props.language}
@@ -29,6 +39,11 @@ export function ToolCodeBlock(props: {
       isWrapped
     />
   );
+  return scopedOverrides ? (
+    <AstryxLocaleProvider overrides={scopedOverrides}>
+      {codeBlock}
+    </AstryxLocaleProvider>
+  ) : codeBlock;
 }
 
 /** Grid 0fr→1fr enter for tool detail (matches group/reasoning motion). */

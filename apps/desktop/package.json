@@ -38,7 +38,8 @@
     "smoke:real-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs",
     "smoke:programmatic-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --programmatic-only",
     "launch:fixture": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --manual",
-    "smoke:browser": "npm run build:workspace-deps && npm run build:main && electron scripts/browser-observe-act-smoke.mjs"
+    "smoke:browser": "npm run build:workspace-deps && npm run build:main && npm run smoke:browser:run",
+    "smoke:browser:run": "electron scripts/browser-observe-act-smoke.mjs"
   },
   "dependencies": {
     "@jackwener/opencli": "1.8.6",

@@ -184,7 +184,13 @@ export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
   throughSequence: number;
 }
 
-export const SESSION_DOMAINS = ['task', 'plan', 'deep_research', 'runtime_resource'] as const;
+export const SESSION_DOMAINS = [
+  'task',
+  'plan',
+  'deep_research',
+  'usage',
+  'runtime_resource',
+] as const;
 export type SessionDomain = (typeof SESSION_DOMAINS)[number];
 export const SESSION_RUNTIME_RESOURCE_CHANGES_MAX = 64;
 

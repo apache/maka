@@ -180,6 +180,7 @@ export function QuoteCompanionPanel(props: {
     >
       <ChatSurfaceLayout
         conversationKey={companion.companionSession?.id ?? props.sourceSession?.id}
+        scrollToBottomLabel={copy.scrollToBottom}
         composer={
           <>
             {companion.error && (

@@ -2,17 +2,18 @@
 
 [简体中文](./cli-npm-release.zh-CN.md)
 
-This runbook is the operational authority for publishing `maka-agent`. The package version is
-independent of the Desktop release line. Every public version must come from the exact tarball
-validated by the Stage workflow.
+This runbook is the operational authority for publishing the `maka-agent` npm installation channel. The root `package.json` remains the sole Maka product-version authority, and `packages/cli/package.json` must match it. Every public npm version must come from the exact tarball validated by the Stage workflow.
 
 ## Release invariants
 
-- Dispatch release workflows only from `main`.
+- Dispatch the product Release workflow only from the exact approved ASF source candidate tag.
+  Dispatch npm Stage only from the resulting product `v<version>` tag and npm Finalize from `main`.
 - Publish prereleases under `next` and stable versions under `latest`. `next` must never resolve to
   a version older than `latest`; when no newer prerelease exists, both tags point to the stable
   version.
-- Use the Git tag `cli-v<version>`; CLI releases never replace the Desktop GitHub Latest release.
+- Do not create an npm-specific Git tag or GitHub Release. The product `v<version>` tag and GitHub Release are owned only by the `Release` workflow, and must already exist before npm staging.
+- Keep that GitHub Release in Draft until npm Finalize and Desktop remote Runtime Host acceptance
+  succeed. The Draft supplies npm's product identity; its publication is the final product action.
 - Do not run `npm publish`. GitHub Actions may only run `npm stage publish`; a human package
   maintainer approves the staged package with npm 2FA.
 - Do not rebuild between validation, staging, approval, and finalization.
@@ -20,27 +21,28 @@ validated by the Stage workflow.
 
 The two workflow boundaries are:
 
-1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) builds and validates one
-   immutable tarball, records its source identity, enters the protected `npm-release` Environment,
-   and submits it to npm staging through OIDC.
-2. [Finalize CLI npm release](../.github/workflows/release-cli-finalize.yml) accepts only the exact
-   successful Stage run and attempt, verifies the public registry bytes, signature, provenance, and
-   dist-tag, then creates the exact Git tag and a non-Latest GitHub Release.
+1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) resolves the existing product
+   tag and GitHub Release, checks out that exact product commit, builds and validates one immutable
+   tarball, records that single tag commit and workflow run, enters the protected `npm-release`
+   Environment, and submits it to npm staging through OIDC.
+2. [Finalize CLI npm channel](../.github/workflows/release-cli-finalize.yml) accepts only the exact successful Stage run and attempt, then verifies the public registry bytes, signature, provenance, and dist-tag. It creates no tag or GitHub Release.
 
 ## One-time control-plane configuration
 
 ### GitHub Environment
 
-Create an Environment named `npm-release` with:
+The checked-in `.asf.yaml` is the authority for the `npm-release` Environment. After it reaches
+`main`, confirm ASF reconciliation produced:
 
-- `main` as the only allowed deployment branch;
-- the active CLI release maintainer as a required reviewer;
-- self-review allowed while one person is the sole release maintainer;
+- a selected deployment tag rule matching `v*`, with no branch rule;
+- `M4n5ter` as the required reviewer;
+- self-review disabled;
 - administrator bypass disabled where repository policy permits it;
 - no environment secrets or variables.
 
-Repository administration permission is required to configure the Environment. The workflow itself
-uses GitHub OIDC and does not read an npm token.
+Repository administration permission is required to inspect or repair reconciliation. Do not maintain
+a second manual Environment policy in GitHub. The workflow itself uses GitHub OIDC and does not read
+an npm token.
 
 ### npm Trusted Publisher
 
@@ -48,8 +50,8 @@ In the `maka-agent` package settings, configure one GitHub Actions trusted publi
 
 | Field | Value |
 | --- | --- |
-| Organization or user | `maka-agent` |
-| Repository | `maka-agent` |
+| Organization or user | `apache` |
+| Repository | `maka` |
 | Workflow filename | `release-cli-stage.yml` |
 | Environment name | `npm-release` |
 | Allowed actions | `npm stage publish` only |
@@ -63,10 +65,16 @@ package owner or recovery access as part of that change.
 
 ## Prepare a release
 
-1. Merge all intended package, documentation, and release changes to `main`.
-2. Set `packages/cli/package.json` to the unused target version and merge that change. The release
-   tool maps prerelease versions to `next` and stable versions to `latest`.
-3. Confirm the target version is absent from both public and staged package state:
+1. Merge all intended package, documentation, and release changes to `main`, prepare the ASF source
+   candidate, and complete both the podling and Incubator PMC votes.
+2. Confirm the root product version, `apps/desktop/package.json`, and
+   `packages/cli/package.json` have the same unused target version at the approved source commit.
+   The npm channel maps prerelease versions to `next` and stable versions to `latest`.
+3. Dispatch the product `Release` workflow from the exact approved
+   `v<version>-incubating-rc<rc>` tag, supplying that same tag as `source_reference_tag`. Confirm its
+   Draft `v<version>` Release points to the approved commit. npm staging consumes this identity and
+   cannot precede it.
+4. Confirm the target version is absent from both public and staged package state:
 
    ```sh
    version=0.1.0-beta.1
@@ -76,13 +84,19 @@ package owner or recovery access as part of that change.
 
    The first command should report that the target version is not present. Resolve any existing
    stage instead of submitting the same version again.
-4. Confirm the `npm-release` Environment and Trusted Publisher still match the values above and the
+5. Confirm the `npm-release` Environment and Trusted Publisher still match the values above and the
    approving npm account has 2FA enabled.
 
 ## Stage the candidate
 
-1. Open **Actions → Stage CLI npm release → Run workflow**.
-2. Select `main` and enter the exact version from `packages/cli/package.json`.
+1. Dispatch the workflow with the exact product tag as its GitHub ref:
+
+   ```sh
+   version=0.1.0-beta.1
+   gh workflow run release-cli-stage.yml --ref "v$version" -f version="$version"
+   ```
+
+2. Confirm the created run uses `v<version>`. The workflow requires its GitHub ref, checkout, product tag, Release, source commit, and npm provenance to identify that one tag commit, and requires the commit to remain an ancestor of `main`.
 3. Wait for the reusable package validation jobs to pass. They build one tarball and validate the
    installed CLI on Linux x64, macOS arm64, and Windows x64, plus real Harbor and Pier Docker cells
    on Linux x64.
@@ -111,6 +125,18 @@ Before approval:
 - inspect the file inventory and the packaged `README.md`;
 - confirm the tarball belongs to the recorded Stage run and source commit.
 
+Immediately before approval, recheck the live product authority recorded by the Stage run:
+
+```sh
+set -eu
+source_commit=replace-with-stage-recorded-commit
+node scripts/product-release-authority.mjs verify-draft \
+  "v$version" "$source_commit" apache/maka
+```
+
+The verifier must succeed. Stop if the tag is absent, moved, no longer on `main`, the matching
+GitHub Release is no longer a Draft, or its prerelease classification does not match the version.
+
 Approve only that stage ID. npm requires 2FA and makes the package public as part of approval:
 
 ```sh
@@ -138,17 +164,15 @@ Do not change `next` when it already points to a newer version such as `0.2.0-be
 intentionally manual: npm Trusted Publishing authenticates `npm publish` and `npm stage publish`,
 not dist-tag mutations, and the release workflows must not gain a long-lived npm token.
 
-## Finalize the public release
+## Finalize the public npm channel
 
 After npm reports the version as public:
 
-1. Open **Actions → Finalize CLI npm release → Run workflow** on `main`.
+1. Open **Actions → Finalize CLI npm channel → Run workflow** on `main`.
 2. Enter the successful Stage run ID, its exact run attempt, and the version.
 3. Let the inspection job verify the public tarball bytes, checksum, inventory, npm signature,
    Trusted Publishing provenance, the release dist-tag, and that `next` is not older than `latest`.
-4. Review and approve the `npm-release` Environment deployment for the Git tag and GitHub Release.
-5. Confirm the workflow created `cli-v<version>` at the Stage source commit. A prerelease must be
-   marked prerelease; no CLI release may become the repository's GitHub Latest release.
+4. Confirm the workflow preserved the verified public package as an Actions artifact and did not create or modify any Git tag or GitHub Release.
 
 Check the resulting registry state:
 
@@ -162,12 +186,14 @@ Finally, install the exact public version on each release platform and complete 
 turn. On the supported Eval host, complete at least one real experiment cell and inspect score,
 usage, cost, and artifacts.
 
+Return to the [product release checklist](../.github/RELEASE_CHECKLIST.md) and exercise remote Runtime
+Host setup from the packaged Desktop apps before publishing the GitHub Release.
+
 ## Failure recovery
 
 ### Before npm staging
 
-If validation or Environment approval fails before `npm stage publish`, fix the problem on `main`
-and start a new Stage run. No npm version has been consumed.
+If a transient failure occurs before `npm stage publish`, rerun Stage from the same product tag. If code or workflow changes are required, fix them on `main`, increment the product version, create a new product tag and Draft, and Stage that new version. No npm version has been consumed.
 
 ### Stage workflow failed but npm contains a stage
 
@@ -187,8 +213,7 @@ Never reject a stage based only on version text; bind the action to the inspecte
 
 ### Stage succeeded but review found a problem
 
-Reject the stage, fix the problem on `main`, and stage again. Do not approve a candidate merely to
-clear the staging area.
+Reject the stage, fix the problem on `main`, increment the product version, create a new product tag and Draft, and Stage that new version. Do not approve a candidate merely to clear the staging area.
 
 ### npm approval succeeded but Finalize failed
 
@@ -196,11 +221,7 @@ The npm version is already immutable. Do not publish or approve it again. Preser
 attempt, version, and artifacts. If the package bytes and provenance are valid, fix the current
 Finalize verifier on `main` and rerun Finalize against that same successful Stage identity.
 
-Finalize is idempotent across partial GitHub Release creation: it resumes an exact draft and accepts
-an already-published release only after verifying its metadata and asset digests. If an existing
-`cli-v<version>` tag points anywhere other than the recorded Stage source commit, or an existing
-published release differs from the verified candidate, stop and investigate. Do not move or delete
-it to make the workflow pass.
+Finalize is read-only with respect to product release state. If the npm package version, bytes, dist-tag, signature, provenance, or recorded Stage identity differ, stop and investigate; do not modify the product tag or GitHub Release to make npm verification pass.
 
 ### The public version is defective
 

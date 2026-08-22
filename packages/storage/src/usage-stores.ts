@@ -6,16 +6,16 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
-import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { throwDeduplicatedFailures } from './failure-utils.js';
 import {
   createSqliteModelCallLedger,
+  type CatchUpModelCallProjectionInput,
+  type CatchUpModelCallProjectionResult,
   ModelCallLedgerClosedError,
   ModelCallLedgerPublicationError,
   type ModelCallLedger,
   type ModelCallLedgerPage,
   type ModelCallLedgerReader,
-  type PendingReprojection,
 } from './model-call-ledger.js';
 import {
   PricingCommitUnknownError,
@@ -80,17 +80,19 @@ export interface TelemetryIndexWriter extends TelemetryIndexReader {
  * storage-root lease.
  */
 export interface ModelCallIndexReader {
-  modelCallAttempts(range: {
-    readonly from: number;
-    readonly to: number;
-  }): Promise<ModelCallLedgerPage>;
+  modelCallAttempts(
+    range: {
+      readonly from: number;
+      readonly to: number;
+    },
+    sessionId?: string,
+  ): Promise<ModelCallLedgerPage>;
 }
 
 export interface ModelCallIndexWriter extends ModelCallIndexReader {
-  recordModelCallAttempt(attempt: ModelCallAttempt): Promise<void>;
-  markRunPendingReprojection(sessionId: string, runId: string): Promise<void>;
-  pendingReprojections(): Promise<PendingReprojection[]>;
-  clearPendingReprojection(sessionId: string, runId: string): Promise<void>;
+  catchUpModelCallProjection(
+    input?: CatchUpModelCallProjectionInput,
+  ): Promise<CatchUpModelCallProjectionResult>;
 }
 
 export interface PricingAuthorityReader {
@@ -119,6 +121,7 @@ export interface InteractiveUsageStoresWriter {
   readonly telemetry: Readonly<TelemetryIndexWriter>;
   readonly modelCalls: Readonly<ModelCallIndexWriter>;
   readonly pricing: Readonly<PricingAuthorityWriter>;
+  subscribeSessionUsageChanges(listener: (sessionId: string) => void): () => void;
   beginDrain(): Promise<void>;
   flush(): Promise<void>;
   close(): Promise<void>;
@@ -318,6 +321,17 @@ function createWriterFacade(
   const failures: unknown[] = [];
   let drainPromise: Promise<void> | undefined;
   let closePromise: Promise<void> | undefined;
+  const sessionUsageChangeListeners = new Set<(sessionId: string) => void>();
+
+  const publishSessionUsageChange = (sessionId: string): void => {
+    for (const listener of sessionUsageChangeListeners) {
+      try {
+        listener(sessionId);
+      } catch {
+        /* observers cannot perturb the Usage authority */
+      }
+    }
+  };
 
   const assertOpen = () => {
     if (state !== 'open') throw new InteractiveUsageStoresClosedError();
@@ -337,6 +351,30 @@ function createWriterFacade(
     barrier = Promise.all([barrier, observed]).then(() => undefined);
     return admitted;
   };
+  const admitSessionUsageMutation = <T>(
+    sessionId: string | undefined,
+    operation: () => T | Promise<T>,
+  ): Promise<T> =>
+    admit(async () => {
+      const result = await run(operation);
+      if (sessionId) publishSessionUsageChange(sessionId);
+      return result;
+    });
+  const admitSessionUsageChange = (
+    sessionId: string,
+    operation: () => Promise<boolean>,
+  ): Promise<void> =>
+    admit(async () => {
+      if (await run(operation)) publishSessionUsageChange(sessionId);
+    });
+  const admitModelCallProjectionCatchUp = (
+    input?: CatchUpModelCallProjectionInput,
+  ): Promise<CatchUpModelCallProjectionResult> =>
+    admit(async () => {
+      const result = await run(() => modelCalls.catchUpProjection(input));
+      for (const sessionId of result.changedSessionIds) publishSessionUsageChange(sessionId);
+      return result;
+    });
   const read = <T>(operation: () => T): Promise<T> => {
     assertOpen();
     return run(operation);
@@ -386,6 +424,7 @@ function createWriterFacade(
       })
       .finally(() => {
         state = 'closed';
+        sessionUsageChangeListeners.clear();
       });
     return closePromise;
   };
@@ -401,18 +440,14 @@ function createWriterFacade(
       toolLogs: (query, offset, limit) => read(() => telemetry.toolLogs(query, offset, limit)),
       latestLlmRuntimeProbe: (connectionSlug, modelId) =>
         read(() => telemetry.latestLlmRuntimeProbe(connectionSlug, modelId)),
-      recordLlmCall: (record) => admit(() => run(() => telemetry.insertLlmCall(record))),
+      recordLlmCall: (record) =>
+        admitSessionUsageMutation(record.sessionId, () => telemetry.insertLlmCall(record)),
       recordToolInvocation: (record) =>
         admit(() => run(() => telemetry.insertToolInvocation(record))),
     },
     modelCalls: {
-      modelCallAttempts: (range) => read(() => modelCalls.read(range)),
-      recordModelCallAttempt: (attempt) => admit(() => run(() => modelCalls.record(attempt))),
-      markRunPendingReprojection: (sessionId, runId) =>
-        admit(() => run(() => modelCalls.markRunPendingReprojection(sessionId, runId))),
-      pendingReprojections: () => read(() => modelCalls.pendingReprojections()),
-      clearPendingReprojection: (sessionId, runId) =>
-        admit(() => run(() => modelCalls.clearPendingReprojection(sessionId, runId))),
+      modelCallAttempts: (range, sessionId) => read(() => modelCalls.read(range, sessionId)),
+      catchUpModelCallProjection: admitModelCallProjectionCatchUp,
     },
     pricing: {
       snapshot: () => read(() => pricing.snapshot()),
@@ -423,6 +458,11 @@ function createWriterFacade(
           () => run(() => pricing.delete(expectedRevision, modelKey)),
           isExpectedPricingFailure,
         ),
+    },
+    subscribeSessionUsageChanges(listener) {
+      assertOpen();
+      sessionUsageChangeListeners.add(listener);
+      return () => sessionUsageChangeListeners.delete(listener);
     },
     beginDrain,
     flush,
@@ -453,8 +493,10 @@ function modelCallReader(
   run: <T>(operation: () => T | Promise<T>) => Promise<T>,
 ): Readonly<ModelCallIndexReader> {
   return Object.freeze({
-    modelCallAttempts: (range: { readonly from: number; readonly to: number }) =>
-      run(() => ledger.read(range)),
+    modelCallAttempts: (
+      range: { readonly from: number; readonly to: number },
+      sessionId?: string,
+    ) => run(() => ledger.read(range, sessionId)),
   });
 }
 

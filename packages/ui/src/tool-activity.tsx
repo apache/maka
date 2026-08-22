@@ -58,11 +58,20 @@ import { getToolActivityCopy } from './tool-activity/copy.js';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 
 /** Friendly card for a `load_tools` result; falls back to JSON on unexpected shapes. */
-function LoadToolResultPreview(props: { args: unknown; value: unknown }) {
+function LoadToolResultPreview(props: {
+  args: unknown;
+  value: unknown;
+  actionIdentity: string;
+}) {
   const locale = useUiLocale();
   const desc = describeLoadToolResult(props.args, props.value, locale);
   if (!desc) {
-    return <ToolResultPreview content={{ kind: 'json', value: props.value }} />;
+    return (
+      <ToolResultPreview
+        content={{ kind: 'json', value: props.value }}
+        actionIdentity={props.actionIdentity}
+      />
+    );
   }
   return (
     <div className={previewVariants({ part: 'load-tool' })} data-kind="load_tool">
@@ -92,6 +101,12 @@ export function ToolCallDetail({
   const failedOutcome = item.status === 'errored' && !cancelled;
   const permissionDenied = isPermissionDeniedToolResult(item.result);
   const running = isInFlightToolStatus(item.status);
+  const outputActionIdentity = [
+    computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
+    item.intent ? formatToolIntent(item.intent) : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' · ');
   const ptyControlResult = item.toolName === 'WriteStdin' && item.result?.kind === 'shell_run';
   const ownsPanel = resultOwnsOwnPanel(item);
   // Sandbox only — ordinary failures use ChatToolCalls status=error on the row.
@@ -139,13 +154,18 @@ export function ToolCallDetail({
       )}
       {showResult && ownsPanel && displayResult && (
         isConnectorTool(item.toolName) && displayResult.kind === 'json' ? (
-          <LoadToolResultPreview args={item.args} value={displayResult.value} />
+          <LoadToolResultPreview
+            args={item.args}
+            value={displayResult.value}
+            actionIdentity={outputActionIdentity}
+          />
         ) : (
           <ToolResultPreview
             content={displayResult}
             toolName={item.toolName}
             args={item.args}
             shellRunSource={item.shellRunSource}
+            actionIdentity={outputActionIdentity}
           />
         )
       )}
@@ -157,6 +177,7 @@ export function ToolCallDetail({
         <ToolOutputSurface
           kind="live_stream"
           heading={showInvocation ? invocationLine : undefined}
+          actionIdentity={outputActionIdentity}
         >
           <ToolOutputStream
             chunks={item.outputChunks!}
@@ -181,22 +202,24 @@ export function ToolCallDetail({
                   // Only raw args dumps are JSON; quiet bodies stay untokenized.
                   language={argsBody ? 'json' : undefined}
                   title={title}
+                  actionIdentity={outputActionIdentity}
                 />
               );
             }
             if (showInvocation && invocationLine && !showResult) {
-              return <ToolCodeBlock code={invocationLine} />;
+              return <ToolCodeBlock code={invocationLine} actionIdentity={outputActionIdentity} />;
             }
             if (showResult && !ownsPanel && displayResult) {
               return (
                 <ToolResultPreview
                   content={displayResult}
                   toolName={item.toolName}
+                  actionIdentity={outputActionIdentity}
                 />
               );
             }
             if (showInvocation && invocationLine) {
-              return <ToolCodeBlock code={invocationLine} />;
+              return <ToolCodeBlock code={invocationLine} actionIdentity={outputActionIdentity} />;
             }
             return null;
           })()}

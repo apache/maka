@@ -16,7 +16,6 @@ describe('Maka CLI args', () => {
     ) as Record<string, unknown>;
     assert.deepEqual(manifest.bin, {
       maka: './dist/cli.js',
-      'maka-agent': './dist/cli.js',
     });
     assert.deepEqual(manifest.exports, {});
     assert.equal(Object.hasOwn(manifest, 'main'), false);
@@ -29,7 +28,7 @@ describe('Maka CLI args', () => {
     assert.equal(help.kind, 'help');
     if (help.kind !== 'help') return;
     assert.match(help.text, /^  maka              Start the TUI$/m);
-    assert.match(help.text, /^  maka-agent        Start the TUI$/m);
+    assert.doesNotMatch(help.text, /maka-agent/);
     assert.match(help.text, /^  maka run /m);
     assert.match(help.text, /^  maka activate /m);
     assert.match(help.text, /^  maka eval /m);

@@ -38,6 +38,7 @@ export interface DesktopConversationCopy {
     modelReboundDescription: (modelId?: string) => string;
     messageReadFailedTitle: string;
     returnLatest: string;
+    scrollMainToBottom: string;
   };
   attachments: { tooMany: string; tooLarge: string; duplicate: string };
   model: {
@@ -161,9 +162,14 @@ export interface DesktopConversationCopy {
     /** The panel-empty (tier 2) sentence under `empty`. */
     emptyHelp: string;
     costUnavailable: string;
-    /** Labels for the two headline figures the trace always states. */
+    costEstimateHelp: string;
+    loadEarlier: string;
+    loadingEarlier: string;
+    loadingTrace: string;
+    loadingSummary: string;
+    summaryUnavailable: string;
+    /** Label for the complete Session cost estimate. */
     totals: {
-      duration: string;
       cost: string;
     };
     /**
@@ -175,6 +181,7 @@ export interface DesktopConversationCopy {
     coverageAbsent: (parts: readonly string[]) => string;
     /** Each states its own count, so English can say "1 turn" and not "1 turns". */
     unreadable: (count: number) => string;
+    oversizedRuns: (count: number) => string;
     turnsMissing: (count: number) => string;
     turnsShort: (count: number) => string;
     /**
@@ -197,16 +204,8 @@ export interface DesktopConversationCopy {
      * reader gets, with a plain fallback for a code nobody has named yet.
      */
     turnFailure: (code: string) => string;
-    filterLabel: string;
-    filterPlaceholder: string;
-    /** The failure count that doubles as the "only failures" toggle. */
-    filterFailedOnly: (count: number) => string;
-    noMatches: string;
-    /** The filter no-match's clear action. */
-    clearFilter: string;
-    hiddenByFilter: (count: number) => string;
-    /** Display name of one turn in the raw record: 第 N 轮 / Turn N. */
-    turnLabel: (index: number) => string;
+    /** Stable display name of one turn, qualified by its recorded start time. */
+    turnLabel: (startedAt: string) => string;
     /** Summary above the raw timeline. */
     overview: {
       context: string;
@@ -257,6 +256,7 @@ export interface DesktopConversationCopy {
     /** Short-lived status while the eager fork is created. */
     preparing: string;
     permissionStreaming: string;
+    scrollToBottom: string;
     closeConfirmation: {
       title(count: number): string;
       description(count: number): string;
@@ -371,7 +371,7 @@ function enDetail(parts: readonly string[]): string {
 
 const COPY = {
   zh: {
-    actions: { stopFailedTitle: '停止失败', stopFailedFallback: '任务操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新任务列表失败', refreshSessionsFailedFallback: '刷新任务列表失败，请稍后重试。', conversationErrorTitle: '任务出错', conversationErrorFallback: '任务运行失败，请稍后重试。', regenerateStartedTitle: '已发起重新生成', regenerateStartedDescription: '正在生成新的一轮回答', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新任务 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原任务仍会保留；修改后发送将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；编辑后发送即可', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '包含附件的历史消息暂不支持编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '通过显式技能发送的历史消息暂不支持编辑并重发，请复制文字后重新选择技能。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionCommandUnsupported: '修改消息时不能执行 /compact、/side 或编排命令，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', revisionUnchanged: '内容没有变化。如需重新回答，请使用“重新生成”。', operationFailedTitle: '操作失败', operationFailedFallback: '任务操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原任务使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取任务失败', returnLatest: '返回最新消息' },
+    actions: { stopFailedTitle: '停止失败', stopFailedFallback: '任务操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新任务列表失败', refreshSessionsFailedFallback: '刷新任务列表失败，请稍后重试。', conversationErrorTitle: '任务出错', conversationErrorFallback: '任务运行失败，请稍后重试。', regenerateStartedTitle: '已发起重新生成', regenerateStartedDescription: '正在生成新的一轮回答', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新任务 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原任务仍会保留；修改后发送将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；编辑后发送即可', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '包含附件的历史消息暂不支持编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '通过显式技能发送的历史消息暂不支持编辑并重发，请复制文字后重新选择技能。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionCommandUnsupported: '修改消息时不能执行 /compact、/side 或编排命令，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', revisionUnchanged: '内容没有变化。如需重新回答，请使用“重新生成”。', operationFailedTitle: '操作失败', operationFailedFallback: '任务操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原任务使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取任务失败', returnLatest: '返回最新消息', scrollMainToBottom: '滚动主对话到底部' },
     attachments: { tooMany: '附件数量超过 8 个', tooLarge: '附件大小超过 50MB', duplicate: '附件来源重复，请勿重复添加同一文件。' },
     model: {
       fakeBackendLabel: '本地模拟连接',
@@ -481,13 +481,19 @@ const COPY = {
       empty: '这个任务还没有可追踪的活动',
       emptyHelp: '任务尚无活动记录。',
       costUnavailable: '费用未知',
+      costEstimateHelp: '基于已记录用量和定价估算；缺失或未定价的调用可能未计入。',
+      loadEarlier: '加载更早记录',
+      loadingEarlier: '正在加载…',
+      loadingTrace: '正在读取时间线…',
+      loadingSummary: '正在估算完整会话用量…',
+      summaryUnavailable: '完整会话用量暂时无法估算。',
       totals: {
-        duration: '总耗时',
-        cost: '花费',
+        cost: '估算成本',
       },
-      coveragePartial: (parts) => `部分调用没有留下记录，下面的数字只少不多${zhDetail(parts)}`,
+      coveragePartial: (parts) => `部分调用未能完整显示，下面的数字只少不多${zhDetail(parts)}`,
       coverageAbsent: (parts) => `这个后端不记录每次调用的明细${zhDetail(parts)}`,
       unreadable: (count) => `${count} 条记录读不出来`,
+      oversizedRuns: (count) => `${count} 条运行记录过大，无法在线显示`,
       turnsMissing: (count) => `${count} 轮没有调用记录`,
       turnsShort: (count) => `${count} 轮的调用记录不全`,
       stepKind: { permission: '权限', compaction: '上下文压缩', error: '错误' },
@@ -496,13 +502,7 @@ const COPY = {
       recoveredAs: (disposition) => `已恢复：${ZH_RECOVERED[disposition] ?? disposition}`,
       retries: (count) => `重试 ${count} 次`,
       turnFailure: (code) => ZH_TURN_FAILURE[code] ?? '本轮失败',
-      filterLabel: '筛选追踪',
-      filterPlaceholder: '按工具、模型或轮次筛选',
-      filterFailedOnly: (count) => `${count} 轮失败`,
-      noMatches: '没有匹配的记录',
-      clearFilter: '清除筛选',
-      hiddenByFilter: (count) => `已隐藏 ${count} 项`,
-      turnLabel: (index) => `第 ${index} 轮`,
+      turnLabel: (startedAt) => `轮次 · ${startedAt}`,
       overview: {
         context: '上下文窗口',
         segment: {
@@ -534,6 +534,7 @@ const COPY = {
       namePrefix: '侧聊：',
       preparing: '正在建立侧边对话…',
       permissionStreaming: '侧边对话运行中暂时不能更改权限',
+      scrollToBottom: '滚动侧边对话到底部',
       closeConfirmation: {
         title: (count) => count > 1 ? `关闭 ${count} 个侧边对话？` : '关闭侧边对话？',
         description: (count) =>
@@ -571,7 +572,7 @@ const COPY = {
     turnError: { unknown: '未知错误', contextOverflow: '上下文窗口已超出限制', timeout: '请求超时', auth: '鉴权失败', providerBilling: '模型服务计费受限', rateLimit: '触发模型速率限制', network: '网络错误', provider: '模型服务返回错误', stepCap: '达到工具步骤上限', tool: '工具调用失败', permission: '等待权限确认', restarted: '本地应用重启，上一轮没有完成', sandboxBoundaryClosed: '本地应用重启，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭', recovery: { safeResume: '检查当前状态后，可尝试安全恢复', stepCap: '任务可能尚未完成，可以继续', toolError: '先检查工具结果，再决定是否重试', connection: '先检查模型连接或登录状态', partial: '已保留部分输出，可从这里继续', toolRecord: '工具记录已保留，重试前先看结果', retry: '没有执行工具，可直接重试', sandboxBoundaryClosed: '访问范围没有放开，重试本轮后可重新决定' } },
   },
   en: {
-    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The task action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh tasks', refreshSessionsFailedFallback: 'The task list could not be refreshed. Try again later.', conversationErrorTitle: 'Task error', conversationErrorFallback: 'The task run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New task: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original task is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The task action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load task', returnLatest: 'Return to latest' },
+    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The task action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh tasks', refreshSessionsFailedFallback: 'The task list could not be refreshed. Try again later.', conversationErrorTitle: 'Task error', conversationErrorFallback: 'The task run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New task: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original task is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The task action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load task', returnLatest: 'Return to latest', scrollMainToBottom: 'Scroll main conversation to bottom' },
     attachments: { tooMany: 'You can attach at most 8 files', tooLarge: 'Attachments must be 50 MB or smaller', duplicate: 'This attachment was already added.' },
     model: {
       fakeBackendLabel: 'Local simulation',
@@ -683,14 +684,21 @@ const COPY = {
       empty: 'Nothing to trace in this task yet',
       emptyHelp: 'No activity recorded for this task yet.',
       costUnavailable: 'cost unknown',
+      costEstimateHelp: 'Estimated from recorded usage and pricing; missing or unpriced calls may be excluded.',
+      loadEarlier: 'Load earlier records',
+      loadingEarlier: 'Loading…',
+      loadingTrace: 'Loading timeline…',
+      loadingSummary: 'Estimating full-session usage…',
+      summaryUnavailable: 'Full-session usage is temporarily unavailable.',
       totals: {
-        duration: 'Duration',
-        cost: 'Cost',
+        cost: 'Estimated cost',
       },
       coveragePartial: (parts) =>
-        `Some calls left no record, so the numbers below only undercount${enDetail(parts)}`,
+        `Some calls could not be shown completely, so the numbers below only undercount${enDetail(parts)}`,
       coverageAbsent: (parts) => `This backend does not record per-call detail${enDetail(parts)}`,
       unreadable: (count) => `${count} record${count === 1 ? '' : 's'} could not be read`,
+      oversizedRuns: (count) =>
+        `${count} run record${count === 1 ? '' : 's'} too large to show online`,
       turnsMissing: (count) => `${count} turn${count === 1 ? '' : 's'} with no call record`,
       turnsShort: (count) =>
         `${count} turn${count === 1 ? '' : 's'} with an incomplete call record`,
@@ -700,13 +708,7 @@ const COPY = {
       recoveredAs: (disposition) => `recovered as ${disposition}`,
       retries: (count) => `${count} retr${count === 1 ? 'y' : 'ies'}`,
       turnFailure: (code) => EN_TURN_FAILURE[code] ?? 'Turn failed',
-      filterLabel: 'Filter the trace',
-      filterPlaceholder: 'Filter by tool, model or turn',
-      filterFailedOnly: (count) => `${count} failed turn${count === 1 ? '' : 's'}`,
-      noMatches: 'Nothing matches this filter',
-      clearFilter: 'Clear filters',
-      hiddenByFilter: (count) => `${count} hidden by the filter`,
-      turnLabel: (index) => `Turn ${index}`,
+      turnLabel: (startedAt) => `Turn · ${startedAt}`,
       overview: {
         context: 'Context window',
         segment: {
@@ -738,6 +740,7 @@ const COPY = {
       namePrefix: 'Side: ',
       preparing: 'Preparing side chat…',
       permissionStreaming: 'Permissions cannot change while the side chat is running',
+      scrollToBottom: 'Scroll side conversation to bottom',
       closeConfirmation: {
         title: (count) => count > 1 ? `Close ${count} side chats?` : 'Close side chat?',
         description: (count) =>
@@ -786,9 +789,8 @@ export type InspectorCopy = DesktopConversationCopy['inspector'];
  * The name a step falls back to when it has no identifier of its own. A model
  * call and a tool call always carry one, so they never reach here.
  *
- * It lives beside the words rather than in the panel because the filter needs
- * the same string: what the reader searches has to be what the reader sees, and
- * that correspondence breaks the moment two places decide the wording.
+ * It lives beside the words rather than in the panel so fallback labels stay
+ * part of the locale's vocabulary instead of being reconstructed by the view.
  */
 export function inspectorStepKindLabel(copy: InspectorCopy, kind: string): string {
   if (kind === 'permission') return copy.stepKind.permission;

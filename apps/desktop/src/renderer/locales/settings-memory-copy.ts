@@ -43,6 +43,7 @@ export type MemorySettingsCopy = {
   countMatches(filtered: number, total: number): string;
   listAria(title: string): string;
   entryActionsAria(title: string): string;
+  entryActionAria(action: string, identity: string): string;
   openBackupAria(label: string): string;
   restoreBackupAria(label: string): string;
   copyBackupAria(label: string): string;
@@ -88,7 +89,9 @@ function makeCopy(intlLocale: string, text: Record<MemoryTextKey, string>, value
     backupSummary: (active, archived) => isZh ? `${active} 条生效${archived > 0 ? ` / ${archived} 条已归档` : ''}` : `${plural(active, 'active entry', 'active entries')}${archived > 0 ? ` / ${plural(archived, 'archived entry', 'archived entries')}` : ''}`,
     countEntries: (count) => isZh ? `${count} 条记忆` : plural(count, 'memory', 'memories'),
     countMatches: (filtered, total) => isZh ? `${filtered} / ${total} 条匹配` : `${filtered} / ${total} matching`,
-    listAria: (title) => isZh ? `${title}列表` : `${title} list`, entryActionsAria: (title) => isZh ? `${title}记忆操作` : `${title} memory actions`,
+    listAria: (title) => isZh ? `${title}列表` : `${title} list`,
+    entryActionsAria: (title) => isZh ? `${title} 记忆操作` : `${title} memory actions`,
+    entryActionAria: (action, identity) => isZh ? `${action}：${identity}` : `${action}: ${identity}`,
     openBackupAria: (label) => isZh ? `打开备份候选 ${label}` : `Open backup candidate ${label}`, restoreBackupAria: (label) => isZh ? `恢复备份候选 ${label}` : `Restore backup candidate ${label}`, copyBackupAria: (label) => isZh ? `复制备份候选引用 ${label}` : `Copy backup candidate reference ${label}`,
     draftStatusAria: (action) => isZh ? `${action}，保存前不会写入 MEMORY.md` : `${action}; MEMORY.md is not written until you save`,
     restoreLatestDescription: (label) => isZh ? `会先备份当前 MEMORY.md，再用最近一次备份覆盖当前文件。将恢复：${label}` : `The current MEMORY.md will be backed up before the latest backup replaces it. Restore: ${label}`,

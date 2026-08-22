@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
+import { readProductManifestIdentity } from './product-release-identity.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -24,9 +25,7 @@ import {
 } from './verify-packaged-app.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const desktopRoot = join(repoRoot, 'apps', 'desktop');
 const expectedAppId = 'com.maka.desktop';
-const ptyProbe = makePtyProbe('/bin/echo', ['maka-node-pty-ok']);
 
 function runCommandFromRepo(command, args, options = {}) {
   return runCommand(command, args, { cwd: repoRoot, ...options });
@@ -106,7 +105,7 @@ export async function verifyPackagedMacApp(
     workingDirectory = dirname(appPath),
   } = {},
 ) {
-  const desktopManifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
+  const product = await readProductManifestIdentity();
   const contents = join(appPath, 'Contents');
   const resources = join(contents, 'Resources');
   const infoPlist = join(contents, 'Info.plist');
@@ -116,8 +115,8 @@ export async function verifyPackagedMacApp(
     throw new Error(`Expected app id ${expectedAppId}, found ${appId}.`);
   }
   const version = await readPlistValue(run, infoPlist, 'CFBundleShortVersionString');
-  if (version !== desktopManifest.version) {
-    throw new Error(`Expected app version ${desktopManifest.version}, found ${version}.`);
+  if (version !== product.version) {
+    throw new Error(`Expected app version ${product.version}, found ${version}.`);
   }
   const executableName = await readPlistValue(run, infoPlist, 'CFBundleExecutable');
   const executable = join(contents, 'MacOS', executableName);
@@ -135,6 +134,7 @@ export async function verifyPackagedMacApp(
   await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
   await run('xcrun', ['stapler', 'validate', appPath]);
 
+  const ptyProbe = makePtyProbe('/bin/echo', ['maka-node-pty-ok'], product.runtimeHostSetupPackage);
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {
       ELECTRON_RUN_AS_NODE: '1',

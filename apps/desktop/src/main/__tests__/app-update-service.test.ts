@@ -56,9 +56,11 @@ class FakeUpdater extends EventEmitter {
   quitAndInstallDispatchError = false;
   onQuitAndInstall: (() => void) | undefined;
   feed: unknown;
+  setFeedURLCalls = 0;
   checkResult: Promise<unknown> | undefined;
 
   setFeedURL(input: unknown): void {
+    this.setFeedURLCalls += 1;
     this.feed = input;
   }
 
@@ -134,12 +136,7 @@ describe('AppUpdateService', () => {
 
     assert.equal(updater.autoDownload, true);
     assert.equal(updater.autoInstallOnAppQuit, false);
-    assert.equal(updater.allowPrerelease, false);
-    assert.deepEqual(updater.feed, {
-      provider: 'github',
-      owner: 'Maka-Agent',
-      repo: 'maka-agent',
-    });
+    assert.equal(updater.setFeedURLCalls, 0);
 
     service.start();
     service.start();
@@ -153,12 +150,22 @@ describe('AppUpdateService', () => {
     assert.equal(clock.pending().length, 0);
   });
 
+  test('preserves electron-updater channel policy derived from the app version', () => {
+    for (const allowPrerelease of [false, true]) {
+      const updater = new FakeUpdater();
+      updater.allowPrerelease = allowPrerelease;
+      createHarness({ updater });
+      assert.equal(updater.allowPrerelease, allowPrerelease);
+    }
+  });
+
   test('routes the feed to a loopback generic provider when the test override is set', () => {
     const { updater } = createHarness({ testFeedUrl: 'http://127.0.0.1:8443/feed' });
     assert.deepEqual(updater.feed, {
       provider: 'generic',
       url: 'http://127.0.0.1:8443/feed',
     });
+    assert.equal(updater.setFeedURLCalls, 1);
   });
 
   test('rejects a non-loopback test feed instead of falling back to production', () => {
