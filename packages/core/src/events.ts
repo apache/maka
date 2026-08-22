@@ -1028,6 +1028,7 @@ export interface QueueUpdateEvent extends BaseEvent {
 
 export type ProviderRetryReason =
   | 'network'
+  | 'provider_capacity'
   | 'provider_unavailable'
   | 'rate_limit'
   | 'timeout'

@@ -939,10 +939,7 @@ function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
     case 'timeout':
       return kind;
     case 'provider_capacity':
-      // ProviderRetryReason intentionally remains transport-oriented; the
-      // durable failure kind and Desktop presentation retain the capacity
-      // distinction while retry progress uses the existing availability lane.
-      return 'provider_unavailable';
+      return 'provider_capacity';
     default:
       return 'unknown';
   }

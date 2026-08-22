@@ -10148,6 +10148,69 @@ describe('AiSdkBackend RunTrace', () => {
     );
   });
 
+  test('preserves provider capacity in retry progress', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new APICallError({
+            message: 'The model is currently at capacity due to high demand.',
+            url: 'https://api.x.ai/v1/chat/completions',
+            requestBodyValues: {},
+            data: { error: { code: 'resource-exhausted' } },
+          });
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, reason }) => ({ phase, reason })),
+      [
+        { phase: 'scheduled', reason: 'provider_capacity' },
+        { phase: 'started', reason: 'provider_capacity' },
+      ],
+    );
+  });
+
   test('retries one idle watchdog timeout after preserving partial thinking', async () => {
     const timers = manualWatchdogTimer();
     const assistants: AssistantMessage[] = [];
