@@ -270,6 +270,66 @@ export async function evaluateInRenderer(
   }
 }
 
+/** Send one command to a CDP target and return the command result. */
+export async function sendCdpCommand(
+  webSocketDebuggerUrl,
+  method,
+  params = {},
+  { timeoutMs = 10_000 } = {},
+) {
+  if (typeof WebSocket !== 'function') {
+    throw new Error('The release verifier requires Node.js WebSocket support.');
+  }
+  const socket = new WebSocket(webSocketDebuggerUrl);
+  try {
+    await new Promise((resolvePromise, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`CDP WebSocket did not open within ${timeoutMs}ms.`));
+      }, timeoutMs);
+      socket.addEventListener(
+        'open',
+        () => {
+          clearTimeout(timeout);
+          resolvePromise();
+        },
+        { once: true },
+      );
+      socket.addEventListener(
+        'error',
+        (event) => {
+          clearTimeout(timeout);
+          reject(event.error ?? new Error('CDP WebSocket connection failed.'));
+        },
+        { once: true },
+      );
+    });
+  } catch (error) {
+    socket.close();
+    throw error;
+  }
+
+  try {
+    return await new Promise((resolvePromise, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`CDP ${method} timed out.`));
+      }, timeoutMs);
+      socket.addEventListener('message', (event) => {
+        const message = JSON.parse(String(event.data));
+        if (message.id !== 1) return;
+        clearTimeout(timeout);
+        if (message.error) {
+          reject(new Error(`${method}: ${message.error.message}`));
+          return;
+        }
+        resolvePromise(message.result);
+      });
+      socket.send(JSON.stringify({ id: 1, method, params }));
+    });
+  } finally {
+    socket.close();
+  }
+}
+
 export const RENDERER_STATE_EXPRESSION = `({
   readyState: document.readyState,
   hasBridge: Boolean(window.maka),
@@ -332,6 +392,158 @@ export async function waitForUsableRenderer(
     }
     await delay(250);
   }
+}
+
+const WINDOW_LAYOUT_EXPRESSION = `(async () => {
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  const rect = (selector) => {
+    const element = document.querySelector(selector);
+    if (!element) return null;
+    const bounds = element.getBoundingClientRect();
+    return {
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+    };
+  };
+  return {
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    outerWidth: window.outerWidth,
+    outerHeight: window.outerHeight,
+    documentWidth: document.documentElement.clientWidth,
+    documentHeight: document.documentElement.clientHeight,
+    visualViewportWidth: window.visualViewport?.width ?? null,
+    visualViewportHeight: window.visualViewport?.height ?? null,
+    screenAvailWidth: window.screen.availWidth,
+    screenAvailHeight: window.screen.availHeight,
+    html: rect('html'),
+    body: rect('body'),
+    root: rect('#root'),
+    appFrame: rect('.appFrame'),
+  };
+})()`;
+
+function dimensionsMatch(actual, expected, tolerance = 1) {
+  return Number.isFinite(actual) && Math.abs(actual - expected) <= tolerance;
+}
+
+export function rendererLayoutMatchesViewport(layout) {
+  if (!Number.isFinite(layout?.innerWidth) || layout.innerWidth <= 0) return false;
+  if (!Number.isFinite(layout?.innerHeight) || layout.innerHeight <= 0) return false;
+  if (!dimensionsMatch(layout.documentWidth, layout.innerWidth)) return false;
+  if (!dimensionsMatch(layout.documentHeight, layout.innerHeight)) return false;
+  if (!dimensionsMatch(layout.visualViewportWidth, layout.innerWidth)) return false;
+  if (!dimensionsMatch(layout.visualViewportHeight, layout.innerHeight)) return false;
+  for (const bounds of [layout.html, layout.body, layout.root, layout.appFrame]) {
+    if (!bounds) return false;
+    if (!dimensionsMatch(bounds.x, 0) || !dimensionsMatch(bounds.y, 0)) return false;
+    if (!dimensionsMatch(bounds.width, layout.innerWidth)) return false;
+    if (!dimensionsMatch(bounds.height, layout.innerHeight)) return false;
+  }
+  return true;
+}
+
+async function browserDebuggerUrl(port) {
+  const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+    signal: AbortSignal.timeout(2_000),
+  });
+  if (!response.ok) {
+    throw new Error(`CDP browser target returned HTTP ${response.status}.`);
+  }
+  const version = await response.json();
+  if (!version.webSocketDebuggerUrl) {
+    throw new Error('CDP browser target did not expose a WebSocket URL.');
+  }
+  return version.webSocketDebuggerUrl;
+}
+
+async function captureWindowLayout(browserUrl, rendererUrl, windowId) {
+  const [{ bounds }, layout] = await Promise.all([
+    sendCdpCommand(browserUrl, 'Browser.getWindowBounds', { windowId }),
+    evaluateInRenderer(rendererUrl, WINDOW_LAYOUT_EXPRESSION, {
+      awaitPromise: true,
+      timeoutMs: 10_000,
+    }),
+  ]);
+  return { bounds, layout };
+}
+
+async function waitForWindowLayout(
+  browserUrl,
+  rendererUrl,
+  child,
+  windowId,
+  expectedWindowState,
+  { timeoutMs = 30_000 } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let observed;
+  let lastError;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(`Packaged Maka exited during the ${expectedWindowState} transition.`);
+    }
+    try {
+      observed = await captureWindowLayout(browserUrl, rendererUrl, windowId);
+      lastError = undefined;
+      if (
+        observed.bounds?.windowState === expectedWindowState &&
+        rendererLayoutMatchesViewport(observed.layout)
+      ) {
+        return observed;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(250);
+  }
+  throw new Error(
+    `Packaged renderer did not settle in ${expectedWindowState} state within ${timeoutMs}ms: ${
+      lastError ? lastError.message : JSON.stringify(observed)
+    }`,
+  );
+}
+
+export async function exercisePackagedRendererMaximizeRestore(browserUrl, rendererTarget, child) {
+  const rendererUrl = rendererTarget.webSocketDebuggerUrl;
+  const { windowId } = await sendCdpCommand(browserUrl, 'Browser.getWindowForTarget', {
+    targetId: rendererTarget.id,
+  });
+  const restored = await waitForWindowLayout(browserUrl, rendererUrl, child, windowId, 'normal');
+
+  await sendCdpCommand(browserUrl, 'Browser.setWindowBounds', {
+    windowId,
+    bounds: { windowState: 'maximized' },
+  });
+  const maximized = await waitForWindowLayout(
+    browserUrl,
+    rendererUrl,
+    child,
+    windowId,
+    'maximized',
+  );
+
+  await sendCdpCommand(browserUrl, 'Browser.setWindowBounds', {
+    windowId,
+    bounds: { windowState: 'normal' },
+  });
+  const restoredAgain = await waitForWindowLayout(
+    browserUrl,
+    rendererUrl,
+    child,
+    windowId,
+    'normal',
+  );
+
+  console.log(
+    `[packaged-renderer] window transition: ${JSON.stringify({
+      restored,
+      maximized,
+      restoredAgain,
+    })}`,
+  );
 }
 
 export async function stopChild(child) {
@@ -409,7 +621,10 @@ export function isolatedUserEnv(homeDirectory, { temporaryDirectory = homeDirect
   };
 }
 
-export async function smokePackagedRenderer(executable, { workingDirectory } = {}) {
+export async function smokePackagedRenderer(
+  executable,
+  { workingDirectory, verifyMaximizeRestore = false } = {},
+) {
   const home = join(workingDirectory, 'home');
   const userData = join(workingDirectory, 'user-data');
   const userEnv = isolatedUserEnv(home);
@@ -440,6 +655,9 @@ export async function smokePackagedRenderer(executable, { workingDirectory } = {
     const port = await waitForDevToolsPort(child);
     const target = await findRendererTarget(port, child);
     await waitForUsableRenderer(target.webSocketDebuggerUrl, child);
+    if (verifyMaximizeRestore) {
+      await exercisePackagedRendererMaximizeRestore(await browserDebuggerUrl(port), target, child);
+    }
   } catch (error) {
     throw new Error(`${error.message}${stderr.trim() ? `\n${stderr.trim()}` : ''}`);
   } finally {

@@ -26,7 +26,9 @@ on:
       # The packaged updater's feed behavior — and the boot wiring that hands
       # MAKA_UPDATE_TEST_FEED to it — is only observable on this path.
       - 'apps/desktop/src/main/app-update-service.ts'
+      - 'apps/desktop/src/main/main-window.ts'
       - 'apps/desktop/src/main/runtime-host-boot.ts'
+      - 'apps/desktop/src/main/windows-maximize-renderer-sync.ts'
       - 'scripts/prepare-windows-upgrade-baseline.mjs'
       - 'scripts/windows-upgrade-baseline.json'
       - 'scripts/verify-packaged-app.mjs'

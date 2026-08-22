@@ -11,6 +11,7 @@ import { validateWindowsUpgradeBaseline } from './prepare-windows-upgrade-baseli
 import {
   diffTreeManifests,
   directoryTreeManifest,
+  rendererLayoutMatchesViewport,
   runCommand,
   waitForDevToolsPort,
   waitForUsableRenderer,
@@ -33,6 +34,36 @@ import {
 const temporaryRoots = [];
 const delay = (milliseconds) =>
   new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+
+describe('rendererLayoutMatchesViewport', () => {
+  const viewportLayout = () => ({
+    innerWidth: 1920,
+    innerHeight: 1040,
+    outerWidth: 1920,
+    outerHeight: 1040,
+    documentWidth: 1920,
+    documentHeight: 1040,
+    visualViewportWidth: 1920,
+    visualViewportHeight: 1040,
+    screenAvailWidth: 1920,
+    screenAvailHeight: 1040,
+    html: { x: 0, y: 0, width: 1920, height: 1040 },
+    body: { x: 0, y: 0, width: 1920, height: 1040 },
+    root: { x: 0, y: 0, width: 1920, height: 1040 },
+    appFrame: { x: 0, y: 0, width: 1920, height: 1040 },
+  });
+
+  it('accepts a renderer tree that covers the maximized viewport', () => {
+    assert.equal(rendererLayoutMatchesViewport(viewportLayout()), true);
+  });
+
+  it('rejects the stale-height band from the maximize regression', () => {
+    const layout = viewportLayout();
+    layout.root.height = 820;
+    layout.appFrame.height = 820;
+    assert.equal(rendererLayoutMatchesViewport(layout), false);
+  });
+});
 
 it('uses the product SemVer contract throughout Windows release verification', () => {
   assert.equal(installerVersion('Maka-1.2.3-beta.2-win-x64.exe'), '1.2.3-beta.2');
