@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, SkillEntry } from '@maka/ui';
@@ -56,11 +56,18 @@ export function useAppShellModuleData(options: {
   const [managedSkillSources, setManagedSkillSources] = useState<ManagedSkillSourceEntry[]>([]);
   const [bundledSkillCatalog, setBundledSkillCatalog] = useState<BundledSkillCatalogEntry[]>([]);
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
+  const refreshGenerationsRef = useRef({
+    skills: 0,
+    managedSkillSources: 0,
+    bundledSkillCatalog: 0,
+    scheduledTasks: 0,
+  });
 
   const scheduledTaskActions = createAppShellScheduledTaskActions({
     uiLocale,
     getScheduledTasks: () => scheduledTasks,
     isScheduledTasksSurfaceActive,
+    refreshGenerationsRef,
     setScheduledTasks,
     toastApi,
   });
@@ -68,6 +75,7 @@ export function useAppShellModuleData(options: {
   const skillActions = createAppShellSkillActions({
     uiLocale,
     isSkillsSurfaceActive,
+    refreshGenerationsRef,
     setSkills,
     setManagedSkillSources,
     setBundledSkillCatalog,

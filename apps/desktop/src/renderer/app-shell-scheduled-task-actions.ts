@@ -28,6 +28,7 @@ type ToastApi = {
 };
 
 type ScheduledTaskCreateInput = Omit<CreateScheduledTaskInput, "createdBy">;
+type RefBox<T> = { current: T };
 
 export interface AppShellScheduledTaskActions {
   refreshScheduledTasks(options?: {
@@ -46,6 +47,7 @@ export function createAppShellScheduledTaskActions(deps: {
   uiLocale: UiLocale;
   getScheduledTasks: () => readonly ScheduledTask[];
   isScheduledTasksSurfaceActive: () => boolean;
+  refreshGenerationsRef: RefBox<{ scheduledTasks: number }>;
   setScheduledTasks: Dispatch<SetStateAction<ScheduledTask[]>>;
   toastApi: ToastApi;
 }): AppShellScheduledTaskActions {
@@ -53,6 +55,7 @@ export function createAppShellScheduledTaskActions(deps: {
     uiLocale,
     getScheduledTasks,
     isScheduledTasksSurfaceActive,
+    refreshGenerationsRef,
     setScheduledTasks,
     toastApi,
   } = deps;
@@ -61,11 +64,16 @@ export function createAppShellScheduledTaskActions(deps: {
   async function refreshScheduledTasks(
     options: { shouldShowError?: () => boolean } = {},
   ) {
+    const generation = ++refreshGenerationsRef.current.scheduledTasks;
     try {
       const next = await runOnDefaultRuntimeHost((host) =>
         window.maka.scheduledTasks.list(host),
       );
-      await runIfDefaultRuntimeHostCurrent(next.host, () => setScheduledTasks(next.value));
+      await runIfDefaultRuntimeHostCurrent(next.host, () => {
+        if (generation === refreshGenerationsRef.current.scheduledTasks) {
+          setScheduledTasks(next.value);
+        }
+      });
     } catch (error) {
       if (options.shouldShowError?.() ?? true) {
         toastApi.error(
