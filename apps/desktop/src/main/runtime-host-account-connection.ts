@@ -1,4 +1,5 @@
 import {
+  classifyConnectionModelInventory,
   PROVIDER_DEFAULTS,
   type ProviderType,
 } from '@maka/core/llm-connections';
@@ -96,11 +97,10 @@ export async function synchronizeRuntimeHostAccountConnection(
   // needs a default — new Session, send, external Session import — fail with a
   // reason the user cannot see from the error it produces.
   await client.fetchConnectionModels(connection.connectionId).catch(() => undefined);
-  await adoptDiscoveredAccountModels(client, providerType);
   const catalog = await client.loadConnectionCatalog();
   if (catalog.defaultTarget !== null) return;
   const updated = findRuntimeHostAccountConnection(catalog, providerType);
-  const modelId = updated?.enabledModelIds[0];
+  const modelId = updated && firstAccountDefaultModelId(updated);
   if (!updated || !modelId) return;
   const selected = await client.setDefaultConnectionTarget(catalog.revision, {
     connectionId: updated.connectionId,
@@ -112,42 +112,25 @@ export async function synchronizeRuntimeHostAccountConnection(
 }
 
 /**
- * An account Connection is created before anyone can ask the account what it
- * has: the OAuth login path has no credential yet at that point, so the
- * enabled ids start as the provider's curated fallback list. Once discovery
- * answers, the account's own catalog is the authority — an id it does not list
- * cannot be selected, tested, or sent to, and leaving it enabled only produces
- * failures naming a model the user never chose.
+ * The model this account's first default should name.
  *
- * A deliberate narrower selection survives: ids are dropped, never added, and
- * the discovered list is adopted whole only when nothing the user kept remains.
+ * An account Connection is created before anyone can ask the account what it
+ * has — the OAuth login path holds no credential at that point — so its enabled
+ * ids start as the provider's curated fallback list, in the order this build
+ * ships them. Taking the first one names a model the account may never serve,
+ * and every later operation that falls back to the default then fails on a
+ * model the user never chose.
+ *
+ * A live response is the better-informed opinion about which of those ids to
+ * open on, so it picks the order. It does not pick the set: an id the response
+ * omitted stays enabled, because a `/models` answer that cannot see a model is
+ * not evidence the account cannot run it (`authorizeConnectionModel`).
  */
-async function adoptDiscoveredAccountModels(
-  client: RuntimeHostAccountConnectionClient,
-  providerType: ProviderType,
-): Promise<void> {
-  const connection = findRuntimeHostAccountConnection(
-    await client.loadConnectionCatalog(),
-    providerType,
-  );
-  // Only a fetched inventory is authoritative. A fallback one is the same guess
-  // the enabled ids already are, so it can prove nothing about them.
-  if (!connection || connection.modelSource !== 'fetched') return;
-  const discovered = (connection.models ?? [])
-    .map(({ id }) => id.trim())
-    .filter((id) => id.length > 0);
-  if (discovered.length === 0) return;
-  const available = new Set(discovered);
-  const retained = connection.enabledModelIds.filter((id) => available.has(id));
-  const next = retained.length > 0 ? retained : discovered;
-  if (sameStrings(connection.enabledModelIds, next)) return;
-  const updated = await client.updateConnection(
-    { connectionId: connection.connectionId, revision: connection.revision },
-    accountConnectionChanges(connection, connection.enabled, next),
-  );
-  if (updated.kind !== 'committed') {
-    throw new Error(`Unable to adopt discovered account models: ${updated.kind}`);
-  }
+function firstAccountDefaultModelId(connection: ConnectionCatalogEntry): string | undefined {
+  const enabled = connection.enabledModelIds;
+  if (classifyConnectionModelInventory(connection) !== 'live') return enabled[0];
+  const live = new Set((connection.models ?? []).map(({ id }) => id));
+  return enabled.find((id) => live.has(id)) ?? enabled[0];
 }
 
 export async function setRuntimeHostAccountCredential(

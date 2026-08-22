@@ -101,67 +101,59 @@ describe('synchronizeRuntimeHostAccountConnection', () => {
     assert.equal(selectCalls(), 0);
   });
 
-  it('drops enabled ids the account does not list once discovery is authoritative', async () => {
-    // An OAuth login creates the Connection before a credential exists, so its
-    // enabled ids are the curated fallback guess. Testing or sending to one the
-    // account never had fails while naming a model the user did not choose.
-    const { client, catalog, selected } = discoveringAccountClient(
+  it("opens on a model the account's live list reported", async () => {
+    // The Connection is created before a credential exists, so its enabled ids
+    // are the curated fallback guess in the order this build ships them. The
+    // first of those may be a model the account never serves.
+    const { client, selected } = discoveringAccountClient(
       ['fallback-only', 'gpt-5-codex'],
       [{ id: 'gpt-5-codex' }, { id: 'gpt-5-codex-mini' }],
     );
 
     await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
 
-    assert.deepEqual(catalog().connections[0]?.enabledModelIds, ['gpt-5-codex']);
     assert.deepEqual(selected(), { connectionId: CONNECTION_ID, modelId: 'gpt-5-codex' });
   });
 
-  it('adopts the discovered inventory when no enabled id survives', async () => {
-    const { client, catalog } = discoveringAccountClient(
-      ['fallback-only', 'another-guess'],
-      [{ id: 'gpt-5-codex' }, { id: 'gpt-5-codex-mini' }],
-    );
-
-    await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
-
-    assert.deepEqual(catalog().connections[0]?.enabledModelIds, [
-      'gpt-5-codex',
-      'gpt-5-codex-mini',
-    ]);
-  });
-
-  it('keeps a narrower selection the user made', async () => {
+  it('keeps every enabled id the live response omitted', async () => {
+    // Ordering only. A `/models` answer that cannot see a model is not evidence
+    // the account cannot run it, so nothing is pruned and nothing is rewritten.
     const { client, catalog, updateCalls } = discoveringAccountClient(
-      ['gpt-5-codex'],
-      [{ id: 'gpt-5-codex' }, { id: 'gpt-5-codex-mini' }],
+      ['fallback-only', 'gpt-5-codex'],
+      [{ id: 'gpt-5-codex' }],
     );
 
     await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
 
-    // Ids are dropped, never added: discovery must not re-enable what the user
-    // turned off.
-    assert.deepEqual(catalog().connections[0]?.enabledModelIds, ['gpt-5-codex']);
+    assert.deepEqual(catalog().connections[0]?.enabledModelIds, ['fallback-only', 'gpt-5-codex']);
     assert.equal(updateCalls(), 0);
   });
 
-  it('leaves the enabled ids alone when discovery did not commit', async () => {
-    const { client, catalog, updateCalls } = discoveringAccountClient(
-      ['fallback-only'],
+  it('opens on the first enabled id when no live response arrived', async () => {
+    const { client, selected } = discoveringAccountClient(
+      ['fallback-only', 'gpt-5-codex'],
       [{ id: 'gpt-5-codex' }],
       'fallback',
     );
 
     await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
 
-    assert.deepEqual(catalog().connections[0]?.enabledModelIds, ['fallback-only']);
-    assert.equal(updateCalls(), 0);
+    assert.deepEqual(selected(), { connectionId: CONNECTION_ID, modelId: 'fallback-only' });
+  });
+
+  it('opens on the first enabled id when the live list shares none of them', async () => {
+    const { client, selected } = discoveringAccountClient(
+      ['fallback-only'],
+      [{ id: 'gpt-5-codex' }],
+    );
+
+    await synchronizeRuntimeHostAccountConnection(client, 'openai-codex');
+
+    assert.deepEqual(selected(), { connectionId: CONNECTION_ID, modelId: 'fallback-only' });
   });
 });
 
-/**
- * A client whose discovery commits an inventory, so the enabled ids can be
- * reconciled against something authoritative.
- */
+/** A client whose discovery commits an inventory, so a live list exists. */
 function discoveringAccountClient(
   enabledModelIds: readonly string[],
   models: readonly { id: string }[],
