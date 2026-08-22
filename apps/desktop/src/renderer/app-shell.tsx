@@ -79,6 +79,7 @@ import {
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
 import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
+import { Button } from '@astryxdesign/core/Button';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
 import { ChatMessageSurface } from './chat-message-surface';
@@ -128,6 +129,9 @@ import {
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { RuntimeHostSshTerminalDialog } from './settings/runtime-host-ssh-terminal-dialog.js';
+import { createWorkHubController } from './workhub-controller.js';
+import { createDesktopWorkHubSessionPort } from './workhub-session-port.js';
+import { WorkHubSurface } from './workhub-surface.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
@@ -450,6 +454,35 @@ function AppShellContent({
     ));
   }, []);
   const navSelectionRef = useRef<NavSelection>(navSelection);
+  const [workHubEnabled, setWorkHubEnabled] = useState(false);
+  const [workHubActive, setWorkHubActive] = useState(false);
+  const workHubEnabledRef = useRef(false);
+  useEffect(() => {
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const enabled = (await window.maka.settings.getClient()).workHub.enabled;
+        if (disposed) return;
+        const becameEnabled = enabled && !workHubEnabledRef.current;
+        workHubEnabledRef.current = enabled;
+        setWorkHubEnabled(enabled);
+        if (!enabled) setWorkHubActive(false);
+        if (becameEnabled) {
+          setWorkHubActive(true);
+          setNavSelection({ section: 'sessions' });
+        }
+      } catch {
+        // Keep the last known client-owned setting. A transient settings read
+        // must not leave the shell half-switched between WorkHub and Session.
+      }
+    };
+    void refresh();
+    const unsubscribe = window.maka.settings.subscribeClientChanged(() => void refresh());
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [setNavSelection]);
   // #1985: the shell's complete read of session UI state. See the hook for why
   // the two token-rate maps are absent.
   const {
@@ -1215,6 +1248,7 @@ function AppShellContent({
   }
 
   function openSessionInChat(sessionId: string, turnId?: string, sequence?: number): void {
+    setWorkHubActive(false);
     setNavSelection({ section: 'sessions' });
     setActiveId(sessionId);
     if (turnId) {
@@ -1269,6 +1303,10 @@ function AppShellContent({
   const sessionListSelectSession = useCallback((sessionId: string) => {
     openSessionInChatRef.current(sessionId);
   }, []);
+  const openWorkHub = useCallback(() => {
+    setNavSelection({ section: 'sessions' });
+    setWorkHubActive(true);
+  }, [setNavSelection]);
 
   // PR109f: branched session context. When the active session was
   // created via `sessions:branchFromTurn`, its `parentSessionId` is
@@ -1625,6 +1663,13 @@ function AppShellContent({
     },
     toastApi,
   });
+  const workHubController = useMemo(() => createWorkHubController({
+    sessions: createDesktopWorkHubSessionPort({
+      sessions: window.maka.sessions,
+      projectName: (projectId) => projects.find((project) => project.id === projectId)?.name,
+      newTurnId: () => crypto.randomUUID(),
+    }),
+  }), [projects]);
   // Where a NEW chat starts. Built unconditionally and handed to the composer,
   // which renders it only while no session owns it — the project is fixed once
   // the first message creates one, so there is nothing to pick after that.
@@ -1774,7 +1819,7 @@ function AppShellContent({
     [toastApi],
   );
   const workbarAvailable =
-    navSelection.section === 'sessions' && Boolean(activeId);
+    navSelection.section === 'sessions' && !workHubActive && Boolean(activeId);
   const workbar = useWorkbarController({
     available: workbarAvailable,
     activeSession: activeSessionForView,
@@ -2805,7 +2850,7 @@ function AppShellContent({
                 summary loads, and the name this replaced (the context layer's) was
                 showing through that window. Hung on the real record alone, 新任务
                 was named nowhere for the length of it. */}
-            {navSelection.section === 'sessions' && activeSessionForView && (
+            {navSelection.section === 'sessions' && !workHubActive && activeSessionForView && (
               <TitlebarSessionIdentity
                 /* Keyed by session: the open rename is local state and the field is
                    uncontrolled, so a switch that left the instance mounted would
@@ -2864,7 +2909,7 @@ function AppShellContent({
             maxWidth={SESSION_LIST_EXPANDED_MAX_WIDTH}
             selection={navSelection}
             sessions={visibleSessions}
-            activeId={sidebarActiveId}
+            activeId={workHubActive ? undefined : sidebarActiveId}
             scheduledTasks={scheduledTasks}
             streamingSessionIds={streamingSessionIds}
             staleSessionIds={staleSessionIds}
@@ -2874,13 +2919,24 @@ function AppShellContent({
             worktreeSessionIds={worktreeSessionIds}
             sessionMeta={runtimeHostSessionMeta}
             moduleMemory={navigationState.moduleMemory}
-            onSelect={setNavSelection}
+            onSelect={(selection) => {
+              setWorkHubActive(false);
+              setNavSelection(selection);
+            }}
             onSelectSession={sessionListSelectSession}
             onOpenSettings={openSettings}
             buildStamp={buildStamp}
             updateReminder={updateReminder}
             onOpenUpdate={openUpdateDownload}
-            onNew={createSession}
+            onNew={() => {
+              setWorkHubActive(false);
+              void createSession();
+            }}
+            workHubEntry={workHubEnabled ? {
+              active: workHubActive,
+              label: 'WorkHub',
+              onSelect: openWorkHub,
+            } : undefined}
             rowActions={sessionRowActions}
             projectActions={projectRowActions}
           />
@@ -2967,6 +3023,13 @@ function AppShellContent({
                   onSaveMarkdown={(input) => saveDailyReviewMarkdown(input, { shouldShowFeedback: isDailyReviewSurfaceActive })}
                 />
               ) : null}
+              {workHubEnabled && workHubActive && navSelection.section === 'sessions' ? (
+                <WorkHubSurface
+                  controller={workHubController}
+                  locale={uiLocale}
+                  onOpenSession={openSessionInChat}
+                />
+              ) : (
               <ChatSurfaceLayout
                 // Reset conversation-owned scroll state without remounting the
                 // composer: its contenteditable DOM carries the live draft.
@@ -2989,6 +3052,15 @@ function AppShellContent({
                       />
                     ) : null}
                     {navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
+                    {workHubEnabled && navSelection.section === 'sessions' && activeId ? (
+                      <Button
+                        className="workhub-return"
+                        label={uiLocale === 'zh' ? '返回 WorkHub' : 'Return to WorkHub'}
+                        variant="secondary"
+                        size="sm"
+                        onClick={openWorkHub}
+                      />
+                    ) : null}
                     <ChatComposerRegion
                   workspacePicker={workspacePicker}
                   composerRef={composerRef}
@@ -3360,6 +3432,7 @@ function AppShellContent({
                   />
                 ) : null}
               </ChatSurfaceLayout>
+              )}
             </div>
             {/* Collapse hides the Workbar surface without unmounting its tools;
                 dynamic resources therefore keep their existing lifecycle. */}

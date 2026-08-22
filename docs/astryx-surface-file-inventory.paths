@@ -143,6 +143,8 @@ apps/desktop/src/renderer/styles/workbar/review.css
 apps/desktop/src/renderer/styles/workbar/shell.css
 apps/desktop/src/renderer/styles/workbar/side-chat.css
 apps/desktop/src/renderer/styles/workbar/terminal.css
+apps/desktop/src/renderer/styles/workhub.css
+apps/desktop/src/renderer/workhub-surface.tsx
 packages/ui/src/astryx-chat-reasoning.tsx
 packages/ui/src/astryx-i18n.tsx
 packages/ui/src/attachment-kinds.tsx
