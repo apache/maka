@@ -185,9 +185,12 @@ export function devAppProcessPattern() {
   // Rough filter over every shape that can hold the shared "Maka Dev" lock:
   // the TCC bundle, the plain dev npm shim, and the resolved Electron binary
   // it spawns. Each shape is regex-escaped; pgrep -f matches the whole line.
-  // The bundle suffix is the single source from dev-app-profile.mjs so the
-  // probe pattern and the owner judgment can never disagree.
-  const bundle = toProcessMatchPattern(TCC_BUNDLE_EXECUTABLE_SUFFIX);
+  // The bundle shape is the SHORTER literal (the suffix's tail) on purpose:
+  // the probe is a rough pre-filter and must stay WIDE (a missed candidate
+  // never reaches judgment), while the owner judgment uses the exact suffix
+  // from dev-app-profile.mjs. A test asserts the tail is a substring of the
+  // suffix, so the two can drift apart but never silently.
+  const bundle = toProcessMatchPattern(join('Maka Dev.app', 'Contents', 'MacOS', 'Electron'));
   const shim = toProcessMatchPattern(join('node_modules', '.bin', 'electron'));
   const resolved = toProcessMatchPattern(join('Electron.app', 'Contents', 'MacOS', 'Electron'));
   return `${bundle}|${shim}|${resolved}`;
