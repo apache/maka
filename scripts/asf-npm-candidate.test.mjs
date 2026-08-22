@@ -48,7 +48,33 @@ test('record creation rejects a source tag version that differs from the manifes
         runId: '1234',
         runAttempt: '1',
       }),
-    /Release version 0\.1\.12 does not match root 0\.1\.11 and CLI 0\.1\.11/u,
+    /Source candidate tag version 0\.1\.12 does not match product 0\.1\.11/u,
+  );
+});
+
+test('record creation enforces the canonical product command identity', async (t) => {
+  const fixture = await createFixture(t);
+  await writeFile(
+    join(fixture.repoRoot, 'packages/cli/package.json'),
+    JSON.stringify({
+      name: 'maka-agent',
+      version: VERSION,
+      bin: { maka: './dist/cli.js', legacyMaka: './dist/cli.js' },
+    }),
+  );
+
+  assert.throws(
+    () =>
+      createAsfNpmCandidateRecord({
+        repoRoot: fixture.repoRoot,
+        releaseDirectory: fixture.releaseDirectory,
+        sourceReferenceTag: `v${VERSION}-incubating-rc1`,
+        sourceCommit: COMMIT,
+        repository: REPOSITORY,
+        runId: '1234',
+        runAttempt: '1',
+      }),
+    /The only public CLI command must be maka/u,
   );
 });
 
@@ -122,9 +148,14 @@ async function createFixture(t) {
   const releaseDirectory = join(repoRoot, 'packages/cli/release');
   await mkdir(releaseDirectory, { recursive: true });
   await writeFile(join(repoRoot, 'package.json'), JSON.stringify({ version: VERSION }));
+  await mkdir(join(repoRoot, 'apps/desktop'), { recursive: true });
+  await writeFile(
+    join(repoRoot, 'apps/desktop/package.json'),
+    JSON.stringify({ version: VERSION }),
+  );
   await writeFile(
     join(repoRoot, 'packages/cli/package.json'),
-    JSON.stringify({ name: 'maka-agent', version: VERSION }),
+    JSON.stringify({ name: 'maka-agent', version: VERSION, bin: { maka: './dist/cli.js' } }),
   );
   const tarball = Buffer.from('reviewed npm candidate');
   const tarballName = `maka-agent-${VERSION}.tgz`;

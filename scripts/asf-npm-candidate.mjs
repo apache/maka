@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseAsfSourceReferenceTag } from './product-release-identity.mjs';
+import {
+  parseAsfSourceReferenceTag,
+  resolveProductManifestIdentity,
+} from './product-release-identity.mjs';
 import { parseProductReleaseVersion } from './release-version.mjs';
 
 const PACKAGE_NAME = 'maka-agent';
@@ -39,7 +42,7 @@ export function createAsfNpmCandidateRecord({
     sourceCommit,
   });
   const identity = asfNpmCandidateIdentity(version);
-  validateRepositoryVersion(repoRoot, version);
+  validateProductIdentity(repoRoot, version);
   const workflow = validateWorkflowIdentity({
     repository,
     path: WORKFLOW_PATH,
@@ -127,12 +130,18 @@ export function verifyAsfNpmCandidateRecord({ recordPath }) {
   return { record, tarballPath: candidate.tarballPath };
 }
 
-function validateRepositoryVersion(repoRoot, version) {
+function validateProductIdentity(repoRoot, sourceVersion) {
   const root = readJson(join(repoRoot, 'package.json'), 'root package manifest');
+  const desktop = readJson(join(repoRoot, 'apps/desktop/package.json'), 'Desktop package manifest');
   const cli = readJson(join(repoRoot, 'packages/cli/package.json'), 'CLI package manifest');
-  if (root.version !== version || cli.version !== version) {
+  const { version } = resolveProductManifestIdentity({
+    rootManifest: root,
+    desktopManifest: desktop,
+    cliManifest: cli,
+  });
+  if (version !== sourceVersion) {
     throw new Error(
-      `Release version ${version} does not match root ${root.version} and CLI ${cli.version}`,
+      `Source candidate tag version ${sourceVersion} does not match product ${version}`,
     );
   }
 }
