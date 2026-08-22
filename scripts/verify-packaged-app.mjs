@@ -399,13 +399,33 @@ export function rendererViewportMatchesNativeClient(layout, nativeWindow) {
   );
 }
 
-function windowsWindowProbeScript(processId, nextWindowState) {
-  const showCommand =
+function windowsWindowProbeScript(processId, nextWindowState, restoredBounds) {
+  const stateTransition =
     nextWindowState === undefined
       ? ''
-      : `[void][MakaNativeWindow]::ShowWindowAsync($handle, ${
-          nextWindowState === 'maximized' ? 3 : 9
-        })`;
+      : String.raw`
+[void][MakaNativeWindow]::ShowWindowAsync($handle, ${nextWindowState === 'maximized' ? 3 : 9})
+$expectedZoomed = ${nextWindowState === 'maximized' ? '$true' : '$false'}
+$stateDeadline = (Get-Date).AddSeconds(2)
+while ([MakaNativeWindow]::IsZoomed($handle) -ne $expectedZoomed) {
+  if ((Get-Date) -ge $stateDeadline) {
+    throw 'Packaged Maka did not enter the requested native window state.'
+  }
+  Start-Sleep -Milliseconds 25
+}`;
+  const resizeRestoredWindow = restoredBounds
+    ? String.raw`
+if (-not [MakaNativeWindow]::MoveWindow(
+  $handle,
+  ${restoredBounds.x},
+  ${restoredBounds.y},
+  ${restoredBounds.width},
+  ${restoredBounds.height},
+  $true
+)) {
+  throw 'MoveWindow failed for packaged Maka.'
+}`
+    : '';
   return String.raw`
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
@@ -428,6 +448,16 @@ public static class MakaNativeWindow {
   public static extern bool IsZoomed(IntPtr hWnd);
 
   [DllImport("user32.dll")]
+  public static extern bool MoveWindow(
+    IntPtr hWnd,
+    int x,
+    int y,
+    int width,
+    int height,
+    bool repaint
+  );
+
+  [DllImport("user32.dll")]
   public static extern bool ShowWindowAsync(IntPtr hWnd, int command);
 }
 '@
@@ -437,7 +467,8 @@ $handle = $process.MainWindowHandle
 if ($handle -eq [IntPtr]::Zero) {
   throw 'Packaged Maka has no main window handle.'
 }
-${showCommand}
+${stateTransition}
+${resizeRestoredWindow}
 $rect = New-Object MakaNativeWindow+RECT
 if (-not [MakaNativeWindow]::GetClientRect($handle, [ref]$rect)) {
   throw 'GetClientRect failed for packaged Maka.'
@@ -451,14 +482,14 @@ $windowState = if ([MakaNativeWindow]::IsZoomed($handle)) { 'maximized' } else {
 `;
 }
 
-async function readWindowsNativeWindow(processId, nextWindowState) {
+async function readWindowsNativeWindow(processId, nextWindowState, restoredBounds) {
   const { stdout } = await runCommand(
     'powershell',
     [
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      windowsWindowProbeScript(processId, nextWindowState),
+      windowsWindowProbeScript(processId, nextWindowState, restoredBounds),
     ],
     { timeoutMs: 10_000 },
   );
@@ -514,6 +545,12 @@ async function waitForWindowLayout(
 
 export async function exercisePackagedRendererMaximizeRestore(rendererTarget, child) {
   const rendererUrl = rendererTarget.webSocketDebuggerUrl;
+  await readWindowsNativeWindow(child.pid, 'normal', {
+    x: 80,
+    y: 60,
+    width: 800,
+    height: 600,
+  });
   const restored = await waitForWindowLayout(rendererUrl, child, 'normal');
 
   await readWindowsNativeWindow(child.pid, 'maximized');
@@ -521,6 +558,34 @@ export async function exercisePackagedRendererMaximizeRestore(rendererTarget, ch
 
   await readWindowsNativeWindow(child.pid, 'normal');
   const restoredAgain = await waitForWindowLayout(rendererUrl, child, 'normal');
+
+  const restoredClient = restored.nativeWindow;
+  const maximizedClient = maximized.nativeWindow;
+  const restoredAgainClient = restoredAgain.nativeWindow;
+  if (
+    maximizedClient.clientWidth < restoredClient.clientWidth ||
+    maximizedClient.clientHeight < restoredClient.clientHeight ||
+    (maximizedClient.clientWidth === restoredClient.clientWidth &&
+      maximizedClient.clientHeight === restoredClient.clientHeight)
+  ) {
+    throw new Error(
+      `Packaged Maka maximize smoke did not grow the native client: ${JSON.stringify({
+        restored: restoredClient,
+        maximized: maximizedClient,
+      })}`,
+    );
+  }
+  if (
+    !dimensionsMatch(restoredAgainClient.clientWidth, restoredClient.clientWidth, 2) ||
+    !dimensionsMatch(restoredAgainClient.clientHeight, restoredClient.clientHeight, 2)
+  ) {
+    throw new Error(
+      `Packaged Maka did not restore its original native client size: ${JSON.stringify({
+        restored: restoredClient,
+        restoredAgain: restoredAgainClient,
+      })}`,
+    );
+  }
 
   console.log(
     `[packaged-renderer] window transition: ${JSON.stringify({
