@@ -263,7 +263,7 @@ export function resolveTaskbarProgress(
 export function safeBoundaryResumeParkedCopy(reason: TurnResumeParkReason): string {
   switch (reason) {
     case 'continuation_unavailable':
-      return 'Safe-boundary resume is not enabled on this runtime.';
+      return 'Safe-boundary resume is not enabled on this runtime (set MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1 to enable).';
     case 'resume_candidate_missing':
       return 'Nothing to resume: no interrupted run exists in this session.';
     case 'session_busy':
