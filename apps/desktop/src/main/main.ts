@@ -51,27 +51,30 @@ if (!app.requestSingleInstanceLock()) {
       console.log('[startup] app ready');
       return import('./runtime-host-boot.js');
     })
-    .catch((error: unknown) => {
+    .catch(async (error: unknown) => {
       console.error('[startup] fatal:', error);
-      // E2E runs must not hang on a modal error box (same reasoning as the
-      // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
-      if (!isIsolatedE2e) {
-        const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
-        showFatalStartupError(error, {
-          locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
-          environment: () =>
-            captureDesktopDiagnosticEnvironment({
-              appVersion: app.getVersion(),
-              buildMode: buildInfo.mode,
-              buildCommit: buildInfo.commit,
-              locale: app.getLocale(),
-              workspacePath: join(app.getPath('userData'), 'workspaces', 'default'),
-            }),
-          mainLogs: () => mainProcessLogBuffer.snapshot(),
-          writeClipboard: (report) => clipboard.writeText(report),
-          showMessageBoxSync: (options) => dialog.showMessageBoxSync(options),
-        });
+      try {
+        // E2E runs must not hang on a modal error box (same reasoning as the
+        // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
+        if (!isIsolatedE2e) {
+          const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
+          await showFatalStartupError(error, {
+            locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+            environment: () =>
+              captureDesktopDiagnosticEnvironment({
+                appVersion: app.getVersion(),
+                buildMode: buildInfo.mode,
+                buildCommit: buildInfo.commit,
+                locale: app.getLocale(),
+                workspacePath: join(app.getPath('userData'), 'workspaces', 'default'),
+              }),
+            mainLogs: () => mainProcessLogBuffer.snapshot(),
+            writeClipboard: (report) => clipboard.writeText(report),
+            showMessageBox: (options) => dialog.showMessageBox(options),
+          });
+        }
+      } finally {
+        app.exit(1);
       }
-      app.exit(1);
     });
 }

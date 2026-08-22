@@ -177,7 +177,6 @@ import { createAppShellDailyReviewActions } from './app-shell-daily-review-actio
 import { createAppShellSessionRowActions } from './app-shell-session-row-actions';
 import { createAppShellSessionSettingsActions } from './app-shell-session-settings-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
-import { diagnosticInputForErrorToast } from './app-shell-toast-diagnostics';
 import { useStableActions } from './use-stable-actions';
 import {
   useActiveSessionEvents,
@@ -280,9 +279,13 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
   const errorToastAction = useMemo<ToastErrorAction>(
     () => ({
       label: getShellCopy(uiLocale).errorBoundary.copyReport,
-      onClick: (input) => window.maka.diagnostics.copyReport(
-        diagnosticInputForErrorToast(input),
-      ),
+      onClick: (input) => window.maka.diagnostics.copyReport({
+        surface: 'toast',
+        title: input.title,
+        ...(input.description ? { description: input.description } : {}),
+        ...(input.diagnosticDetails ? { details: input.diagnosticDetails } : {}),
+        ...(input.diagnosticTarget ? { target: input.diagnosticTarget } : {}),
+      }),
     }),
     [uiLocale],
   );

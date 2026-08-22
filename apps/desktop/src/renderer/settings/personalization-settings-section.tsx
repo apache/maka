@@ -18,7 +18,7 @@ import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { TextArea, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 // PR-TONE-AUTOSAVE-0: the personalization block used to be the page's ONLY
 // control with an explicit 保存 button + helper line — every neighboring row
@@ -34,7 +34,7 @@ export function PersonalizationSettingsSection(props: {
   runtimeHostAvailable: boolean;
   onUpdate(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
 }) {
-  const host = useRuntimeHostSettingsTarget();
+  const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).personalization;
   const sections = getSettingsPreferencesCopy(locale).sections;
@@ -120,7 +120,7 @@ export function PersonalizationSettingsSection(props: {
           copy.saveFailed,
           settingsActionErrorMessage(error, locale),
           undefined,
-          targetsRuntimeHost ? { profileId: host.profileId } : undefined,
+          targetsRuntimeHost && host ? { profileId: host.profileId } : undefined,
         );
       }
       return false;

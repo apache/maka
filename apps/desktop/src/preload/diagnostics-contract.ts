@@ -2,6 +2,7 @@ export interface DesktopExecutionDiagnosticTarget {
   readonly sessionId: string;
   readonly turnId: string;
   readonly eventId: string;
+  readonly profileId?: never;
 }
 
 interface DesktopDiagnosticRendererContext {
@@ -11,13 +12,21 @@ interface DesktopDiagnosticRendererContext {
 
 export type DesktopManualDiagnosticTarget =
   | {
-      readonly kind: 'session';
       readonly sessionId: string;
+      readonly profileId?: never;
+      readonly turnId?: never;
+      readonly eventId?: never;
     }
   | {
-      readonly kind: 'profile';
       readonly profileId: string;
+      readonly sessionId?: never;
+      readonly turnId?: never;
+      readonly eventId?: never;
     };
+
+export type DesktopDiagnosticTarget =
+  | DesktopManualDiagnosticTarget
+  | DesktopExecutionDiagnosticTarget;
 
 export interface DesktopManualDiagnosticInput {
   readonly surface: 'manual';
@@ -29,8 +38,7 @@ export interface DesktopErrorDiagnosticInput {
   readonly title: string;
   readonly description?: string;
   readonly details?: string;
-  readonly target?: DesktopManualDiagnosticTarget;
-  readonly execution?: DesktopExecutionDiagnosticTarget;
+  readonly target?: DesktopDiagnosticTarget;
 }
 
 export type DesktopDiagnosticInput = DesktopManualDiagnosticInput | DesktopErrorDiagnosticInput;
@@ -52,6 +60,7 @@ export type DesktopManualDiagnosticWireInput = Omit<DesktopManualDiagnosticInput
 export type DesktopErrorDiagnosticWireInput = Omit<DesktopErrorDiagnosticInput, 'target'> &
   DesktopDiagnosticRendererContext & {
     readonly hostTarget: DesktopDiagnosticHostTarget;
+    readonly execution?: DesktopExecutionDiagnosticTarget;
   };
 
 export type DesktopDiagnosticWireInput =

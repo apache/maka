@@ -8,14 +8,14 @@ test('targets manual diagnostics to the current task or new-task Host profile', 
       { navSection: 'sessions', sessionId: '["remote-host","session-1"]' },
       'new-task-profile',
     ),
-    { kind: 'session', sessionId: '["remote-host","session-1"]' },
+    { sessionId: '["remote-host","session-1"]' },
   );
   assert.deepEqual(
     resolveManualDiagnosticTarget(
       { navSection: 'sessions', sessionId: undefined },
       'new-task-profile',
     ),
-    { kind: 'profile', profileId: 'new-task-profile' },
+    { profileId: 'new-task-profile' },
   );
   assert.equal(
     resolveManualDiagnosticTarget(
@@ -31,7 +31,7 @@ test('targets manual diagnostics to the current task or new-task Host profile', 
       true,
       'settings-profile',
     ),
-    { kind: 'profile', profileId: 'settings-profile' },
+    { profileId: 'settings-profile' },
   );
   assert.equal(
     resolveManualDiagnosticTarget(

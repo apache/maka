@@ -98,13 +98,13 @@ export function resolveManualDiagnosticTarget(
 ): DesktopManualDiagnosticTarget | undefined {
   if (settingsOpen) {
     return settingsProfileId
-      ? { kind: 'profile', profileId: settingsProfileId }
+      ? { profileId: settingsProfileId }
       : undefined;
   }
   if (owner.navSection !== 'sessions') return undefined;
-  if (owner.sessionId) return { kind: 'session', sessionId: owner.sessionId };
+  if (owner.sessionId) return { sessionId: owner.sessionId };
   return newTaskProfileId
-    ? { kind: 'profile', profileId: newTaskProfileId }
+    ? { profileId: newTaskProfileId }
     : undefined;
 }
 
@@ -412,11 +412,6 @@ export function buildAppShellCommandList(
         });
         toastApi.success(copy.diagnosticsCopiedTitle, copy.diagnosticsCopiedDescription);
       } catch (err) {
-        const diagnosticTarget = target?.kind === 'session'
-          ? { sessionId: target.sessionId }
-          : target?.kind === 'profile'
-            ? { profileId: target.profileId }
-            : undefined;
         toastApi.error(
           copy.copyFailedTitle,
           commandPaletteActionErrorMessage(
@@ -425,7 +420,7 @@ export function buildAppShellCommandList(
             options.uiLocale,
           ),
           undefined,
-          diagnosticTarget,
+          target,
         );
       }
     },

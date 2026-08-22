@@ -50,9 +50,24 @@ export interface ToastErrorAction {
 }
 
 export type ToastDiagnosticTarget =
-  | { sessionId: string }
-  | { sessionId: string; turnId: string; eventId: string }
-  | { profileId: string };
+  | {
+      sessionId: string;
+      profileId?: never;
+      turnId?: never;
+      eventId?: never;
+    }
+  | {
+      sessionId: string;
+      turnId: string;
+      eventId: string;
+      profileId?: never;
+    }
+  | {
+      profileId: string;
+      sessionId?: never;
+      turnId?: never;
+      eventId?: never;
+    };
 
 export interface ToastInput {
   title: string;

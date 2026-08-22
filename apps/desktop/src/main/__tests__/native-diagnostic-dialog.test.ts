@@ -36,12 +36,12 @@ test('copies diagnostics as an auxiliary native-dialog action', async () => {
   assert.match(shown[1]?.detail ?? '', /Diagnostics copied/);
 });
 
-test('fatal startup errors remain copyable without a renderer or BrowserWindow', () => {
+test('fatal startup errors remain copyable without a renderer or BrowserWindow', async () => {
   const shown: MessageBoxOptions[] = [];
   const responses = [1, 0];
   let clipboard = '';
 
-  showFatalStartupError(new Error('Authorization: Bearer very-secret-token'), {
+  await showFatalStartupError(new Error('Authorization: Bearer very-secret-token'), {
     locale: 'en',
     environment: () => ({
       appVersion: '0.1.8',
@@ -62,9 +62,9 @@ test('fatal startup errors remain copyable without a renderer or BrowserWindow',
     writeClipboard: (value) => {
       clipboard = value;
     },
-    showMessageBoxSync: (options) => {
+    showMessageBox: async (options): Promise<MessageBoxReturnValue> => {
       shown.push(options);
-      return responses.shift() ?? 0;
+      return { response: responses.shift() ?? 0, checkboxChecked: false };
     },
   });
 

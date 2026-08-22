@@ -24,39 +24,16 @@ export async function showMessageBoxWithDiagnostics(
   }
 }
 
-export function showMessageBoxSyncWithDiagnostics(
-  options: MessageBoxOptions,
-  deps: {
-    readonly locale: UiLocale;
-    readonly copyDiagnostics: () => void;
-    readonly showMessageBoxSync: (options: MessageBoxOptions) => number;
-  },
-): number {
-  let status: string | undefined;
-  for (;;) {
-    const { options: next, copyId } = diagnosticDialogOptions(options, deps.locale, status);
-    const response = deps.showMessageBoxSync(next);
-    if (response !== copyId) return response;
-    try {
-      deps.copyDiagnostics();
-      status = DIALOG_COPY[deps.locale].copied;
-    } catch (error) {
-      console.error('[diagnostics] native clipboard write failed:', error);
-      status = DIALOG_COPY[deps.locale].copyFailed;
-    }
-  }
-}
-
-export function showFatalStartupError(
+export async function showFatalStartupError(
   error: unknown,
   deps: {
     readonly locale: UiLocale;
     readonly environment: () => DesktopDiagnosticEnvironment;
     readonly mainLogs: () => readonly string[];
     readonly writeClipboard: (value: string) => void;
-    readonly showMessageBoxSync: (options: MessageBoxOptions) => number;
+    readonly showMessageBox: (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
   },
-): void {
+): Promise<void> {
   const copy = FATAL_STARTUP_COPY[deps.locale];
   const message = error instanceof Error ? error.message : String(error);
   const input = createDesktopStartupDiagnosticInput({
@@ -64,7 +41,7 @@ export function showFatalStartupError(
     description: message || 'Unknown startup error',
     ...(error instanceof Error && error.stack ? { details: error.stack } : {}),
   });
-  showMessageBoxSyncWithDiagnostics(
+  await showMessageBoxWithDiagnostics(
     {
       type: 'error',
       title: copy.title,
@@ -77,7 +54,7 @@ export function showFatalStartupError(
     },
     {
       locale: deps.locale,
-      showMessageBoxSync: deps.showMessageBoxSync,
+      showMessageBox: deps.showMessageBox,
       copyDiagnostics: () =>
         deps.writeClipboard(
           formatDesktopDiagnosticReport(

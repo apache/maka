@@ -46,7 +46,10 @@ import { settingsTestResultMessage } from "../locales/settings-test-result-copy.
 import { getShellCopy } from "../locales/shell-copy.js";
 import type { RuntimeHostSettingsConnectionsBridge } from './runtime-host-settings-bridge.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  useOptionalRuntimeHostSettingsTarget,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 
 export function GeneralSettingsPage(props: {
   settings: AppSettings;
@@ -61,13 +64,15 @@ export function GeneralSettingsPage(props: {
   onRefreshConnections(): Promise<void>;
   onRetryRuntimeHost(): Promise<void>;
 }) {
-  const host = useRuntimeHostSettingsTarget();
+  const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
   const sections = getSettingsPreferencesCopy(locale).sections;
   const sharedCopy = getSettingsSharedCopy(locale);
   const toast = useToast();
+  const hostDiagnosticTarget = host ? { profileId: host.profileId } : undefined;
   const runtimeHostAvailable =
+    host !== undefined &&
     props.runtimeHostStatus === 'ready' &&
     props.connectionsBridge !== undefined &&
     props.testNetworkProxy !== undefined;
@@ -117,7 +122,7 @@ export function GeneralSettingsPage(props: {
                     copy.incognitoFailed,
                     settingsActionErrorMessage(error, locale),
                     undefined,
-                    { profileId: host.profileId },
+                    hostDiagnosticTarget,
                   );
                 }
               }}
@@ -161,7 +166,7 @@ export function GeneralSettingsPage(props: {
                     copy.workspaceInstructionsFailed,
                     settingsActionErrorMessage(error, locale),
                     undefined,
-                    { profileId: host.profileId },
+                    hostDiagnosticTarget,
                   );
                 }
               }}

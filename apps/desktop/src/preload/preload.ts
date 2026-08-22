@@ -50,6 +50,7 @@ import {
 import type {
   DesktopDiagnosticInput,
   DesktopErrorDiagnosticWireInput,
+  DesktopExecutionDiagnosticTarget,
   DesktopManualDiagnosticTarget,
   DesktopManualDiagnosticWireInput,
 } from './diagnostics-contract.js';
@@ -320,8 +321,11 @@ async function resolveManualDiagnosticRuntimeHost(
   value: DesktopManualDiagnosticTarget | undefined,
 ): Promise<ManualDiagnosticRuntimeHostResolution> {
   if (value === undefined) return { hostTarget: 'default' };
-  const selector = parseManualDiagnosticTarget(value);
-  return resolveTaskDiagnosticRuntimeHost(selector);
+  const target = parseDiagnosticTarget(value);
+  if (target.execution) {
+    throw new TypeError('Manual Desktop diagnostics do not accept execution targets');
+  }
+  return resolveTaskDiagnosticRuntimeHost(target.selector);
 }
 
 async function resolveTaskDiagnosticRuntimeHost(
@@ -339,32 +343,56 @@ async function resolveTaskDiagnosticRuntimeHost(
   return { hostTarget: 'task', ...(scope ? { scope } : {}) };
 }
 
-function parseManualDiagnosticTarget(value: unknown): ManualDiagnosticHostSelector {
+function parseDiagnosticTarget(value: unknown): {
+  readonly selector: ManualDiagnosticHostSelector;
+  readonly execution?: DesktopExecutionDiagnosticTarget;
+} {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new TypeError('Invalid Desktop manual diagnostic target');
+    throw new TypeError('Invalid Desktop diagnostic target');
   }
   const record = value as Record<string, unknown>;
   if (
-    record.kind === 'session' &&
-    Object.keys(record).length === 2 &&
+    Object.keys(record).length === 1 &&
     Object.hasOwn(record, 'sessionId') &&
     typeof record.sessionId === 'string' &&
     Buffer.byteLength(record.sessionId, 'utf8') <= 512
   ) {
-    return { kind: 'host', hostId: parseDesktopSessionKey(record.sessionId).hostId };
+    return {
+      selector: { kind: 'host', hostId: parseDesktopSessionKey(record.sessionId).hostId },
+    };
   }
   if (
-    record.kind === 'profile' &&
-    Object.keys(record).length === 2 &&
+    Object.keys(record).length === 1 &&
     Object.hasOwn(record, 'profileId') &&
     typeof record.profileId === 'string' &&
     record.profileId.length > 0 &&
     !/[\u0000-\u001f\u007f]/.test(record.profileId) &&
     Buffer.byteLength(record.profileId, 'utf8') <= 512
   ) {
-    return { kind: 'profile', profileId: record.profileId };
+    return { selector: { kind: 'profile', profileId: record.profileId } };
   }
-  throw new TypeError('Invalid Desktop manual diagnostic target');
+  const executionKeys = ['sessionId', 'turnId', 'eventId'] as const;
+  if (
+    Object.keys(record).length === executionKeys.length &&
+    executionKeys.every((key) => Object.hasOwn(record, key)) &&
+    typeof record.sessionId === 'string' &&
+    Buffer.byteLength(record.sessionId, 'utf8') <= 512 &&
+    typeof record.turnId === 'string' &&
+    Buffer.byteLength(record.turnId, 'utf8') <= 512 &&
+    typeof record.eventId === 'string' &&
+    Buffer.byteLength(record.eventId, 'utf8') <= 512
+  ) {
+    const session = parseDesktopSessionKey(record.sessionId);
+    return {
+      selector: { kind: 'host', hostId: session.hostId },
+      execution: {
+        sessionId: session.sessionId,
+        turnId: record.turnId,
+        eventId: record.eventId,
+      },
+    };
+  }
+  throw new TypeError('Invalid Desktop diagnostic target');
 }
 
 async function activeRuntimeHostRef(): Promise<DesktopTargetScope> {
@@ -2687,29 +2715,16 @@ const makaBridge = {
         );
         return;
       }
-      const { execution, target, ...errorInput } = input;
-      if (!execution) {
-        const resolution: DiagnosticRuntimeHostResolution<'none' | 'default' | 'task'> = target
-          ? await resolveManualDiagnosticRuntimeHost(target)
-          : { hostTarget: 'none' };
-        const wireInput: DesktopErrorDiagnosticWireInput = {
-          ...errorInput,
-          hostTarget: resolution.hostTarget,
-          ...rendererContext,
-        };
-        await ipcRenderer.invoke('diagnostics:copyReport', resolution.scope, wireInput);
-        return;
-      }
-      const session = parseDesktopSessionKey(execution.sessionId);
-      const resolution = await resolveTaskDiagnosticRuntimeHost({
-        kind: 'host',
-        hostId: session.hostId,
-      });
+      const { target, ...errorInput } = input;
+      const parsedTarget = target ? parseDiagnosticTarget(target) : undefined;
+      const resolution: DiagnosticRuntimeHostResolution<'none' | 'task'> = parsedTarget
+        ? await resolveTaskDiagnosticRuntimeHost(parsedTarget.selector)
+        : { hostTarget: 'none' };
       const wireInput: DesktopErrorDiagnosticWireInput = {
         ...errorInput,
         hostTarget: resolution.hostTarget,
         ...rendererContext,
-        execution: { ...execution, sessionId: session.sessionId },
+        ...(parsedTarget?.execution ? { execution: parsedTarget.execution } : {}),
       };
       await ipcRenderer.invoke('diagnostics:copyReport', resolution.scope, wireInput);
     },
