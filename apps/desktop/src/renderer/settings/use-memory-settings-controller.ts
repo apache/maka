@@ -23,7 +23,10 @@ import { deriveMemorySettingsViewModel } from './memory-settings-view-model';
 import { useKeyedActionGuard } from './use-action-guard';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
 import { readScrollMotionBehavior } from '../scroll-motion-policy';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 
 export interface MemoryDocumentControllerProps {
   settings: AppSettings;
@@ -33,7 +36,7 @@ export interface MemoryDocumentControllerProps {
 /** Owns the MEMORY.md document lifecycle. */
 export function useMemoryDocumentController(props: MemoryDocumentControllerProps) {
   const host = useRuntimeHostSettingsTarget();
-  const diagnosticTarget = { profileId: host.profileId } as const;
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const locale = useUiLocale();
   const copy = getMemorySettingsCopy(locale);
   type MemoryWriteAction = 'reload' | 'enable' | 'agent-read' | 'save' | 'reset' | 'restore' | 'entry-status';
@@ -62,8 +65,6 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
   const memoryPageLifecycleRef = useRef(0);
   const memoryReloadTicketRef = useRef(0);
   const toast = useToast();
-  const reportHostError = (title: string, description?: string) =>
-    toast.error(title, description, undefined, diagnosticTarget);
 
   useEffect(() => {
     memoryPageLifecycleRef.current += 1;

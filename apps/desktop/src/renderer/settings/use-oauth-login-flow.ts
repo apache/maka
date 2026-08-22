@@ -5,11 +5,10 @@ import {
   useMountedRef,
   useToast,
   useUiLocale,
-  type ToastDiagnosticTarget,
 } from '@maka/ui';
 import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-
+import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
 // Shared browser-assisted OAuth login-flow controller (device-code polling).
 //
@@ -95,7 +94,6 @@ export interface OAuthLoginFlowController {
 export function useOAuthLoginFlow(params: {
   bridge: OAuthLoginFlowBridge;
   display: OAuthLoginFlowDisplay;
-  diagnosticTarget: ToastDiagnosticTarget;
   // Fired after a successful completeAuthorization (browser handoff done).
   // The detail sheet uses it to re-probe hasSecret + reload connection status;
   // catalog modals use it to refresh both their account card and the shared
@@ -111,8 +109,7 @@ export function useOAuthLoginFlow(params: {
   const copy = getProviderSettingsCopy(locale).oauthFlow;
   const direct = params.direct;
   const toast = useToast();
-  const reportHostError = (title: string, description?: string) =>
-    toast.error(title, description, undefined, params.diagnosticTarget);
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const [state, setState] = useState<SubscriptionSnapshot | null>(null);
   const [authRequestId, setAuthRequestId] = useState<string | null>(null);
   const [stateHint, setStateHint] = useState<string | null>(null);
