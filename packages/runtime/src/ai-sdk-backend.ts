@@ -2785,14 +2785,34 @@ export class AiSdkBackend implements AgentBackend {
             ...(providerStepUsage ? { usage: providerStepUsage } : {}),
           });
           const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
-          if (
-            returnedToolCalls.length > 0 &&
-            !stepLimitReached &&
-            !scope.loopStopRequested &&
-            !scope.aborted
-          ) {
+          const mayTakeAnotherStep =
+            !stepLimitReached && !scope.loopStopRequested && !scope.aborted;
+          if (returnedToolCalls.length > 0 && mayTakeAnotherStep) {
             currentStepMessageId = this.newId();
             continue agentLoop;
+          }
+          if (mayTakeAnotherStep) {
+            // Last chance for a steer that landed after this turn's final
+            // tool-call boundary — including the only boundary a tool-free
+            // turn has, which precedes the model's first token. Without it the
+            // message is never pulled at all, and whether Steer works would
+            // depend on the model happening to call a tool afterwards (#3529).
+            // A step-limited turn deliberately skips this: its budget is spent,
+            // and the Host folds the message into the next Turn instead.
+            const injectedBefore = scope.injectedSteeringMessages.length;
+            await this.drainSteeringInto(scope, input, queue);
+            // Re-read the stop flags: the drain awaits a durable push, so an
+            // `after_step` stop or an abort can land while it is in flight, and
+            // `mayTakeAnotherStep` is stale by now. Stop wins — the message is
+            // already durable, so the Host folds it into the next Turn.
+            if (
+              scope.injectedSteeringMessages.length > injectedBefore &&
+              !scope.loopStopRequested &&
+              !scope.aborted
+            ) {
+              currentStepMessageId = this.newId();
+              continue agentLoop;
+            }
           }
           break agentLoop;
         }
