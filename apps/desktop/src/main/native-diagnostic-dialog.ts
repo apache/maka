@@ -2,17 +2,21 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   MessageBoxOptions,
   MessageBoxReturnValue,
-  RenderProcessGoneDetails,
 } from 'electron';
 import {
-  createDesktopMainRendererDiagnosticInput,
   createDesktopStartupDiagnosticInput,
   formatDesktopDiagnosticReport,
   type DesktopDiagnosticEnvironment,
 } from './main-process-diagnostics.js';
 import { whileAwaitingPerson } from './startup-step.js';
 
-interface NativeDiagnosticDialogDeps {
+interface DiagnosticDialogDeps {
+  readonly locale: UiLocale;
+  readonly copyDiagnostics: () => void | Promise<void>;
+  readonly showMessageBox: (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
+}
+
+interface FatalStartupDiagnosticDialogDeps {
   readonly locale: UiLocale;
   readonly environment: () => DesktopDiagnosticEnvironment;
   readonly mainLogs: () => readonly string[];
@@ -22,11 +26,7 @@ interface NativeDiagnosticDialogDeps {
 
 export async function showMessageBoxWithDiagnostics(
   options: MessageBoxOptions,
-  deps: {
-    readonly locale: UiLocale;
-    readonly copyDiagnostics: () => void | Promise<void>;
-    readonly showMessageBox: (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
-  },
+  deps: DiagnosticDialogDeps,
 ): Promise<MessageBoxReturnValue> {
   let status: string | undefined;
   for (;;) {
@@ -39,7 +39,7 @@ export async function showMessageBoxWithDiagnostics(
 
 export async function showFatalStartupError(
   error: unknown,
-  deps: NativeDiagnosticDialogDeps,
+  deps: FatalStartupDiagnosticDialogDeps,
 ): Promise<void> {
   const copy = FATAL_STARTUP_COPY[deps.locale];
   const message = error instanceof Error ? error.message : String(error);
@@ -76,15 +76,9 @@ export async function showFatalStartupError(
 }
 
 export async function showMainRendererProcessGoneDialog(
-  details: RenderProcessGoneDetails,
-  deps: NativeDiagnosticDialogDeps,
+  deps: DiagnosticDialogDeps,
 ): Promise<'relaunch' | 'exit'> {
   const copy = MAIN_RENDERER_GONE_COPY[deps.locale];
-  const input = createDesktopMainRendererDiagnosticInput({
-    title: 'Maka main Renderer process exited unexpectedly',
-    description: `Reason: ${details.reason}`,
-    details: `Exit code: ${details.exitCode}`,
-  });
   const result = await showMessageBoxWithDiagnostics(
     {
       type: 'error',
@@ -96,19 +90,7 @@ export async function showMainRendererProcessGoneDialog(
       cancelId: 1,
       noLink: true,
     },
-    {
-      locale: deps.locale,
-      showMessageBox: deps.showMessageBox,
-      copyDiagnostics: () =>
-        deps.writeClipboard(
-          formatDesktopDiagnosticReport(
-            input,
-            deps.environment(),
-            deps.mainLogs(),
-            { ok: false, error: 'No Runtime Host authority was associated with this error' },
-          ),
-        ),
-    },
+    deps,
   );
   return result.response === 0 ? 'relaunch' : 'exit';
 }

@@ -74,6 +74,7 @@ import { createMainWindowController } from "./main-window.js";
 import {
   captureDesktopDiagnosticEnvironment,
   copyDesktopDiagnosticReport,
+  createDesktopMainRendererDiagnosticInput,
   createDesktopStartupDiagnosticInput,
   mainProcessLogBuffer,
   type DesktopDiagnosticsDeps,
@@ -327,11 +328,15 @@ const mainWindowController = createMainWindowController({
   startHidden,
   onClose: () => onMainWindowClose(),
   onRendererProcessGone: async (details) => {
-    const decision = await showMainRendererProcessGoneDialog(details, {
+    const diagnosticInput = createDesktopMainRendererDiagnosticInput({
+      title: "Maka main Renderer process exited unexpectedly",
+      description: `Reason: ${details.reason}`,
+      details: `Exit code: ${details.exitCode}`,
+    });
+    const decision = await showMainRendererProcessGoneDialog({
       locale: desktopLocale.current(),
-      environment: desktopDiagnostics.environment,
-      mainLogs: desktopDiagnostics.mainLogs,
-      writeClipboard: desktopDiagnostics.writeClipboard,
+      copyDiagnostics: () =>
+        copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
       showMessageBox: (options) => dialog.showMessageBox(options),
     });
     if (decision === "relaunch") app.relaunch();

@@ -26,7 +26,6 @@ test('ignores clean exits and app shutdown', () => {
   ]) {
     const source = new EventEmitter();
     const abort = new AbortController();
-    if (scenario.aborted) abort.abort();
     let observed = false;
     observeMainRendererProcessGone({
       source,
@@ -35,6 +34,7 @@ test('ignores clean exits and app shutdown', () => {
         observed = true;
       },
     });
+    if (scenario.aborted) abort.abort();
 
     source.emit('render-process-gone', {}, scenario.details);
     assert.equal(observed, false);

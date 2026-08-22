@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { MessageBoxOptions, MessageBoxReturnValue } from 'electron';
 import {
+  copyDesktopDiagnosticReport,
+  createDesktopMainRendererDiagnosticInput,
+} from '../main-process-diagnostics.js';
+import {
   showFatalStartupError,
   showMainRendererProcessGoneDialog,
   showMessageBoxWithDiagnostics,
@@ -86,22 +90,36 @@ test('main Renderer loss keeps Copy Diagnostics auxiliary to recovery', async ()
   const shown: MessageBoxOptions[] = [];
   const responses = [2, 0];
   let clipboard = '';
+  const diagnosticInput = createDesktopMainRendererDiagnosticInput({
+    title: 'Maka main Renderer process exited unexpectedly',
+    description: 'Reason: oom',
+    details: 'Exit code: 137',
+  });
 
-  const decision = await showMainRendererProcessGoneDialog(
-    { reason: 'oom', exitCode: 137 },
-    {
-      locale: 'en',
-      environment: diagnosticEnvironment,
-      mainLogs: () => ['renderer stopped with api_key=very-secret-token'],
-      writeClipboard: (value) => {
-        clipboard = value;
-      },
-      showMessageBox: async (options): Promise<MessageBoxReturnValue> => {
-        shown.push(options);
-        return { response: responses.shift() ?? 1, checkboxChecked: false };
-      },
+  const decision = await showMainRendererProcessGoneDialog({
+    locale: 'en',
+    copyDiagnostics: () =>
+      copyDesktopDiagnosticReport(
+        {
+          environment: diagnosticEnvironment,
+          mainLogs: () => ['renderer stopped with api_key=very-secret-token'],
+          resolveActiveRuntimeHost: () => {
+            throw new Error('Renderer-loss diagnostics must remain Desktop-only');
+          },
+          resolveRuntimeHost: () => {
+            throw new Error('Renderer-loss diagnostics must not resolve a task Host');
+          },
+          writeClipboard: (value) => {
+            clipboard = value;
+          },
+        },
+        diagnosticInput,
+      ),
+    showMessageBox: async (options): Promise<MessageBoxReturnValue> => {
+      shown.push(options);
+      return { response: responses.shift() ?? 1, checkboxChecked: false };
     },
-  );
+  });
 
   assert.equal(decision, 'relaunch');
   assert.deepEqual(shown[0]?.buttons, ['Relaunch', 'Exit', 'Copy Diagnostics']);
