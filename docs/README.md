@@ -13,6 +13,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 
 - [Backend architecture](../ARCHITECTURE.md) ([中文](../ARCHITECTURE.zh-CN.md))
 - [Desktop architecture](../apps/desktop/README.md)
+- [WSL Desktop quickstart (Ubuntu 26.04)](./wsl-desktop-quickstart.md)
 - [Renderer architecture](../apps/desktop/src/renderer/README.md)
 - [Evaluation kernel](../packages/eval/README.md)
 - [Runtime package](../packages/runtime/README.md)

@@ -270,6 +270,7 @@ Before submitting code, run typecheck, build, and focused tests proportionate to
 ## Documentation
 
 - [Documentation index and authority map](./docs/README.md)
+- [WSL Desktop quickstart (Ubuntu 26.04)](./docs/wsl-desktop-quickstart.md)
 - [Backend architecture](./ARCHITECTURE.md)
 - [Product design](./DESIGN.md)
 - [Contributing guide](./CONTRIBUTING.md)
