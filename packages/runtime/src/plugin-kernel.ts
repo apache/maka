@@ -111,19 +111,22 @@ export interface LoggerService extends Logger {
 }
 
 export interface Context {
-  root: Context;
-  parent?: Context;
-  fiber: Fiber;
+  readonly root: Context;
+  readonly parent?: Context;
+  readonly fiber: Fiber;
   readonly logger: LoggerService;
   [Context.filter]?: (listenerContext: Context) => boolean;
 }
 
+/** A non-owning capability view whose lifecycle and resources belong to exactly one Fiber. */
 export class Context {
   static readonly effect = effectMeta;
   static readonly filter = Symbol('maka.plugin-kernel.filter');
 
   readonly [contextBrand] = true;
   readonly #kernel: KernelState;
+  readonly #parent?: Context;
+  #fiber!: Fiber;
   readonly #isolation: Readonly<Record<string, symbol>>;
   readonly #intercepts: Readonly<Record<string, readonly unknown[]>>;
   readonly #proxy: Context;
@@ -149,21 +152,18 @@ export class Context {
     intercepts?: Readonly<Record<string, readonly unknown[]>>,
     meta: object = {},
   ) {
-    this.parent = parent;
+    this.#parent = parent;
     this.#isolation = isolation ?? parent?._isolation() ?? freezeRecord();
     this.#intercepts = intercepts ?? parent?._intercepts() ?? freezeRecord();
+    this.#kernel = kernel ?? ({} as KernelState);
+    this.#proxy = new Proxy(this, contextProxy);
     if (kernel) {
-      this.#kernel = kernel;
-      this.root = kernel.root;
-      this.fiber = fiber ?? parent?.fiber ?? kernel.root.fiber;
+      this.#fiber = fiber ?? parent?.fiber ?? kernel.root.fiber;
     } else {
-      const placeholder = {} as KernelState;
-      this.#kernel = placeholder;
-      this.root = this;
-      const rootFiber = Fiber.root(this);
-      this.fiber = rootFiber;
-      Object.assign(placeholder, {
-        root: this,
+      const rootFiber = Fiber.root(this.#proxy);
+      this.#fiber = rootFiber;
+      Object.assign(this.#kernel, {
+        root: this.#proxy,
         services: new Map(),
         serviceLabels: new Map(),
         runtimes: new WeakMap(),
@@ -174,34 +174,36 @@ export class Context {
         closed: false,
       } satisfies KernelState);
     }
-    Object.assign(this, meta);
+    assignContextMetadata(this, meta);
     Object.defineProperty(this, 'logger', {
       enumerable: true,
       configurable: false,
       value: createLoggerService(() => this.fiber.name),
     });
-    this.#proxy = new Proxy(this, contextProxy);
     return this.#proxy;
+  }
+
+  get root(): Context {
+    return this.#kernel.root;
+  }
+
+  get parent(): Context | undefined {
+    return this.#parent;
+  }
+
+  get fiber(): Fiber {
+    return this.#fiber;
   }
 
   extend(meta: object = {}): this {
     this.#assertOpen();
-    return new Context(
-      this.#kernel,
-      this,
-      this.fiber,
-      this.#isolation,
-      this.#intercepts,
-      meta,
-    ) as this;
+    return this.fiber.deriveContext(this.#proxy, this.#isolation, this.#intercepts, meta) as this;
   }
 
   isolate(name: string, label = Symbol(name)): this {
     validateServiceName(name);
-    return new Context(
-      this.#kernel,
-      this,
-      this.fiber,
+    return this.fiber.deriveContext(
+      this.#proxy,
       freezeRecord({ ...this.#isolation, [name]: label }),
       this.#intercepts,
     ) as this;
@@ -210,55 +212,24 @@ export class Context {
   intercept(name: string, config: unknown): this {
     validateServiceName(name);
     const existing = this.#intercepts[name] ?? [];
-    return new Context(
-      this.#kernel,
-      this,
-      this.fiber,
+    return this.fiber.deriveContext(
+      this.#proxy,
       this.#isolation,
       freezeRecord({ ...this.#intercepts, [name]: Object.freeze([...existing, config]) }),
     ) as this;
   }
 
-  plugin<P extends Plugin>(plugin: P, config?: unknown): Fiber & PromiseLike<Fiber> {
+  plugin<P extends Plugin>(plugin: P, config?: unknown): Fiber {
     this.#assertOpen();
-    const callback = resolvePlugin(plugin);
-    let runtime = this.#kernel.runtimes.get(plugin);
-    if (!runtime) {
-      runtime = {
-        callback,
-        fibers: new Set(),
-        name: plugin.name,
-        Config: plugin.Config,
-      };
-      this.#kernel.runtimes.set(plugin, runtime);
-    }
-    const fiber = new Fiber(this, plugin, config, normalizeInject(plugin.inject), runtime);
-    return new Proxy(fiber, {
-      get(target, property, receiver) {
-        if (property === 'then') {
-          return <TResult1 = Fiber, TResult2 = never>(
-            onFulfilled?: ((value: Fiber) => TResult1 | PromiseLike<TResult1>) | null,
-            onRejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-          ): PromiseLike<TResult1 | TResult2> =>
-            target
-              .await()
-              .then(
-                () => (onFulfilled ? onFulfilled(target) : (target as unknown as TResult1)),
-                onRejected ?? undefined,
-              );
-        }
-        const value = Reflect.get(target, property, target);
-        return typeof value === 'function' ? value.bind(target) : value;
-      },
-    }) as Fiber & PromiseLike<Fiber>;
+    return this.fiber.mount(this.#proxy, plugin, config);
   }
 
-  inject(inject: Inject, callback: Plugin.Function<void>): Fiber & PromiseLike<Fiber> {
+  inject(inject: Inject, callback: Plugin.Function<void>): Fiber {
     return this.plugin(Object.assign(callback, { inject }));
   }
 
   effect(execute: () => unknown, label = 'anonymous'): Disposable<Promise<void>> {
-    return this.fiber.effect(execute, label);
+    return this.fiber.own(execute, label);
   }
 
   provide(name: string, value?: unknown, check?: () => boolean): Disposable<Promise<void>> {
@@ -368,7 +339,7 @@ export class Context {
   ): Disposable<boolean> {
     this.#assertOpen();
     const normalized = typeof options === 'boolean' ? { prepend: options } : options;
-    const hook: Hook = { context: this, listener, global: normalized.global === true };
+    const hook: Hook = { context: this.#proxy, listener, global: normalized.global === true };
     const hooks = this.#kernel.listeners.get(name) ?? [];
     let active = true;
     const unregister = () => {
@@ -541,10 +512,21 @@ export class Context {
   }
 }
 
+function assignContextMetadata(context: Context, meta: object): void {
+  for (const key of Reflect.ownKeys(meta)) {
+    const descriptor = Object.getOwnPropertyDescriptor(meta, key);
+    if (!descriptor?.enumerable) continue;
+    if (key === 'logger' || Reflect.has(context, key)) {
+      throw new Error(`Context metadata cannot overwrite owned field: ${String(key)}`);
+    }
+  }
+  Object.assign(context, meta);
+}
+
 const contextProxy: ProxyHandler<Context> = {
   get(target, property, receiver) {
     if (Reflect.has(target, property)) {
-      const value = Reflect.get(target, property, receiver);
+      const value = Reflect.get(target, property, target);
       return typeof value === 'function' && Object.hasOwn(Context.prototype, property)
         ? value.bind(target)
         : value;
@@ -560,7 +542,7 @@ const contextProxy: ProxyHandler<Context> = {
     }
   },
   set(target, property, value, receiver) {
-    if (Reflect.has(target, property)) return Reflect.set(target, property, value, receiver);
+    if (Reflect.has(target, property)) return Reflect.set(target, property, value, target);
     const accessor = target._kernel().accessors.get(property);
     if (accessor?.set) return accessor.set.call(receiver as Context, value, receiver);
     if (typeof property === 'string' && target.get(property, false) !== undefined) {
@@ -585,10 +567,11 @@ function hasAncestorProperty(context: Context | undefined, property: PropertyKey
   return false;
 }
 
+/** The sole lifecycle, child-instance, dependency, error, and resource owner at runtime. */
 export class Fiber {
   readonly id: number;
-  readonly ctx: Context;
-  readonly parent: Context;
+  readonly context: Context;
+  readonly parent?: Fiber;
   readonly plugin?: Plugin;
   readonly inject: Readonly<Record<string, unknown>>;
   state: FiberState;
@@ -601,6 +584,7 @@ export class Fiber {
   readonly #effects: Array<Disposable<Awaitable<void>> & { [effectMeta]?: EffectMeta }> = [];
   readonly #services = new Map<string, unknown>();
   #disposed = false;
+  #cleanupFailed = false;
   #dependencyRefreshQueued = false;
   #disposeTask?: Promise<void>;
   #transition: Promise<void> = Promise.resolve();
@@ -610,28 +594,76 @@ export class Fiber {
   }
 
   constructor(
-    parent: Context,
+    parentContext: Context,
     plugin: Plugin | undefined,
     config: unknown,
     inject: Readonly<Record<string, unknown>>,
     runtime: PluginRuntime | undefined,
     root = false,
   ) {
-    this.parent = parent;
+    this.parent = root ? undefined : parentContext.fiber;
     this.plugin = plugin;
     this.config = config;
     this.inject = inject;
     this.#runtime = runtime;
-    const kernel = parent._kernel();
+    const kernel = parentContext._kernel();
     this.id = root ? 0 : ++kernel.nextFiberId;
     this.state = root ? FiberState.ACTIVE : FiberState.PENDING;
-    this.ctx = root ? parent : new Context(kernel, parent, this, undefined, undefined);
+    this.context = root
+      ? parentContext
+      : new Context(kernel, parentContext, this, undefined, undefined);
     if (!root) {
       kernel.fibers.add(this);
       runtime?.fibers.add(this);
-      parent.fiber.#children.add(this);
+      if (this.parent) this.parent.#children.add(this);
       this.refreshDependencies();
     }
+  }
+
+  deriveContext(
+    parent: Context = this.context,
+    isolation?: Readonly<Record<string, symbol>>,
+    intercepts?: Readonly<Record<string, readonly unknown[]>>,
+    meta: object = {},
+  ): Context {
+    if (parent.fiber !== this) {
+      throw new Error('Cannot derive a Context view from another Fiber');
+    }
+    if (
+      this.#disposed ||
+      this.state === FiberState.DISPOSED ||
+      this.state === FiberState.UNLOADING
+    ) {
+      throw new Error('Cannot derive a Context view from an inactive Fiber');
+    }
+    return new Context(parent._kernel(), parent, this, isolation, intercepts, meta);
+  }
+
+  mount<P extends Plugin>(context: Context, plugin: P, config?: unknown): Fiber {
+    if (context.fiber !== this) {
+      throw new Error('Cannot mount a child through a Context owned by another Fiber');
+    }
+    if (
+      this.#disposed ||
+      this.state === FiberState.DISPOSED ||
+      this.state === FiberState.UNLOADING
+    ) {
+      throw new Error('Cannot mount a child on an inactive Fiber');
+    }
+    const kernel = context._kernel();
+    const callback = resolvePlugin(plugin);
+    let runtime = kernel.runtimes.get(plugin);
+    if (!runtime) {
+      runtime = {
+        callback,
+        fibers: new Set(),
+        name: plugin.name,
+        Config: plugin.Config,
+      };
+      kernel.runtimes.set(plugin, runtime);
+    }
+    const fiber = new Fiber(context, plugin, config, normalizeInject(plugin.inject), runtime);
+    return fiber;
   }
 
   get name(): string {
@@ -645,7 +677,7 @@ export class Fiber {
   }
 
   serviceLabel(name: string): symbol {
-    return this.ctx._label(name);
+    return this.context._label(name);
   }
 
   refreshDependencies(): void {
@@ -664,7 +696,7 @@ export class Fiber {
     for (const name of Object.keys(this.inject)) {
       let implementation: unknown;
       try {
-        implementation = this.ctx.get(name);
+        implementation = this.context.get(name);
       } catch (error) {
         const errors = [error];
         this.#services.clear();
@@ -706,7 +738,7 @@ export class Fiber {
     }
   }
 
-  effect(execute: () => unknown, label = 'anonymous'): Disposable<Promise<void>> {
+  own(execute: () => unknown, label = 'anonymous'): Disposable<Promise<void>> {
     if (this.#disposed || this.state === FiberState.UNLOADING) {
       throw new Error('Cannot create an Effect on an inactive Fiber');
     }
@@ -814,10 +846,10 @@ export class Fiber {
       try {
         await this.#unload(FiberState.DISPOSED);
       } finally {
-        const kernel = this.parent._kernel();
+        const kernel = this.context._kernel();
         kernel.fibers.delete(this);
         this.#runtime?.fibers.delete(this);
-        this.parent.fiber.#children.delete(this);
+        if (this.parent) this.parent.#children.delete(this);
         if (this.id === 0) kernel.closed = true;
       }
     });
@@ -836,18 +868,20 @@ export class Fiber {
   }
 
   async #restart(): Promise<void> {
+    if (this.#cleanupFailed) throw this.error;
     await this.#unload(FiberState.PENDING);
     if (this.#dependenciesAvailable()) await this.#load();
   }
 
   async #load(): Promise<void> {
     if (this.#disposed || !this.plugin || !this.#dependenciesAvailable()) return;
+    if (this.#cleanupFailed) throw this.error;
     this.error = undefined;
     this.#setState(FiberState.LOADING);
     try {
       const config = await validateConfig(this.#runtime?.Config, this.config);
-      const output = await invokePlugin(this.plugin, this.ctx, config);
-      if (typeof output === 'function') this.effect(() => output, `plugin:${this.name}`);
+      const output = await invokePlugin(this.plugin, this.context, config);
+      if (typeof output === 'function') this.own(() => output, `plugin:${this.name}`);
       else if (
         output !== undefined &&
         output !== null &&
@@ -861,6 +895,7 @@ export class Fiber {
       try {
         await this.#disposeEffects();
       } catch (cleanupError) {
+        this.#cleanupFailed = true;
         errors.push(cleanupError);
       }
       this.error =
@@ -886,8 +921,13 @@ export class Fiber {
     } catch (error) {
       errors.push(error);
     }
+    if (errors.length) {
+      this.#cleanupFailed = true;
+      this.error = new AggregateError(errors, `Fiber ${this.name} cleanup failed`);
+      this.#setState(nextState === FiberState.DISPOSED ? FiberState.DISPOSED : FiberState.FAILED);
+      throw this.error;
+    }
     this.#setState(nextState);
-    if (errors.length) throw new AggregateError(errors, `Fiber ${this.name} cleanup failed`);
   }
 
   async #disposeEffects(): Promise<void> {
@@ -903,16 +943,16 @@ export class Fiber {
   }
 
   #dependenciesAvailable(): boolean {
-    return Object.keys(this.inject).every((name) => this.ctx.get(name) !== undefined);
+    return Object.keys(this.inject).every((name) => this.context.get(name) !== undefined);
   }
 
   #setState(state: FiberState): void {
     const previous = this.state;
     this.state = state;
     if (state === FiberState.ACTIVE) {
-      notifyProvidedServices(this.parent._kernel(), this);
+      notifyProvidedServices(this.context._kernel(), this);
     }
-    if (previous !== state) this.ctx.emit('internal/status', this, previous);
+    if (previous !== state) this.context.emit('internal/status', this, previous);
   }
 }
 
