@@ -17,22 +17,6 @@
  * under the License.
  */
 
-/**
- * The form behind the ＋ menu's "Set a goal…" entry.
- *
- * A Goal is the one control here that keeps spending tokens after the user
- * stops typing, so it is a dialog rather than a menu row: the condition needs
- * a sentence, and the two budgets that stop it should be visible while it is
- * being armed, not discovered afterwards.
- *
- * Bounds are the Host's. This sends what the user chose and reports what the
- * Host answers; it does not clamp a rejected number into an accepted one,
- * because the Goal that then runs would not be the one they asked for. For the
- * same reason the budget fields hold the user's own text rather than a parsed
- * number: a field that quietly keeps the last value it could parse can arm a
- * budget the form is no longer showing, and a field that quietly keeps nothing
- * can arm no budget at all where the user asked for a tight one.
- */
 import { useEffect, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
@@ -41,42 +25,28 @@ import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import { TextArea } from '@astryxdesign/core/TextArea';
 import { TextInput } from '@astryxdesign/core/TextInput';
-import { useUiLocale } from '@maka/ui';
 import {
   GOAL_CONDITION_TEXT_LIMIT,
   GOAL_MAX_ITERATIONS_LIMIT,
   GOAL_TOKEN_BUDGET_MINIMUM,
 } from '@maka/core/goal';
-import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
+import { useUiLocale } from '@maka/ui';
+import {
+  getShellCopy,
+  localizedShellErrorMessage,
+} from '../../../locales/shell-copy.js';
+import { readGoalBudget } from '../model/goal-budget.js';
+import type { GoalArmInput } from '../ports.js';
 
-type BudgetReading =
-  | { readonly kind: 'empty' }
-  | { readonly kind: 'value'; readonly value: number }
-  | { readonly kind: 'invalid' };
-
-/**
- * Read one budget field, refusing anything the Host would not take.
- *
- * `min`/`max` repeat the operation's own bounds so the refusal can be shown
- * beside the field instead of arriving as a rejected frame; the numbers
- * themselves come from the shared Goal limits, so there is still one authority
- * for what they are.
- */
-function readGoalBudget(text: string, min: number, max?: number): BudgetReading {
-  const trimmed = text.trim();
-  if (!trimmed) return { kind: 'empty' };
-  if (!/^\d+$/.test(trimmed)) return { kind: 'invalid' };
-  const value = Number(trimmed);
-  if (!Number.isSafeInteger(value) || value < min) return { kind: 'invalid' };
-  if (max !== undefined && value > max) return { kind: 'invalid' };
-  return { kind: 'value', value };
-}
-
-export function GoalDialog(props: {
+export interface GoalDialogProps {
   /** The Session to arm. `undefined` closes the dialog. */
   sessionId?: string;
+  onArm(sessionId: string, request: GoalArmInput): Promise<void>;
   onClose(): void;
-}) {
+}
+
+/** The form behind the composer menu's "Set a goal…" entry. */
+export function GoalDialog(props: GoalDialogProps) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).goalDialog;
   const [condition, setCondition] = useState('');
@@ -85,8 +55,6 @@ export function GoalDialog(props: {
   const [arming, setArming] = useState(false);
   const [error, setError] = useState<string>();
 
-  // Each opening starts from empty: the previous Session's condition is not a
-  // useful default for this one, and a stale error would outlive its cause.
   useEffect(() => {
     if (props.sessionId === undefined) return;
     setCondition('');
@@ -97,8 +65,15 @@ export function GoalDialog(props: {
   }, [props.sessionId]);
 
   const sessionId = props.sessionId;
-  const maxIterations = readGoalBudget(maxIterationsText, 1, GOAL_MAX_ITERATIONS_LIMIT);
-  const tokenBudget = readGoalBudget(tokenBudgetText, GOAL_TOKEN_BUDGET_MINIMUM);
+  const maxIterations = readGoalBudget(
+    maxIterationsText,
+    1,
+    GOAL_MAX_ITERATIONS_LIMIT,
+  );
+  const tokenBudget = readGoalBudget(
+    tokenBudgetText,
+    GOAL_TOKEN_BUDGET_MINIMUM,
+  );
   const canSubmit =
     condition.trim().length > 0 &&
     maxIterations.kind !== 'invalid' &&
@@ -110,9 +85,10 @@ export function GoalDialog(props: {
     setArming(true);
     setError(undefined);
     try {
-      await window.maka.goal.arm(sessionId, {
+      await props.onArm(sessionId, {
         condition: condition.trim(),
-        maxIterations: maxIterations.kind === 'value' ? maxIterations.value : null,
+        maxIterations:
+          maxIterations.kind === 'value' ? maxIterations.value : null,
         tokenBudget: tokenBudget.kind === 'value' ? tokenBudget.value : null,
       });
       props.onClose();
@@ -134,13 +110,20 @@ export function GoalDialog(props: {
       className="goalDialog"
     >
       <Layout
-        header={<DialogHeader title={copy.title} onOpenChange={(open) => {
-          if (!open && !arming) props.onClose();
-        }} />}
+        header={
+          <DialogHeader
+            title={copy.title}
+            onOpenChange={(open) => {
+              if (!open && !arming) props.onClose();
+            }}
+          />
+        }
         content={
           <LayoutContent padding={4}>
             <VStack gap={4}>
-              <Text type="body" color="secondary">{copy.description}</Text>
+              <Text type="body" color="secondary">
+                {copy.description}
+              </Text>
               <TextArea
                 label={copy.conditionLabel}
                 description={copy.conditionDescription}
@@ -152,7 +135,9 @@ export function GoalDialog(props: {
                 isRequired
                 isDisabled={arming}
                 hasAutoFocus
-                {...(error ? { status: { type: 'error' as const, message: error } } : {})}
+                {...(error
+                  ? { status: { type: 'error' as const, message: error } }
+                  : {})}
               />
               <HStack gap={3}>
                 <TextInput
@@ -163,7 +148,14 @@ export function GoalDialog(props: {
                   isOptional
                   isDisabled={arming}
                   {...(maxIterations.kind === 'invalid'
-                    ? { status: { type: 'error' as const, message: copy.maxIterationsInvalid(GOAL_MAX_ITERATIONS_LIMIT) } }
+                    ? {
+                        status: {
+                          type: 'error' as const,
+                          message: copy.maxIterationsInvalid(
+                            GOAL_MAX_ITERATIONS_LIMIT,
+                          ),
+                        },
+                      }
                     : {})}
                 />
                 <TextInput
@@ -174,7 +166,14 @@ export function GoalDialog(props: {
                   isOptional
                   isDisabled={arming}
                   {...(tokenBudget.kind === 'invalid'
-                    ? { status: { type: 'error' as const, message: copy.tokenBudgetInvalid(GOAL_TOKEN_BUDGET_MINIMUM) } }
+                    ? {
+                        status: {
+                          type: 'error' as const,
+                          message: copy.tokenBudgetInvalid(
+                            GOAL_TOKEN_BUDGET_MINIMUM,
+                          ),
+                        },
+                      }
                     : {})}
                 />
               </HStack>
