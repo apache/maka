@@ -5,8 +5,10 @@ import {
   HOST_DIAGNOSTIC_LOG_MAX_ENTRY_BYTES,
 } from './protocol/host-status.js';
 
+export const RUNTIME_HOST_DIAGNOSTIC_LOG_MAX_BYTES = 64 * 1024;
+
 export const runtimeHostLogBuffer = new DiagnosticLogBuffer({
-  maxBytes: 48 * 1024,
+  maxBytes: RUNTIME_HOST_DIAGNOSTIC_LOG_MAX_BYTES,
   maxEntries: HOST_DIAGNOSTIC_LOG_MAX_ENTRIES,
   maxEntryUtf8Bytes: HOST_DIAGNOSTIC_LOG_MAX_ENTRY_BYTES,
 });

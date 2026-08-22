@@ -23,6 +23,7 @@ const INPUT_LIMITS = {
 } as const;
 const INPUT_TRUNCATION_MARKER = '\n<diagnostic input truncated>';
 const EXECUTION_DIAGNOSTIC_TIMEOUT_MS = 2_000;
+export const MAIN_PROCESS_DIAGNOSTIC_LOG_MAX_BYTES = 256 * 1024;
 
 export interface DesktopDiagnosticEnvironment {
   readonly appVersion: string;
@@ -85,7 +86,9 @@ export interface DesktopDiagnosticsDeps {
   readonly writeClipboard: (value: string) => void;
 }
 
-export const mainProcessLogBuffer = new DiagnosticLogBuffer();
+export const mainProcessLogBuffer = new DiagnosticLogBuffer({
+  maxBytes: MAIN_PROCESS_DIAGNOSTIC_LOG_MAX_BYTES,
+});
 
 let logCaptureInstalled = false;
 

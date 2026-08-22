@@ -9,6 +9,8 @@ import {
   copyDesktopDiagnosticReport,
   createDesktopStartupDiagnosticInput,
   formatDesktopDiagnosticReport,
+  MAIN_PROCESS_DIAGNOSTIC_LOG_MAX_BYTES,
+  mainProcessLogBuffer,
   parseDesktopDiagnosticInput,
 } from '../main-process-diagnostics.js';
 
@@ -48,6 +50,18 @@ const runtimeHostDiagnostics = {
   osRelease: '6.6.0',
   logs: ['host log'],
 };
+
+test('retains an extended bounded tail of main-process logs', () => {
+  for (let index = 0; index < 300; index += 1) {
+    mainProcessLogBuffer.append('info', `retained detail ${index} ${'x'.repeat(1_024)}`);
+  }
+  const logs = mainProcessLogBuffer.snapshot();
+  const encodedLogBytes = Buffer.byteLength(JSON.stringify(logs));
+
+  assert.ok(encodedLogBytes > 64 * 1024);
+  assert.ok(encodedLogBytes <= MAIN_PROCESS_DIAGNOSTIC_LOG_MAX_BYTES);
+  assert.match(logs.at(-1) ?? '', /retained detail 299/);
+});
 
 test('formats one redacted Desktop and Runtime Host diagnostic report', () => {
   const report = formatDesktopDiagnosticReport(
