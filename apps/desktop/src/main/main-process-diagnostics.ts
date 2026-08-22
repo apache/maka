@@ -5,7 +5,6 @@ import type { TurnTrace } from '@maka/core/session-trace';
 import type { HostDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { arch as osArch, homedir, release as osRelease } from 'node:os';
 import type {
-  DesktopDiagnosticHostTarget,
   DesktopDiagnosticWireInput,
   DesktopExecutionDiagnosticTarget,
 } from '../preload/diagnostics-contract.js';
@@ -160,31 +159,57 @@ export function parseDesktopDiagnosticInput(input: unknown): DesktopDiagnosticWi
       ...optionalBoundedString(record, 'rendererLocale', INPUT_LIMITS.rendererLocale),
     };
   }
+  if (record.surface !== 'toast' && record.surface !== 'renderer_crash') {
+    throw new TypeError('Invalid Desktop diagnostic surface');
+  }
   const allowedKeys = new Set([
     ...sharedKeys,
     'title',
     'description',
     'details',
-    'execution',
+    ...(record.surface === 'toast' ? ['execution'] : []),
   ]);
   if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
     throw new TypeError('Invalid Desktop diagnostic input');
   }
-  if (record.surface !== 'toast' && record.surface !== 'renderer_crash') {
-    throw new TypeError('Invalid Desktop diagnostic surface');
-  }
   const title = requireDiagnosticString(record.title, 'title', INPUT_LIMITS.title);
-  return {
-    surface: record.surface,
+  const errorDetails = {
     title,
-    hostTarget: parseDiagnosticHostTarget(record.hostTarget),
     ...optionalBoundedString(record, 'description', INPUT_LIMITS.description),
     ...optionalBoundedString(record, 'details', INPUT_LIMITS.details),
+    ...optionalBoundedString(record, 'rendererUserAgent', INPUT_LIMITS.rendererUserAgent),
+    ...optionalBoundedString(record, 'rendererLocale', INPUT_LIMITS.rendererLocale),
+  };
+  if (record.surface === 'renderer_crash') {
+    if (record.hostTarget !== 'none') {
+      throw new TypeError('Renderer crash diagnostics cannot target a Runtime Host');
+    }
+    return {
+      surface: 'renderer_crash',
+      hostTarget: 'none',
+      ...errorDetails,
+    };
+  }
+  if (record.hostTarget !== 'none' && record.hostTarget !== 'task') {
+    throw new TypeError('Toast diagnostics require an explicit Runtime Host target');
+  }
+  if (record.hostTarget === 'none') {
+    if (record.execution !== undefined) {
+      throw new TypeError('Desktop-only diagnostics cannot carry Runtime Host execution');
+    }
+    return {
+      surface: 'toast',
+      hostTarget: 'none',
+      ...errorDetails,
+    };
+  }
+  return {
+    surface: 'toast',
+    hostTarget: 'task',
+    ...errorDetails,
     ...(record.execution !== undefined
       ? { execution: parseExecutionDiagnosticTarget(record.execution) }
       : {}),
-    ...optionalBoundedString(record, 'rendererUserAgent', INPUT_LIMITS.rendererUserAgent),
-    ...optionalBoundedString(record, 'rendererLocale', INPUT_LIMITS.rendererLocale),
   };
 }
 
@@ -245,10 +270,7 @@ export async function copyDesktopDiagnosticReport(
     }
   }
   let runtimeExecution: RuntimeHostExecutionDiagnosticRead | undefined;
-  const execution =
-    input.surface === 'toast' || input.surface === 'renderer_crash'
-      ? input.execution
-      : undefined;
+  const execution = input.surface === 'toast' ? input.execution : undefined;
   if (execution && runtime) {
     try {
       const turn = await runtime.getTurnTrace(
@@ -331,10 +353,7 @@ export function formatDesktopDiagnosticReport(
     lines.push(`Diagnostics unavailable: ${runtimeHost.error}`);
   }
 
-  const execution =
-    input.surface === 'toast' || input.surface === 'renderer_crash'
-      ? input.execution
-      : undefined;
+  const execution = input.surface === 'toast' ? input.execution : undefined;
   if (execution) {
     lines.push('', 'Runtime Host execution');
     if (!runtimeExecution?.ok) {
@@ -348,19 +367,14 @@ export function formatDesktopDiagnosticReport(
   return collapseHomePath(redacted, environment.homePath, environment.platform);
 }
 
-function parseDiagnosticHostTarget(value: unknown): DesktopDiagnosticHostTarget {
-  if (value === 'none' || value === 'default' || value === 'task') return value;
-  throw new TypeError('Invalid Desktop diagnostic Runtime Host target');
-}
-
 function parseManualDiagnosticHostTarget(
   value: unknown,
-): Exclude<DesktopDiagnosticHostTarget, 'none'> {
-  const target = parseDiagnosticHostTarget(value);
-  if (target === 'none') {
+): 'default' | 'task' {
+  if (value === 'default' || value === 'task') return value;
+  if (value === 'none') {
     throw new TypeError('Manual Desktop diagnostics require Runtime Host authority');
   }
-  return target;
+  throw new TypeError('Invalid Desktop diagnostic Runtime Host target');
 }
 
 function parseExecutionDiagnosticTarget(value: unknown): DesktopExecutionDiagnosticTarget {

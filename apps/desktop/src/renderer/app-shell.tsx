@@ -398,6 +398,11 @@ function AppShellContent({
 
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const newTask = useNewTaskTarget({ toastApi, uiLocale });
+  const defaultRuntimeHostDiagnosticTarget = newTask.catalog.hosts.some(
+    (host) => host.profile.id === newTask.catalog.defaultProfileId,
+  )
+    ? { profileId: newTask.catalog.defaultProfileId }
+    : undefined;
   const currentNewTaskDraftKey = newTaskDraftKey(newTask.target);
   const attachmentDraftKey = activeId ?? currentNewTaskDraftKey;
   const {
@@ -1874,6 +1879,7 @@ function AppShellContent({
     isSkillsSurfaceActive,
     isScheduledTasksSurfaceActive,
     toastApi,
+    diagnosticTarget: defaultRuntimeHostDiagnosticTarget,
   });
 
   // 保持系统唤醒 capability for the 定时任务 page: reads/writes
@@ -3101,7 +3107,10 @@ function AppShellContent({
                   onDeleteSkill={(skillRef) => deleteSkill(skillRef)}
                 />
               ) : navSelection.section === 'extensions' && navSelection.module === 'mcp' ? (
-                <McpPage hubHeader={extensionsHubHeader} />
+                <McpPage
+                  hubHeader={extensionsHubHeader}
+                  diagnosticTarget={defaultRuntimeHostDiagnosticTarget}
+                />
               ) : navSelection.section === 'automations' && navSelection.module === 'scheduled-tasks' ? (
                 <ScheduledTasksPage
                   hubHeader={automationsHubHeader}

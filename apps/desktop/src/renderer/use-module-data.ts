@@ -10,7 +10,12 @@ import { createAppShellSkillActions, type AppShellSkillActions } from './app-she
 
 type ToastApi = {
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { profileId: string },
+  ): void;
   confirm(options: {
     title: string;
     description: string;
@@ -35,13 +40,20 @@ export function useAppShellModuleData(options: {
   isSkillsSurfaceActive: () => boolean;
   isScheduledTasksSurfaceActive: () => boolean;
   toastApi: ToastApi;
+  diagnosticTarget?: { profileId: string };
 }): AppShellScheduledTaskActions & AppShellSkillActions & {
   skills: SkillEntry[];
   managedSkillSources: ManagedSkillSourceEntry[];
   bundledSkillCatalog: BundledSkillCatalogEntry[];
   scheduledTasks: ScheduledTask[];
 } {
-  const { uiLocale, isSkillsSurfaceActive, isScheduledTasksSurfaceActive, toastApi } = options;
+  const {
+    uiLocale,
+    isSkillsSurfaceActive,
+    isScheduledTasksSurfaceActive,
+    toastApi,
+    diagnosticTarget,
+  } = options;
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   const [managedSkillSources, setManagedSkillSources] = useState<ManagedSkillSourceEntry[]>([]);
   const [bundledSkillCatalog, setBundledSkillCatalog] = useState<BundledSkillCatalogEntry[]>([]);
@@ -53,6 +65,7 @@ export function useAppShellModuleData(options: {
     isScheduledTasksSurfaceActive,
     setScheduledTasks,
     toastApi,
+    diagnosticTarget,
   });
 
   const skillActions = createAppShellSkillActions({
@@ -62,6 +75,7 @@ export function useAppShellModuleData(options: {
     setManagedSkillSources,
     setBundledSkillCatalog,
     toastApi,
+    diagnosticTarget,
   });
 
   return {

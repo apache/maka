@@ -68,7 +68,7 @@ test('formats one redacted Desktop and Runtime Host diagnostic report', () => {
     {
       surface: 'toast',
       title: 'Connection failed',
-      hostTarget: 'default',
+      hostTarget: 'task',
       description: 'api_key=sk-secretvalue123',
       rendererLocale: 'en-US',
     },
@@ -91,7 +91,7 @@ test('bounds renderer diagnostic text and rejects unknown fields', () => {
   const input = parseDesktopDiagnosticInput({
     surface: 'toast',
     title: '🚀'.repeat(513),
-    hostTarget: 'default',
+    hostTarget: 'none',
     description: 'x'.repeat(30 * 1024),
   });
 
@@ -103,7 +103,7 @@ test('bounds renderer diagnostic text and rejects unknown fields', () => {
     () => parseDesktopDiagnosticInput({
       surface: 'toast',
       title: 'error',
-      hostTarget: 'default',
+      hostTarget: 'none',
       extra: true,
     }),
     /Invalid Desktop diagnostic input/,
@@ -122,6 +122,35 @@ test('accepts only a Runtime Host target and renderer context for capture', () =
       hostTarget: 'default',
       rendererLocale: 'en-US',
     },
+  );
+  assert.throws(
+    () => parseDesktopDiagnosticInput({
+      surface: 'toast',
+      title: 'Ambiguous Host',
+      hostTarget: 'default',
+    }),
+    /Toast diagnostics require an explicit Runtime Host target/,
+  );
+  assert.throws(
+    () => parseDesktopDiagnosticInput({
+      surface: 'toast',
+      title: 'Detached execution',
+      hostTarget: 'none',
+      execution: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        eventId: 'event-1',
+      },
+    }),
+    /Desktop-only diagnostics cannot carry Runtime Host execution/,
+  );
+  assert.throws(
+    () => parseDesktopDiagnosticInput({
+      surface: 'renderer_crash',
+      title: 'Renderer failed',
+      hostTarget: 'task',
+    }),
+    /Renderer crash diagnostics cannot target a Runtime Host/,
   );
   assert.deepEqual(
     parseDesktopDiagnosticInput({

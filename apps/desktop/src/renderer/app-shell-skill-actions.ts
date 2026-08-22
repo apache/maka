@@ -12,7 +12,12 @@ import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.j
 
 type ToastApi = {
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { profileId: string },
+  ): void;
 };
 
 export interface AppShellSkillActions {
@@ -44,8 +49,23 @@ export function createAppShellSkillActions(deps: {
   setManagedSkillSources: Dispatch<SetStateAction<ManagedSkillSourceEntry[]>>;
   setBundledSkillCatalog: Dispatch<SetStateAction<BundledSkillCatalogEntry[]>>;
   toastApi: ToastApi;
+  diagnosticTarget?: { profileId: string };
 }): AppShellSkillActions {
-  const { uiLocale, isSkillsSurfaceActive, setBundledSkillCatalog, setManagedSkillSources, setSkills, toastApi } = deps;
+  const {
+    uiLocale,
+    isSkillsSurfaceActive,
+    setBundledSkillCatalog,
+    setManagedSkillSources,
+    setSkills,
+    toastApi: baseToastApi,
+    diagnosticTarget,
+  } = deps;
+  const toastApi = {
+    success: (title: string, description?: string) =>
+      baseToastApi.success(title, description),
+    error: (title: string, description?: string) =>
+      baseToastApi.error(title, description, undefined, diagnosticTarget),
+  };
   const copy = getShellCopy(uiLocale).skillActions;
   const openSkill = createOpenSkillAction({
     uiLocale,

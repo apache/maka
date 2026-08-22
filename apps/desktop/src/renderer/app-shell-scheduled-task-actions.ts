@@ -6,7 +6,12 @@ import { localizedShellErrorMessage } from "./locales/shell-copy.js";
 
 type ToastApi = {
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { profileId: string },
+  ): void;
   confirm(options: {
     title: string;
     description: string;
@@ -37,6 +42,7 @@ export function createAppShellScheduledTaskActions(deps: {
   isScheduledTasksSurfaceActive: () => boolean;
   setScheduledTasks: Dispatch<SetStateAction<ScheduledTask[]>>;
   toastApi: ToastApi;
+  diagnosticTarget?: { profileId: string };
 }): AppShellScheduledTaskActions {
   const {
     uiLocale,
@@ -44,6 +50,7 @@ export function createAppShellScheduledTaskActions(deps: {
     isScheduledTasksSurfaceActive,
     setScheduledTasks,
     toastApi,
+    diagnosticTarget,
   } = deps;
   const copy = getShellRemainingCopy(uiLocale).scheduledTaskActions;
 
@@ -58,6 +65,8 @@ export function createAppShellScheduledTaskActions(deps: {
         toastApi.error(
           copy.refreshFailed,
           localizedShellErrorMessage(error, copy.refreshFallback, uiLocale),
+          undefined,
+          diagnosticTarget,
         );
       }
     }
@@ -86,6 +95,8 @@ export function createAppShellScheduledTaskActions(deps: {
           mutation.errorTitle,
           mutation.errorMessage?.(error) ??
             localizedShellErrorMessage(error, mutation.errorFallback, uiLocale),
+          undefined,
+          diagnosticTarget,
         );
       }
       return false;

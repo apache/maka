@@ -33,35 +33,50 @@ export interface DesktopManualDiagnosticInput {
   readonly target?: DesktopManualDiagnosticTarget;
 }
 
-export interface DesktopErrorDiagnosticInput {
-  readonly surface: 'toast' | 'renderer_crash';
+interface DesktopErrorDiagnosticDetails {
   readonly title: string;
   readonly description?: string;
   readonly details?: string;
-  readonly target?: DesktopDiagnosticTarget;
 }
+
+export type DesktopErrorDiagnosticInput = DesktopErrorDiagnosticDetails &
+  (
+    | {
+        readonly surface: 'toast';
+        readonly target?: DesktopDiagnosticTarget;
+      }
+    | {
+        readonly surface: 'renderer_crash';
+        readonly target?: never;
+      }
+  );
 
 export type DesktopDiagnosticInput = DesktopManualDiagnosticInput | DesktopErrorDiagnosticInput;
 
-/**
- * Runtime Host authority attached to one diagnostic request.
- *
- * `none` is intentionally distinct from `default`: renderer-local failures
- * have no Runtime Host whose logs can be attributed to them, while a manual
- * capture with no explicit task asks for the current default Host.
- */
-export type DesktopDiagnosticHostTarget = 'none' | 'default' | 'task';
-
 export type DesktopManualDiagnosticWireInput = Omit<DesktopManualDiagnosticInput, 'target'> &
   DesktopDiagnosticRendererContext & {
-    readonly hostTarget: Exclude<DesktopDiagnosticHostTarget, 'none'>;
+    readonly hostTarget: 'default' | 'task';
   };
 
-export type DesktopErrorDiagnosticWireInput = Omit<DesktopErrorDiagnosticInput, 'target'> &
-  DesktopDiagnosticRendererContext & {
-    readonly hostTarget: DesktopDiagnosticHostTarget;
-    readonly execution?: DesktopExecutionDiagnosticTarget;
-  };
+export type DesktopErrorDiagnosticWireInput = DesktopErrorDiagnosticDetails &
+  DesktopDiagnosticRendererContext &
+  (
+    | {
+        readonly surface: 'toast';
+        readonly hostTarget: 'none';
+        readonly execution?: never;
+      }
+    | {
+        readonly surface: 'toast';
+        readonly hostTarget: 'task';
+        readonly execution?: DesktopExecutionDiagnosticTarget;
+      }
+    | {
+        readonly surface: 'renderer_crash';
+        readonly hostTarget: 'none';
+        readonly execution?: never;
+      }
+  );
 
 export type DesktopDiagnosticWireInput =
   | DesktopManualDiagnosticWireInput

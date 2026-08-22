@@ -305,7 +305,7 @@ async function runtimeHostSessionRef(sessionId: string): Promise<{
   return { scope, sessionId: ref.sessionId };
 }
 
-type DiagnosticRuntimeHostResolution<TTarget extends 'none' | 'default' | 'task'> = {
+type DiagnosticRuntimeHostResolution<TTarget extends 'default' | 'task'> = {
   readonly hostTarget: TTarget;
   readonly scope?: DesktopTargetScope;
 };
@@ -2715,16 +2715,35 @@ const makaBridge = {
         );
         return;
       }
+      if (input.surface === 'renderer_crash') {
+        const wireInput: DesktopErrorDiagnosticWireInput = {
+          surface: 'renderer_crash',
+          title: input.title,
+          ...(input.description ? { description: input.description } : {}),
+          ...(input.details ? { details: input.details } : {}),
+          hostTarget: 'none',
+          ...rendererContext,
+        };
+        await ipcRenderer.invoke('diagnostics:copyReport', undefined, wireInput);
+        return;
+      }
       const { target, ...errorInput } = input;
       const parsedTarget = target ? parseDiagnosticTarget(target) : undefined;
-      const resolution: DiagnosticRuntimeHostResolution<'none' | 'task'> = parsedTarget
-        ? await resolveTaskDiagnosticRuntimeHost(parsedTarget.selector)
-        : { hostTarget: 'none' };
+      if (!parsedTarget) {
+        const wireInput: DesktopErrorDiagnosticWireInput = {
+          ...errorInput,
+          hostTarget: 'none',
+          ...rendererContext,
+        };
+        await ipcRenderer.invoke('diagnostics:copyReport', undefined, wireInput);
+        return;
+      }
+      const resolution = await resolveTaskDiagnosticRuntimeHost(parsedTarget.selector);
       const wireInput: DesktopErrorDiagnosticWireInput = {
         ...errorInput,
-        hostTarget: resolution.hostTarget,
+        hostTarget: 'task',
         ...rendererContext,
-        ...(parsedTarget?.execution ? { execution: parsedTarget.execution } : {}),
+        ...(parsedTarget.execution ? { execution: parsedTarget.execution } : {}),
       };
       await ipcRenderer.invoke('diagnostics:copyReport', resolution.scope, wireInput);
     },
