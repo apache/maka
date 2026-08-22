@@ -195,22 +195,29 @@ test('recheckAfterAbsence: foreign holder on the target profile is reported', as
   assert.doesNotThrow(() => recheckAfterAbsence({ commandLines: [] }));
 });
 
-test('TCC monitor rechecks on BOTH terminal paths (never-started and appeared→exited)', async () => {
+test('TCC monitor recheck on appeared→exited wires the REAL quiet recheck', async () => {
   const { monitorDevelopmentApp } = await import('./dev-app-runtime.mjs');
-  // Appeared briefly, then exited (the loser shape that a
-  // never-started-only implementation would miss).
+  // No recheck stub: the production recheckAfterAbsenceQuiet runs, fed by
+  // the injected command lines (the outer probe seam). A foreign holder on
+  // the shared profile must print a named conflict.
   const appearedThenExited = (() => {
     let calls = 0;
     return () => { calls += 1; return calls < 3; };
   })();
-  const rechecks = [];
-  const recheck = (input) => { rechecks.push(input.targetProfile); };
-  const outcome = await monitorDevelopmentApp({
-    isRunning: appearedThenExited,
-    recheckAfterAbsence: recheck,
-    pollMs: 1,
-    startupAttempts: 10,
-  });
-  assert.equal(outcome, 'exited');
-  assert.equal(rechecks.length, 1);
+  const foreign = '/Users/other/codebase/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron /Users/other/codebase/apps/desktop';
+  const errors = [];
+  const originalError = console.error;
+  console.error = (message) => errors.push(String(message));
+  try {
+    const outcome = await monitorDevelopmentApp({
+      isRunning: appearedThenExited,
+      commandLines: [foreign],
+      pollMs: 1,
+      startupAttempts: 10,
+    });
+    assert.equal(outcome, 'exited');
+  } finally {
+    console.error = originalError;
+  }
+  assert.ok(errors.some((message) => message.includes('absorbed this launch')), `expected conflict, got ${errors.join(' | ')}`);
 });

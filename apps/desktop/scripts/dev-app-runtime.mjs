@@ -286,9 +286,9 @@ export function recheckAfterAbsence(options = {}) {
  * Quiet variant for the monitor paths: prints the absorbed-launch conflict
  * instead of throwing (the monitor's outcome is consumed asynchronously).
  */
-function recheckAfterAbsenceQuiet(targetProfile) {
+function recheckAfterAbsenceQuiet(options = {}) {
   try {
-    recheckAfterAbsence({ targetProfile });
+    recheckAfterAbsence(options);
   } catch (error) {
     console.error(error.message);
   }
@@ -624,6 +624,12 @@ function terminateProcessTree(child) {
 export async function monitorDevelopmentApp(options = {}) {
   const isRunning = options.isRunning ?? isDevelopmentAppRunning;
   const recheck = options.recheckAfterAbsence ?? recheckAfterAbsenceQuiet;
+  const recheckInput = {
+    targetProfile: options.targetProfile,
+    ...(options.commandLines ? { commandLines: options.commandLines } : {}),
+    ...(options.probe ? { probe: options.probe } : {}),
+    ...(options.readFile ? { readFile: options.readFile } : {}),
+  };
   const delay = options.delay ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
   const stopped = options.stopped ?? (() => false);
   const pollMs = options.pollMs ?? 250;
@@ -635,14 +641,14 @@ export async function monitorDevelopmentApp(options = {}) {
     else await delay(pollMs);
   }
   if (!appeared) {
-    recheck({ targetProfile: options.targetProfile });
+    recheck(recheckInput);
     return 'never-started';
   }
   while (!stopped()) {
     await delay(pollMs);
     if (stopped()) break;
     if (!isRunning()) {
-      recheck({ targetProfile: options.targetProfile });
+      recheck(recheckInput);
       return 'exited';
     }
   }
