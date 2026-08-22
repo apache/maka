@@ -651,6 +651,13 @@ test('guarded credential revocation requires its active credential', async () =>
       }),
       { credentialId: 'already-absent', revoked: false },
     );
+    await assert.rejects(
+      authority.revoke({
+        credentialId: desktop.credentialId,
+        requiredActiveCredentialId: desktop.credentialId,
+      }),
+      /cannot revoke itself/u,
+    );
     await authority.revoke({ credentialId: desktop.credentialId });
     await assert.rejects(
       authority.revoke({

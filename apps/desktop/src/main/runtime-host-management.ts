@@ -163,7 +163,6 @@ export function createDesktopRuntimeHostManagement(input: {
       throw new Error('This Runtime Host profile does not have an SSH management channel');
     }
     return {
-      profileId,
       managed,
       canRotate: managed.enabled,
       currentCredentialFingerprint: managed.credentialFingerprint,
@@ -254,7 +253,7 @@ export function createDesktopRuntimeHostManagement(input: {
     ) {
       throw new Error('Remote Runtime Host returned an invalid Desktop credential replacement');
     }
-    await input.profiles.rotateManagedCredential(access.profileId, response.credential);
+    await input.profiles.rotateManagedCredential(access.managed, response.credential);
     const finalized = response.credentials.flatMap((credential) => {
       if (credential.credentialId === replacement.credentialId) {
         const { expiresAt: _expiresAt, ...active } = credential;

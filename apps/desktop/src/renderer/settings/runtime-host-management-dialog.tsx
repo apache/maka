@@ -277,9 +277,7 @@ export function RuntimeHostManagementDialog(props: {
                       title={copy.revokeCredentialConfirm(
                         confirmation.credential.principalId,
                       )}
-                      description={confirmation.credential.status === 'active'
-                        ? copy.revokeActiveCredentialConfirmBody
-                        : undefined}
+                      description={copy.revokeCredentialConfirmBody}
                     />
                   ) : null}
                   {access.credentials.length === 0 ? (

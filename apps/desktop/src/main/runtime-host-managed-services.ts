@@ -86,6 +86,18 @@ export function findDesktopRuntimeHostManagedServiceBinding(
     : undefined;
 }
 
+export function sameDesktopRuntimeHostManagedServiceBinding(
+  left: DesktopRuntimeHostManagedServiceBinding,
+  right: DesktopRuntimeHostManagedServiceBinding,
+): boolean {
+  return (
+    left.state === right.state &&
+    left.profile.id === right.profile.id &&
+    sameRemoteRuntimeHostProfileTarget(left.profile, right.profile) &&
+    sameService(left.service, right.service)
+  );
+}
+
 class FileDesktopRuntimeHostManagedServiceStore
   implements DesktopRuntimeHostManagedServiceStore
 {
