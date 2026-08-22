@@ -41,7 +41,11 @@ afterEach(async () => {
  */
 async function mountRegion(): Promise<{
   composer: { current: ComposerHandle | null };
-  render(activeId: string | undefined, newTaskDraftKey: string): Promise<void>;
+  render(
+    activeId: string | undefined,
+    newTaskDraftKey: string,
+    newTaskSendPending?: boolean,
+  ): Promise<void>;
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   const storage = new Map<string, string>();
@@ -74,7 +78,11 @@ async function mountRegion(): Promise<{
   mountedRoot = root;
   const composer = createRef<ComposerHandle>();
 
-  const render = async (activeId: string | undefined, newTaskDraftKey: string) => {
+  const render = async (
+    activeId: string | undefined,
+    newTaskDraftKey: string,
+    newTaskSendPending = false,
+  ) => {
     await act(async () => {
       root.render(
         createElement(
@@ -89,6 +97,7 @@ async function mountRegion(): Promise<{
               activeInteraction: undefined,
               activeId,
               newTaskDraftKey,
+              newTaskSendPending,
               stopPendingBySession: {},
               respondToSandboxBoundary: () => {},
               activeSandboxBoundary: undefined,
@@ -153,6 +162,42 @@ test('does not resurrect a sent new-task draft from a target passed through', as
 
   await render(undefined, 'new-task:local:project-2');
   assert.equal(composer.current?.getText(), '');
+});
+
+test('a send in flight owns its text even if the target changes under it', async () => {
+  const { composer, render } = await mountRegion();
+
+  await render(undefined, 'new-task:local:project-1');
+  await act(() => composer.current?.setText('submitted text'));
+
+  // The picker stays live while a send settles, so the target can move between
+  // `sendCurrent` capturing the key it submitted from and clearing it. Carrying
+  // the text out to project-2 here would leave the sent message in the composer
+  // ready to be sent a second time, and the completion would clear an empty
+  // project-1 instead.
+  await render(undefined, 'new-task:local:project-2', true);
+  // The composer's own completion: it clears the exact key it submitted from.
+  await act(() => composer.current?.clearDraft('new-task:local:project-1'));
+  await render(undefined, 'new-task:local:project-2', false);
+
+  assert.equal(composer.current?.getText(), '');
+  assert.equal(composer.current?.getDraft('new-task:local:project-1'), '');
+  assert.equal(composer.current?.getDraft('new-task:local:project-2'), '');
+});
+
+test('a send in flight still hands over text typed after it was submitted', async () => {
+  const { composer, render } = await mountRegion();
+
+  await render(undefined, 'new-task:local:project-1');
+  await act(() => composer.current?.setText('submitted text'));
+
+  // The next message, begun while the send is still resolving. It is not the
+  // submission's to clear, so it follows the target once the send settles.
+  await act(() => composer.current?.setText('the next message'));
+  await render(undefined, 'new-task:local:project-2', true);
+  await render(undefined, 'new-task:local:project-2', false);
+
+  assert.equal(composer.current?.getText(), 'the next message');
 });
 
 test('restores a reload draft when its own target is selected later', async () => {

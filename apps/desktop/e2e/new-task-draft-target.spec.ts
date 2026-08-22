@@ -61,3 +61,26 @@ test('the new-task draft follows the Project chosen under the composer', async (
   await settle(page);
   await expect(composer).toHaveText(DRAFT);
 });
+
+test('a staged attachment survives the Project chosen under the composer', async ({
+  newTaskTargetWindow: page,
+}) => {
+  const picker = page.locator('button.maka-workspace-picker');
+  const chip = page.locator('.maka-composer-attachment-token');
+  await expect(picker).toHaveAttribute('aria-label', new RegExp(NEW_TASK_PROJECT_NAME));
+
+  await page.locator('.maka-composer').first().evaluate((form) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['staged'], 'dropped-notes.txt', { type: 'text/plain' }));
+    form.dispatchEvent(
+      new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true }),
+    );
+  });
+  await expect(chip).toHaveCount(1);
+
+  await picker.click();
+  await page.getByRole('menuitem', { name: '无项目', exact: true }).click();
+  await expect(picker).toHaveAttribute('aria-label', /无项目/);
+  await settle(page);
+  await expect(chip).toHaveCount(1);
+});

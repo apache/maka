@@ -7,7 +7,6 @@ import {
   selectPending,
   type PendingByKey,
 } from './app-shell-pending-attachments.js';
-import { useNewTaskPendingCarry } from './use-new-task-pending-carry.js';
 
 /**
  * Excerpts longer than this are truncated before staging. Kept equal to the
@@ -20,14 +19,9 @@ const MAX_QUOTE_CHARS = 32_000;
  * Quoted excerpts staged for the next send, keyed by draft key so each session
  * keeps its own (mirrors pending attachments). Cleared once the turn is sent.
  */
-export function useAppShellComposerQuotes(options: {
-  draftKey: string;
-  /** The new-task target's own key; see useNewTaskPendingCarry. */
-  newTaskDraftKey: string;
-}) {
+export function useAppShellComposerQuotes(options: { draftKey: string }) {
   const [pendingByKey, setPendingByKey] = useState<PendingByKey<QuoteRef>>({});
   const pendingQuotes = selectPending(pendingByKey, options.draftKey);
-  useNewTaskPendingCarry(options.newTaskDraftKey, setPendingByKey);
 
   function addQuote(input: { text: string; turnId?: string; label?: string }): void {
     const text = input.text.slice(0, MAX_QUOTE_CHARS).trim();

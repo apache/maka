@@ -55,6 +55,8 @@ interface ChatComposerRegionProps extends Omit<ComponentProps<typeof Composer>, 
   activeInteraction: ComposerInteraction | undefined;
   activeId: string | undefined;
   newTaskDraftKey: string;
+  /** True from the moment a new-task send starts until it has settled. */
+  newTaskSendPending: boolean;
   stopPendingBySession: Record<string, boolean>;
   respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
   activeSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['request'] | undefined;
@@ -71,6 +73,7 @@ export function ChatComposerRegion({
   activeInteraction,
   activeId,
   newTaskDraftKey,
+  newTaskSendPending,
   stopPendingBySession,
   respondToSandboxBoundary,
   activeSandboxBoundary,
@@ -83,6 +86,15 @@ export function ChatComposerRegion({
   const previousNewTaskDraftKey = useRef(newTaskDraftKey);
   useLayoutEffect(() => {
     const previous = previousNewTaskDraftKey.current;
+    // A submission owns the text it submitted until it settles. `sendCurrent`
+    // captures the key it sent from and clears exactly that key when the send
+    // resolves, so carrying the text to a target chosen mid-flight would leave
+    // the sent message sitting in the composer under the new one, ready to be
+    // sent twice. Leave `previous` where it is rather than dropping the change:
+    // the effect re-runs when the send settles, and carries then — from the
+    // slot the completion has already cleared, so nothing sent comes with it,
+    // and anything typed after the send does.
+    if (newTaskSendPending) return;
     previousNewTaskDraftKey.current = newTaskDraftKey;
     if (previous === newTaskDraftKey) return;
     const composer = composerRef.current;
@@ -126,7 +138,7 @@ export function ChatComposerRegion({
         ? carried
         : (newTaskDraftPersistence.read(newTaskDraftKey) ?? ''),
     );
-  }, [composerRef, newTaskDraftKey]);
+  }, [composerRef, newTaskDraftKey, newTaskSendPending]);
 
   return (
     <>

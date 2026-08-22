@@ -1,5 +1,23 @@
 export type PendingByKey<T> = Record<string, T[]>;
 
+/**
+ * The bucket the session-less composer stages into, whatever the workspace
+ * picker points at (#3408).
+ *
+ * The rest of the new-task surface is keyed by (profileId, hostId, projectId)
+ * since #3122, and staged files and quotes were keyed with it. But they are
+ * in-memory intent, not Host state: nothing persists them, and nothing restores
+ * them per target. Keying them by the target only made them drop out of the
+ * composer when the picker moved.
+ *
+ * A key that never moves is also the only owner an in-flight submission can
+ * safely have. `send()` captures the key it submitted from and clears that key
+ * when it resolves, so a key that followed the picker would leave the files it
+ * just sent staged under the new target, ready to be sent a second time. This
+ * one cannot go stale, so no re-keying rule is needed to keep it honest.
+ */
+export const NEW_TASK_PENDING_KEY = 'new-task';
+
 export function selectPending<T>(map: PendingByKey<T>, key: string): T[] {
   return map[key] ?? [];
 }
@@ -27,29 +45,6 @@ export function removePendingItems<T>(
   const remaining = (map[key] ?? []).filter((item) => !submitted.has(identityOf(item)));
   if (remaining.length === 0) return clearPending(map, key);
   return { ...map, [key]: remaining };
-}
-
-/**
- * Move one key's staged items to another, leaving nothing behind under the old
- * one. The destination takes exactly what the source had — including nothing —
- * so a bucket left under a key the composer merely passed through can never
- * resurface later as that key's own staged set.
- */
-export function rekeyPending<T>(
-  map: PendingByKey<T>,
-  from: string,
-  to: string,
-): PendingByKey<T> {
-  if (from === to) return map;
-  const hasFrom = Object.hasOwn(map, from);
-  const hasTo = Object.hasOwn(map, to);
-  if (!hasFrom && !hasTo) return map;
-  const moved = hasFrom ? (map[from] ?? []) : [];
-  const next = { ...map };
-  if (hasFrom) delete next[from];
-  if (moved.length > 0) next[to] = moved;
-  else if (hasTo) delete next[to];
-  return next;
 }
 
 export function clearPending<T>(map: PendingByKey<T>, key: string): PendingByKey<T> {
