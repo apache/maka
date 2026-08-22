@@ -52,6 +52,17 @@ export function createSettingsResourceState<T>(
   };
 }
 
+/**
+ * Keeps the last snapshot visible while revoking the authority established by
+ * an older Runtime Host generation. Ordinary same-generation refreshes use
+ * `beginSettingsResourceLoad` instead so they retain verified SWR semantics.
+ */
+export function invalidateSettingsResourceGeneration<T>(
+  current: SettingsResourceState<T>,
+): SettingsResourceState<T> {
+  return createSettingsResourceState(current.key, current.snapshot);
+}
+
 export function beginSettingsResourceLoad<T>(
   current: SettingsResourceState<T>,
   key: string,

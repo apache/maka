@@ -25,6 +25,7 @@ import {
   completeSettingsResourceLoad,
   createSettingsResourceState,
   failSettingsResourceLoad,
+  invalidateSettingsResourceGeneration,
   reconcileRuntimeHostProfileSelection,
   settingsResourceSnapshot,
   settingsResourceStatus,
@@ -79,6 +80,29 @@ describe('Settings resource state', () => {
       isVerified: true,
       message: 'offline',
     });
+  });
+
+  it('keeps a previous-generation snapshot visible without keeping its authority', () => {
+    const snapshot = { value: 'ready' };
+    const invalidated = invalidateSettingsResourceGeneration(
+      completeSettingsResourceLoad(LOCAL_KEY, snapshot),
+    );
+
+    assert.equal(settingsResourceSnapshot(invalidated, LOCAL_KEY), snapshot);
+    assert.deepEqual(settingsResourceStatus(invalidated, LOCAL_KEY), {
+      phase: 'loading',
+      hasSnapshot: true,
+      isVerified: false,
+      message: undefined,
+    });
+
+    const failed = failSettingsResourceLoad(
+      beginSettingsResourceLoad(invalidated, LOCAL_KEY),
+      LOCAL_KEY,
+      'replacement offline',
+    );
+    assert.equal(settingsResourceSnapshot(failed, LOCAL_KEY), snapshot);
+    assert.equal(settingsResourceStatus(failed, LOCAL_KEY).isVerified, false);
   });
 
   it('never exposes one Runtime Host snapshot through another Host key', () => {
@@ -162,7 +186,7 @@ describe('Settings snapshot cache', () => {
     assert.equal(settingsSnapshotCacheFor(secondBridge).readClient(), undefined);
   });
 
-  it('isolates settings and connections by Runtime Host epoch', () => {
+  it('isolates settings and connections by selected Runtime Host key', () => {
     const cache = createSettingsSnapshotCache();
     const localSettings = createDefaultSettings();
     const remoteSettings = {
@@ -239,7 +263,7 @@ describe('Settings Runtime Host request authority', () => {
     assert.equal(authority.acceptsSettingsWrite(settingsWrite), true);
   });
 
-  it('rejects every in-flight operation synchronously when the Host epoch changes', () => {
+  it('rejects every in-flight operation synchronously when the selected Host changes', () => {
     const authority = createSettingsRequestAuthority(LOCAL_KEY);
     const settingsRead = authority.beginSettingsRead(LOCAL_KEY);
     const connectionsRead = authority.beginConnectionsRead(LOCAL_KEY);
@@ -253,6 +277,47 @@ describe('Settings Runtime Host request authority', () => {
     assert.equal(authority.acceptsSettingsRead(settingsRead), false);
     assert.equal(authority.acceptsConnectionsRead(connectionsRead), false);
     assert.equal(authority.acceptsSettingsWrite(settingsWrite), false);
+  });
+
+  it('rejects every in-flight operation when the same Host key enters a new epoch', () => {
+    const authority = createSettingsRequestAuthority(LOCAL_KEY, 'epoch-1');
+    const settingsRead = authority.beginSettingsRead(LOCAL_KEY);
+    const connectionsRead = authority.beginConnectionsRead(LOCAL_KEY);
+    const settingsWrite = authority.beginSettingsWrite(LOCAL_KEY);
+    assert.ok(settingsRead);
+    assert.ok(connectionsRead);
+    assert.ok(settingsWrite);
+
+    assert.equal(authority.selectTarget(LOCAL_KEY, 'epoch-2'), true);
+
+    assert.equal(authority.acceptsSettingsRead(settingsRead), false);
+    assert.equal(authority.acceptsConnectionsRead(connectionsRead), false);
+    assert.equal(authority.acceptsSettingsWrite(settingsWrite), false);
+    assert.equal(authority.isCurrentTarget(settingsWrite), false);
+  });
+
+  it('does not revoke tickets for a repeated observation of the same Host epoch', () => {
+    const authority = createSettingsRequestAuthority(LOCAL_KEY, 'epoch-1');
+    const settingsRead = authority.beginSettingsRead(LOCAL_KEY);
+    const settingsWrite = authority.beginSettingsWrite(LOCAL_KEY);
+    assert.ok(settingsRead);
+    assert.ok(settingsWrite);
+
+    assert.equal(authority.selectTarget(LOCAL_KEY, 'epoch-1'), false);
+
+    assert.equal(authority.acceptsSettingsRead(settingsRead), true);
+    assert.equal(authority.acceptsSettingsWrite(settingsWrite), true);
+  });
+
+  it('rejects an in-flight write while the same Host epoch reconnects', () => {
+    const authority = createSettingsRequestAuthority(LOCAL_KEY, 'epoch-1');
+    const settingsWrite = authority.beginSettingsWrite(LOCAL_KEY);
+    assert.ok(settingsWrite);
+
+    assert.equal(authority.selectTarget(undefined, 'epoch-1'), true);
+
+    assert.equal(authority.acceptsSettingsWrite(settingsWrite), false);
+    assert.equal(authority.isCurrentTarget(settingsWrite), false);
   });
 
   it('keeps only the latest mutation for one Host', () => {

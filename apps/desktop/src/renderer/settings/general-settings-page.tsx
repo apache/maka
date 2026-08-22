@@ -498,7 +498,7 @@ function GeneralDefaultsCard(props: {
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
 }) {
-  const host = useRuntimeHostSettingsTarget();
+  const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
   // Level names come from the composer's own map — one vocabulary for the
@@ -560,7 +560,7 @@ function GeneralDefaultsCard(props: {
           copy.saveDefaultModelFailed,
           settingsActionErrorMessage(error, locale),
           undefined,
-          { profileId: host.profileId },
+          host ? { profileId: host.profileId } : undefined,
         );
       }
     } finally {
@@ -611,7 +611,7 @@ function GeneralDefaultsCard(props: {
           copy.saveDefaultPermissionFailed,
           settingsActionErrorMessage(error, locale),
           undefined,
-          { profileId: host.profileId },
+          host ? { profileId: host.profileId } : undefined,
         );
       }
     } finally {
@@ -633,7 +633,7 @@ function GeneralDefaultsCard(props: {
           copy.saveDefaultThinkingFailed,
           settingsActionErrorMessage(error, locale),
           undefined,
-          { profileId: host.profileId },
+          host ? { profileId: host.profileId } : undefined,
         );
       }
     } finally {
