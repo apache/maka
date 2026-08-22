@@ -30,6 +30,7 @@ import {
   StatusDot,
   Text,
   Token,
+  Tooltip,
   type DropdownMenuOption,
 } from '@astryxdesign/core';
 import { getConversationCopy } from './conversation-copy.js';
@@ -348,6 +349,7 @@ export function SessionContextLayer(props: {
       label={copy.sessionContextAriaLabel}
       className="maka-session-context"
       data-session-context-layer="true"
+      data-has-goal={props.goal ? 'true' : undefined}
     >
       <div className="maka-session-context__inner">
         {/* Lineage only. The session's own name moved to the window titlebar
@@ -356,7 +358,15 @@ export function SessionContextLayer(props: {
             twice. What stays is what the titlebar cannot answer: which session
             this one branched FROM. */}
         <div className="maka-session-context__lineage">
-          {props.branch ? (
+          {props.goal ? (
+            <Tooltip content={props.goal.condition}>
+              <div className="maka-session-context__goal-description">
+                <Text type="supporting" maxLines={1}>
+                  {props.goal.condition}
+                </Text>
+              </div>
+            </Tooltip>
+          ) : props.branch ? (
             <Breadcrumbs
               label={copy.sessionLineageAriaLabel}
               variant="supporting"

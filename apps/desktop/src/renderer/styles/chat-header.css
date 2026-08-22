@@ -84,6 +84,16 @@
   -webkit-app-region: no-drag;
 }
 
+/* A live Goal can keep creating Turns after the user stops typing, so its
+   identity and kill switches stay reachable while the transcript scrolls.
+   Ordinary lineage/revision context remains in-flow when no Goal is present. */
+.maka-session-context[data-has-goal="true"] {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  box-shadow: 0 var(--border-width-hairline) 0 var(--border-soft);
+}
+
 .maka-session-context__inner {
   min-width: 0;
   /* Control rhythm 36 (lg) — band holds sm/md controls without off-ladder 40. */
@@ -122,6 +132,23 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.maka-session-context__goal-description {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  padding-left: var(--space-1);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Goal rows are intentionally single-line, but Astryx tooltip layers inherit
+   typography from their trigger subtree even after entering the top layer.
+   Restore the Tooltip contract here so long Goal copy wraps inside its 300px
+   content measure instead of being clipped as one unbreakable line. */
+.maka-session-context [role="tooltip"] {
+  white-space: normal;
 }
 
 .maka-session-context__cluster {
