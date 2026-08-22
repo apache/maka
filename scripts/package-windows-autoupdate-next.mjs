@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { access, readFile, rm } from 'node:fs/promises';
+import { access, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runCommand } from './package-windows-x64.mjs';
@@ -68,22 +68,38 @@ export async function packageWindowsAutoupdateNext({
   await access(join(desktopRoot, 'release', 'win-unpacked'));
 
   await rm(outputDirectory, { recursive: true, force: true });
-  await run('npm', [
-    '--workspace',
-    '@maka/desktop',
-    'exec',
-    '--',
-    'electron-builder',
-    '--config',
-    'electron-builder.config.mjs',
-    '--win',
-    'nsis',
-    '--x64',
-    '--publish',
-    'never',
-    `-c.extraMetadata.version=${nextVersion}`,
-    '-c.directories.output=release-autoupdate-next',
-  ]);
+  // electron-builder reads the root Desktop manifest for the executable's
+  // Windows version resource. `extraMetadata` only changes the packaged app
+  // manifest, so it cannot by itself produce a genuinely version-bumped
+  // installer. Temporarily update the source manifest for the build and
+  // restore it even when electron-builder fails.
+  const originalManifest = await readFile(join(desktopRoot, 'package.json'));
+  const bumpedManifest = JSON.parse(originalManifest);
+  bumpedManifest.version = nextVersion;
+  await writeFile(
+    join(desktopRoot, 'package.json'),
+    `${JSON.stringify(bumpedManifest, null, 2)}\n`,
+  );
+  try {
+    await run('npm', [
+      '--workspace',
+      '@maka/desktop',
+      'exec',
+      '--',
+      'electron-builder',
+      '--config',
+      'electron-builder.config.mjs',
+      '--win',
+      'nsis',
+      '--x64',
+      '--publish',
+      'never',
+      `-c.extraMetadata.version=${nextVersion}`,
+      '-c.directories.output=release-autoupdate-next',
+    ]);
+  } finally {
+    await writeFile(join(desktopRoot, 'package.json'), originalManifest);
+  }
 
   // Assert the properties the harness depends on, not just process exit 0.
   await access(exePath);
