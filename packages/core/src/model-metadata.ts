@@ -429,6 +429,21 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
   },
   'ollama-cloud': ollamaCloudThinkingModels,
   deepseek: {
+    // The first-party model inventory currently returns this new model as a bare id.
+    // Keep its official metadata explicit until the generated catalog includes it.
+    'deepseek-v4-flash-vision-exp': {
+      displayName: 'DeepSeek-V4-Flash-Vision-Exp',
+      description:
+        'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
+      docsUrl: 'https://api-docs.deepseek.com/guides/vision/',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 384_000,
+      structuredOutput: true,
+      lastUpdated: '2026-08-21',
+      capabilities: { ...REASONING_FUNCTION_CALLING, vision: true },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
+    },
     'deepseek-v4-flash': {
       capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
       thinkingOptions: { efforts: ['high', 'max'], toggle: true },
