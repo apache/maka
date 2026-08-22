@@ -58,7 +58,7 @@ describe('relative timestamp labels', () => {
     assert.equal(formatCompactTimestamp(futureTs, NOW, 'en'), 'just now');
   });
 
-  it('keeps finite timestamp refresh delays within the scheduler bound', () => {
+  it('keeps timestamp refresh delays within the scheduler bound', () => {
     for (const ts of [
       NOW - 60_000,
       NOW - 60 * 60_000,
