@@ -30,6 +30,7 @@
 //     Revision:  50b43c0559a9658a4fda79645b2cfe66cfa2f133
 //     Path:      evals/diff-edits/diff-apply/diff-06-23-25.ts
 //     License:   Apache-2.0
+//     Copyright: Copyright 2025 Cline Bot Inc.
 //     Modified:  returns every matching span instead of the first, and rejects
 //                a match at EOF when old_string ended with a newline.
 //

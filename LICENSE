@@ -337,6 +337,7 @@ cline/cline diff-apply (adapted source, reached through opencode)
 Source: https://github.com/cline/cline
 Revision: 50b43c0559a9658a4fda79645b2cfe66cfa2f133
 Path: evals/diff-edits/diff-apply/diff-06-23-25.ts
+Copyright 2025 Cline Bot Inc.
 License: Apache-2.0
 
 The line-trimmed matcher in packages/runtime/src/edit-replace.ts is adapted
