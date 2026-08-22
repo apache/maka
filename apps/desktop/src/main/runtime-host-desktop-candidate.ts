@@ -70,7 +70,11 @@ import {
 } from "./runtime-host-session-execution-ipc-main.js";
 import { RuntimeHostSessionObservationRegistry } from "./runtime-host-session-observation-registry.js";
 import { RuntimeHostSessionObserver } from "./runtime-host-session-observer.js";
-import type { IpcHandler, ReconnectableReadIpcMain } from "./ipc-reconnect-policy.js";
+import type {
+  IpcHandler,
+  ReconciledControlHandlers,
+  ReconnectableReadIpcMain,
+} from "./ipc-reconnect-policy.js";
 import type { RuntimeHostTargetIpcMain } from "./runtime-host-reconnecting-ipc-main.js";
 import {
   desktopSessionResourceKey,
@@ -749,6 +753,45 @@ class ScopedIpcMain implements ReconnectableReadIpcMain {
 
   handleReconnectableRead(channel: string, listener: IpcHandler): void {
     this.#handle(channel, listener, true);
+  }
+
+  handleReconciledControl<Context, Result>(
+    channel: string,
+    handlers: ReconciledControlHandlers<Context, Result>,
+  ): void {
+    if (this.#closed)
+      throw new Error("Desktop Runtime Host candidate IPC is closed");
+    if (this.#channels.has(channel)) {
+      throw new Error(
+        `Desktop Runtime Host candidate registered duplicate IPC: ${channel}`,
+      );
+    }
+    const scopedHandlers: ReconciledControlHandlers<Context, Result> = {
+      dispatch: (event, scope, ...args) => {
+        requireDesktopTargetScope(scope, this.scope);
+        return handlers.dispatch(event, ...args);
+      },
+      reconcile: (context, event, scope, ...args) => {
+        requireDesktopTargetScope(scope, this.scope);
+        return handlers.reconcile(context, event, ...args);
+      },
+      reconciliationUnavailable: (context, event, scope, ...args) => {
+        requireDesktopTargetScope(scope, this.scope);
+        return handlers.reconciliationUnavailable(context, event, ...args);
+      },
+    };
+    if (this.#ipcMain.handleReconciledControl) {
+      this.#ipcMain.handleReconciledControl(channel, scopedHandlers);
+    } else {
+      this.#ipcMain.handle(channel, async (event, scope, ...args) => {
+        requireDesktopTargetScope(scope, this.scope);
+        const step = await handlers.dispatch(event, ...args);
+        return step.kind === "completed"
+          ? step.value
+          : handlers.reconcile(step.context, event, ...args);
+      });
+    }
+    this.#channels.add(channel);
   }
 
   #handle(channel: string, listener: IpcHandler, reconnectableRead: boolean): void {

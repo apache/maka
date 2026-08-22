@@ -197,7 +197,11 @@ import {
   requireDesktopTargetScope,
   type DesktopTargetScope,
 } from '../shared/runtime-host-identity.js';
-import type { GoalArmRequest } from '../shared/goal-arm.js';
+import type { GoalArmOutcome, GoalArmRequest } from '../shared/goal-arm.js';
+import {
+  invokeProjectedSessionRuntimeHost as invokeProjectedSessionRuntimeHostBridge,
+  projectProtocolSessionIds,
+} from './projected-session-runtime-host.js';
 import {
   projectDesktopAttachmentRefs,
   projectDesktopDailyReviewSummary,
@@ -567,14 +571,18 @@ async function invokeProjectedSessionRuntimeHost<T>(
   sessionId: string,
   ...args: unknown[]
 ): Promise<T> {
-  const session = await runtimeHostSessionRef(sessionId);
-  const value = await ipcRenderer.invoke(
+  return invokeProjectedSessionRuntimeHostBridge<T>(
+    runtimeHostSessionRef,
+    (targetChannel, scope, rawSessionId, ...targetArgs) => ipcRenderer.invoke(
+      targetChannel,
+      scope,
+      rawSessionId,
+      ...targetArgs,
+    ),
     channel,
-    session.scope,
-    session.sessionId,
+    sessionId,
     ...args,
-  ) as T;
-  return projectProtocolSessionIds(session.scope.hostId, value);
+  );
 }
 
 async function invokeSessionSummary(
@@ -691,31 +699,6 @@ function projectShellRunUpdate(
             sourceSessionId: sessionId(update.ownership.sourceSessionId),
           },
   };
-}
-
-const SESSION_ID_FIELDS = new Set([
-  'sessionId',
-  'rootSessionId',
-  'childSessionId',
-  'sourceSessionId',
-  'ownerSessionId',
-]);
-
-// Closed client models may be projected structurally. Opaque tool/provider data
-// must use the typed projection above so user content is never rewritten.
-function projectProtocolSessionIds<T>(hostId: string, value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((entry) => projectProtocolSessionIds(hostId, entry)) as T;
-  }
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [
-      key,
-      SESSION_ID_FIELDS.has(key) && typeof entry === 'string'
-        ? desktopSessionKey({ hostId, sessionId: entry })
-        : projectProtocolSessionIds(hostId, entry),
-    ]),
-  ) as T;
 }
 
 function subscribeRuntimeHostEvent<T extends readonly unknown[]>(
@@ -2055,7 +2038,7 @@ const makaBridge = {
     get(sessionId: string): Promise<GoalState | null> {
       return invokeProjectedSessionRuntimeHost('goal:get', sessionId);
     },
-    arm(sessionId: string, goal: GoalArmRequest): Promise<GoalState> {
+    arm(sessionId: string, goal: GoalArmRequest): Promise<GoalArmOutcome> {
       return invokeProjectedSessionRuntimeHost('goal:arm', sessionId, goal);
     },
     clear(sessionId: string): Promise<void> {

@@ -833,7 +833,7 @@ export interface MakaBridge {
     arm(
       sessionId: string,
       goal: import('../shared/goal-arm').GoalArmRequest,
-    ): Promise<import('@maka/runtime/goal-state').GoalState>;
+    ): Promise<import('../shared/goal-arm').GoalArmOutcome>;
     /** Clear the active goal, stopping autonomous continuation. */
     clear(sessionId: string): Promise<void>;
     /** Pause the active goal without spending a model turn. */

@@ -28,6 +28,7 @@ import { type ChatDefaultPermissionMode, type SettingsSection } from '@maka/core
 import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 
 import { type ThinkingLevel } from '@maka/core/model-thinking';
+import { type GoalStatus } from '@maka/core/goal';
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
@@ -360,8 +361,14 @@ type ShellCopy = {
     tokenBudgetDescription: string;
     tokenBudgetInvalid(min: number): string;
     cancel: string;
+    close: string;
     submit: string;
     failedFallback: string;
+    statusLabels: Record<GoalStatus, string>;
+    reconciledMatching(condition: string, status: string): string;
+    reconciledDifferent(condition: string, status: string): string;
+    reconciledNoGoal: string;
+    reconciliationUnavailable: string;
   };
   errorBoundary: {
     copyPending: string;
@@ -1016,8 +1023,26 @@ const SHELL_COPY_BY_LOCALE = {
       tokenBudgetDescription: '留空表示不设 token 上限。',
       tokenBudgetInvalid: (min) => `请填不小于 ${min} 的整数，或留空。`,
       cancel: '取消',
+      close: '关闭',
       submit: '开始',
       failedFallback: '无法设定 Goal，请稍后重试。',
+      statusLabels: {
+        active: '进行中',
+        waiting: '等待中',
+        paused: '已暂停',
+        achieved: '已达成',
+        impossible: '不可行',
+        cleared: '已清除',
+        stalled: '已停滞',
+        budget_limited: '已达到 Token 预算',
+        max_iterations: '已达到最多轮数',
+      },
+      reconciledMatching: (condition, status) =>
+        `已重新读取当前 Goal：“${condition}”（${status}）。它符合你的请求，但无法确认刚才的操作是否提交。`,
+      reconciledDifferent: (condition, status) =>
+        `已重新读取当前 Goal：“${condition}”（${status}）。它与本次请求不同。`,
+      reconciledNoGoal: '已重新读取当前状态：当前未读到 Goal。',
+      reconciliationUnavailable: '连接中断后暂时无法确认当前 Goal 状态。请关闭后重新打开再检查；此窗口不会重复提交。',
     },
     errorBoundary: {
       copyPending: '复制中…',
@@ -1523,8 +1548,26 @@ const SHELL_COPY_BY_LOCALE = {
       tokenBudgetDescription: 'Leave empty for no token ceiling.',
       tokenBudgetInvalid: (min) => `Enter a whole number of at least ${min}, or leave it empty.`,
       cancel: 'Cancel',
+      close: 'Close',
       submit: 'Start',
       failedFallback: 'The goal could not be set. Try again.',
+      statusLabels: {
+        active: 'Active',
+        waiting: 'Waiting',
+        paused: 'Paused',
+        achieved: 'Achieved',
+        impossible: 'Impossible',
+        cleared: 'Cleared',
+        stalled: 'Stalled',
+        budget_limited: 'Token budget reached',
+        max_iterations: 'Maximum turns reached',
+      },
+      reconciledMatching: (condition, status) =>
+        `Current Goal after reconnect: “${condition}” (${status}). It matches your request, but this does not prove that the interrupted operation committed.`,
+      reconciledDifferent: (condition, status) =>
+        `Current Goal after reconnect: “${condition}” (${status}). It differs from this request.`,
+      reconciledNoGoal: 'Current state after reconnect: no Goal was found.',
+      reconciliationUnavailable: 'The connection was interrupted and the current Goal cannot be confirmed yet. Close and reopen to check again; this dialog will not submit twice.',
     },
     errorBoundary: {
       copyPending: 'Copying…',
