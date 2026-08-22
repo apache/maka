@@ -435,6 +435,7 @@ export interface MakaBridge {
 
   runtimeHostProfiles: {
     getSnapshot(): Promise<DesktopRuntimeHostProfileSnapshot>;
+    getDefaultHost(): Promise<DesktopRuntimeHostRef>;
     addAndEnable(
       input: DesktopRuntimeHostProfileAddInput,
     ): Promise<DesktopRuntimeHostProfileAddResult>;
@@ -706,7 +707,7 @@ export interface MakaBridge {
     }, host?: DesktopRuntimeHostRef): Promise<ExternalSessionImportIpcResult<DesktopSessionSummary>>;
   };
   projects: {
-    getDefaultContext(): Promise<{
+    getDefaultContext(host?: DesktopRuntimeHostRef): Promise<{
       snapshot: DesktopProjectSnapshot;
       info: DesktopAppInfo;
     }>;
@@ -807,14 +808,14 @@ export interface MakaBridge {
     subscribeEvents(handler: (event: ConnectionEvent) => void, host?: DesktopRuntimeHostRef): () => void;
   };
   mcp: {
-    getConfig(): Promise<McpConfigFile>;
-    listStatuses(): Promise<McpServerStatus[]>;
-    setConfig(config: McpConfigFile): Promise<McpConfigFile>;
-    upsert(serverId: string, config: McpServerConfig): Promise<McpConfigFile>;
-    install(serverId: string, config: McpServerConfig): Promise<McpConfigFile>;
-    remove(serverId: string): Promise<McpConfigFile>;
-    cancelInstall(serverId: string): Promise<McpConfigFile>;
-    test(serverId: string): Promise<McpTestResult>;
+    getConfig(host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    listStatuses(host?: DesktopRuntimeHostRef): Promise<McpServerStatus[]>;
+    setConfig(config: McpConfigFile, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    install(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    cancelInstall(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult>;
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void;
   };
   settings: {
@@ -857,6 +858,7 @@ export interface MakaBridge {
     setMilestone(
       id: OnboardingMilestoneId,
       status: 'completed' | 'skipped',
+      host?: DesktopRuntimeHostRef,
     ): Promise<OnboardingSnapshot>;
   };
   taskReadiness: {
@@ -978,17 +980,18 @@ export interface MakaBridge {
     logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
   };
   scheduledTasks: {
-    list(): Promise<ScheduledTask[]>;
-    create(input: Omit<CreateScheduledTaskInput, 'createdBy'>): Promise<ScheduledTask>;
+    list(host?: DesktopRuntimeHostRef): Promise<ScheduledTask[]>;
+    create(input: Omit<CreateScheduledTaskInput, 'createdBy'>, host?: DesktopRuntimeHostRef): Promise<ScheduledTask>;
     update(
       id: string,
       patch: UpdateScheduledTaskInput,
+      host?: DesktopRuntimeHostRef,
     ): Promise<ScheduledTask>;
-    setEnabled(id: string, enabled: boolean): Promise<ScheduledTask>;
-    triggerNow(id: string): Promise<ScheduledTask>;
-    snooze(id: string): Promise<ScheduledTask>;
-    clearRunHistory(id: string): Promise<ScheduledTask>;
-    delete(id: string): Promise<void>;
+    setEnabled(id: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<ScheduledTask>;
+    triggerNow(id: string, host?: DesktopRuntimeHostRef): Promise<ScheduledTask>;
+    snooze(id: string, host?: DesktopRuntimeHostRef): Promise<ScheduledTask>;
+    clearRunHistory(id: string, host?: DesktopRuntimeHostRef): Promise<ScheduledTask>;
+    delete(id: string, host?: DesktopRuntimeHostRef): Promise<void>;
     subscribeChanges(
       handler: (event: { type: 'scheduled_tasks_changed'; reason: string; taskId?: string; ts: number }) => void,
     ): () => void;
@@ -1013,7 +1016,7 @@ export interface MakaBridge {
     test(input: { provider?: WebSearchProvider; apiKey?: string }, host?: DesktopRuntimeHostRef): Promise<WebSearchResponse>;
   };
   dailyReview: {
-    day(offsetDays: number, daySpan?: number): Promise<Result<DailyReviewSummary>>;
+    day(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef): Promise<Result<DailyReviewSummary>>;
     getConfig?(host?: DesktopRuntimeHostRef): Promise<DailyReviewConfig>;
     setConfig?(patch: Partial<DailyReviewConfig>, host?: DesktopRuntimeHostRef): Promise<DailyReviewConfig>;
     runOnce?(input: { range: DailyReviewRange; offsetDays?: number; modelKey?: string }): Promise<{ archiveId: string }>;
@@ -1096,7 +1099,7 @@ export interface MakaBridge {
             | 'open-failed';
         }
     >;
-    resolveProjectGitInfo(projectPath: string): Promise<
+    resolveProjectGitInfo(projectPath: string, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; projectPath: string; projectGit: { isGitRepo: boolean; branch?: string } }
       | { ok: false; reason: 'invalid-path' | 'not-found' }
     >;
@@ -1140,7 +1143,7 @@ export interface MakaBridge {
     subscribeChanges(handler: (event: ArtifactChangedEvent) => void): () => void;
   };
   skills: {
-    list(): Promise<SkillEntry[]>;
+    list(host?: DesktopRuntimeHostRef): Promise<SkillEntry[]>;
     listInvocable(
       sessionId?: string,
       newSessionContext?: {
@@ -1150,44 +1153,44 @@ export interface MakaBridge {
       },
     ): Promise<import('@maka/runtime/skill-invocation').InvocableSkillEntry[]>;
     catalog: {
-      list(): Promise<BundledSkillCatalogEntry[]>;
-      install(id: string): Promise<
+      list(host?: DesktopRuntimeHostRef): Promise<BundledSkillCatalogEntry[]>;
+      install(id: string, host?: DesktopRuntimeHostRef): Promise<
         | { ok: true; skill: SkillEntry }
         | { ok: false; reason: 'not_found' | 'already_exists' | 'blocked_path' | 'write_failed' }
       >;
     };
     sources: {
-      list(): Promise<ManagedSkillSourceEntry[]>;
-      importLocalFile(): Promise<
+      list(host?: DesktopRuntimeHostRef): Promise<ManagedSkillSourceEntry[]>;
+      importLocalFile(host?: DesktopRuntimeHostRef): Promise<
         | { ok: true; source: ManagedSkillSourceEntry }
         | { ok: false; reason: 'cancelled' | 'invalid_skill' | 'already_exists' | 'blocked_path' | 'write_failed' }
       >;
     };
-    installManaged(sourceId: string): Promise<
+    installManaged(sourceId: string, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; skill: SkillEntry }
       | { ok: false; reason: 'not_found' | 'already_exists' | 'blocked_path' | 'write_failed' }
     >;
-    previewUpdate(skillId: string): Promise<
+    previewUpdate(skillId: string, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; preview: ManagedSkillUpdatePreview }
       | { ok: false; reason: 'not_managed' | 'source_missing' | 'metadata_error' | 'blocked_path' | 'read_failed' }
     >;
-    updateManaged(skillId: string, options?: { force?: boolean; expectedCurrentSha256?: string; expectedSourceSha256?: string }): Promise<
+    updateManaged(skillId: string, options?: { force?: boolean; expectedCurrentSha256?: string; expectedSourceSha256?: string }, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; skill: SkillEntry }
       | { ok: false; reason: 'not_managed' | 'source_missing' | 'local_modified' | 'metadata_error' | 'blocked_path' | 'write_failed' }
     >;
-    setEnabled(skillId: string, enabled: boolean): Promise<
+    setEnabled(skillId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; skill: SkillEntry }
       | { ok: false; reason: 'not_found' | 'blocked_path' | 'state_error' | 'write_failed' }
     >;
-    setPinned(skillRef: string, pinned: boolean): Promise<
+    setPinned(skillRef: string, pinned: boolean, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; skill: SkillEntry }
       | { ok: false; reason: 'not_found' | 'blocked_path' | 'state_error' | 'write_failed' }
     >;
-    delete(idOrRef: string): Promise<
+    delete(idOrRef: string, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true }
       | { ok: false; reason: 'not_found' | 'blocked_path' | 'blocked_scope' | 'delete_failed' }
     >;
-    open(id: string, target?: 'file' | 'directory'): Promise<
+    open(id: string, target?: 'file' | 'directory', host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; target: 'file' | 'directory' }
       | { ok: false; reason: 'invalid_id' | 'missing' | 'blocked_path' | 'not_file' | 'not_directory' | 'open_failed' }
     >;

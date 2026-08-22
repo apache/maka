@@ -121,3 +121,9 @@ export function truncateUtf8(value: string, maximumBytes: number, marker = ''): 
   }
   return `${codePoints.slice(0, low).join('')}${suffix}`;
 }
+
+export function collapseHomePath(value: string, homePath: string, platform: string): string {
+  if (!homePath) return value;
+  const escaped = homePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return value.replace(new RegExp(escaped, platform === 'win32' ? 'gi' : 'g'), '~');
+}

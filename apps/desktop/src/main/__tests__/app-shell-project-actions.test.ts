@@ -67,6 +67,9 @@ test('Project errors preserve the Host authority of the failed operation', async
   const diagnosticTargets: unknown[] = [];
   globalThis.window = {
     maka: {
+      runtimeHostProfiles: {
+        getDefaultHost: async () => ({ profileId: 'default-profile', hostId: 'default-host' }),
+      },
       app: {
         openPath: async () => {
           throw new Error('unavailable');
@@ -106,7 +109,7 @@ test('Project errors preserve the Host authority of the failed operation', async
     await actions.openProjectFolder();
 
     assert.deepEqual(diagnosticTargets, [
-      undefined,
+      { profileId: 'default-profile' },
       { sessionId: 'session-key' },
     ]);
   } finally {

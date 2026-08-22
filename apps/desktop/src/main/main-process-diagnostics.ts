@@ -1,4 +1,4 @@
-import { DiagnosticLogBuffer, truncateUtf8 } from '@maka/core/diagnostic-log';
+import { collapseHomePath, DiagnosticLogBuffer, truncateUtf8 } from '@maka/core/diagnostic-log';
 import { installConsoleDiagnosticLogCapture } from '@maka/core/node-diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import type { TurnTrace } from '@maka/core/session-trace';
@@ -475,10 +475,4 @@ function boundedDiagnosticError(error: unknown): string {
     redactSecrets(error instanceof Error ? error.message : String(error)),
     1024,
   );
-}
-
-function collapseHomePath(value: string, homePath: string, platform: NodeJS.Platform): string {
-  if (!homePath) return value;
-  const escaped = homePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return value.replace(new RegExp(escaped, platform === 'win32' ? 'gi' : 'g'), '~');
 }

@@ -70,11 +70,15 @@ test('keeps connection projections isolated and cached by owning Host', async ()
 
 test('loads the default Host projection without waiting for the new-task catalog', async () => {
   const { root } = installReactRenderer();
-  const requestedSessions: Array<string | undefined> = [];
+  const requestedHosts: unknown[] = [];
+  const defaultHost = { profileId: 'profile-default', hostId: 'host-default' };
   (globalThis.window as unknown as { maka: unknown }).maka = {
+    runtimeHostProfiles: {
+      getDefaultHost: async () => defaultHost,
+    },
     connections: {
-      getSnapshot: async (sessionId?: string) => {
-        requestedSessions.push(sessionId);
+      getSnapshot: async (_sessionId?: string, host?: unknown) => {
+        requestedHosts.push(host);
         return snapshot('default-connection');
       },
     },
@@ -94,7 +98,7 @@ test('loads the default Host projection without waiting for the new-task catalog
     root.render(createElement(Probe));
   });
 
-  assert.deepEqual(requestedSessions, [undefined]);
+  assert.deepEqual(requestedHosts, [defaultHost]);
   assert.equal(current.defaultConnection, 'default-connection');
 });
 
@@ -112,6 +116,9 @@ test('reports connection refresh failures against their owning Host', async () =
       getConnections: async () => {
         throw new Error('profile unavailable');
       },
+    },
+    runtimeHostProfiles: {
+      getDefaultHost: async () => ({ profileId: 'profile-default', hostId: 'host-default' }),
     },
   };
 
@@ -139,10 +146,14 @@ test('reports connection refresh failures against their owning Host', async () =
       },
     }));
   });
+  await act(async () => {
+    root.render(createElement(Probe, { target: { kind: 'default' } }));
+  });
 
   assert.deepEqual(diagnosticTargets, [
     { sessionId },
     { profileId: 'profile-b' },
+    { profileId: 'profile-default' },
   ]);
 });
 

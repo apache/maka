@@ -1,11 +1,18 @@
 import type { Dispatch, SetStateAction } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { DesktopProjectCapabilities } from '../preload/bridge-contract.js';
+import type {
+  DesktopProjectCapabilities,
+  DesktopRuntimeHostRef,
+} from '../preload/bridge-contract.js';
 import { openPathActionErrorMessage } from './app-shell-copy';
 import { openPathActionLabel, openPathFailureCopy } from './open-path';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 import { isSessionWorkspaceUnavailableError, showSessionWorkspaceUnavailableToast } from './session-workspace-errors';
+import {
+  defaultRuntimeHostDiagnosticTarget,
+  runOnDefaultRuntimeHost,
+} from './default-runtime-host-operation.js';
 
 export interface RendererAppInfo {
   projectId?: string | null;
@@ -51,7 +58,7 @@ export function createAppShellProjectActions(deps: {
   projectPickerRequestRef: RefBox<number>;
   rendererMountedRef: RefBox<boolean>;
   setProjectPickerPending: Dispatch<SetStateAction<boolean>>;
-  refreshDefaultProjectState(): Promise<ProjectRecord[]>;
+  refreshDefaultProjectState(host?: DesktopRuntimeHostRef): Promise<ProjectRecord[]>;
   selectedProjectId: string | null | undefined;
   projects: readonly ProjectRecord[];
   projectCapabilities: DesktopProjectCapabilities;
@@ -75,31 +82,35 @@ export function createAppShellProjectActions(deps: {
   } = deps;
   const copy = getShellCopy(uiLocale).projectActions;
   const sessionDiagnosticTarget = sessionId ? { sessionId } : undefined;
-  const showDefaultProjectError = (title: string, description?: string) => {
-    // These operations use the default Host implicitly. Without an explicit
-    // Host ref captured by the operation, a profile sampled elsewhere could
-    // identify a different Host after a default switch. Desktop-only evidence
-    // is preferable to a confidently wrong Runtime Host report.
-    toastApi.error(title, description);
+  const showDefaultProjectError = (title: string, description: string | undefined, error: unknown) => {
+    toastApi.error(
+      title,
+      description,
+      undefined,
+      defaultRuntimeHostDiagnosticTarget(error),
+    );
   };
   const showSessionProjectError = (title: string, description?: string) => {
     toastApi.error(title, description, undefined, sessionDiagnosticTarget);
   };
 
   async function refreshProjects(): Promise<ProjectRecord[]> {
-    return refreshDefaultProjectState();
+    return (
+      await runOnDefaultRuntimeHost((host) => refreshDefaultProjectState(host))
+    ).value;
   }
 
   async function applySelectedProject(
     project: ProjectRecord,
     path: string,
     notify: boolean,
+    host: DesktopRuntimeHostRef,
   ): Promise<boolean> {
     if (project.preferredPath) {
-      const info = await window.maka.app.resolveProjectGitInfo(path);
+      const info = await window.maka.app.resolveProjectGitInfo(path, host);
       if (!info.ok) throw new Error(copy.selectedPathUnreadable);
     }
-    await refreshProjects();
+    await refreshDefaultProjectState(host);
     if (notify) {
       onProjectSelected(sessionId);
       toastApi.success(copy.directorySwitchedTitle, project.name);
@@ -107,11 +118,15 @@ export function createAppShellProjectActions(deps: {
     return true;
   }
 
-  async function selectProjectRecord(project: ProjectRecord, notify: boolean): Promise<boolean> {
+  async function selectProjectRecord(
+    project: ProjectRecord,
+    notify: boolean,
+    host: DesktopRuntimeHostRef,
+  ): Promise<boolean> {
     if (!project.available || project.archivedAt !== undefined) return false;
-    const selected = await window.maka.projects.select(project.id);
+    const selected = await window.maka.projects.select(project.id, host);
     if (!selected.project) return false;
-    return applySelectedProject(selected.project, selected.path, notify);
+    return applySelectedProject(selected.project, selected.path, notify, host);
   }
 
   async function addProject(): Promise<ProjectRecord | null> {
@@ -124,16 +139,21 @@ export function createAppShellProjectActions(deps: {
     const isCurrentProjectPickerRequest = () =>
       rendererMountedRef.current && projectPickerRequestRef.current === requestId;
     try {
-      const result = await window.maka.projects.add();
+      const result = await runOnDefaultRuntimeHost(async (host) => {
+        const added = await window.maka.projects.add(host);
+        if (!added.ok) return added;
+        await applySelectedProject(added.project, added.path, true, host);
+        return added;
+      });
       if (!isCurrentProjectPickerRequest()) return null;
-      if (!result.ok) return null;
-      await applySelectedProject(result.project, result.path, true);
-      return result.project;
+      if (!result.value.ok) return null;
+      return result.value.project;
     } catch (error) {
       if (isCurrentProjectPickerRequest()) {
         showDefaultProjectError(
           copy.selectDirectoryFailedTitle,
           localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
+          error,
         );
       }
       return null;
@@ -149,9 +169,11 @@ export function createAppShellProjectActions(deps: {
     try {
       const project = projects.find((candidate) => candidate.id === projectId);
       if (!project) return false;
-      return await selectProjectRecord(project, true);
+      return (
+        await runOnDefaultRuntimeHost((host) => selectProjectRecord(project, true, host))
+      ).value;
     } catch (error) {
-      showDefaultProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
+      showDefaultProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale), error);
       return false;
     }
   }
@@ -159,13 +181,16 @@ export function createAppShellProjectActions(deps: {
   async function selectNoProject(): Promise<void> {
     if (!projectCapabilities.selectNoProject) return;
     try {
-      await window.maka.projects.select(null);
-      await refreshProjects();
-      onProjectSelected(sessionId);
+      await runOnDefaultRuntimeHost(async (host) => {
+        await window.maka.projects.select(null, host);
+        await refreshDefaultProjectState(host);
+        onProjectSelected(sessionId);
+      });
     } catch (error) {
       showDefaultProjectError(
         copy.selectDirectoryFailedTitle,
         localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
+        error,
       );
     }
   }
@@ -173,30 +198,43 @@ export function createAppShellProjectActions(deps: {
   async function prepareProject(projectId: string): Promise<boolean> {
     try {
       const project = projects.find((candidate) => candidate.id === projectId);
-      return project ? await selectProjectRecord(project, false) : false;
+      return project
+        ? (
+            await runOnDefaultRuntimeHost((host) =>
+              selectProjectRecord(project, false, host),
+            )
+          ).value
+        : false;
     } catch (error) {
-      showDefaultProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
+      showDefaultProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale), error);
       return false;
     }
   }
 
   async function prepareDefaultProject(): Promise<boolean> {
     try {
-      if (selectedProjectId === null && projectCapabilities.selectNoProject) return true;
-      const candidates = projects.length > 0 ? projects : await refreshProjects();
-      const project = candidates.find(
-        (candidate) => candidate.archivedAt === undefined && candidate.available,
-      );
-      if (!project) {
-        if (!projectCapabilities.selectNoProject) return false;
-        await selectNoProject();
-        return true;
-      }
-      return await selectProjectRecord(project, false);
+      return (
+        await runOnDefaultRuntimeHost(async (host) => {
+          if (selectedProjectId === null && projectCapabilities.selectNoProject) return true;
+          const candidates = projects.length > 0
+            ? projects
+            : await refreshDefaultProjectState(host);
+          const project = candidates.find(
+            (candidate) => candidate.archivedAt === undefined && candidate.available,
+          );
+          if (project) return selectProjectRecord(project, false, host);
+          if (!projectCapabilities.selectNoProject) return false;
+          await window.maka.projects.select(null, host);
+          await refreshDefaultProjectState(host);
+          onProjectSelected(sessionId);
+          return true;
+        })
+      ).value;
     } catch (error) {
       showDefaultProjectError(
         copy.selectDirectoryFailedTitle,
         localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
+        error,
       );
       return false;
     }
@@ -205,66 +243,84 @@ export function createAppShellProjectActions(deps: {
   async function relinkProject(projectId: string, selectAfter = false): Promise<ProjectRecord | null> {
     if (!projectCapabilities.chooseClientDirectory) return null;
     try {
-      const result = await window.maka.projects.relink(projectId);
-      if (!result.ok) return null;
-      if (selectAfter) await selectProjectRecord(result.project, true);
-      else await refreshProjects();
-      return result.project;
+      return (
+        await runOnDefaultRuntimeHost(async (host) => {
+          const result = await window.maka.projects.relink(projectId, host);
+          if (!result.ok) return null;
+          if (selectAfter) await selectProjectRecord(result.project, true, host);
+          else await refreshDefaultProjectState(host);
+          return result.project;
+        })
+      ).value;
     } catch (error) {
-      showDefaultProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));
+      showDefaultProjectError(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale), error);
       return null;
     }
   }
 
   async function renameProject(projectId: string, name: string): Promise<void> {
     try {
-      await window.maka.projects.rename(projectId, name);
-      await refreshProjects();
+      await runOnDefaultRuntimeHost(async (host) => {
+        await window.maka.projects.rename(projectId, name, host);
+        await refreshDefaultProjectState(host);
+      });
     } catch (error) {
       showDefaultProjectError(
         copy.projectUpdateFailedTitle,
         localizedShellErrorMessage(error, copy.projectUpdateFailedFallback, uiLocale),
+        error,
       );
     }
   }
 
   async function archiveProject(projectId: string): Promise<void> {
     try {
-      await window.maka.projects.archive(projectId);
-      await refreshProjects();
+      await runOnDefaultRuntimeHost(async (host) => {
+        await window.maka.projects.archive(projectId, host);
+        await refreshDefaultProjectState(host);
+      });
     } catch (error) {
       showDefaultProjectError(
         copy.projectUpdateFailedTitle,
         localizedShellErrorMessage(error, copy.projectUpdateFailedFallback, uiLocale),
+        error,
       );
     }
   }
 
   async function restoreProject(projectId: string): Promise<void> {
     try {
-      await window.maka.projects.restore(projectId);
-      await refreshProjects();
+      await runOnDefaultRuntimeHost(async (host) => {
+        await window.maka.projects.restore(projectId, host);
+        await refreshDefaultProjectState(host);
+      });
     } catch (error) {
       showDefaultProjectError(
         copy.projectUpdateFailedTitle,
         localizedShellErrorMessage(error, copy.projectUpdateFailedFallback, uiLocale),
+        error,
       );
     }
   }
 
   async function openSkillsFolder() {
     try {
-      const result = await window.maka.app.openPath('skills');
+      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+        window.maka.app.openPath('skills', undefined, host),
+      );
       if (!result.ok) {
-        showDefaultProjectError(
+        toastApi.error(
           copy.openFailedTitle(openPathActionLabel('skills', uiLocale)),
           openPathFailureCopy(result.reason, uiLocale),
+          undefined,
+          diagnosticTarget,
         );
       }
     } catch (error) {
       showDefaultProjectError(
         copy.openFailedTitle(openPathActionLabel('skills', uiLocale)),
         openPathActionErrorMessage(error, 'skills', uiLocale),
+        error,
       );
     }
   }
@@ -292,17 +348,22 @@ export function createAppShellProjectActions(deps: {
 
   async function openWorkspaceFolder() {
     try {
-      const result = await window.maka.app.openPath('workspace');
+      const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
+        window.maka.app.openPath('workspace', undefined, host),
+      );
       if (!result.ok) {
-        showDefaultProjectError(
+        toastApi.error(
           copy.openFailedTitle(openPathActionLabel('workspace', uiLocale)),
           openPathFailureCopy(result.reason, uiLocale),
+          undefined,
+          diagnosticTarget,
         );
       }
     } catch (error) {
       showDefaultProjectError(
         copy.openFailedTitle(openPathActionLabel('workspace', uiLocale)),
         openPathActionErrorMessage(error, 'workspace', uiLocale),
+        error,
       );
     }
   }

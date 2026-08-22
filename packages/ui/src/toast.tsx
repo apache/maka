@@ -44,6 +44,8 @@ export interface ToastAction {
 
 export interface ToastErrorAction {
   label: string;
+  failureTitle: string;
+  failureDescription: string;
   onClick(
     input: Pick<ToastInput, 'title' | 'description' | 'diagnosticDetails' | 'diagnosticTarget'>,
   ): Promise<void>;
@@ -139,6 +141,30 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
       let dismissCurrent: ToastDismissFn | undefined;
       const duration = input.duration ?? DEFAULT_DURATION;
       const errorAction = props.errorAction;
+      const showErrorActionFailure = () => {
+        if (!errorAction) return;
+        const failureId = `t${++idSeed.current}`;
+        let dismissFailure: ToastDismissFn | undefined;
+        dismissFailure = showToast({
+          uniqueID: failureId,
+          body: (
+            <ToastBody
+              input={{
+                title: errorAction.failureTitle,
+                description: errorAction.failureDescription,
+                variant: 'error',
+              }}
+            />
+          ),
+          type: 'error',
+          isAutoHide: true,
+          autoHideDuration: DEFAULT_DURATION,
+          onHide: () => {
+            dismissByIdRef.current.delete(failureId);
+          },
+        });
+        dismissByIdRef.current.set(failureId, dismissFailure);
+      };
       const actions = [
         input.action,
         input.variant === 'error' && errorAction
@@ -171,10 +197,10 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
                     }
                     void pending.then(
                       () => dismissCurrent?.(),
-                      () => undefined,
+                      showErrorActionFailure,
                     );
                   } catch {
-                    // Keep the toast visible so the user can retry the action.
+                    showErrorActionFailure();
                   }
                 }}
               />

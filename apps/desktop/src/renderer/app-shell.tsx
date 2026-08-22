@@ -153,6 +153,10 @@ import type { ArchivedTasksBridge } from './settings/tasks-settings-page';
 import { CustomPetCompanion } from './custom-pet-companion';
 import { derivePetActivityState } from './custom-pet-companion-model';
 import { createAppShellDailyReviewBridge } from './app-shell-daily-review-bridge';
+import {
+  defaultRuntimeHostDiagnosticTarget,
+  runOnDefaultRuntimeHost,
+} from './default-runtime-host-operation.js';
 import { useAppShellModuleData } from './use-module-data';
 import { useKeepSystemAwake } from './use-keep-system-awake';
 import { useAppShellProjectContext } from './use-project-context';
@@ -279,6 +283,8 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
   const errorToastAction = useMemo<ToastErrorAction>(
     () => ({
       label: getShellCopy(uiLocale).errorBoundary.copyReport,
+      failureTitle: getShellCopy(uiLocale).commandActions.copyFailedTitle,
+      failureDescription: getShellCopy(uiLocale).commandActions.clipboardDenied,
       onClick: (input) => window.maka.diagnostics.copyReport({
         surface: 'toast',
         title: input.title,
@@ -398,11 +404,6 @@ function AppShellContent({
 
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const newTask = useNewTaskTarget({ toastApi, uiLocale });
-  const defaultRuntimeHostDiagnosticTarget = newTask.catalog.hosts.some(
-    (host) => host.profile.id === newTask.catalog.defaultProfileId,
-  )
-    ? { profileId: newTask.catalog.defaultProfileId }
-    : undefined;
   const currentNewTaskDraftKey = newTaskDraftKey(newTask.target);
   const attachmentDraftKey = activeId ?? currentNewTaskDraftKey;
   const {
@@ -1879,7 +1880,6 @@ function AppShellContent({
     isSkillsSurfaceActive,
     isScheduledTasksSurfaceActive,
     toastApi,
-    diagnosticTarget: defaultRuntimeHostDiagnosticTarget,
   });
 
   // 保持系统唤醒 capability for the 定时任务 page: reads/writes
@@ -3107,10 +3107,7 @@ function AppShellContent({
                   onDeleteSkill={(skillRef) => deleteSkill(skillRef)}
                 />
               ) : navSelection.section === 'extensions' && navSelection.module === 'mcp' ? (
-                <McpPage
-                  hubHeader={extensionsHubHeader}
-                  diagnosticTarget={defaultRuntimeHostDiagnosticTarget}
-                />
+                <McpPage hubHeader={extensionsHubHeader} />
               ) : navSelection.section === 'automations' && navSelection.module === 'scheduled-tasks' ? (
                 <ScheduledTasksPage
                   hubHeader={automationsHubHeader}
@@ -3525,12 +3522,20 @@ function AppShellContent({
                 onRefreshConnections={refreshConnections}
                 onSkip={async () => {
                   try {
-                    await window.maka.onboarding.setMilestone('initial_onboarding', 'skipped');
+                    await runOnDefaultRuntimeHost((host) =>
+                      window.maka.onboarding.setMilestone(
+                        'initial_onboarding',
+                        'skipped',
+                        host,
+                      ),
+                    );
                     onboarding.refresh();
                   } catch (error) {
                     toastApi.error(
                       shellCopy.skipErrorTitle,
                       localizedShellErrorMessage(error, shellCopy.tryAgainLater, uiLocale),
+                      undefined,
+                      defaultRuntimeHostDiagnosticTarget(error),
                     );
                   }
                 }}

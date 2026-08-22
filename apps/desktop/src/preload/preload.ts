@@ -845,8 +845,8 @@ const runtimeHost: MakaBridge['runtimeHost'] = {
   },
 };
 
-async function listScheduledTasks(): Promise<ScheduledTask[]> {
-  const host = scopedRuntimeHost(await activeRuntimeHostRef());
+async function listScheduledTasks(target?: DesktopRuntimeHostRef): Promise<ScheduledTask[]> {
+  const host = scopedRuntimeHost(await selectedRuntimeHostScope(target));
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const tasks: ScheduledTask[] = [];
     const taskIds = new Set<string>();
@@ -891,8 +891,9 @@ async function listScheduledTasks(): Promise<ScheduledTask[]> {
 
 async function mutateScheduledTask(
   input: OperationInput<'scheduled-task.mutate'>,
+  target?: DesktopRuntimeHostRef,
 ): Promise<ScheduledTask> {
-  const host = scopedRuntimeHost(await activeRuntimeHostRef());
+  const host = scopedRuntimeHost(await selectedRuntimeHostScope(target));
   const result = await host.command('scheduled-task.mutate', input);
   if (result.kind !== 'task') throw new Error('Runtime Host returned no ScheduledTask');
   return result.task;
@@ -1095,6 +1096,12 @@ const makaBridge = {
   runtimeHostProfiles: {
     getSnapshot() {
       return ipcRenderer.invoke('runtime-host-profiles:getSnapshot');
+    },
+    async getDefaultHost(): Promise<DesktopRuntimeHostRef> {
+      const scope = await activeRuntimeHostRef();
+      const metadata = runtimeHostMetadata.get(scope.hostId);
+      if (!metadata) throw new Error('The default Runtime Host identity is unavailable');
+      return { profileId: metadata.profileId, hostId: scope.hostId };
     },
     addAndEnable(input: DesktopRuntimeHostProfileAddInput) {
       return ipcRenderer.invoke('runtime-host-profiles:add-and-enable', input);
@@ -1832,11 +1839,11 @@ const makaBridge = {
     },
   },
   projects: {
-    async getDefaultContext(): Promise<{
+    async getDefaultContext(host?: DesktopRuntimeHostRef): Promise<{
       snapshot: DesktopProjectSnapshot;
       info: DesktopAppInfo;
     }> {
-      const scope = await activeRuntimeHostRef();
+      const scope = await selectedRuntimeHostScope(host);
       const [snapshot, info] = await Promise.all([
         ipcRenderer.invoke('projects:getSnapshot', scope) as Promise<DesktopProjectSnapshot>,
         ipcRenderer.invoke('app:info', scope) as Promise<DesktopAppInfo>,
@@ -2080,29 +2087,29 @@ const makaBridge = {
     },
   },
   mcp: {
-    getConfig(): Promise<McpConfigFile> {
-      return invokeActiveRuntimeHost('mcp:getConfig');
+    getConfig(host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
+      return invokeSelectedRuntimeHost(host, 'mcp:getConfig');
     },
-    listStatuses(): Promise<McpServerStatus[]> {
-      return invokeActiveRuntimeHost('mcp:listStatuses');
+    listStatuses(host?: DesktopRuntimeHostRef): Promise<McpServerStatus[]> {
+      return invokeSelectedRuntimeHost(host, 'mcp:listStatuses');
     },
-    setConfig(config: McpConfigFile): Promise<McpConfigFile> {
-      return invokeActiveRuntimeHost('mcp:setConfig', config);
+    setConfig(config: McpConfigFile, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
+      return invokeSelectedRuntimeHost(host, 'mcp:setConfig', config);
     },
-    upsert(serverId: string, config: McpServerConfig): Promise<McpConfigFile> {
-      return invokeActiveRuntimeHost('mcp:upsert', serverId, config);
+    upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
+      return invokeSelectedRuntimeHost(host, 'mcp:upsert', serverId, config);
     },
-    install(serverId: string, config: McpServerConfig): Promise<McpConfigFile> {
-      return invokeActiveRuntimeHost('mcp:install', serverId, config);
+    install(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
+      return invokeSelectedRuntimeHost(host, 'mcp:install', serverId, config);
     },
-    remove(serverId: string): Promise<McpConfigFile> {
-      return invokeActiveRuntimeHost('mcp:remove', serverId);
+    remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
+      return invokeSelectedRuntimeHost(host, 'mcp:remove', serverId);
     },
-    cancelInstall(serverId: string): Promise<McpConfigFile> {
-      return invokeActiveRuntimeHost('mcp:cancelInstall', serverId);
+    cancelInstall(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
+      return invokeSelectedRuntimeHost(host, 'mcp:cancelInstall', serverId);
     },
-    test(serverId: string): Promise<McpTestResult> {
-      return invokeActiveRuntimeHost('mcp:test', serverId);
+    test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult> {
+      return invokeSelectedRuntimeHost(host, 'mcp:test', serverId);
     },
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void {
       return subscribeActiveRuntimeHostEvent('mcp:changed', handler);
@@ -2119,8 +2126,9 @@ const makaBridge = {
     async setMilestone(
       id: OnboardingMilestoneId,
       status: 'completed' | 'skipped',
+      host?: DesktopRuntimeHostRef,
     ): Promise<OnboardingSnapshot> {
-      const scope = await activeRuntimeHostRef();
+      const scope = await selectedRuntimeHostScope(host);
       const snapshot = await ipcRenderer.invoke(
         'onboarding:setMilestone', scope, id, status,
       ) as OnboardingSnapshot;
@@ -2345,36 +2353,36 @@ const makaBridge = {
     },
   },
   scheduledTasks: {
-    list(): Promise<ScheduledTask[]> {
-      return listScheduledTasks();
+    list(host?: DesktopRuntimeHostRef): Promise<ScheduledTask[]> {
+      return listScheduledTasks(host);
     },
-    create(input: Omit<CreateScheduledTaskInput, 'createdBy'>): Promise<ScheduledTask> {
-      return mutateScheduledTask({ kind: 'create', input });
+    create(input: Omit<CreateScheduledTaskInput, 'createdBy'>, host?: DesktopRuntimeHostRef): Promise<ScheduledTask> {
+      return mutateScheduledTask({ kind: 'create', input }, host);
     },
-    update(id: string, patch: UpdateScheduledTaskInput): Promise<ScheduledTask> {
-      return mutateScheduledTask({ kind: 'update', taskId: id, patch });
+    update(id: string, patch: UpdateScheduledTaskInput, host?: DesktopRuntimeHostRef): Promise<ScheduledTask> {
+      return mutateScheduledTask({ kind: 'update', taskId: id, patch }, host);
     },
-    setEnabled(id: string, enabled: boolean): Promise<ScheduledTask> {
+    setEnabled(id: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<ScheduledTask> {
       return mutateScheduledTask({
         kind: enabled ? 'resume' : 'pause',
         taskId: id,
-      });
+      }, host);
     },
-    triggerNow(id: string): Promise<ScheduledTask> {
-      return mutateScheduledTask({ kind: 'trigger_now', taskId: id });
+    triggerNow(id: string, host?: DesktopRuntimeHostRef): Promise<ScheduledTask> {
+      return mutateScheduledTask({ kind: 'trigger_now', taskId: id }, host);
     },
-    snooze(id: string): Promise<ScheduledTask> {
+    snooze(id: string, host?: DesktopRuntimeHostRef): Promise<ScheduledTask> {
       return mutateScheduledTask({
         kind: 'snooze',
         taskId: id,
         delayMs: 10 * 60 * 1000,
-      });
+      }, host);
     },
-    clearRunHistory(id: string): Promise<ScheduledTask> {
-      return mutateScheduledTask({ kind: 'clear_history', taskId: id });
+    clearRunHistory(id: string, host?: DesktopRuntimeHostRef): Promise<ScheduledTask> {
+      return mutateScheduledTask({ kind: 'clear_history', taskId: id }, host);
     },
-    async delete(id: string): Promise<void> {
-      await runtimeHost.command('scheduled-task.mutate', {
+    async delete(id: string, host?: DesktopRuntimeHostRef): Promise<void> {
+      await scopedRuntimeHost(await selectedRuntimeHostScope(host)).command('scheduled-task.mutate', {
         kind: 'delete',
         taskId: id,
       });
@@ -2502,9 +2510,9 @@ const makaBridge = {
     },
   },
   dailyReview: {
-    day(offsetDays: number, daySpan?: number): Promise<Result<DailyReviewSummary>> {
+    day(offsetDays: number, daySpan?: number, host?: DesktopRuntimeHostRef): Promise<Result<DailyReviewSummary>> {
       return bridgeResult(async () => {
-        const scope = await activeRuntimeHostRef();
+        const scope = await selectedRuntimeHostScope(host);
         const result = await scopedRuntimeHost(scope).query('daily-review.query', {
           kind: 'summary',
           offsetDays: integer(offsetDays, 0),
@@ -2672,11 +2680,11 @@ const makaBridge = {
         ipcRenderer.invoke('app:openPath', session.scope, key, session.sessionId),
       );
     },
-    resolveProjectGitInfo(projectPath: string): Promise<
+    resolveProjectGitInfo(projectPath: string, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; projectPath: string; projectGit: { isGitRepo: boolean; branch?: string } }
       | { ok: false; reason: 'invalid-path' | 'not-found' }
     > {
-      return invokeActiveRuntimeHost('app:resolveProjectGitInfo', projectPath);
+      return invokeSelectedRuntimeHost(host, 'app:resolveProjectGitInfo', projectPath);
     },
     openArtifactPath(
       sessionId: string,
@@ -2803,8 +2811,8 @@ const makaBridge = {
     },
   },
   skills: {
-    list(): Promise<SkillEntry[]> {
-      return invokeActiveRuntimeHost('skills:list');
+    list(host?: DesktopRuntimeHostRef): Promise<SkillEntry[]> {
+      return invokeSelectedRuntimeHost(host, 'skills:list');
     },
     listInvocable(
       sessionId?: string,
@@ -2819,71 +2827,71 @@ const makaBridge = {
         : invokeActiveRuntimeHost('skills:listInvocable', undefined, newSessionContext);
     },
     catalog: {
-      list(): Promise<BundledSkillCatalogEntry[]> {
-        return invokeActiveRuntimeHost('skills:catalog:list');
+      list(host?: DesktopRuntimeHostRef): Promise<BundledSkillCatalogEntry[]> {
+        return invokeSelectedRuntimeHost(host, 'skills:catalog:list');
       },
-      install(id: string): Promise<
+      install(id: string, host?: DesktopRuntimeHostRef): Promise<
         | { ok: true; skill: SkillEntry }
         | { ok: false; reason: 'not_found' | 'already_exists' | 'blocked_path' | 'write_failed' }
       > {
-        return invokeActiveRuntimeHost('skills:catalog:install', id);
+        return invokeSelectedRuntimeHost(host, 'skills:catalog:install', id);
       },
     },
     sources: {
-      list(): Promise<ManagedSkillSourceEntry[]> {
-        return invokeActiveRuntimeHost('skills:sources:list');
+      list(host?: DesktopRuntimeHostRef): Promise<ManagedSkillSourceEntry[]> {
+        return invokeSelectedRuntimeHost(host, 'skills:sources:list');
       },
-      importLocalFile(): Promise<
+      importLocalFile(host?: DesktopRuntimeHostRef): Promise<
         | { ok: true; source: ManagedSkillSourceEntry }
         | { ok: false; reason: 'cancelled' | 'invalid_skill' | 'already_exists' | 'blocked_path' | 'write_failed' }
       > {
-        return invokeActiveRuntimeHost('skills:sources:importLocalFile');
+        return invokeSelectedRuntimeHost(host, 'skills:sources:importLocalFile');
       },
     },
-    installManaged(sourceId: string): Promise<
+    installManaged(sourceId: string, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; skill: SkillEntry }
       | { ok: false; reason: 'not_found' | 'already_exists' | 'blocked_path' | 'write_failed' }
     > {
-      return invokeActiveRuntimeHost('skills:installManaged', sourceId);
+      return invokeSelectedRuntimeHost(host, 'skills:installManaged', sourceId);
     },
-    previewUpdate(skillId: string): Promise<
+    previewUpdate(skillId: string, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; preview: ManagedSkillUpdatePreview }
       | { ok: false; reason: 'not_managed' | 'source_missing' | 'metadata_error' | 'blocked_path' | 'read_failed' }
     > {
-      return invokeActiveRuntimeHost('skills:previewUpdate', skillId);
+      return invokeSelectedRuntimeHost(host, 'skills:previewUpdate', skillId);
     },
-    updateManaged(skillId: string, options?: { force?: boolean; expectedCurrentSha256?: string; expectedSourceSha256?: string }): Promise<
+    updateManaged(skillId: string, options?: { force?: boolean; expectedCurrentSha256?: string; expectedSourceSha256?: string }, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; skill: SkillEntry }
       | { ok: false; reason: 'not_managed' | 'source_missing' | 'local_modified' | 'metadata_error' | 'blocked_path' | 'write_failed' }
     > {
-      return invokeActiveRuntimeHost('skills:updateManaged', skillId, options);
+      return invokeSelectedRuntimeHost(host, 'skills:updateManaged', skillId, options);
     },
-    setEnabled(skillId: string, enabled: boolean): Promise<
+    setEnabled(skillId: string, enabled: boolean, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; skill: SkillEntry }
       | { ok: false; reason: 'not_found' | 'blocked_path' | 'state_error' | 'write_failed' }
     > {
-      return invokeActiveRuntimeHost('skills:setEnabled', skillId, enabled);
+      return invokeSelectedRuntimeHost(host, 'skills:setEnabled', skillId, enabled);
     },
-    setPinned(skillRef: string, pinned: boolean): Promise<
+    setPinned(skillRef: string, pinned: boolean, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; skill: SkillEntry }
       | {
           ok: false;
           reason: 'not_found' | 'blocked_path' | 'state_error' | 'write_failed';
         }
     > {
-      return invokeActiveRuntimeHost('skills:setPinned', skillRef, pinned);
+      return invokeSelectedRuntimeHost(host, 'skills:setPinned', skillRef, pinned);
     },
-    delete(idOrRef: string): Promise<
+    delete(idOrRef: string, host?: DesktopRuntimeHostRef): Promise<
       | { ok: true }
       | { ok: false; reason: 'not_found' | 'blocked_path' | 'blocked_scope' | 'delete_failed' }
     > {
-      return invokeActiveRuntimeHost('skills:delete', idOrRef);
+      return invokeSelectedRuntimeHost(host, 'skills:delete', idOrRef);
     },
-    open(id: string, target: 'file' | 'directory' = 'file'): Promise<
+    open(id: string, target: 'file' | 'directory' = 'file', host?: DesktopRuntimeHostRef): Promise<
       | { ok: true; target: 'file' | 'directory' }
       | { ok: false; reason: 'invalid_id' | 'missing' | 'blocked_path' | 'not_file' | 'not_directory' | 'open_failed' }
     > {
-      return invokeActiveRuntimeHost('skills:open', id, target);
+      return invokeSelectedRuntimeHost(host, 'skills:open', id, target);
     },
   },
   // Embedded browser (P3). The native WebContentsView floats above the DOM; the
