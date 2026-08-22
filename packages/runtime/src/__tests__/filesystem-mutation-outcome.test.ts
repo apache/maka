@@ -266,6 +266,36 @@ describe('filesystem mutation T0 identity capture (queue-window closure)', () =>
       'identity must be the inode captured at lock acquisition (before the replacement); a T1 capture would sample the replacement',
     );
   });
+
+  test('an apply_patch mutation forwards its captured identity, not unchecked (#3484 regression)', async () => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-t0-applypatch-')));
+    cleanup.push(cwd);
+    const target = join(cwd, 'file.txt');
+    await writeFile(target, 'original', 'utf8');
+
+    const original = await stat(target, { bigint: true });
+    let dispatched: FilesystemWorkerExpectedIdentity | undefined;
+    const gatedWorker: {
+      execute: (input: FilesystemWorkerExecuteInput) => Promise<FilesystemWorkerResult>;
+    } = {
+      async execute(input) {
+        dispatched = input.expectedIdentity;
+        return { kind: 'apply_patch', ok: true, path: target };
+      },
+    };
+    const fs = executorWith(gatedWorker);
+
+    await fs.applyPatch({
+      operation: { type: 'update_file', path: target, diff: '--- a\n+++ b\n' },
+      cwd,
+    });
+
+    assert.ok(
+      dispatched && typeof dispatched !== 'string',
+      'apply_patch must dispatch with the captured identity, not unchecked',
+    );
+    assert.equal(dispatched.ino, String(original.ino));
+  });
 });
 
 function sleep(ms: number): Promise<void> {

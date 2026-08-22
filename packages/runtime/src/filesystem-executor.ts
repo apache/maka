@@ -217,10 +217,14 @@ export function createBoundaryFilesystemExecutor(
       ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
       // The worker client now requires an explicit T0 marker (#3484): a
       // mutation carries its captured identity, or 'missing' when T0 saw no
-      // target; a read never participates in CAS and says so. The kind check
-      // mirrors `mutates` for the backend input union.
+      // target; a read never participates in CAS and says so. The kind list
+      // deliberately mirrors `operationAccess` in the worker client
+      // (write | apply_patch | edit | format_json) — `mutates` is narrower
+      // and would silently drop the apply_patch identity onto 'unchecked',
+      // disabling the queue-window CAS on the main editing channel.
       expectedIdentity:
         call.operation.kind === 'write' ||
+        call.operation.kind === 'apply_patch' ||
         call.operation.kind === 'edit' ||
         call.operation.kind === 'format_json'
           ? (expectedIdentity ?? 'missing')
