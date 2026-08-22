@@ -3851,6 +3851,135 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('shows an in-progress notice while the rewind branch is being created', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new DeferredRewindDriver(
+      [{ turnId: 'turn-1', label: 'first question' }],
+      [
+        storedUserMessage('user-0', 'turn-0', 'earlier question'),
+        storedAssistantMessage('assistant-0', 'turn-0', 'earlier answer'),
+      ],
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+
+    terminal.input('\r');
+    // The branch switch is still in flight, but the selection must already be
+    // visibly accepted — control-busy otherwise renders nothing (#3383).
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+    assert.deepEqual(driver.rewound, []);
+
+    driver.gate.resolve();
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('已回退到该轮之前'));
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('refilled: turn-1'));
+    // The in-progress notice is wiped together with the transcript it announced.
+    await waitFor(
+      () => plainTerminalOutput(terminal.screenOutput()).includes('正在回退到该轮之前') === false,
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('keeps a draft typed while the rewind is in flight instead of overwriting it', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new DeferredRewindDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+
+    // Typed while the branch switch is in flight: this is newer user work and
+    // must win over the prompt refill (#3383). Enter stays swallowed by
+    // disableSubmit, so the draft never becomes a turn.
+    terminal.input('my draft');
+    await waitFor(() => editorInputText(terminal) === 'my draft');
+    terminal.input('\r');
+    assert.deepEqual(driver.prompts, []);
+
+    driver.gate.resolve();
+    // The notice wraps across screen lines at 80 columns, so match against a
+    // whitespace-collapsed copy instead of the raw output.
+    const collapsedOutput = () => plainTerminalOutput(terminal.output()).replace(/\s+/g, '');
+    await waitFor(() => collapsedOutput().includes('未回填该轮prompt'));
+    await waitFor(() => editorInputText(terminal) === 'my draft');
+    assert.equal(plainTerminalOutput(terminal.output()).includes('refilled: turn-1'), false);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('refuses a rewind selection with a notice when another action claimed busy', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new BusyAfterPickerOpenDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+
+    // A Host-started turn claims busy while the picker is open (the same way a
+    // Goal auto-continuation would). Selecting a target must then surface a
+    // refusal instead of runControl's silent early return (#3383).
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('无法回退'));
+    assert.deepEqual(driver.rewound, []);
+
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('marks an inherited running Bash card detached after rewind', async () => {
     const terminal = new FakeTerminal();
     const ref = 'maka://runtime/background-tasks/bg-1';
@@ -7317,6 +7446,55 @@ class RewindDriver extends SlashCommandDriver {
       ...switchResult(this.branchSummary, [...this.branchMessages]),
       prompt: `refilled: ${turnId}`,
     };
+  }
+}
+
+class DeferredRewindDriver extends RewindDriver {
+  readonly gate = deferred<void>();
+
+  override async rewindToTurn(turnId: string): Promise<MakaSessionRewindResult> {
+    await this.gate.promise;
+    return super.rewindToTurn(turnId);
+  }
+}
+
+/**
+ * Holds `busy` from underneath an open picker: publishSuccessor-style, a
+ * Host-started turn begins (and blocks on `turnGate`) while the rewind picker
+ * is already open, so a selection lands on runControl's busy early return.
+ */
+class BusyAfterPickerOpenDriver extends RewindDriver {
+  readonly turnGate = deferred<void>();
+  #startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.#startedTurnListener = listener;
+    return () => {
+      if (this.#startedTurnListener === listener) this.#startedTurnListener = undefined;
+    };
+  }
+
+  startBlockingTurn(): void {
+    const gate = this.turnGate;
+    this.#startedTurnListener?.({
+      sessionId: this.getSessionId()!,
+      turnId: 'turn-host',
+      messages: [
+        storedUserMessage('user-host', 'turn-host', 'host question'),
+        storedAssistantMessage('assistant-host', 'turn-host', 'host answer'),
+      ],
+      summary: fakeSessionSummary(this.getSessionId()!),
+      events: (async function* () {
+        await gate.promise;
+        yield {
+          type: 'complete',
+          id: 'complete-host',
+          turnId: 'turn-host',
+          ts: 3,
+          stopReason: 'end_turn',
+        } satisfies SessionEvent;
+      })(),
+    });
   }
 }
 
