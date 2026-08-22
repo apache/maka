@@ -346,6 +346,19 @@ describe('tool execution safety (real production path)', () => {
     }
   }
 
+  // Finish-reason authority: chunkFinishReason (model-adapter.ts) already
+  // resolves "other" through the provider's own raw spelling for step
+  // settlement. This proves the guard's own terminal classification for an
+  // incrementally-streamed call now agrees with that resolution end to end,
+  // through the real ModelAdapter -> resolveToolCallSafety wiring, rather
+  // than only in the unit-level tracker tests. ("unknown" is exercised at
+  // the unit level only — it is Maka's own settlement-layer fallback, never
+  // a value a real raw SDK finish chunk's own `unified` field carries.)
+  test('incremental + finish reason unified "other" but raw "stop": executes once', async () => {
+    const executions = await executionCountFor('incremental', { unified: 'other', raw: 'stop' });
+    assert.equal(executions, 1);
+  });
+
   test('missing terminal event executes zero times', async () => {
     let executions = 0;
     const chunks = toolCallChunks('incremental', { unified: 'stop', raw: 'stop' }).slice(0, -1);

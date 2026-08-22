@@ -93,7 +93,21 @@ interface RawToolCallState {
   invalid: boolean;
 }
 
-type TerminalState = 'pending' | 'safe' | 'unsafe';
+/**
+ * `pending`: no terminal stream event observed yet.
+ * `finish`: an actual `finish` chunk was observed; `reason` is this
+ * tracker's own local read of it (`.unified` only — see
+ * `normalizedFinishReason`), which may be ambiguous (`"other"`/`"unknown"`/
+ * `undefined`) even when the provider's own spelling, available elsewhere,
+ * is not. See `isTerminalSafe`.
+ * `blocked`: an explicit `error`/`abort` part, or tool-call evidence
+ * arriving after any terminal event already happened (a poisoned request).
+ * Sticky: nothing can move a tracker out of `blocked`.
+ */
+type TerminalState =
+  | { readonly kind: 'pending' }
+  | { readonly kind: 'finish'; readonly reason: string | undefined }
+  | { readonly kind: 'blocked' };
 
 export interface ToolCallSafetyTracker {
   /** Per-id raw argument state for this physical provider request only. */
@@ -131,17 +145,13 @@ function normalizedFinishReason(value: unknown): string | undefined {
   return undefined;
 }
 
-function markTerminal(tracker: ToolCallSafetyTracker, safe: boolean): void {
-  if (!safe || tracker.terminal === 'unsafe') {
-    tracker.terminal = 'unsafe';
-    return;
-  }
-  tracker.terminal = 'safe';
+function blockTerminal(tracker: ToolCallSafetyTracker): void {
+  tracker.terminal = { kind: 'blocked' };
 }
 
 /** Starts tracking one physical provider request's raw stream. */
 export function createToolCallSafetyTracker(): ToolCallSafetyTracker {
-  return { calls: new Map(), idsWithRawDelta: new Set(), terminal: 'pending' };
+  return { calls: new Map(), idsWithRawDelta: new Set(), terminal: { kind: 'pending' } };
 }
 
 /** Feed one raw AI SDK stream chunk through, unchanged, as observed. */
@@ -161,7 +171,7 @@ export function observeRawChunk(tracker: ToolCallSafetyTracker, chunk: unknown):
     part.type === 'tool-input-delta' ||
     part.type === 'tool-input-end' ||
     part.type === 'tool-error';
-  if (tracker.terminal !== 'pending' && isToolEvidence) tracker.terminal = 'unsafe';
+  if (tracker.terminal.kind !== 'pending' && isToolEvidence) blockTerminal(tracker);
 
   switch (part.type) {
     case 'tool-input-start': {
@@ -199,13 +209,19 @@ export function observeRawChunk(tracker: ToolCallSafetyTracker, chunk: unknown):
       return;
     }
     case 'finish': {
-      const reason = normalizedFinishReason(part.finishReason);
-      markTerminal(tracker, reason === 'stop' || reason === 'tool-calls');
+      // A second finish-shaped event is exactly as suspicious as tool
+      // evidence after a terminal event — treat it the same way (blocked),
+      // rather than letting a later finish silently replace an earlier one.
+      if (tracker.terminal.kind !== 'pending') {
+        blockTerminal(tracker);
+        return;
+      }
+      tracker.terminal = { kind: 'finish', reason: normalizedFinishReason(part.finishReason) };
       return;
     }
     case 'error':
     case 'abort':
-      markTerminal(tracker, false);
+      blockTerminal(tracker);
       return;
     default:
       return;
@@ -217,24 +233,56 @@ function rejectedDecision(): ToolCallSafetyDecision {
 }
 
 /**
+ * Whether this request's terminal state is execution-safe, given the
+ * stronger provider reason `resolveToolCallSafety`'s caller already resolved
+ * (see below). Mirrors `chunkFinishReason`'s (model-adapter.ts) own rule —
+ * fall back to the provider's own spelling only when the SDK's unified
+ * reason is ambiguous (`"other"`/`"unknown"`) — without importing it
+ * directly: `tool-call-execution-guard.ts` is imported by `model-adapter.ts`,
+ * so the reverse import would cycle.
+ *
+ * `providerReason` may only resolve an AMBIGUOUS classification belonging to
+ * a real terminal event this tracker itself witnessed. It can never promote
+ * `pending` (no terminal event observed at all — see the module doc comment
+ * for why `sdk.finishReason`'s own fallback means a caller can have a
+ * non-empty `providerReason` even then) or `blocked` (explicit error/abort,
+ * or tool evidence poisoning the request) to safe, and it can never override
+ * a terminal event this tracker directly classified as unsafe on its own
+ * (`length`, `content-filter`, `stop`-with-no-safe-match, etc.) — only an
+ * ambiguous one.
+ */
+function isTerminalSafe(terminal: TerminalState, providerReason: string | undefined): boolean {
+  if (terminal.kind !== 'finish') return false;
+  if (terminal.reason === 'stop' || terminal.reason === 'tool-calls') return true;
+  const ambiguous =
+    terminal.reason === undefined || terminal.reason === 'other' || terminal.reason === 'unknown';
+  if (!ambiguous) return false;
+  return providerReason === 'stop' || providerReason === 'tool-calls';
+}
+
+/**
  * Resolves every call that actually streamed raw bytes. Positive execution
  * requires start + non-empty raw bytes + end + a raw-stream tool name + valid
- * JSON decoded from exactly those bytes + an observed `stop`/`tool-calls`
- * terminal event. Missing, contradictory, or out-of-order evidence fails
- * closed. `meta` is accepted for the ModelAdapter call shape but cannot
- * promote a stream with no terminal event to safe.
+ * JSON decoded from exactly those bytes + an execution-safe terminal
+ * classification (see `isTerminalSafe`). Missing, contradictory, or
+ * out-of-order evidence fails closed. `meta.providerReason` is the same
+ * finish reason `ModelAdapter.startStream` resolves for step settlement
+ * (`chunkFinishReason`, model-adapter.ts) — passing it lets an ambiguous
+ * local classification agree with the stronger, already-computed answer
+ * instead of the two diverging for the same physical request.
  */
 export function resolveToolCallSafety(
   tracker: ToolCallSafetyTracker,
-  _meta?: { providerReason?: string },
+  meta?: { providerReason?: string },
 ): ToolCallExecutionSafety {
   if (tracker.resolved !== undefined) return tracker.resolved;
 
+  const terminalSafe = isTerminalSafe(tracker.terminal, meta?.providerReason);
   const decisions = new Map<string, ToolCallSafetyDecision>();
   for (const id of tracker.idsWithRawDelta) {
     const state = tracker.calls.get(id);
     if (
-      tracker.terminal !== 'safe' ||
+      !terminalSafe ||
       state === undefined ||
       !state.started ||
       !state.ended ||

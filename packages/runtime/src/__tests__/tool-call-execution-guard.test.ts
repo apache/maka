@@ -104,6 +104,80 @@ describe('tool-call-execution-guard', () => {
     assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
   });
 
+  // Finish-reason authority: model-adapter.ts already resolves a stronger
+  // finish reason (chunkFinishReason) that falls back to the provider's own
+  // spelling when the SDK's unified reason is "other"/"unknown", and passes
+  // it as providerReason. Before this, the tracker's own local (unified-only)
+  // read of the same finish chunk could disagree with that stronger answer
+  // for the exact same physical request.
+  test('a real finish event with an ambiguous unified reason is rescued by a real providerReason', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushCompleteCall(tracker);
+    observeRawChunk(tracker, { type: 'finish', finishReason: { unified: 'other', raw: 'stop' } });
+    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
+    assert.equal(safety.decisions.get('call-1')?.action, 'execute');
+  });
+
+  test('unknown is also rescuable when providerReason resolves to tool-calls', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushCompleteCall(tracker);
+    observeRawChunk(tracker, {
+      type: 'finish',
+      finishReason: { unified: 'unknown', raw: 'tool-calls' },
+    });
+    const safety = resolveToolCallSafety(tracker, { providerReason: 'tool-calls' });
+    assert.equal(safety.decisions.get('call-1')?.action, 'execute');
+  });
+
+  test('an ambiguous reason with no rescuing providerReason still fails closed', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushCompleteCall(tracker);
+    observeRawChunk(tracker, { type: 'finish', finishReason: { unified: 'other', raw: 'other' } });
+    const safety = resolveToolCallSafety(tracker, { providerReason: 'other' });
+    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+  });
+
+  test('an abort terminal event is never rescued by providerReason', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushCompleteCall(tracker);
+    observeRawChunk(tracker, { type: 'abort' });
+    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
+    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+  });
+
+  test('a provider error terminal event is never rescued by providerReason', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushCompleteCall(tracker);
+    observeRawChunk(tracker, { type: 'error', error: new Error('upstream 500') });
+    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
+    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+  });
+
+  test('a directly observed length finish reason is never rescued by providerReason', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushCompleteCall(tracker);
+    observeRawChunk(tracker, { type: 'finish', finishReason: 'length' });
+    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
+    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+  });
+
+  test('a directly observed content-filter finish reason is never rescued by providerReason', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushCompleteCall(tracker);
+    observeRawChunk(tracker, { type: 'finish', finishReason: 'content-filter' });
+    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
+    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+  });
+
+  test('a second finish-shaped event is treated as poisoning, not a softer verdict', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushCompleteCall(tracker);
+    observeRawChunk(tracker, { type: 'finish', finishReason: { unified: 'other', raw: 'stop' } });
+    observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
+    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
+    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+  });
+
   test('missing tool-input-end fails closed', () => {
     const tracker = createToolCallSafetyTracker();
     observeRawChunk(tracker, { type: 'tool-input-start', id: 'call-1', toolName: 'Write' });
