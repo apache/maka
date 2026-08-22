@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useEffectEvent, useLayoutEffect } from 'react';
 import { useHotkeys } from '@astryxdesign/core/hooks';
 import type { ConnectionEvent } from '@maka/core/connections';
@@ -24,10 +43,6 @@ import {
   recordSessionEventStreamChange,
   recordSessionEventStreamEvent,
 } from './session-event-health';
-import {
-  persistableSessionWorkbarPanels,
-  type SessionWorkbarPanelsState,
-} from './session-workbar-tabs.js';
 import type {
   DesktopRuntimeHostProfileChangedEvent,
   WindowCommand,
@@ -75,10 +90,7 @@ export function useAppShellNavRefSync(options: { navSelection: NavSelection; nav
   }, [options.navSelection]);
 }
 
-export function useAppShellHostEffects(options: {
-  activeId: string | undefined;
-  setLiveBrowserSessionIds: (sessionIds: string[]) => void;
-}) {
+export function useAppShellHostEffects() {
   // Tag the document with the host OS so glass-material CSS rules
   // (sidebar vibrancy passthrough)
   // can light up only on macOS, where `BrowserWindow({ vibrancy: 'sidebar' })`
@@ -100,18 +112,6 @@ export function useAppShellHostEffects(options: {
     };
   }, []);
 
-  // P3 embedded browser: track which sessions have a live view (panel mounts
-  // only for those) and tell main which session this window shows (so it can
-  // validate browser:* IPC targets).
-  useEffect(() => {
-    const off = window.maka.browser.onLive((payload) => options.setLiveBrowserSessionIds(payload.sessionIds));
-    return off;
-  }, []);
-
-  useEffect(() => {
-    window.maka.browser.setActiveSession(options.activeId ?? null);
-  }, [options.activeId]);
-
   // Modal-open titlebar dimming/hiding is driven by observing the top layer
   // (`dialog:modal`) rather than the shell's own modal state, so dialogs
   // mounted deep in module pages — the scheduled-task form above all — are
@@ -124,11 +124,6 @@ export function useAppShellPersistenceEffects(options: {
   sessionListCollapsed: boolean;
   sessionListWidth: number;
   sessionListViewMode: SessionViewMode;
-  workbarCollapsed: boolean;
-  workbarWidth: number;
-  bottomPanelOpen: boolean;
-  bottomPanelHeight: number;
-  workbarPanelsState: SessionWorkbarPanelsState;
   themePalette: ThemePalette;
   themePref: ThemePreference;
 }) {
@@ -170,41 +165,6 @@ export function useAppShellPersistenceEffects(options: {
   useEffect(() => {
     writeSessionListViewMode(options.sessionListViewMode);
   }, [options.sessionListViewMode]);
-
-  useEffect(() => {
-    const handle = window.setTimeout(() => {
-      safeLocalStorageSet('maka-session-workbar-width-v1', String(options.workbarWidth));
-    }, LAYOUT_PERSIST_DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
-  }, [options.workbarWidth]);
-
-  useEffect(() => {
-    safeLocalStorageSet('maka-session-workbar-collapsed-v1', options.workbarCollapsed ? 'true' : 'false');
-  }, [options.workbarCollapsed]);
-
-  useEffect(() => {
-    const handle = window.setTimeout(() => {
-      safeLocalStorageSet(
-        'maka-session-bottom-panel-height-v1',
-        String(options.bottomPanelHeight),
-      );
-    }, LAYOUT_PERSIST_DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
-  }, [options.bottomPanelHeight]);
-
-  useEffect(() => {
-    safeLocalStorageSet(
-      'maka-session-bottom-panel-open-v1',
-      options.bottomPanelOpen ? 'true' : 'false',
-    );
-  }, [options.bottomPanelOpen]);
-
-  useEffect(() => {
-    safeLocalStorageSet(
-      'maka-session-workbar-panels-v3',
-      JSON.stringify(persistableSessionWorkbarPanels(options.workbarPanelsState)),
-    );
-  }, [options.workbarPanelsState]);
 
   // Persist the active destination and each hub's last selected module.
   // Strict localStorage availability check — Vite dev sometimes runs through

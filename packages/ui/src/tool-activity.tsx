@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef } from 'react';
 import { countDiffLineStats } from '@maka/core/unified-diff';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
@@ -14,7 +33,12 @@ import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { useUiLocale } from './locale-context.js';
 import { type ToolActivityItem, type ToolOutputChunk } from './materialize.js';
 import { isConnectorTool, resolveToolDisplayName } from './tool-activity/display-name.js';
-import { computerActionLabel } from './tool-activity/computer-action-label.js';
+import {
+  computerActionLabel,
+  computerActionLabelIncludesTarget,
+  computerActionTarget,
+  isComputerTool,
+} from './tool-activity/computer-action-label.js';
 import {
   extractErrorText,
   isCancelledToolResult,
@@ -295,6 +319,7 @@ type ToolTrowSegment =
 
 function toolTrowSegments(items: ToolActivityItem[], locale: UiLocale): ToolTrowSegment[] {
   const segments: ToolTrowSegment[] = [];
+  let computerTarget: string | undefined;
   for (const item of items) {
     const rows = linkedAgentRows(item, locale);
     const previous = segments.at(-1);
@@ -303,7 +328,15 @@ function toolTrowSegments(items: ToolActivityItem[], locale: UiLocale): ToolTrow
       else segments.push({ kind: 'agents', key: item.toolUseId, rows });
       continue;
     }
-    const call = standardToolCall(item, locale);
+    const ownComputerTarget = computerActionTarget(item, locale);
+    if (ownComputerTarget) computerTarget = ownComputerTarget;
+    const call = standardToolCall(
+      item,
+      locale,
+      isComputerTool(item) && !computerActionLabelIncludesTarget(item)
+        ? computerTarget
+        : undefined,
+    );
     if (previous?.kind === 'tools') previous.calls.push(call);
     else segments.push({ kind: 'tools', key: item.toolUseId, calls: [call] });
   }
@@ -367,7 +400,11 @@ function LinkedAgentList(props: {
   );
 }
 
-function standardToolCall(item: ToolActivityItem, locale: UiLocale): ChatToolCallItem {
+function standardToolCall(
+  item: ToolActivityItem,
+  locale: UiLocale,
+  inferredTarget?: string,
+): ChatToolCallItem {
   return {
     key: item.toolUseId,
     // The name is what a person reads to tell one call from the next, and for
@@ -376,10 +413,12 @@ function standardToolCall(item: ToolActivityItem, locale: UiLocale): ChatToolCal
     // arguments says what happened instead.
     name: computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     status: astryxToolStatus(item),
-    target: item.intent ? formatToolIntent(item.intent) : undefined,
+    target: item.intent ? formatToolIntent(item.intent) : inferredTarget,
     duration: formatDuration(item.durationMs) ?? undefined,
     errorMessage: toolCallErrorMessage(item, locale),
-    stats: outcomeWord(item, locale),
+    stats: item.progress && isInFlightToolStatus(item.status)
+      ? `${item.progress.current}/${item.progress.total}`
+      : outcomeWord(item, locale),
     ...diffStats(itemDiffs(item)),
     resultDetail: (
       <ToolDetailReveal>

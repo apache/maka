@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import {
@@ -86,8 +105,10 @@ describe('filesystem worker client permission snapshots', () => {
     assert.equal(expectedTarget?.targetType, 'symlink');
     // The symlink entry's own identity (lstat, no follow) is captured at T0 and
     // forwarded; only its shape is stable, not its value.
-    assert.equal(typeof expectedTarget?.identity?.dev, 'string');
-    assert.equal(typeof expectedTarget?.identity?.ino, 'string');
+    assert.equal(typeof expectedTarget?.identity, 'object');
+    const forwarded = expectedTarget?.identity as { dev: string; ino: string };
+    assert.equal(typeof forwarded.dev, 'string');
+    assert.equal(typeof forwarded.ino, 'string');
   });
 
   for (const kind of ['bypass', 'external'] as const) {
@@ -100,7 +121,8 @@ describe('filesystem worker client permission snapshots', () => {
           operation: { kind: 'write', path: 'allowed-by-legacy-mode.txt', content: kind },
           cwd: workspace,
           executionBoundary: { kind, revision: 1 },
-          mode: 'execute',
+          mode: 'ask',
+          expectedIdentity: 'unchecked',
         }),
         (error: unknown) => {
           assert.ok(error instanceof FilesystemWorkerClientError);
@@ -129,6 +151,7 @@ describe('filesystem worker client permission snapshots', () => {
           createWorkspaceWritePermissionProfile(),
           0,
         ),
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -152,8 +175,9 @@ describe('filesystem worker client permission snapshots', () => {
       client.execute({
         operation: { kind: 'write', path: 'blocked.txt', content: 'blocked' },
         cwd: workspace,
-        mode: 'execute',
+        mode: 'ask',
         permissionProfile: createReadOnlyPermissionProfile(),
+        expectedIdentity: 'unchecked',
       }),
       isPathDenied,
     );
@@ -181,8 +205,9 @@ describe('filesystem worker client permission snapshots', () => {
       client.execute({
         operation: { kind: 'write', path: target, content: 'blocked' },
         cwd: workspace,
-        mode: 'execute',
+        mode: 'ask',
         permissionProfile: profile,
+        expectedIdentity: 'unchecked',
       }),
       isPathDenied,
     );
@@ -210,6 +235,7 @@ describe('filesystem worker client permission snapshots', () => {
         operation: { kind: 'read', path: target },
         cwd: workspace,
         mode: 'explore',
+        expectedIdentity: 'unchecked',
       }),
       isPathDenied,
     );
@@ -218,6 +244,7 @@ describe('filesystem worker client permission snapshots', () => {
       cwd: workspace,
       mode: 'explore',
       permissionProfile: profile,
+      expectedIdentity: 'unchecked',
     });
 
     assert.deepEqual(result, { kind: 'read', content: 'worker-content' });
@@ -243,6 +270,7 @@ describe('filesystem worker client Grep target scope', () => {
       operation: grepOperation(target),
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
 
     assert.deepEqual(result, { kind: 'grep', matches: ['file.ts:1:value'] });
@@ -259,6 +287,7 @@ describe('filesystem worker client Grep target scope', () => {
       operation: grepOperation(directory),
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
 
     assert.equal(requests[0]?.expectedTarget.scope, 'subtree');
@@ -282,7 +311,8 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
     await client.execute({
       operation: { kind: 'write', path: target, content: 'target' },
       cwd: workspace,
-      mode: 'execute',
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
 
     const transform = transforms[0];
@@ -315,6 +345,7 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
         operation: grepOperation(target),
         cwd: workspace,
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -338,6 +369,7 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
         operation: grepOperation(target),
         cwd: workspace,
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -365,6 +397,7 @@ describe('filesystem worker Linux path context', () => {
         operation: { kind: 'glob', path: target, pattern: '*.ts', limit: 20 },
         cwd: workspace,
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -385,6 +418,7 @@ describe('filesystem worker Linux path context', () => {
       operation: { kind: 'read', path: target },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
 
     const processInput = processInputs[0];
@@ -407,6 +441,8 @@ describe('filesystem worker Linux path context', () => {
       operation: { kind: 'write', path: target, content: 'new' },
       cwd: workspace,
       mode: 'ask',
+      // T0 observed no target (a create), so the T0 marker is 'missing'.
+      expectedIdentity: 'missing',
     });
 
     const processInput = processInputs[0];
@@ -621,6 +657,7 @@ describe('filesystem worker client dispatch classification', () => {
         operation: { kind: 'write', path: '/tmp/maka-dispatch-incomplete.txt', content: 'x' },
         cwd: '/tmp',
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -638,6 +675,7 @@ describe('filesystem worker client dispatch classification', () => {
         operation: { kind: 'write', path: '/tmp/maka-dispatch-spawn.txt', content: 'x' },
         cwd: '/tmp',
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -656,6 +694,7 @@ describe('filesystem worker client dispatch classification', () => {
         operation: { kind: 'write', path: '/tmp/maka-dispatch-noflag.txt', content: 'x' },
         cwd: '/tmp',
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -723,7 +762,10 @@ describe('filesystem worker client dispatch classification', () => {
     });
 
     assert.equal(requests[0]?.expectedTarget.targetType, 'missing');
-    assert.equal(requests[0]?.expectedTarget.identity, undefined);
+    // The stale identity is never sent on a missing target; the wire's
+    // required identity contract reports 'missing' (nothing to compare),
+    // which lets the worker proceed as a fresh exclusive create.
+    assert.equal(requests[0]?.expectedTarget.identity, 'missing');
   });
 
   test('rejects a write whose target was created while queued (never invalid_request)', async () => {
@@ -757,6 +799,9 @@ describe('filesystem worker client dispatch classification', () => {
         operation: { kind: 'write', path: target, content: 'new' },
         cwd: workspace,
         mode: 'ask',
+        // T0 approved the target as missing; it appeared by T1 — the
+        // "created while queued" race, which must stay path_changed.
+        expectedIdentity: 'missing',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -766,6 +811,93 @@ describe('filesystem worker client dispatch classification', () => {
     );
     // The interloper's content was never touched.
     assert.equal(await readFile(target, 'utf8'), 'external-content');
+  });
+
+  test('lets an unchecked caller write an existing target without a CAS identity (#3484)', async () => {
+    const workspace = await temporaryDirectory('maka-client-unchecked-');
+    const target = join(workspace, 'file.txt');
+    // The target already exists; the caller has no T0 snapshot to compare
+    // (e.g. a verification script that owns the path itself).
+    await writeFile(target, 'existing', 'utf8');
+
+    const { client, requests } = fakeClient();
+    await client.execute({
+      operation: { kind: 'write', path: target, content: 'new' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'unchecked',
+    });
+
+    const expectedTarget = requests[0]?.expectedTarget;
+    assert.equal(expectedTarget?.targetType, 'file');
+    assert.equal(expectedTarget?.identity, 'unchecked');
+  });
+
+  test('marks a T0-missing create as missing on the wire, not unchecked (#3484)', async () => {
+    const workspace = await temporaryDirectory('maka-client-t0missing-');
+    const target = join(workspace, 'new.txt');
+
+    const { client, requests } = fakeClient();
+    await client.execute({
+      operation: { kind: 'write', path: target, content: 'new' },
+      cwd: workspace,
+      mode: 'ask',
+      expectedIdentity: 'missing',
+    });
+
+    const expectedTarget = requests[0]?.expectedTarget;
+    assert.equal(expectedTarget?.targetType, 'missing');
+    assert.equal(expectedTarget?.identity, 'missing');
+  });
+
+  test('a read without expectedIdentity sends unchecked automatically (#3487)', async () => {
+    const workspace = await temporaryDirectory('maka-client-read-auto-');
+    const target = join(workspace, 'file.txt');
+    await writeFile(target, 'content', 'utf8');
+
+    const { client, requests } = fakeClient();
+    await client.execute({
+      operation: { kind: 'read', path: target },
+      cwd: workspace,
+      mode: 'ask',
+      // No expectedIdentity: reads never participate in CAS, and the client
+      // must not reject or silently omit the wire field — a plain-JavaScript
+      // caller that bypasses TypeScript has no way to get this wrong.
+    });
+
+    assert.equal(requests[0]?.expectedTarget.identity, 'unchecked');
+  });
+
+  test('a write without expectedIdentity is rejected at runtime (#3487)', async () => {
+    const workspace = await temporaryDirectory('maka-client-write-required-');
+    const target = join(workspace, 'file.txt');
+    await writeFile(target, 'existing', 'utf8');
+
+    const client = new FilesystemWorkerClient({
+      sandboxManager: new SandboxManager([new MacosSeatbeltBackend()]),
+      platform: 'darwin',
+      getLaunchSpec: async () => ({
+        ok: false,
+        reason: 'worker_bundle_unavailable',
+        message: 'unused',
+      }),
+      runProcess: async () => {
+        throw new Error('must not dispatch');
+      },
+    });
+
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'write', path: target, content: 'new' },
+        cwd: workspace,
+        mode: 'ask',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'invalid_request');
+        return true;
+      },
+    );
   });
 });
 

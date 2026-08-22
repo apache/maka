@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -25,6 +44,7 @@ import {
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
   FilesystemWorkerOperationSchema,
+  operationAccess,
   operationUsesDirectoryEntry,
   parseFilesystemWorkerResponse,
   type FilesystemWorkerErrorCode,
@@ -50,6 +70,26 @@ export interface FilesystemWorkerClientInput {
   platform?: SandboxPlatform;
 }
 
+/**
+ * What the caller observed about the operation target at lock acquisition
+ * (T0). Required, so every caller must decide explicitly which CAS contract it
+ * is participating in — an absent field is no longer a silently accepted "no
+ * CAS" that a queue window can slip through (#3484).
+ *
+ * - `{ dev, ino }`: T0 observed an existing target; the worker compare-and-
+ *   swaps this against the on-disk inode at T1.
+ * - `'missing'`: T0 observed no target (a create). If the target exists by T1,
+ *   something created it while this call waited — writing would clobber
+ *   content this call never saw, so the operation fails with `path_changed`.
+ * - `'unchecked'`: the caller does not participate in CAS (no T0 snapshot,
+ *   e.g. a verification script or a read). Writes proceed without an identity
+ *   check; use deliberately, never as a default for mutations.
+ */
+export type FilesystemWorkerExpectedIdentity =
+  | { readonly dev: string; readonly ino: string }
+  | 'missing'
+  | 'unchecked';
+
 export interface FilesystemWorkerExecuteInput {
   operation: FilesystemWorkerClientOperation;
   cwd: string;
@@ -59,12 +99,15 @@ export interface FilesystemWorkerExecuteInput {
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
   /**
-   * The target identity captured at lock acquisition (T0), passed in by the
-   * caller so the client does not re-derive it after acquiring the lock (T1).
-   * The worker compare-and-swaps this against the on-disk inode. Undefined for
-   * a missing target (create) or when the host-local backend is in use.
+   * The caller's T0 observation, see `FilesystemWorkerExpectedIdentity`.
+   *
+   * REQUIRED for write operations: the client throws at runtime when a write
+   * arrives without one, so a JavaScript caller (which TypeScript cannot
+   * guard) fails loudly instead of silently skipping the queue-window CAS.
+   * Reads never participate in CAS: the client sends 'unchecked' for them
+   * automatically, so read callers have no way to get this wrong.
    */
-  expectedIdentity?: { dev: string; ino: string };
+  expectedIdentity?: FilesystemWorkerExpectedIdentity;
 }
 
 export type FilesystemWorkerClientErrorReason =
@@ -174,22 +217,41 @@ export class FilesystemWorkerClient {
     if (!parsedOperation.success) throw clientError('invalid_operation', 'validation', requestId);
 
     const access = operationAccess(parsedOperation.data.kind);
+    // Reads never participate in CAS: the client sends 'unchecked' for them
+    // automatically, so read callers (including plain-JavaScript verifiers
+    // that bypass TypeScript) have no way to get the identity wrong.
+    // Writes require an explicit T0 state, enforced at runtime: a caller that
+    // omits it fails loudly here instead of silently skipping the
+    // queue-window CAS (#3487, maintainer review).
+    const writeIdentity = access === 'write' ? input.expectedIdentity : 'unchecked';
+    if (access === 'write' && writeIdentity === undefined) {
+      throw clientError(
+        'invalid_request',
+        'validation',
+        requestId,
+        'A write operation requires an explicit expectedIdentity: {dev, ino}, "missing", or "unchecked".',
+      );
+    }
     const entryMode = operationUsesDirectoryEntry(parsedOperation.data);
-    const target: FilesystemWorkerTarget & { writableAncestor?: string } = await (entryMode
-      ? normalizeDirectoryEntryTarget({
-          path: parsedOperation.data.path,
-          access,
-          cwd: canonicalCwd,
-        })
-      : normalizeSandboxBoundaryPath({
-          path: parsedOperation.data.path,
-          access,
-          scope: operationScope(parsedOperation.data.kind),
-          cwd: canonicalCwd,
-        })
-    ).catch(() => {
-      throw clientError('invalid_operation', 'validation', requestId);
-    });
+    // The wire identity contract is derived below from the caller's explicit
+    // expectedIdentity; the normalised target itself has no identity field,
+    // so the declared type omits it.
+    const target: Omit<FilesystemWorkerTarget, 'identity'> & { writableAncestor?: string } =
+      await (entryMode
+        ? normalizeDirectoryEntryTarget({
+            path: parsedOperation.data.path,
+            access,
+            cwd: canonicalCwd,
+          })
+        : normalizeSandboxBoundaryPath({
+            path: parsedOperation.data.path,
+            access,
+            scope: operationScope(parsedOperation.data.kind),
+            cwd: canonicalCwd,
+          })
+      ).catch(() => {
+        throw clientError('invalid_operation', 'validation', requestId);
+      });
     // The identity was captured by the caller at lock acquisition (T0) and
     // passed in as expectedIdentity. Do NOT re-derive it here: re-deriving at
     // this point (after the lock is held) would sample the post-queue inode,
@@ -203,14 +265,16 @@ export class FilesystemWorkerClient {
     //   mutation proceed as a fresh exclusive create ("delete then rewrite"
     //   stays a clean apply; a rename-swap is NOT this case — it leaves an
     //   existing inode and is caught by the identity comparison instead).
-    // - T0 missing (no identity) but T1 existing: the target was created while
+    // - T0 missing ('missing') but T1 existing: the target was created while
     //   this call waited. Writing would clobber content this call never saw,
     //   so fail with a meaningful path_changed (never invalid_request).
+    // - 'unchecked': the caller does not participate in CAS. The target may
+    //   be present at T1 without this being a race — the caller simply has no
+    //   T0 snapshot, so nothing can be compared (#3484).
+    const targetExistsAtT1 = target.targetType !== 'missing';
     const identity =
-      input.expectedIdentity && target.targetType !== 'missing'
-        ? input.expectedIdentity
-        : undefined;
-    if (!identity && target.targetType !== 'missing' && access === 'write') {
+      targetExistsAtT1 && typeof writeIdentity === 'object' ? writeIdentity : undefined;
+    if (targetExistsAtT1 && access === 'write' && writeIdentity === 'missing') {
       throw clientError(
         'path_changed',
         'validation',
@@ -297,7 +361,11 @@ export class FilesystemWorkerClient {
         access,
         scope: target.scope,
         targetType: target.targetType,
-        ...(identity ? { identity } : {}),
+        // The execution-time identity contract. A concrete identity is only
+        // carried when the target still exists at T1; a target that vanished
+        // while queued (or was never there) is 'missing'; reads always say
+        // 'unchecked' (the client generates it, callers cannot get it wrong).
+        identity: typeof writeIdentity === 'object' ? (identity ?? 'missing') : writeIdentity,
       },
     } as const;
     const requestJson = JSON.stringify(request);
@@ -622,12 +690,6 @@ function deriveWorkerProfile(
   };
 }
 
-function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
-  return kind === 'write' || kind === 'apply_patch' || kind === 'edit' || kind === 'format_json'
-    ? 'write'
-    : 'read';
-}
-
 function operationScope(kind: FilesystemWorkerOperation['kind']): 'exact' | 'subtree' | 'auto' {
   if (kind === 'glob') return 'subtree';
   return kind === 'grep' ? 'auto' : 'exact';
@@ -641,7 +703,7 @@ async function normalizeDirectoryEntryTarget(input: {
   path: string;
   cwd: string;
   access: 'read' | 'write';
-}): Promise<FilesystemWorkerTarget & { writableAncestor?: string }> {
+}): Promise<Omit<FilesystemWorkerTarget, 'identity'> & { writableAncestor?: string }> {
   const target = await resolveCanonicalDirectoryEntryTarget(input.cwd, input.path);
   let targetType: FilesystemWorkerTarget['targetType'];
   try {

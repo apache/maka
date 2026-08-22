@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -12,9 +31,19 @@ const DEVELOPMENT_DIRECTORIES = new Set([
   'tests',
 ]);
 const LOCAL_PACKAGE_PREFIX = '@maka/';
+const ASF_WIP_DISCLAIMER_MARKER = '<!-- ASF-WIP-DISCLAIMER -->';
 
 function manifestFromEntry(entry) {
   return entry?.manifest ?? entry;
+}
+
+export function renderNpmReadme(readme, disclaimer) {
+  const markerCount = readme.split(ASF_WIP_DISCLAIMER_MARKER).length - 1;
+  if (markerCount !== 1) {
+    throw new Error(`CLI README must contain exactly one ${ASF_WIP_DISCLAIMER_MARKER} marker.`);
+  }
+  if (!disclaimer.trim()) throw new Error('DISCLAIMER-WIP must not be empty.');
+  return readme.replace(ASF_WIP_DISCLAIMER_MARKER, disclaimer.trimEnd());
 }
 
 export function collectWorkspaceDependencyClosure(entryName, manifestsByName) {

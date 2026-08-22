@@ -1,4 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useRef } from 'react';
+import type { MessageQueueEntryProjection } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
 import { confirmLiveTurn, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
 import type { ShellRunUpdatesBySession } from './shell-run-update-state.js';
@@ -12,8 +32,15 @@ export interface AppShellSessionUiState {
   liveTurnBySession: Record<string, LiveTurnProjection>;
   shellRunUpdatesBySession: ShellRunUpdatesBySession;
   interactionBySession: InteractionQueues;
+  messageQueueBySession: Record<string, MessageQueueUiState>;
   pendingPermissionModeBySession: Record<string, boolean>;
   pendingSessionModelBySession: Record<string, boolean>;
+}
+
+export interface MessageQueueUiState {
+  queueRevision?: number;
+  steering: MessageQueueEntryProjection[];
+  followup: MessageQueueEntryProjection[];
 }
 
 type AppShellSessionUiStateMapKey = keyof AppShellSessionUiState;
@@ -25,6 +52,7 @@ const SESSION_UI_MAP_KEYS = [
   'liveTurnBySession',
   'shellRunUpdatesBySession',
   'interactionBySession',
+  'messageQueueBySession',
   'pendingPermissionModeBySession',
   'pendingSessionModelBySession',
 ] as const satisfies readonly AppShellSessionUiStateMapKey[];
@@ -151,6 +179,7 @@ export function createAppShellSessionUiStateController(
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),
     setShellRunUpdatesBySession: createMapSetter('shellRunUpdatesBySession'),
     setInteractionBySession: createMapSetter('interactionBySession'),
+    setMessageQueueBySession: createMapSetter('messageQueueBySession'),
     setSessionEventHealthBySession: ((updater) => {
       sessionEventHealthBySessionRef.current = updater(sessionEventHealthBySessionRef.current);
     }) satisfies StateUpdater<Record<string, SessionEventStreamSnapshot>>,
@@ -214,6 +243,7 @@ export function useAppShellSessionUiState() {
     setLiveTurnBySession: controller.setLiveTurnBySession,
     setShellRunUpdatesBySession: controller.setShellRunUpdatesBySession,
     setInteractionBySession: controller.setInteractionBySession,
+    setMessageQueueBySession: controller.setMessageQueueBySession,
     setSessionEventHealthBySession: controller.setSessionEventHealthBySession,
     setPendingPermissionModeBySession: controller.setPendingPermissionModeBySession,
     setPendingSessionModelBySession: controller.setPendingSessionModelBySession,

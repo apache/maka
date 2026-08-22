@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* Text-selection quote side panel.
    -------------------------------------------------------------------------
    Astryx Layer and ButtonGroup own the floating "引用" / "在侧栏追问"
@@ -30,87 +49,4 @@
   .maka-quote-actions {
     animation: none;
   }
-}
-
-/* The quote lives as a transient tab inside the session workbar (not a second
-   right column, which was too crowded). The tab panel is a flex column so the
-   companion's ChatView transcript fills the height and the Composer pins to the
-   bottom — the same vertical rhythm as the main conversation. */
-.maka-quote-workbar-panel {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding: 0;
-  overflow: hidden;
-}
-
-.maka-quote-companion {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-
-/* ChatView is designed for the wide main column; inside the narrow workbar tab
-   it fills the free space and drops the right-edge prompt anchor rail. */
-.maka-quote-companion .maka-main {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-/* The anchor, not just the rail inside it: hiding the sticky box outright
-   keeps a zero-height sticky element out of the narrow panel's flow. */
-.maka-quote-companion .maka-prompt-rail-anchor {
-  display: none;
-}
-
-.maka-quote-companion-empty {
-  min-height: 1px;
-}
-
-.maka-quote-companion-preparing {
-  justify-content: center;
-  min-height: 32px;
-}
-
-.maka-session-workbar-panel[data-placement="right"] .maka-quote-companion .composer {
-  padding-inline: var(--space-2);
-  padding-bottom: var(--space-2);
-}
-
-/* `.maka-composer-astryx` is deliberately unstyled on this surface. Side Chat is
-   a branch of the main conversation, not a second one, so the composer resolves
-   `--radius-chat` here exactly as it does at full width and pairs with the
-   bubble; a side-only radius token forked the pair the moment the bubbles moved
-   to the primitive's default. The wrapper is also left unclipped — `overflow:
-   hidden` here would hide the body's hover/focus shadow against the white side
-   panel, and `session-workbar.spec.ts` asserts `overflow: visible`. */
-
-.maka-session-workbar-panel[data-placement="right"]
-  .maka-quote-companion
-  .maka-composer-context-drawer {
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
-}
-
-.maka-session-workbar-panel[data-placement="right"]
-  .maka-quote-companion
-  .maka-composer-left-controls {
-  flex-wrap: nowrap;
-}
-
-.maka-session-workbar-panel[data-placement="right"]
-  .maka-quote-companion
-  .maka-model-selection-controls {
-  max-width: min(200px, 56%);
-  flex: 1 1 auto;
-}
-
-.maka-session-workbar-panel[data-placement="right"]
-  .maka-quote-companion
-  .maka-composer-model-chip {
-  justify-content: flex-start;
-  width: 100%;
-  max-width: 200px;
-  padding-inline: var(--space-1-5);
 }

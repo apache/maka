@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
 import type { OnboardingMilestone } from './onboarding.js';
 import { sanitizeOnboardingMilestones } from './onboarding.js';
@@ -16,6 +35,7 @@ import {
 } from './web-search.js';
 import { defaultLocalMemorySettings, normalizeLocalMemorySettings } from './local-memory.js';
 import type { PermissionMode } from './permission.js';
+import { decodePersistedPermissionMode } from './permission.js';
 import {
   UI_LOCALE_PREFERENCES,
   isUiLocalePreference,
@@ -694,12 +714,14 @@ function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefa
     // drops to "no preference" (the model's own default) rather than reaching
     // session creation as a rung no picker recognizes.
     thinkingLevel: isThinkingLevel(settings.thinkingLevel) ? settings.thinkingLevel : undefined,
-    permissionMode:
-      (settings.permissionMode as unknown) === 'execute'
-        ? 'ask'
-        : isChatDefaultPermissionMode(settings.permissionMode)
-          ? settings.permissionMode
-          : 'ask',
+    // A retired mode is decoded (not rejected) so an existing settings file
+    // keeps working; knowing which modes are retired lives in one place.
+    // Anything that decodes to a mode outside the pickable set — including
+    // `explore`, which only a product mode confers — still falls back.
+    permissionMode: (() => {
+      const mode = decodePersistedPermissionMode(settings.permissionMode);
+      return mode !== undefined && isChatDefaultPermissionMode(mode) ? mode : 'ask';
+    })(),
   };
 }
 

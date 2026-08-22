@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -23,6 +42,7 @@ import {
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
   orderWorkspaceBuilds,
+  renderNpmReadme,
   releaseNpmEnvironment,
   resolveReleaseWorkspacePackages,
   resolveWorkspaceReleaseFiles,
@@ -419,7 +439,9 @@ function copyEvalMirror() {
 }
 
 function copyReleaseDocuments() {
-  copyFileSync(join(cliSource, 'README.md'), join(stageRoot, 'README.md'));
+  const readme = readFileSync(join(cliSource, 'README.md'), 'utf8');
+  const disclaimer = readFileSync(join(repoRoot, 'DISCLAIMER-WIP'), 'utf8');
+  writeFileSync(join(stageRoot, 'README.md'), renderNpmReadme(readme, disclaimer), 'utf8');
   copyFileSync(join(cliSource, 'README.zh-CN.md'), join(stageRoot, 'README.zh-CN.md'));
   copyFileSync(join(repoRoot, 'LICENSE'), join(stageRoot, 'LICENSE'));
   copyFileSync(join(repoRoot, 'NOTICE'), join(stageRoot, 'NOTICE'));
@@ -445,7 +467,7 @@ function writeReleaseManifest(cli, publishable) {
   const manifest = {
     name: source.name,
     version: source.version,
-    description: 'Local-first agent workspace for the terminal.',
+    description: 'Apache Maka (Incubating), a local-first agent workspace for the terminal.',
     license: source.license,
     type: source.type,
     exports: {},
@@ -458,7 +480,7 @@ function writeReleaseManifest(cli, publishable) {
     },
     homepage: 'https://github.com/apache/maka#readme',
     bugs: { url: 'https://github.com/apache/maka/issues' },
-    keywords: ['ai', 'agent', 'cli', 'tui', 'local-first'],
+    keywords: ['apache', 'ai', 'agent', 'cli', 'tui', 'local-first'],
     publishConfig: publishable
       ? {
           access: 'public',

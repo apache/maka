@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // packages/runtime/src/file-stable-write.ts
 // The fd-pinned mutation primitive enforcing the filesystem-authority contract
 // (#2600). A path-based write re-opens the pathname after every check, so a
@@ -58,51 +77,20 @@ function pathChanged(message: string): StableWriteFailure {
  *   so a failed identity check leaves the file untouched. Windows has no
  *   O_NOFOLLOW; the link is detected with an lstat just before the open and
  *   the residual window is closed by the identity comparison on the fd.
- * - Approved-missing target (approvedIdentity undefined): `open(path, 'wx')` —
- *   atomic create-if-absent. EEXIST means something appeared in the gap.
+ * - Existing target without an identity (an 'unchecked' caller, targetType is
+ *   a concrete type): same open, no identity comparison — there is nothing to
+ *   compare, and the caller declared it does not participate in CAS.
+ * - Approved-missing target (approvedIdentity undefined, targetType
+ *   'missing'): `open(path, 'wx')` — atomic create-if-absent. EEXIST means
+ *   something appeared in the gap.
  */
 export async function openStableTarget(input: {
   path: string;
   approvedIdentity: FilesystemTargetIdentity | undefined;
+  targetType?: 'file' | 'directory' | 'symlink' | 'other' | 'missing';
 }): Promise<FileHandle> {
-  const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
   if (input.approvedIdentity) {
-    if (process.platform === 'win32') {
-      const entry = await lstat(input.path).catch(() => null);
-      if (entry?.isSymbolicLink()) {
-        throw pathChanged(
-          'The approved filesystem target is a symbolic link; refusing to follow it.',
-        );
-      }
-    }
-    let handle: FileHandle;
-    try {
-      handle = await open(input.path, constants.O_RDWR | noFollow);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ELOOP' || code === 'ENOTDIR' || code === 'ENOENT') {
-        throw pathChanged('The approved filesystem target changed before execution.');
-      }
-      if (code === 'EACCES' || code === 'EPERM') {
-        // A write-only target (e.g. mode 0o222) refuses 'r+' but is still a
-        // legitimate mutation target — unlink semantics need no read
-        // permission. Retry write-only (still no truncate: identity is
-        // validated on the descriptor before writeThroughHandle truncates).
-        // The pinned read of the previous content will fail and the caller
-        // reports 'unknown' (no diff), which is the pre-existing behaviour.
-        try {
-          handle = await open(input.path, constants.O_WRONLY | noFollow);
-        } catch (retry) {
-          const retryCode = (retry as NodeJS.ErrnoException).code;
-          if (retryCode === 'ELOOP' || retryCode === 'ENOTDIR' || retryCode === 'ENOENT') {
-            throw pathChanged('The approved filesystem target changed before execution.');
-          }
-          throw retry;
-        }
-      } else {
-        throw error;
-      }
-    }
+    const handle = await openExistingNoTruncate(input.path);
     // The compare in compare-and-update, performed on the descriptor itself.
     const metadata = await handle.stat({ bigint: true });
     if (
@@ -114,11 +102,56 @@ export async function openStableTarget(input: {
     }
     return handle;
   }
+  if (input.targetType !== undefined && input.targetType !== 'missing') {
+    // An existing target with no identity: the caller explicitly opted out of
+    // CAS (#3484). Open without truncation but perform no comparison — the
+    // caller's own absence of a T0 snapshot is the contract.
+    return openExistingNoTruncate(input.path);
+  }
   try {
     return await open(input.path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
       throw pathChanged('A file appeared at the approved missing target; re-read before writing.');
+    }
+    throw error;
+  }
+}
+
+/** Open an existing target for read-write without truncating it. */
+async function openExistingNoTruncate(path: string): Promise<FileHandle> {
+  const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
+  if (process.platform === 'win32') {
+    const entry = await lstat(path).catch(() => null);
+    if (entry?.isSymbolicLink()) {
+      throw pathChanged(
+        'The approved filesystem target is a symbolic link; refusing to follow it.',
+      );
+    }
+  }
+  try {
+    return await open(path, constants.O_RDWR | noFollow);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ELOOP' || code === 'ENOTDIR' || code === 'ENOENT') {
+      throw pathChanged('The approved filesystem target changed before execution.');
+    }
+    if (code === 'EACCES' || code === 'EPERM') {
+      // A write-only target (e.g. mode 0o222) refuses 'r+' but is still a
+      // legitimate mutation target — unlink semantics need no read
+      // permission. Retry write-only (still no truncate: identity is
+      // validated on the descriptor before writeThroughHandle truncates).
+      // The pinned read of the previous content will fail and the caller
+      // reports 'unknown' (no diff), which is the pre-existing behaviour.
+      try {
+        return await open(path, constants.O_WRONLY | noFollow);
+      } catch (retry) {
+        const retryCode = (retry as NodeJS.ErrnoException).code;
+        if (retryCode === 'ELOOP' || retryCode === 'ENOTDIR' || retryCode === 'ENOENT') {
+          throw pathChanged('The approved filesystem target changed before execution.');
+        }
+        throw retry;
+      }
     }
     throw error;
   }

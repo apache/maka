@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Electron binding for the drag-to-grant overlay.
  *
@@ -22,9 +41,10 @@ import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { UiLocale } from '@maka/core/ui-locale';
+import { desktopAssetPath } from '../desktop-assets.js';
 import { resolveOverlayAssetDir } from '../overlay-assets.js';
 import { openSystemPermissionPane, requestPermissionAccess } from '../permissions-actions.js';
-import { BUNDLE_ICON_OPTIONS, loadNativeBundleIcon, resolveAppBundle } from './app-bundle.js';
+import { resolveAppBundle } from './app-bundle.js';
 import { getPermissionOverlayCopy } from './permission-overlay-copy.js';
 import {
   createPermissionOverlayController,
@@ -64,7 +84,7 @@ export function createPermissionOverlayMain(
   let locale: UiLocale = 'en';
   let iconDataUrl: string | null = null;
   const electron = requireElectron('electron') as Electron;
-  const { BrowserWindow, app, screen, systemPreferences } = electron;
+  const { BrowserWindow, app, nativeImage, screen, systemPreferences } = electron;
 
   function isGranted(id: DragGrantPermissionId): boolean {
     if (process.platform !== 'darwin') return false;
@@ -74,15 +94,21 @@ export function createPermissionOverlayMain(
     return systemPreferences.getMediaAccessStatus('screen') === 'granted';
   }
 
-  async function resolveAppIconDataUrl(bundlePath: string | null): Promise<string | null> {
-    if (!bundlePath) return null;
-    const icon = await loadNativeBundleIcon(app.isPackaged, () =>
-      app.getFileIcon(bundlePath, BUNDLE_ICON_OPTIONS),
+  function resolveAppIconDataUrl(): string | null {
+    // The canonical 1024px icon ships in assets/ — the same PNG
+    // electron-builder stamps onto the bundle. `app.getFileIcon()` is the
+    // wrong source for an identity: macOS reduces the path to its UTType
+    // and returns the generic application icon, never this app's own — and
+    // requesting it at size 'large' killed packaged builds outright with a
+    // fatal NOTREACHED inside Chromium's IconLoader (#3352).
+    const icon = nativeImage.createFromPath(
+      desktopAssetPath(
+        { isPackaged: app.isPackaged, resourcesPath: process.resourcesPath },
+        'assets',
+        'icon.png',
+      ),
     );
-    if (!icon || icon.isEmpty()) return null;
-    // nativeImage.createFromPath does not decode .icns reliably. Asking
-    // macOS for the bundle icon returns the same image Finder and the TCC
-    // list display for packaged Maka builds.
+    if (icon.isEmpty()) return null;
     return icon.resize({ width: 64, height: 64 }).toDataURL();
   }
 
@@ -110,6 +136,10 @@ export function createPermissionOverlayMain(
         exists: existsSync,
       });
       const bundlePath = bundle.ok ? bundle.bundlePath : null;
+      // Resolved here, at the only consumer, so a non-darwin start() never
+      // pays the PNG decode; a null result (asset missing) retries on the
+      // next card rather than caching the failure.
+      iconDataUrl ??= resolveAppIconDataUrl();
       return {
         permission: id,
         appName: app.getName(),
@@ -187,12 +217,6 @@ export function createPermissionOverlayMain(
       } catch (error) {
         console.warn('[permission-overlay] locale lookup failed, keeping', locale, error);
       }
-      const bundle = resolveAppBundle({
-        executablePath: app.getPath('exe'),
-        platform: process.platform,
-        exists: existsSync,
-      });
-      iconDataUrl = await resolveAppIconDataUrl(bundle.ok ? bundle.bundlePath : null);
       return controller.start(id);
     },
   };
@@ -267,17 +291,12 @@ function attachCardGestures(win: import('electron').BrowserWindow): void {
       payload && typeof payload === 'object' && 'iconDataUrl' in payload
         ? (payload as { iconDataUrl?: unknown }).iconDataUrl
         : null;
+    // The file drag still works without a decorative drag image, so a
+    // failed decode degrades to an empty icon rather than a native read.
     let icon = nativeImage.createEmpty();
     if (typeof iconDataUrl === 'string' && iconDataUrl.startsWith('data:image/')) {
       const fromRenderer = nativeImage.createFromDataURL(iconDataUrl);
       if (!fromRenderer.isEmpty()) icon = fromRenderer;
-    }
-    if (icon.isEmpty()) {
-      const fallback = await loadNativeBundleIcon(app.isPackaged, () =>
-        app.getFileIcon(resolved.bundlePath, BUNDLE_ICON_OPTIONS),
-      );
-      if (fallback && !fallback.isEmpty()) icon = fallback.resize({ width: 64, height: 64 });
-      // The file drag still works without a decorative drag image.
     }
 
     if (!win.isDestroyed()) win.webContents.startDrag({ file: resolved.bundlePath, icon });

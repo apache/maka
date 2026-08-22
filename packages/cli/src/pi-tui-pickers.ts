@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   CombinedAutocompleteProvider,
   Editor,
@@ -728,11 +747,10 @@ export class ModelSearchOverlay implements Component {
  * #1611: `current` marks an option that is genuinely in force, so choosing it
  * is a no-op. A read-only session is neither of these options, and marking
  * Auto as current there turned "confirm what I already have" into a silent
- * widening of the boundary. Legacy `execute` has no boundary of its own and
- * really does resolve to Auto, so it still marks Auto.
+ * widening of the boundary.
  */
 export function permissionModePickerItems(currentMode: PermissionMode): SelectItem[] {
-  const autoIsCurrent = currentMode === 'ask' || currentMode === 'execute';
+  const autoIsCurrent = currentMode === 'ask';
   return [
     {
       value: 'auto',

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, readFileSync } from 'node:fs';
@@ -714,6 +733,11 @@ export async function assertPackagedResources(
     // build, which predates the disclaimer being packaged. Requiring it there
     // would fail a release that was correct when it shipped.
     requireDisclaimer = true,
+    // Same shape as the disclaimer: the canonical icon began shipping as an
+    // extra resource with the window-icon fix, and the permission overlay
+    // reads it at runtime, so current builds must carry it — but a
+    // previously released baseline predates it.
+    requireCanonicalIcon = true,
   } = {},
 ) {
   if (bundledGitContract !== 'forbidden' && bundledGitContract !== 'legacy-required') {
@@ -732,6 +756,7 @@ export async function assertPackagedResources(
           join('licenses', 'git', 'NOTICE.txt'),
         ]
       : []),
+    ...(requireCanonicalIcon ? [join('assets', 'icon.png')] : []),
     join('workers', 'filesystem-worker.js'),
     join('licenses', 'maka', 'LICENSE'),
     join('licenses', 'maka', 'NOTICE'),

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
@@ -7,12 +26,12 @@ import {
   type TraceModelCallStep,
   type TraceStep,
 } from '@maka/core/session-trace';
-import { deriveInspectorPanelModel } from '../../renderer/session-inspector-panel-model.js';
 import {
+  deriveInspectorPanelModel,
   deriveInspectorOverviewModel,
   estimatedSessionCost,
   hasUnavailableSessionUsage,
-} from '../../renderer/session-inspector-overview-model.js';
+} from '../../renderer/features/workbar/testing.js';
 
 test('does not render legacy zero cost as a known free Session', () => {
   const summary = {
@@ -119,7 +138,6 @@ test('does not estimate a cache-hit ratio from partial usage', () => {
 
   assert.equal(overview.cacheHitRate, undefined);
 });
-
 test('derives per-turn cost only from priced model-call step totals', () => {
   const cases: readonly {
     name: string;

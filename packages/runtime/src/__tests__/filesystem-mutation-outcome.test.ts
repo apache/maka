@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Verify that a filesystem mutation whose worker fails after dispatch is
 // surfaced as an unknown outcome, while pre-flight failures and read failures
 // pass through as ordinary errors. This is the host-side half of issue #2600's
@@ -17,6 +36,7 @@ import {
   type FilesystemWorkerClient,
   type FilesystemWorkerClientErrorReason,
   type FilesystemWorkerExecuteInput,
+  type FilesystemWorkerExpectedIdentity,
 } from '../filesystem-worker/client.js';
 import type { FilesystemWorkerResult } from '../filesystem-worker/protocol.js';
 import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
@@ -216,7 +236,7 @@ describe('filesystem mutation T0 identity capture (queue-window closure)', () =>
       releaseFirst = resolve;
     });
     let calls = 0;
-    let queuedIdentity: { dev: string; ino: string } | undefined;
+    let queuedIdentity: FilesystemWorkerExpectedIdentity | undefined;
     const gatedWorker: {
       execute: (input: FilesystemWorkerExecuteInput) => Promise<FilesystemWorkerResult>;
     } = {
@@ -255,12 +275,45 @@ describe('filesystem mutation T0 identity capture (queue-window closure)', () =>
     releaseFirst();
     await Promise.all([first, second]);
 
-    assert.ok(queuedIdentity, 'the queued mutation should have dispatched to the worker');
+    assert.ok(
+      queuedIdentity && typeof queuedIdentity !== 'string',
+      'the queued mutation should have dispatched with the captured identity',
+    );
     assert.equal(
-      queuedIdentity.ino,
+      (queuedIdentity as { dev: string; ino: string }).ino,
       String(original.ino),
       'identity must be the inode captured at lock acquisition (before the replacement); a T1 capture would sample the replacement',
     );
+  });
+
+  test('an apply_patch mutation forwards its captured identity, not unchecked (#3484 regression)', async () => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-t0-applypatch-')));
+    cleanup.push(cwd);
+    const target = join(cwd, 'file.txt');
+    await writeFile(target, 'original', 'utf8');
+
+    const original = await stat(target, { bigint: true });
+    let dispatched: FilesystemWorkerExpectedIdentity | undefined;
+    const gatedWorker: {
+      execute: (input: FilesystemWorkerExecuteInput) => Promise<FilesystemWorkerResult>;
+    } = {
+      async execute(input) {
+        dispatched = input.expectedIdentity;
+        return { kind: 'apply_patch', ok: true, path: target };
+      },
+    };
+    const fs = executorWith(gatedWorker);
+
+    await fs.applyPatch({
+      operation: { type: 'update_file', path: target, diff: '--- a\n+++ b\n' },
+      cwd,
+    });
+
+    assert.ok(
+      dispatched && typeof dispatched !== 'string',
+      'apply_patch must dispatch with the captured identity, not unchecked',
+    );
+    assert.equal(dispatched.ino, String(original.ino));
   });
 });
 

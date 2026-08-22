@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import {
@@ -332,6 +351,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
+  // Mirrors the editor's bracketed-paste buffering at the input seam: between a
+  // paste start marker and its end marker the editor holds incoming bytes in an
+  // internal buffer and getText() stays empty, so "editor is empty" must not
+  // treat that in-flight paste as absent user input (#3475 review). The marker
+  // matching deliberately mirrors the editor's own per-chunk includes() checks,
+  // so this flag agrees with what the editor will buffer.
+  let editorPastePending = false;
   type AttachedTurnContext =
     | { readonly kind: 'adopted'; readonly turn: MakaPreparedSessionTurn }
     | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
@@ -1511,18 +1537,48 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // non-destructive and inherits the branch's resume guarantees.
   const rewindToTurn = async (turnId: string) => {
     resolvedInteractionIds.clear();
-    const result = await input.driver.rewindToTurn(turnId);
-    await applySwitchResult(result);
-    // Refill the editor with the discarded turn's prompt so the user can edit
-    // and resend it. The picker only arms when the editor is neutral (empty
-    // draft, no autocomplete), so overwriting the text loses no in-progress work.
-    editor.setText(result.prompt);
-    state.entries.push({
+    // Synchronous feedback before the first await: branching + switching takes
+    // several serialized runtime-host round trips, and control-busy renders
+    // nothing in the TUI body, so without this notice the picker's Enter looks
+    // dead until the branch lands (#3383). replaceTranscript wipes it on
+    // success; the catch removes it on failure so only the error stays.
+    const pendingNotice: (typeof state.entries)[number] = {
       kind: 'notice',
       level: 'info',
-      text: '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。',
-    });
+      text: '正在回退到该轮之前…',
+    };
+    state.entries.push(pendingNotice);
     requestRender();
+    try {
+      const result = await input.driver.rewindToTurn(turnId);
+      await applySwitchResult(result);
+      // Record the discarded turn's prompt in the editor history before
+      // deciding on the refill: prompts submitted in this TUI process are
+      // already there (addToHistory dedupes consecutive duplicates), but a
+      // session entered via startup resume or /resume has no entry yet, and
+      // the notice below promises ↑ recovery (#3475 review).
+      editor.addToHistory(result.prompt);
+      // Refill the editor with that prompt so the user can edit and resend it
+      // — unless newer user input arrived while the switch was in flight. The
+      // picker's neutral-editor guarantee only holds at open time, so this
+      // covers both a typed draft and a bracketed paste still being buffered
+      // (getText() stays empty until its end marker); either wins over the
+      // refill.
+      const refill = editor.getText().trim().length === 0 && !editorPastePending;
+      if (refill) editor.setText(result.prompt);
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: refill
+          ? '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。'
+          : '已回退到该轮之前（分支为新任务，原任务保留）。输入框已有未发送内容，未覆盖；该轮 prompt 已存入输入历史，可按 ↑ 找回。',
+      });
+      requestRender();
+    } catch (error) {
+      const index = state.entries.indexOf(pendingNotice);
+      if (index >= 0) state.entries.splice(index, 1);
+      throw error;
+    }
   };
 
   const showBottomPicker = (picker: Component): OverlayHandle =>
@@ -2095,6 +2151,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       'Rewind',
       items,
       (item) => {
+        // runControl drops the action silently when busy is already held (e.g.
+        // a Goal auto-continuation started while the picker was open). The
+        // overlay is already closed at this point, so say so instead of
+        // leaving a dead Enter — same contract as /goal's busy guard.
+        if (busy) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: '无法回退：当前有正在进行的操作 — 请等待其完成，或中断（Esc）后重试。',
+          });
+          requestRender();
+          return;
+        }
         void runControl(() => rewindToTurn(item.value));
       },
       {
@@ -2107,9 +2176,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const newSession = () => {
     input.driver.startNewSession();
-    // A fresh session is not bound by the previous one's boundary; re-read the
-    // mode the next session will actually be created with.
-    permissionMode = input.driver.getPermissionMode?.() ?? permissionMode;
+    // A fresh session is not bound by the previous one's boundary. Falling back
+    // to the *current* label would keep the previous Session's mode, including
+    // Auto while a changed Host default creates with full access; the launch
+    // reading is the Host's value, so it is the safe floor when the driver has
+    // nothing newer.
+    permissionMode = input.driver.getPermissionMode?.() ?? input.permissionMode;
     attention.setBaseTitle(input.title);
     shellRunHydration.reset();
     // Fresh transcript for the fresh session; the next prompt creates it on disk.
@@ -3045,6 +3117,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   refreshEditorCwd(cwd);
 
   tui.addInputListener((data) => {
+    // Track bracketed pastes before any consuming branch: this must observe
+    // every chunk the editor could buffer, regardless of what the rest of the
+    // listener decides (#3475 review).
+    if (data.includes('\x1b[200~')) {
+      // A paste begins; it is only complete when the end marker follows, here
+      // or in a later chunk.
+      editorPastePending = !data.slice(data.indexOf('\x1b[200~') + 6).includes('\x1b[201~');
+    } else if (editorPastePending && data.includes('\x1b[201~')) {
+      // The paste ends; bytes after the end marker may start another paste.
+      const remainder = data.slice(data.indexOf('\x1b[201~') + 6);
+      editorPastePending = remainder.includes('\x1b[200~');
+    }
     // Once closing has begun, swallow any buffered input that reaches the
     // listener while the terminal is being torn down.
     if (closed) return { consume: true };

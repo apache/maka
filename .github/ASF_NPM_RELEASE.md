@@ -1,100 +1,102 @@
-# Apache Maka npm convenience candidate runbook
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
 
-This runbook prepares the `maka-agent` npm convenience artifact for the first
-Apache Maka (Incubating) release. The official ASF release is the source
-release. The npm package is an additional distribution form and must be built
-from the exact source release commit, reviewed independently, and published
-only after the source release is approved.
+      http://www.apache.org/licenses/LICENSE-2.0
 
-## Candidate contract
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
 
-For version `<version>` and source release candidate `<rc>`, the workflow
-produces one unsigned handoff artifact containing:
+# Apache Maka npm source-RC preflight
 
-- `maka-agent-<version>.tgz`;
-- the existing SHA-256 sidecar used by the npm publication verifier;
-- `maka-agent-<version>.tgz.sha512` for ASF release review;
-- the npm pack file inventory; and
-- `maka-agent-<version>.tgz.asf-candidate.json`, which binds those exact bytes
-  to the source reference `v<version>-incubating-rc<rc>`, its full commit, and
-  the producing workflow run attempt.
+This runbook validates the `maka-agent` npm convenience artifact while an
+Apache Maka (Incubating) source release candidate is under review. The source
+archive is the ASF release artifact. The npm package is published only after
+the source release is approved, from the exact approved commit.
 
-The workflow builds the tarball once and passes the same bytes through the
-Linux, macOS, Windows, and Eval validation matrix. It does not call npm
-staging, publish a package, modify a dist-tag, sign the tarball, or establish
-that the source candidate has passed either required vote.
+This follows the practice used by Apache OpenDAL while incubating: its Node.js
+workflow validated release-candidate tags without publishing, and a final tag
+on the same commit triggered npm publication after approval. OpenDAL's ASF
+distribution contained the signed source release, not a separately signed npm
+tarball.
 
-## Prerequisites
+## Preflight contract
 
-1. The intended source candidate tag
-   `v<version>-incubating-rc<rc>` exists as a signed annotated tag at a commit
-   on `main`. The Release Manager has independently verified the tag signature
-   with the trusted ASF `KEYS` material as required by the source-release
-   runbook.
-2. The root product version and `packages/cli/package.json` version both equal
-   `<version>` at that commit.
-3. The source candidate was prepared and reviewed under
-   [ASF_SOURCE_RELEASE.md](./ASF_SOURCE_RELEASE.md).
-4. The reusable CLI package validation workflow is green for the exact commit.
+The workflow:
 
-## Prepare the unsigned candidate
+- runs only in `apache/maka` from an annotated
+  `v<version>-incubating-rc<rc>` tag;
+- requires that tag to resolve to the dispatched commit on `main`;
+- requires the source-tag version to match the root, Desktop, and CLI product
+  versions; and
+- builds one clean-source npm tarball and validates that artifact across the
+  supported Linux, macOS, Windows, and Eval matrix.
 
-Dispatch **Prepare ASF npm candidate** from the exact source candidate tag:
+The resulting workflow artifact is diagnostic evidence for the source RC. It
+is not an ASF release artifact or the npm publication input. The workflow has
+no publishing credentials and cannot stage a package, publish a version, or
+move a dist-tag.
+
+## Run the preflight
+
+Dispatch **Validate ASF npm package from source RC** from the exact source
+candidate tag:
 
 ```sh
 version=0.1.11
 rc=1
 source_reference_tag="v${version}-incubating-rc${rc}"
-gh workflow run asf-npm-candidate.yml \
-  --ref "$source_reference_tag"
+gh workflow run asf-npm-candidate.yml --ref "$source_reference_tag"
 ```
 
-The workflow rejects a fork repository, a lightweight tag, a tag/version/RC
-mismatch, a tag that does not resolve to the dispatched commit, and a commit
-outside current `main`. These checks pin a source reference; they do not
-authenticate its signature or establish source-release approval. Its reusable
-validation job builds one clean-source npm tarball and tests that exact artifact
-across the supported platform matrix. The final job adds only the source
-reference/run record and uploads a new handoff artifact; it never rebuilds the
-tarball. The handoff requires validation from the current workflow attempt. If
-validation or handoff must be retried, re-run the validation job and its
-dependent jobs; the handoff independently revalidates the live source tag, so
-the successful resolve job does not need to be repeated.
+A successful run shows that the package can be built and installed from the
+candidate commit on the supported matrix. It does not authenticate the source
+tag signature or establish that either required source-release vote has
+passed. Those remain responsibilities of the source-release process.
 
-## Verify the handoff
-
-After downloading and extracting the workflow artifact, verify the record and
-both checksum sidecars from a trusted checkout of the same source commit:
-
-```sh
-npm run release:asf:npm:verify -- \
-  <candidate-dir>/maka-agent-<version>.tgz.asf-candidate.json
-```
-
-Review the JSON record directly and confirm the full source commit, source
-reference tag, workflow run ID, and run attempt against GitHub. Treat the
-tarball as immutable after it enters release review. Any byte change requires a
-new npm package version and, when the source commit changes, a new source RC.
+If the source candidate changes, create a new source RC and run the preflight
+again. Rerunning the preflight for the same commit is safe because it has no
+registry side effects.
 
 ## Publication boundary
 
-This preparation workflow is deliberately credential-free. Before any npm
-approval or public publication, G8 still requires:
+After both source-release votes approve the candidate, the product Release
+workflow creates `v<version>` at that approved commit. The npm Stage workflow
+then builds and validates one tarball from that final tag, submits those exact
+bytes to npm staging through the protected `npm-release` Environment and OIDC,
+and records the stage identity. Human approval with npm 2FA makes the package
+public; Finalize verifies the registry bytes, integrity, signature, provenance,
+and dist-tag.
 
-- artifact-specific legal and dependency review;
-- the reviewed detached-signature path and independent signature verification;
-- the mentor/IPMC decision on the npm package name;
-- a recorded successful source-release vote result;
-- PPMC-controlled npm ownership, OIDC, 2FA recovery, and approval; and
-- verification that npm staging and the public registry preserve these exact
-  candidate bytes and their provenance.
+The npm tarball therefore does not need an ASF detached PGP signature, an ASF
+SHA-512 sidecar, inclusion in `dist/dev` or `dist/release`, or byte identity
+with a pre-vote build. Its release identity comes from the approved source
+commit and final product tag; its publication integrity comes from npm staging,
+Trusted Publishing provenance, and the registry verification performed by
+Finalize.
 
-Do not infer source-release approval from a successful candidate workflow or
-from the existence of an RC tag.
+The project currently retains `maka-agent`, but must record explicit mentor or
+ASF Brand confirmation before the first compliant publication. The Incubator
+npm guide shows an `apache-<project>` name, while Apache OpenDAL published the
+unprefixed `opendal` package throughout incubation. OpenDAL's package predates
+its incubation entry whereas `maka-agent` does not, so that precedent supports
+asking to retain the name but does not settle Maka's naming decision.
 
 ## References
 
-- https://incubator.apache.org/guides/distribution.html#npm
-- https://incubator.apache.org/guides/releasemanagement.html
-- https://www.apache.org/legal/release-policy.html
-- https://www.apache.org/legal/resolved.html
+- [ASF Incubator distribution guide: npm](https://incubator.apache.org/guides/distribution.html#npm)
+- [ASF Release Policy](https://www.apache.org/legal/release-policy.html)
+- [OpenDAL incubating release guide at v0.44.0](https://github.com/apache/opendal/blob/v0.44.0/website/community/committers/release.md)
+- [OpenDAL incubating Node.js workflow at v0.44.0](https://github.com/apache/opendal/blob/v0.44.0/.github/workflows/bindings_nodejs.yml)
+- [OpenDAL 0.44.0 source artifacts in the ASF archive](https://archive.apache.org/dist/incubator/opendal/0.44.0/)
+- [OpenDAL current Node.js release workflow](https://github.com/apache/opendal/blob/main/.github/workflows/release_nodejs.yml)

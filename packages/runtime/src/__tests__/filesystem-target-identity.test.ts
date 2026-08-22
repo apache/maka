@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Red-line tests for the T0 target identity CAS (issue #2600 concern #1).
 // A mutation whose target was replaced while the call waited for the write
 // lock must be detected and rejected, not silently written to the replacement.
@@ -29,7 +48,8 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 
 function requestFor(
   operation: FilesystemWorkerRequest['operation'],
-  expectedTarget: FilesystemWorkerTarget,
+  expectedTarget: Omit<FilesystemWorkerTarget, 'identity'>,
+  identity: FilesystemWorkerTarget['identity'] = 'missing',
 ): FilesystemWorkerRequest {
   return {
     version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -40,7 +60,7 @@ function requestFor(
         entries: [{ path: expectedTarget.enforcementPath, access: 'write', scope: 'exact' }],
       },
     },
-    expectedTarget,
+    expectedTarget: { ...expectedTarget, identity },
   };
 }
 
@@ -67,7 +87,8 @@ describe('filesystem worker target identity CAS', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'write', cwd, path: target, content: 'new' },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
       ),
     );
 
@@ -90,7 +111,8 @@ describe('filesystem worker target identity CAS', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'write', cwd, path: target, content: 'updated' },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
       ),
     );
 
@@ -115,7 +137,8 @@ describe('filesystem worker target identity CAS', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'apply_patch', cwd, path: target, action: 'delete' },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
       ),
     );
 
@@ -139,7 +162,8 @@ describe('filesystem worker target identity CAS', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'edit', cwd, path: target, oldString: 'old', newString: 'new' },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
       ),
     );
 
@@ -148,6 +172,37 @@ describe('filesystem worker target identity CAS', () => {
     // The replacement content must be untouched (no edit applied).
     const { readFile } = await import('node:fs/promises');
     assert.equal(await readFile(target, 'utf8'), 'replacement\nold\n');
+  });
+
+  test('rejects an apply_patch update when the target inode changed after authorisation', async () => {
+    const cwd = await temporaryDirectory('maka-identity-applypatch-update-');
+    const target = join(cwd, 'file.txt');
+    const replacement = join(cwd, 'replacement.txt');
+    await writeFile(target, 'line\noriginal\n', 'utf8');
+    await writeFile(replacement, 'line\nreplacement\n', 'utf8');
+
+    const identity = await captureIdentity(target);
+    await rename(replacement, target);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        {
+          kind: 'apply_patch',
+          cwd,
+          path: target,
+          action: 'update',
+          diff: '--- a\n+++ b\n@@ -1,2 +1,2 @@\n line\n-original\n+updated\n',
+        },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
+      ),
+    );
+
+    assert.equal(response.ok, false);
+    assert.equal(response.error?.code, 'path_changed');
+    // The replacement content must be untouched (the patch never applied).
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(target, 'utf8'), 'line\nreplacement\n');
   });
 
   test('creates a missing target without requiring an identity', async () => {
@@ -170,6 +225,32 @@ describe('filesystem worker target identity CAS', () => {
     assert.equal(await readFile(target, 'utf8'), 'created');
   });
 
+  test('a write to a missing target reports a creation diff (#3487 P1)', async () => {
+    const cwd = await temporaryDirectory('maka-identity-missing-write-');
+    const target = join(cwd, 'brand-new.txt');
+
+    // The truthy 'missing' identity string used to make the "approved
+    // missing" truthiness test fail, collapsing the diff into unknown and
+    // hiding new-file changes from review. The write must report the creation
+    // diff (`--- /dev/null`) instead.
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'write', cwd, path: target, content: 'created\n' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'missing' },
+      ),
+    );
+
+    assert.equal(response.ok, true);
+    assert.equal(response.result.kind, 'write');
+    if (response.result.kind !== 'write') return;
+    assert.ok(
+      response.result.diff?.includes('--- /dev/null'),
+      'a created file must carry a creation diff with --- /dev/null',
+    );
+    const { readFile } = await import('node:fs/promises');
+    assert.equal(await readFile(target, 'utf8'), 'created\n');
+  });
+
   test('reports path_changed when the target is replaced before the write (pre-write CAS)', async () => {
     const cwd = await temporaryDirectory('maka-identity-prewrite-');
     const target = join(cwd, 'file.txt');
@@ -186,7 +267,8 @@ describe('filesystem worker target identity CAS', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'write', cwd, path: target, content: 'new' },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file', identity },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        identity,
       ),
     );
 

@@ -1,5 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { InteractionQueues } from '@maka/ui';
-import type { AppShellSessionUiState, AppShellSessionUiStateController } from './app-shell-session-ui-state.js';
+import type {
+  AppShellSessionUiState,
+  AppShellSessionUiStateController,
+  MessageQueueUiState,
+} from './app-shell-session-ui-state.js';
 import {
   deriveLiveTurnSnapshot,
   liveTurnSnapshotsEqual,
@@ -13,6 +36,7 @@ const selectMessageLoadError = (state: AppShellSessionUiState) => state.messageL
 const selectMessageRetryPending = (state: AppShellSessionUiState) => state.messageRetryPendingBySession;
 const selectStopPending = (state: AppShellSessionUiState) => state.stopPendingBySession;
 const selectInteraction = (state: AppShellSessionUiState) => state.interactionBySession;
+const selectMessageQueue = (state: AppShellSessionUiState) => state.messageQueueBySession;
 const selectPendingPermissionMode = (state: AppShellSessionUiState) => state.pendingPermissionModeBySession;
 const selectPendingSessionModel = (state: AppShellSessionUiState) => state.pendingSessionModelBySession;
 const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSessionIds(state.liveTurnBySession);
@@ -52,6 +76,7 @@ export function useAppShellSessionUiReads(
   messageRetryPendingBySession: Record<string, boolean>;
   stopPendingBySession: Record<string, boolean>;
   interactionBySession: InteractionQueues;
+  messageQueueBySession: Record<string, MessageQueueUiState>;
   pendingPermissionModeBySession: Record<string, boolean>;
   pendingSessionModelBySession: Record<string, boolean>;
   streamingSessionIds: Set<string>;
@@ -62,6 +87,7 @@ export function useAppShellSessionUiReads(
     messageRetryPendingBySession: useAppShellSessionUiSelector(controller, selectMessageRetryPending),
     stopPendingBySession: useAppShellSessionUiSelector(controller, selectStopPending),
     interactionBySession: useAppShellSessionUiSelector(controller, selectInteraction),
+    messageQueueBySession: useAppShellSessionUiSelector(controller, selectMessageQueue),
     pendingPermissionModeBySession: useAppShellSessionUiSelector(controller, selectPendingPermissionMode),
     pendingSessionModelBySession: useAppShellSessionUiSelector(controller, selectPendingSessionModel),
     streamingSessionIds: useAppShellSessionUiSelector(controller, selectPulseSet, undefined, sessionIdSetsEqual),

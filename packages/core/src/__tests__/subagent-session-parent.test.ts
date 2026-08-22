@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionSummary, SubagentSessionParent, SubagentSessionSpawn } from '../session.js';
@@ -11,7 +30,6 @@ import {
   projectLinkedSessionTree,
   subagentSessionRuntimeSummary,
 } from '../session.js';
-import { isPermissionModeWithinCeiling } from '../permission.js';
 
 const relation: SubagentSessionParent = {
   kind: 'subagent',
@@ -186,3 +204,31 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
     ...overrides,
   };
 }
+
+describe('legacy child execution snapshots', () => {
+  const runtime = {
+    schemaVersion: 1,
+    definitionVersion: 1,
+    agentId: 'agent-1',
+    agentName: 'Reader',
+    profile: 'local_read',
+    systemPrompt: 'Read only.',
+    toolNames: ['Read'],
+    categoryPolicy: { read: 'allow' },
+  } as const;
+
+  test('accepts a snapshot carrying a retired key', () => {
+    // Written before `permissionCeiling` was dropped. Rejecting it would make
+    // the whole child Session unreadable, and nothing reads the value.
+    assert.equal(isSubagentSessionRuntime({ ...runtime, permissionCeiling: 'execute' }), true);
+    assert.equal(isSubagentSessionRuntime({ ...runtime, permissionCeiling: 'ask' }), true);
+  });
+
+  test('accepts a current snapshot without the key', () => {
+    assert.equal(isSubagentSessionRuntime(runtime), true);
+  });
+
+  test('still rejects a key that was never part of the shape', () => {
+    assert.equal(isSubagentSessionRuntime({ ...runtime, notAField: 'x' }), false);
+  });
+});

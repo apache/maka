@@ -1,4 +1,23 @@
-import { isPermissionMode, type PermissionMode } from './permission.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { decodePersistedPermissionMode, type PermissionMode } from './permission.js';
 import { isCollaborationMode, type CollaborationMode } from './collaboration.js';
 import {
   isAgentSwarmAuthorizationSource,
@@ -588,6 +607,10 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
   }
   const status =
     value.status === 'waiting_permission' ? ('waiting_for_user' as const) : value.status;
+  // Same shape as the status fold above: a run written before a mode was
+  // retired is old, not malformed, so it decodes to the live equivalent
+  // rather than making the run unreadable.
+  const permissionMode = decodePersistedPermissionMode(value.permissionMode);
   const valid =
     typeof value.runId === 'string' &&
     typeof value.sessionId === 'string' &&
@@ -597,7 +620,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     typeof value.llmConnectionSlug === 'string' &&
     typeof value.modelId === 'string' &&
     typeof value.cwd === 'string' &&
-    isPermissionMode(value.permissionMode) &&
+    permissionMode !== undefined &&
     (value.collaborationMode === undefined || isCollaborationMode(value.collaborationMode)) &&
     (value.orchestrationMode === undefined || isOrchestrationMode(value.orchestrationMode)) &&
     (value.orchestrationSource === undefined ||
@@ -641,7 +664,9 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     (value.continuationSource === undefined ||
       isAgentRunContinuationSource(value.continuationSource));
   if (!valid) throw new Error('Invalid AgentRun header schema');
-  if (status !== value.status) return { ...value, status } as unknown as AgentRunHeader;
+  if (status !== value.status || permissionMode !== value.permissionMode) {
+    return { ...value, status, permissionMode } as unknown as AgentRunHeader;
+  }
   return value as unknown as AgentRunHeader;
 }
 

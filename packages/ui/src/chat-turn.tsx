@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { ICON_SIZE, AlertOctagon, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
@@ -10,6 +29,7 @@ import {
 } from './chat-display-helpers.js';
 import { redactSecrets } from './redact.js';
 import { isProgressiveStreamingEnabled, isTimeDrivenMotionEnabled } from './streaming-presentation.js';
+import { computerRunningLabel } from './tool-activity/computer-action-label.js';
 import {
   Badge,
   Banner,
@@ -433,6 +453,7 @@ export const TurnView = memo(function TurnView(props: {
   // flat timeline. Settled turn identities are stable (memoized projections),
   // so this only recomputes for the turn whose timeline actually changed.
   const foldedTimeline = useMemo(() => foldTimeline(turn.timeline), [turn.timeline]);
+  const runningToolLabel = computerRunningLabel(turn.tools, locale);
   const conversationSegments = useMemo(
     () => splitTimelineAtUserMessages(foldedTimeline, showAssistantMessage),
     [foldedTimeline, showAssistantMessage],
@@ -665,6 +686,7 @@ export const TurnView = memo(function TurnView(props: {
                       <TurnRunningStatus
                         startedAt={turn.startedAt}
                         showSpinner={!toolSurfaceOwnsSpinner}
+                        activityLabel={runningToolLabel}
                       />
                     )
                   )}
@@ -955,7 +977,11 @@ const ELAPSED_TICK_MS = 1_000;
  * rare fallback path where streaming beat the user turn into the transcript;
  * the phrase then stands alone.
  */
-export function TurnRunningStatus(props: { startedAt?: number; showSpinner?: boolean }) {
+export function TurnRunningStatus(props: {
+  startedAt?: number;
+  showSpinner?: boolean;
+  activityLabel?: string;
+}) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const phrases = copy.workingPhrases;
   const { startedAt } = props;
@@ -997,7 +1023,12 @@ export function TurnRunningStatus(props: { startedAt?: number; showSpinner?: boo
   }, [phrases.length]);
 
   return (
-    <div className="maka-turn-processing" role="status" aria-label={copy.processing} ref={rootRef}>
+    <div
+      className="maka-turn-processing"
+      role="status"
+      aria-label={props.activityLabel ?? copy.processing}
+      ref={rootRef}
+    >
       {props.showSpinner !== false && (
         <Spinner size="md" shade="subtle" aria-hidden="true" />
       )}
@@ -1006,7 +1037,7 @@ export function TurnRunningStatus(props: { startedAt?: number; showSpinner?: boo
           its whole accessible name and the text is decoration. */}
       <span className="maka-turn-indicator-text" aria-hidden="true">
         <span className="maka-turn-working-phrase" data-fading={phraseFading || undefined}>
-          {phrases[phraseIndex] ?? copy.processing}
+          {props.activityLabel ?? phrases[phraseIndex] ?? copy.processing}
         </span>
         {elapsedMs !== undefined && (
           <>

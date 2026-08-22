@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
@@ -116,6 +135,55 @@ describe('Maka Pi TUI transcript', () => {
     );
     assert.doesNotMatch(achieved, /goal/);
     assert.doesNotMatch(stripAnsi(renderMakaPiStatusLine({ ...meta(), goal: null }, 120)), /goal/);
+  });
+
+  test('status line degrades to ctx ?/window when the window is known but usage is not (#3371)', () => {
+    // No usage object at all: the window is known, so degrade explicitly.
+    assert.match(
+      stripAnsi(renderMakaPiStatusLine({ ...meta(), modelContextWindow: 500_000 }, 120)),
+      /ctx \?\/500k/,
+    );
+
+    // Usage exists but contextRemaining has not been reported yet.
+    assert.match(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          {
+            ...meta(),
+            modelContextWindow: 500_000,
+            usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0 },
+          },
+          120,
+        ),
+      ),
+      /ctx \?\/500k/,
+    );
+
+    // Window unknown: the segment stays hidden, even with usage present.
+    assert.doesNotMatch(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          { ...meta(), usage: { costUsd: 0.01, cacheHitInput: 0, cacheMissInput: 0 } },
+          120,
+        ),
+      ),
+      /ctx/,
+    );
+
+    // contextRemaining present: the measured segment is unchanged.
+    assert.match(
+      stripAnsi(
+        renderMakaPiStatusLine(
+          {
+            ...meta(),
+            modelContextWindow: 500_000,
+            usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0, contextRemaining: 480_000 },
+          },
+          120,
+        ),
+      ),
+      /ctx 20k\/500k 4%/,
+    );
   });
 
   test('keeps assistant text after a tool call visible after the tool block', () => {

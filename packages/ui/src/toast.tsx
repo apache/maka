@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // packages/ui/src/toast.tsx
 //
 // In-app toast notification system + Promise-returning confirm dialog. Both
@@ -133,11 +152,14 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
   const activeConfirmRef = useRef<PendingConfirm | null>(null);
   const confirmQueueRef = useRef<PendingConfirm[]>([]);
   const dismissByIdRef = useRef(new Map<string, ToastDismissFn>());
+  const toastIdByContentRef = useRef(new Map<string, string>());
   const idSeed = useRef(0);
 
   const push = useCallback(
     (input: ToastInput): string => {
-      const id = `t${++idSeed.current}`;
+      const contentKey = toastContentKey(input);
+      const id = toastIdByContentRef.current.get(contentKey) ?? `t${++idSeed.current}`;
+      toastIdByContentRef.current.set(contentKey, id);
       let dismissCurrent: ToastDismissFn | undefined;
       const duration = input.duration ?? DEFAULT_DURATION;
       const errorAction = props.errorAction;
@@ -176,6 +198,7 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
       ].filter((action): action is ToastAction => action !== undefined);
       dismissCurrent = showToast({
         uniqueID: id,
+        collisionBehavior: 'overwrite',
         body: <ToastBody input={input} />,
         type: input.variant === 'error' ? 'error' : 'info',
         isAutoHide: duration > 0,
@@ -209,6 +232,9 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
         ) : undefined,
         onHide: () => {
           dismissByIdRef.current.delete(id);
+          if (toastIdByContentRef.current.get(contentKey) === id) {
+            toastIdByContentRef.current.delete(contentKey);
+          }
         },
       });
       dismissByIdRef.current.set(id, dismissCurrent);
@@ -288,6 +314,7 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
       }
       confirmQueueRef.current = [];
       dismissByIdRef.current.clear();
+      toastIdByContentRef.current.clear();
     };
   }, []);
 
@@ -325,6 +352,27 @@ function ToastController(props: { children: ReactNode; errorAction?: ToastErrorA
       )}
     </ToastContext.Provider>
   );
+}
+
+export function toastContentKey(input: ToastInput): string {
+  const diagnosticTarget = input.diagnosticTarget;
+  const diagnosticScope = !diagnosticTarget
+    ? null
+    : 'profileId' in diagnosticTarget
+      ? ['profile', diagnosticTarget.profileId]
+      : [
+          'session',
+          diagnosticTarget.sessionId,
+          diagnosticTarget.turnId ?? '',
+          diagnosticTarget.eventId ?? '',
+        ];
+  return JSON.stringify([
+    input.variant ?? 'info',
+    input.title,
+    input.description ?? '',
+    input.action?.label ?? '',
+    diagnosticScope,
+  ]);
 }
 
 /**

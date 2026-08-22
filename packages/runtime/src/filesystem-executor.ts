@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // packages/runtime/src/filesystem-executor.ts
 // The single authority for where the built-in file tools may reach.
 //
@@ -31,6 +50,7 @@ import type {
 } from './filesystem-worker/client.js';
 import { isSupportedImagePath, type ImageMimeType } from './image-file.js';
 import type { FilesystemWorkerResult } from './filesystem-worker/protocol.js';
+import { operationAccess } from './filesystem-worker/protocol.js';
 import { resolveCanonicalDirectoryEntryTarget } from './path-containment.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import { SandboxCommandError } from './sandbox/errors.js';
@@ -121,12 +141,11 @@ function pathScopeForBoundary(boundary: ExecutionBoundary | undefined): Workspac
   return boundary?.kind === 'bypass' ? 'host' : 'workspace';
 }
 
-/** Operations that read, modify and write back, and so must hold the target's lock. */
-function mutates(operation: FilesystemOperation): boolean {
-  return (
-    operation.kind === 'write' || operation.kind === 'edit' || operation.kind === 'format_json'
-  );
-}
+/**
+ * Operations that read, modify and write back, and so must hold the target's lock.
+ * The single authority on which kinds are writes is `operationAccess` in the
+ * worker protocol; `mutates` was a second, narrower list that drifted.
+ */
 
 /**
  * Capture the target's stable identity at lock acquisition (T0) — *before*
@@ -215,7 +234,17 @@ export function createBoundaryFilesystemExecutor(
       mode: call.permissionMode ?? 'ask',
       ...(input.permissionProfile ? { permissionProfile: input.permissionProfile } : {}),
       ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
-      ...(expectedIdentity ? { expectedIdentity } : {}),
+      // The worker client now requires an explicit T0 marker (#3484): a
+      // mutation carries its captured identity, or 'missing' when T0 saw no
+      // target; a read never participates in CAS and says so. `operationAccess`
+      // is the single authority on which kinds are writes (write | apply_patch
+      // | edit | format_json) — `mutates` is narrower and would silently drop
+      // the apply_patch identity onto 'unchecked', disabling the queue-window
+      // CAS on the main editing channel.
+      expectedIdentity:
+        operationAccess(call.operation.kind) === 'write'
+          ? (expectedIdentity ?? 'missing')
+          : 'unchecked',
     });
     if (result.kind === 'read_image') {
       return {
@@ -256,7 +285,7 @@ export function createBoundaryFilesystemExecutor(
   }
   return {
     async execute(call) {
-      if (!mutates(call.operation)) return await run(call);
+      if (operationAccess(call.operation.kind) !== 'write') return await run(call);
       // Canonicalisation without any containment check, so a target the policy
       // goes on to reject still takes the same lock as its other spellings. The
       // key is derived from the same canonicalisation the backend will resolve

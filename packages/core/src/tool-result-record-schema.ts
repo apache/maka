@@ -1,8 +1,27 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   decodeCanonicalShellToolResultContent,
   isSandboxDenialSignal,
 } from './shell-run-result.js';
-import { isPermissionMode } from './permission.js';
+import { decodePersistedPermissionMode } from './permission.js';
 import { isStorageRef, type ToolResultContent } from './events.js';
 import { validateSandboxBoundaryExpansion } from './sandbox-boundary.js';
 import {
@@ -196,7 +215,21 @@ export function decodeCanonicalToolResultContent(value: unknown): ToolResultCont
   if (!isNonShellToolResultContent(value)) {
     throw new Error('Invalid tool result content');
   }
-  return value;
+  return foldRetiredPermissionMode(value);
+}
+
+/**
+ * Transcript records written before a permission mode was retired still carry
+ * the old spelling. The shape validators accept it on purpose — rejecting would
+ * make the Turn unreadable — so canonicalize it here, at the single exit every
+ * stored tool result passes through, rather than leaving a value the return
+ * type forbids.
+ */
+function foldRetiredPermissionMode(content: ToolResultContent): ToolResultContent {
+  if (content.kind !== 'subagent') return content;
+  const permissionMode = decodePersistedPermissionMode(content.permissionMode);
+  if (permissionMode === undefined || permissionMode === content.permissionMode) return content;
+  return { ...content, permissionMode };
 }
 
 function isNonShellToolResultContent(value: unknown): value is ToolResultContent {
@@ -305,7 +338,7 @@ function hasValidSubagentResultFields(value: Record<string, unknown>): boolean {
     typeof value.agentName === 'string' &&
     typeof value.turnId === 'string' &&
     isOptionalString(value.runId) &&
-    isPermissionMode(value.permissionMode) &&
+    decodePersistedPermissionMode(value.permissionMode) !== undefined &&
     typeof value.summary === 'string' &&
     isStringArray(value.artifactIds) &&
     isOptionalFiniteNumber(value.startedAt) &&

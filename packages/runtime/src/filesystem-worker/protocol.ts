@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { z } from 'zod';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 
@@ -6,7 +25,16 @@ import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 // inode that was authorised at lock acquisition instead of only the path
 // string. The identity is carried as strings because bigint cannot cross the
 // JSON protocol boundary.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 6 as const;
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 7 as const;
+
+/** The single authority on which operation kinds are writes. Shared by the
+ * client (permission/identity decisions) and the worker (operation guards) so
+ * the set cannot drift. */
+export function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
+  return kind === 'write' || kind === 'apply_patch' || kind === 'edit' || kind === 'format_json'
+    ? 'write'
+    : 'read';
+}
 
 const path = z.string().min(1).max(4096);
 const cwd = z.string().min(1).max(4096);
@@ -53,16 +81,19 @@ export const FilesystemWorkerTargetSchema = z
     access: z.enum(['read', 'write']),
     scope: z.enum(['exact', 'subtree']),
     targetType: z.enum(['file', 'directory', 'symlink', 'other', 'missing']),
-    // Captured at lock acquisition (T0). Present (and required) for every
-    // targetType except 'missing'. The contract module (FilesystemTargetDescriptor)
-    // models this as a discriminated union; the wire schema keeps the field
-    // optional so it can omit it for missing targets, and the client that
-    // builds the request enforces the invariant.
-    identity: FilesystemTargetIdentitySchema.optional(),
+    // The execution-time identity contract, one required field (no separate
+    // T0 marker — a single three-state shape mirrors the client input, so an
+    // illegal combination cannot be expressed on the wire):
+    // - { dev, ino }: the T0 identity the worker must CAS against at T1.
+    // - 'missing': T0 saw no target; a target present at execution time was
+    //   created while the call waited and must fail.
+    // - 'unchecked': the caller does not participate in CAS; the write
+    //   proceeds without an identity comparison.
+    identity: FilesystemTargetIdentitySchema.or(z.literal('missing')).or(z.literal('unchecked')),
   })
   .strict()
   .superRefine((target, context) => {
-    if (target.targetType === 'missing' && target.identity !== undefined) {
+    if (target.targetType === 'missing' && typeof target.identity === 'object') {
       context.addIssue({
         code: 'custom',
         message: 'A missing target cannot carry an identity.',

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -233,10 +252,14 @@ test('contract checks run before dependency setup and can fail the job', () => {
   const workflow = readWorkflow('ci.yml');
   const setupNodeStart = workflow.indexOf('      - uses: actions/setup-node@');
 
-  // Both contracts need nothing but the checkout, so they run on every change
+  // These contracts need nothing but the checkout, so they run on every change
   // rather than behind a surface flag — and a gate that cannot fail the job is
   // not a gate.
-  for (const name of ['Test CI planner', 'Check Windows test inventory']) {
+  for (const name of [
+    'Test CI planner',
+    'Check Windows test inventory',
+    'Verify ASF npm preflight policy',
+  ]) {
     const start = workflow.indexOf(`      - name: ${name}\n`);
     assert.ok(start >= 0, name);
     assert.ok(start < setupNodeStart, name);
@@ -297,6 +320,13 @@ test('the sandbox lane pairs its path filter with a nightly run', () => {
   // dropping the filter would put the whole runtime back on pull requests.
   assert.match(workflow, /\n {2}pull_request:\n {4}paths:/u);
   assert.match(workflow, /\n {2}schedule:/u);
+});
+
+test('the packaged Windows gate owns Runtime Host candidate election changes', () => {
+  const workflow = readWorkflow('release-windows-check.yml');
+
+  assert.match(workflow, /'packages\/runtime-host\/src\/client\/connect-or-spawn\.ts'/u);
+  assert.match(workflow, /'packages\/runtime-host\/src\/client\/launcher\.ts'/u);
 });
 
 test('specialized platform workflows stay reachable without pull requests', () => {

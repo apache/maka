@@ -1,8 +1,29 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Maka CLI npm 发布操作手册
 
 [English](./cli-npm-release.md)
 
 本文档是发布 `maka-agent` npm 安装渠道的操作权威。根目录 `package.json` 仍是 Maka 唯一产品版本权威，`packages/cli/package.json` 必须与其一致。每个公开 npm 版本都必须来自 Stage workflow 验证过的同一个精确 tarball。
+
+source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行、且不持有发布凭据的兼容性检查；其 tarball 不会进入正式发布。source release 获批后，Stage 从位于同一获批 commit 的最终产品 tag 重新构建，并成为 npm staging 与 registry 验证所使用的字节权威。这与 Apache OpenDAL 孵化期的实践一致，同时保留了 Maka 更严格的受保护 Environment、staged publishing、2FA 与 Finalize 控制。
 
 ## 发布不变量
 
@@ -248,6 +269,9 @@ npm deprecate "maka-agent@$bad_version" "Known issue; install maka-agent@$recove
 
 ## 参考资料
 
+- [ASF Incubator npm 分发指南](https://incubator.apache.org/guides/distribution.html#npm)
+- [Apache OpenDAL 孵化期 Node.js 发布 workflow](https://github.com/apache/opendal/blob/v0.44.0/.github/workflows/bindings_nodejs.yml)
+- [Apache OpenDAL 孵化期发布指南](https://github.com/apache/opendal/blob/v0.44.0/website/community/committers/release.md)
 - [npm staged publishing](https://docs.npmjs.com/staged-publishing/)
 - [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/)
 - [npm dist-tags](https://docs.npmjs.com/cli/dist-tag/)

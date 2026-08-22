@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
@@ -24,6 +43,7 @@ import {
 import { isSupportedImagePath, readWorkspaceImage } from '../image-file.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
+  operationAccess,
   operationUsesDirectoryEntry,
   type FilesystemWorkerErrorCode,
   type FilesystemWorkerOperation,
@@ -66,12 +86,6 @@ export interface FilesystemWorkerGrepRunResult {
 export type FilesystemWorkerGrepRunner = (
   input: FilesystemWorkerGrepRunInput,
 ) => Promise<FilesystemWorkerGrepRunResult>;
-
-function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
-  return kind === 'write' || kind === 'apply_patch' || kind === 'edit' || kind === 'format_json'
-    ? 'write'
-    : 'read';
-}
 
 export async function executeFilesystemWorkerRequest(
   request: FilesystemWorkerRequest,
@@ -159,13 +173,18 @@ export async function executeFilesystemOperation(
       // appeared in the gap is `path_changed`, never truncated.
       const handle = await openStableTarget({
         path,
-        approvedIdentity: expectedTarget?.identity,
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
+        targetType: expectedTarget?.targetType,
       });
       try {
         // Read-before-write (for the diff): only through the pinned descriptor.
         // An approved-missing target was just created by 'wx', so it is new.
+        // The wire identity is three-state (#3484): 'missing' is a truthy
+        // string, so a truthiness test can no longer stand in for "the target
+        // was approved as missing" — targetType is the authority here.
         let previous: 'new' | 'unknown' | string;
-        if (!expectedTarget?.identity) {
+        if (expectedTarget?.targetType === 'missing') {
           previous = 'new';
         } else {
           try {
@@ -210,7 +229,8 @@ export async function executeFilesystemOperation(
         else
           await compareAndDeleteEntry({
             path,
-            approvedIdentity: expectedTarget?.identity,
+            approvedIdentity:
+              typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
           });
         return { kind: 'apply_patch', ok: true, path };
       }
@@ -225,7 +245,9 @@ export async function executeFilesystemOperation(
       // rejected patch propagates before any truncation, so the file is intact.
       const handle = await openStableTarget({
         path,
-        approvedIdentity: expectedTarget?.identity,
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
+        targetType: expectedTarget?.targetType,
       });
       try {
         await readModifyWriteThroughHandle(handle, (existing) =>
@@ -248,7 +270,9 @@ export async function executeFilesystemOperation(
       );
       const handle = await openStableTarget({
         path,
-        approvedIdentity: expectedTarget?.identity,
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
+        targetType: expectedTarget?.targetType,
       });
       try {
         const content = await handle.readFile('utf8');
@@ -294,7 +318,9 @@ export async function executeFilesystemOperation(
       );
       const handle = await openStableTarget({
         path,
-        approvedIdentity: expectedTarget?.identity,
+        approvedIdentity:
+          typeof expectedTarget?.identity === 'object' ? expectedTarget.identity : undefined,
+        targetType: expectedTarget?.targetType,
       });
       try {
         const original = await handle.readFile('utf8');
@@ -485,30 +511,34 @@ async function assertTargetUnchanged(
   // while the call waited for the lock has a different inode even when its
   // canonical path and type still match.
   //
-  // A non-missing WRITE target MUST carry an identity — if it does not, the
-  // CAS is silently skipped and the entire defence collapses. Fail loudly
-  // rather than degrading to "no check", so a buggy caller that omits the
-  // identity is caught immediately instead of leaving the window open. Reads
-  // are exempt: they do not mutate, so there is no queue window to close.
-  if (access === 'write' && expected.targetType !== 'missing' && !expected.identity) {
-    throw operationError(
-      'invalid_request',
-      'A non-missing filesystem target must carry an identity for CAS.',
-    );
-  }
-  if (expected.identity) {
-    const metadata = noFollowFinalSymlink
-      ? await fs.lstat(enforcementPath, { bigint: true })
-      : await fs.stat(enforcementPath, { bigint: true });
-    if (
-      String(metadata.dev) !== expected.identity.dev ||
-      String(metadata.ino) !== expected.identity.ino
-    ) {
+  // The wire carries one required three-state identity contract (#3484):
+  // - { dev, ino }: CAS against the on-disk inode.
+  // - 'missing': T0 saw no target but T1 does — something created it while
+  //   this call waited. Writing would clobber content the caller never saw.
+  // - 'unchecked': the caller deliberately does not participate in CAS.
+  //   Reads never mutate and are exempt either way.
+  if (access === 'write' && expected.targetType !== 'missing') {
+    if (expected.identity === 'missing') {
       throw operationError(
         'path_changed',
-        'The approved filesystem target changed before execution.',
+        'The target was created while this call waited for the lock; re-read before writing.',
       );
     }
+    if (typeof expected.identity === 'object') {
+      const metadata = noFollowFinalSymlink
+        ? await fs.lstat(enforcementPath, { bigint: true })
+        : await fs.stat(enforcementPath, { bigint: true });
+      if (
+        String(metadata.dev) !== expected.identity.dev ||
+        String(metadata.ino) !== expected.identity.ino
+      ) {
+        throw operationError(
+          'path_changed',
+          'The approved filesystem target changed before execution.',
+        );
+      }
+    }
+    // identity === 'unchecked': nothing to compare, nothing to fail.
   }
 }
 

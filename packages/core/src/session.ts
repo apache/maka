@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   decodeMessageContent,
   TOOL_ACTIVITY_KINDS,
@@ -107,8 +126,6 @@ export interface SubagentSessionRuntime {
   systemPrompt: string;
   toolNames: string[];
   categoryPolicy: Partial<Record<ToolCategory, PolicyDecision>>;
-  /** Legacy decode-only metadata. Current child sessions do not write it. */
-  permissionCeiling?: PermissionMode;
 }
 
 /**
@@ -409,8 +426,18 @@ const SUBAGENT_SESSION_RUNTIME_SHAPE = defineObjectShape<SubagentSessionRuntime>
     'toolNames',
     'categoryPolicy',
   ],
-  ['permissionCeiling', 'presetId'],
+  ['presetId'],
 );
+
+/**
+ * Keys older child sessions wrote that this type no longer has.
+ *
+ * `hasExactShape` rejects unknown keys, so without this a record written before
+ * the key was dropped would fail validation and make the whole child Session
+ * unreadable. Nothing reads the values, and they stay in the stored JSON as
+ * written — this only stops their presence from being treated as corruption.
+ */
+const RETIRED_SUBAGENT_RUNTIME_KEYS: readonly string[] = ['permissionCeiling'];
 const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionSpawn>()(
   ['schemaVersion', 'requestFingerprint', 'initialTurnId', 'initialRunId'],
   [],
@@ -458,11 +485,20 @@ export function isSubagentSessionParent(value: unknown): value is SubagentSessio
   return swarmValid && graphValid && !(value.swarm && value.graph);
 }
 
+function withoutRetiredSubagentRuntimeKeys(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!RETIRED_SUBAGENT_RUNTIME_KEYS.some((key) => Object.hasOwn(value, key))) return value;
+  return Object.fromEntries(
+    Object.entries(value).filter(([key]) => !RETIRED_SUBAGENT_RUNTIME_KEYS.includes(key)),
+  );
+}
+
 /** Strict decoder guard for the persisted child execution snapshot. */
 export function isSubagentSessionRuntime(value: unknown): value is SubagentSessionRuntime {
   if (
     !isRecord(value) ||
-    !hasExactShape(value, SUBAGENT_SESSION_RUNTIME_SHAPE) ||
+    !hasExactShape(withoutRetiredSubagentRuntimeKeys(value), SUBAGENT_SESSION_RUNTIME_SHAPE) ||
     value.schemaVersion !== SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION ||
     !Number.isSafeInteger(value.definitionVersion) ||
     (value.definitionVersion as number) < 1 ||
@@ -485,7 +521,7 @@ export function isSubagentSessionRuntime(value: unknown): value is SubagentSessi
   ) {
     return false;
   }
-  return value.permissionCeiling === undefined || isPermissionMode(value.permissionCeiling);
+  return true;
 }
 
 /** Strict decoder guard for durable child-spawn idempotency metadata. */

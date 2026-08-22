@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type BackgroundTerminalStatus = 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'orphaned';
@@ -41,9 +60,12 @@ export interface ToolActivityCopy {
   computer: {
     fallback: string;
     listApps: string;
+    launchApp: (app: string) => string;
+    launchAppUnknown: string;
     observe: string;
     observeApp: (app: string) => string;
     observeWindow: (windowId: number) => string;
+    observeMenu: (menu: string) => string;
     screenshot: string;
     screenshotApp: (app: string) => string;
     screenshotWindow: (windowId: number) => string;
@@ -53,6 +75,17 @@ export interface ToolActivityCopy {
     setValue: (element: string) => string;
     selectText: (element: string) => string;
     secondaryAction: (element: string) => string;
+    scrollElement: (element: string) => string;
+    elementSequence: (count: number) => string;
+    elementSequenceUnknown: string;
+    windowAction: string;
+    windowMove: string;
+    windowResize: string;
+    windowMinimize: string;
+    targetApp: (app: string) => string;
+    targetWindow: (windowId: number) => string;
+    runningAction: (action: string, target?: string) => string;
+    runningSequence: (current: number, total: number, target?: string) => string;
     scroll: string;
     pressKey: string;
     type: string;
@@ -167,9 +200,12 @@ const TOOL_ACTIVITY_COPY = {
     computer: {
       fallback: '操作电脑',
       listApps: '列出打开的应用',
+      launchApp: (app) => `打开「${app}」`,
+      launchAppUnknown: '打开应用',
       observe: '观察当前窗口',
       observeApp: (app) => `观察「${app}」窗口`,
       observeWindow: (windowId) => `观察窗口 ${windowId}`,
+      observeMenu: (menu) => `查看「${menu}」菜单`,
       screenshot: '截图当前窗口',
       screenshotApp: (app) => `截图「${app}」窗口`,
       screenshotWindow: (windowId) => `截图窗口 ${windowId}`,
@@ -182,6 +218,20 @@ const TOOL_ACTIVITY_COPY = {
       setValue: (element) => `设置值：${element}`,
       selectText: (element) => `选择文本：${element}`,
       secondaryAction: (element) => `次要操作：${element}`,
+      scrollElement: (element) => `滚动${element}`,
+      elementSequence: (count) => `连续操作 ${count} 个控件`,
+      elementSequenceUnknown: '连续操作多个控件',
+      windowAction: '操作窗口',
+      windowMove: '移动窗口',
+      windowResize: '调整窗口大小',
+      windowMinimize: '最小化窗口',
+      targetApp: (app) => `「${app}」窗口`,
+      targetWindow: (windowId) => `窗口 ${windowId}`,
+      runningAction: (action, target) => target ? `正在${action} · ${target}` : `正在${action}`,
+      runningSequence: (current, total, target) =>
+        target
+          ? `正在操作${target} · 连续操作第 ${current}/${total} 步`
+          : `正在连续操作第 ${current}/${total} 步`,
       scroll: '滚动',
       pressKey: '按下按键',
       type: '输入文本',
@@ -233,9 +283,12 @@ const TOOL_ACTIVITY_COPY = {
     computer: {
       fallback: 'Use the computer',
       listApps: 'List open apps',
+      launchApp: (app) => `Open “${app}”`,
+      launchAppUnknown: 'Open an app',
       observe: 'Observe the current window',
       observeApp: (app) => `Observe the “${app}” window`,
       observeWindow: (windowId) => `Observe window ${windowId}`,
+      observeMenu: (menu) => `Inspect the “${menu}” menu`,
       screenshot: 'Screenshot the current window',
       screenshotApp: (app) => `Screenshot the “${app}” window`,
       screenshotWindow: (windowId) => `Screenshot window ${windowId}`,
@@ -245,6 +298,20 @@ const TOOL_ACTIVITY_COPY = {
       setValue: (element) => `Set the value of ${element}`,
       selectText: (element) => `Select text in ${element}`,
       secondaryAction: (element) => `Run a secondary action on ${element}`,
+      scrollElement: (element) => `Scroll ${element}`,
+      elementSequence: (count) => `Operate ${count} controls`,
+      elementSequenceUnknown: 'Operate multiple controls',
+      windowAction: 'Operate the window',
+      windowMove: 'Move the window',
+      windowResize: 'Resize the window',
+      windowMinimize: 'Minimize the window',
+      targetApp: (app) => `“${app}” window`,
+      targetWindow: (windowId) => `Window ${windowId}`,
+      runningAction: (action, target) => target ? `${action} · ${target}` : action,
+      runningSequence: (current, total, target) =>
+        target
+          ? `Operating ${target} · step ${current}/${total}`
+          : `Operating controls · step ${current}/${total}`,
       scroll: 'Scroll',
       pressKey: 'Press a key',
       type: 'Type text',
