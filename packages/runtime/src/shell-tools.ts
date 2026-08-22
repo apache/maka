@@ -49,8 +49,12 @@ import {
 import type { ChildFdInput } from './child-fd-input.js';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import {
+  BASH_REQUIRED_BOUNDARY_DESCRIPTION,
+  bashBoundaryIntentSchema,
   preflightDeclaredSandboxBoundary,
+  refineBashBoundaryDeclaration,
   sandboxBoundaryExpansionSchema,
+  selectedBashBoundaryExpansion,
 } from './sandbox-boundary-declaration.js';
 
 export interface ForegroundBashExecuteInput {
@@ -248,14 +252,14 @@ export function buildManagedBashTool(
       ? z
           .object({
             ...managedBashFields,
+            boundary_intent: bashBoundaryIntentSchema,
             required_boundary: sandboxBoundaryExpansionSchema
               .optional()
-              .describe(
-                'Declare the exact filesystem or network sandbox authority this command requires. Do not infer it from command text.',
-              ),
+              .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
           })
           .strict()
           .superRefine(refineManagedBash)
+          .superRefine(refineBashBoundaryDeclaration)
       : z.object(managedBashFields).strict().superRefine(refineManagedBash),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
@@ -263,7 +267,7 @@ export function buildManagedBashTool(
       throwIfShellSetupFailed(shell);
       const { command, timeout_ms, run_in_background, pty } = input;
       const normalizedRequiredBoundary = await preflightDeclaredSandboxBoundary(
-        'required_boundary' in input ? input.required_boundary : undefined,
+        selectedBashBoundaryExpansion(input),
         ctx,
       );
       const transformed = options.transformCommand?.({

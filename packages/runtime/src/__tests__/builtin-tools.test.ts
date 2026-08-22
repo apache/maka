@@ -306,31 +306,92 @@ describe('builtin Bash streaming output', () => {
     if (!bash) throw new Error('Bash tool missing');
     const parameters = bash.parameters as { safeParse(input: unknown): { success: boolean } };
 
-    expect(parameters.safeParse({ command: 'sleep 60', run_in_background: true }).success).toBe(
-      true,
-    );
+    expect(parameters.safeParse({ command: 'sleep 60' }).success).toBe(false);
     expect(
-      parameters.safeParse({ command: 'sleep 60', run_in_background: true, pty: true }).success,
-    ).toBe(true);
-    expect(parameters.safeParse({ command: 'sleep 60', pty: true }).success).toBe(false);
-    expect(parameters.safeParse({ command: 'sleep 60', yield_time_ms: 250 }).success).toBe(false);
-    expect(parameters.safeParse({ command: 'sleep 60', timeout_ms: 600_001 }).success).toBe(false);
-    expect(
-      parameters.safeParse({ command: 'sleep 60', timeout_ms: 600_001, run_in_background: true })
-        .success,
+      parameters.safeParse({
+        command: 'sleep 60',
+        run_in_background: true,
+        boundary_intent: 'current',
+      }).success,
     ).toBe(true);
     expect(
       parameters.safeParse({
         command: 'sleep 60',
+        run_in_background: true,
+        pty: true,
+        boundary_intent: 'current',
+      }).success,
+    ).toBe(true);
+    expect(
+      parameters.safeParse({ command: 'sleep 60', pty: true, boundary_intent: 'current' }).success,
+    ).toBe(false);
+    expect(
+      parameters.safeParse({
+        command: 'sleep 60',
+        yield_time_ms: 250,
+        boundary_intent: 'current',
+      }).success,
+    ).toBe(false);
+    expect(
+      parameters.safeParse({
+        command: 'sleep 60',
+        timeout_ms: 600_001,
+        boundary_intent: 'current',
+      }).success,
+    ).toBe(false);
+    expect(
+      parameters.safeParse({
+        command: 'sleep 60',
+        timeout_ms: 600_001,
+        run_in_background: true,
+        boundary_intent: 'current',
+      }).success,
+    ).toBe(true);
+    expect(
+      parameters.safeParse({
+        command: 'sleep 60',
+        boundary_intent: 'current',
         sandbox_permissions: { mode: 'use_default' },
       }).success,
     ).toBe(false);
     expect(
       parameters.safeParse({
         command: 'curl https://example.com',
+        boundary_intent: 'expand',
         required_boundary: { network: { enabled: true } },
       }).success,
     ).toBe(true);
+    expect(
+      parameters.safeParse({
+        command: 'npm test',
+        boundary_intent: 'current',
+        required_boundary: {
+          filesystem: {
+            entries: [{ path: '.', access: 'read', scope: 'exact' }],
+          },
+          network: { enabled: true },
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      parameters.safeParse({ command: 'curl https://example.com', boundary_intent: 'expand' })
+        .success,
+    ).toBe(false);
+
+    const modelVisibleSchema = JSON.stringify(z.toJSONSchema(bash.parameters as z.ZodTypeAny));
+    assert.match(modelVisibleSchema, /Use current when the command needs no specifically declared/);
+    assert.match(modelVisibleSchema, /ordinary workspace inspection/);
+    assert.match(modelVisibleSchema, /used only when boundary_intent is expand/);
+    assert.match(modelVisibleSchema, /under current it has no authority effect/);
+    assert.match(modelVisibleSchema, /repeat the same declaration when retrying after approval/);
+    assert.match(modelVisibleSchema, /Never add authority speculatively/);
+    assert.match(modelVisibleSchema, /normalized absolute path/);
+    assert.match(
+      modelVisibleSchema,
+      /Use exact for one file and subtree for an existing directory/,
+    );
+    assert.match(modelVisibleSchema, /loopback connection, or listener/);
+    assert.match(modelVisibleSchema, /Omit for offline commands and tests/);
   });
 
   test('background-capable Bash stays foreground unless explicitly requested', async () => {
@@ -859,7 +920,12 @@ describe('builtin Bash streaming output', () => {
     }).find((candidate) => candidate.name === 'Bash');
     if (!bash) throw new Error('Bash tool missing');
 
-    const ptyArgs = { command: 'bash', run_in_background: true, pty: true };
+    const ptyArgs = {
+      command: 'bash',
+      boundary_intent: 'current' as const,
+      run_in_background: true,
+      pty: true,
+    };
     await assert.rejects(
       async () => {
         await bash.impl(ptyArgs, {
@@ -931,6 +997,7 @@ describe('builtin Bash streaming output', () => {
     if (!bash) throw new Error('Bash tool missing');
     const args = {
       command: 'curl https://example.com',
+      boundary_intent: 'expand' as const,
       required_boundary: { network: { enabled: true as const } },
     };
     const context = {
@@ -947,6 +1014,22 @@ describe('builtin Bash streaming output', () => {
         profile: createWorkspaceWritePermissionProfile(),
       },
     };
+
+    await bash.impl(
+      {
+        command: 'npm test',
+        boundary_intent: 'current',
+        required_boundary: {
+          filesystem: {
+            entries: [{ path: '.', access: 'read', scope: 'exact' }],
+          },
+          network: { enabled: true },
+        },
+      } as never,
+      context,
+    );
+    expect(calls).toHaveLength(1);
+    calls.length = 0;
 
     await assert.rejects(
       async () => await bash.impl(args as never, context),
@@ -1094,12 +1177,14 @@ describe('builtin Bash streaming output', () => {
       assert.equal(
         (bash!.parameters as z.ZodTypeAny).safeParse({
           command: 'echo unsafe',
+          boundary_intent: 'current',
           sandbox_permissions: { mode: 'use_default' },
         }).success,
         false,
       );
       const args = {
         command: `printf ok > ${JSON.stringify(target)}`,
+        boundary_intent: 'current' as const,
       };
       const parameters = bash.parameters as z.ZodTypeAny;
       expect(parameters.safeParse(args).success).toBe(true);
@@ -2434,6 +2519,7 @@ async function linuxMissingExactWriteFixture() {
   const target = join(await realpath(outside), 'new.txt');
   const args = {
     command: 'true',
+    boundary_intent: 'expand' as const,
     required_boundary: {
       filesystem: {
         entries: [{ path: target, access: 'write' as const, scope: 'exact' as const }],
