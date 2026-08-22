@@ -20,6 +20,62 @@
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
 
+/* An Item row draws a focus ring for ITS OWN tab stop, never for a control
+   that already draws one.
+
+   Astryx's Item (and everything built on it — ListItem, and so every settings
+   row) applies `outline: 2px solid accent` at `:has(:focus-visible)`,
+   unconditionally. That is right for an interactive row: `onClick`/`href`
+   makes Item render an INVISIBLE `<button>`/`<a>` as a direct child, and the
+   row's ring is that button's only visible focus indicator. It is wrong for
+   every other row, where the focusable thing is a real control in the end slot
+   that rings itself — the row ring is then a second outline around a whole
+   label + description + control band.
+
+   Two ways this showed up, both measured in a real window:
+
+   1. Tabbing onto any settings-row control — a Selector trigger, a Switch, a
+      SegmentedControl, a ghost Button — lit the control AND the full row.
+   2. Opening the 默认模型 picker outlined the entire row and nothing else.
+      A Selector popup is a native `popover` element: the top layer moves where
+      it PAINTS, not where it sits in the DOM, so it is still a descendant of
+      the row. Focus goes to the popup's search input on open, `:has()` walks
+      up to the row, and the row rings — while the trigger, whose own wrapper
+      is a sibling of the popup, does not. Reported as "点开下拉框时外面整行
+      出现一个蓝色的框".
+
+   `:not(:has(> :is(a, button):focus-visible))` is what separates the two: the
+   only `<a>`/`<button>` that is a DIRECT child of an Item root is that
+   invisible tab stop, since start/end/label content each sit inside their own
+   span. So an interactive row keeps its ring when its own tab stop has focus,
+   and loses it only when focus is on a control that owns its indicator — which
+   is also the case for a row carrying both.
+
+   Product CSS is the last cascade layer (`components`, see
+   cascade-layers.css), so this wins over the compiled StyleX atom regardless
+   of that atom's `:not(#\#)` specificity padding.
+
+   Gated on `forced-colors: none` because the premise — "the control already
+   draws one" — is only true when the page controls its own colors. Under
+   Windows High Contrast the control's affordance is gone: forced-colors drops
+   `box-shadow` entirely and repaints every border in the same system color, so
+   an Astryx field looks identical resting and focused, and its trigger button
+   sets `outline: none` on itself (Selector.tsx: the wrapper is supposed to
+   carry the ring). The row outline is then the ONLY indicator that survives —
+   outline is the one focus property forced-colors preserves — and taking it
+   away leaves a keyboard user with no visible focus at all. So there, the
+   doubled ring is the lesser problem and the row keeps it.
+
+   Fixing it at the control instead was the other option and is not better:
+   it would mean product CSS reaching past the design system into the internals
+   of Selector, Switch, SegmentedControl and Button, one forced-colors rule per
+   control, to restore what each was supposed to draw itself. */
+@media (forced-colors: none) {
+  .astryx-item:has(:focus-visible):not(:has(> :is(a, button):focus-visible)) {
+    outline: none;
+  }
+}
+
 .maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong); }
 .maka-quote-chip-remove:hover { color: var(--foreground); background: var(--state-hover-bg); }
 .maka-quote-chip-remove:focus-visible { color: var(--foreground); background: var(--state-hover-bg); outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
