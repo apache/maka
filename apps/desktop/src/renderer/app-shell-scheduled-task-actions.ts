@@ -75,6 +75,7 @@ export function createAppShellScheduledTaskActions(deps: {
         }
       });
     } catch (error) {
+      if (generation !== refreshGenerationsRef.current.scheduledTasks) return;
       if (options.shouldShowError?.() ?? true) {
         toastApi.error(
           copy.refreshFailed,

@@ -12,13 +12,15 @@ const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((settle, fail) => {
     resolve = settle;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
-test('keeps the newest same-Host module projection refresh', async () => {
+test('keeps stale same-Host module refreshes from changing state or reporting errors', async () => {
   const moduleData = await importModuleData();
   const { root } = installReactRenderer();
   const host = { profileId: 'profile-a', hostId: 'host-a' };
@@ -59,6 +61,7 @@ test('keeps the newest same-Host module projection refresh', async () => {
   };
   let current: ReturnType<typeof moduleData.useAppShellModuleData> | undefined;
   let renderRevision = 0;
+  const errors: string[] = [];
 
   function Probe(_props: { revision: number }) {
     current = moduleData.useAppShellModuleData({
@@ -67,7 +70,7 @@ test('keeps the newest same-Host module projection refresh', async () => {
       isScheduledTasksSurfaceActive: () => true,
       toastApi: {
         success: () => {},
-        error: () => {},
+        error: (title) => errors.push(title),
         confirm: async () => true,
       },
     });
@@ -125,6 +128,26 @@ test('keeps the newest same-Host module projection refresh', async () => {
       await staleRefresh;
     });
     assert.deepEqual(values(current!).map(({ id }) => id), [`${projection}-new`]);
+    assert.equal(activeRead.calls, 2);
+
+    const errorStarted = deferred<void>();
+    const pendingError = deferred<Array<{ id: string }>>();
+    activeRead = {
+      projection,
+      calls: 0,
+      started: errorStarted,
+      pending: pendingError,
+    };
+    const staleErrorRefresh = refresh(current!);
+    await errorStarted.promise;
+    await act(async () => {
+      await refresh(current!);
+    });
+    await act(async () => {
+      pendingError.reject(new Error(`${projection} stale failure`));
+      await staleErrorRefresh;
+    });
+    assert.deepEqual(errors, []);
     assert.equal(activeRead.calls, 2);
   }
 });

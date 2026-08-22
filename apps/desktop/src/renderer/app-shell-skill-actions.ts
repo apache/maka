@@ -98,6 +98,7 @@ export function createAppShellSkillActions(deps: {
         if (generation === refreshGenerationsRef.current.skills) setSkills(next.value);
       });
     } catch (error) {
+      if (generation !== refreshGenerationsRef.current.skills) return;
       if (options.shouldShowError?.() ?? true) {
         reportRuntimeHostError(copy.refreshSkillsFailedTitle, copy.refreshSkillsFallback, error);
       }
@@ -114,6 +115,7 @@ export function createAppShellSkillActions(deps: {
         }
       });
     } catch (error) {
+      if (generation !== refreshGenerationsRef.current.managedSkillSources) return;
       if (options.shouldShowError?.() ?? true) {
         reportRuntimeHostError(copy.refreshSourcesFailedTitle, copy.refreshSourcesFallback, error);
       }
@@ -130,6 +132,7 @@ export function createAppShellSkillActions(deps: {
         }
       });
     } catch (error) {
+      if (generation !== refreshGenerationsRef.current.bundledSkillCatalog) return;
       if (options.shouldShowError?.() ?? true) {
         reportRuntimeHostError(copy.refreshBundledFailedTitle, copy.refreshBundledFallback, error);
       }
