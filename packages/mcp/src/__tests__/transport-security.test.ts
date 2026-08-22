@@ -87,6 +87,9 @@ describe('transport security provenance', () => {
       'https://[::192.168.1.1]/compat',
       'https://[::127.0.0.1]:8443/compat-loopback',
       'https://[::]/unspecified',
+      'https://[::ffff:0:0]:8443/mapped-unspecified',
+      'https://[64:ff9b:1:c0a8:1:100::]/local-nat64',
+      'https://[0::ffff:0:192.168.1.1]/siit',
     ]) {
       assert.throws(() => assertTransportSecurity(new URL(url), remoteRoot), /refused remotely/u);
     }

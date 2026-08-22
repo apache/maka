@@ -67,6 +67,28 @@ describe('MCP host classification', () => {
     assert.equal(isPrivateRangeHost('[::2]'), false);
   });
 
+  it('classifies the remaining translation embeddings and the mapped unspecified address', () => {
+    // Mapped unspecified: connecting to ::ffff:0.0.0.0 reaches a
+    // 127.0.0.1-bound listener on common stacks — private, fail closed.
+    assert.equal(isPrivateRangeHost('[::ffff:0:0]'), true);
+    // RFC 8215 local-use NAT64 space (64:ff9b:1::/48) is reserved for
+    // in-network translation; deployments carve arbitrary RFC 6052 prefix
+    // lengths out of it, so the whole /48 fails closed.
+    assert.equal(isPrivateRangeHost('[64:ff9b:1:c0a8:1:100::]'), true);
+    assert.equal(isPrivateRangeHost('[64:ff9b:1::1]'), true);
+    // RFC 2765 SIIT (::ffff:0:0/96) classifies by its embedded IPv4.
+    assert.equal(isPrivateRangeHost(new URL('https://[0::ffff:0:192.168.1.1]/').hostname), true);
+    assert.equal(isPrivateRangeHost('[::ffff:0:808:808]'), false); // SIIT 8.8.8.8
+  });
+
+  it('rejects literals RFC 4291 does not permit instead of mis-parsing them', () => {
+    // Dotted IPv4 belongs only in the low-order 32 bits; an empty zone id
+    // is not a literal. Both fail closed as private.
+    assert.equal(isPrivateRangeHost('[192.168.1.1::]'), true);
+    assert.equal(isPrivateRangeHost('[1:2.2.2.2:3::]'), true);
+    assert.equal(isPrivateRangeHost('[2606:4700::1%]'), true);
+  });
+
   it('keeps global addresses reachable and fails closed on garbage', () => {
     assert.equal(isPrivateRangeHost('[2606:4700::1]'), false);
     assert.equal(isPrivateRangeHost('[::ffff:808:808]'), false); // mapped 8.8.8.8

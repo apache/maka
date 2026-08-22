@@ -122,14 +122,22 @@ function isPrivateIpv4(a: number, b: number): boolean {
  * for anything that is not a well-formed address. */
 function parseIpv6(literal: string): Uint8Array | undefined {
   const zone = literal.indexOf('%');
+  // An empty zone id ('fe80::1%') is not a valid literal; rejecting it
+  // keeps the documented fail-closed default honest.
+  if (zone !== -1 && zone === literal.length - 1) return undefined;
   const text = (zone === -1 ? literal : literal.slice(0, zone)).toLowerCase();
   const gap = text.indexOf('::');
   if (gap !== -1 && text.indexOf('::', gap + 1) !== -1) return undefined;
-  const parseGroups = (part: string): number[] | undefined => {
+  const parseGroups = (part: string, dottedAllowedAtEnd: boolean): number[] | undefined => {
     if (part === '') return [];
     const out: number[] = [];
-    for (const piece of part.split(':')) {
+    const pieces = part.split(':');
+    for (let index = 0; index < pieces.length; index += 1) {
+      const piece = pieces[index] ?? '';
       if (piece.includes('.')) {
+        // RFC 4291 §2.2: dotted IPv4 only in the low-order 32 bits — the
+        // FINAL piece. '[192.168.1.1::]' must fail, not parse shifted.
+        if (!dottedAllowedAtEnd || index !== pieces.length - 1) return undefined;
         const dotted = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u.exec(piece);
         if (!dotted) return undefined;
         const octets = dotted.slice(1).map(Number);
@@ -144,11 +152,12 @@ function parseIpv6(literal: string): Uint8Array | undefined {
   };
   let groups: number[] | undefined;
   if (gap === -1) {
-    groups = parseGroups(text);
+    groups = parseGroups(text, true);
     if (!groups || groups.length !== 8) return undefined;
   } else {
-    const head = parseGroups(text.slice(0, gap));
-    const tail = parseGroups(text.slice(gap + 2));
+    // Dotted IPv4 can only close the address, so only the tail may carry it.
+    const head = parseGroups(text.slice(0, gap), false);
+    const tail = parseGroups(text.slice(gap + 2), true);
     if (!head || !tail || head.length + tail.length > 7) return undefined;
     groups = [...head, ...new Array<number>(8 - head.length - tail.length).fill(0), ...tail];
   }
@@ -170,21 +179,37 @@ function classifyIpv6(bytes: Uint8Array): 'loopback' | 'private' | 'global' {
     bytes[2] === 0xff &&
     bytes[3] === 0x9b &&
     bytes.slice(4, 12).every((byte) => byte === 0);
-  // The third byte-level IPv4 embedding: deprecated IPv4-compatible ::/96
-  // (RFC 4291 §2.5.5.1). Deprecated is not absent — the classifier's whole
-  // premise is bytes over spellings, and whether the OTHER end's stack
-  // still translates these must not be what the gate's correctness rests
-  // on. `::1` was returned above; the all-zero `::` flows through as an
-  // embedded 0.0.0.0 and is treated as private below.
+  // RFC 8215 local-use NAT64 space (64:ff9b:1::/48) is reserved for
+  // translation inside one network — by definition never a global
+  // destination. Deployments carve arbitrary RFC 6052 prefix lengths out
+  // of it, so the embedded IPv4's position is not recoverable here; the
+  // whole /48 fails closed instead.
+  if (bytes[0] === 0 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b && bytes[4] === 0 && bytes[5] === 1) {
+    return 'private';
+  }
+  // The remaining byte-level IPv4 embeddings, classified by the embedded
+  // address: deprecated IPv4-compatible ::/96 (RFC 4291 §2.5.5.1) and the
+  // RFC 2765 SIIT prefix ::ffff:0:0/96. Deprecated is not absent — the
+  // classifier's whole premise is bytes over spellings, and whether the
+  // OTHER end's stack still translates these must not be what the gate's
+  // correctness rests on. `::1` was returned above.
   const compat = bytes.slice(0, 12).every((byte) => byte === 0);
-  if (mapped || nat64 || compat) {
+  const siit =
+    bytes.slice(0, 8).every((byte) => byte === 0) &&
+    bytes[8] === 0xff &&
+    bytes[9] === 0xff &&
+    bytes[10] === 0 &&
+    bytes[11] === 0;
+  if (mapped || nat64 || compat || siit) {
     const [a, b] = [bytes[12] ?? 0, bytes[13] ?? 0];
     // Mapped loopback lands on the PRIVATE side of the gate: isLoopbackHost
     // stays strict-by-spelling, so this is the check that must catch it.
     if (a === 127) return 'private';
-    // The unspecified address (`[::]`, embedded 0.0.0.0): connecting to it
-    // reaches the LOCAL machine on common stacks — private, fail closed.
-    if (compat && a === 0 && b === 0 && bytes[14] === 0 && bytes[15] === 0) return 'private';
+    // The unspecified embedded address (0.0.0.0) under ANY embedding:
+    // connecting to it reaches the LOCAL machine on common stacks
+    // (`::ffff:0:0` verifiably reaches a 127.0.0.1-bound listener) —
+    // private, fail closed.
+    if (a === 0 && b === 0 && bytes[14] === 0 && bytes[15] === 0) return 'private';
     return isPrivateIpv4(a, b) ? 'private' : 'global';
   }
   if (((bytes[0] ?? 0) & 0xfe) === 0xfc) return 'private'; // fc00::/7 (ULA)
