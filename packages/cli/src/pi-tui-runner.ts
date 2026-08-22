@@ -331,6 +331,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
+  // Mirrors the editor's bracketed-paste buffering at the input seam: between a
+  // paste start marker and its end marker the editor holds incoming bytes in an
+  // internal buffer and getText() stays empty, so "editor is empty" must not
+  // treat that in-flight paste as absent user input (#3475 review). The marker
+  // matching deliberately mirrors the editor's own per-chunk includes() checks,
+  // so this flag agrees with what the editor will buffer.
+  let editorPastePending = false;
   type AttachedTurnContext =
     | { readonly kind: 'adopted'; readonly turn: MakaPreparedSessionTurn }
     | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
@@ -1519,19 +1526,26 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     try {
       const result = await input.driver.rewindToTurn(turnId);
       await applySwitchResult(result);
-      // Refill the editor with the discarded turn's prompt so the user can edit
-      // and resend it — unless the user typed into the editor while the switch
-      // was in flight. The picker's neutral-editor guarantee only holds at open
-      // time, so a non-empty draft here is newer user work and wins; the prompt
-      // stays recoverable from the editor history (submitPrompt added it).
-      const refill = editor.getText().trim().length === 0;
+      // Record the discarded turn's prompt in the editor history before
+      // deciding on the refill: prompts submitted in this TUI process are
+      // already there (addToHistory dedupes consecutive duplicates), but a
+      // session entered via startup resume or /resume has no entry yet, and
+      // the notice below promises ↑ recovery (#3475 review).
+      editor.addToHistory(result.prompt);
+      // Refill the editor with that prompt so the user can edit and resend it
+      // — unless newer user input arrived while the switch was in flight. The
+      // picker's neutral-editor guarantee only holds at open time, so this
+      // covers both a typed draft and a bracketed paste still being buffered
+      // (getText() stays empty until its end marker); either wins over the
+      // refill.
+      const refill = editor.getText().trim().length === 0 && !editorPastePending;
       if (refill) editor.setText(result.prompt);
       state.entries.push({
         kind: 'notice',
         level: 'info',
         text: refill
           ? '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。'
-          : '已回退到该轮之前（分支为新任务，原任务保留）。输入框已有未发送内容，未回填该轮 prompt（可按 ↑ 从输入历史找回）。',
+          : '已回退到该轮之前（分支为新任务，原任务保留）。输入框已有未发送内容，未覆盖；该轮 prompt 已存入输入历史，可按 ↑ 找回。',
       });
       requestRender();
     } catch (error) {
@@ -3010,6 +3024,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   refreshEditorCwd(cwd);
 
   tui.addInputListener((data) => {
+    // Track bracketed pastes before any consuming branch: this must observe
+    // every chunk the editor could buffer, regardless of what the rest of the
+    // listener decides (#3475 review).
+    if (data.includes('\x1b[200~')) {
+      // A paste begins; it is only complete when the end marker follows, here
+      // or in a later chunk.
+      editorPastePending = !data.slice(data.indexOf('\x1b[200~') + 6).includes('\x1b[201~');
+    } else if (editorPastePending && data.includes('\x1b[201~')) {
+      // The paste ends; bytes after the end marker may start another paste.
+      const remainder = data.slice(data.indexOf('\x1b[201~') + 6);
+      editorPastePending = remainder.includes('\x1b[200~');
+    }
     // Once closing has begun, swallow any buffered input that reaches the
     // listener while the terminal is being torn down.
     if (closed) return { consume: true };

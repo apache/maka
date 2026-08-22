@@ -3928,9 +3928,62 @@ describe('Maka Pi TUI runner', () => {
     // The notice wraps across screen lines at 80 columns, so match against a
     // whitespace-collapsed copy instead of the raw output.
     const collapsedOutput = () => plainTerminalOutput(terminal.output()).replace(/\s+/g, '');
-    await waitFor(() => collapsedOutput().includes('未回填该轮prompt'));
+    await waitFor(() => collapsedOutput().includes('未覆盖'));
     await waitFor(() => editorInputText(terminal) === 'my draft');
     assert.equal(plainTerminalOutput(terminal.output()).includes('refilled: turn-1'), false);
+    // The ↑ recovery promise must hold even though nothing was submitted in
+    // this TUI process (a resumed session has no live-path history entry):
+    // the rewound prompt is recorded explicitly on completion (#3475 review).
+    // The first ↑ only jumps to line start while the cursor sits at col > 0;
+    // the second one then enters history recall.
+    terminal.input('\x1b[A');
+    terminal.input('\x1b[A');
+    await waitFor(() => editorInputText(terminal) === 'refilled: turn-1');
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('lets a bracketed paste still being buffered win over the prompt refill', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new DeferredRewindDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+
+    // A bracketed paste starts while the branch switch is in flight and its end
+    // marker has not arrived: getText() still reports empty, but the buffered
+    // bytes are newer user input and must win over the refill (#3475 review).
+    terminal.input('\x1b[200~pasted half');
+
+    driver.gate.resolve();
+    // The completion notice wraps across screen lines at 80 columns, so match a
+    // whitespace-collapsed copy.
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).replace(/\s+/g, '').includes('未覆盖'),
+    );
+
+    // Only now does the paste complete — after the refill decision was made.
+    terminal.input(' rest\x1b[201~');
+    await waitFor(() => editorInputText(terminal)?.includes('pasted half rest') ?? false);
+    assert.equal(editorInputText(terminal)?.includes('refilled'), false);
 
     exitMaka(terminal);
     await Promise.race([
