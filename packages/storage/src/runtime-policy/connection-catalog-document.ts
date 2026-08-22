@@ -396,13 +396,11 @@ export class ConnectionCatalogDocumentOwner {
     input: MigrateFallbackInventoryInput,
   ): Promise<ConnectionCatalogMutationResult> {
     const current = await this.read(root);
-    const allowed = new Set(input.modelIds);
+    const retired = new Set(input.retiredModelIds);
     const connections = current.connections.map((connection) => {
       if (connection.providerType !== input.providerType) return connection;
-      const filteredEnabledModelIds = connection.enabledModelIds.filter((id) => allowed.has(id));
-      const enabledModelIds =
-        filteredEnabledModelIds.length > 0 ? filteredEnabledModelIds : input.modelIds.slice(0, 1);
-      const models = connection.models.filter((model) => allowed.has(model.id));
+      const enabledModelIds = connection.enabledModelIds.filter((id) => !retired.has(id));
+      const models = connection.models.filter((model) => !retired.has(model.id));
       if (
         enabledModelIds.length === connection.enabledModelIds.length &&
         models.length === connection.models.length

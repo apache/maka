@@ -313,6 +313,7 @@ export interface MigrateSystemSeedInput {
 export interface MigrateFallbackInventoryInput {
   readonly providerType: ProviderType;
   readonly modelIds: readonly string[];
+  readonly retiredModelIds: readonly string[];
 }
 
 export interface SetDefaultConnectionTargetInput {

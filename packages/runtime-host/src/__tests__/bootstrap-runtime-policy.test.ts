@@ -58,16 +58,16 @@ test('a fresh Host starts with one anonymous runnable target', async () => {
   });
 });
 
-test('reconciles retired models for providers without model discovery', async () => {
+test('reconciles retired OpenCode Free models without removing user models', async () => {
   await withFixture(async ({ root, stores }) => {
     const created = await stores.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
-        slug: 'ark',
-        name: 'Ark',
-        providerType: 'volcengine-ark',
+        slug: 'opencode-free',
+        name: 'OpenCode Free',
+        providerType: 'opencode-free',
         enabled: true,
-        enabledModelIds: ['doubao-seed-2-0-pro-260215'],
+        enabledModelIds: ['nemotron-3-ultra-free', 'big-pickle', 'user-model'],
       },
     });
     assert.equal(created.kind, 'committed');
@@ -77,17 +77,31 @@ test('reconciles retired models for providers without model discovery', async ()
       changes: {
         name: connection.name,
         enabled: true,
-        enabledModelIds: [...connection.enabledModelIds, 'retired-model'],
+        enabledModelIds: connection.enabledModelIds,
       },
     });
     assert.equal(updated.kind, 'committed');
+    const updatedConnection = updated.snapshot.connections[0]!;
+    const defaulted = await stores.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: updated.snapshot.revision,
+      target: { connectionId: updatedConnection.connectionId, modelId: 'big-pickle' },
+    });
+    assert.equal(defaulted.kind, 'committed');
 
     await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });
 
     const migrated = (await stores.connectionCatalog.getSnapshot()).connections.find(
-      ({ slug }) => slug === 'ark',
+      ({ slug }) => slug === 'opencode-free',
     );
-    assert.deepEqual(migrated?.enabledModelIds, ['doubao-seed-2-0-pro-260215']);
+    assert.deepEqual(migrated?.enabledModelIds, ['nemotron-3-ultra-free', 'user-model']);
+    assert.deepEqual(
+      migrated?.models.map(({ id }) => id),
+      ['nemotron-3-ultra-free'],
+    );
+    assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, {
+      connectionId: migrated?.connectionId,
+      modelId: 'nemotron-3-ultra-free',
+    });
   });
 });
 

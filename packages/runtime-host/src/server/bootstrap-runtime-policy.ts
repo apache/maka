@@ -23,7 +23,6 @@ import { join } from 'node:path';
 import {
   OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
-  PROVIDER_DEFAULTS,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
@@ -76,19 +75,14 @@ export async function ensureBootstrapRuntimePolicy(input: {
     } catch (error) {
       input.onDeferredError?.(error);
     }
-    for (const [providerType, definition] of Object.entries(PROVIDER_DEFAULTS)) {
-      if (
-        definition.modelDiscovery.kind !== 'fallback' ||
-        providerType === 'opencode-free'
-      ) continue;
-      try {
-        await input.stores.connectionCatalog.migrateFallbackInventory({
-          providerType: providerType as ProviderType,
-          modelIds: definition.fallbackModels,
-        });
-      } catch (error) {
-        input.onDeferredError?.(error);
-      }
+    try {
+      await input.stores.connectionCatalog.migrateFallbackInventory({
+        providerType: 'opencode-free',
+        modelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+        retiredModelIds: retiredOpencodeFreeModelIds(),
+      });
+    } catch (error) {
+      input.onDeferredError?.(error);
     }
   }
   if (!resuming) {
@@ -210,6 +204,11 @@ const LEGACY_OPENCODE_FREE_SEEDS: readonly (readonly string[])[] = [
   ['nemotron-3-ultra-free'],
   ['nemotron-3-ultra-free', 'mimo-v2.5-free', 'deepseek-v4-flash-free'],
 ];
+
+function retiredOpencodeFreeModelIds(): readonly string[] {
+  const current = new Set(OPENCODE_FREE_DEFAULT_ENABLED_MODELS);
+  return [...new Set(LEGACY_OPENCODE_FREE_SEEDS.flat())].filter((id) => !current.has(id));
+}
 
 async function removeFailedBootstrapConnection(
   stores: RuntimePolicyStoresWriter,
