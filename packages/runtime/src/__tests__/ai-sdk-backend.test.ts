@@ -13984,6 +13984,82 @@ describe('AiSdkBackend steering durability and identity', () => {
     }
   };
 
+  test('injects a steer that arrives after the turn last tool-call boundary', async () => {
+    // A tool-free turn runs exactly one provider step, and the top-of-loop
+    // drain happens before the model has said anything — so a steer typed
+    // while the answer streams has no boundary left to land on. Whether
+    // "Steer" works at all must not depend on the model happening to call a
+    // tool afterwards (#3529).
+    const model = textCompletionModel('done');
+    const backend = steeringBackend(model);
+    const acked: string[] = [];
+    const nacked: string[] = [];
+    let pulls = 0;
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({
+      turnId: 'turn-1',
+      text: 'start',
+      context: [],
+      pullSteering: () => {
+        pulls += 1;
+        // Nothing to take before the model speaks; the interjection lands
+        // while the first (and only) step is streaming.
+        if (pulls !== 2) return [];
+        return [{ id: 'lease-late', messageId: 'message-late', content: { text: 'late steer' } }];
+      },
+      ackSteering: (leaseIds) => acked.push(...leaseIds),
+      nackSteering: (leaseIds) => nacked.push(...leaseIds),
+    })) {
+      events.push(event);
+    }
+
+    const steering = events.filter((event) => event.type === 'steering_message');
+    assert.equal(steering.length, 1);
+    assert.deepEqual(acked, ['lease-late']);
+    assert.deepEqual(nacked, []);
+    // Echoing the message is not the point — the model has to be asked again
+    // with it. Draining without taking another step would satisfy every
+    // assertion above while the user still never gets an answer.
+    assert.equal(model.doStreamCalls.length, 2);
+    assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /late steer/);
+  });
+
+  test('a stop that lands during the final drain wins over the injected steer', async () => {
+    // The final drain awaits a durable push, so an `after_step` stop can arrive
+    // while it is in flight. Deciding to take another step from flags read
+    // BEFORE that await would spend a provider step the user already stopped —
+    // which is precisely what `after_step` exists to prevent.
+    const model = textCompletionModel('done');
+    const backend = steeringBackend(model);
+    let pulls = 0;
+    const iterator = backend
+      .send({
+        turnId: 'turn-1',
+        text: 'start',
+        context: [],
+        pullSteering: () => {
+          pulls += 1;
+          if (pulls !== 2) return [];
+          return [{ id: 'lease-late', messageId: 'message-late', content: { text: 'late steer' } }];
+        },
+        ackSteering: () => {},
+      })
+      [Symbol.asyncIterator]();
+
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) break;
+      const event = next.value as SessionEvent;
+      // Consuming the echo is what resolves the drain's push, so the stop lands
+      // in the window between that resolution and the post-drain decision.
+      if (event.type === 'steering_message') await backend.stop('user_stop', 'after_step');
+    }
+
+    // The steer was still delivered — it is durable and the Host will carry it
+    // into the next Turn — but no further provider step was dispatched.
+    assert.equal(model.doStreamCalls.length, 1);
+  });
+
   test('holds the provider request until the steering event is durably consumed', async () => {
     // Persist-before-include: the initial user message is durable before the
     // backend is invoked, and a steered message holds the same line via the
