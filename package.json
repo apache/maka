@@ -80,6 +80,8 @@
     "windows:inventory:write": "node scripts/windows-test-inventory.mjs --write",
     "smoke:windows": "npm run build && npm run smoke:windows:dist",
     "smoke:windows:dist": "node scripts/windows-smoke.mjs",
+    "stress:windows-runtime-host-node-startup": "npm run build && npm run stress:windows-runtime-host-node-startup:dist",
+    "stress:windows-runtime-host-node-startup:dist": "node scripts/stress-windows-runtime-host-node-startup.mjs",
     "prepare:bundled-git": "node scripts/prepare-bundled-git.mjs",
     "prepare:bundled-git-source": "node scripts/prepare-bundled-git-source.mjs"
   },

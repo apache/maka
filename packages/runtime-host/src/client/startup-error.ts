@@ -1,4 +1,5 @@
 import type { CandidateStartupFailureReason } from '../candidate-startup-failure.js';
+import type { RuntimeHostElectionDiagnostic } from './connect-or-spawn.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 
 export type RuntimeHostStartupFailureReason =
@@ -21,7 +22,10 @@ export class RuntimeHostStartupError extends RuntimeHostPermanentReconnectError 
   }
 }
 
-export function runtimeHostStartupError(reason: RuntimeHostStartupFailureReason): Error {
+export function runtimeHostStartupError(
+  reason: RuntimeHostStartupFailureReason,
+  diagnostic?: RuntimeHostElectionDiagnostic,
+): Error {
   switch (reason) {
     case 'stored_data_incompatible':
       return new RuntimeHostStartupError(
@@ -47,8 +51,16 @@ export function runtimeHostStartupError(reason: RuntimeHostStartupFailureReason)
         'This workspace belongs to a different Runtime Host composition. Diagnostic code: COMPOSITION_MISMATCH.',
       );
     case 'startup_timeout':
-      return new Error('Runtime Host did not become ready before the startup deadline');
+      return new Error(
+        `Runtime Host did not become ready before the startup deadline${electionDiagnosticSuffix(diagnostic)}`,
+      );
     case 'host_unresponsive':
-      return new Error('Runtime Host stopped responding during startup');
+      return new Error(
+        `Runtime Host stopped responding during startup${electionDiagnosticSuffix(diagnostic)}`,
+      );
   }
+}
+
+function electionDiagnosticSuffix(diagnostic: RuntimeHostElectionDiagnostic | undefined): string {
+  return diagnostic ? `; election diagnostic: ${JSON.stringify(diagnostic)}` : '';
 }

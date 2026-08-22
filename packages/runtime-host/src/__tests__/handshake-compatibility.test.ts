@@ -10,7 +10,7 @@ import {
   STORAGE_ROOT_MARKER_FILE,
   STORAGE_ROOT_MARKER_SCHEMA_VERSION,
 } from '@maka/storage/root-authority';
-import { connectResolvedRuntimeHost, type ConnectRuntimeHostResult } from '../client/connection.js';
+import { connectResolvedRuntimeHost } from '../client/connection.js';
 import { prepareRuntimeHostEndpoint } from '../control/endpoint.js';
 import { removeHostRegistration, writeHostRegistration } from '../control/registration.js';
 import {
@@ -93,9 +93,65 @@ test('rejects an epoch-23 Host before any domain command', async () => {
   assert.equal(admittedRequest, undefined);
 });
 
+test('records a registration root mismatch before connecting the endpoint', async () => {
+  await withForgedHandshakePeer(
+    async () => {
+      assert.fail('registration mismatch must not connect to the endpoint');
+    },
+    async (result) => {
+      assert.equal(result.kind, 'unavailable');
+      if (result.kind !== 'unavailable') return;
+      assert.equal(result.reason, 'root_mismatch');
+      assert.equal(result.endpointConnected, false);
+    },
+    {
+      registrationRootId: randomBytes(32).toString('hex'),
+      expectConnection: false,
+    },
+  );
+});
+
+test('records a root mismatch returned after connecting and handshaking', async () => {
+  await withForgedHandshakePeer(
+    async (transport, hostEpoch) => {
+      const hello = decodeClientFrame(await transport.read(2_000));
+      assert.ok('kind' in hello && hello.kind === 'hello');
+      await writeProtocolFrame(transport, {
+        kind: 'accepted',
+        rootId: randomBytes(32).toString('hex'),
+        hostEpoch,
+        connectionId: 'forged-root-mismatch-connection',
+        selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+      });
+      await transport.closed;
+    },
+    async (result) => {
+      assert.equal(result.kind, 'unavailable');
+      if (result.kind !== 'unavailable') return;
+      assert.equal(result.reason, 'root_mismatch');
+      assert.equal(result.endpointConnected, true);
+    },
+    { prepareAfterListen: false },
+  );
+});
+
+type ResolvedConnectRuntimeHostResult = Exclude<
+  Awaited<ReturnType<typeof connectResolvedRuntimeHost>>,
+  { kind: 'election_deadline_elapsed' }
+>;
+
 async function withForgedHandshakePeer(
   serve: (transport: FramedTransport, hostEpoch: string, rootId: string) => Promise<void>,
-  run: (result: ConnectRuntimeHostResult) => Promise<void>,
+  run: (result: ResolvedConnectRuntimeHostResult) => Promise<void>,
+  options: {
+    readonly registrationRootId?: string;
+    readonly expectConnection?: boolean;
+    readonly prepareAfterListen?: boolean;
+  } = {},
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-handshake-'));
   const rootPath = join(base, 'root');
@@ -132,12 +188,14 @@ async function withForgedHandshakePeer(
     );
   });
   try {
-    await listen(server, endpoint.path);
-    await endpoint.prepareAfterListen();
+    if (options.expectConnection !== false) {
+      await listen(server, endpoint.path);
+      if (options.prepareAfterListen !== false) await endpoint.prepareAfterListen();
+    }
     await writeHostRegistration(controlDirectory, {
       kind: 'maka-runtime-host',
       schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
-      rootId: capability.rootId,
+      rootId: options.registrationRootId ?? capability.rootId,
       hostEpoch,
       endpoint: endpoint.path,
       protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -164,7 +222,7 @@ async function withForgedHandshakePeer(
     } finally {
       if (result.kind === 'connected') await result.connection.close();
     }
-    await serverTask.promise;
+    if (options.expectConnection !== false) await serverTask.promise;
   } finally {
     await closeServer(server);
     await removeHostRegistration(controlDirectory, hostEpoch).catch(() => undefined);

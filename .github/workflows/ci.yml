@@ -42,7 +42,7 @@ jobs:
           fi
 
       - name: Test CI planner
-        run: node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs scripts/verify-windows-harness.test.mjs
+        run: node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs scripts/verify-windows-harness.test.mjs scripts/stress-windows-runtime-host-node-startup.test.mjs
 
       # Same shape and the same needs: a regenerate-and-diff contract that runs
       # on Node alone, so it belongs beside the planner test rather than behind
