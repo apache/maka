@@ -145,13 +145,15 @@ describe('retired provider contract', () => {
 });
 
 // A deprecated id in `fallbackModels` is offered as a usable choice: the
-// catalog marks whatever the list contains available and default-capable, and
-// `fallbackModels[0]` is what a new connection defaults to and what the
-// connection test probes. `toolCallingModelIds` filters on tool-calling
-// capability only, so each derivation drops deprecated ids at its call site;
-// `openai` writes its list by hand. Removal is from the offer only — an id a
-// user already chose still sends, and live discovery still returns whatever
-// the endpoint serves (#3355).
+// catalog marks the list available and default-capable, and `fallbackModels[0]`
+// is the new-connection default and the connection-test probe. (For the eight
+// providers with a `CURATED_CATALOG_FALLBACK_MODELS` entry that curated list
+// replaces this one in the catalog, so theirs reaches CLI onboarding and the
+// probe candidates instead.) `toolCallingModelIds` filters on tool-calling
+// capability only, so a derivation that needs it drops deprecated ids at its
+// own call site, and `openai` writes its list by hand. Removal is from the
+// offer only — an id a user already chose still sends, and live discovery
+// still returns whatever the endpoint serves (#3355).
 // Not every catalog provider has a models.dev snapshot (custom and
 // compatible-endpoint types have none), so the lookup is widened rather than
 // keyed on the registry's own union.
