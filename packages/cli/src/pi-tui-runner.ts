@@ -73,7 +73,11 @@ import type {
 } from './pi-tui-contracts.js';
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
-import type { AgentGraphClientSnapshot, AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
+import type {
+  AgentGraphClientSnapshot,
+  AgentGraphEpochSummary,
+  TurnResumeParkReason,
+} from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
 import { parseGraphCommand, type ParsedGraphCommand } from '@maka/core/graph-command';
@@ -85,6 +89,7 @@ import {
   type MakaSessionDriver,
   type MakaSessionSwitchResult,
 } from './session-driver.js';
+import { SafeBoundaryResumeParkedError } from './runtime-host-session-driver.js';
 import {
   appendTurnFailureToTranscript,
   appendUserPrompt,
@@ -267,6 +272,25 @@ export function resolveTaskbarProgress(
   if (forced === '1' || forced === 'true') return true;
   if (forced === '0' || forced === 'false') return false;
   return environment.platform !== 'win32' && environment.windowsTerminalSession === undefined;
+}
+
+/**
+ * User-facing copy for a parked safe-boundary resume. Parked is the host's
+ * way of saying "no safe continuation exists right now"; the reasons below
+ * are informational, so they read as a plain sentence instead of a protocol
+ * identifier.
+ */
+export function safeBoundaryResumeParkedCopy(reason: TurnResumeParkReason): string {
+  switch (reason) {
+    case 'continuation_unavailable':
+      return 'Safe-boundary resume is not enabled on this runtime (set MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1 to enable).';
+    case 'resume_candidate_missing':
+      return 'Nothing to resume: no interrupted run exists in this session.';
+    case 'session_busy':
+      return 'Cannot resume: the session already has an active turn.';
+    default:
+      return `Safe-boundary resume parked: ${reason}`;
+  }
 }
 
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
@@ -1972,11 +1996,28 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       text: 'Resuming from the latest safe boundary…',
     });
     requestRender();
-    for await (const event of input.driver.resumeLatest()) {
-      applyMakaSessionEventToTranscript(state, event);
-      shellRunElapsedTicker.sync();
-      syncUserQuestionOverlay();
-      requestRender();
+    try {
+      for await (const event of input.driver.resumeLatest()) {
+        applyMakaSessionEventToTranscript(state, event);
+        shellRunElapsedTicker.sync();
+        syncUserQuestionOverlay();
+        requestRender();
+      }
+    } catch (error) {
+      // A parked plan is the host saying "there is nothing safe to resume",
+      // not a failure: the runtime feature may be disabled or no interrupted
+      // run exists. Show that as information, not as a red error that reads
+      // like session corruption.
+      if (error instanceof SafeBoundaryResumeParkedError) {
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: safeBoundaryResumeParkedCopy(error.reason),
+        });
+        requestRender();
+        return;
+      }
+      throw error;
     }
   };
 

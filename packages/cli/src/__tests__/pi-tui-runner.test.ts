@@ -42,7 +42,7 @@ import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { AgentGraphClientSnapshot } from '@maka/runtime-host/protocol';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type ContextDiagnostics } from '@maka/runtime/context-diagnostics';
-import type { GoalProjection } from '@maka/runtime-host/protocol';
+import type { GoalProjection, TurnResumeParkReason } from '@maka/runtime-host/protocol';
 import type {
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
@@ -56,6 +56,7 @@ import type {
   SessionResumeAvailability,
 } from '../session-driver.js';
 import { SkillInvocationBlockedError } from '../session-driver.js';
+import { SafeBoundaryResumeParkedError } from '../runtime-host-session-driver.js';
 import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
 import type {
   MakaOnboardingSurface,
@@ -5121,6 +5122,74 @@ describe('Maka Pi TUI runner', () => {
       await run;
     });
 
+    test('/resume parked by the host is informational, not a red error', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      driver.parkedResumeReason = 'continuation_unavailable';
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      // Attach a session first so the driver actually has one to resume.
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.length === 1);
+
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes(
+          'Safe-boundary resume is not enabled on this runtime',
+        ),
+      );
+      assert.equal(driver.resumeCalls, 1);
+
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('/resume with no interrupted run explains there is nothing to resume', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      driver.parkedResumeReason = 'resume_candidate_missing';
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.length === 1);
+
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes(
+          'Nothing to resume: no interrupted run exists in this session.',
+        ),
+      );
+
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
     test('/model refuses instead of opening the picker behind the running turn', async () => {
       const terminal = new FakeTerminal();
       const driver = new SteeringTurnDriver();
@@ -6728,6 +6797,8 @@ class SlashCommandDriver implements MakaSessionDriver {
   readonly moves: string[] = [];
   startNewSessionCalls = 0;
   resumeCalls = 0;
+  /** When set, resumeLatest throws SafeBoundaryResumeParkedError with this reason. */
+  parkedResumeReason: TurnResumeParkReason | undefined;
   contextDiagnosticsRequests = 0;
   goal: GoalProjection | null = null;
   readonly goalListeners = new Set<(goal: GoalProjection | null) => void>();
@@ -6846,6 +6917,9 @@ class SlashCommandDriver implements MakaSessionDriver {
 
   async *resumeLatest(): AsyncIterable<SessionEvent> {
     this.resumeCalls += 1;
+    if (this.parkedResumeReason !== undefined) {
+      throw new SafeBoundaryResumeParkedError(this.parkedResumeReason);
+    }
     yield {
       type: 'text_complete',
       id: 'event-resume-text',
