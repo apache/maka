@@ -503,7 +503,12 @@ const failedMcpStatuses: McpServerStatus[] = [
   },
 ];
 
+const storyRuntimeHostProfilesBridge = {
+  getDefaultHost: async () => ({ profileId: 'local', hostId: 'storybook-local-host' }),
+};
+
 const withConfiguredMcpBridge = withScopedMakaBridge({
+  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => configuredMcpConfig,
     listStatuses: async () => configuredMcpStatuses,
@@ -518,6 +523,7 @@ const withConfiguredMcpBridge = withScopedMakaBridge({
 });
 
 const withEditorMcpBridge = withScopedMakaBridge({
+  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => editorMcpConfig,
     listStatuses: async () => [editorMcpStatus],
@@ -532,6 +538,7 @@ const withEditorMcpBridge = withScopedMakaBridge({
 });
 
 const withEmptyMcpBridge = withScopedMakaBridge({
+  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => ({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
     listStatuses: async () => [],
@@ -546,6 +553,7 @@ const withEmptyMcpBridge = withScopedMakaBridge({
 });
 
 const withFailedMcpBridge = withScopedMakaBridge({
+  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => failedMcpConfig,
     listStatuses: async () => failedMcpStatuses,

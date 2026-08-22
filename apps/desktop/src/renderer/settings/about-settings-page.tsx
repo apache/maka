@@ -19,6 +19,10 @@ import { useActionGuard } from './use-action-guard.js';
 import { aboutUpdateStatusDetail } from './about-update-status.js';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+import {
+  defaultRuntimeHostDiagnosticTarget,
+  runOnDefaultRuntimeHost,
+} from '../default-runtime-host-operation.js';
 
 type AppInfo = Awaited<ReturnType<typeof window.maka.app.info>>;
 
@@ -42,11 +46,10 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
 
   useEffect(() => {
     let cancelled = false;
-    window.maka.app
-      .info()
-      .then((next) => {
+    runOnDefaultRuntimeHost((host) => window.maka.app.info(host))
+      .then(({ value }) => {
         if (!cancelled) {
-          setInfo(next);
+          setInfo(value);
           setInfoError(null);
         }
       })
@@ -54,7 +57,12 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
         if (cancelled) return;
         const message = settingsActionErrorMessage(error, locale);
         setInfoError(message);
-        toast.error(copy.loadFailed, message);
+        toast.error(
+          copy.loadFailed,
+          message,
+          undefined,
+          defaultRuntimeHostDiagnosticTarget(error),
+        );
     });
     return () => {
       cancelled = true;

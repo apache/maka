@@ -596,6 +596,7 @@ let storyRuntimeHostSettings = createDefaultSettings();
 
 const makaBridge = {
   runtimeHostProfiles: {
+    getDefaultHost: async () => ({ profileId: 'local', hostId: 'storybook-local-host' }),
     getSnapshot: async () => runtimeHostProfiles,
     addAndEnable: async () => ({ kind: 'connected' as const, snapshot: runtimeHostProfiles }),
     remove: async () => runtimeHostProfiles,

@@ -7,6 +7,33 @@ import { build } from 'esbuild';
 import type * as ProjectActions from '../../renderer/app-shell-project-actions.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
+const NO_PROJECT_CAPABILITIES = {
+  chooseClientDirectory: false,
+  chooseHostDirectory: false,
+  selectNoProject: false,
+  setLocalDefault: false,
+  viewClientPath: false,
+} as const;
+
+function createTestProjectActions(
+  actionsModule: typeof ProjectActions,
+  overrides: Partial<Parameters<typeof ProjectActions.createAppShellProjectActions>[0]> = {},
+) {
+  return actionsModule.createAppShellProjectActions({
+    uiLocale: 'en',
+    projectPickerPendingRef: { current: false },
+    projectPickerRequestRef: { current: 0 },
+    rendererMountedRef: { current: true },
+    setProjectPickerPending: () => {},
+    refreshDefaultProjectState: async () => [],
+    selectedProjectId: null,
+    projects: [],
+    projectCapabilities: NO_PROJECT_CAPABILITIES,
+    onProjectSelected: () => {},
+    toastApi: { success: () => {}, error: () => {} },
+    ...overrides,
+  });
+}
 
 test('remote Project capabilities do not dispatch Client-local actions', async () => {
   const actionsModule = await importProjectActions();
@@ -32,25 +59,7 @@ test('remote Project capabilities do not dispatch Client-local actions', async (
   } as unknown as Window & typeof globalThis;
 
   try {
-    const actions = actionsModule.createAppShellProjectActions({
-      uiLocale: 'en',
-      projectPickerPendingRef: { current: false },
-      projectPickerRequestRef: { current: 0 },
-      rendererMountedRef: { current: true },
-      setProjectPickerPending: () => {},
-      refreshDefaultProjectState: async () => [],
-      selectedProjectId: null,
-      projects: [],
-      projectCapabilities: {
-        chooseClientDirectory: false,
-        chooseHostDirectory: false,
-        selectNoProject: false,
-        setLocalDefault: false,
-        viewClientPath: false,
-      },
-      onProjectSelected: () => {},
-      toastApi: { success: () => {}, error: () => {} },
-    });
+    const actions = createTestProjectActions(actionsModule);
 
     assert.equal(await actions.addProject(), null);
     await actions.selectNoProject();
@@ -65,6 +74,12 @@ test('Project errors preserve the Host authority of the failed operation', async
   const actionsModule = await importProjectActions();
   const previousWindow = globalThis.window;
   const diagnosticTargets: unknown[] = [];
+  const toastApi = {
+    success: () => {},
+    error: (_title: string, _description?: string, _details?: string, target?: unknown) => {
+      diagnosticTargets.push(target);
+    },
+  };
   globalThis.window = {
     maka: {
       runtimeHostProfiles: {
@@ -79,39 +94,61 @@ test('Project errors preserve the Host authority of the failed operation', async
   } as unknown as Window & typeof globalThis;
 
   try {
-    const actions = actionsModule.createAppShellProjectActions({
-      uiLocale: 'en',
-      projectPickerPendingRef: { current: false },
-      projectPickerRequestRef: { current: 0 },
-      rendererMountedRef: { current: true },
-      setProjectPickerPending: () => {},
-      refreshDefaultProjectState: async () => [],
-      selectedProjectId: null,
-      projects: [],
-      projectCapabilities: {
-        chooseClientDirectory: false,
-        chooseHostDirectory: false,
-        selectNoProject: false,
-        setLocalDefault: false,
-        viewClientPath: false,
-      },
+    const actions = createTestProjectActions(actionsModule, {
       sessionId: 'session-key',
-      onProjectSelected: () => {},
-      toastApi: {
-        success: () => {},
-        error: (_title, _description, _details, target) => {
-          diagnosticTargets.push(target);
-        },
-      },
+      toastApi,
     });
 
     await actions.openWorkspaceFolder();
     await actions.openProjectFolder();
+    await createTestProjectActions(actionsModule, {
+      toastApi,
+    }).openProjectFolder();
 
     assert.deepEqual(diagnosticTargets, [
       { profileId: 'default-profile' },
       { sessionId: 'session-key' },
+      { profileId: 'default-profile' },
     ]);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test('an old Host mutation cannot refresh the current default Host presentation', async () => {
+  const actionsModule = await importProjectActions();
+  const previousWindow = globalThis.window;
+  const hosts = [
+    { profileId: 'profile-a', hostId: 'host-a' },
+    { profileId: 'profile-b', hostId: 'host-b' },
+  ];
+  let renamedOnHost: unknown;
+  let refreshCalls = 0;
+  globalThis.window = {
+    maka: {
+      runtimeHostProfiles: {
+        getDefaultHost: async () => hosts.shift() ?? { profileId: 'profile-b', hostId: 'host-b' },
+      },
+      projects: {
+        rename: async (_projectId: string, _name: string, host: unknown) => {
+          renamedOnHost = host;
+        },
+      },
+    },
+  } as unknown as Window & typeof globalThis;
+
+  try {
+    const actions = createTestProjectActions(actionsModule, {
+      refreshDefaultProjectState: async () => {
+        refreshCalls += 1;
+        return [];
+      },
+    });
+
+    await actions.renameProject('project-1', 'Renamed');
+
+    assert.deepEqual(renamedOnHost, { profileId: 'profile-a', hostId: 'host-a' });
+    assert.equal(refreshCalls, 0);
   } finally {
     globalThis.window = previousWindow;
   }

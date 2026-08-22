@@ -125,12 +125,12 @@ export function ProjectsSettingsPage(props: {
   const defaultResolves =
     defaultProjectId !== undefined &&
     listed.some((project) => project.id === defaultProjectId && project.available);
+  const diagnosticTarget = host ? { profileId: host.profileId } : undefined;
 
   async function runRowAction(
     key: string,
     action: () => Promise<void>,
     failure: string,
-    diagnosticTarget?: { profileId: string },
   ) {
     const release = actionGuard.begin(key);
     if (!release) return;
@@ -156,7 +156,7 @@ export function ProjectsSettingsPage(props: {
             failure,
             settingsActionErrorMessage(error, locale),
             undefined,
-            host ? { profileId: host.profileId } : undefined,
+            diagnosticTarget,
           );
         }
       }
@@ -190,8 +190,6 @@ export function ProjectsSettingsPage(props: {
       </SettingsPage>
     );
   }
-  const selectedHost = host;
-
   return (
     <SettingsPage as="section" aria-label={copy.section}>
       <RuntimeHostProfilesSection onRemoteHostAdded={props.onRemoteHostAdded} />
@@ -300,7 +298,6 @@ export function ProjectsSettingsPage(props: {
                                         if (!result.ok) throw new Error(result.reason);
                                       },
                                       copy.openFolderFailed,
-                                      { profileId: host.profileId },
                                     ),
                                 },
                               ]
@@ -331,13 +328,14 @@ export function ProjectsSettingsPage(props: {
                                         toast.error(
                                           copy.setDefaultFailed,
                                           settingsActionErrorMessage(error, locale),
+                                          undefined,
+                                          diagnosticTarget,
                                         );
                                       }
                                     }
                                   }
                                 },
                                 copy.actionFailed,
-                                { profileId: host.profileId },
                               ),
                           },
                         ]}
@@ -359,7 +357,6 @@ export function ProjectsSettingsPage(props: {
                     setRenamingId(null);
                   },
                   copy.renameFailed,
-                  { profileId: selectedHost.profileId },
                 );
               }
 

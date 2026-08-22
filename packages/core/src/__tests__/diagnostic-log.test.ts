@@ -30,4 +30,12 @@ test('collapses the home path belonging to the process that captured the logs', 
     collapseHomePath('C:\\Users\\Remote\\.maka', 'c:\\users\\remote', 'win32'),
     '~\\.maka',
   );
+  assert.equal(
+    collapseHomePath(
+      'file:///C:/Users/Remote%20User%231/.maka/logs',
+      'C:\\Users\\Remote User#1',
+      'win32',
+    ),
+    'file:///~/.maka/logs',
+  );
 });
