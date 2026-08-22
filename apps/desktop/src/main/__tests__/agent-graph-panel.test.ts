@@ -288,6 +288,37 @@ async function renderPanel(
   return harness;
 }
 
+describe('AgentGraphPanel collapse', () => {
+  it('keeps the disclosure state and controlled content in sync', async () => {
+    const harness = await renderPanel(snapshot({ graphId: 'graph-1', status: 'active' }));
+    const panel = harness.container.querySelector('.maka-agent-graph-panel');
+    const toggle = harness.container.querySelector('.maka-agent-graph-collapse-toggle');
+    assert.ok(panel);
+    assert.ok(toggle);
+    const contentId = toggle.getAttribute('aria-controls');
+    assert.ok(contentId);
+
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(panel.getAttribute('data-collapsed'), 'false');
+    assert.ok(harness.container.querySelector(`#${contentId}`));
+
+    await act(async () => {
+      (toggle as HTMLElement).click();
+    });
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+    assert.equal(panel.getAttribute('data-collapsed'), 'true');
+    assert.equal(harness.container.querySelector(`#${contentId}`), null);
+
+    await act(async () => {
+      (toggle as HTMLElement).click();
+    });
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(panel.getAttribute('data-collapsed'), 'false');
+    assert.ok(harness.container.querySelector(`#${contentId}`));
+    await act(async () => harness.root.unmount());
+  });
+});
+
 describe('AgentGraphPanel dismiss', () => {
   it('keeps the new session loading when a disposed read settles later', async () => {
     const sessionA = snapshot({ graphId: 'graph-a', status: 'active' });
