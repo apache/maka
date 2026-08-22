@@ -1053,7 +1053,13 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     // Three re-observations between the four steps, plus the closing one.
     assert.equal(captures, 4);
     assert.match(result.text, /ok \(4 of 4 steps\)/);
-    assert.deepEqual(progress, [[0, 4], [1, 4], [2, 4], [3, 4], [4, 4]]);
+    assert.deepEqual(progress, [
+      [0, 4],
+      [1, 4],
+      [2, 4],
+      [3, 4],
+      [4, 4],
+    ]);
   });
 
   test('a sequence stops at the step it cannot resolve, and says which', async () => {

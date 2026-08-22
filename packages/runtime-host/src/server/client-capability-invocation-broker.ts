@@ -323,10 +323,7 @@ export class ClientCapabilityInvocationBroker<
         }
         if (
           invocation.progress &&
-          (
-            frame.total !== invocation.progress.total ||
-            frame.current < invocation.progress.current
-          )
+          (frame.total !== invocation.progress.total || frame.current < invocation.progress.current)
         ) {
           throw new Error('Client Capability progress moved backwards or changed total');
         }

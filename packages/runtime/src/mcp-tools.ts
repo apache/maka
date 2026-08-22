@@ -67,9 +67,7 @@ export interface BuildMcpToolsOptions {
   categoryHint?: ToolCategory;
   recoveryMode?: ToolRecoveryMode;
   executionLocation?: 'host' | 'remote';
-  activityKindForDescriptor?: (
-    descriptor: McpToolDescriptor,
-  ) => ToolActivityKind | undefined;
+  activityKindForDescriptor?: (descriptor: McpToolDescriptor) => ToolActivityKind | undefined;
 }
 
 export function buildMcpTools(

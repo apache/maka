@@ -17,10 +17,7 @@
  * under the License.
  */
 
-import {
-  TOOL_ACTIVITY_KINDS,
-  type ToolActivityKind,
-} from '@maka/core/events';
+import { TOOL_ACTIVITY_KINDS, type ToolActivityKind } from '@maka/core/events';
 import {
   assertExactKeys,
   requireCount,
@@ -411,11 +408,7 @@ export function decodeClientCapabilityClientFrame(value: unknown): ClientCapabil
       ]);
       const current = requireCount(frame.current, 'current');
       const total = requireCount(frame.total, 'total');
-      if (
-        total === 0 ||
-        total > CLIENT_CAPABILITY_MAX_PROGRESS_TOTAL ||
-        current > total
-      ) {
+      if (total === 0 || total > CLIENT_CAPABILITY_MAX_PROGRESS_TOTAL || current > total) {
         throw invalidProtocolFrame('Invalid Client Capability progress bounds');
       }
       return {
@@ -679,10 +672,7 @@ function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {
 }
 
 function decodeToolActivityKind(value: unknown): ToolActivityKind {
-  if (
-    typeof value === 'string' &&
-    (TOOL_ACTIVITY_KINDS as readonly string[]).includes(value)
-  ) {
+  if (typeof value === 'string' && (TOOL_ACTIVITY_KINDS as readonly string[]).includes(value)) {
     return value as ToolActivityKind;
   }
   throw invalidProtocolFrame('Invalid Client Capability tool activity kind');

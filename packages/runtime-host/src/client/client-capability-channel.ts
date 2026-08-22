@@ -318,12 +318,14 @@ export class ClientCapabilityChannel {
         ) {
           return;
         }
-        void this.#options.write({
-          kind: 'client.capability.progress',
-          invocationId,
-          current,
-          total,
-        }).catch((error: unknown) => this.#options.onFailure(asError(error)));
+        void this.#options
+          .write({
+            kind: 'client.capability.progress',
+            invocationId,
+            current,
+            total,
+          })
+          .catch((error: unknown) => this.#options.onFailure(asError(error)));
       };
       const result = decodeClientCapabilityResult(
         await execute({

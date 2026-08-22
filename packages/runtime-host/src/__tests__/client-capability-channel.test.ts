@@ -216,14 +216,16 @@ test('Client Capability channel forwards admitted tool progress before the resul
   const written: unknown[] = [];
   let channel!: ClientCapabilityChannel;
   const provider: ClientCapabilityProvider = {
-    offers: () => [{
-      offerId: 'fixture',
-      version: '0',
-      affinity: 'call',
-      hostPathAccess: 'cwd',
-      label: 'Fixture',
-      tools: [{ serverId: 'fixture', name: 'sequence', inputSchema: { type: 'object' } }],
-    }],
+    offers: () => [
+      {
+        offerId: 'fixture',
+        version: '0',
+        affinity: 'call',
+        hostPathAccess: 'cwd',
+        label: 'Fixture',
+        tools: [{ serverId: 'fixture', name: 'sequence', inputSchema: { type: 'object' } }],
+      },
+    ],
     call: async (_frame, options) => {
       await options.accept();
       options.progress?.(1, 3);
@@ -235,10 +237,12 @@ test('Client Capability channel forwards admitted tool progress before the resul
     write: async (frame) => {
       written.push(frame);
       if (frame.kind === 'client.capability.accepted') {
-        queueMicrotask(() => channel.accept({
-          kind: 'client.capability.admitted',
-          invocationId: frame.invocationId,
-        }));
+        queueMicrotask(() =>
+          channel.accept({
+            kind: 'client.capability.admitted',
+            invocationId: frame.invocationId,
+          }),
+        );
       }
     },
     replace: async (input) => {

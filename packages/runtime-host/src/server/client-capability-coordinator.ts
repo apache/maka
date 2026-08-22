@@ -518,8 +518,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         categoryHint: 'custom_tool',
         recoveryMode: 'outcome_unknown',
         executionLocation: 'remote',
-        activityKindForDescriptor: (descriptor) =>
-          trustedClientToolActivityKind(descriptor),
+        activityKindForDescriptor: (descriptor) => trustedClientToolActivityKind(descriptor),
       }),
     ];
     const groups = selected.map(({ offer: binding }) => ({

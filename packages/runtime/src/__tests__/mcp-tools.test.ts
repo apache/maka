@@ -246,10 +246,12 @@ test('a trusted composition can apply the Client Capability permission floor and
 test('a trusted composition can preserve provider-owned activity semantics', () => {
   const [tool] = buildMcpTools(
     fakeProvider(
-      [boundTool(
-        descriptor('desktop_computer_use', 'maka_computer'),
-        binding('desktop-computer-binding'),
-      )],
+      [
+        boundTool(
+          descriptor('desktop_computer_use', 'maka_computer'),
+          binding('desktop-computer-binding'),
+        ),
+      ],
       async () => ({ content: [{ type: 'text', text: 'ok' }] }),
     ),
     { activityKindForDescriptor: () => 'computer' },

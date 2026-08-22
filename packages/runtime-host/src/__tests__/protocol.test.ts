@@ -1458,19 +1458,23 @@ describe('Runtime Host bootstrap protocol', () => {
 test('Client Capability tool descriptors preserve only known activity kinds', () => {
   const input = {
     registrationId: 'registration-1',
-    offers: [{
-      offerId: 'desktop_computer_use',
-      version: '0',
-      affinity: 'session',
-      hostPathAccess: 'cwd',
-      label: 'Computer Use',
-      tools: [{
-        serverId: 'desktop_computer_use',
-        name: 'maka_computer',
-        inputSchema: { type: 'object' },
-        activityKind: 'computer',
-      }],
-    }],
+    offers: [
+      {
+        offerId: 'desktop_computer_use',
+        version: '0',
+        affinity: 'session',
+        hostPathAccess: 'cwd',
+        label: 'Computer Use',
+        tools: [
+          {
+            serverId: 'desktop_computer_use',
+            name: 'maka_computer',
+            inputSchema: { type: 'object' },
+            activityKind: 'computer',
+          },
+        ],
+      },
+    ],
   };
 
   assert.equal(
@@ -1478,13 +1482,16 @@ test('Client Capability tool descriptors preserve only known activity kinds', ()
     'computer',
   );
   assert.throws(
-    () => decodeClientCapabilityReplaceInput({
-      ...input,
-      offers: [{
-        ...input.offers[0],
-        tools: [{ ...input.offers[0]!.tools[0], activityKind: 'desktop' }],
-      }],
-    }),
+    () =>
+      decodeClientCapabilityReplaceInput({
+        ...input,
+        offers: [
+          {
+            ...input.offers[0],
+            tools: [{ ...input.offers[0]!.tools[0], activityKind: 'desktop' }],
+          },
+        ],
+      }),
     isInvalidFrame,
   );
 });
@@ -1505,21 +1512,23 @@ test('Client Capability progress frames require bounded monotonic coordinates', 
     },
   );
   assert.throws(
-    () => decodeClientFrame({
-      kind: 'client.capability.progress',
-      invocationId: 'invocation-1',
-      current: 12,
-      total: 11,
-    }),
+    () =>
+      decodeClientFrame({
+        kind: 'client.capability.progress',
+        invocationId: 'invocation-1',
+        current: 12,
+        total: 11,
+      }),
     isInvalidFrame,
   );
   assert.throws(
-    () => decodeClientFrame({
-      kind: 'client.capability.progress',
-      invocationId: 'invocation-1',
-      current: 1,
-      total: 1_025,
-    }),
+    () =>
+      decodeClientFrame({
+        kind: 'client.capability.progress',
+        invocationId: 'invocation-1',
+        current: 1,
+        total: 1_025,
+      }),
     isInvalidFrame,
   );
 });
