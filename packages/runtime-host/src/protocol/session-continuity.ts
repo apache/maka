@@ -41,7 +41,12 @@ import {
   type SessionMessageQueueProjection,
 } from './message.js';
 import { defineOperation } from './operation-spec.js';
-import { decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
+import {
+  decodeMessageContent,
+  decodeTurnSnapshot,
+  type MessageContent,
+  type TurnSnapshot,
+} from './turn.js';
 import { decodeGoalProjection, type GoalProjection } from './goal.js';
 import { decodeRuntimeResourceRef } from './runtime-resource.js';
 import {
@@ -50,7 +55,7 @@ import {
   type SessionTranscriptBootstrap,
 } from './session-transcript.js';
 
-export const SESSION_CONTINUITY_SCHEMA_VERSION = 4 as const;
+export const SESSION_CONTINUITY_SCHEMA_VERSION = 5 as const;
 export const SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES = 56 * 1024;
 // Leave transport headroom for the response envelope and request correlation.
 export const SUBSCRIPTION_OPEN_RESULT_MAX_BYTES = 92 * 1024;
@@ -190,11 +195,26 @@ export type SessionToolEvent =
       content: ToolResultPreviewContent;
     });
 
+/**
+ * The durable mid-turn user interjection (steering), forwarded verbatim from the
+ * run's event stream. Unlike tool events it has no toolUseId; it shares the
+ * frame so subscribers render the interjection in place without depending on
+ * observing the transient in-flight queue state.
+ */
+export interface SessionSteeringEvent {
+  type: 'steering_message';
+  id: string;
+  turnId: string;
+  ts: number;
+  messageId: string;
+  content: MessageContent;
+}
+
 export interface SessionEventFrame extends SubscriptionEnvelope {
   kind: 'subscription.session_event';
   sessionId: string;
   runId: string;
-  event: SessionToolEvent;
+  event: SessionToolEvent | SessionSteeringEvent;
 }
 
 export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
@@ -365,7 +385,7 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
       ...envelope,
       sessionId: requireEntityId(record.sessionId, 'sessionId'),
       runId: requireEntityId(record.runId, 'runId'),
-      event: decodeSessionToolEvent(record.event),
+      event: decodeSessionFrameEvent(record.event),
     };
   } else if (record.kind === 'subscription.transcript_advanced') {
     assertExactKeys(record, 'Session transcript advanced frame', [
@@ -707,6 +727,31 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
           ),
     ...(record.reset === true ? { reset: true as const } : {}),
     ...(record.complete === true ? { complete: true as const } : {}),
+  };
+}
+
+function decodeSessionFrameEvent(value: unknown): SessionToolEvent | SessionSteeringEvent {
+  const record = requireRecord(value, 'Session event');
+  if (record.type === 'steering_message') return decodeSessionSteeringEvent(record);
+  return decodeSessionToolEvent(record);
+}
+
+function decodeSessionSteeringEvent(record: Record<string, unknown>): SessionSteeringEvent {
+  assertExactKeys(record, 'Session steering event', [
+    'type',
+    'id',
+    'turnId',
+    'ts',
+    'messageId',
+    'content',
+  ]);
+  return {
+    type: 'steering_message',
+    id: requireId(record.id, 'Session steering event id'),
+    turnId: requireEntityId(record.turnId, 'turnId'),
+    ts: requireCount(record.ts, 'Session steering event timestamp'),
+    messageId: requireEntityId(record.messageId, 'messageId'),
+    content: decodeMessageContent(record.content),
   };
 }
 

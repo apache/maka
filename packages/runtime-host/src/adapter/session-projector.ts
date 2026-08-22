@@ -43,6 +43,13 @@ interface AssistantAccumulator {
 
 export interface RuntimeHostSessionProjectionSeed {
   readonly durableInFlightMessageIds: readonly string[];
+  /**
+   * messageIds of steering interjections already durable in the transcript.
+   * `subscription.open` can bootstrap message X and install the subscriber
+   * before the Host's live echo for X arrives; these ids suppress that late
+   * echo so the bootstrapped render stays the only one.
+   */
+  readonly durableSteeringMessageIds: readonly string[];
   readonly activeAssistantMessages: readonly Extract<StoredMessage, { type: 'assistant' }>[];
 }
 
@@ -56,6 +63,9 @@ export function createRuntimeHostSessionProjectionSeed(
   return {
     durableInFlightMessageIds: transcript
       .filter((message) => inFlightMessageIds.has(message.id))
+      .map((message) => message.id),
+    durableSteeringMessageIds: transcript
+      .filter((message) => message.type === 'user' && message.steeringEventId !== undefined)
       .map((message) => message.id),
     activeAssistantMessages:
       snapshot.rootTurn === null
@@ -84,6 +94,13 @@ export class RuntimeHostSessionProjector {
   #snapshot: SessionContinuitySnapshot;
   readonly #now: () => number;
   readonly #transcriptIds: Set<string>;
+  /**
+   * One render per steering message, whichever authoritative source projects
+   * it first: the transcript bootstrap (seeded here), the durable session-event
+   * echo (in stream order), or the queue in-flight synthesis (which can win the
+   * race or cover a rejoin window).
+   */
+  readonly #renderedSteeringMessageIds: Set<string>;
   readonly #accumulators = new Map<string, AssistantAccumulator>();
 
   constructor(
@@ -95,6 +112,7 @@ export class RuntimeHostSessionProjector {
     this.#snapshot = structuredClone(snapshot);
     this.#now = now;
     this.#transcriptIds = new Set(seed.durableInFlightMessageIds);
+    this.#renderedSteeringMessageIds = new Set(seed.durableSteeringMessageIds);
     const root = snapshot.rootTurn;
     if (!root) return;
     for (const message of seed.activeAssistantMessages) {
@@ -167,6 +185,8 @@ export class RuntimeHostSessionProjector {
     }
     for (const entry of rootQueueInFlight(this.#snapshot.queue)) {
       if (this.#transcriptIds.has(entry.messageId)) continue;
+      if (this.#renderedSteeringMessageIds.has(entry.messageId)) continue;
+      this.#renderedSteeringMessageIds.add(entry.messageId);
       events.push({
         type: 'steering_message',
         id: `host-queue:${this.#snapshot.queue.hostEpoch}:${this.#snapshot.queue.queueRevision}:${entry.entryId}`,
@@ -339,8 +359,16 @@ export class RuntimeHostSessionProjector {
       return emptyUpdate(events);
     }
     if (frame.kind === 'subscription.session_event') {
-      const event = projectToolEvent(frame);
-      if (event) events.push(event);
+      const event = projectSessionEvent(frame);
+      if (event) {
+        if (event.type === 'steering_message') {
+          if (this.#renderedSteeringMessageIds.has(event.messageId)) {
+            return emptyUpdate(events);
+          }
+          this.#renderedSteeringMessageIds.add(event.messageId);
+        }
+        events.push(event);
+      }
       return emptyUpdate(events);
     }
     if (frame.kind !== 'subscription.session_projection') return emptyUpdate(events);
@@ -359,6 +387,8 @@ export class RuntimeHostSessionProjector {
     const root = next.rootTurn;
     if (root && queueChanged(previousSnapshot.queue, next.queue)) {
       for (const entry of newlyInFlight(previousSnapshot.queue, next.queue)) {
+        if (this.#renderedSteeringMessageIds.has(entry.messageId)) continue;
+        this.#renderedSteeringMessageIds.add(entry.messageId);
         events.push({
           type: 'steering_message',
           id: `host-queue:${next.queue.hostEpoch}:${next.queue.queueRevision}:${entry.entryId}`,
@@ -477,10 +507,20 @@ export function projectRuntimeHostInteractionRequest(
   return [];
 }
 
-function projectToolEvent(
+function projectSessionEvent(
   frame: Extract<SubscriptionFrame, { kind: 'subscription.session_event' }>,
 ): SessionEvent | undefined {
   const event = frame.event;
+  if (event.type === 'steering_message') {
+    return {
+      type: 'steering_message',
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+      messageId: event.messageId,
+      content: structuredClone(event.content),
+    };
+  }
   const base = {
     id: event.id,
     turnId: event.turnId,
