@@ -32,7 +32,6 @@ test('documentation-only changes do not select code validation', () => {
   const plan = planTests(['docs/ci.md'], { graph });
 
   assert.equal(plan.code, false);
-  assert.equal(plan.asfNpm, false);
   assert.equal(plan.asfSource, false);
   assert.equal(plan.astryxSurface, false);
   assert.deepEqual(plan.workspaces, []);
@@ -162,23 +161,9 @@ test('ASF source authority changes select their dedicated gate', () => {
   assert.equal(planTests(['scripts/audit-alignment.mjs'], { graph }).asfSource, false);
 });
 
-test('ASF npm authority changes select their dedicated gate', () => {
-  for (const path of [
-    '.github/workflows/asf-npm-candidate.yml',
-    'scripts/asf-npm-candidate.mjs',
-    'scripts/asf-npm-candidate.test.mjs',
-    'scripts/asf-npm-workflow-policy.test.mjs',
-    'scripts/release-version.mjs',
-  ]) {
-    assert.equal(planTests([path], { graph }).asfNpm, true, path);
-  }
-  assert.equal(planTests(['.github/ASF_NPM_RELEASE.md'], { graph }).asfNpm, false);
-});
-
-test('shared CLI validation changes select both owning release contracts', () => {
+test('shared CLI validation changes select installed-package validation', () => {
   const plan = planTests(['.github/workflows/cli-package-validation.yml'], { graph });
 
-  assert.equal(plan.asfNpm, true);
   assert.equal(plan.cliPackage, true);
 });
 
@@ -190,7 +175,6 @@ test('full selection covers every live surface', () => {
   const plan = planTests([], { graph, forceFull: true });
 
   assert.equal(plan.full, true);
-  assert.equal(plan.asfNpm, true);
   assert.equal(plan.asfSource, true);
   assert.equal(plan.cliPackage, true);
   assert.equal(plan.code, true);
