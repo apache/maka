@@ -103,6 +103,9 @@ export interface DesktopRuntimeHostProfileService {
   markManagedServiceUninstalling(
     expected: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<DesktopRuntimeHostManagedServiceBinding>;
+  markManagedServiceCleanupPending(
+    expected: DesktopRuntimeHostManagedServiceBinding,
+  ): Promise<DesktopRuntimeHostManagedServiceBinding>;
   rotateManagedCredential(
     expected: DesktopRuntimeHostManagedAccess,
     credential: string,
@@ -767,6 +770,25 @@ export function createDesktopRuntimeHostProfileService(input: {
         return { ...expected, state: 'uninstalling' };
       });
     },
+    markManagedServiceCleanupPending(expected) {
+      return mutateProfiles(async () => {
+        assertPairingComplete(expected.profile.id);
+        const current = (await catalog.read()).profiles.find(
+          (profile) => profile.id === expected.profile.id,
+        );
+        if (
+          !current ||
+          !sameRemoteRuntimeHostProfileTarget(current, expected.profile) ||
+          !(await managedServices.markCleanupPendingIfCurrent(
+            expected.profile,
+            expected.service,
+          ))
+        ) {
+          throw new Error('Runtime Host managed service binding changed during uninstall');
+        }
+        return { ...expected, state: 'cleanup_pending' };
+      });
+    },
     clearManagedServiceBinding(expected) {
       return mutateProfiles(async () => {
         assertPairingComplete(expected.profile.id);
@@ -776,7 +798,10 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (
           !current ||
           !sameRemoteRuntimeHostProfileTarget(current, expected.profile) ||
-          !(await managedServices.removeIfCurrent(expected.profile, expected.service))
+          !(await managedServices.removeCleanupPendingIfCurrent(
+            expected.profile,
+            expected.service,
+          ))
         ) {
           throw new Error('Runtime Host managed service binding changed during uninstall');
         }
@@ -884,7 +909,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           await managedServices.read(),
           profile,
         );
-        if (managedBinding?.state === 'uninstalling') {
+        if (managedBinding && managedBinding.state !== 'active') {
           throw new Error('Finish uninstalling this Runtime Host service before removing it');
         }
         await catalog.remove(profileId);

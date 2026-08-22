@@ -43,7 +43,7 @@ export interface DesktopRuntimeHostManagedService {
 export interface DesktopRuntimeHostManagedServiceBinding {
   readonly profile: RemoteRuntimeHostProfile;
   readonly service: DesktopRuntimeHostManagedService;
-  readonly state: "active" | "uninstalling";
+  readonly state: "active" | "uninstalling" | "cleanup_pending";
 }
 
 export interface DesktopRuntimeHostManagedServiceDocument {
@@ -63,6 +63,14 @@ export interface DesktopRuntimeHostManagedServiceStore {
   ): Promise<boolean>;
   removeForProfileIfCurrent(profile: RemoteRuntimeHostProfile): Promise<boolean>;
   markUninstallingIfCurrent(
+    profile: RemoteRuntimeHostProfile,
+    service: DesktopRuntimeHostManagedService,
+  ): Promise<boolean>;
+  markCleanupPendingIfCurrent(
+    profile: RemoteRuntimeHostProfile,
+    service: DesktopRuntimeHostManagedService,
+  ): Promise<boolean>;
+  removeCleanupPendingIfCurrent(
     profile: RemoteRuntimeHostProfile,
     service: DesktopRuntimeHostManagedService,
   ): Promise<boolean>;
@@ -149,29 +157,35 @@ class FileDesktopRuntimeHostManagedServiceStore
     value: RemoteRuntimeHostProfile,
     managedService: DesktopRuntimeHostManagedService,
   ): Promise<boolean> {
-    const profile = decodeRemoteRuntimeHostProfile(value);
-    const service = decodeService(managedService);
-    return this.#exclusive(async () => {
-      const current = await this.read();
-      const binding = current.bindings.find(
-        (candidate) => candidate.profile.id === profile.id,
-      );
-      if (
-        !binding ||
-        !sameRemoteRuntimeHostProfileTarget(binding.profile, profile) ||
-        !sameService(binding.service, service)
-      ) {
-        return false;
-      }
-      if (binding.state === "uninstalling") return true;
-      await writeDocument(this.#path, {
-        schemaVersion: SCHEMA_VERSION,
-        bindings: current.bindings.map((candidate) =>
-          candidate === binding ? { ...candidate, state: "uninstalling" as const } : candidate,
-        ),
-      });
-      return true;
-    });
+    return this.#setStateIfCurrent(
+      value,
+      managedService,
+      ["active", "uninstalling"],
+      "uninstalling",
+    );
+  }
+
+  markCleanupPendingIfCurrent(
+    value: RemoteRuntimeHostProfile,
+    managedService: DesktopRuntimeHostManagedService,
+  ): Promise<boolean> {
+    return this.#setStateIfCurrent(
+      value,
+      managedService,
+      ["uninstalling", "cleanup_pending"],
+      "cleanup_pending",
+    );
+  }
+
+  removeCleanupPendingIfCurrent(
+    value: RemoteRuntimeHostProfile,
+    managedService: DesktopRuntimeHostManagedService,
+  ): Promise<boolean> {
+    return this.#remove(
+      decodeRemoteRuntimeHostProfile(value),
+      decodeService(managedService),
+      "cleanup_pending",
+    );
   }
 
   removeIfCurrent(
@@ -190,6 +204,7 @@ class FileDesktopRuntimeHostManagedServiceStore
   #remove(
     profile: RemoteRuntimeHostProfile,
     service?: DesktopRuntimeHostManagedService,
+    state?: DesktopRuntimeHostManagedServiceBinding["state"],
   ): Promise<boolean> {
     return this.#exclusive(async () => {
       const current = await this.read();
@@ -199,7 +214,8 @@ class FileDesktopRuntimeHostManagedServiceStore
       if (
         !binding ||
         !sameRemoteRuntimeHostProfileTarget(binding.profile, profile) ||
-        (service && !sameService(binding.service, service))
+        (service && !sameService(binding.service, service)) ||
+        (state && binding.state !== state)
       ) {
         return false;
       }
@@ -207,6 +223,38 @@ class FileDesktopRuntimeHostManagedServiceStore
         schemaVersion: SCHEMA_VERSION,
         bindings: current.bindings.filter(
           (candidate) => candidate.profile.id !== profile.id,
+        ),
+      });
+      return true;
+    });
+  }
+
+  #setStateIfCurrent(
+    value: RemoteRuntimeHostProfile,
+    managedService: DesktopRuntimeHostManagedService,
+    allowedStates: readonly DesktopRuntimeHostManagedServiceBinding["state"][],
+    state: DesktopRuntimeHostManagedServiceBinding["state"],
+  ): Promise<boolean> {
+    const profile = decodeRemoteRuntimeHostProfile(value);
+    const service = decodeService(managedService);
+    return this.#exclusive(async () => {
+      const current = await this.read();
+      const binding = current.bindings.find(
+        (candidate) => candidate.profile.id === profile.id,
+      );
+      if (
+        !binding ||
+        !sameRemoteRuntimeHostProfileTarget(binding.profile, profile) ||
+        !sameService(binding.service, service) ||
+        !allowedStates.includes(binding.state)
+      ) {
+        return false;
+      }
+      if (binding.state === state) return true;
+      await writeDocument(this.#path, {
+        schemaVersion: SCHEMA_VERSION,
+        bindings: current.bindings.map((candidate) =>
+          candidate === binding ? { ...candidate, state } : candidate,
         ),
       });
       return true;
@@ -240,7 +288,11 @@ function decodeDocument(value: unknown): DesktopRuntimeHostManagedServiceDocumen
     if (profile.transport.kind !== "ssh") {
       throw new Error("A managed Runtime Host service requires SSH");
     }
-    if (binding.state !== "active" && binding.state !== "uninstalling") {
+    if (
+      binding.state !== "active" &&
+      binding.state !== "uninstalling" &&
+      binding.state !== "cleanup_pending"
+    ) {
       throw new Error("Runtime Host managed service state is invalid");
     }
     return Object.freeze({
