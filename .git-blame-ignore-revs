@@ -12,5 +12,5 @@
 # style: apply Biome format baseline outside the UI surface (#415)
 # -> squash-commit hash added in a follow-up immediately after this PR lands.
 
-# chore: apply the ASF license header to every covered source file (#3397)
-# -> squash-commit hash added in a follow-up immediately after this PR lands.
+# chore: add ASF source headers and a release header audit gate (#3397)
+c633ea5b2524d9463228e01f8d369ef9166c3f05
