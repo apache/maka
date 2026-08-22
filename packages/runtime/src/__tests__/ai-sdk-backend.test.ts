@@ -10843,6 +10843,7 @@ describe('AiSdkBackend RunTrace', () => {
           request: { messages: [] },
           continuation: 'none',
         }),
+        toolCallSafety: Promise.resolve({ hadRawArgumentEvidence: false, decisions: new Map() }),
       };
     };
 
@@ -13546,6 +13547,7 @@ describe('AiSdkBackend thinking persistence', () => {
         request: { messages: [] },
         continuation: 'none',
       }),
+      toolCallSafety: Promise.resolve({ hadRawArgumentEvidence: false, decisions: new Map() }),
     });
 
     for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
