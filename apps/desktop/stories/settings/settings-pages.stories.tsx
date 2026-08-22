@@ -8,6 +8,7 @@ import type {
   ThemePalette,
   ThemePreference,
   UpdateAppSettingsResult,
+  UsageRange,
   UsageStats,
 } from '@maka/core/settings';
 import type {
@@ -1292,6 +1293,51 @@ export const UsageLongTail: Story = {
 export const UsageNarrow: Story = {
   ...UsageLongTail,
   parameters: { viewport: { defaultViewport: 'mobile2' } },
+};
+
+/** The persisted range lands with the async CLIENT settings load — usage
+ * is client-owned (settings-ownership.ts), so getClient() is the channel
+ * that carries it — after the section effect's first fetch already ran
+ * with the '24h' default. A Settings window restored directly onto
+ * 使用统计 must refetch when the persisted range arrives — without that,
+ * the page shows the default range's (empty) numbers under the persisted
+ * range's selected chip until a manual refresh. The bridge makes the race
+ * explicit: stats exist only for the persisted 'all' range, and the
+ * client settings resolve a beat late. */
+const withUsagePersistedRangeBridge = (() => {
+  const clientSettings = mergeSettings(createDefaultSettings(), { usage: { range: 'all' } });
+  return withScopedMakaBridge({
+    ...makaBridge,
+    settings: {
+      ...makaBridge.settings,
+      getClient: async () => {
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 30));
+        return clientSettings;
+      },
+      updateClient: async (
+        patch: Parameters<typeof window.maka.settings.updateClient>[0],
+      ): Promise<UpdateAppSettingsResult> => ({
+        settings: mergeSettings(clientSettings, patch),
+      }),
+      usageStats: async (range?: UsageRange): Promise<UsageStats> =>
+        range === 'all' ? usageStats : emptyUsageStats,
+    },
+  } satisfies Record<string, unknown>);
+})();
+
+// Real path: 设置 remembers 使用统计 as the last-open page and restores
+// straight onto it, with 全部 as the persisted range.
+export const UsagePersistedRangeRestore: Story = {
+  decorators: [withUsagePersistedRangeBridge],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement }) => {
+    // The totals must come from the PERSISTED range's dataset, not the
+    // '24h' default the section effect first fired with.
+    await waitForStoryCondition(
+      () => (canvasElement.textContent ?? '').includes('420'),
+      'Usage totals for the persisted range did not render',
+    );
+  },
 };
 /**
  * #1364: entry list (long title / content / tag set), archived group, and

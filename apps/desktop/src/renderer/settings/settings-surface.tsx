@@ -575,8 +575,18 @@ export function SettingsSurface(props: {
   }, [connectionsBridge, selectedRuntimeHost]);
 
   useEffect(() => {
-    if (section === 'usage') void reloadUsage();
-  }, [section]);
+    // Keyed on the EFFECTIVE range, not just the section: usage is
+    // client-owned (settings-ownership.ts), and the persisted range rides
+    // in with the async getClient() load — which lands after this effect
+    // first fires when a Settings window is restored directly onto
+    // 使用统计. The initial fetch then used the '24h' default while the
+    // chip showed the persisted range, and nothing refetched — every
+    // metric read 0 until a manual refresh or a tab round-trip. With the
+    // range in the deps, the truth's arrival (or any later range change,
+    // including the page's own persisted range clicks) is the trigger, and
+    // this effect is the single owner of range-driven fetches.
+    if (section === 'usage') void reloadUsage(settings.usage.range);
+  }, [section, settings.usage.range]);
 
   // PR-SETTINGS-HEADER-COPY-MAP-0 (U1): the page header derives its title
   // and description from the section→copy map keyed by the active section,
