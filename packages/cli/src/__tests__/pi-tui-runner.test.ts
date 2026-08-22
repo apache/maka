@@ -2912,6 +2912,7 @@ describe('Maka Pi TUI runner', () => {
       { query: 'alpha', keep: 'GPT 5.5 Preview', drop: ['GLM Max', 'text-unicorn'] },
       { query: 'zai', keep: 'GLM Max', drop: ['GPT 5.5 Preview', 'text-unicorn'] },
       { query: 'gemini', keep: 'text-unicorn', drop: ['GPT 5.5 Preview', 'GLM Max'] },
+      { query: 'glm-max', keep: 'GLM Max', drop: ['GPT 5.5 Preview', 'text-unicorn'] },
     ];
     for (const c of cases) {
       terminal.input(c.query);
