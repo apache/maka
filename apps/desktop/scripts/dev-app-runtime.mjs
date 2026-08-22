@@ -233,7 +233,7 @@ export function sharedDevelopmentAppOwner(options = {}) {
     // worktree's holder (our launch is absorbed), not misjudging our own
     // (one blocked launch). Same principle as dev-app-profile.mjs.
     if (isOwnDevApp(line, ownRoot)) return false;
-    return holdsProfile(line, targetProfile, options);
+    return holdsProfile(line, targetProfile);
   });
 }
 
@@ -253,9 +253,11 @@ export function assertNoCrossWorktreeOwner(options = {}) {
 }
 
 /**
- * Terminates this worktree's development app. The bundle path is unique per
- * worktree, so matching on it is precise without tracking a pid: concurrent
- * worktrees own different bundles and are unaffected.
+ * Terminates this worktree's development app. All three process shapes — the
+ * TCC bundle, the npm shim, and the resolved Electron it spawns — are
+ * anchored under this worktree's path (REPO_ROOT/node_modules for the plain
+ * shapes), so matching each shape precisely needs no pid tracking and never
+ * touches a concurrent worktree's processes.
  */
 export async function quitMacosDevelopmentApp(options = {}) {
   const platform = options.platform ?? process.platform;
