@@ -28,6 +28,11 @@ import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import { rawFinishReasonString } from './model-protocol.js';
+import {
+  createToolCallSafetyTracker,
+  observeRawChunk,
+  resolveToolCallSafety,
+} from './tool-call-execution-guard.js';
 import type {
   ModelMessage,
   NormalizedUsage,
@@ -41,6 +46,7 @@ import type {
   ModelRequestMetadata,
   ModelToolSet,
   ToolCallPart,
+  ToolCallExecutionSafety,
 } from './model-protocol.js';
 export type {
   NormalizedUsage,
@@ -331,6 +337,16 @@ export class ModelAdapter {
     const outcome = new Promise<ModelStepOutcome>((resolve) => {
       settleOutcome = resolve;
     });
+    let settleToolCallSafety!: (safety: ToolCallExecutionSafety) => void;
+    const toolCallSafety = new Promise<ToolCallExecutionSafety>((resolve) => {
+      settleToolCallSafety = resolve;
+    });
+    // One tracker per physical provider request (this method's own
+    // "one physical provider request" contract — see ModelStreamResult) so
+    // two concurrent requests, even with colliding provider-issued
+    // toolCallIds, can never share or cross-resolve state. See
+    // tool-call-execution-guard.ts.
+    const toolCallGuard = createToolCallSafetyTracker();
     const request = { messages: continuation.requestMessages };
     const events: AsyncIterable<ModelStreamEvent> = {
       async *[Symbol.asyncIterator]() {
@@ -340,6 +356,11 @@ export class ModelAdapter {
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
             onStreamActivity();
+            // Raw, unmodified chunk — before translateChunk's semantic
+            // narrowing — so the guard proves each tool call's argument
+            // completeness from its own raw byte stream, not from
+            // translateChunk's already-trusted `tool-call.input`.
+            observeRawChunk(toolCallGuard, chunk);
             for (const event of translateChunk(chunk, openAiChatReasoningTransportState)) {
               if (event.kind === 'error') failure = event.failure;
               if (event.kind === 'finish') sawFinish = true;
@@ -390,12 +411,15 @@ export class ModelAdapter {
               }
             }
           } finally {
+            settleToolCallSafety(
+              resolveToolCallSafety(toolCallGuard, { providerReason: finishReason }),
+            );
             settleOutcome(settled);
           }
         }
       },
     };
-    return { events, outcome };
+    return { events, outcome, toolCallSafety };
   }
 
   endContinuation(lane: string): void {
