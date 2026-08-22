@@ -50,6 +50,23 @@ describe('MCP host classification', () => {
     assert.equal(isPrivateRangeHost('[fec0::1]'), false);
   });
 
+  it('classifies deprecated IPv4-compatible ::/96 embeddings by their bytes', () => {
+    // RFC 4291 §2.5.5.1 — deprecated, but a byte-level embedding the
+    // classifier must know regardless of whether modern stacks still
+    // translate it: the gate's correctness must not rest on the other
+    // end's network stack.
+    assert.equal(isPrivateRangeHost(new URL('https://[::192.168.1.1]/').hostname), true);
+    assert.equal(isPrivateRangeHost(new URL('https://[::127.0.0.1]/').hostname), true);
+    assert.equal(isPrivateRangeHost('[::c0a8:101]'), true);
+    assert.equal(isPrivateRangeHost('[::7f00:1]'), true);
+    assert.equal(isPrivateRangeHost('[::a00:5]'), true); // ::10.0.0.5
+    // Public v4-compatible stays global; the unspecified address reaches
+    // the local machine on common stacks and is private (fail closed).
+    assert.equal(isPrivateRangeHost('[::808:808]'), false);
+    assert.equal(isPrivateRangeHost('[::]'), true);
+    assert.equal(isPrivateRangeHost('[::2]'), false);
+  });
+
   it('keeps global addresses reachable and fails closed on garbage', () => {
     assert.equal(isPrivateRangeHost('[2606:4700::1]'), false);
     assert.equal(isPrivateRangeHost('[::ffff:808:808]'), false); // mapped 8.8.8.8

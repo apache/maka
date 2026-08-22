@@ -161,6 +161,7 @@ function parseIpv6(literal: string): Uint8Array | undefined {
 }
 
 function classifyIpv6(bytes: Uint8Array): 'loopback' | 'private' | 'global' {
+  if (bytes.slice(0, 15).every((byte) => byte === 0) && bytes[15] === 1) return 'loopback';
   const mapped =
     bytes.slice(0, 10).every((byte) => byte === 0) && bytes[10] === 0xff && bytes[11] === 0xff;
   const nat64 =
@@ -169,14 +170,23 @@ function classifyIpv6(bytes: Uint8Array): 'loopback' | 'private' | 'global' {
     bytes[2] === 0xff &&
     bytes[3] === 0x9b &&
     bytes.slice(4, 12).every((byte) => byte === 0);
-  if (mapped || nat64) {
+  // The third byte-level IPv4 embedding: deprecated IPv4-compatible ::/96
+  // (RFC 4291 §2.5.5.1). Deprecated is not absent — the classifier's whole
+  // premise is bytes over spellings, and whether the OTHER end's stack
+  // still translates these must not be what the gate's correctness rests
+  // on. `::1` was returned above; the all-zero `::` flows through as an
+  // embedded 0.0.0.0 and is treated as private below.
+  const compat = bytes.slice(0, 12).every((byte) => byte === 0);
+  if (mapped || nat64 || compat) {
     const [a, b] = [bytes[12] ?? 0, bytes[13] ?? 0];
     // Mapped loopback lands on the PRIVATE side of the gate: isLoopbackHost
     // stays strict-by-spelling, so this is the check that must catch it.
     if (a === 127) return 'private';
+    // The unspecified address (`[::]`, embedded 0.0.0.0): connecting to it
+    // reaches the LOCAL machine on common stacks — private, fail closed.
+    if (compat && a === 0 && b === 0 && bytes[14] === 0 && bytes[15] === 0) return 'private';
     return isPrivateIpv4(a, b) ? 'private' : 'global';
   }
-  if (bytes.slice(0, 15).every((byte) => byte === 0) && bytes[15] === 1) return 'loopback';
   if (((bytes[0] ?? 0) & 0xfe) === 0xfc) return 'private'; // fc00::/7 (ULA)
   if (bytes[0] === 0xfe && ((bytes[1] ?? 0) & 0xc0) === 0x80) return 'private'; // fe80::/10
   return 'global';

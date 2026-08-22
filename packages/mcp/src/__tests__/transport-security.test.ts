@@ -82,6 +82,11 @@ describe('transport security provenance', () => {
       'https://[0:0:0:0:0:ffff:10.0.0.5]/internal',
       'https://[64:ff9b::192.168.1.1]/nat64',
       'https://[fe9a::1]/link-local',
+      // Deprecated IPv4-compatible ::/96 — the third byte-level embedding,
+      // arriving through the same remote-provenance path a real one would.
+      'https://[::192.168.1.1]/compat',
+      'https://[::127.0.0.1]:8443/compat-loopback',
+      'https://[::]/unspecified',
     ]) {
       assert.throws(() => assertTransportSecurity(new URL(url), remoteRoot), /refused remotely/u);
     }
