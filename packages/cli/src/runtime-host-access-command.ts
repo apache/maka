@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   connectExistingRuntimeHost,
   consumeAccessCredentialDelivery,
@@ -370,22 +371,14 @@ function writeAccessManagementError(
       action,
       error: {
         code: 'access_management_failed',
-        message: bounded(
-          error instanceof Error ? error.message : String(error),
-          RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_MESSAGE_MAX_BYTES,
-        ),
+        message:
+          truncateUtf8(
+            error instanceof Error ? error.message : String(error),
+            RUNTIME_HOST_ACCESS_MANAGEMENT_ERROR_MESSAGE_MAX_BYTES,
+          ) || 'Runtime Host access management failed',
       },
     }),
   );
-}
-
-function bounded(value: string, maxBytes: number): string {
-  const fallback = 'Runtime Host access management failed';
-  if (value.length === 0) return fallback;
-  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
-  let end = Math.min(value.length, maxBytes);
-  while (end > 0 && Buffer.byteLength(value.slice(0, end), 'utf8') > maxBytes) end -= 1;
-  return value.slice(0, end) || fallback;
 }
 
 function requireOperationGrants(values: readonly string[]): readonly OperationKey[] {

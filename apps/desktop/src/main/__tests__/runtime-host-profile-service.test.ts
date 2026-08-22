@@ -39,6 +39,7 @@ import {
   RuntimeHostPairingFinalizationInterruptedError,
   type RuntimeHostDesktopTargetState,
 } from "../runtime-host-desktop-manager.js";
+import { createDesktopRuntimeHostManagedServiceStore } from "../runtime-host-managed-services.js";
 import {
   createDesktopRuntimeHostProfileService,
   resolveDesktopRuntimeHostStartup,
@@ -481,10 +482,19 @@ test("finishes a persisted pairing after Desktop restarts before finalization", 
   );
 });
 
-test("preserves a staged pairing when finalization is interrupted", async () => {
+test("recovers interrupted managed credential rotation after restart", async () => {
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);
   await catalog.create(MANAGED_PROFILE, "old-token");
+  await createDesktopRuntimeHostManagedServiceStore(root).save(MANAGED_PROFILE, MANAGED_SERVICE);
+  await writeFile(
+    join(root, "runtime-host-profile-selection.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+      enabledRemoteProfileIds: [MANAGED_PROFILE.id],
+    })}\n`,
+  );
   const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
@@ -500,12 +510,7 @@ test("preserves a staged pairing when finalization is interrupted", async () => 
   });
 
   await assert.rejects(
-    () =>
-      service.addAndEnableVerified({
-        profile: MANAGED_PROFILE,
-        credential: "new-token",
-        managedService: MANAGED_SERVICE,
-      }),
+    () => service.rotateManagedCredential(MANAGED_PROFILE.id, "new-token"),
     RuntimeHostPairingFinalizationInterruptedError,
   );
   assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "new-token");
