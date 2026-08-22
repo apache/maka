@@ -64,7 +64,7 @@ jobs:
       - name: Test AX tree audit contract
         run: node --test scripts/ax-tree-audit.test.mjs
 
-      - name: Verify ASF npm candidate mechanics
+      - name: Verify ASF npm preflight policy
         run: npm run check:asf-npm
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

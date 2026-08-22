@@ -12,9 +12,19 @@ const DEVELOPMENT_DIRECTORIES = new Set([
   'tests',
 ]);
 const LOCAL_PACKAGE_PREFIX = '@maka/';
+const ASF_WIP_DISCLAIMER_MARKER = '<!-- ASF-WIP-DISCLAIMER -->';
 
 function manifestFromEntry(entry) {
   return entry?.manifest ?? entry;
+}
+
+export function renderNpmReadme(readme, disclaimer) {
+  const markerCount = readme.split(ASF_WIP_DISCLAIMER_MARKER).length - 1;
+  if (markerCount !== 1) {
+    throw new Error(`CLI README must contain exactly one ${ASF_WIP_DISCLAIMER_MARKER} marker.`);
+  }
+  if (!disclaimer.trim()) throw new Error('DISCLAIMER-WIP must not be empty.');
+  return readme.replace(ASF_WIP_DISCLAIMER_MARKER, disclaimer.trimEnd());
 }
 
 export function collectWorkspaceDependencyClosure(entryName, manifestsByName) {

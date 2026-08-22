@@ -8,9 +8,19 @@ import {
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
   orderWorkspaceBuilds,
+  renderNpmReadme,
   resolveWorkspaceReleaseFiles,
   workspaceReleaseFiles,
 } from './release-cli-file-policy.mjs';
+
+test('the npm README receives the canonical WIP disclaimer exactly once', () => {
+  const disclaimer = 'Canonical first line.\n\nCanonical final line.\n';
+  assert.equal(
+    renderNpmReadme('Before\n<!-- ASF-WIP-DISCLAIMER -->\nAfter\n', disclaimer),
+    'Before\nCanonical first line.\n\nCanonical final line.\nAfter\n',
+  );
+  assert.throws(() => renderNpmReadme('No marker\n', disclaimer), /exactly one/u);
+});
 
 describe('CLI release file policy', () => {
   test('derives the runtime workspace build order from production dependencies', () => {

@@ -4,6 +4,12 @@
 
 This runbook is the operational authority for publishing the `maka-agent` npm installation channel. The root `package.json` remains the sole Maka product-version authority, and `packages/cli/package.json` must match it. Every public npm version must come from the exact tarball validated by the Stage workflow.
 
+The source-RC [npm preflight](../.github/ASF_NPM_RELEASE.md) is an earlier, credential-free
+compatibility check. Its tarball is not carried into publication. After source approval, Stage
+rebuilds from the final product tag at the same approved commit and becomes the byte authority for
+npm staging and registry verification. This matches Apache OpenDAL's incubating practice while
+retaining Maka's stronger protected-Environment, staged-publishing, 2FA, and Finalize controls.
+
 ## Release invariants
 
 - Dispatch the product Release workflow only from the exact approved ASF source candidate tag.
@@ -268,6 +274,9 @@ existing installations and does not restore the reviewed release chain.
 
 ## References
 
+- [ASF Incubator distribution guide: npm](https://incubator.apache.org/guides/distribution.html#npm)
+- [Apache OpenDAL incubating Node.js release workflow](https://github.com/apache/opendal/blob/v0.44.0/.github/workflows/bindings_nodejs.yml)
+- [Apache OpenDAL incubating release guide](https://github.com/apache/opendal/blob/v0.44.0/website/community/committers/release.md)
 - [npm staged publishing](https://docs.npmjs.com/staged-publishing/)
 - [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/)
 - [npm dist-tags](https://docs.npmjs.com/cli/dist-tag/)

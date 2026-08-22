@@ -4,6 +4,8 @@
 
 本文档是发布 `maka-agent` npm 安装渠道的操作权威。根目录 `package.json` 仍是 Maka 唯一产品版本权威，`packages/cli/package.json` 必须与其一致。每个公开 npm 版本都必须来自 Stage workflow 验证过的同一个精确 tarball。
 
+source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行、且不持有发布凭据的兼容性检查；其 tarball 不会进入正式发布。source release 获批后，Stage 从位于同一获批 commit 的最终产品 tag 重新构建，并成为 npm staging 与 registry 验证所使用的字节权威。这与 Apache OpenDAL 孵化期的实践一致，同时保留了 Maka 更严格的受保护 Environment、staged publishing、2FA 与 Finalize 控制。
+
 ## 发布不变量
 
 - 产品 Release workflow 只能从已批准的 ASF source candidate tag dispatch；npm Stage 只能从随后创建的产品 `v<version>` tag dispatch，npm Finalize 只能从 `main` dispatch；
@@ -248,6 +250,9 @@ npm deprecate "maka-agent@$bad_version" "Known issue; install maka-agent@$recove
 
 ## 参考资料
 
+- [ASF Incubator npm 分发指南](https://incubator.apache.org/guides/distribution.html#npm)
+- [Apache OpenDAL 孵化期 Node.js 发布 workflow](https://github.com/apache/opendal/blob/v0.44.0/.github/workflows/bindings_nodejs.yml)
+- [Apache OpenDAL 孵化期发布指南](https://github.com/apache/opendal/blob/v0.44.0/website/community/committers/release.md)
 - [npm staged publishing](https://docs.npmjs.com/staged-publishing/)
 - [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/)
 - [npm dist-tags](https://docs.npmjs.com/cli/dist-tag/)

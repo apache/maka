@@ -1,9 +1,18 @@
-# Maka CLI
+# Apache Maka (Incubating) CLI
 
 [简体中文](https://github.com/apache/maka/blob/main/packages/cli/README.zh-CN.md)
 
 Maka is a local-first agent workspace. The `maka-agent` npm package installs the interactive
 terminal UI, the non-interactive CLI, Runtime Host tooling, and the Eval command.
+
+## Apache Incubation Disclaimer
+
+Apache Maka is undergoing incubation at The Apache Software Foundation. The published npm README
+includes the canonical work-in-progress disclaimer below directly from the release commit's
+[DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/DISCLAIMER-WIP); the
+[Maka podling status page](https://incubator.apache.org/projects/maka.html) records current status.
+
+<!-- ASF-WIP-DISCLAIMER -->
 
 > **Beta:** The CLI is under active development. Commands and local data formats may change before
 > the stable release.

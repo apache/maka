@@ -233,10 +233,14 @@ test('contract checks run before dependency setup and can fail the job', () => {
   const workflow = readWorkflow('ci.yml');
   const setupNodeStart = workflow.indexOf('      - uses: actions/setup-node@');
 
-  // Both contracts need nothing but the checkout, so they run on every change
+  // These contracts need nothing but the checkout, so they run on every change
   // rather than behind a surface flag — and a gate that cannot fail the job is
   // not a gate.
-  for (const name of ['Test CI planner', 'Check Windows test inventory']) {
+  for (const name of [
+    'Test CI planner',
+    'Check Windows test inventory',
+    'Verify ASF npm preflight policy',
+  ]) {
     const start = workflow.indexOf(`      - name: ${name}\n`);
     assert.ok(start >= 0, name);
     assert.ok(start < setupNodeStart, name);
