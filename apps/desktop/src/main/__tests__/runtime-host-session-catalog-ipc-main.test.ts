@@ -45,7 +45,7 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 2,
+    activityAt: 2,
     name: 'Session',
     isFlagged: false,
     isArchived: false,

@@ -1175,7 +1175,7 @@ function session(id: string): SessionCatalogProjection {
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: id,
     isFlagged: false,
     isArchived: false,

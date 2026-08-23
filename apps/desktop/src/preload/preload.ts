@@ -119,7 +119,12 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
+import type {
+  SessionCatalogSummary,
+  SessionChangedEvent,
+  SessionSummary,
+  TurnRecord,
+} from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
@@ -226,7 +231,6 @@ const runtimeHostMetadata = new Map<
   string,
   { readonly profileId: string; readonly profileName: string; readonly profileKind: 'local' | 'remote' }
 >();
-const runtimeHostSessionCache = new Map<string, DesktopSessionSummary[]>();
 const newTaskChangeListeners = new Set<() => void>();
 
 type RuntimeHostProfileWireEvent = DesktopRuntimeHostProfileChangedEvent;
@@ -242,7 +246,6 @@ ipcRenderer.on(
       runtimeHostScopes.delete(previousHostId);
       if (change.removed) {
         runtimeHostMetadata.delete(previousHostId);
-        runtimeHostSessionCache.delete(previousHostId);
         runtimeHostProfiles.delete(change.profileId);
       }
     }
@@ -318,10 +321,6 @@ async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
     for (const hostId of runtimeHostScopes.keys()) {
       if (authoritativeHostIds.has(hostId)) continue;
       runtimeHostScopes.delete(hostId);
-    }
-    for (const hostId of runtimeHostSessionCache.keys()) {
-      if (authoritativeHostIds.has(hostId)) continue;
-      runtimeHostSessionCache.delete(hostId);
     }
     return readyScopes;
   }
@@ -772,29 +771,26 @@ async function listDesktopSessions(
       'sessions:list',
       parent.scope,
       { ...filter, subagentParentSessionId: parent.sessionId },
-    ) as SessionSummary[];
+    ) as SessionCatalogSummary[];
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
   const scopes = await runtimeHostScopeList();
-  const settled = await Promise.allSettled(
+  const groups = await Promise.all(
     scopes.map(async (scope) => {
-      const sessions = await ipcRenderer.invoke('sessions:list', scope, filter) as SessionSummary[];
-      const projected = sessions.map((session) => projectSessionSummary(scope, session));
-      if (!filter) runtimeHostSessionCache.set(scope.hostId, projected);
-      return projected;
+      const sessions = await ipcRenderer.invoke(
+        'sessions:list',
+        scope,
+        filter,
+      ) as SessionCatalogSummary[];
+      return sessions.map((session) => projectSessionSummary(scope, session));
     }),
   );
-  const groups = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-  if (groups.length === 0) {
-    throw settled.find((result) => result.status === 'rejected')?.reason ??
-      new Error('No Runtime Host is available');
-  }
-  const sessions = filter
-    ? groups.flat()
-    : [...runtimeHostSessionCache.values()].flat();
-  return sessions.sort(
-    (left, right) => (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0),
-  );
+  return groups.flat().sort((left, right) => {
+    if (left.activityAt === undefined || right.activityAt === undefined) {
+      throw new Error('Runtime Host Session Catalog activity is unavailable');
+    }
+    return right.activityAt - left.activityAt || left.id.localeCompare(right.id);
+  });
 }
 
 function sendActiveRuntimeHost(channel: string, ...args: unknown[]): void {

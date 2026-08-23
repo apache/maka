@@ -23,7 +23,8 @@ import { isOrchestrationMode } from '@maka/core/orchestration';
 import { isPermissionMode } from '@maka/core/permission';
 import { isThinkingLevel } from '@maka/core/model-thinking';
 import { type CreateSessionRequestInput, type SessionListFilter } from '@maka/core/runtime-inputs';
-import { type SessionChangedEvent, type SessionChangedReason, type SessionSummary } from '@maka/core/session';
+import { type SessionChangedEvent, type SessionChangedReason, type SessionCatalogSummary } from '@maka/core/session';
+import { projectSessionCatalogSummary } from '@maka/runtime-host/client';
 import type {
   SessionCatalogProjection,
   SessionCreateInput,
@@ -56,7 +57,7 @@ type RuntimeHostSessionCatalogClient = Pick<
   | 'updateSessionMetadata'
 >;
 
-export interface DesktopHostSessionSummary extends SessionSummary {
+export interface DesktopHostSessionSummary extends SessionCatalogSummary {
   labelsTruncated: boolean;
 }
 
@@ -337,49 +338,8 @@ export function toDesktopHostSessionSummary(
   session: SessionCatalogProjection,
 ): DesktopHostSessionSummary {
   return {
-    id: session.id,
-    cwd: session.workspace.hostCwd,
-    ...(session.workspace.target.kind === 'project'
-      ? { projectId: session.workspace.target.projectId }
-      : {}),
-    name: session.name,
-    isFlagged: session.isFlagged,
-    isArchived: session.isArchived,
-    labels: [...session.labels],
+    ...projectSessionCatalogSummary(session),
     labelsTruncated: session.labelsTruncated,
-    hasUnread: session.hasUnread,
-    ...(session.lastMessageAt === undefined ? {} : { lastMessageAt: session.lastMessageAt }),
-    ...(session.lastMessagePreview === undefined
-      ? {}
-      : { lastMessagePreview: session.lastMessagePreview }),
-    status: session.status,
-    ...(session.liveRunState === undefined
-      ? {}
-      : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),
-    ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
-    ...(session.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: session.statusUpdatedAt }),
-    ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
-    ...(session.branchOfTurnId === undefined ? {} : { branchOfTurnId: session.branchOfTurnId }),
-    ...(session.subagent === undefined ? {} : { subagent: session.subagent }),
-    ...(session.revisionRootSessionId === undefined
-      ? {}
-      : { revisionRootSessionId: session.revisionRootSessionId }),
-    ...(session.revisionParentSessionId === undefined
-      ? {}
-      : { revisionParentSessionId: session.revisionParentSessionId }),
-    ...(session.revisionOfTurnId === undefined
-      ? {}
-      : { revisionOfTurnId: session.revisionOfTurnId }),
-    ...(session.revisionIndex === undefined ? {} : { revisionIndex: session.revisionIndex }),
-    ...(session.revisionState === undefined ? {} : { revisionState: session.revisionState }),
-    backend: session.backend,
-    llmConnectionSlug: session.llmConnectionSlug,
-    connectionLocked: session.connectionLocked,
-    model: session.model,
-    ...(session.thinkingLevel === undefined ? {} : { thinkingLevel: session.thinkingLevel }),
-    permissionMode: session.permissionMode,
-    collaborationMode: session.collaborationMode,
-    orchestrationMode: session.orchestrationMode,
   };
 }
 

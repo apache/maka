@@ -1076,7 +1076,7 @@ function session(cwd = "/workspace"): SessionCatalogProjection {
       hostCwd: cwd,
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: "Session",
     isFlagged: false,
     isArchived: false,
