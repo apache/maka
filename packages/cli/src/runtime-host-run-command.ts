@@ -256,11 +256,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   #closed = false;
   readonly #interactions: NonInteractiveInteractionController;
   #graphAdmissionTurnIds = new Set<string>();
-  #latestTranscriptReplacement: StoredMessage[] | undefined;
+  #latestTranscriptReplacement: readonly StoredMessage[] | undefined;
   readonly #graphTerminalWaiters = new Map<
     string,
     Set<{
-      resolve(messages: StoredMessage[]): void;
+      resolve(messages: readonly StoredMessage[]): void;
       reject(error: Error): void;
       timer: ReturnType<typeof setTimeout>;
     }>
@@ -398,7 +398,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       throw new Error(`Agent Graph ${terminalStatus}`);
     }
     await this.#interactions.settle();
-    let messages = await this.#driver.readMessages();
+    let messages: readonly StoredMessage[] = await this.#driver.readMessages();
     let graphTurnId = lastNewGraphSupervisorTurnId(messages, this.#graphAdmissionTurnIds);
     let outcome = graphTurnId ? outcomeFromStoredTurn(messages, graphTurnId) : undefined;
     if (graphTurnId && !outcome) {
@@ -472,14 +472,13 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   }
 
   #acceptGraphTranscript(messages: readonly StoredMessage[]): void {
-    const replacement = messages.map((message) => structuredClone(message));
-    this.#latestTranscriptReplacement = replacement;
+    this.#latestTranscriptReplacement = messages;
     for (const [turnId, waiters] of this.#graphTerminalWaiters) {
-      if (!outcomeFromStoredTurn(replacement, turnId)) continue;
+      if (!outcomeFromStoredTurn(messages, turnId)) continue;
       this.#graphTerminalWaiters.delete(turnId);
       for (const waiter of waiters) {
         clearTimeout(waiter.timer);
-        waiter.resolve(replacement);
+        waiter.resolve(messages);
       }
     }
   }
@@ -494,12 +493,12 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     active.outcome = classifierFromStoredTurn(messages, turnId, active.runId);
   }
 
-  #waitForGraphTurnTerminal(turnId: string): Promise<StoredMessage[]> {
+  #waitForGraphTurnTerminal(turnId: string): Promise<readonly StoredMessage[]> {
     if (this.#closed) return Promise.reject(new Error('Runtime Host run context closed'));
     if (this.#stopRequested) return Promise.reject(new Error('Agent Graph wait was cancelled'));
     const latest = this.#latestTranscriptReplacement;
     if (latest && outcomeFromStoredTurn(latest, turnId)) return Promise.resolve(latest);
-    return new Promise<StoredMessage[]>((resolve, reject) => {
+    return new Promise<readonly StoredMessage[]>((resolve, reject) => {
       let waiters = this.#graphTerminalWaiters.get(turnId);
       if (!waiters) {
         waiters = new Set();
