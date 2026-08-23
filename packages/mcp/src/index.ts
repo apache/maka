@@ -2293,9 +2293,42 @@ function descriptorFromTool(serverId: string, tool: Tool): McpToolDescriptor {
     serverId,
     name: tool.name,
     description: tool.description,
-    inputSchema: structuredClone(tool.inputSchema),
+    inputSchema: normalizeToolInputSchema(tool.inputSchema),
     annotations: tool.annotations ? { ...tool.annotations } : undefined,
   };
+}
+
+function normalizeToolInputSchema(
+  inputSchema: Tool['inputSchema'],
+): McpToolDescriptor['inputSchema'] {
+  const root = structuredClone(inputSchema);
+  const visit = (value: unknown): void => {
+    if (!isRecord(value)) return;
+    delete value.$schema;
+    delete value.$comment;
+
+    for (const key of ['properties', '$defs', 'definitions'] as const) {
+      const entries = value[key];
+      if (!isRecord(entries)) continue;
+      for (const nested of Object.values(entries)) visit(nested);
+    }
+    for (const key of ['additionalProperties', 'propertyNames'] as const) {
+      visit(value[key]);
+    }
+    const items = value.items;
+    if (Array.isArray(items)) {
+      for (const nested of items) visit(nested);
+    } else {
+      visit(items);
+    }
+    for (const key of ['allOf', 'anyOf', 'oneOf'] as const) {
+      const schemas = value[key];
+      if (!Array.isArray(schemas)) continue;
+      for (const nested of schemas) visit(nested);
+    }
+  };
+  visit(root);
+  return root;
 }
 
 function normalizeContent(value: unknown): McpContentBlock {

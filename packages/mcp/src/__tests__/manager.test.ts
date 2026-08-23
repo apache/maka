@@ -1008,6 +1008,17 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
   });
 
   describe('McpClientManager stdio E2E', () => {
+    test('drops non-semantic JSON Schema annotations from discovered tools', async () => {
+      const manager = createManager();
+      await manager.sync(fixtureConfig(['--schema-annotations']));
+
+      assert.deepEqual(manager.status('fixture')?.tools[0]?.inputSchema, {
+        $id: 'https://example.com/annotated.schema.json',
+        type: 'object',
+        properties: { value: { type: 'string' } },
+      });
+    });
+
     test('discovers paginated tools and calls structured content', async () => {
       const manager = createManager();
       await manager.sync(fixtureConfig());
