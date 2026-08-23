@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
 const workflowPath = join(import.meta.dirname, '../.github/workflows/asf-source-candidate.yml');
+const ciWorkflowPath = join(import.meta.dirname, '../.github/workflows/ci.yml');
 
 describe('ASF source workflow policy', () => {
   test('binds the candidate handoff to the dispatched commit and artifact', () => {
@@ -57,6 +58,24 @@ describe('ASF source workflow policy', () => {
     assert.match(
       workflow,
       /Audit source headers in the extracted candidate\n\s+working-directory: candidate-source\n/,
+    );
+  });
+});
+
+describe('ASF source CI policy', () => {
+  test('keeps the header audit install-free and runs generation checks after installation', () => {
+    const workflow = readFileSync(ciWorkflowPath, 'utf8');
+    const headerIndex = workflow.indexOf('name: Check ASF source headers');
+    const installIndex = workflow.indexOf('name: Install dependencies');
+    const sourceGateIndex = workflow.indexOf('name: Verify ASF source release mechanics');
+    assert.notEqual(headerIndex, -1);
+    assert.notEqual(installIndex, -1);
+    assert.notEqual(sourceGateIndex, -1);
+    assert.ok(headerIndex < installIndex);
+    assert.ok(installIndex < sourceGateIndex);
+    assert.match(
+      workflow,
+      /name: Install dependencies\n\s+if: .*steps\.plan\.outputs\.asf_source == 'true'/,
     );
   });
 });

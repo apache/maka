@@ -106,7 +106,6 @@ export const PROVIDERS = {
 };
 
 export async function main(argv = process.argv) {
-  const inputPath = option('--input', argv);
   const refreshInputPath = option('--refresh-input', argv);
   const snapshotPath = option('--snapshot', argv) ?? DEFAULT_SNAPSHOT;
   const outputPath = option('--output', argv) ?? DEFAULT_OUTPUT;
@@ -115,14 +114,11 @@ export async function main(argv = process.argv) {
     (outputPath === DEFAULT_OUTPUT ? DEFAULT_PRICING_OUTPUT : undefined);
   const refresh = argv.includes('--refresh');
   const check = argv.includes('--check');
-  if (inputPath && refresh) throw new Error('--input and --refresh are mutually exclusive');
   if (refreshInputPath && !refresh) throw new Error('--refresh-input requires --refresh');
 
-  const source = inputPath
-    ? await loadDirectInput(inputPath)
-    : refresh
-      ? await refreshSnapshot(snapshotPath, refreshInputPath)
-      : await loadSnapshot(snapshotPath);
+  const source = refresh
+    ? await refreshSnapshot(snapshotPath, refreshInputPath)
+    : await loadSnapshot(snapshotPath);
   const {
     metadata: generated,
     pricing: generatedPricing,
@@ -225,16 +221,6 @@ function buildProjection(catalog) {
   }
 
   return { metadata, pricing, providerFacts, providerOverrides };
-}
-
-async function loadDirectInput(inputPath) {
-  const sourceText = await readFile(inputPath, 'utf8');
-  const projection = buildProjection(JSON.parse(sourceText));
-  return {
-    projection,
-    snapshotDigest: sha256(JSON.stringify(projection)),
-    snapshotLabel: inputPath,
-  };
 }
 
 async function refreshSnapshot(snapshotPath, refreshInputPath) {

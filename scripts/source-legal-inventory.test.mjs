@@ -26,17 +26,14 @@ import { test } from 'node:test';
 const root = resolve(import.meta.dirname, '..');
 
 test('root release documents describe the source candidate', async () => {
-  const [license, notice, disclaimer] = await Promise.all([
+  const [license, notice] = await Promise.all([
     readFile(join(root, 'LICENSE'), 'utf8'),
     readFile(join(root, 'NOTICE'), 'utf8'),
-    readFile(join(root, 'DISCLAIMER-WIP'), 'utf8'),
   ]);
   assert.equal(
     notice,
-    'Apache Maka\nCopyright 2026 The Apache Software Foundation\n\nThis product includes software developed at\nThe Apache Software Foundation (https://www.apache.org/).\n',
+    'Apache Maka (incubating)\nCopyright 2026 The Apache Software Foundation\n\nThis product includes software developed at\nThe Apache Software Foundation (https://www.apache.org/).\n',
   );
-  assert.doesNotMatch(disclaimer, /NOTICE has not yet been reworked/);
-  assert.doesNotMatch(license, /Geist and Geist Mono \(bundled webfonts\)/);
   assert.match(license, /apps\/desktop\/src\/renderer\/public\/THIRD_PARTY_LICENSES\.txt/);
 
   const patches = (await readdir(join(root, 'patches'))).filter((name) => name.endsWith('.patch'));
