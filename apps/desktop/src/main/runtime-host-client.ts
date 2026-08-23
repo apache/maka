@@ -89,8 +89,6 @@ import {
   PROJECT_DIRECTORY_MAX_ENTRIES,
   type ProjectDirectoryEntry,
   type ProjectDirectoryRoot,
-  type QueueRetractInput,
-  type QueueRetractResult,
   type QueueEntriesReorderInput,
   type QueueEntriesReorderResult,
   type QueueEntryPromoteInput,
@@ -1057,15 +1055,6 @@ export class DesktopRuntimeHostClient {
     input: Omit<TurnMessageSubmitInput, "originHostEpoch">,
   ): Promise<TurnMessageSubmitResult> {
     return this.request("turn.message.submit", {
-      ...input,
-      originHostEpoch: this.connection.hostEpoch,
-    });
-  }
-
-  retractQueue(
-    input: Omit<QueueRetractInput, "originHostEpoch">,
-  ): Promise<QueueRetractResult> {
-    return this.request("queue.retract", {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
     });

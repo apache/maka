@@ -678,7 +678,6 @@ export interface MakaBridge {
       attachments: import('@maka/core/events').AttachmentRef[];
       inlineReferences: import('@maka/core/events').InlineReference[];
     }>;
-    retractQueue(sessionId: string): Promise<MessageContent>;
     retractQueueEntry(sessionId: string, entryId: string): Promise<MessageContent>;
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
     reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;

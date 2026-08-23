@@ -2009,9 +2009,6 @@ function AppShellContent({
     const followUpAtSubmit = !slashCommand
       ? resolveFollowUpModeAtSubmit({
           requestedMode: metadata?.followUpMode,
-          // Mid-turn the composer only queues; Shift+Enter carries the one-shot
-          // steer as the requested mode.
-          defaultMode: 'queue',
           hasActiveTurn: hasActiveTurnAtSubmit({ liveTurn, runningTurnIds }),
         })
       : undefined;

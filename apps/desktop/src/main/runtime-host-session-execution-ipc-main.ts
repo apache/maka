@@ -22,7 +22,6 @@ import type { IpcMainInvokeEvent } from "electron";
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
-import { aggregateMessageContents } from '@maka/core/events';
 import {
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -73,7 +72,6 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "queryTurnResume"
   | "readExecutionBoundary"
   | "regenerateTurn"
-  | "retractQueue"
   | "retractQueueEntry"
   | "promoteQueueEntry"
   | "reorderQueueEntries"
@@ -442,13 +440,6 @@ export function registerRuntimeHostSessionExecutionIpc(
       };
     },
   );
-  ipcMain.handle("sessions:retractQueue", async (_event, sessionId: string) => {
-    const result = await deps.client.retractQueue({
-      sessionId,
-      retractId: newId(),
-    });
-    return aggregateMessageContents(result.retracted.map((entry) => entry.content));
-  });
   ipcMain.handle(
     "sessions:retractQueueEntry",
     async (_event, sessionId: string, entryId: unknown) => {

@@ -393,7 +393,16 @@ test('treats empty configuration patches as read-only lookups', async () => {
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
     { disposition: 'steering', queueRevision: 2 },
-    { queueRevision: 3, retracted: [] },
+    {
+      queueRevision: 3,
+      retracted: {
+        entryId: 'entry-1',
+        messageId: 'message-1',
+        content: { text: 'Steer it' },
+        placement: 'current_turn',
+        state: 'retracted',
+      },
+    },
     {
       queueRevision: 4,
       retracted: [],
@@ -414,7 +423,11 @@ test('binds message controls to the current Host Epoch', async () => {
     content: { text: 'Steer it' },
     placement: 'current_turn',
   });
-  await client.retractQueue({ sessionId: 'session-1', retractId: 'retract-1' });
+  await client.retractQueueEntry({
+    sessionId: 'session-1',
+    entryId: 'entry-1',
+    retractId: 'retract-1',
+  });
   await client.interruptTurn({
     sessionId: 'session-1',
     interruptId: 'interrupt-1',
@@ -434,9 +447,10 @@ test('binds message controls to the current Host Epoch', async () => {
       },
     },
     {
-      operation: 'queue.retract',
+      operation: 'queue.entry.retract',
       input: {
         sessionId: 'session-1',
+        entryId: 'entry-1',
         retractId: 'retract-1',
         originHostEpoch: 'host-current',
       },
