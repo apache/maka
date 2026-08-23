@@ -1033,6 +1033,7 @@ dependencies = [
  "gix",
  "serde",
  "serde_json",
+ "unicode-normalization",
 ]
 
 [[package]]
