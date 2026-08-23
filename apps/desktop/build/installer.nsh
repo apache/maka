@@ -614,8 +614,13 @@ FunctionEnd
 
 !macro customInstall
   # Success tail: the upgrade completed, so the backup and any aside residue
-  # are redundant. Best effort -- a held handle must not fail a completed
-  # install.
+  # are redundant. Invalidate the completeness marker before the best-effort
+  # tree removal: if a scanner holds an application file, RMDir may leave the
+  # old backup behind, and a later upgrade must not mistake that residue for a
+  # live recovery source from the newly installed version.
+  ClearErrors
+  Delete "$makaBackupDir\${MAKA_BACKUP_MARKER}"
+  Delete "$makaBackupDir\${MAKA_RECOVERY_README}"
   ClearErrors
   ${If} ${FileExists} "$makaBackupDir\*.*"
     RMDir /r "$makaBackupDir"
