@@ -361,7 +361,7 @@ export function applyLiveTurnEvent(
       ...(event.intent !== undefined ? { intent: event.intent } : {}),
       ...projectToolActivityIdentity(event),
       ...(event.stepId !== undefined ? { stepId: event.stepId } : {}),
-      status: 'pending',
+      status: 'running',
       args: projectToolActivityArgs(event.toolName, event.args),
     };
     const existingTool = existingToolStep?.tools.find((candidate) => candidate.toolUseId === event.toolUseId);
@@ -390,7 +390,7 @@ export function applyLiveTurnEvent(
     const tool: ToolActivityItem = {
       ...base,
       ...projectToolActivityIdentity(event),
-      status: base.status === 'pending' ? 'running' : base.status,
+      status: base.status,
       outputChunks: applied.chunks,
       outputTruncated: base.outputTruncated || applied.truncated,
     };
@@ -424,7 +424,7 @@ export function applyLiveTurnEvent(
     const toolIndex = step.tools.findIndex((candidate) => candidate.toolUseId === event.toolUseId);
     const base: ToolActivityItem = toolIndex >= 0
       ? step.tools[toolIndex]!
-      : { toolUseId: event.toolUseId, toolName: 'Tool', status: 'pending', args: undefined };
+      : { toolUseId: event.toolUseId, toolName: 'Tool', status: 'running', args: undefined };
     const tool: ToolActivityItem = {
       ...base,
       ...projectToolActivityIdentity(event),
@@ -441,7 +441,7 @@ export function applyLiveTurnEvent(
     const toolIndex = step.tools.findIndex((candidate) => candidate.toolUseId === event.toolUseId);
     const base: ToolActivityItem = toolIndex >= 0
       ? step.tools[toolIndex]!
-      : { toolUseId: event.toolUseId, toolName: 'Tool', status: 'pending', args: undefined };
+      : { toolUseId: event.toolUseId, toolName: 'Tool', status: 'running', args: undefined };
     // RH live tool_result deliberately omits content (empty text). Do not wipe
     // mid-flight open-facts until a meaningful result or persisted merge arrives.
     const retainOpenFacts =

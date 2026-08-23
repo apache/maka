@@ -907,7 +907,6 @@ function transcriptToolStatus(status: ToolActivityStatus): MakaPiToolEntry['stat
       return 'error';
     case 'interrupted':
       return 'aborted';
-    case 'pending':
     case 'running':
       return 'running';
   }

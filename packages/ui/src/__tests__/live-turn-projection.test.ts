@@ -304,7 +304,7 @@ describe('applyLiveTurnEvent', () => {
       toolUseId: 'nested-1',
       toolName: 'Read',
       stepId: 'step-1',
-      status: 'pending',
+      status: 'running',
       args: { path: 'README.md' },
       origin: 'code_mode',
       modelVisibility: 'hidden',
