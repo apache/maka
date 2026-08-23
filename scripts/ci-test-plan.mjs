@@ -86,12 +86,34 @@ const CLI_PACKAGE_FILES = new Set([
 
 const ASF_SOURCE_FILES = new Set([
   '.github/workflows/asf-source-candidate.yml',
+  'DISCLAIMER-WIP',
+  'LICENSE',
+  'NOTICE',
+  'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',
+  'biome.jsonc',
+  'package.json',
+  'packages/core/src/model-metadata.generated.ts',
+  'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
+  'packages/runtime/src/telemetry/model-pricing.generated.ts',
   'scripts/asf-license-headers.mjs',
   'scripts/asf-license-headers.test.mjs',
   'scripts/asf-source-release.mjs',
   'scripts/asf-source-release.test.mjs',
   'scripts/asf-source-workflow-policy.test.mjs',
+  'scripts/model-metadata/models-dev-api.snapshot.json',
+  'scripts/source-legal-inventory.test.mjs',
+  'scripts/sync-model-metadata.mjs',
+  'scripts/sync-model-metadata.test.mjs',
 ]);
+
+function isAsfSourcePath(path) {
+  return (
+    ASF_SOURCE_FILES.has(path) ||
+    path.startsWith('patches/') ||
+    path.startsWith('apps/desktop/resources/licenses/renderer/') ||
+    path.startsWith('apps/desktop/src/renderer/assets/provider-brands/')
+  );
+}
 
 const CLI_PACKAGE_WORKSPACES = [
   'packages/cli',
@@ -375,7 +397,7 @@ export function planTests(changedFiles, options = {}) {
 
   const cliPackage = files.some((path) => isCliPackagePath(path));
   return {
-    asfSource: files.some((path) => ASF_SOURCE_FILES.has(path)),
+    asfSource: files.some((path) => isAsfSourcePath(path)),
     astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
     cliPackage,
     code,

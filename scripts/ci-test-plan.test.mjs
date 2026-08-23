@@ -107,7 +107,24 @@ test('release metadata selects only the gate that consumes it', () => {
     const plan = planTests([path], { graph });
     assert.equal(plan.cliPackage, true, path);
     assert.equal(plan.releaseContract, true, path);
-    assert.equal(plan.asfSource, false, path);
+    assert.equal(plan.asfSource, true, path);
+  }
+});
+
+test('source legal authority and generated provenance select the ASF source gate', () => {
+  for (const path of [
+    'DISCLAIMER-WIP',
+    'biome.jsonc',
+    'patches/node-pty+1.2.0-beta.15.patch',
+    'apps/desktop/src/renderer/assets/provider-brands/example.svg',
+    'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
+    'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
+    'packages/core/src/model-metadata.generated.ts',
+    'packages/runtime/src/telemetry/model-pricing.generated.ts',
+    'scripts/model-metadata/models-dev-api.snapshot.json',
+    'scripts/sync-model-metadata.mjs',
+  ]) {
+    assert.equal(planTests([path], { graph }).asfSource, true, path);
   }
 });
 
