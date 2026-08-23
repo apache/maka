@@ -439,7 +439,7 @@ async function createReleasePackage(base: string, version: string): Promise<stri
 }
 
 function serviceResult(
-  action: RuntimeHostManagedServiceResult['action'],
+  action: Exclude<RuntimeHostManagedServiceResult['action'], 'retire'>,
   config: RuntimeHostManagedServiceConfig | null,
   installedVersion: string | null,
 ): RuntimeHostManagedServiceResult {

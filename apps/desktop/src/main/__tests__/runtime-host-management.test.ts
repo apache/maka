@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { runtimeHostAccessCredentialFingerprint } from '@maka/runtime-host/operator';
+import {
+  runtimeHostAccessCredentialFingerprint,
+  type RuntimeHostServiceManagementFrame,
+} from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostManagement } from '../runtime-host-management.js';
 import type {
   DesktopRuntimeHostSshAccessInput,
@@ -438,11 +441,10 @@ test('rechecks uninstall intent before retrying the remote service', async () =>
 function serviceResult(
   action: DesktopRuntimeHostSshManagementInput['action'],
   operatorAccess = false,
-) {
-  return {
+): Extract<RuntimeHostServiceManagementFrame, { kind: 'result' }> {
+  const result = {
     schemaVersion: 1 as const,
     kind: 'result' as const,
-    action,
     ...(operatorAccess
       ? { operatorCapabilities: ['access-management-v1' as const] }
       : {}),
@@ -457,6 +459,9 @@ function serviceResult(
       projectDirectoryRoots: [],
     },
   };
+  return action === 'retire'
+    ? { ...result, action, retirement: { kind: 'stopped' } }
+    : { ...result, action };
 }
 
 function accessCredential(

@@ -572,6 +572,7 @@ describe('managed Runtime Host service', () => {
             'Persistent user services are disabled',
           );
         },
+        withLifecycleLock: async (_root, operation) => operation(),
         createBackend: createUnusedBackend,
         writeOutput: (value) => {
           output += value;
@@ -592,6 +593,7 @@ describe('managed Runtime Host service', () => {
 
   it('emits bounded retirement facts in framed output', async () => {
     let output = '';
+    let lifecycleLocked = false;
     const exitCode = await runManagedRuntimeHostServiceCli(
       {
         action: 'retire',
@@ -603,22 +605,33 @@ describe('managed Runtime Host service', () => {
         cliPath: '/opt/maka/cli.js',
       },
       {
-        manage: async () => ({
-          schemaVersion: 1,
-          action: 'retire',
-          service: {
-            manager: 'systemd_user',
-            installed: true,
-            enabled: true,
-            active: false,
-            state: 'stopped',
-            pid: null,
-            lastExitCode: 0,
-            installedVersion: '1.2.3',
-            config: null,
-          },
-          retirement: { kind: 'retired', hostEpoch: 'host-1', pid: 42 },
-        }),
+        manage: async () => {
+          assert.equal(lifecycleLocked, true);
+          return {
+            schemaVersion: 1,
+            action: 'retire',
+            service: {
+              manager: 'systemd_user',
+              installed: true,
+              enabled: true,
+              active: false,
+              state: 'stopped',
+              pid: null,
+              lastExitCode: 0,
+              installedVersion: '1.2.3',
+              config: null,
+            },
+            retirement: { kind: 'retired', hostEpoch: 'host-1', pid: 42 },
+          };
+        },
+        withLifecycleLock: async (_root, operation) => {
+          lifecycleLocked = true;
+          try {
+            return await operation();
+          } finally {
+            lifecycleLocked = false;
+          }
+        },
         createBackend: createUnusedBackend,
         writeOutput: (value) => {
           output += value;
@@ -628,11 +641,14 @@ describe('managed Runtime Host service', () => {
     assert.equal(exitCode, 0);
     const frame = decodeRuntimeHostServiceManagementFrame(output);
     assert.equal(frame?.kind, 'result');
-    assert.deepEqual(frame?.kind === 'result' ? frame.retirement : undefined, {
-      kind: 'retired',
-      hostEpoch: 'host-1',
-      pid: 42,
-    });
+    assert.deepEqual(
+      frame?.kind === 'result' && frame.action === 'retire' ? frame.retirement : null,
+      {
+        kind: 'retired',
+        hostEpoch: 'host-1',
+        pid: 42,
+      },
+    );
   });
 
   it('projects requested operator capabilities without launch configuration', async (t) => {
@@ -803,7 +819,7 @@ describe('managed Runtime Host service', () => {
     const root = await resolveStorageRoot({ path: join(base, 'state'), kind: 'interactive' });
     const cliPath = join(base, 'cli.js');
     await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
-    let active = true;
+    let serviceState: 'running' | 'starting' | 'stopped' = 'running';
     let stops = 0;
     const backend: RuntimeHostServiceBackend = {
       ...createReadyBackend(),
@@ -811,14 +827,14 @@ describe('managed Runtime Host service', () => {
         manager: 'systemd_user',
         installed: true,
         enabled: true,
-        active,
-        state: active ? ('running' as const) : ('stopped' as const),
-        pid: active ? 42 : null,
+        active: serviceState === 'running',
+        state: serviceState,
+        pid: serviceState === 'running' ? 42 : null,
         lastExitCode: 0,
       }),
       stop: async () => {
         stops += 1;
-        active = false;
+        serviceState = 'stopped';
       },
     };
     const common = {
@@ -835,19 +851,16 @@ describe('managed Runtime Host service', () => {
       rootPath: root.canonicalPath,
       rootId: root.rootId,
     } as const;
-    let preparations = 0;
     const deps = {
-      prepareRetirement: async (_config: RuntimeHostManagedServiceConfig, allow: boolean) => {
-        preparations += 1;
+      prepareRetirement: async (
+        _config: RuntimeHostManagedServiceConfig,
+        expectedPid: number,
+        allow: boolean,
+      ) => {
+        assert.equal(expectedPid, 42);
         return allow
           ? ({ kind: 'prepared', hostEpoch: 'host-1', pid: 42 } as const)
-          : ({
-              kind: 'active_tasks',
-              blockers: {
-                activeOperations: 0,
-                residencies: [{ label: 'scheduled-task', count: 1 }],
-              },
-            } as const);
+          : ({ kind: 'active_tasks' } as const);
       },
     } as const;
 
@@ -856,13 +869,7 @@ describe('managed Runtime Host service', () => {
       backend,
       deps,
     );
-    assert.deepEqual(blocked.retirement, {
-      kind: 'active_tasks',
-      blockers: {
-        activeOperations: 0,
-        residencies: [{ label: 'scheduled-task', count: 1 }],
-      },
-    });
+    assert.deepEqual(blocked.retirement, { kind: 'active_tasks' });
     assert.equal(stops, 0);
 
     const retired = await manageRuntimeHostService(
@@ -891,18 +898,14 @@ describe('managed Runtime Host service', () => {
     );
     await conflictingOwner.close();
 
-    const repeated = await manageRuntimeHostService(
+    serviceState = 'starting';
+    const starting = await manageRuntimeHostService(
       { ...common, action: 'retire', expectedTarget },
       backend,
       deps,
     );
-    assert.deepEqual(repeated.retirement, {
-      kind: 'retired',
-      hostEpoch: null,
-      pid: null,
-    });
-    assert.equal(preparations, 2);
-    assert.equal(stops, 1);
+    assert.deepEqual(starting.retirement, { kind: 'stopped' });
+    assert.equal(serviceState, 'stopped');
   });
 
   it('restores the deployed service when the replacement never becomes ready', async (t) => {

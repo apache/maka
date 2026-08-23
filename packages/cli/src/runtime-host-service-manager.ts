@@ -35,6 +35,7 @@ import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
   resolveExistingStorageRoot,
   tryAcquireInteractiveRootOwner,
+  type StorageRootCapability,
 } from '@maka/storage/root-authority';
 import {
   isRuntimeHostManagedDeploymentCli,
@@ -116,26 +117,30 @@ export type RuntimeHostManagedServiceAction =
   | 'uninstall';
 
 export type RuntimeHostRetirementResult =
-  | { readonly kind: 'active_tasks'; readonly blockers: RuntimeHostRetirementBlockers }
+  | { readonly kind: 'active_tasks' }
   | {
       readonly kind: 'retired';
-      readonly hostEpoch: string | null;
-      readonly pid: number | null;
-    };
+      readonly hostEpoch: string;
+      readonly pid: number;
+    }
+  | { readonly kind: 'stopped' };
 
-export interface RuntimeHostRetirementBlockers {
-  readonly activeOperations: number;
-  readonly residencies: readonly { readonly label: string; readonly count: number }[];
-}
-
-export interface RuntimeHostManagedServiceResult {
+interface RuntimeHostManagedServiceResultBase {
   readonly schemaVersion: 1;
-  readonly action: RuntimeHostManagedServiceAction;
   readonly service: RuntimeHostManagedServiceStatus;
-  readonly retirement?: RuntimeHostRetirementResult;
   readonly retainedStateRoot?: string;
   readonly logs?: string;
 }
+
+export type RuntimeHostManagedServiceResult =
+  | (RuntimeHostManagedServiceResultBase & {
+      readonly action: 'retire';
+      readonly retirement: RuntimeHostRetirementResult;
+    })
+  | (RuntimeHostManagedServiceResultBase & {
+      readonly action: Exclude<RuntimeHostManagedServiceAction, 'retire'>;
+      readonly retirement?: never;
+    });
 
 export interface RuntimeHostManagedServiceInput {
   readonly action: RuntimeHostManagedServiceAction;
@@ -172,12 +177,12 @@ interface RuntimeHostServiceManagerDeps {
   ) => Promise<void>;
   readonly prepareRetirement: (
     config: RuntimeHostManagedServiceConfig,
+    expectedPid: number,
     allowInterruptActiveTasks: boolean,
   ) => Promise<
-    | { readonly kind: 'active_tasks'; readonly blockers: RuntimeHostRetirementBlockers }
+    | { readonly kind: 'active_tasks' }
     | { readonly kind: 'prepared'; readonly hostEpoch: string; readonly pid: number }
   >;
-  readonly verifyRootReleased: (rootPath: string, expectedRootId: string) => Promise<void>;
   readonly environment: NodeJS.ProcessEnv;
   readonly homeDir: string;
 }
@@ -212,7 +217,6 @@ export async function manageRuntimeHostService(
     allocateLoopbackPort,
     waitForReady: waitForManagedRuntimeHostReady,
     prepareRetirement: prepareRuntimeHostRetirement,
-    verifyRootReleased: verifyRuntimeHostRootReleased,
     environment: process.env,
     homeDir: homedir(),
     ...overrides,
@@ -287,10 +291,10 @@ async function manageRuntimeHostServiceLocked(
   if (input.expectedTarget) assertExpectedServiceIdentity(serviceId, input.expectedTarget);
   if (input.action === 'install') {
     const previous = await readServiceConfigForRepair(configPath);
-    const expectedRootPath = await resolveExpectedServiceRoot(previous, input);
+    const expectedRoot = await resolveExpectedServiceRoot(previous, input);
     await backend.preflightInstall();
     const config = await prepareServiceConfig(
-      expectedRootPath ? { ...input, rootPath: expectedRootPath } : input,
+      expectedRoot ? { ...input, rootPath: expectedRoot.canonicalPath } : input,
       previous,
       deps,
     );
@@ -319,11 +323,10 @@ async function manageRuntimeHostServiceLocked(
   if (input.action === 'uninstall') {
     const { config: before, invalid: invalidConfig } =
       await readServiceConfigForUninstall(configPath);
-    const serviceStateAlreadyRemoved = before === null && !invalidConfig;
-    const expectedRootPath =
-      serviceStateAlreadyRemoved && input.expectedTarget
+    const retainedStateRoot =
+      before === null && !invalidConfig && input.expectedTarget
         ? input.expectedTarget.rootPath
-        : await resolveExpectedServiceRoot(before, input);
+        : (await resolveExpectedServiceRoot(before, input))?.canonicalPath;
     const managedDeploymentRoot =
       before?.managedDeploymentRoot ??
       resolveRuntimeHostManagedDeploymentForCli(serviceId, input.cliPath);
@@ -347,7 +350,7 @@ async function manageRuntimeHostServiceLocked(
         `Runtime Host service still has managed state: ${service.state}`,
       );
     }
-    return result(input.action, service, before?.rootPath ?? expectedRootPath);
+    return result(input.action, service, before?.rootPath ?? retainedStateRoot);
   }
 
   if (input.action === 'logs') {
@@ -364,8 +367,8 @@ async function manageRuntimeHostServiceLocked(
       );
     }
     const service = await readServiceStatus(configPath, backend);
-    const rootPath = await resolveExpectedServiceRoot(service.config, input);
-    if (!service.installed || !service.config || !rootPath) {
+    const root = await resolveExpectedServiceRoot(service.config, input);
+    if (!service.installed || !service.config || !root) {
       throw new RuntimeHostServiceManagerError(
         'not_installed',
         'Runtime Host service is not installed',
@@ -373,33 +376,38 @@ async function manageRuntimeHostServiceLocked(
     }
     let prepared: { readonly hostEpoch: string; readonly pid: number } | undefined;
     if (service.active) {
+      if (service.pid === null) {
+        throw new RuntimeHostServiceManagerError(
+          'retirement_failed',
+          'Managed Runtime Host service did not report its process identity',
+        );
+      }
       const retirement = await deps.prepareRetirement(
         service.config,
+        service.pid,
         input.allowInterruptActiveTasks ?? false,
       );
       if (retirement.kind === 'active_tasks') {
         return { schemaVersion: 1, action: input.action, service, retirement };
       }
       prepared = retirement;
-      await backend.stop();
     }
+    await backend.stop();
     const stopped = await readServiceStatus(configPath, backend);
-    if (stopped.active) {
+    if (stopped.active || stopped.state !== 'stopped' || stopped.pid !== null) {
       throw new RuntimeHostServiceManagerError(
         'retirement_failed',
-        'Runtime Host service remained active after retirement',
+        'Runtime Host service did not reach a stable stopped state after retirement',
       );
     }
-    await deps.verifyRootReleased(rootPath, input.expectedTarget.rootId);
+    await verifyRuntimeHostRootReleased(root);
     return {
       schemaVersion: 1,
       action: input.action,
       service: stopped,
-      retirement: {
-        kind: 'retired',
-        hostEpoch: prepared?.hostEpoch ?? null,
-        pid: prepared?.pid ?? null,
-      },
+      retirement: prepared
+        ? { kind: 'retired', hostEpoch: prepared.hostEpoch, pid: prepared.pid }
+        : { kind: 'stopped' },
     };
   }
   const config = await readServiceConfig(configPath);
@@ -437,7 +445,7 @@ function assertExpectedServiceIdentity(
 async function resolveExpectedServiceRoot(
   config: RuntimeHostManagedServiceConfig | null,
   input: Pick<RuntimeHostManagedServiceInput, 'expectedTarget'>,
-): Promise<string | undefined> {
+): Promise<StorageRootCapability<'interactive'> | undefined> {
   if (!input.expectedTarget) return undefined;
   try {
     const root = await resolveExistingStorageRoot({
@@ -448,7 +456,7 @@ async function resolveExpectedServiceRoot(
     if (config && resolve(config.rootPath) !== root.canonicalPath) {
       throw new Error('The service config points to a different State Root path');
     }
-    return root.canonicalPath;
+    return root;
   } catch (error) {
     throw new RuntimeHostServiceManagerError(
       'target_mismatch',
@@ -840,9 +848,10 @@ async function waitForManagedRuntimeHostReady(
 
 async function prepareRuntimeHostRetirement(
   config: RuntimeHostManagedServiceConfig,
+  expectedPid: number,
   allowInterruptActiveTasks: boolean,
 ): Promise<
-  | { readonly kind: 'active_tasks'; readonly blockers: RuntimeHostRetirementBlockers }
+  | { readonly kind: 'active_tasks' }
   | { readonly kind: 'prepared'; readonly hostEpoch: string; readonly pid: number }
 > {
   const connected = await connectExistingRuntimeHost({
@@ -864,18 +873,24 @@ async function prepareRuntimeHostRetirement(
   const hostEpoch = connected.connection.hostEpoch;
   try {
     const diagnostics = await connected.connection.queryHostDiagnostics();
+    if (diagnostics.pid !== expectedPid) {
+      throw new RuntimeHostServiceManagerError(
+        'retirement_failed',
+        'The State Root is owned by a different Runtime Host process',
+      );
+    }
     const prepared = await connected.connection.request('host.upgrade.prepare', {
       expectedHostEpoch: hostEpoch,
       allowInterruptActiveTasks,
     });
-    if (prepared.kind === 'prepared') return { ...prepared, hostEpoch };
-    return {
-      kind: 'active_tasks',
-      blockers: {
-        activeOperations: Math.max(0, diagnostics.activeOperations - 1),
-        residencies: diagnostics.residencies.filter(({ label }) => label !== 'process-retention'),
-      },
-    };
+    if (prepared.kind === 'active_tasks') return prepared;
+    if (prepared.pid !== expectedPid) {
+      throw new RuntimeHostServiceManagerError(
+        'retirement_failed',
+        'Runtime Host process identity changed while preparing retirement',
+      );
+    }
+    return { ...prepared, hostEpoch };
   } catch (error) {
     throw new RuntimeHostServiceManagerError(
       'retirement_failed',
@@ -888,16 +903,10 @@ async function prepareRuntimeHostRetirement(
 }
 
 async function verifyRuntimeHostRootReleased(
-  rootPath: string,
-  expectedRootId: string,
+  root: StorageRootCapability<'interactive'>,
 ): Promise<void> {
   try {
-    const capability = await resolveExistingStorageRoot({
-      path: rootPath,
-      kind: 'interactive',
-      expectedRootId,
-    });
-    const owner = await tryAcquireInteractiveRootOwner(capability);
+    const owner = await tryAcquireInteractiveRootOwner(root);
     if (!owner) {
       throw new Error('The State Root writer is still held');
     }
@@ -968,7 +977,7 @@ async function allocateLoopbackPort(): Promise<number> {
 }
 
 function result(
-  action: RuntimeHostManagedServiceAction,
+  action: Exclude<RuntimeHostManagedServiceAction, 'retire'>,
   service: RuntimeHostManagedServiceStatus,
   retainedStateRoot?: string,
   logs?: string,
