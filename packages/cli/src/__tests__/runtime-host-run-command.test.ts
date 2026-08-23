@@ -895,7 +895,7 @@ function runFixture(input: {
         if (input.graphMultiWakeRace) {
           queueMicrotask(() => {
             for (const listener of transcriptListeners) {
-              listener('session-created', 'turn-2', structuredClone(graphMessages()), 'terminal');
+              listener('session-created', 'turn-2', structuredClone(graphMessages()), 'reconcile');
             }
           });
         }
@@ -905,7 +905,7 @@ function runFixture(input: {
         queueMicrotask(() => {
           const terminal = multiWakeGraphMessages(true);
           for (const listener of transcriptListeners) {
-            listener('session-created', 'turn-3', structuredClone(terminal), 'terminal');
+            listener('session-created', 'turn-3', structuredClone(terminal), 'reconcile');
           }
         });
         return multiWakeGraphMessages(false);
@@ -918,7 +918,7 @@ function runFixture(input: {
       if (input.graphProjectionRace) {
         queueMicrotask(() => {
           for (const listener of transcriptListeners) {
-            listener('session-created', 'turn-2', structuredClone(messages), 'terminal');
+            listener('session-created', 'turn-2', structuredClone(messages), 'reconcile');
           }
         });
         return graphMessages(false);

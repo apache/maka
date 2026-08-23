@@ -134,7 +134,8 @@
     "./tool-result-record-schema": "./dist/tool-result-record-schema.js",
     "./tool-result-status": "./dist/tool-result-status.js",
     "./ui-locale": "./dist/ui-locale.js",
-    "./unified-diff": "./dist/unified-diff.js"
+    "./unified-diff": "./dist/unified-diff.js",
+    "./dev-single-instance": "./dist/dev-single-instance.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",

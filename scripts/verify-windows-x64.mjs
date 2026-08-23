@@ -235,7 +235,10 @@ export async function verifyPackagedWindowsApp(
   });
 
   step('smoking the packaged renderer');
-  await smokeRenderer(executable, { workingDirectory });
+  await smokeRenderer(executable, {
+    workingDirectory,
+    verifyMaximizeRestore: requiresCurrentContract,
+  });
 
   step('packaged app verified');
 }

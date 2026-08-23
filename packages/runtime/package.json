@@ -2,7 +2,7 @@
   "name": "@maka/runtime",
   "version": "0.1.0",
   "license": "Apache-2.0",
-  "description": "SessionManager, session sandbox boundaries, AiSdkBackend, materializer.",
+  "description": "SessionManager, session sandbox boundaries, and AiSdkBackend.",
   "type": "module",
   "private": true,
   "exports": {
@@ -19,7 +19,6 @@
     "./context-budget": "./dist/context-budget.js",
     "./test-connection": "./dist/test-connection.js",
     "./model-fetcher": "./dist/model-fetcher.js",
-    "./materializer": "./dist/materializer.js",
     "./session-manager": "./dist/session-manager.js",
     "./test-only/fake-backend": "./dist/test-only/fake-backend.js",
     "./test-only/observation-text-reader": "./dist/__tests__/observation-text-reader.js",

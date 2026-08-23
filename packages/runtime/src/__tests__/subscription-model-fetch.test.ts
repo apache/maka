@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { buildSubscriptionModelFetch } from '../subscription-model-fetch.js';
 
 describe('subscription model fetch', () => {
@@ -44,6 +45,7 @@ describe('subscription model fetch', () => {
       body: JSON.stringify({
         system: 'Use the Maka system prompt.',
         input: [{ role: 'user', content: 'hi' }],
+        parallel_tool_calls: true,
       }),
     });
 
@@ -55,6 +57,41 @@ describe('subscription model fetch', () => {
     assert.equal(body.store, false);
     assert.equal(body.parallel_tool_calls, true);
     assert.equal(body.text.verbosity, 'medium');
+  });
+
+  test('sends the resolved Codex parallel-tool-call default through the OpenAI SDK', async () => {
+    const connection = openAiCodexConnection();
+    let observedBody: Record<string, unknown> = {};
+    const modelFetch = buildSubscriptionModelFetch({
+      connection,
+      sessionId: 'session-parallel-tools',
+      modelId: connection.defaultModel,
+      fetchFn: async (_url, init) => {
+        observedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Response.json({
+          id: 'resp-1',
+          object: 'response',
+          model: connection.defaultModel,
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        });
+      },
+    });
+    assert.ok(modelFetch);
+    const model = getAIModel({
+      connection,
+      apiKey: codexToken('account-parallel-tools'),
+      modelId: connection.defaultModel,
+      fetch: modelFetch,
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      providerOptions: buildProviderOptions(connection, connection.defaultModel),
+    });
+
+    assert.equal(observedBody.parallel_tool_calls, true);
   });
 
   test('force-refreshes one Codex 401 without consuming the independent edge retry budget', async () => {

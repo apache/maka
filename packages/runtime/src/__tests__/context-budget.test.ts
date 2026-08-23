@@ -18,10 +18,12 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { applyRuntimeEventContextBudget } from '../context-budget.js';
 import { estimateRuntimeEventsTokens } from '../context-budget-helpers.js';
+import { buildHistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
 
 test('estimates only model-visible provider context', () => {
   const visible = textEvent('visible', 'visible context');
@@ -41,6 +43,56 @@ test('capacity policy keeps the canonical ledger until a checkpoint replaces it'
   assert.deepEqual(result?.events, events);
 });
 
+test('checkpoint replay uses the canonical ledger before stale tool results are pruned', () => {
+  const payload = 'large tool result '.repeat(200);
+  const serializedPayload = JSON.stringify(payload);
+  const coveredEvents = [
+    textEvent('user', 'inspect the result'),
+    toolCallEvent('call'),
+    toolResultEvent('result', payload),
+  ];
+  const tail = { ...textEvent('tail', 'newer history'), turnId: 'turn-2' };
+  const checkpoint = buildHistoryCompactCheckpoint({
+    sessionId: 'session-1',
+    coveredRuntimeEvents: coveredEvents,
+    charsPerToken: 1,
+    providerState: {
+      kind: 'openai_codex_remote_v2',
+      connectionSlug: 'codex',
+      modelId: 'gpt-test',
+      itemId: 'compact-item',
+      encryptedContent: 'encrypted',
+    },
+  });
+
+  const result = applyRuntimeEventContextBudget([...coveredEvents, tail], {
+    charsPerToken: 1,
+    staleToolResultPrune: {
+      enabled: true,
+      maxResultEstimatedTokens: 1,
+      minRecentTurnsFull: 0,
+      archiveRefs: [
+        {
+          runtimeEventId: 'result',
+          toolCallId: 'tool-call',
+          toolName: 'Bash',
+          artifactId: 'artifact-1',
+          bodySha256: createHash('sha256').update(serializedPayload).digest('hex'),
+          originalEstimatedTokens: serializedPayload.length,
+          originalBytes: Buffer.byteLength(serializedPayload, 'utf8'),
+          rewriteVersion: 1,
+          reason: 'stale_tool_result_pruned_before_compact',
+        },
+      ],
+    },
+    historyCompact: { enabled: true, checkpoint },
+  });
+
+  assert.equal(result?.historyCompactCheckpoint?.checkpointId, checkpoint.checkpointId);
+  assert.equal(result?.diagnostic.compactionDecisions?.[0]?.decision, 'replaced');
+  assert.deepEqual(result?.events, [tail]);
+});
+
 function textEvent(id: string, text: string): RuntimeEvent {
   return {
     id,
@@ -55,5 +107,23 @@ function textEvent(id: string, text: string): RuntimeEvent {
     status: 'completed',
     modelVisibility: 'visible',
     content: { kind: 'text', text },
+  };
+}
+
+function toolCallEvent(id: string): RuntimeEvent {
+  return {
+    ...textEvent(id, ''),
+    role: 'model',
+    author: 'agent',
+    content: { kind: 'function_call', id: 'tool-call', name: 'Bash', args: {} },
+  };
+}
+
+function toolResultEvent(id: string, result: string): RuntimeEvent {
+  return {
+    ...textEvent(id, ''),
+    role: 'tool',
+    author: 'tool',
+    content: { kind: 'function_response', id: 'tool-call', name: 'Bash', result },
   };
 }

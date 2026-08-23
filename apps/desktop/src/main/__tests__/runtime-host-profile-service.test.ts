@@ -225,6 +225,43 @@ test("keeps Local enabled while a new remote Host connects", async () => {
   );
 });
 
+test("reconnects an enabled remote Host with interactive SSH", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  await catalog.create(MANAGED_PROFILE, "opaque-token");
+  const calls: string[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup: {
+      preferences: {
+        schemaVersion: 2,
+        defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+        enabledRemoteProfileIds: [MANAGED_PROFILE.id],
+      },
+      pairingIntents: [],
+      remotes: [{ profile: MANAGED_PROFILE, credential: "opaque-token" }],
+      unavailable: new Map(),
+    },
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async (target, interaction) => {
+      calls.push(`enable:${target.profile.id}:${interaction}`);
+    },
+    disable: async (profileId) => {
+      calls.push(`disable:${profileId}`);
+    },
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+
+  await service.reconnect(MANAGED_PROFILE.id, MANAGED_PROFILE.rootId);
+
+  assert.deepEqual(calls, [
+    `disable:${MANAGED_PROFILE.id}`,
+    `enable:${MANAGED_PROFILE.id}:terminal`,
+  ]);
+});
+
 test("does not enable the same State Root twice", async () => {
   const root = await clientRoot();
   const startup = await resolveDesktopRuntimeHostStartup(root);

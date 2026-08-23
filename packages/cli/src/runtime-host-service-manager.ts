@@ -31,7 +31,10 @@ import {
 } from '@maka/runtime-host/protocol';
 import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_SERVICE_LOG_MAX_BYTES } from '@maka/runtime-host/operator';
-import { withFileUpdateLock } from '@maka/storage/file-update-lock';
+import {
+  withLegacyFileUpdateLockLease,
+  withProcessLifetimeFileUpdateLock,
+} from '@maka/storage/process-lifetime-file-update-lock';
 import {
   resolveExistingStorageRoot,
   tryAcquireInteractiveRootOwner,
@@ -46,6 +49,7 @@ import {
 
 const SERVICE_CONFIG_FILE = 'runtime-host-service.json';
 const SERVICE_LIFECYCLE_LOCK_FILE = 'runtime-host-setup';
+const SERVICE_DEPLOYMENT_LOCK_FILE = 'runtime-host-deployment';
 const DEFAULT_WEBSOCKET_PATH = '/runtime-host';
 const SERVICE_OPERATION_LOCK_TIMEOUT_MS = 60_000;
 const SERVICE_READY_TIMEOUT_MS = 45_000;
@@ -90,6 +94,8 @@ export interface RuntimeHostServiceBackendStatus {
 export interface RuntimeHostServiceBackend {
   preflightInstall(): Promise<void>;
   install(config: RuntimeHostManagedServiceConfig): Promise<RuntimeHostServiceDeployment>;
+  replace(config: RuntimeHostManagedServiceConfig): Promise<void>;
+  verifyDeployment(config: RuntimeHostManagedServiceConfig): Promise<void>;
   status(): Promise<RuntimeHostServiceBackendStatus>;
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -170,6 +176,11 @@ export interface RuntimeHostManagedDeploymentCleanupInput {
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
 }
 
+export interface RuntimeHostManagedServiceReplacementInput
+  extends Omit<RuntimeHostManagedServiceInput, 'action' | 'expectedTarget'> {
+  readonly expectedTarget: RuntimeHostManagedServiceTarget;
+}
+
 interface RuntimeHostServiceManagerDeps {
   readonly allocateLoopbackPort: () => Promise<number>;
   readonly waitForReady: (
@@ -199,6 +210,8 @@ export class RuntimeHostServiceManagerError extends Error {
       | 'invalid_launch'
       | 'target_mismatch'
       | 'retirement_failed'
+      | 'update_requires_retirement'
+      | 'update_incomplete'
       | 'service_manager_operation_failed'
       | 'uninstall_incomplete',
     message: string,
@@ -216,7 +229,7 @@ export async function manageRuntimeHostService(
 ): Promise<RuntimeHostManagedServiceResult> {
   const deps: RuntimeHostServiceManagerDeps = {
     allocateLoopbackPort,
-    waitForReady: waitForManagedRuntimeHostReady,
+    waitForReady: verifyRuntimeHostManagedServiceReady,
     prepareRetirement: prepareRuntimeHostRetirement,
     environment: process.env,
     homeDir: homedir(),
@@ -229,7 +242,7 @@ export async function manageRuntimeHostService(
   }
   await mkdir(configDirectory, { recursive: true, mode: 0o700 });
 
-  return withFileUpdateLock(
+  return withProcessLifetimeFileUpdateLock(
     configPath,
     () => manageRuntimeHostServiceLocked(input, backend, deps, configPath),
     SERVICE_OPERATION_LOCK_TIMEOUT_MS,
@@ -242,10 +255,64 @@ export async function withRuntimeHostManagedServiceLifecycleLock<T>(
   timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
 ): Promise<T> {
   await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });
-  return withFileUpdateLock(
+  return withProcessLifetimeFileUpdateLock(
     join(clientDataRoot, SERVICE_LIFECYCLE_LOCK_FILE),
     operation,
     timeoutMs,
+  );
+}
+
+export async function withRuntimeHostManagedServiceDeploymentLock<T>(
+  clientDataRoot: string,
+  operation: () => Promise<T>,
+  timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
+): Promise<T> {
+  await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });
+  return withProcessLifetimeFileUpdateLock(
+    join(clientDataRoot, SERVICE_DEPLOYMENT_LOCK_FILE),
+    operation,
+    timeoutMs,
+  );
+}
+
+export async function withRuntimeHostManagedServiceLegacyOperatorLeases<T>(
+  clientDataRoot: string,
+  operation: (inheritedFds: readonly number[]) => Promise<T>,
+  timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
+): Promise<T> {
+  const configPath = resolveRuntimeHostManagedServiceConfigPath(clientDataRoot);
+  await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
+  return withLegacyFileUpdateLockLease(
+    join(clientDataRoot, SERVICE_LIFECYCLE_LOCK_FILE),
+    (lifecycleFd) =>
+      withLegacyFileUpdateLockLease(
+        configPath,
+        (configFd) => operation([lifecycleFd, configFd]),
+        timeoutMs,
+      ),
+    timeoutMs,
+  );
+}
+
+export async function replaceRuntimeHostManagedService(
+  input: RuntimeHostManagedServiceReplacementInput,
+  backend: RuntimeHostServiceBackend,
+  overrides: Partial<RuntimeHostServiceManagerDeps> = {},
+): Promise<RuntimeHostManagedServiceStatus> {
+  const deps: RuntimeHostServiceManagerDeps = {
+    allocateLoopbackPort,
+    waitForReady: verifyRuntimeHostManagedServiceReady,
+    prepareRetirement: prepareRuntimeHostRetirement,
+    environment: process.env,
+    homeDir: homedir(),
+    ...overrides,
+  };
+  const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
+  await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
+  return withProcessLifetimeFileUpdateLock(
+    configPath,
+    () => replaceRuntimeHostManagedServiceLocked(input, backend, deps, configPath),
+    SERVICE_OPERATION_LOCK_TIMEOUT_MS,
   );
 }
 
@@ -256,7 +323,7 @@ export async function cleanupRuntimeHostManagedDeployment(
   await withRuntimeHostManagedServiceLifecycleLock(input.clientDataRoot, async () => {
     const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
     await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
-    await withFileUpdateLock(
+    await withProcessLifetimeFileUpdateLock(
       configPath,
       async () => {
         const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
@@ -443,6 +510,57 @@ async function manageRuntimeHostServiceLocked(
   return result(input.action, await readServiceStatus(configPath, backend));
 }
 
+async function replaceRuntimeHostManagedServiceLocked(
+  input: RuntimeHostManagedServiceReplacementInput,
+  backend: RuntimeHostServiceBackend,
+  deps: RuntimeHostServiceManagerDeps,
+  configPath: string,
+): Promise<RuntimeHostManagedServiceStatus> {
+  const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
+  assertExpectedServiceIdentity(serviceId, input.expectedTarget);
+  const service = await readServiceStatus(configPath, backend);
+  const root = await resolveExpectedServiceRoot(service.config, input);
+  if (!service.installed || !service.config || !root) {
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'Runtime Host service is not installed',
+    );
+  }
+  if (
+    service.active ||
+    service.pid !== null ||
+    (service.state !== 'stopped' && service.state !== 'failed')
+  ) {
+    throw new RuntimeHostServiceManagerError(
+      'update_requires_retirement',
+      'Retire the managed Runtime Host service before replacing its package',
+    );
+  }
+  await backend.preflightInstall();
+  const config = await prepareServiceConfig(input, service.config, deps);
+  let rootFence: InteractiveRootOwner | undefined =
+    await acquireRuntimeHostRootRetirementFence(root);
+  try {
+    await writeRuntimeHostServiceFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
+    await releaseRuntimeHostRootRetirementFence(rootFence);
+    rootFence = undefined;
+  } finally {
+    await rootFence?.close().catch(() => undefined);
+  }
+  try {
+    await backend.replace(config);
+    await deps.waitForReady(config, backend);
+  } catch (error) {
+    await backend.stop().catch(() => undefined);
+    throw new RuntimeHostServiceManagerError(
+      'update_incomplete',
+      'The replacement Runtime Host did not become ready; the previous deployment was retained but was not restarted because its storage compatibility is unknown',
+      { cause: error },
+    );
+  }
+  return readServiceStatus(configPath, backend);
+}
+
 function assertExpectedServiceIdentity(
   serviceId: string,
   expectedTarget: RuntimeHostManagedServiceTarget,
@@ -528,7 +646,7 @@ export async function removeRuntimeHostServiceFile(path: string, label: string):
 }
 
 async function prepareServiceConfig(
-  input: RuntimeHostManagedServiceInput,
+  input: Omit<RuntimeHostManagedServiceInput, 'action'>,
   previous: RuntimeHostManagedServiceConfig | null,
   deps: RuntimeHostServiceManagerDeps,
 ): Promise<RuntimeHostManagedServiceConfig> {
@@ -813,10 +931,11 @@ function isWithin(root: string, candidate: string): boolean {
   );
 }
 
-async function waitForManagedRuntimeHostReady(
+export async function verifyRuntimeHostManagedServiceReady(
   config: RuntimeHostManagedServiceConfig,
   backend: RuntimeHostServiceBackend,
 ): Promise<void> {
+  await backend.verifyDeployment(config);
   const deadline = Date.now() + SERVICE_READY_TIMEOUT_MS;
   let lastFailure = 'not available';
   while (Date.now() < deadline) {

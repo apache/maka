@@ -28,6 +28,7 @@
   height: 100%;
   min-height: 0;
   overflow-y: auto;
+  container: maka-inspector / inline-size;
 }
 
 /* The live region is a wrapper only; its children carry their own spacing. */
@@ -125,7 +126,7 @@
   font: var(--maka-text-label);
   color: var(--destructive-text);
   min-width: 0;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .maka-inspector-turn-meta {
@@ -139,6 +140,37 @@
 
 .maka-inspector-turn-cost {
   color: var(--foreground-secondary);
+}
+
+/* The default 480px workbar does not leave enough room for the timestamp,
+   failure and measurement to remain one useful line in every locale. Reflow
+   from the inspector's own width rather than the window's: the workbar can be
+   resized independently, and the same panel can also live in the bottom
+   placement. The identity gets the first row; status and measurement become
+   a compact comparison row below it. Keeping the failure phrase atomic avoids
+   the character-by-character column that `overflow-wrap: anywhere` produced. */
+@container maka-inspector (max-width: 32rem) {
+  .maka-inspector-turn-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: var(--space-1);
+  }
+
+  .maka-inspector-turn-label {
+    grid-column: 1 / -1;
+    min-width: 0;
+    white-space: normal;
+  }
+
+  .maka-inspector-turn-failure {
+    grid-column: 1;
+  }
+
+  .maka-inspector-turn-meta {
+    grid-column: 2;
+    justify-self: end;
+    margin-left: 0;
+  }
 }
 
 .maka-inspector-steps {
@@ -241,45 +273,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* The record-file row is the one non-list line the panel carries: label,
-   path, copy button. The path must truncate, so the row flexes and the
-   directory part alone gets the ellipsis — the label, the filename and the
-   button keep their size. The row is also the tooltip trigger: one Tab stop,
-   with a visible focus ring (the Astryx focus-visible ring, same token the
-   panel's other interactive controls use). */
-.maka-inspector-record-file-row {
-  min-width: 0;
-}
-
-.maka-inspector-record-file-label {
-  flex-shrink: 0;
-}
-
-.maka-inspector-record-file {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  user-select: text;
-  border-radius: 4px;
-}
-
-.maka-inspector-record-file:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.maka-inspector-record-file-dir {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-inspector-record-file-name {
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
 /* The readout carries the tier too, so a full window is legible from the line
    that states it rather than only from the colour of the bands below. */
 .maka-inspector-section-head[data-level='warning'] .maka-inspector-section-readout {
@@ -311,6 +304,50 @@
 .maka-inspector-composition-name {
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+/* The request is one proportional colour strip, then the same colours become
+   keys beside the exact estimates. Colour carries category, never state: the
+   chart avoids success/warning/error tokens whose semantics would mislabel an
+   ordinary prompt. Light and dark values are paired for comparable contrast. */
+.maka-inspector-composition-track {
+  display: flex;
+  height: var(--space-2);
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--muted);
+}
+
+.maka-inspector-composition-band {
+  flex-basis: 0;
+  min-width: 2px;
+}
+
+.maka-inspector-composition-swatch {
+  width: var(--space-1-5);
+  height: var(--space-1-5);
+  border-radius: var(--radius-pill);
+  flex: 0 0 auto;
+}
+
+.maka-inspector-composition-band[data-segment='system_instructions'],
+.maka-inspector-composition-swatch[data-segment='system_instructions'] {
+  background: light-dark(oklch(0.62 0.18 255), oklch(0.72 0.15 255));
+}
+
+.maka-inspector-composition-band[data-segment='tool_definitions'],
+.maka-inspector-composition-swatch[data-segment='tool_definitions'] {
+  background: light-dark(oklch(0.62 0.16 315), oklch(0.74 0.13 315));
+}
+
+.maka-inspector-composition-band[data-segment='messages'],
+.maka-inspector-composition-swatch[data-segment='messages'] {
+  background: light-dark(oklch(0.61 0.14 165), oklch(0.75 0.12 165));
+}
+
+.maka-inspector-composition-band[data-segment='other'],
+.maka-inspector-composition-swatch[data-segment='other'] {
+  background: light-dark(oklch(0.66 0.15 75), oklch(0.78 0.13 75));
 }
 
 /* The context window drawn as bands. Colour is the join between the track and

@@ -180,6 +180,7 @@ test('previous main-process evidence remains copyable before a Renderer exists',
         {
           environment: diagnosticEnvironment,
           mainLogs: () => ['current main log'],
+          runtimeHostProcessLogs: () => ['current Runtime Host exit'],
           resolveActiveRuntimeHost: () => {
             throw new Error('Previous-run diagnostics must remain Desktop-only');
           },
@@ -204,5 +205,5 @@ test('previous main-process evidence remains copyable before a Renderer exists',
   assert.match(clipboard, /clean shutdown was not observed/);
   assert.match(clipboard, /Maka: 0\.1\.10/);
   assert.match(clipboard, /Recent previous main-process logs \(1\)/);
-  assert.doesNotMatch(clipboard, /current main log|very-secret-token/);
+  assert.doesNotMatch(clipboard, /current main log|current Runtime Host exit|very-secret-token/);
 });

@@ -119,6 +119,38 @@ describe('ToolAvailabilityRuntime — economy mode', () => {
     assert.ok(connector);
     await assert.rejects(async () => connector!.impl({ group: 'nope' }, ctx), /Unknown tool group/);
   });
+
+  test('connector returns presentation metadata with the loaded tool ids', async () => {
+    const connector = runtime(true)
+      .prepare([])
+      .providerTools.find((t) => t.name === LOAD_TOOLS_NAME);
+    assert.ok(connector);
+    assert.deepEqual(await connector.impl({ group: 'rive' }, ctx), {
+      loaded: ['rive_run'],
+      group: {
+        id: 'rive',
+        label: 'Rive',
+      },
+    });
+    assert.deepEqual(await connector.impl({ group: 'docs' }, ctx), {
+      loaded: ['docs_edit', 'docs_read'],
+      group: {
+        id: 'docs',
+        description: 'Document tools',
+      },
+    });
+    assert.deepEqual(
+      await connector.toModelOutput?.({
+        toolCallId: 'tc',
+        input: { group: 'rive' },
+        output: await connector.impl({ group: 'rive' }, ctx),
+      }),
+      {
+        type: 'json',
+        value: { loaded: ['rive_run'] },
+      },
+    );
+  });
 });
 
 describe('ToolAvailabilityRuntime — durable ledger seed', () => {

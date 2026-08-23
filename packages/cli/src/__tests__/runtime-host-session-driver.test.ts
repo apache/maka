@@ -41,38 +41,12 @@ import {
 } from '@maka/runtime-host/protocol';
 import {
   createRuntimeHostMakaSessionDriver,
-  runtimeHostSessionSummary,
   type RuntimeHostMakaSessionDriverInput,
 } from '../runtime-host-session-driver.js';
-import {
-  SkillInvocationBlockedError,
-  type MakaAttachedSessionTurn,
-  type MakaTranscriptReplacementReason,
-} from '../session-driver.js';
+import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
-  test('maps authoritative live Turn ids into Session summaries', () => {
-    assert.deepEqual(
-      runtimeHostSessionSummary(
-        sessionProjection({
-          status: 'running',
-          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1', 'turn-2'] },
-        }),
-      ).runningTurnIds,
-      ['turn-1', 'turn-2'],
-    );
-    const knownEmpty = runtimeHostSessionSummary(
-      sessionProjection({ liveRunState: { schemaVersion: 1, runningTurnIds: [] } }),
-    );
-    assert.equal(Object.hasOwn(knownEmpty, 'runningTurnIds'), true);
-    assert.deepEqual(knownEmpty.runningTurnIds, []);
-    assert.equal(
-      Object.hasOwn(runtimeHostSessionSummary(sessionProjection()), 'runningTurnIds'),
-      false,
-    );
-  });
-
   test('keeps remote Session paths out of Client filesystem policy', async () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: new FakeConnection([]).value,
@@ -1330,7 +1304,7 @@ describe('Runtime Host Maka Session driver', () => {
       model: 'gpt-5',
     });
     await driver.switchSession('session-1');
-    const replacement = deferred<StoredMessage[]>();
+    const replacement = deferred<readonly StoredMessage[]>();
     driver.subscribeTranscriptReplacements!((_sessionId, _turnId, messages) =>
       replacement.resolve(messages),
     );
@@ -1370,9 +1344,9 @@ describe('Runtime Host Maka Session driver', () => {
       model: 'gpt-5',
     });
     await driver.switchSession('session-1');
-    const replacements: StoredMessage[][] = [];
+    const replacements: Array<readonly StoredMessage[]> = [];
     driver.subscribeTranscriptReplacements!((_sessionId, _turnId, messages, reason) => {
-      assert.equal(reason, 'tool_result');
+      assert.equal(reason, 'reconcile');
       replacements.push(messages);
     });
 
@@ -1383,16 +1357,15 @@ describe('Runtime Host Maka Session driver', () => {
     assert.deepEqual(replacements, [secondMessages]);
   });
 
-  test('does not let an older live refresh overwrite the terminal transcript', async () => {
+  test('does not publish an older tool-result transcript after the terminal transcript', async () => {
     const attached = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
     const liveTranscript = deferred<StoredMessage[]>();
-    const staleLiveMessages = [userMessage('turn-1', 'Run it')];
-    const terminalMessages = [userMessage('turn-1', 'Run it'), assistantMessage('turn-1', 'Done')];
     const liveRefresh = new FakeSubscription(
       continuitySnapshot(),
       liveTranscript.promise,
       'subscription-2',
     );
+    const terminalMessages = [userMessage('turn-1', 'Run it'), assistantMessage('turn-1', 'Done')];
     const terminalRefresh = new FakeSubscription(
       continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
       Promise.resolve(terminalMessages),
@@ -1406,54 +1379,40 @@ describe('Runtime Host Maka Session driver', () => {
       model: 'gpt-5',
     });
     await driver.switchSession('session-1');
-    const replacements: Array<{
-      messages: StoredMessage[];
-      reason: MakaTranscriptReplacementReason;
-    }> = [];
+    const replacements: Array<{ messages: readonly StoredMessage[]; reason: string }> = [];
     driver.subscribeTranscriptReplacements!((_sessionId, _turnId, messages, reason) => {
       replacements.push({ messages, reason });
     });
 
     attached.push(toolResultFrame(1));
     await waitFor(() => connection.openedSubscriptions === 2);
-    attached.push({
-      kind: 'subscription.session_projection',
-      hostEpoch: 'host-1',
-      subscriptionId: 'subscription-1',
-      sequence: 2,
-      snapshot: continuitySnapshot({
-        projectionRevision: 2,
-        rootTurn: completedTurn('turn-1', 'run-1'),
-      }),
-    });
+    attached.push(projectionFrame(2, completedTurn('turn-1', 'run-1'), 2));
     await waitFor(() => replacements.length === 1);
-    assert.deepEqual(replacements, [{ messages: terminalMessages, reason: 'terminal' }]);
+    assert.deepEqual(replacements, [{ messages: terminalMessages, reason: 'reconcile' }]);
 
-    liveTranscript.resolve(staleLiveMessages);
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(replacements, [{ messages: terminalMessages, reason: 'terminal' }]);
+    liveTranscript.resolve([userMessage('turn-1', 'Run it')]);
+    await delay(0);
+    assert.deepEqual(replacements, [{ messages: terminalMessages, reason: 'reconcile' }]);
   });
 
-  test('does not let a retired-channel live refresh overwrite a reconnect snapshot', async () => {
+  test('does not publish an older tool-result transcript after reconnect recovery', async () => {
     const initial = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
     const liveTranscript = deferred<StoredMessage[]>();
-    const staleLiveMessages = [userMessage('turn-1', 'Run it')];
-    const reconnectMessages = [
-      userMessage('turn-1', 'Run it'),
-      assistantMessage('turn-1', 'Still running'),
-    ];
     const liveRefresh = new FakeSubscription(
       continuitySnapshot(),
       liveTranscript.promise,
       'subscription-2',
     );
-    const replacement = new FakeSubscription(
+    const recoveredMessages = [
+      userMessage('turn-1', 'Run it'),
+      assistantMessage('turn-1', 'Recovered'),
+    ];
+    const recovered = new FakeSubscription(
       continuitySnapshot({ projectionRevision: 2 }),
-      Promise.resolve(reconnectMessages),
+      Promise.resolve(recoveredMessages),
       'subscription-3',
     );
-    const connection = new FakeConnection([initial, liveRefresh, replacement], true);
+    const connection = new FakeConnection([initial, liveRefresh, recovered], true);
     const driver = createRuntimeHostMakaSessionDriver({
       connection: connection.value,
       cwd: '/tmp',
@@ -1461,10 +1420,7 @@ describe('Runtime Host Maka Session driver', () => {
       model: 'gpt-5',
     });
     await driver.switchSession('session-1');
-    const replacements: Array<{
-      messages: StoredMessage[];
-      reason: MakaTranscriptReplacementReason;
-    }> = [];
+    const replacements: Array<{ messages: readonly StoredMessage[]; reason: string }> = [];
     driver.subscribeTranscriptReplacements!((_sessionId, _turnId, messages, reason) => {
       replacements.push({ messages, reason });
     });
@@ -1475,12 +1431,11 @@ describe('Runtime Host Maka Session driver', () => {
       new RuntimeHostSubscriptionError('connection_closed', 'connection lost during active Turn'),
     );
     await waitFor(() => replacements.length === 1);
-    assert.deepEqual(replacements, [{ messages: reconnectMessages, reason: 'reconnect' }]);
+    assert.deepEqual(replacements, [{ messages: recoveredMessages, reason: 'reconnect' }]);
 
-    liveTranscript.resolve(staleLiveMessages);
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(replacements, [{ messages: reconnectMessages, reason: 'reconnect' }]);
+    liveTranscript.resolve([userMessage('turn-1', 'Run it')]);
+    await delay(0);
+    assert.deepEqual(replacements, [{ messages: recoveredMessages, reason: 'reconnect' }]);
   });
 
   test('resnapshots an active Session after reconnect and continues its live stream', async () => {
@@ -1503,7 +1458,7 @@ describe('Runtime Host Maka Session driver', () => {
     });
     const switched = await driver.switchSession('session-1');
     assert.ok(switched.activeTurn);
-    const transcript = deferred<StoredMessage[]>();
+    const transcript = deferred<readonly StoredMessage[]>();
     driver.subscribeTranscriptReplacements!((_sessionId, _turnId, messages, reason) => {
       assert.equal(reason, 'reconnect');
       transcript.resolve(messages);
@@ -2383,7 +2338,7 @@ describe('turn consumer lag recovery (#3180)', () => {
     });
     const switched = await driver.switchSession('session-1');
     assert.ok(switched.activeTurn);
-    const transcript = deferred<StoredMessage[]>();
+    const transcript = deferred<readonly StoredMessage[]>();
     driver.subscribeTranscriptReplacements!((_sessionId, _turnId, messages, reason) => {
       assert.equal(reason, 'reconnect');
       transcript.resolve(messages);

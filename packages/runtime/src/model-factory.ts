@@ -379,6 +379,18 @@ export function buildProviderOptions(
   modelId: string,
   thinkingLevel?: ThinkingLevel,
 ): SharedV4ProviderOptions {
+  return withParallelToolCallOptions(
+    connection,
+    modelId,
+    buildThinkingProviderOptions(connection, modelId, thinkingLevel),
+  );
+}
+
+function buildThinkingProviderOptions(
+  connection: RuntimeExecutionConnection,
+  modelId: string,
+  thinkingLevel?: ThinkingLevel,
+): SharedV4ProviderOptions {
   const thinkingOptions = thinkingOptionsForModel(connection.providerType, modelId);
   const level = resolveThinkingLevel(connection, modelId, thinkingLevel);
   switch (connection.providerType) {
@@ -529,6 +541,51 @@ export function buildProviderOptions(
     default:
       return buildFamilyWire(connection, modelId, level, thinkingOptions);
   }
+}
+
+function withParallelToolCallOptions(
+  connection: RuntimeExecutionConnection,
+  modelId: string,
+  options: SharedV4ProviderOptions,
+): SharedV4ProviderOptions {
+  const runtime = resolveModelRuntime(connection, modelId);
+  if (runtime.parallelToolCalls === undefined) return options;
+
+  let providerKey: string;
+  let optionKey: 'parallelToolCalls' | 'parallel_tool_calls';
+  if (runtime.adapter.kind === 'openai' || runtime.adapter.kind === 'openai-codex') {
+    providerKey = 'openai';
+    optionKey = 'parallelToolCalls';
+  } else if (runtime.adapter.kind === 'github-copilot') {
+    if (runtime.wire === 'anthropic-messages') return options;
+    providerKey = runtime.wire === 'openai-responses' ? 'openai' : 'githubCopilot';
+    optionKey = runtime.wire === 'openai-responses' ? 'parallelToolCalls' : 'parallel_tool_calls';
+  } else if (runtime.adapter.kind === 'openai-compatible') {
+    if (runtime.wire === 'openai-responses') {
+      if (
+        runtime.reasoningReplay.kind !== 'responses' ||
+        runtime.reasoningReplay.contract.adapter !== 'openai'
+      ) {
+        return options;
+      }
+      providerKey = 'openai';
+      optionKey = 'parallelToolCalls';
+    } else {
+      providerKey = openAiCompatibleProviderOptionsKey(runtime.adapter, connection);
+      optionKey = 'parallel_tool_calls';
+    }
+  } else {
+    return options;
+  }
+
+  const current = options[providerKey];
+  return {
+    ...options,
+    [providerKey]: {
+      ...(isRecord(current) ? current : {}),
+      [optionKey]: runtime.parallelToolCalls,
+    },
+  };
 }
 
 function buildFamilyWire(

@@ -123,7 +123,7 @@ export interface MakaSessionDriver {
     listener: (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void;
@@ -176,7 +176,7 @@ export type CreateSessionRequest = Omit<CreateSessionInput, 'permissionMode'> & 
   permissionMode?: PermissionMode;
 };
 
-export type MakaTranscriptReplacementReason = 'terminal' | 'reconnect' | 'tool_result';
+export type MakaTranscriptReplacementReason = 'reconcile' | 'reconnect';
 
 export type SessionResumeAvailability = { available: true } | { available: false; reason: string };
 

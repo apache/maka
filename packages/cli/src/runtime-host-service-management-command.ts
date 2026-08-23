@@ -23,8 +23,10 @@ import {
   encodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
+  type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceSummary,
 } from '@maka/runtime-host/operator';
@@ -33,6 +35,7 @@ import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
+  withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLifecycleLock,
   type RuntimeHostManagedServiceInput,
   type RuntimeHostManagedServiceResult,
@@ -41,13 +44,16 @@ import {
 } from './runtime-host-service-manager.js';
 import { createSystemdUserRuntimeHostService } from './runtime-host-systemd-service.js';
 
-export interface RuntimeHostServiceManagementCliOptions extends RuntimeHostManagedServiceInput {
+export interface RuntimeHostServiceManagementCliOptions
+  extends Omit<RuntimeHostManagedServiceInput, 'action'> {
+  readonly action: RuntimeHostManagedServiceInput['action'];
   readonly json: boolean;
   readonly framed?: boolean;
 }
 
 export interface RuntimeHostServiceManagementCliDeps {
   readonly manage: typeof manageRuntimeHostService;
+  readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly writeOutput: (value: string) => unknown;
@@ -60,6 +66,7 @@ export async function runManagedRuntimeHostServiceCli(
 ): Promise<number> {
   const deps: RuntimeHostServiceManagementCliDeps = {
     manage: manageRuntimeHostService,
+    withDeploymentLock: withRuntimeHostManagedServiceDeploymentLock,
     withLifecycleLock: withRuntimeHostManagedServiceLifecycleLock,
     createBackend: createPlatformRuntimeHostServiceBackend,
     writeOutput: (value) => process.stdout.write(value),
@@ -73,7 +80,11 @@ export async function runManagedRuntimeHostServiceCli(
     const result =
       options.action === 'status' || options.action === 'logs'
         ? await manage()
-        : await deps.withLifecycleLock(options.clientDataRoot, manage);
+        : options.action === 'retire'
+          ? await deps.withLifecycleLock(options.clientDataRoot, manage)
+          : await deps.withDeploymentLock(options.clientDataRoot, () =>
+              deps.withLifecycleLock(options.clientDataRoot, manage),
+            );
     const blocked = result.action === 'retire' && result.retirement.kind === 'active_tasks';
     if (options.framed) {
       deps.writeOutput(encodeRuntimeHostServiceManagementFrame(successFrame(result)));
@@ -160,8 +171,35 @@ function formatHumanResult(result: RuntimeHostManagedServiceResult): string {
 }
 
 function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServiceManagementFrame {
+  const service = runtimeHostServiceSummary(result);
+  const common = {
+    schemaVersion: 1,
+    kind: 'result',
+    service,
+    ...requestedOperatorCapabilities(),
+    ...(result.retainedStateRoot ? { retainedStateRoot: result.retainedStateRoot } : {}),
+    ...(result.logs !== undefined ? { logs: result.logs } : {}),
+  } as const;
+  return result.action === 'retire'
+    ? { ...common, action: result.action, retirement: { ...result.retirement } }
+    : { ...common, action: result.action };
+}
+
+function requestedOperatorCapabilities(): {
+  readonly operatorCapabilities?: RuntimeHostOperatorCapability[];
+} {
+  const requested = process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+  return requested === RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY ||
+    requested === RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY
+    ? { operatorCapabilities: [requested] }
+    : {};
+}
+
+export function runtimeHostServiceSummary(
+  result: RuntimeHostManagedServiceResult,
+): RuntimeHostServiceSummary {
   const config = result.service.config;
-  const service: RuntimeHostServiceSummary = {
+  return {
     platform: process.platform,
     arch: process.arch,
     osRelease: release(),
@@ -172,24 +210,6 @@ function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServi
     ...(config ? { stateRoot: config.rootPath } : {}),
     projectDirectoryRoots: [...(config?.projectDirectoryRoots ?? [])],
   };
-  const common = {
-    schemaVersion: 1,
-    kind: 'result',
-    service,
-    ...(process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] ===
-    RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY
-      ? {
-          operatorCapabilities: [
-            RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
-          ] as (typeof RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)[],
-        }
-      : {}),
-    ...(result.retainedStateRoot ? { retainedStateRoot: result.retainedStateRoot } : {}),
-    ...(result.logs !== undefined ? { logs: result.logs } : {}),
-  } as const;
-  return result.action === 'retire'
-    ? { ...common, action: result.action, retirement: { ...result.retirement } }
-    : { ...common, action: result.action };
 }
 
 export function createPlatformRuntimeHostServiceBackend(

@@ -70,7 +70,7 @@ export interface RuntimeHostSessionCatalogIpcDeps {
   emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
-    extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
+    extra?: Pick<SessionChangedEvent, 'modelId' | 'turnId'>,
   ) => void;
   releaseSessionResources: (sessionId: string) => void | Promise<void>;
   sessionCopyCleanup: SessionCopyCleanupAuthority;
@@ -199,13 +199,7 @@ export function registerRuntimeHostSessionCatalogIpc(
   );
   ipcMain.handle('sessions:setModel', async (_event, sessionId: string, input: unknown) => {
     const modelTarget = normalizeExplicitModel(input);
-    return updateConfiguration(
-      deps,
-      sessionId,
-      { modelTarget, thinkingLevel: null },
-      'updated',
-      { connectionSlug: modelTarget.connectionSlug, modelId: modelTarget.model },
-    );
+    return updateConfiguration(deps, sessionId, { modelTarget, thinkingLevel: null }, 'updated');
   });
   ipcMain.handle('sessions:setThinkingLevel', async (_event, sessionId: string, level: unknown) => {
     if (level !== undefined && level !== null && !isThinkingLevel(level)) {
@@ -263,7 +257,7 @@ async function updateConfiguration(
   sessionId: string,
   patch: DesktopSessionConfigurationPatch,
   reason: SessionChangedReason,
-  extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
+  extra?: Pick<SessionChangedEvent, 'modelId' | 'turnId'>,
 ): Promise<DesktopHostSessionSummary> {
   const session = await deps.client.updateSessionConfiguration(sessionId, patch);
   deps.emitSessionsChanged(reason, sessionId, extra);

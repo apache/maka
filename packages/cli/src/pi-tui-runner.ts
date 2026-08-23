@@ -48,7 +48,7 @@ import {
 } from '@maka/core/slash-command-catalog';
 import { type QueueEnqueueOutcome, type ShellRunUpdate } from '@maka/core/events';
 import {
-  deriveModelSwitchTranscript,
+  latestAssistantModelId,
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
@@ -96,7 +96,7 @@ import {
   applyShellRunViewUpdateToTranscript,
   permissionModeLabel,
   replaceTranscriptWithStoredMessages,
-  reconcileToolsWithStoredMessages,
+  hydrateToolsWithStoredMessages,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
@@ -280,9 +280,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
   const tui = new TUI(terminal);
   const state = createMakaPiTranscriptState();
-  let transcriptMessages: readonly StoredMessage[] = [];
+  let transcriptLastUsedModel: string | undefined;
+  const rememberTranscriptModel = (messages: readonly StoredMessage[]): void => {
+    transcriptLastUsedModel = latestAssistantModelId(messages);
+  };
   const replaceTranscript = (messages: readonly StoredMessage[]): void => {
-    transcriptMessages = messages;
+    rememberTranscriptModel(messages);
     replaceTranscriptWithStoredMessages(state, messages);
   };
   let cwd = input.cwd;
@@ -537,8 +540,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
         return;
       }
-      transcriptMessages = messages;
-      if (reconcileToolsWithStoredMessages(state, turnId, messages)) {
+      rememberTranscriptModel(messages);
+      if (hydrateToolsWithStoredMessages(state, turnId, messages)) {
         shellRunElapsedTicker.sync();
         requestRender();
       }
@@ -1462,7 +1465,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const setModel = async (nextModel: string) => {
     if (nextModel === model) return;
-    const previousModel = deriveModelSwitchTranscript(transcriptMessages).lastUsedModel ?? model;
+    const previousModel = transcriptLastUsedModel ?? model;
     await input.driver.setModel(nextModel);
     model = nextModel;
     // Same-connection switch: scope the choice lookup to the live connection
@@ -1488,7 +1491,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Updates the provider (and thus the thinking variants) and the status line.
   const setModelChoice = async (choice: ModelChoice) => {
     if (choice.model === model && choice.connectionSlug === connectionSlug) return;
-    const previousModel = deriveModelSwitchTranscript(transcriptMessages).lastUsedModel ?? model;
+    const previousModel = transcriptLastUsedModel ?? model;
     const previousConnectionSlug = connectionSlug;
     const previousChoice = modelChoices?.find(
       (candidate) =>

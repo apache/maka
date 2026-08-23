@@ -138,6 +138,37 @@ describe('responses wire contract', () => {
     });
   });
 
+  test('resolves parallel tool calls from model facts before native wire defaults', () => {
+    assert.equal(
+      resolveModelRuntime({ providerType: 'openai' }, 'gpt-5.5').parallelToolCalls,
+      true,
+    );
+    assert.equal(
+      resolveModelRuntime(
+        {
+          providerType: 'openai',
+          models: [{ id: 'gpt-5.5', capabilities: { parallelToolCalls: false } }],
+        },
+        'gpt-5.5',
+      ).parallelToolCalls,
+      false,
+    );
+    assert.equal(
+      resolveModelRuntime({ providerType: 'openai-compatible' }, 'relay-model').parallelToolCalls,
+      undefined,
+    );
+    assert.equal(
+      resolveModelRuntime(
+        {
+          providerType: 'openai-compatible',
+          models: [{ id: 'relay-model', capabilities: { parallelToolCalls: true } }],
+        },
+        'relay-model',
+      ).parallelToolCalls,
+      true,
+    );
+  });
+
   test('enables Responses only through an explicit supported contract', () => {
     const configured = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
       const adapter = definition.runtimeAdapter;

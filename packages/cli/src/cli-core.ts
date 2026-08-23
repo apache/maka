@@ -122,6 +122,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service install [options]`,
     `  ${cliCommand} runtime-host service status|start|stop|restart|logs|uninstall [--json]`,
     `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
+    `  ${cliCommand} runtime-host service update --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
     `  ${cliCommand} runtime-host access list`,
@@ -272,6 +273,22 @@ export async function runMakaCli(
         ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
         ...(command.retainManagedDeployment ? { retainManagedDeployment: true } : {}),
+        ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+      });
+    }
+    case 'runtime-host-service-update': {
+      const { runManagedRuntimeHostUpdateCli } = await import('./runtime-host-update-command.js');
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
+      return runManagedRuntimeHostUpdateCli({
+        json: command.json,
+        framed: command.framed ?? false,
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        defaultRootPath: serviceDataRoots.workspaceRoot,
+        sourcePackageRoot: fileURLToPath(new URL('..', import.meta.url)),
+        version,
+        expectedTarget: command.expectedTarget,
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
       });
     }

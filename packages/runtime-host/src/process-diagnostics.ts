@@ -25,6 +25,7 @@ import {
 } from './protocol/host-status.js';
 
 export const RUNTIME_HOST_DIAGNOSTIC_LOG_MAX_BYTES = 64 * 1024;
+export const RUNTIME_HOST_STDERR_PIPE_ENV = 'MAKA_RUNTIME_HOST_STDERR_PIPE';
 
 export const runtimeHostLogBuffer = new DiagnosticLogBuffer({
   maxBytes: RUNTIME_HOST_DIAGNOSTIC_LOG_MAX_BYTES,
@@ -33,9 +34,25 @@ export const runtimeHostLogBuffer = new DiagnosticLogBuffer({
 });
 
 let logCaptureInstalled = false;
+let stderrPipeGuardInstalled = false;
 
 export function installRuntimeHostLogCapture(buffer = runtimeHostLogBuffer): void {
+  installRuntimeHostStderrPipeGuard();
   if (logCaptureInstalled) return;
   logCaptureInstalled = true;
   installConsoleDiagnosticLogCapture(buffer);
+}
+
+function installRuntimeHostStderrPipeGuard(): void {
+  if (stderrPipeGuardInstalled || process.env[RUNTIME_HOST_STDERR_PIPE_ENV] !== '1') {
+    return;
+  }
+  stderrPipeGuardInstalled = true;
+  process.stderr.on('error', (error: NodeJS.ErrnoException) => {
+    // A detached Host intentionally outlives the Client that owns this pipe.
+    // Once that Client exits, later diagnostics must be dropped rather than
+    // turning the expected pipe closure into a fatal Host error.
+    if (error.code === 'EPIPE') return;
+    throw error;
+  });
 }

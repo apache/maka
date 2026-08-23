@@ -41,8 +41,8 @@ import {
 } from '../runtime-host-desktop-manager.js';
 
 test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, async () => {
-  const first = candidateHarness({ delayDisconnect: true });
-  const second = candidateHarness();
+  const first = candidateHarness({ delayDisconnect: true, hostEpoch: 'host-before' });
+  const second = candidateHarness({ hostEpoch: 'host-after' });
   const queue = [ready(first.candidate), ready(second.candidate)];
   let starts = 0;
   const interactions: Array<string | undefined> = [];
@@ -71,6 +71,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   });
 
   first.disconnect();
+  const replacementReady = owner.waitUntilReady(owner.defaultProfileId(), 'host-before');
   const botMessage = owner.handleBotIncomingMessage({ text: 'hello' } as BotIncomingMessage);
   const stop = owner.stopSession({
     hostId: 'test-host',
@@ -95,7 +96,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   assert.equal(second.botMessages, 0);
   assert.deepEqual(second.stoppedSessions, []);
   releaseSecond();
-  await Promise.all([botMessage, stop]);
+  await Promise.all([botMessage, stop, replacementReady]);
 
   assert.equal(first.botMessages, 0);
   assert.equal(second.botMessages, 1);
@@ -815,6 +816,7 @@ function candidateHarness(
     activeTasks?: boolean;
     lifecycleMode?: 'ephemeral' | 'service' | 'remote';
     hostId?: string;
+    hostEpoch?: string;
     finalizeFailures?: Error[];
     disconnectOnFinalizeFailure?: boolean;
     onPrepare?: () => void;
@@ -837,6 +839,7 @@ function candidateHarness(
     hostLifecycleMode: options.lifecycleMode ?? 'ephemeral',
     client: {
       hostId: options.hostId ?? 'test-host',
+      hostEpoch: options.hostEpoch ?? 'test-host-epoch',
       get lifecycleState() {
         return lifecycleState;
       },

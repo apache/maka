@@ -840,6 +840,7 @@ function modelListsEqual(left: ModelInfo[], right: ModelInfo[]): boolean {
     if (leftModel.capabilities?.vision !== rightModel.capabilities?.vision) return false;
     if (leftModel.capabilities?.reasoning !== rightModel.capabilities?.reasoning) return false;
     if (leftModel.capabilities?.functionCalling !== rightModel.capabilities?.functionCalling) return false;
+    if (leftModel.capabilities?.parallelToolCalls !== rightModel.capabilities?.parallelToolCalls) return false;
     if (leftModel.capabilities?.imageGeneration !== rightModel.capabilities?.imageGeneration) return false;
   }
   return true;
