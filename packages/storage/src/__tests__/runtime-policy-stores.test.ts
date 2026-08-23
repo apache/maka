@@ -3331,6 +3331,50 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('clears a stale onboarding intent when its connection id conflicts with the catalog', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const connection = await createConnection(
+          stores,
+          0,
+          connectionDraft('openai', 'openai', 'Stale onboarding'),
+        );
+        await writeFile(
+          join(root, 'runtime-policy-onboarding.json'),
+          `${JSON.stringify({
+            schemaVersion: 1,
+            connectionId: '11111111-1111-4111-8111-111111111111',
+            providerType: connection.providerType,
+            suppliedSecret: null,
+            enabledModelIds: connection.enabledModelIds,
+            discovery: {
+              models: [{ id: 'gpt-5' }],
+              source: 'fetched',
+              fetchedAt: 1_800_000_000_000,
+            },
+            invalidateLastTest: false,
+          })}\n`,
+        );
+      } finally {
+        await owner.close();
+      }
+
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      if (!successor) return;
+      try {
+        await openInteractiveRuntimePolicyStoresForWrite(successor.lease);
+        assert.equal(existsSync(join(root, 'runtime-policy-onboarding.json')), false);
+      } finally {
+        await successor.close();
+      }
+    });
+  });
+
   test('interactive OAuth login commits only against its frozen connection and credential basis', async () => {
     await withInteractiveOwner(async ({ root, stores }) => {
       const claude = await createConnection(
