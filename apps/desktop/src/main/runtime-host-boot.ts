@@ -290,7 +290,7 @@ const resolveLocalStorageRoot = () =>
 const startupLocalStorageRoot =
   await resolveLocalStorageRoot();
 if (!startupLocalStorageRoot) {
-  app.exit(0);
+  app.quit();
   await new Promise<never>(() => {});
   throw new Error("Desktop storage root resolution did not complete");
 }
@@ -840,7 +840,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
   },
 ).catch((error: unknown) => {
   if (error instanceof RuntimeHostUpgradeCancelledError) {
-    app.exit(0);
+    app.quit();
     return new Promise<never>(() => undefined);
   }
   throw error;

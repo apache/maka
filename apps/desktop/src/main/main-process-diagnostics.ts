@@ -31,6 +31,7 @@ import {
   requireDesktopTargetScope,
   type DesktopTargetScope,
 } from '../shared/runtime-host-identity.js';
+import type { MainProcessRecoveryEvidence } from './main-process-recovery-journal.js';
 
 const INPUT_LIMITS = {
   title: 512,
@@ -83,10 +84,20 @@ export interface DesktopMainRendererDiagnosticInput {
   readonly hostTarget: 'none';
 }
 
+export interface DesktopPreviousMainProcessDiagnosticInput {
+  readonly surface: 'previous_main_process_interruption';
+  readonly title: string;
+  readonly description?: string;
+  readonly details?: string;
+  readonly hostTarget: 'none';
+  readonly evidence: MainProcessRecoveryEvidence;
+}
+
 export type DesktopDiagnosticReportInput =
   | DesktopDiagnosticWireInput
   | DesktopStartupDiagnosticInput
-  | DesktopMainRendererDiagnosticInput;
+  | DesktopMainRendererDiagnosticInput
+  | DesktopPreviousMainProcessDiagnosticInput;
 
 export type RuntimeHostDiagnosticRead =
   | { readonly ok: true; readonly value: HostDiagnosticsResult }
@@ -119,10 +130,13 @@ export const mainProcessLogBuffer = new DiagnosticLogBuffer({
 
 let logCaptureInstalled = false;
 
-export function installMainProcessLogCapture(buffer: DiagnosticLogBuffer = mainProcessLogBuffer): void {
+export function installMainProcessLogCapture(
+  buffer: DiagnosticLogBuffer = mainProcessLogBuffer,
+  onAppend?: () => void,
+): void {
   if (logCaptureInstalled) return;
   logCaptureInstalled = true;
-  installConsoleDiagnosticLogCapture(buffer);
+  installConsoleDiagnosticLogCapture(buffer, onAppend);
 }
 
 export function captureDesktopDiagnosticEnvironment(
@@ -160,6 +174,17 @@ export function createDesktopMainRendererDiagnosticInput(input: {
   return {
     surface: 'renderer_process_gone',
     ...createDesktopNativeDiagnosticFields(input),
+  };
+}
+
+export function createDesktopPreviousMainProcessDiagnosticInput(
+  evidence: MainProcessRecoveryEvidence,
+): DesktopPreviousMainProcessDiagnosticInput {
+  return {
+    surface: 'previous_main_process_interruption',
+    hostTarget: 'none',
+    title: 'Previous Maka session ended before shutdown completed',
+    evidence,
   };
 }
 
@@ -295,9 +320,12 @@ export async function copyDesktopDiagnosticReport(
   if (!runtime) {
     let error: string;
     if (input.hostTarget === 'none') {
-      error = input.surface === 'startup'
-        ? 'Runtime Host diagnostics were unavailable before the app opened'
-        : 'No Runtime Host authority was associated with this error';
+      error =
+        input.surface === 'startup'
+          ? 'Runtime Host diagnostics were unavailable before the app opened'
+          : input.surface === 'previous_main_process_interruption'
+            ? 'Runtime Host diagnostics were not persisted for the previous Desktop session'
+            : 'No Runtime Host authority was associated with this error';
     } else if (input.hostTarget === 'default') {
       error = input.surface === 'manual'
         ? 'Runtime Host is unavailable'
@@ -371,24 +399,44 @@ export function formatDesktopDiagnosticReport(
     if (input.details) lines.push('', 'Details:', input.details);
   }
 
-  lines.push(
-    '',
-    'Environment',
-    `Maka: ${environment.appVersion}`,
-    `Build: ${environment.buildMode}${environment.buildCommit ? ` @ ${environment.buildCommit.slice(0, 12)}` : ''}`,
-    `Electron: ${environment.electronVersion}`,
-    `Chrome: ${environment.chromeVersion}`,
-    `Node: ${environment.nodeVersion}`,
-    `OS: ${environment.platform} ${environment.osRelease} (${environment.arch})`,
-    `Locale: ${environment.locale}`,
-    `Renderer locale: ${rendererContext?.rendererLocale ?? '<unknown>'}`,
-    `Renderer user agent: ${rendererContext?.rendererUserAgent ?? '<unknown>'}`,
-    `Workspace: ${environment.workspacePath}`,
-    `Main process uptime: ${Math.max(0, Math.floor(environment.processUptimeSeconds))}s`,
-    '',
-    `Recent main-process logs (${mainLogs.length})`,
-    ...(mainLogs.length > 0 ? mainLogs : ['<none captured>']),
-  );
+  if (input.surface === 'previous_main_process_interruption') {
+    const { run, snapshotAt, logs } = input.evidence;
+    lines.push(
+      'Classification: clean shutdown was not observed; the termination cause is unknown',
+      '',
+      'Previous run',
+      `Started at: ${run.startedAt}`,
+      `Last snapshot: ${snapshotAt ?? '<none captured>'}`,
+      `Maka: ${run.appVersion}`,
+      `Build: ${run.buildMode}${run.buildCommit ? ` @ ${run.buildCommit.slice(0, 12)}` : ''}`,
+      `Electron: ${run.electronVersion}`,
+      `Chrome: ${run.chromeVersion}`,
+      `Node: ${run.nodeVersion}`,
+      `OS: ${run.platform} ${run.osRelease} (${run.arch})`,
+      '',
+      `Recent previous main-process logs (${logs.length})`,
+      ...(logs.length > 0 ? logs : ['<none captured>']),
+    );
+  } else {
+    lines.push(
+      '',
+      'Environment',
+      `Maka: ${environment.appVersion}`,
+      `Build: ${environment.buildMode}${environment.buildCommit ? ` @ ${environment.buildCommit.slice(0, 12)}` : ''}`,
+      `Electron: ${environment.electronVersion}`,
+      `Chrome: ${environment.chromeVersion}`,
+      `Node: ${environment.nodeVersion}`,
+      `OS: ${environment.platform} ${environment.osRelease} (${environment.arch})`,
+      `Locale: ${environment.locale}`,
+      `Renderer locale: ${rendererContext?.rendererLocale ?? '<unknown>'}`,
+      `Renderer user agent: ${rendererContext?.rendererUserAgent ?? '<unknown>'}`,
+      `Workspace: ${environment.workspacePath}`,
+      `Main process uptime: ${Math.max(0, Math.floor(environment.processUptimeSeconds))}s`,
+      '',
+      `Recent main-process logs (${mainLogs.length})`,
+      ...(mainLogs.length > 0 ? mainLogs : ['<none captured>']),
+    );
+  }
 
   lines.push('', 'Runtime Host');
   if (runtimeHost.ok) {

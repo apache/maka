@@ -22,7 +22,10 @@ import type { DiagnosticLogBuffer } from './diagnostic-log.js';
 
 const MAX_LOG_ENTRY_CODE_POINTS = 8 * 1024;
 
-export function installConsoleDiagnosticLogCapture(buffer: DiagnosticLogBuffer): void {
+export function installConsoleDiagnosticLogCapture(
+  buffer: DiagnosticLogBuffer,
+  onAppend?: () => void,
+): void {
   for (const level of ['debug', 'info', 'log', 'warn', 'error'] as const) {
     const original = console[level].bind(console);
     console[level] = (...args: unknown[]) => {
@@ -41,6 +44,7 @@ export function installConsoleDiagnosticLogCapture(buffer: DiagnosticLogBuffer):
             ...args,
           ),
         );
+        onAppend?.();
       } catch {
         // Diagnostic capture must not change console behavior.
       }
