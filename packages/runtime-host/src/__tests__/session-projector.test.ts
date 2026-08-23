@@ -262,6 +262,74 @@ test('does not replay settled transcript steps when the active step reaches term
   );
 });
 
+test('marks Runtime Host tool results whose durable content is omitted', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const projected = projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'tool_result',
+      id: 'result-1',
+      turnId: 'turn-1',
+      ts: 10,
+      toolUseId: 'tool-1',
+      status: 'completed',
+    },
+  }).events[0];
+
+  assert.equal(projected?.type, 'tool_result');
+  assert.equal(
+    projected?.type === 'tool_result' && 'contentOmitted' in projected
+      ? projected.contentOmitted
+      : undefined,
+    true,
+  );
+});
+
+test('preserves the bounded shell-run correlation on a tool start', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const ref = 'maka://runtime/background-tasks/bg-1';
+
+  const projected = projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'tool_start',
+      id: 'start-1',
+      turnId: 'turn-1',
+      ts: 10,
+      toolUseId: 'tool-1',
+      toolName: 'Read',
+      shellRunRef: ref,
+    },
+  } as SubscriptionFrame).events[0];
+
+  assert.equal(projected?.type, 'tool_start');
+  assert.equal(
+    projected?.type === 'tool_start' && 'shellRunRef' in projected
+      ? projected.shellRunRef
+      : undefined,
+    ref,
+  );
+});
+
 function deltaFrame(
   sequence: number,
   startOffset: number,

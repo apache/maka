@@ -934,20 +934,31 @@ describe('tool_result_preview live projection', () => {
     );
   });
 
-  it('keeps open-facts when RH-style empty tool_result settles the row', () => {
+  it('keeps hydrated result content when Runtime Host omits it from the live event', () => {
     const previewed = previewedSubagentTurn();
-    const settled = applyLiveTurnEvent(previewed, {
+    const hydrated: LiveTurnProjection = {
+      ...previewed,
+      steps: [{
+        ...previewed.steps[0]!,
+        tools: [{
+          ...previewed.steps[0]!.tools[0]!,
+          result: { kind: 'text', text: 'full durable output' },
+        }],
+      }],
+    };
+    const settled = applyLiveTurnEvent(hydrated, {
       type: 'tool_result',
       id: 'event-3',
       turnId: 'turn-1',
       toolUseId: 'tool-1',
+      contentOmitted: true,
       isError: false,
       content: { kind: 'text', text: '' },
       ts: 102,
     });
 
     assert.equal(settled.steps[0]?.tools[0]?.status, 'completed');
-    assert.deepEqual(settled.steps[0]?.tools[0]?.result, previewed.steps[0]?.tools[0]?.result);
+    assert.deepEqual(settled.steps[0]?.tools[0]?.result, { kind: 'text', text: 'full durable output' });
   });
 });
 

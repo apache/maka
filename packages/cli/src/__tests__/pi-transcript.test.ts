@@ -33,7 +33,7 @@ import {
   renderMakaPiActivityStrip,
   renderMakaPiStatusLine,
   renderMakaPiTranscript,
-  reconcileToolsWithStoredMessages,
+  hydrateToolsWithStoredMessages,
   replaceTranscriptWithStoredMessages,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
@@ -339,7 +339,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(state.entries[0]?.kind === 'assistant' ? state.entries[0].text : undefined, '');
   });
 
-  test('reconciles durable tool details without resetting live turn state', () => {
+  test('hydrates durable tool details without resetting live turn state', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
       state,
@@ -350,7 +350,7 @@ describe('Maka Pi TUI transcript', () => {
     state.pendingFallback = [{ text: 'Try again', enqueue: 'steer' }];
 
     assert.equal(
-      reconcileToolsWithStoredMessages(state, 'turn-1', [
+      hydrateToolsWithStoredMessages(state, 'turn-1', [
         {
           type: 'tool_call',
           id: 'tool-1',
@@ -383,20 +383,20 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(state.entries.at(-1)?.kind, 'notice');
   });
 
-  test('keeps an in-flight background poll hidden during settlement reconciliation', () => {
+  test('keeps an in-flight background poll suppressed during durable hydration', () => {
     const { state, messages } = inFlightBackgroundPollFixture();
-    reconcileToolsWithStoredMessages(state, 'turn-1', messages);
+    hydrateToolsWithStoredMessages(state, 'turn-1', messages);
 
     const poll = state.entries.find(
       (entry) => entry.kind === 'tool' && entry.toolUseId === 'read-bg',
     );
-    assert.equal(poll?.kind === 'tool' ? poll.hidden : undefined, true);
+    assert.equal(poll?.kind === 'tool' ? poll.suppressed : undefined, true);
     assert.equal(poll?.kind === 'tool' ? poll.status : undefined, 'running');
   });
 
-  test('drops a reconciled in-flight background poll on abort', () => {
+  test('drops a hydrated in-flight background poll on abort', () => {
     const { state, messages } = inFlightBackgroundPollFixture();
-    reconcileToolsWithStoredMessages(state, 'turn-1', messages);
+    hydrateToolsWithStoredMessages(state, 'turn-1', messages);
 
     applyMakaSessionEventToTranscript(state, event({ type: 'abort', reason: 'user_stop' }));
 
@@ -406,30 +406,71 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
-  test('removes a live poll card that the durable transcript folds into its Bash parent', () => {
-    const state = createMakaPiTranscriptState();
-    for (const tool of [
-      { toolUseId: 'bash-1', toolName: 'Bash' },
-      { toolUseId: 'poll-1', toolName: 'Read' },
-    ]) {
-      applyMakaSessionEventToTranscript(state, event({ type: 'tool_start', ...tool, args: {} }));
-      applyMakaSessionEventToTranscript(
-        state,
-        event({
-          type: 'tool_result',
-          toolUseId: tool.toolUseId,
-          isError: false,
-          content: { kind: 'text', text: '' },
-        }),
-      );
-    }
-    const initialRun = shellRun({ ref: 'maka://runtime/session-1/run-1', revision: 1 });
-    const polledRun = shellRun({ ref: 'maka://runtime/session-1/run-1', revision: 2 });
+  test('drops a resultless background poll when the turn completes', () => {
+    const { state, messages } = inFlightBackgroundPollFixture();
+    hydrateToolsWithStoredMessages(state, 'turn-1', [
+      ...messages.filter((message) => message.type !== 'turn_state'),
+      {
+        type: 'turn_state',
+        id: 'turn-state-complete',
+        turnId: 'turn-1',
+        ts: 5,
+        status: 'completed',
+        partialOutputRetained: true,
+      },
+    ]);
 
-    reconcileToolsWithStoredMessages(state, 'turn-1', [
+    applyMakaSessionEventToTranscript(state, event({ type: 'complete', stopReason: 'end_turn' }));
+
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.toolUseId === 'read-bg'),
+      false,
+    );
+  });
+
+  test('lets the live result own failed-poll tail placement after durable hydration', () => {
+    const state = createMakaPiTranscriptState();
+    const ref = 'maka://runtime/background-tasks/bg-1';
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'bash-bg',
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-bg',
+        isError: false,
+        content: shellRun({ ref, status: 'running' }),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'tool_start', toolUseId: 'read-bg', toolName: 'Read', args: { ref } }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_delta', messageId: 'assistant-late', text: 'Still working' }),
+    );
+
+    const before = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi);
+    const assistant = state.entries.find(
+      (entry) => entry.kind === 'assistant' && entry.messageId === 'assistant-late',
+    );
+    assert.ok(assistant);
+    const viewportTop = state.renderGeometry.entryFirstLine?.get(assistant);
+    assert.ok(viewportTop !== undefined && viewportTop > 0);
+    state.renderGeometry.viewportTop = viewportTop;
+
+    hydrateToolsWithStoredMessages(state, 'turn-1', [
       {
         type: 'tool_call',
-        id: 'bash-1',
+        id: 'bash-bg',
         turnId: 'turn-1',
         ts: 1,
         toolName: 'Bash',
@@ -440,38 +481,149 @@ describe('Maka Pi TUI transcript', () => {
         id: 'bash-result',
         turnId: 'turn-1',
         ts: 2,
-        toolUseId: 'bash-1',
+        toolUseId: 'bash-bg',
         isError: false,
-        content: initialRun,
+        content: shellRun({ ref, status: 'running' }),
       },
       {
         type: 'tool_call',
-        id: 'poll-1',
+        id: 'read-bg',
         turnId: 'turn-1',
         ts: 3,
         toolName: 'Read',
-        args: { ref: initialRun.ref },
+        args: { ref },
       },
       {
         type: 'tool_result',
-        id: 'poll-result',
+        id: 'read-result',
         turnId: 'turn-1',
         ts: 4,
-        toolUseId: 'poll-1',
-        isError: false,
-        content: polledRun,
+        toolUseId: 'read-bg',
+        isError: true,
+        content: { kind: 'text', text: 'background task no longer exists' },
       },
     ]);
 
-    const tools = state.entries.filter(
-      (entry): entry is Extract<(typeof state.entries)[number], { kind: 'tool' }> =>
-        entry.kind === 'tool',
+    const hydratedPoll = state.entries.find(
+      (entry) => entry.kind === 'tool' && entry.toolUseId === 'read-bg',
     );
+    assert.equal(hydratedPoll?.kind === 'tool' ? hydratedPoll.suppressed : undefined, true);
     assert.deepEqual(
-      tools.map((tool) => tool.toolUseId),
-      ['bash-1'],
+      renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).slice(0, viewportTop),
+      before.slice(0, viewportTop),
     );
-    assert.equal(tools[0]?.result?.kind === 'shell_run' ? tools[0].result.revision : undefined, 2);
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'read-bg',
+        isError: true,
+        content: { kind: 'text', text: '' },
+        contentOmitted: true,
+      }),
+    );
+
+    const tail = state.entries.at(-1);
+    assert.equal(tail?.kind, 'tool');
+    assert.equal(tail?.kind === 'tool' ? tail.toolUseId : undefined, 'read-bg');
+    assert.deepEqual(tail?.kind === 'tool' ? tail.result : undefined, {
+      kind: 'text',
+      text: 'background task no longer exists',
+    });
+  });
+
+  test('keeps a successful poll correlated until its live result folds it', () => {
+    const state = createMakaPiTranscriptState();
+    const ref = 'maka://runtime/background-tasks/bg-1';
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'bash-bg',
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-bg',
+        isError: false,
+        content: shellRun({ ref, status: 'running', revision: 1 }),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'tool_start', toolUseId: 'read-bg', toolName: 'Read', args: { ref } }),
+    );
+
+    hydrateToolsWithStoredMessages(state, 'turn-1', [
+      {
+        type: 'tool_call',
+        id: 'bash-bg',
+        turnId: 'turn-1',
+        ts: 1,
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      },
+      {
+        type: 'tool_result',
+        id: 'bash-result',
+        turnId: 'turn-1',
+        ts: 2,
+        toolUseId: 'bash-bg',
+        isError: false,
+        content: shellRun({ ref, status: 'running', revision: 1 }),
+      },
+      {
+        type: 'tool_call',
+        id: 'read-bg',
+        turnId: 'turn-1',
+        ts: 3,
+        toolName: 'Read',
+        args: { ref },
+      },
+      {
+        type: 'tool_result',
+        id: 'read-result',
+        turnId: 'turn-1',
+        ts: 4,
+        toolUseId: 'read-bg',
+        isError: false,
+        content: shellRun({ ref, status: 'running', revision: 2 }),
+      },
+    ]);
+
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.toolUseId === 'read-bg'),
+      true,
+    );
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'read-bg',
+        isError: false,
+        content: shellRun({ ref, status: 'running', revision: 2 }),
+      }),
+    );
+
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.toolUseId === 'read-bg'),
+      false,
+    );
+    const parent = state.entries.find(
+      (entry) => entry.kind === 'tool' && entry.toolUseId === 'bash-bg',
+    );
+    assert.equal(
+      parent?.kind === 'tool' && parent.result?.kind === 'shell_run'
+        ? parent.result.revision
+        : undefined,
+      2,
+    );
   });
 
   test('renders steering messages with human-facing text and falls back to model-facing text', () => {
@@ -1616,6 +1768,60 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(settled, /● Read/);
   });
 
+  test('folds an omitted Runtime Host poll result using its live correlation', () => {
+    const state = createMakaPiTranscriptState();
+    const ref = 'maka://runtime/background-tasks/bg-1';
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'bash-bg',
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-bg',
+        isError: false,
+        content: shellRun({ ref, status: 'running' }),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'read-bg',
+        toolName: 'Read',
+        args: undefined,
+        shellRunRef: ref,
+      }),
+    );
+
+    const poll = state.entries.find(
+      (entry) => entry.kind === 'tool' && entry.toolUseId === 'read-bg',
+    );
+    assert.equal(poll?.kind === 'tool' ? poll.suppressed : undefined, true);
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'read-bg',
+        isError: false,
+        content: { kind: 'text', text: '' },
+        contentOmitted: true,
+      }),
+    );
+
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.toolUseId === 'read-bg'),
+      false,
+    );
+  });
+
   test('surfaces an errored poll carrying shell_run content instead of folding it', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
@@ -1856,6 +2062,114 @@ describe('Maka Pi TUI transcript', () => {
     const after = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi);
     assert.deepEqual(after.slice(0, viewportTop), before.slice(0, viewportTop));
     assert.match(after.slice(viewportTop).join('\n'), /● Read/);
+  });
+
+  test('removes a successful off-screen poll without changing scrollback', () => {
+    const state = createMakaPiTranscriptState();
+    const ref = 'maka://runtime/background-tasks/bg-1';
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'bash-bg',
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-bg',
+        isError: false,
+        content: shellRun({ ref, status: 'running' }),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_delta', messageId: 'assistant-middle', text: 'Still working' }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'tool_start', toolUseId: 'read-bg', toolName: 'Read', args: { ref } }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_delta', messageId: 'assistant-late', text: 'More output' }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'tool_start', toolUseId: 'read-file', toolName: 'Read', args: {} }),
+    );
+
+    const before = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi);
+    const visibleTail = state.entries.find(
+      (entry) => entry.kind === 'tool' && entry.toolUseId === 'read-file',
+    );
+    assert.ok(visibleTail);
+    const viewportTop = state.renderGeometry.entryFirstLine?.get(visibleTail);
+    assert.ok(viewportTop !== undefined && viewportTop > 0);
+    state.renderGeometry.viewportTop = viewportTop;
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'read-bg',
+        isError: false,
+        content: shellRun({ ref, status: 'running', revision: 2 }),
+      }),
+    );
+
+    const after = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi);
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.toolUseId === 'read-bg'),
+      false,
+    );
+    assert.deepEqual(after.slice(0, viewportTop), before.slice(0, viewportTop));
+  });
+
+  test('gives a suppressed poll zero transcript footprint', () => {
+    const state = createMakaPiTranscriptState();
+    const ref = 'maka://runtime/background-tasks/bg-1';
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'bash-bg',
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-bg',
+        isError: false,
+        content: shellRun({ ref, status: 'running' }),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'text_delta', messageId: 'assistant-middle', text: 'Still working' }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'tool_start', toolUseId: 'read-bg', toolName: 'Read', args: { ref } }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'tool_start', toolUseId: 'read-file', toolName: 'Read', args: {} }),
+    );
+
+    const before = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi);
+    state.entries = state.entries.filter(
+      (entry) => entry.kind !== 'tool' || entry.toolUseId !== 'read-bg',
+    );
+    const after = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi);
+
+    assert.deepEqual(after, before);
   });
 
   test('never renders a StopBackgroundTask card while the stop is in flight', () => {
@@ -2433,7 +2747,7 @@ describe('Maka Pi TUI transcript', () => {
     const afterAbort = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.doesNotMatch(afterAbort, /● Read/);
     assert.equal(
-      state.entries.some((entry) => entry.kind === 'tool' && entry.hidden),
+      state.entries.some((entry) => entry.kind === 'tool' && entry.suppressed),
       false,
     );
   });

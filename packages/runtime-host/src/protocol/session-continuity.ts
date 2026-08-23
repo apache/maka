@@ -164,6 +164,7 @@ export type SessionToolEvent =
       activityKind?: ToolActivityKind;
       displayName?: string;
       stepId?: string;
+      shellRunRef?: string;
     })
   | (SessionToolEventIdentity & {
       type: 'tool_output_delta';
@@ -730,6 +731,7 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'activityKind',
       'displayName',
       'stepId',
+      'shellRunRef',
     ];
     assertAllowedKeys(record, 'Session tool start event', allowed);
     assertRequiredKeys(record, 'Session tool start event', [
@@ -764,6 +766,9 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
             ),
           }),
       ...(record.stepId === undefined ? {} : { stepId: requireEntityId(record.stepId, 'stepId') }),
+      ...(record.shellRunRef === undefined
+        ? {}
+        : { shellRunRef: decodeRuntimeResourceRef(record.shellRunRef) }),
     };
   }
   if (record.type === 'tool_output_delta') {

@@ -96,7 +96,7 @@ import {
   applyShellRunViewUpdateToTranscript,
   permissionModeLabel,
   replaceTranscriptWithStoredMessages,
-  reconcileToolsWithStoredMessages,
+  hydrateToolsWithStoredMessages,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
@@ -541,7 +541,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         return;
       }
       rememberTranscriptModel(messages);
-      if (reconcileToolsWithStoredMessages(state, turnId, messages)) {
+      if (hydrateToolsWithStoredMessages(state, turnId, messages)) {
         shellRunElapsedTicker.sync();
         requestRender();
       }

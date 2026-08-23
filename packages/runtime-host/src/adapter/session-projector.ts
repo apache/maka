@@ -496,6 +496,7 @@ function projectToolEvent(
       ...(event.activityKind ? { activityKind: event.activityKind } : {}),
       ...(event.displayName ? { displayName: event.displayName } : {}),
       ...(event.stepId ? { stepId: event.stepId } : {}),
+      ...(event.shellRunRef ? { shellRunRef: event.shellRunRef } : {}),
     };
   }
   if (event.type === 'tool_output_delta') {
@@ -523,6 +524,7 @@ function projectToolEvent(
   return {
     type: 'tool_result',
     ...base,
+    contentOmitted: true,
     isError: event.status === 'errored',
     content: {
       kind: 'text',
