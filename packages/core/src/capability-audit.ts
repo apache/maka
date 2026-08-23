@@ -28,7 +28,7 @@ export type SourceAuthType = (typeof SOURCE_AUTH_TYPES)[number];
 export const SOURCE_RECORD_STATUSES = ['ready', 'needs_auth', 'error', 'disabled'] as const;
 export type SourceRecordStatus = (typeof SOURCE_RECORD_STATUSES)[number];
 
-export const CAPABILITY_AUDIT_PERMISSION_MODES = ['explore', 'ask', 'execute'] as const;
+export const CAPABILITY_AUDIT_PERMISSION_MODES = ['explore', 'ask'] as const;
 export type CapabilityAuditPermissionMode = (typeof CAPABILITY_AUDIT_PERMISSION_MODES)[number];
 
 export const SCHEDULED_TASK_LAST_RUN_STATUSES = ['ok', 'error', 'skipped'] as const;
@@ -64,7 +64,7 @@ export interface SkillAuditRecord {
   declaredTools: string[];
   enabled: boolean;
   sourceSlug: string;
-  permissionMode: Exclude<CapabilityAuditPermissionMode, 'execute'>;
+  permissionMode: CapabilityAuditPermissionMode;
 }
 
 export interface ScheduledTaskAuditRecord {
@@ -201,8 +201,9 @@ function scheduledTaskToAuditRecord(task: ScheduledTask): ScheduledTaskAuditReco
 
 function scheduledTaskPermissionMode(task: ScheduledTask): CapabilityAuditPermissionMode {
   if (task.status === 'completed' || task.status === 'expired') return 'explore';
-  if (task.status === 'paused') return 'ask';
-  return 'execute';
+  // Active tasks run with `ask` approval — the retired `execute` mode folded to
+  // `ask` identically, so this preserves the historical behaviour.
+  return 'ask';
 }
 
 function mapScheduledTaskRunOutcome(outcome: ScheduledTaskRunOutcome): ScheduledTaskLastRunStatus {
@@ -228,7 +229,7 @@ function summarizeCapabilityAudit(
     declaredToolKindCount: distinctDeclaredToolKinds(skills).length,
     scheduledTaskCount: scheduledTasks.length,
     enabledScheduledTaskCount: scheduledTasks.filter((task) => task.enabled).length,
-    executableScheduledTaskCount: scheduledTasks.filter((task) => task.permissionMode === 'execute')
+    executableScheduledTaskCount: scheduledTasks.filter((task) => task.enabled && task.permissionMode !== 'explore')
       .length,
     failedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'error')
       .length,
