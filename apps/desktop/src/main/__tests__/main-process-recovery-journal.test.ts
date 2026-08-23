@@ -31,6 +31,7 @@ import {
   MAIN_PROCESS_RECOVERY_FLUSH_INTERVAL_MS,
   MAIN_PROCESS_RECOVERY_LOG_MAX_BYTES,
   MAIN_PROCESS_RECOVERY_MAX_AGE_MS,
+  presentPendingMainProcessRecovery,
 } from '../main-process-recovery-journal.js';
 
 test('recovers one bounded redacted snapshot after an unclean exit', async () => {
@@ -158,19 +159,38 @@ test('persists only the bounded newest log tail', async () => {
   }
 });
 
-test('expires stale evidence and ignores a corrupt pending record', async () => {
+test('retains a newly discovered interruption and expires pending evidence after seven days', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-main-recovery-expiry-'));
-  const errors: unknown[] = [];
   try {
     createJournal(directory, new DiagnosticLogBuffer(), new Date('2026-08-01T00:00:00Z'));
+    const discovered = createJournal(
+      directory,
+      new DiagnosticLogBuffer(),
+      new Date('2026-08-20T00:00:00Z'),
+    );
+    assert.equal(discovered.pending?.run.startedAt, '2026-08-01T00:00:00.000Z');
+    discovered.markClean();
+
     const afterExpiry = createJournal(
       directory,
       new DiagnosticLogBuffer(),
-      new Date(new Date('2026-08-01T00:00:00Z').getTime() + MAIN_PROCESS_RECOVERY_MAX_AGE_MS + 1),
+      new Date(
+        new Date('2026-08-20T00:00:00Z').getTime() +
+          MAIN_PROCESS_RECOVERY_MAX_AGE_MS +
+          2_000,
+      ),
     );
     assert.equal(afterExpiry.pending, undefined);
     afterExpiry.markClean();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
+test('ignores corrupt pending records without amplifying invalid log arrays', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-main-recovery-corrupt-'));
+  const errors: unknown[] = [];
+  try {
     writeFileSync(join(directory, 'pending.json'), '{not json', { mode: 0o600 });
     const afterCorruption = createJournal(
       directory,
@@ -181,6 +201,76 @@ test('expires stale evidence and ignores a corrupt pending record', async () => 
     assert.equal(afterCorruption.pending, undefined);
     assert.equal(errors.length, 1);
     afterCorruption.markClean();
+
+    writeFileSync(
+      join(directory, 'pending.json'),
+      JSON.stringify({ logs: Array.from({ length: 50_000 }, () => 0) }),
+      { mode: 0o600 },
+    );
+    const afterInvalidLogs = createJournal(
+      directory,
+      new DiagnosticLogBuffer(),
+      new Date('2026-08-20T00:00:00Z'),
+      errors,
+    );
+    assert.equal(afterInvalidLogs.pending, undefined);
+    assert.equal(errors.length, 2);
+    assert.equal((errors[1] as Error).message, 'Main-process recovery logs are invalid');
+    afterInvalidLogs.markClean();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('discards pending evidence only after its recovery presentation succeeds', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-main-recovery-presentation-'));
+  const errors: unknown[] = [];
+  try {
+    const interrupted = createJournal(
+      directory,
+      new DiagnosticLogBuffer(),
+      new Date('2026-08-20T00:00:00Z'),
+    );
+    interrupted.markDirty();
+    interrupted.flushNow();
+
+    const failedPresentation = createJournal(
+      directory,
+      new DiagnosticLogBuffer(),
+      new Date('2026-08-20T01:00:00Z'),
+    );
+    await presentPendingMainProcessRecovery(
+      failedPresentation,
+      async () => {
+        throw new Error('dialog unavailable');
+      },
+      (error) => errors.push(error),
+    );
+    assert.equal(errors.length, 1);
+    failedPresentation.markClean();
+
+    const retriedPresentation = createJournal(
+      directory,
+      new DiagnosticLogBuffer(),
+      new Date('2026-08-20T02:00:00Z'),
+    );
+    await presentPendingMainProcessRecovery(
+      retriedPresentation,
+      async (evidence) => {
+        assert.equal(evidence.run.startedAt, '2026-08-20T00:00:00.000Z');
+      },
+      (error) => errors.push(error),
+    );
+    retriedPresentation.markClean();
+
+    const afterSuccess = createJournal(
+      directory,
+      new DiagnosticLogBuffer(),
+      new Date('2026-08-20T03:00:00Z'),
+    );
+    assert.equal(afterSuccess.pending, undefined);
+    assert.equal(errors.length, 1);
+    afterSuccess.markClean();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

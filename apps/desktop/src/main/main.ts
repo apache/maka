@@ -31,6 +31,7 @@ import {
 import {
   appendUncaughtMainProcessError,
   createMainProcessRecoveryJournal,
+  presentPendingMainProcessRecovery,
   type MainProcessRecoveryJournal,
 } from './main-process-recovery-journal.js';
 import {
@@ -101,42 +102,43 @@ if (!app.requestSingleInstanceLock()) {
     .whenReady()
     .then(async () => {
       console.log('[startup] app ready');
-      const pending = recoveryJournal?.pending;
-      if (pending) {
+      const journal = recoveryJournal;
+      if (journal?.pending) {
         if (isIsolatedE2e) {
-          recoveryJournal?.discardPending();
+          journal.discardPending();
         } else {
-          try {
-            await showPreviousMainProcessInterruptionDialog({
-              locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
-              copyDiagnostics: () =>
-                copyDesktopDiagnosticReport(
-                  {
-                    environment: () =>
-                      captureDesktopDiagnosticEnvironment({
-                        appVersion: app.getVersion(),
-                        buildMode: buildInfo.mode,
-                        buildCommit: buildInfo.commit,
-                        locale: app.getLocale(),
-                        workspacePath: join(
-                          app.getPath('userData'),
-                          'workspaces',
-                          'default',
-                        ),
-                      }),
-                    mainLogs: () => mainProcessLogBuffer.snapshot(),
-                    resolveActiveRuntimeHost: () => undefined,
-                    resolveRuntimeHost: () => undefined,
-                    writeClipboard: (report) => clipboard.writeText(report),
-                  },
-                  createDesktopPreviousMainProcessDiagnosticInput(pending),
-                ),
-              showMessageBox: (options) => dialog.showMessageBox(options),
-            });
-            recoveryJournal?.discardPending();
-          } catch (error) {
-            console.error('[diagnostics] previous-session recovery dialog failed:', error);
-          }
+          await presentPendingMainProcessRecovery(
+            journal,
+            (pending) =>
+              showPreviousMainProcessInterruptionDialog({
+                locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+                copyDiagnostics: () =>
+                  copyDesktopDiagnosticReport(
+                    {
+                      environment: () =>
+                        captureDesktopDiagnosticEnvironment({
+                          appVersion: app.getVersion(),
+                          buildMode: buildInfo.mode,
+                          buildCommit: buildInfo.commit,
+                          locale: app.getLocale(),
+                          workspacePath: join(
+                            app.getPath('userData'),
+                            'workspaces',
+                            'default',
+                          ),
+                        }),
+                      mainLogs: () => mainProcessLogBuffer.snapshot(),
+                      resolveActiveRuntimeHost: () => undefined,
+                      resolveRuntimeHost: () => undefined,
+                      writeClipboard: (report) => clipboard.writeText(report),
+                    },
+                    createDesktopPreviousMainProcessDiagnosticInput(pending),
+                  ),
+                showMessageBox: (options) => dialog.showMessageBox(options),
+              }),
+            (error) =>
+              console.error('[diagnostics] previous-session recovery dialog failed:', error),
+          );
         }
       }
       return import('./runtime-host-boot.js');

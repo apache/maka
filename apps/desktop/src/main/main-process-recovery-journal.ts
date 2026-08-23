@@ -29,6 +29,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { arch as osArch, homedir, release as osRelease } from 'node:os';
@@ -138,11 +139,12 @@ export function createMainProcessRecoveryJournal(
   const activePath = join(input.root, 'active.json');
   const pendingPath = join(input.root, 'pending.json');
   const temporaryPath = join(input.root, '.active.json.tmp');
-  rotatePriorRun({ activePath, pendingPath, temporaryPath });
-  const pending = readPendingEvidence(pendingPath, now(), input.onError);
+  const startupAt = now();
+  rotatePriorRun({ activePath, pendingPath, temporaryPath }, startupAt);
+  const pending = readPendingEvidence(pendingPath, startupAt, input.onError);
 
   const run: MainProcessRecoveryRun = {
-    startedAt: now().toISOString(),
+    startedAt: startupAt.toISOString(),
     appVersion: input.appVersion,
     buildMode: input.buildMode,
     buildCommit: input.buildCommit,
@@ -237,6 +239,21 @@ export function createMainProcessRecoveryJournal(
   };
 }
 
+export async function presentPendingMainProcessRecovery(
+  journal: Pick<MainProcessRecoveryJournal, 'pending' | 'discardPending'>,
+  present: (evidence: MainProcessRecoveryEvidence) => Promise<void>,
+  onError: (error: unknown) => void,
+): Promise<void> {
+  const evidence = journal.pending;
+  if (!evidence) return;
+  try {
+    await present(evidence);
+    journal.discardPending();
+  } catch (error) {
+    onError(error);
+  }
+}
+
 export function appendUncaughtMainProcessError(
   logs: { append(level: 'error', message: string, capturedAt?: Date): void },
   journal: Pick<MainProcessRecoveryJournal, 'markDirty' | 'flushNow'>,
@@ -257,13 +274,16 @@ function rotatePriorRun(paths: {
   readonly activePath: string;
   readonly pendingPath: string;
   readonly temporaryPath: string;
-}): void {
+}, promotedAt: Date): void {
   removeFileEntry(paths.temporaryPath);
   const active = lstatOrUndefined(paths.activePath);
   if (!active) return;
   if (!active.isFile() || active.isSymbolicLink()) {
     throw new Error('Main-process recovery active record is invalid');
   }
+  // The pending file's mtime is its retention authority. Touch before rename
+  // so even an interruption between these operations leaves recoverable state.
+  utimesSync(paths.activePath, promotedAt, promotedAt);
   removeFileEntry(paths.pendingPath);
   renameSync(paths.activePath, paths.pendingPath);
 }
@@ -275,9 +295,9 @@ function readPendingEvidence(
 ): MainProcessRecoveryEvidence | undefined {
   if (!lstatOrUndefined(pendingPath)) return undefined;
   try {
-    const evidence = decodeEvidence(readJsonFile(pendingPath, EVIDENCE_MAX_BYTES));
-    const lastEvidenceAt = evidence.capturedAt ?? evidence.run.startedAt;
-    if (now.getTime() - Date.parse(lastEvidenceAt) > MAIN_PROCESS_RECOVERY_MAX_AGE_MS) {
+    const stored = readJsonFile(pendingPath, EVIDENCE_MAX_BYTES);
+    const evidence = decodeEvidence(stored.value);
+    if (now.getTime() - stored.modifiedAtMs > MAIN_PROCESS_RECOVERY_MAX_AGE_MS) {
       removeFileEntry(pendingPath);
       return undefined;
     }
@@ -294,6 +314,13 @@ function readPendingEvidence(
 }
 
 function decodeEvidence(value: unknown): StoredEvidence {
+  const logs =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>).logs
+      : undefined;
+  if (Array.isArray(logs) && logs.some((entry) => typeof entry !== 'string')) {
+    throw new Error('Main-process recovery logs are invalid');
+  }
   const evidence = storedEvidenceSchema.parse(value);
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -304,7 +331,7 @@ function decodeEvidence(value: unknown): StoredEvidence {
 }
 
 function boundedLogTail(logs: readonly string[]): readonly string[] {
-  const bounded: string[] = [];
+  const newestFirst: string[] = [];
   let bytes = 2;
   for (let index = logs.length - 1; index >= 0; index -= 1) {
     const entry = truncateUtf8(
@@ -313,15 +340,18 @@ function boundedLogTail(logs: readonly string[]): readonly string[] {
       ENTRY_TRUNCATION_MARKER,
     );
     const entryBytes = Buffer.byteLength(JSON.stringify(entry));
-    const separatorBytes = bounded.length > 0 ? 1 : 0;
+    const separatorBytes = newestFirst.length > 0 ? 1 : 0;
     if (bytes + separatorBytes + entryBytes > MAIN_PROCESS_RECOVERY_LOG_MAX_BYTES) break;
-    bounded.unshift(entry);
+    newestFirst.push(entry);
     bytes += separatorBytes + entryBytes;
   }
-  return bounded;
+  return newestFirst.reverse();
 }
 
-function readJsonFile(path: string, maximumBytes: number): unknown {
+function readJsonFile(
+  path: string,
+  maximumBytes: number,
+): { readonly value: unknown; readonly modifiedAtMs: number } {
   const linkMetadata = lstatSync(path);
   if (!linkMetadata.isFile() || linkMetadata.isSymbolicLink()) {
     throw new Error(`Main-process recovery file ${basename(path)} is invalid`);
@@ -333,7 +363,10 @@ function readJsonFile(path: string, maximumBytes: number): unknown {
     if (!metadata.isFile() || metadata.size > maximumBytes) {
       throw new Error(`Main-process recovery file ${basename(path)} is invalid`);
     }
-    return JSON.parse(readFileSync(fd, 'utf8'));
+    return {
+      value: JSON.parse(readFileSync(fd, 'utf8')),
+      modifiedAtMs: metadata.mtimeMs,
+    };
   } finally {
     closeSync(fd);
   }
