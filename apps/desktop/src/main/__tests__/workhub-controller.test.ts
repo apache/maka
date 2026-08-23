@@ -244,6 +244,32 @@ test('a short Latin Session name does not match inside another word', async () =
   assert.deepEqual(submitted, ['parser-new']);
 });
 
+test('a one-character Latin discriminator prevents routing to a different Session name', async () => {
+  for (const { existingName, requestedName } of [
+    { existingName: 'GPT-4', requestedName: 'GPT-3' },
+    { existingName: 'Project A', requestedName: 'Project B' },
+  ]) {
+    const submitted: string[] = [];
+    const sessions = port([
+      session('existing', { sessionName: existingName }),
+    ]);
+    sessions.create = async ({ name }) => session('new', { sessionName: name });
+    sessions.submit = async (target) => {
+      submitted.push(target.sessionId);
+      return { turnId: 'turn-new' };
+    };
+
+    const result = await createWorkHubController({ sessions }).submit({
+      requestId: `request-${requestedName}`,
+      text: `请处理 ${requestedName} 的问题`,
+    });
+
+    assert.equal(result.kind, 'submitted');
+    assert.equal(result.kind === 'submitted' ? result.evidence : undefined, 'new_session');
+    assert.deepEqual(submitted, ['new']);
+  }
+});
+
 test('submit asks the user when weak relevance matches more than one Session', async () => {
   const submitted: string[] = [];
   const sessions = port([

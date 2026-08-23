@@ -128,7 +128,12 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
         };
       }
 
-      const related = rankRelatedSessions(text, sessions, originPromptBySessionId);
+      const relatedSessions = sessions.filter((session) => {
+        const qualifiedName = `${session.projectName}/${session.sessionName}`;
+        return !hasConflictingLatinIdentity(text, session.sessionName) &&
+          !hasConflictingLatinIdentity(text, qualifiedName);
+      });
+      const related = rankRelatedSessions(text, relatedSessions, originPromptBySessionId);
       if (looksLikeTargetUncertainty(text) && sessions.length > 0) {
         const relatedIds = new Set(related.map(({ session }) => session.target.sessionId));
         const options = [
@@ -238,8 +243,8 @@ function exactIdentityMatchLength(input: string, identity: string): number {
   // punctuation is useful for Han names, but it must never make a short name
   // such as "AI" match inside an unrelated word such as "repair".
   if (/^[a-z0-9\s\p{P}\p{S}]+$/iu.test(identity)) {
-    const inputTokens = latinTokens(input);
-    const identityTokens = latinTokens(identity);
+    const inputTokens = exactLatinTokens(input);
+    const identityTokens = exactLatinTokens(identity);
     if (
       identityTokens.length === 0 ||
       identityTokens.length > inputTokens.length
@@ -253,6 +258,31 @@ function exactIdentityMatchLength(input: string, identity: string): number {
   return normalizeIdentityText(input).includes(normalizedIdentity)
     ? normalizedIdentity.length
     : 0;
+}
+
+function hasConflictingLatinIdentity(input: string, identity: string): boolean {
+  if (!/^[a-z0-9\s\p{P}\p{S}]+$/iu.test(identity)) return false;
+
+  const inputTokens = exactLatinTokens(input);
+  const identityTokens = exactLatinTokens(identity);
+  if (
+    !identityTokens.some((token) => token.length === 1) ||
+    identityTokens.length > inputTokens.length
+  ) return false;
+
+  return inputTokens.some((_, start) => {
+    let hasConflict = false;
+    const sameIdentityExceptDiscriminator = identityTokens.every((token, offset) => {
+      const inputToken = inputTokens[start + offset];
+      if (inputToken === token) return true;
+      if (token.length === 1 && inputToken?.length === 1) {
+        hasConflict = true;
+        return true;
+      }
+      return false;
+    });
+    return sameIdentityExceptDiscriminator && hasConflict;
+  });
 }
 
 function looksLikeRecentFocus(value: string): boolean {
@@ -381,6 +411,10 @@ function routingTerms(value: string): string[] {
 
 function latinTokens(value: string): string[] {
   return value.toLocaleLowerCase().match(/[a-z0-9]{2,}/giu) ?? [];
+}
+
+function exactLatinTokens(value: string): string[] {
+  return value.toLocaleLowerCase().match(/[a-z0-9]+/giu) ?? [];
 }
 
 function isLatinTerm(value: string): boolean {
