@@ -244,10 +244,10 @@ npm --workspace @maka/eval test
 npm --workspace @maka/desktop test
 ```
 
-Use the following commands to update `packages/core/src/model-metadata.generated.ts` from models.dev and run the focused tests. Keep access-path-specific overrides in `model-metadata.ts`; do not edit the generated file by hand.
+Use `refresh:model-metadata` to fetch the current catalog from models.dev, update the committed snapshot, and regenerate the derived TypeScript files. `sync:model-metadata` is intentionally offline: it only regenerates those files from the committed snapshot. Keep access-path-specific overrides in `model-metadata.ts`; do not edit the generated files by hand.
 
 ```sh
-npm run sync:model-metadata
+npm run refresh:model-metadata
 npm --workspace @maka/core test
 ```
 
