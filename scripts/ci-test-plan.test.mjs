@@ -287,6 +287,23 @@ test('contract checks run before dependency setup and can fail the job', () => {
   }
 });
 
+test('core CI checks the Astryx inventory for every code change before building', () => {
+  const workflow = readWorkflow('ci.yml');
+  const inventoryStart = workflow.indexOf('      - name: Astryx surface inventory\n');
+  const inventoryEnd = workflow.indexOf('\n      - ', inventoryStart + 1);
+  const buildStart = workflow.indexOf('      - name: Build\n');
+
+  assert.ok(inventoryStart >= 0);
+  assert.ok(inventoryStart < buildStart);
+
+  const inventoryStep = workflow.slice(inventoryStart, inventoryEnd);
+  assert.match(
+    inventoryStep,
+    /if: steps\.plan\.outputs\.code == 'true' \|\| steps\.plan\.outputs\.astryx_surface == 'true'/u,
+  );
+  assert.doesNotMatch(inventoryStep, /continue-on-error/u);
+});
+
 test('core CI validates affected installed CLI packages on its existing runner', () => {
   const workflow = readWorkflow('ci.yml');
   const toolchain = workflow.indexOf(
