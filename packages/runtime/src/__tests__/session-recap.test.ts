@@ -45,6 +45,57 @@ test('session recap bounds its request to the newest complete turns', () => {
   assert.ok(messages.length < events.length + 1);
 });
 
+test('session recap keeps bounded evidence from one oversized latest turn', () => {
+  const sentinel = 'LATEST-TURN-SENTINEL';
+  const messages = buildSessionRecapMessages({
+    events: [
+      textEvent(
+        'latest-user',
+        'turn-1',
+        'user',
+        `${sentinel} ${'oversized context '.repeat(2_000)}`,
+      ),
+    ],
+    connection: connection(),
+    modelId: 'gpt-4',
+  });
+  const serialized = JSON.stringify(messages);
+
+  assert.equal(messages.length, 2);
+  assert.equal(serialized.includes(sentinel), true);
+  assert.ok(serialized.length <= 13_000);
+});
+
+test('session recap bounds an oversized tool result without splitting its protocol pair', () => {
+  const oversizedOutput = 'tool-output-sentinel '.repeat(2_000);
+  const messages = buildSessionRecapMessages({
+    events: [
+      textEvent('latest-user', 'turn-1', 'user', 'Inspect the current state.'),
+      toolCallEvent('call-event', 'call-1', 'turn-1'),
+      toolResultEvent('result-event', 'call-1', 'turn-1', oversizedOutput),
+    ],
+    connection: connection(),
+    modelId: 'gpt-4',
+  });
+  const serialized = JSON.stringify(messages);
+
+  assert.deepEqual(
+    messages.flatMap((message) =>
+      typeof message.content === 'string'
+        ? []
+        : message.content
+            .filter((part) => part.type === 'tool-call' || part.type === 'tool-result')
+            .map((part) => ({ type: part.type, toolCallId: part.toolCallId })),
+    ),
+    [
+      { type: 'tool-call', toolCallId: 'call-1' },
+      { type: 'tool-result', toolCallId: 'call-1' },
+    ],
+  );
+  assert.equal(serialized.includes(oversizedOutput), false);
+  assert.ok(serialized.length <= 13_000);
+});
+
 function textEvent(id: string, turnId: string, role: 'user' | 'model', text: string): RuntimeEvent {
   return {
     id,
@@ -57,6 +108,36 @@ function textEvent(id: string, turnId: string, role: 'user' | 'model', text: str
     role,
     author: role === 'user' ? 'user' : 'agent',
     content: { kind: 'text', text },
+  };
+}
+
+function toolCallEvent(id: string, callId: string, turnId: string): RuntimeEvent {
+  return {
+    id,
+    sessionId: 'session-1',
+    runId: `run-${turnId}`,
+    turnId,
+    invocationId: `invocation-${turnId}`,
+    ts: 2,
+    partial: false,
+    role: 'model',
+    author: 'agent',
+    content: { kind: 'function_call', id: callId, name: 'Read', args: { path: 'state.txt' } },
+  };
+}
+
+function toolResultEvent(id: string, callId: string, turnId: string, result: string): RuntimeEvent {
+  return {
+    id,
+    sessionId: 'session-1',
+    runId: `run-${turnId}`,
+    turnId,
+    invocationId: `invocation-${turnId}`,
+    ts: 3,
+    partial: false,
+    role: 'tool',
+    author: 'tool',
+    content: { kind: 'function_response', id: callId, name: 'Read', result },
   };
 }
 
