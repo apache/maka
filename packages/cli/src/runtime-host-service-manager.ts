@@ -35,6 +35,7 @@ import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
   resolveExistingStorageRoot,
   tryAcquireInteractiveRootOwner,
+  type InteractiveRootOwner,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
 import {
@@ -375,6 +376,7 @@ async function manageRuntimeHostServiceLocked(
       );
     }
     let prepared: { readonly hostEpoch: string; readonly pid: number } | undefined;
+    let rootFence: InteractiveRootOwner | undefined;
     if (service.pid !== null) {
       const retirement = await deps.prepareRetirement(
         service.config,
@@ -390,24 +392,35 @@ async function manageRuntimeHostServiceLocked(
         'retirement_failed',
         'Managed Runtime Host service did not report its process identity',
       );
+    } else if (service.state === 'starting') {
+      rootFence = await acquireRuntimeHostRootRetirementFence(root);
     }
-    await backend.stop();
-    const stopped = await readServiceStatus(configPath, backend);
-    if (stopped.active || stopped.state !== 'stopped' || stopped.pid !== null) {
-      throw new RuntimeHostServiceManagerError(
-        'retirement_failed',
-        'Runtime Host service did not reach a stable stopped state after retirement',
-      );
+    try {
+      await backend.stop();
+      const stopped = await readServiceStatus(configPath, backend);
+      if (stopped.active || stopped.state !== 'stopped' || stopped.pid !== null) {
+        throw new RuntimeHostServiceManagerError(
+          'retirement_failed',
+          'Runtime Host service did not reach a stable stopped state after retirement',
+        );
+      }
+      if (rootFence) {
+        await releaseRuntimeHostRootRetirementFence(rootFence);
+        rootFence = undefined;
+      } else {
+        await verifyRuntimeHostRootReleased(root);
+      }
+      return {
+        schemaVersion: 1,
+        action: input.action,
+        service: stopped,
+        retirement: prepared
+          ? { kind: 'retired', hostEpoch: prepared.hostEpoch, pid: prepared.pid }
+          : { kind: 'stopped' },
+      };
+    } finally {
+      await rootFence?.close().catch(() => undefined);
     }
-    await verifyRuntimeHostRootReleased(root);
-    return {
-      schemaVersion: 1,
-      action: input.action,
-      service: stopped,
-      retirement: prepared
-        ? { kind: 'retired', hostEpoch: prepared.hostEpoch, pid: prepared.pid }
-        : { kind: 'stopped' },
-    };
   }
   const config = await readServiceConfig(configPath);
   if (!config) {
@@ -914,6 +927,34 @@ async function verifyRuntimeHostRootReleased(
     throw new RuntimeHostServiceManagerError(
       'retirement_failed',
       'Runtime Host retirement did not release the State Root writer',
+      { cause: error },
+    );
+  }
+}
+
+async function acquireRuntimeHostRootRetirementFence(
+  root: StorageRootCapability<'interactive'>,
+): Promise<InteractiveRootOwner> {
+  try {
+    const owner = await tryAcquireInteractiveRootOwner(root);
+    if (!owner) throw new Error('The State Root writer changed while retirement was starting');
+    return owner;
+  } catch (error) {
+    throw new RuntimeHostServiceManagerError(
+      'retirement_failed',
+      'The State Root acquired a writer before retirement could stop the Runtime Host service',
+      { cause: error },
+    );
+  }
+}
+
+async function releaseRuntimeHostRootRetirementFence(owner: InteractiveRootOwner): Promise<void> {
+  try {
+    await owner.close();
+  } catch (error) {
+    throw new RuntimeHostServiceManagerError(
+      'retirement_failed',
+      'Runtime Host retirement did not release the State Root writer fence',
       { cause: error },
     );
   }

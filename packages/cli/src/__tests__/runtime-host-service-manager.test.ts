@@ -887,6 +887,7 @@ describe('managed Runtime Host service', () => {
     let serviceState: 'running' | 'starting' | 'stopped' = 'running';
     let startingPid: number | null = null;
     let stops = 0;
+    let observedStartingFence = false;
     const backend: RuntimeHostServiceBackend = {
       ...createReadyBackend(),
       status: async () => ({
@@ -900,6 +901,11 @@ describe('managed Runtime Host service', () => {
       }),
       stop: async () => {
         stops += 1;
+        if (serviceState === 'starting' && startingPid === null) {
+          const contender = await tryAcquireInteractiveRootOwner(root);
+          observedStartingFence = contender === undefined;
+          await contender?.close();
+        }
         serviceState = 'stopped';
       },
     };
@@ -972,6 +978,19 @@ describe('managed Runtime Host service', () => {
     );
     assert.deepEqual(starting.retirement, { kind: 'stopped' });
     assert.equal(serviceState, 'stopped');
+    assert.equal(observedStartingFence, true);
+
+    serviceState = 'starting';
+    const competingStarter = await tryAcquireInteractiveRootOwner(root);
+    assert.ok(competingStarter);
+    const stopsBeforeConflict = stops;
+    await assert.rejects(
+      manageRuntimeHostService({ ...common, action: 'retire', expectedTarget }, backend, deps),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'retirement_failed',
+    );
+    assert.equal(stops, stopsBeforeConflict);
+    await competingStarter.close();
 
     serviceState = 'starting';
     startingPid = 42;
