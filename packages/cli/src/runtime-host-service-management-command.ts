@@ -140,6 +140,11 @@ function formatHumanResult(result: RuntimeHostManagedServiceResult): string {
     if (!service.installed) return 'Runtime Host service is not installed.\n';
     return `Runtime Host service is ${service.state} at ${websocketUrl(service)}\n`;
   }
+  if (result.action === 'retire') {
+    return result.retirement?.kind === 'active_tasks'
+      ? 'Runtime Host service still owns active work. Retry with explicit interruption authority.\n'
+      : 'Runtime Host service is retired and its State Root writer is released.\n';
+  }
   if (result.action === 'logs') return result.logs || 'No Runtime Host service logs were found.\n';
   return `Runtime Host service is ${service.state}.\n`;
 }
@@ -165,6 +170,22 @@ function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServi
     ...(process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] ===
     RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY
       ? { operatorCapabilities: [RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY] }
+      : {}),
+    ...(result.retirement
+      ? {
+          retirement:
+            result.retirement.kind === 'active_tasks'
+              ? {
+                  kind: result.retirement.kind,
+                  blockers: {
+                    activeOperations: result.retirement.blockers.activeOperations,
+                    residencies: result.retirement.blockers.residencies.map((residency) => ({
+                      ...residency,
+                    })),
+                  },
+                }
+              : { ...result.retirement },
+        }
       : {}),
     ...(result.retainedStateRoot ? { retainedStateRoot: result.retainedStateRoot } : {}),
     ...(result.logs !== undefined ? { logs: result.logs } : {}),

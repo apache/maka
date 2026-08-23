@@ -731,14 +731,6 @@ describe('non-serving Runtime Host kernel', () => {
       assert.equal(connected.kind, 'connected');
       if (connected.kind !== 'connected') return;
       assert.equal(connected.registration.lifecycleMode, 'service');
-      await assert.rejects(
-        connected.connection.request('host.upgrade.prepare', {
-          expectedHostEpoch: connected.connection.hostEpoch,
-          allowInterruptActiveTasks: false,
-        }),
-        (error: unknown) =>
-          error instanceof RuntimeHostOperationError && error.code === 'operation_unavailable',
-      );
       await connected.connection.close();
 
       const incompatible = await connectOrSpawnRuntimeHost({
@@ -1018,6 +1010,34 @@ describe('non-serving Runtime Host kernel', () => {
         { kind: 'prepared', pid: process.pid },
       );
       activity?.release();
+      await host.closed;
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      await successor?.close();
+    });
+  });
+
+  test('local owner can prepare a managed service Host for retirement', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const host = await RuntimeHostKernel.start({
+        owner,
+        lifecycleMode: 'service',
+        composition: KERNEL_COMPOSITION,
+      });
+      const connected = await retryConnect(paths, CURRENT_PROTOCOL);
+      assert.equal(connected.kind, 'connected');
+      if (connected.kind !== 'connected') return;
+
+      assert.deepEqual(
+        await connected.connection.request('host.upgrade.prepare', {
+          expectedHostEpoch: host.hostEpoch,
+          allowInterruptActiveTasks: false,
+        }),
+        { kind: 'prepared', pid: process.pid },
+      );
       await host.closed;
       const successor = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(successor);

@@ -623,15 +623,6 @@ export class RuntimeHostKernel {
           },
         }),
         'host.upgrade.prepare': async (input) => {
-          if (this.#lifecycle.kind !== 'ephemeral') {
-            return {
-              ok: false,
-              error: {
-                code: 'operation_unavailable',
-                message: 'Runtime Host service lifecycle cannot be replaced by a Client',
-              },
-            };
-          }
           if (input.expectedHostEpoch !== this.hostEpoch) {
             return {
               ok: false,
