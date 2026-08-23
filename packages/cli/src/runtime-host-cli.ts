@@ -69,6 +69,11 @@ export type RuntimeHostCliCommand =
       retainManagedDeployment?: true;
     }
   | {
+      kind: 'runtime-host-managed-deployment-cleanup';
+      clientDataRoot?: string;
+      expectedTarget: RuntimeHostManagedServiceTarget;
+    }
+  | {
       kind: 'runtime-host-access-issue';
       rootPath?: string;
       expectedRootId?: string;
@@ -190,6 +195,30 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
 
 function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   const action = argv[0];
+  if (action === 'cleanup-deployment') {
+    let clientDataRoot: string | undefined;
+    const options = parseManagedServiceOptions(argv.slice(1), {
+      allowConfiguration: false,
+      valueOptions: {
+        '--client-data-root': (value) => {
+          if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
+          if (!isSafeAbsolutePath(value))
+            return error('--client-data-root must be an absolute path');
+          clientDataRoot = value;
+        },
+      },
+    });
+    if ('kind' in options) return options;
+    if (options.json) return error('Unexpected argument: --json');
+    if (!options.expectedTarget) {
+      return error('runtime-host service cleanup-deployment requires an expected target');
+    }
+    return {
+      kind: 'runtime-host-managed-deployment-cleanup',
+      ...(clientDataRoot ? { clientDataRoot } : {}),
+      expectedTarget: options.expectedTarget,
+    };
+  }
   if (
     action !== 'install' &&
     action !== 'status' &&

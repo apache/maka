@@ -296,6 +296,11 @@ test('manages only the service identity bound by Desktop onboarding', async () =
   assert.deepEqual(cleanupInputs, [{
     destination: managedProfile.transport.destination,
     operatorPath: managedService.operatorPath,
+    expectedTarget: {
+      serviceId: managedService.id,
+      rootPath: managedService.rootPath,
+      rootId: managedProfile.rootId,
+    },
   }]);
   management.close();
   assert.equal(handlers.size, 0);

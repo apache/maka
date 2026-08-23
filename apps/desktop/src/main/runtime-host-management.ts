@@ -147,6 +147,7 @@ export function createDesktopRuntimeHostManagement(input: {
         ? {}
         : { sshPort: managementInput.sshPort }),
       operatorPath: managementInput.operatorPath,
+      expectedTarget: managementInput.expectedTarget,
     });
     await input.profiles.clearManagedServiceBinding(pending);
     return { kind: 'uninstalled', retainedStateRoot: service.rootPath };

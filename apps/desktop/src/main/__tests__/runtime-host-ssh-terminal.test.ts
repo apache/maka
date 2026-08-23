@@ -359,6 +359,11 @@ test('requires an absent operator deployment root to be absent or empty', async 
   const cleanup = harness.terminal.cleanupManagedDeployment({
     destination: 'operator@example.com',
     operatorPath: '/home/operator/.local/share/maka/operator',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+    },
   });
   await waitFor(() => harness.pty.hasDataListener());
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
@@ -366,6 +371,9 @@ test('requires an absent operator deployment root to be absent or empty', async 
   assert.match(remoteCommand, /rmdir --/u);
   assert.match(remoteCommand, /home\/operator\/\.local\/share\/maka/u);
   assert.match(remoteCommand, /__cleanup-managed-deployment/u);
+  assert.match(remoteCommand, /--expected-service-id/u);
+  assert.match(remoteCommand, /--expected-root-path/u);
+  assert.match(remoteCommand, /--expected-root-id/u);
   harness.pty.exit(0);
 
   await cleanup;

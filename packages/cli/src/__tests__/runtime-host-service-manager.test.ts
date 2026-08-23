@@ -45,6 +45,7 @@ import {
 } from '../runtime-host-managed-deployment.js';
 import { runManagedRuntimeHostServiceCli } from '../runtime-host-service-management-command.js';
 import {
+  cleanupRuntimeHostManagedDeployment,
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceConfigPath,
   resolveRuntimeHostManagedServiceId,
@@ -125,6 +126,26 @@ describe('managed Runtime Host service', () => {
         json: false,
         framed: true,
         retainManagedDeployment: true,
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'service',
+        'cleanup-deployment',
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]),
+      {
+        kind: 'runtime-host-managed-deployment-cleanup',
+        expectedTarget: {
+          serviceId: 'b'.repeat(64),
+          rootPath: '/srv/maka',
+          rootId: 'a'.repeat(64),
+        },
       },
     );
     assert.deepEqual(
@@ -307,6 +328,36 @@ describe('managed Runtime Host service', () => {
     assert.equal(retained.service.installed, false);
     await access(deploymentRoot);
 
+    await manageRuntimeHostService({ ...common, action: 'install' }, backend(), managerDeps);
+    const expectedTarget = {
+      serviceId,
+      rootPath: root.canonicalPath,
+      rootId: root.rootId,
+    } as const;
+    await assert.rejects(
+      cleanupRuntimeHostManagedDeployment(
+        { clientDataRoot, cliPath: canonicalCliPath, expectedTarget },
+        backend(),
+      ),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'uninstall_incomplete',
+    );
+    await access(deploymentRoot);
+    await manageRuntimeHostService(
+      {
+        ...common,
+        action: 'uninstall',
+        retainManagedDeployment: true,
+        expectedTarget,
+      },
+      backend(),
+    );
+    await cleanupRuntimeHostManagedDeployment(
+      { clientDataRoot, cliPath: canonicalCliPath, expectedTarget },
+      backend(),
+    );
+    await assert.rejects(access(deploymentRoot));
+
     const movedRootPath = `${rootPath}-moved`;
     await rename(rootPath, movedRootPath);
 
@@ -324,7 +375,6 @@ describe('managed Runtime Host service', () => {
       backend(),
     );
     assert.equal(repeatedRetain.service.installed, false);
-    await access(deploymentRoot);
 
     const uninstalled = await manageRuntimeHostService(
       {

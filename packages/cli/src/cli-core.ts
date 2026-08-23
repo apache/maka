@@ -273,6 +273,19 @@ export async function runMakaCli(
         ...(command.retainManagedDeployment ? { retainManagedDeployment: true } : {}),
       });
     }
+    case 'runtime-host-managed-deployment-cleanup': {
+      const { runManagedRuntimeHostDeploymentCleanupCli } = await import(
+        './runtime-host-service-management-command.js'
+      );
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
+      return runManagedRuntimeHostDeploymentCleanupCli({
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        cliPath: process.argv[1] ?? '',
+        expectedTarget: command.expectedTarget,
+      });
+    }
     case 'runtime-host-access-issue': {
       const { runRuntimeHostAccessIssueCli } = await import('./runtime-host-access-command.js');
       return runRuntimeHostAccessIssueCli({

@@ -100,6 +100,7 @@ export interface DesktopRuntimeHostSshCleanupInput {
   readonly destination: string;
   readonly sshPort?: number;
   readonly operatorPath: string;
+  readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly signal?: AbortSignal;
 }
 
@@ -540,7 +541,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         sshRemoteCommandArgs(
           destination,
           sshPort,
-          runtimeHostManagedDeploymentCleanupRemoteCommand(cleanupInput.operatorPath),
+          runtimeHostManagedDeploymentCleanupRemoteCommand(cleanupInput),
         ),
         undefined,
         true,
@@ -877,14 +878,21 @@ function runtimeHostAccessManagementRemoteCommand(
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
 }
 
-function runtimeHostManagedDeploymentCleanupRemoteCommand(operatorPath: string): string {
-  const operator = quotePosix(operatorPath);
-  const deploymentRoot = quotePosix(pathPosix.dirname(operatorPath));
+function runtimeHostManagedDeploymentCleanupRemoteCommand(
+  input: DesktopRuntimeHostSshCleanupInput,
+): string {
+  const operator = quotePosix(input.operatorPath);
+  const deploymentRoot = quotePosix(pathPosix.dirname(input.operatorPath));
+  const cleanup = [
+    input.operatorPath,
+    '__cleanup-managed-deployment',
+    ...managedServiceTargetArgs(input.expectedTarget),
+  ].map(quotePosix).join(' ');
   const invocation =
     `if [ ! -e ${operator} ]; then ` +
     `if [ ! -e ${deploymentRoot} ]; then exit 0; fi; ` +
     `exec rmdir -- ${deploymentRoot}; fi; ` +
-    `exec ${operator} __cleanup-managed-deployment`;
+    `exec ${cleanup}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
 }
 

@@ -197,7 +197,7 @@ export function RuntimeHostManagementDialog(props: {
         content={(
           <LayoutContent padding={4}>
             <div className="settingsRuntimeHostManagement">
-              {loading && !result ? (
+              {loading ? (
                 <div className="settingsRuntimeHostSetupProgress" role="status">
                   <Spinner size="sm" />
                 </div>

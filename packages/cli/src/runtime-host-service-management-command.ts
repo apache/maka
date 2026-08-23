@@ -29,11 +29,13 @@ import {
   type RuntimeHostServiceSummary,
 } from '@maka/runtime-host/operator';
 import {
+  cleanupRuntimeHostManagedDeployment,
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceInput,
   type RuntimeHostManagedServiceResult,
+  type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
 import { createSystemdUserRuntimeHostService } from './runtime-host-systemd-service.js';
@@ -100,6 +102,24 @@ export async function runManagedRuntimeHostServiceCli(
     } else {
       deps.writeError(`${message}\n`);
     }
+    return 1;
+  }
+}
+
+export async function runManagedRuntimeHostDeploymentCleanupCli(options: {
+  readonly clientDataRoot: string;
+  readonly cliPath: string;
+  readonly expectedTarget: RuntimeHostManagedServiceTarget;
+}): Promise<number> {
+  try {
+    const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
+    await cleanupRuntimeHostManagedDeployment(
+      options,
+      createPlatformRuntimeHostServiceBackend(serviceId),
+    );
+    return 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
 }
