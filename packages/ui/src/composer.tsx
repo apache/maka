@@ -246,10 +246,7 @@ export const Composer = forwardRef<
     continuing?: boolean;
     /** True while the current streaming session is processing a stop request. */
     stopPending?: boolean;
-    queuedMessages?: {
-      steering: readonly MessageQueueEntryProjection[];
-      followup: readonly MessageQueueEntryProjection[];
-    };
+    queuedMessages?: readonly MessageQueueEntryProjection[];
     /** Promote a queued follow-up into the active Turn (立即发送). */
     onPromoteQueuedEntry?(entryId: string): void | Promise<void>;
     /** Retract one queued entry back into the draft (收回草稿). */
@@ -1330,7 +1327,7 @@ export const Composer = forwardRef<
   const stopShown = props.streaming === true && !text.trim();
   // The pending plate renders the follow-up queue only: steering entries are
   // already handed to the active Turn and leave the plate at that moment.
-  const queueCount = props.queuedMessages?.followup.length ?? 0;
+  const queueCount = props.queuedMessages?.length ?? 0;
   const modelChipLabel = props.modelLabel?.trim() || copy.selectModel;
   // Mid-turn the model and thinking menus stay mounted but locked, each
   // carrying the reason in its own words (model vs thinking level) — the

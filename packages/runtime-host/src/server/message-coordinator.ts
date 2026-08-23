@@ -41,6 +41,7 @@ import {
   type RootTurnSourceMessage,
   type RootTurnSourceMessageReceipt,
 } from '@maka/storage/execution-stores';
+import type { HostOperationErrorCode, OperationSpec } from '../protocol/operation-spec.js';
 import {
   MESSAGE_QUEUE_MAX_ENTRIES,
   MESSAGE_QUEUE_PROJECTION_MAX_BYTES,
@@ -212,12 +213,7 @@ interface PendingSubmit {
   readonly result: Promise<MessageOutcome<TurnMessageSubmitResult>>;
 }
 
-interface PendingRetract {
-  readonly payload: QueueRetractInput;
-  readonly result: Promise<MessageOutcome<QueueRetractResult>>;
-}
-
-type QueuedMutationReceiptKind = 'retract_entry' | 'promote' | 'reorder';
+type QueuedMutationReceiptKind = 'retract' | 'retract_entry' | 'promote' | 'reorder';
 
 interface PendingQueuedMutation {
   readonly payload: object;
@@ -228,13 +224,11 @@ interface QueuedMutationOptions<
   I extends { readonly originHostEpoch: string; readonly sessionId: string },
   R,
 > {
+  readonly spec: OperationSpec<I, R, HostOperationErrorCode>;
   readonly receiptKind: QueuedMutationReceiptKind;
   readonly operationId: string;
+  readonly verb: string;
   readonly input: I;
-  readonly decodeInput: (value: unknown) => I;
-  readonly decodeOutput: (value: unknown) => R;
-  readonly conflictMessage: string;
-  readonly crossEpochMessage: string;
   readonly execute: () => Promise<MessageOutcome<R>>;
 }
 
@@ -319,7 +313,6 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly #preflightSessionSnapshot: CandidateSnapshotPreflight;
   readonly #sessions = new Map<string, SessionState>();
   readonly #pendingSubmits = new Map<string, PendingSubmit>();
-  readonly #pendingRetracts = new Map<string, PendingRetract>();
   readonly #pendingQueuedMutations = new Map<string, PendingQueuedMutation>();
   #draining = false;
   #failStopped = false;
@@ -764,99 +757,64 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   }
 
   private retract(input: QueueRetractInput): Promise<MessageOutcome<QueueRetractResult>> {
-    const isCurrentEpoch = input.originHostEpoch === this.#hostEpoch;
-    if (isCurrentEpoch) {
-      const pending = this.#pendingRetracts.get(operationKey(input.sessionId, input.retractId));
-      if (pending) {
-        return samePayload(pending.payload, input)
-          ? pending.result
-          : Promise.resolve(
-              failure('operation_conflict', 'Retract identity has a different payload'),
-            );
-      }
-    }
-    if (this.#failStopped) {
-      return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
-    }
-    if (!isCurrentEpoch) {
-      return Promise.resolve(
-        failure('outcome_unknown', 'Retract outcome is not durable across Host Epochs'),
-      );
-    }
-    const key = operationKey(input.sessionId, input.retractId);
-    const result = this.#retractAdmitted(input);
-    this.#pendingRetracts.set(key, { payload: input, result });
-    void result.then(
-      () => this.#deletePendingRetract(key, result),
-      () => this.#deletePendingRetract(key, result),
-    );
-    return result;
+    return this.#runQueuedMutation({
+      spec: MESSAGE_OPERATION_SPECS['queue.retract'],
+      receiptKind: 'retract',
+      operationId: input.retractId,
+      verb: 'Retract',
+      input,
+      execute: () => this.#retractAdmitted(input),
+    });
   }
 
-  #retractAdmitted(input: QueueRetractInput): Promise<MessageOutcome<QueueRetractResult>> {
-    return this.#sessionAdmission.run(input.sessionId, async () => {
-      if (this.#failStopped) {
-        return failure('host_draining', 'Runtime Host message authority has failed');
-      }
-      const receipt = await this.#readRetractReceipt(input.sessionId, input.retractId);
-      if (this.#failStopped) {
-        return failure('host_draining', 'Runtime Host message authority has failed');
-      }
-      if (receipt) {
-        return samePayload(receipt.payload, input)
-          ? success(receipt.result)
-          : failure('operation_conflict', 'Retract identity has a different payload');
-      }
-      const header = await this.#root.readSessionHeader(input.sessionId);
-      if (this.#failStopped) {
-        return failure('host_draining', 'Runtime Host message authority has failed');
-      }
-      if (!header) return failure('not_found', 'Session does not exist');
-      if (header.isArchived) return failure('session_archived', 'Session is archived');
-      const state = this.#state(input.sessionId);
-      if (
-        !retractionResultFits(
-          state,
-          state.revision + (queuedEntryCount(state) > 0 ? 1 : 0),
-          MESSAGE_OPERATION_RESULT_MAX_BYTES,
-        )
-      ) {
-        return failure('session_busy', 'Retract result exceeds protocol capacity');
-      }
-      const queued = [...state.steering, ...state.followup];
-      const result = {
-        queueRevision: state.revision + (queued.length > 0 ? 1 : 0),
-        retracted: queued.map(retractedSnapshot),
-      };
-      const retracted = this.#retractQueued(state);
-      if (retracted.length > 0) this.#mutated(state);
-      if (!isDeepStrictEqual(result, { queueRevision: state.revision, retracted })) {
-        throw new RuntimeMessageAuthorityInvariantError(
-          'Retract mutation did not match its prepared result',
-        );
-      }
-      this.#maybeReclaim(input.sessionId, state);
-      try {
-        await this.#commitReceipt('retract', input.sessionId, input.retractId, input, result);
-      } catch (error) {
-        this.#failStop();
-        throw error;
-      }
-      return success(result);
-    });
+  async #retractAdmitted(input: QueueRetractInput): Promise<MessageOutcome<QueueRetractResult>> {
+    const header = await this.#root.readSessionHeader(input.sessionId);
+    if (this.#failStopped) {
+      return failure('host_draining', 'Runtime Host message authority has failed');
+    }
+    if (!header) return failure('not_found', 'Session does not exist');
+    if (header.isArchived) return failure('session_archived', 'Session is archived');
+    const state = this.#state(input.sessionId);
+    if (
+      !retractionResultFits(
+        state,
+        state.revision + (queuedEntryCount(state) > 0 ? 1 : 0),
+        MESSAGE_OPERATION_RESULT_MAX_BYTES,
+      )
+    ) {
+      return failure('session_busy', 'Retract result exceeds protocol capacity');
+    }
+    const queued = [...state.steering, ...state.followup];
+    const result = {
+      queueRevision: state.revision + (queued.length > 0 ? 1 : 0),
+      retracted: queued.map(retractedSnapshot),
+    };
+    const retracted = this.#retractQueued(state);
+    if (retracted.length > 0) this.#mutated(state);
+    if (!isDeepStrictEqual(result, { queueRevision: state.revision, retracted })) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Retract mutation did not match its prepared result',
+      );
+    }
+    this.#maybeReclaim(input.sessionId, state);
+    try {
+      await this.#commitReceipt('retract', input.sessionId, input.retractId, input, result);
+    } catch (error) {
+      this.#failStop();
+      throw error;
+    }
+    return success(result);
   }
 
   private retractQueuedEntry(
     input: QueueEntryRetractInput,
   ): Promise<MessageOutcome<QueueEntryRetractResult>> {
     return this.#runQueuedMutation({
+      spec: MESSAGE_OPERATION_SPECS['queue.entry.retract'],
       receiptKind: 'retract_entry',
       operationId: input.retractId,
+      verb: 'Retract',
       input,
-      decodeInput: MESSAGE_OPERATION_SPECS['queue.entry.retract'].decodeInput,
-      decodeOutput: MESSAGE_OPERATION_SPECS['queue.entry.retract'].decodeOutput,
-      conflictMessage: 'Retract identity has a different payload',
-      crossEpochMessage: 'Retract outcome is not durable across Host Epochs',
       execute: () => this.#retractQueuedEntryAdmitted(input),
     });
   }
@@ -865,13 +823,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     input: QueueEntryPromoteInput,
   ): Promise<MessageOutcome<QueueEntryPromoteResult>> {
     return this.#runQueuedMutation({
+      spec: MESSAGE_OPERATION_SPECS['queue.entry.promote'],
       receiptKind: 'promote',
       operationId: input.promoteId,
+      verb: 'Promote',
       input,
-      decodeInput: MESSAGE_OPERATION_SPECS['queue.entry.promote'].decodeInput,
-      decodeOutput: MESSAGE_OPERATION_SPECS['queue.entry.promote'].decodeOutput,
-      conflictMessage: 'Promote identity has a different payload',
-      crossEpochMessage: 'Promote outcome is not durable across Host Epochs',
       execute: () => this.#promoteQueuedEntryAdmitted(input),
     });
   }
@@ -880,13 +836,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     input: QueueEntriesReorderInput,
   ): Promise<MessageOutcome<QueueEntriesReorderResult>> {
     return this.#runQueuedMutation({
+      spec: MESSAGE_OPERATION_SPECS['queue.entries.reorder'],
       receiptKind: 'reorder',
       operationId: input.reorderId,
+      verb: 'Reorder',
       input,
-      decodeInput: MESSAGE_OPERATION_SPECS['queue.entries.reorder'].decodeInput,
-      decodeOutput: MESSAGE_OPERATION_SPECS['queue.entries.reorder'].decodeOutput,
-      conflictMessage: 'Reorder identity has a different payload',
-      crossEpochMessage: 'Reorder outcome is not durable across Host Epochs',
       execute: () => this.#reorderQueuedEntriesAdmitted(input),
     });
   }
@@ -902,14 +856,18 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (pending) {
         return samePayload(pending.payload, input)
           ? (pending.result as Promise<MessageOutcome<R>>)
-          : Promise.resolve(failure('operation_conflict', options.conflictMessage));
+          : Promise.resolve(
+              failure('operation_conflict', `${options.verb} identity has a different payload`),
+            );
       }
     }
     if (this.#failStopped) {
       return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
     }
     if (!isCurrentEpoch) {
-      return Promise.resolve(failure('outcome_unknown', options.crossEpochMessage));
+      return Promise.resolve(
+        failure('outcome_unknown', `${options.verb} outcome is not durable across Host Epochs`),
+      );
     }
     const result = this.#admitQueuedMutation(options);
     this.#pendingQueuedMutations.set(key, { payload: input, result });
@@ -935,7 +893,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (receipt) {
         return samePayload(receipt.payload, options.input)
           ? success(receipt.result)
-          : failure('operation_conflict', options.conflictMessage);
+          : failure('operation_conflict', `${options.verb} identity has a different payload`);
       }
       return options.execute();
     });
@@ -956,8 +914,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (!receipt) return undefined;
     try {
       return {
-        payload: options.decodeInput(receipt.payload),
-        result: options.decodeOutput(receipt.result),
+        payload: options.spec.decodeInput(receipt.payload),
+        result: options.spec.decodeOutput(receipt.result),
       };
     } catch (error) {
       throw new RuntimeMessageAuthorityInvariantError(
@@ -1338,24 +1296,6 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
   }
 
-  async #readRetractReceipt(
-    sessionId: string,
-    retractId: string,
-  ): Promise<{ payload: QueueRetractInput; result: QueueRetractResult } | undefined> {
-    const receipt = await this.#receipts.read(this.#hostEpoch, 'retract', sessionId, retractId);
-    if (!receipt) return undefined;
-    try {
-      return {
-        payload: MESSAGE_OPERATION_SPECS['queue.retract'].decodeInput(receipt.payload),
-        result: MESSAGE_OPERATION_SPECS['queue.retract'].decodeOutput(receipt.result),
-      };
-    } catch (error) {
-      throw new RuntimeMessageAuthorityInvariantError(
-        `Invalid durable retract receipt: ${error instanceof Error ? error.message : 'malformed'}`,
-      );
-    }
-  }
-
   async #readInterruptReceipt(
     sessionId: string,
     interruptId: string,
@@ -1403,10 +1343,6 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     result: Promise<MessageOutcome<TurnMessageSubmitResult>>,
   ): void {
     if (this.#pendingSubmits.get(key)?.result === result) this.#pendingSubmits.delete(key);
-  }
-
-  #deletePendingRetract(key: string, result: Promise<MessageOutcome<QueueRetractResult>>): void {
-    if (this.#pendingRetracts.get(key)?.result === result) this.#pendingRetracts.delete(key);
   }
 
   #deleteInterruptReceipt(sessionId: string, state: SessionState, interruptId: string): void {

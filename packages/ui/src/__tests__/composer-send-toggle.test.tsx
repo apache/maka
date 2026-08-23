@@ -66,22 +66,13 @@ test('renders the pending plate with per-entry promote, retract, and reorder', (
     <LocaleProvider locale="en">
       <Composer
         streaming
-        queuedMessages={{
-          steering: [{
-            entryId: 'entry-steer',
-            messageId: 'message-steer',
-            content: { text: 'adjust this run' },
-            placement: 'current_turn',
-            state: 'queued',
-          }],
-          followup: [{
-            entryId: 'entry-1',
-            messageId: 'message-1',
-            content: { text: 'do this next' },
-            placement: 'next_turn',
-            state: 'queued',
-          }],
-        }}
+        queuedMessages={[{
+          entryId: 'entry-1',
+          messageId: 'message-1',
+          content: { text: 'do this next' },
+          placement: 'next_turn',
+          state: 'queued',
+        }]}
         onPromoteQueuedEntry={() => undefined}
         onRetractQueuedEntry={() => undefined}
         onReorderQueuedEntries={() => undefined}
@@ -96,57 +87,4 @@ test('renders the pending plate with per-entry promote, retract, and reorder', (
   assert.match(markup, /aria-label="Send now"/);
   assert.match(markup, /aria-label="Restore to draft"/g);
   assert.match(markup, /aria-label="Drag to reorder"/);
-});
-
-test('steering entries already handed to the Turn stay out of the plate', () => {
-  const markup = renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Composer
-        streaming
-        queuedMessages={{
-          steering: [{
-            entryId: 'entry-1',
-            messageId: 'message-1',
-            content: { text: 'adjust this run' },
-            placement: 'current_turn',
-            state: 'queued',
-          }],
-          followup: [],
-        }}
-        onRetractQueuedEntry={() => undefined}
-        onSend={() => undefined}
-        onStop={() => undefined}
-      />
-    </LocaleProvider>,
-  );
-
-  assert.doesNotMatch(markup, /queued message/);
-  assert.doesNotMatch(markup, /adjust this run/);
-  assert.doesNotMatch(markup, /aria-label="Restore to draft"/);
-});
-
-test('in-flight steering is being delivered and stays out of the plate', () => {
-  const markup = renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Composer
-        streaming
-        queuedMessages={{
-          steering: [{
-            entryId: 'entry-1',
-            messageId: 'message-1',
-            content: { text: 'adjust this run' },
-            placement: 'current_turn',
-            state: 'in_flight',
-          }],
-          followup: [],
-        }}
-        onRetractQueuedEntry={() => undefined}
-        onSend={() => undefined}
-        onStop={() => undefined}
-      />
-    </LocaleProvider>,
-  );
-
-  assert.doesNotMatch(markup, /queued message/);
-  assert.doesNotMatch(markup, /aria-label="Restore to draft"/);
 });

@@ -34,19 +34,12 @@ import { useMountedRef } from './use-mounted-ref.js';
  * authoritative queue projection, never a local copy.
  */
 export interface ComposerMessageQueueProps {
-  queuedMessages: {
-    steering: readonly MessageQueueEntryProjection[];
-    followup: readonly MessageQueueEntryProjection[];
-  };
+  queuedMessages: readonly MessageQueueEntryProjection[];
   copy: ConversationCopy['composer'];
   onPromoteEntry?(entryId: string): void | Promise<void>;
   onRetractEntry?(entryId: string): void | Promise<void>;
   onReorderEntries?(entryIds: readonly string[]): void | Promise<void>;
 }
-
-/** How long an unconfirmed drag order survives before snapping back to the
- *  authoritative projection (i.e. the Host rejected the reorder). */
-const PENDING_ORDER_TIMEOUT_MS = 2000;
 
 export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   props: ComposerMessageQueueProps,
@@ -57,18 +50,13 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   const mountedRef = useMountedRef();
   const copy = props.copy;
 
-  const followup = props.queuedMessages.followup;
+  const followup = props.queuedMessages;
   const followupIds = followup.map((entry) => entry.entryId).join(' ');
   // Any projection change settles a pending drag: the accepted order arrives as
   // the new projection, and any other mutation makes the drag base stale.
   useEffect(() => {
     setPendingOrder(null);
   }, [followupIds]);
-  useEffect(() => {
-    if (!pendingOrder) return undefined;
-    const timer = window.setTimeout(() => setPendingOrder(null), PENDING_ORDER_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, [pendingOrder]);
 
   const orderedFollowup = pendingOrder
     ? pendingOrder.flatMap((entryId) => followup.filter((entry) => entry.entryId === entryId))
@@ -81,7 +69,11 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     if (!action || pendingEntryId) return;
     setPendingEntryId(entryId);
     try {
+      // The caller (app shell) surfaces failures itself; the projection is
+      // unchanged on failure, so there is nothing to settle here.
       await action(entryId);
+    } catch {
+      // surfaced by the caller
     } finally {
       if (mountedRef.current) setPendingEntryId(null);
     }
@@ -98,7 +90,12 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     ids.splice(from, 1);
     ids.splice(to, 0, fromId);
     setPendingOrder(ids);
-    void props.onReorderEntries(ids);
+    // A rejected reorder (e.g. the queue changed underneath the drag) snaps
+    // back to the authoritative projection; an accepted one is settled by the
+    // projection change above.
+    void Promise.resolve(props.onReorderEntries(ids)).catch(() => {
+      if (mountedRef.current) setPendingOrder(null);
+    });
   }
 
   function retractButton(entry: MessageQueueEntryProjection) {

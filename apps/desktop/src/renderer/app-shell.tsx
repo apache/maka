@@ -2204,9 +2204,7 @@ function AppShellContent({
   }
 
   async function retractQueuedEntry(entryId: string): Promise<void> {
-    const sessionId = activeIdRef.current;
-    if (!sessionId) return;
-    try {
+    await runQueueEntryAction(async (sessionId) => {
       const content = await window.maka.sessions.retractQueueEntry(sessionId, entryId);
       if (activeIdRef.current !== sessionId) return;
       const displayText = content.displayText ?? content.text;
@@ -2224,47 +2222,39 @@ function AppShellContent({
       restoreAttachments(content.attachments ?? []);
       restoreQuotes(content.quotes ?? []);
       window.requestAnimationFrame(() => composerRef.current?.focus());
+    });
+  }
+
+  // Surfaces the failure, then rethrows so the caller (the pending plate) can
+  // settle its own optimistic state instead of guessing with a timer.
+  async function runQueueEntryAction(action: (sessionId: string) => Promise<void>): Promise<void> {
+    const sessionId = activeIdRef.current;
+    if (!sessionId) return;
+    try {
+      await action(sessionId);
     } catch (error) {
-      if (activeIdRef.current !== sessionId) return;
-      const copy = getDesktopConversationCopy(uiLocale).actions;
-      showSessionError(
-        sessionId,
-        copy.operationFailedTitle,
-        localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
-      );
+      if (activeIdRef.current === sessionId) {
+        const copy = getDesktopConversationCopy(uiLocale).actions;
+        showSessionError(
+          sessionId,
+          copy.operationFailedTitle,
+          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+        );
+      }
+      throw error;
     }
   }
 
   async function promoteQueuedEntry(entryId: string): Promise<void> {
-    const sessionId = activeIdRef.current;
-    if (!sessionId) return;
-    try {
-      await window.maka.sessions.promoteQueueEntry(sessionId, entryId);
-    } catch (error) {
-      if (activeIdRef.current !== sessionId) return;
-      const copy = getDesktopConversationCopy(uiLocale).actions;
-      showSessionError(
-        sessionId,
-        copy.operationFailedTitle,
-        localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
-      );
-    }
+    await runQueueEntryAction((sessionId) =>
+      window.maka.sessions.promoteQueueEntry(sessionId, entryId).then(() => undefined)
+    );
   }
 
   async function reorderQueuedEntries(entryIds: readonly string[]): Promise<void> {
-    const sessionId = activeIdRef.current;
-    if (!sessionId) return;
-    try {
-      await window.maka.sessions.reorderQueueEntries(sessionId, entryIds);
-    } catch (error) {
-      if (activeIdRef.current !== sessionId) return;
-      const copy = getDesktopConversationCopy(uiLocale).actions;
-      showSessionError(
-        sessionId,
-        copy.operationFailedTitle,
-        localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
-      );
-    }
+    await runQueueEntryAction((sessionId) =>
+      window.maka.sessions.reorderQueueEntries(sessionId, entryIds).then(() => undefined)
+    );
   }
 
   const stop = createAppShellStopAction({

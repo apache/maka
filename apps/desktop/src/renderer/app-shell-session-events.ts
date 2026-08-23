@@ -286,29 +286,7 @@ export function createAppShellSessionEventHandlers(options: {
           }
           return {
             ...current,
-            [sessionId]: {
-              ...(event.queueRevision !== undefined
-                ? { queueRevision: event.queueRevision }
-                : {}),
-              steering:
-                event.steeringEntries?.map((entry) => structuredClone(entry)) ??
-                event.steering.map((text, index) => ({
-                  entryId: `legacy-steering-${index}`,
-                  messageId: `legacy-steering-${index}`,
-                  content: { text },
-                  placement: 'current_turn' as const,
-                  state: 'queued' as const,
-                })),
-              followup:
-                event.followupEntries?.map((entry) => structuredClone(entry)) ??
-                event.followup.map((text, index) => ({
-                  entryId: `legacy-followup-${index}`,
-                  messageId: `legacy-followup-${index}`,
-                  content: { text },
-                  placement: 'next_turn' as const,
-                  state: 'queued' as const,
-                })),
-            },
+            [sessionId]: event.followupEntries?.map((entry) => structuredClone(entry)) ?? [],
           };
         });
         break;

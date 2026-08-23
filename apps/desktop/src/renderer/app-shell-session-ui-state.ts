@@ -37,11 +37,9 @@ export interface AppShellSessionUiState {
   pendingSessionModelBySession: Record<string, boolean>;
 }
 
-export interface MessageQueueUiState {
-  queueRevision?: number;
-  steering: MessageQueueEntryProjection[];
-  followup: MessageQueueEntryProjection[];
-}
+// The pending plate mirrors the Host's follow-up queue only: steering entries
+// are already handed to the active Turn, and queueRevision is not rendered.
+export type MessageQueueUiState = MessageQueueEntryProjection[];
 
 type AppShellSessionUiStateMapKey = keyof AppShellSessionUiState;
 

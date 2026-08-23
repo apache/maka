@@ -62,17 +62,13 @@ test('queue_update events drive the independent desktop queue projection', () =>
     }],
   });
 
-  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
-    queueRevision: 3,
-    steering: [steeringEntry],
-    followup: [{
-      entryId: 'entry-next',
-      messageId: 'message-next',
-      content: { text: 'do this next' },
-      placement: 'next_turn',
-      state: 'queued',
-    }],
-  });
+  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], [{
+    entryId: 'entry-next',
+    messageId: 'message-next',
+    content: { text: 'do this next' },
+    placement: 'next_turn',
+    state: 'queued',
+  }]);
 
   handlers.handleEvent('session-1', {
     type: 'queue_update',

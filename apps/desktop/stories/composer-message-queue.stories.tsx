@@ -113,7 +113,7 @@ function QueuedComposer() {
   return (
     <Composer
       {...base}
-      queuedMessages={{ steering: [], followup }}
+      queuedMessages={followup}
       onPromoteQueuedEntry={(entryId) => {
         setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
       }}
