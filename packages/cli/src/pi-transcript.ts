@@ -50,7 +50,6 @@ import { ansi } from './tui-ansi.js';
 import {
   fitLine,
   formatTokenCount,
-  formatToolResultContent,
   formatUnknown,
   limitText,
   markdownTheme,
@@ -176,10 +175,8 @@ export type MakaPiTranscriptEntry =
       toolName: string;
       title?: string;
       input: unknown;
-      /** Structured result; preferred over `output` when present. */
+      /** Structured result returned by the tool. */
       result?: ToolResultContent;
-      /** Flattened result text, kept as a fallback for text/json/unknown kinds. */
-      output?: string;
       /** In-memory revision for render-cache invalidation when a result is replaced. */
       resultVersion: number;
       progress: BoundedChunkBuffer<string>;
@@ -405,7 +402,6 @@ export function reconcileToolsWithStoredMessages(
     entry.title = durable.title;
     entry.input = structuredClone(durable.input);
     entry.result = durable.result ? structuredClone(durable.result) : undefined;
-    entry.output = durable.output;
     entry.durationMs = durable.durationMs;
     entry.status = durable.status;
     entry.hidden = durable.hidden;
@@ -635,7 +631,6 @@ export function applyMakaSessionEventToTranscript(
           progress: createProgressBuffer(),
           outputDeltas: createOutputBuffer(),
           result: event.content,
-          output: formatToolResultContent(event.content),
           resultVersion: 1,
           durationMs: event.durationMs,
           status: event.isError ? 'error' : 'done',
@@ -683,7 +678,6 @@ export function applyMakaSessionEventToTranscript(
         } else {
           tool.status = toolResultTranscriptStatus(event.content, event.isError);
           tool.result = event.content;
-          tool.output = formatToolResultContent(event.content);
           tool.durationMs = event.durationMs;
           tool.resultVersion += 1;
         }
@@ -697,7 +691,6 @@ export function applyMakaSessionEventToTranscript(
           progress: createProgressBuffer(),
           outputDeltas: createOutputBuffer(),
           result: event.content,
-          output: formatToolResultContent(event.content),
           resultVersion: 1,
           durationMs: event.durationMs,
           status: toolResultTranscriptStatus(event.content, event.isError),
@@ -877,11 +870,6 @@ function chatItemToTranscriptEntries(item: ChatItem): MakaPiTranscriptEntry[] {
 }
 
 function toolActivityToTranscriptEntry(item: ToolActivityItem): MakaPiToolEntry {
-  const output = item.result
-    ? formatToolResultContent(item.result)
-    : item.status === 'interrupted'
-      ? 'Interrupted before the tool returned a result.'
-      : undefined;
   const entry: MakaPiToolEntry = {
     kind: 'tool',
     toolUseId: item.toolUseId,
@@ -891,7 +879,6 @@ function toolActivityToTranscriptEntry(item: ToolActivityItem): MakaPiToolEntry 
     progress: createProgressBuffer(),
     outputDeltas: createOutputBuffer(),
     ...(item.result ? { result: item.result } : {}),
-    ...(output ? { output } : {}),
     resultVersion: item.result ? 1 : 0,
     ...(item.durationMs !== undefined ? { durationMs: item.durationMs } : {}),
     status: transcriptToolStatus(item.status),
@@ -942,8 +929,9 @@ function transcriptToolStatus(status: ToolActivityItem['status']): MakaPiToolEnt
     case 'completed':
       return 'done';
     case 'errored':
-    case 'interrupted':
       return 'error';
+    case 'interrupted':
+      return 'aborted';
     case 'pending':
     case 'running':
       return 'running';
@@ -1004,7 +992,6 @@ function applyShellRunResult(
   if (!merged.changed) return false;
   entry.status = shellRunTranscriptStatus(merged.result.status);
   entry.result = merged.result;
-  entry.output = formatToolResultContent(merged.result);
   entry.durationMs = Math.max(
     0,
     (merged.result.completedAt ?? merged.result.updatedAt) - merged.result.startedAt,
@@ -1025,7 +1012,6 @@ function applyOwnShellRunResult(
         : 'done'
       : shellRunTranscriptStatus(result.status);
   entry.result = result;
-  entry.output = formatToolResultContent(result);
   if (entry.toolName === 'WriteStdin') {
     entry.durationMs = operationDurationMs;
   } else {

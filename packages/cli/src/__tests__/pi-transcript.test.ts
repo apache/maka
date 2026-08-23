@@ -588,6 +588,34 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('explains a stored tool call whose turn ended without a result', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      {
+        type: 'tool_call',
+        id: 'tool-1',
+        turnId: 'turn-1',
+        ts: 1,
+        toolName: 'Read',
+        args: { path: '/tmp/example.txt' },
+      },
+      {
+        type: 'turn_state',
+        id: 'turn-state-1',
+        turnId: 'turn-1',
+        ts: 2,
+        status: 'completed',
+        partialOutputRetained: false,
+      },
+    ] satisfies StoredMessage[]);
+
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.match(
+      renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n'),
+      /Interrupted before the tool returned a result\./,
+    );
+  });
+
   test('keeps a stored errored Read poll as a card without folding it into the parent Bash card', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';

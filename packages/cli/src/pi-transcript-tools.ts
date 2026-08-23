@@ -33,6 +33,7 @@ import { colorDiff } from './tui-diff.js';
 import {
   collapseToSingleLine,
   fitLine,
+  formatToolResultContent,
   formatUnknownInline,
   limitText,
   renderIndented,
@@ -193,7 +194,7 @@ function renderExpandedToolBlock(entry: MakaPiToolEntry, width: number): string[
     }
     lines.push(...renderToolStreams(entry.outputDeltas.values(), width));
   }
-  if (entry.result || entry.output) {
+  if (entry.result || entry.status === 'aborted') {
     lines.push(...renderToolResult(entry, width));
   }
   if (
@@ -549,8 +550,8 @@ function renderToolResult(entry: MakaPiToolEntry, width: number): string[] {
   }
   // A generic `text` dump — a Bash body or raw tool text — is what the head/tail
   // cap targets: the model already holds the full body, so the transcript only
-  // needs enough to orient. An undefined result with a formatted `output` string
-  // is treated the same way. `json` is deliberately excluded: a Read json is
+  // needs enough to orient. An interrupted call with no result uses the same
+  // capped path for its explanation. `json` is deliberately excluded: a Read json is
   // summarized above, a Grep/Glob json is a structured list the user expands to
   // scan in full, and any other json collapses to a single inline line where the
   // cap would be a no-op anyway.
@@ -566,6 +567,9 @@ function renderToolResult(entry: MakaPiToolEntry, width: number): string[] {
 /** Best-effort extraction of the human-readable body from a tool result. */
 function plainResultText(entry: MakaPiToolEntry): string {
   const result = entry.result;
+  if (!result) {
+    return entry.status === 'aborted' ? 'Interrupted before the tool returned a result.' : '';
+  }
   if (result?.kind === 'text') return typeof result.text === 'string' ? result.text : '';
   if (result?.kind === 'json') {
     const value = result.value;
@@ -585,7 +589,7 @@ function plainResultText(entry: MakaPiToolEntry): string {
     const preview = formatQuietJsonValue(value, 'en');
     return preview.headline ? `${preview.headline}\n${preview.body}` : preview.body;
   }
-  return entry.output ?? '';
+  return formatToolResultContent(result);
 }
 
 function renderTerminalResult(
