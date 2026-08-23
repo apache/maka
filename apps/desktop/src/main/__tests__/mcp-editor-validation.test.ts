@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { validateMcpEditorDraft } from '../../renderer/mcp-editor-validation.js';
+import { liveEditorErrors, validateMcpEditorDraft } from '../../renderer/mcp-editor-validation.js';
 
 describe('MCP editor validation', () => {
   it('reports substantive URL and command errors for live first-edit display', () => {
@@ -215,5 +215,33 @@ describe('MCP editor validation', () => {
     ]) {
       assert.deepEqual(draft(url), {}, url);
     }
+  });
+
+  it('gates live errors: required shows only where a save already flagged it', () => {
+    // A sibling's visible error must not smuggle a fresh 必填 onto a field
+    // the user just cleared but has not "left" via a save attempt.
+    assert.deepEqual(
+      liveEditorErrors({ id: 'duplicate-id', url: 'required' }, { id: 'duplicate-id' }),
+      { id: 'duplicate-id' },
+    );
+    // After a save attempt flagged the field, editing keeps the verdict
+    // current — including the required state itself.
+    assert.deepEqual(
+      liveEditorErrors({ url: 'required' }, { url: 'required' }),
+      { url: 'required' },
+    );
+    assert.deepEqual(liveEditorErrors({}, { url: 'required' }), {});
+    // Substantive errors are always live, even on a clean slate.
+    assert.deepEqual(
+      liveEditorErrors({ url: 'insecure-url' }, {}),
+      { url: 'insecure-url' },
+    );
+    // A transport-kind switch revalidates every field through the same
+    // gate: the other kind's stale errors drop, and the new kind's empty
+    // fields stay quiet until save.
+    assert.deepEqual(
+      liveEditorErrors({ url: 'required' }, { commandLine: 'unbalanced-quote' }),
+      {},
+    );
   });
 });

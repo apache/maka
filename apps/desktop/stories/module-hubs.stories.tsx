@@ -1079,8 +1079,13 @@ export const ExtensionsMcpNeedsAuth: Story = {
       (candidate) => candidate.textContent?.includes('notion') === true,
     );
     row.click();
-    await waitForStoryText(canvasElement, '需要登录');
-    await waitForStoryText(canvasElement, '登录');
+    // Row text already contains 需要登录, so assert on inspector-only
+    // content: the explanation banner body and the exact-label 登录 button.
+    await waitForStoryText(canvasElement, '该服务器要求浏览器授权');
+    await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.trim() === '登录',
+    );
   },
 };
 

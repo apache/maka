@@ -115,6 +115,7 @@ import {
   type DefaultRuntimeHostDiagnosticTarget,
 } from './default-runtime-host-operation.js';
 import {
+  liveEditorErrors,
   validateMcpEditorDraft,
   type McpEditorErrors,
   type McpEditorValidationCode,
@@ -869,37 +870,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               });
               // Live validation means LIVE: every substantive error — a
               // colliding id, an invalid/insecure URL, embedded credentials,
-              // an unbalanced quote — surfaces the moment it is typed.
-              // Only presence errors stay save-triggered: flagging a field
-              // as missing while the user has not reached it yet is nagging.
-              if (Object.keys(current).length === 0) {
-                const immediate: McpEditorErrors = {};
-                for (const [field, code] of Object.entries(validation) as Array<
-                  [keyof McpEditorErrors, McpEditorValidationCode]
-                >) {
-                  if (code !== 'required') immediate[field] = code;
-                }
-                return immediate;
-              }
-              if (changedKey === 'kind') {
-                return validation;
-              }
-              if (
-                changedKey !== 'id' &&
-                changedKey !== 'commandLine' &&
-                changedKey !== 'url' &&
-                changedKey !== 'headers'
-              ) {
-                return current;
-              }
-              const nextErrors = { ...current };
-              const changedError = validation[changedKey];
-              if (changedError) {
-                nextErrors[changedKey] = changedError;
-              } else {
-                delete nextErrors[changedKey];
-              }
-              return nextErrors;
+              // an unbalanced quote — surfaces the moment it is typed, and a
+              // fixed field clears the moment it is fixed. Presence errors
+              // stay save-triggered; liveEditorErrors is the one rule for
+              // every branch, so neither a sibling error nor a transport
+              // switch can smuggle a fresh 必填 onto an untouched field.
+              return liveEditorErrors(validation, current);
             });
           }}
           onOpenChange={(open) => {
@@ -1183,6 +1159,15 @@ function McpEditorDialog(props: {
   useEffect(() => {
     if (stdioNeedsAdvanced) setAdvancedOpen(true);
   }, [stdioNeedsAdvanced]);
+  // The headers field is the only advanced field that can carry an error;
+  // a collapsed 高级设置 must not swallow the one message that explains why
+  // 保存并连接 refused to submit. Keyed on the errors object itself — every
+  // save attempt produces a fresh one — so a repeat save with the section
+  // collapsed re-opens it even though the error code did not change.
+  const errors = props.errors;
+  useEffect(() => {
+    if (errors.headers) setAdvancedOpen(true);
+  }, [errors]);
 
   const updateDraft = <K extends keyof McpEditorDraft>(key: K, value: McpEditorDraft[K]) => {
     if (props.state.mode !== 'manual') return;

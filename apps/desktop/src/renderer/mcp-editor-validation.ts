@@ -40,6 +40,30 @@ export type McpEditorErrors = Partial<
   Record<'id' | 'commandLine' | 'url' | 'headers', McpEditorValidationCode>
 >;
 
+/**
+ * Live-validation gate for the editor dialog: decides which of a fresh
+ * validation's errors may display while the user is still typing.
+ * Substantive errors always show; `required` shows only on a field that
+ * is already visibly flagged (a save attempt surfaced it), so editing
+ * keeps that verdict current without nagging fields the user has not
+ * reached — regardless of which field changed or whether the transport
+ * kind switched.
+ */
+export function liveEditorErrors(
+  validation: McpEditorErrors,
+  visible: McpEditorErrors,
+): McpEditorErrors {
+  const next: McpEditorErrors = {};
+  for (const [field, code] of Object.entries(validation) as Array<
+    [keyof McpEditorErrors, McpEditorValidationCode]
+  >) {
+    if (code !== 'required' || visible[field] !== undefined) {
+      next[field] = code;
+    }
+  }
+  return next;
+}
+
 export function validateMcpEditorDraft(
   draft: McpEditorDraft,
   options: {
