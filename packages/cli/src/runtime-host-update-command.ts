@@ -39,6 +39,7 @@ import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
+  verifyRuntimeHostManagedServiceReady,
   withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLifecycleLock,
   type RuntimeHostManagedServiceResult,
@@ -70,6 +71,7 @@ interface RuntimeHostUpdateCliDeps {
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
   readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
+  readonly verifyReady: typeof verifyRuntimeHostManagedServiceReady;
   readonly runOperator: (
     operatorPath: string,
     args: readonly string[],
@@ -88,6 +90,7 @@ export async function runManagedRuntimeHostUpdateCli(
     withLifecycleLock: withRuntimeHostManagedServiceLifecycleLock,
     withDeploymentLock: withRuntimeHostManagedServiceDeploymentLock,
     createBackend: createPlatformRuntimeHostServiceBackend,
+    verifyReady: verifyRuntimeHostManagedServiceReady,
     runOperator: runManagedRuntimeHostOperator,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
@@ -143,6 +146,7 @@ export async function runManagedRuntimeHostUpdateCli(
         }
         emit(progress('checking', currentVersion, options.version));
         if (currentVersion === options.version && status.service.active) {
+          await deps.verifyReady(serviceConfig, backend);
           emit({
             schemaVersion: 1,
             kind: 'result',
@@ -178,7 +182,17 @@ export async function runManagedRuntimeHostUpdateCli(
             ...expectedTargetArgs(options.expectedTarget),
             ...(options.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
           ]);
-          if (retirement.kind === 'error') throw new Error(retirement.error.message);
+          if (retirement.kind === 'error') {
+            if (retirement.action !== 'retire') {
+              throw new Error(
+                'The current Runtime Host operator returned an unrelated retirement error',
+              );
+            }
+            await deployment.rollback().catch(() => undefined);
+            deployment = undefined;
+            emit({ ...retirement, action: 'update' });
+            return 1;
+          }
           if (retirement.kind !== 'result' || retirement.action !== 'retire') {
             throw new Error(
               'The current Runtime Host operator returned an invalid retirement result',

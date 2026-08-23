@@ -328,10 +328,12 @@ test('manages only the service identity bound by Desktop onboarding', async () =
   assert.equal(handlers.size, 0);
 });
 
-test('updates the managed profile through its exact package and publishes progress', async () => {
+test('publishes update progress and waits for the managed profile to reconnect', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const updates: DesktopRuntimeHostSshUpdateInput[] = [];
   const progress: unknown[] = [];
+  const connectionCompletions: unknown[] = [];
+  let failConnection = false;
   const profile = {
     id: 'office',
     name: 'Office',
@@ -385,6 +387,11 @@ test('updates the managed profile through its exact package and publishes progre
       };
     },
     resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@1.3.0' }),
+    currentHostEpoch: () => 'host-before-update',
+    awaitUpdatedConnection: async (...args) => {
+      connectionCompletions.push(args);
+      if (failConnection) throw new Error('authentication required');
+    },
     sendProgress: (event) => progress.push(event),
     runAccessManagement: async () => assert.fail('access management is not expected'),
     cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
@@ -404,6 +411,22 @@ test('updates the managed profile through its exact package and publishes progre
     },
   }]);
   assert.deepEqual(progress, [{ profileId: profile.id, phase: 'staging' }]);
+  assert.deepEqual(connectionCompletions, [
+    [profile.id, profile.rootId, 'host-before-update', true],
+  ]);
+
+  failConnection = true;
+  const reconnectFailure = await update({}, profile.id, false);
+  assert.deepEqual(reconnectFailure, {
+    schemaVersion: 1,
+    kind: 'error',
+    action: 'update',
+    error: {
+      code: 'desktop_reconnect_failed',
+      message:
+        'The Runtime Host update completed, but Desktop could not reconnect: authentication required',
+    },
+  });
 });
 
 test('resumes deployment cleanup without invoking the removed operator', async () => {
@@ -567,6 +590,8 @@ function unusedUpdateDependencies() {
   return {
     runUpdate: async (): Promise<never> => assert.fail('update is not expected'),
     resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@1.2.3' } as const),
+    currentHostEpoch: () => undefined,
+    awaitUpdatedConnection: async () => undefined,
     sendProgress: () => undefined,
   };
 }

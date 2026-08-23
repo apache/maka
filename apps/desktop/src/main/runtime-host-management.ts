@@ -76,6 +76,13 @@ export function createDesktopRuntimeHostManagement(input: {
     onProgress: (phase: DesktopRuntimeHostManagementProgress['phase']) => void,
   ) => Promise<RuntimeHostServiceUpdateTerminalFrame>;
   readonly resolveUpdatePackage: () => DesktopRuntimeHostSetupPackage;
+  readonly currentHostEpoch: (profileId: string) => string | undefined;
+  readonly awaitUpdatedConnection: (
+    profileId: string,
+    expectedHostId: string,
+    previousHostEpoch: string | undefined,
+    replacementExpected: boolean,
+  ) => Promise<void>;
   readonly sendProgress: (progress: DesktopRuntimeHostManagementProgress) => void;
   readonly cleanupManagedDeployment: (
     input: DesktopRuntimeHostSshCleanupInput,
@@ -220,6 +227,7 @@ export function createDesktopRuntimeHostManagement(input: {
     if (managed.state !== 'active' || managed.profile.transport.kind !== 'ssh') {
       throw new Error('This Runtime Host profile is not available for managed updates');
     }
+    const previousHostEpoch = input.currentHostEpoch(profileId);
     const response = await input.runUpdate(
       {
         destination: managed.profile.transport.destination,
@@ -236,6 +244,31 @@ export function createDesktopRuntimeHostManagement(input: {
       },
       (phase) => input.sendProgress({ profileId, phase }),
     );
+    if (
+      response.kind === 'result' &&
+      response.update.kind !== 'active_tasks'
+    ) {
+      try {
+        await input.awaitUpdatedConnection(
+          profileId,
+          managed.profile.rootId,
+          previousHostEpoch,
+          response.update.kind !== 'already_current',
+        );
+      } catch (error) {
+        return {
+          schemaVersion: 1,
+          kind: 'error',
+          action: 'update',
+          error: {
+            code: 'desktop_reconnect_failed',
+            message:
+              'The Runtime Host update completed, but Desktop could not reconnect: ' +
+              (error instanceof Error ? error.message : String(error)),
+          },
+        };
+      }
+    }
     return response.kind === 'result'
       ? {
           ...response,

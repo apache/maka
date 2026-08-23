@@ -109,6 +109,27 @@ export function createSystemdUserRuntimeHostService(
         },
       } satisfies RuntimeHostServiceDeployment;
     },
+    verifyDeployment: async (config) => {
+      await validateLaunchFiles(config);
+      const [status, unit] = await Promise.all([
+        readSystemdStatus(context),
+        readFile(context.unitPath, 'utf8').catch((error: unknown) => {
+          if (isNodeError(error, 'ENOENT')) return null;
+          throw error;
+        }),
+      ]);
+      if (
+        status.loadState !== 'loaded' ||
+        status.fragmentPath !== context.unitPath ||
+        status.needDaemonReload !== 'no' ||
+        unit !== renderSystemdUnit(config)
+      ) {
+        throw new RuntimeHostServiceManagerError(
+          'target_mismatch',
+          'The loaded Runtime Host service does not match its managed deployment',
+        );
+      }
+    },
     status: readStatus,
     start: () => runLifecycleAction(context, 'start'),
     stop: () => runLifecycleAction(context, 'stop'),
@@ -234,6 +255,8 @@ interface SystemdStatus {
   readonly loadState: string;
   readonly activeState: string;
   readonly unitFileState: string;
+  readonly fragmentPath?: string;
+  readonly needDaemonReload?: string;
   readonly mainPid?: string;
   readonly execMainStatus?: string;
 }
@@ -346,7 +369,7 @@ async function readSystemdStatus(context: SystemdUnitContext): Promise<SystemdSt
     result = await context.runSystemctl([
       'show',
       context.unitName,
-      '--property=LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus',
+      '--property=LoadState,ActiveState,SubState,UnitFileState,FragmentPath,NeedDaemonReload,MainPID,ExecMainStatus',
       '--no-pager',
     ]);
   } catch (error) {
@@ -365,6 +388,8 @@ async function readSystemdStatus(context: SystemdUnitContext): Promise<SystemdSt
     loadState,
     activeState: properties.get('ActiveState') ?? 'inactive',
     unitFileState: properties.get('UnitFileState') ?? 'disabled',
+    fragmentPath: properties.get('FragmentPath'),
+    needDaemonReload: properties.get('NeedDaemonReload'),
     mainPid: properties.get('MainPID'),
     execMainStatus: properties.get('ExecMainStatus'),
   };

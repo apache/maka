@@ -328,6 +328,7 @@ test('runs an exact update package and reports progress before an active-work re
   assert.match(remoteCommand, /--package.*maka-agent@1\.3\.0/u);
   assert.match(remoteCommand, /runtime-host.*service.*update/u);
   assert.match(remoteCommand, /MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST/u);
+  harness.pty.emitData('Password: ');
   harness.pty.emitData(
     encodeRuntimeHostServiceManagementFrame({
       schemaVersion: 1,
@@ -366,6 +367,7 @@ test('runs an exact update package and reports progress before an active-work re
   assert.equal(result.kind, 'result');
   assert.equal(result.kind === 'result' ? result.update.kind : undefined, 'active_tasks');
   assert.deepEqual(phases, ['retiring']);
+  assert.deepEqual(harness.events.map(({ kind }) => kind), ['opened', 'data', 'connected']);
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   await harness.terminal.close();
 });

@@ -210,6 +210,7 @@ import {
 
 await resolveShellEnv();
 
+const MANAGED_UPDATE_RECONNECT_TIMEOUT_MS = 10_000;
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 const userDataDir = app.getPath("userData");
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
@@ -445,6 +446,37 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
   runUpdate: runtimeHostSshTerminal.runUpdate,
   resolveUpdatePackage: runtimeHostSetupPackage,
+  currentHostEpoch: (profileId) =>
+    runtimeHostManager?.current(profileId)?.candidate?.client.hostEpoch,
+  awaitUpdatedConnection: async (
+    profileId,
+    expectedHostId,
+    previousHostEpoch,
+    replacementExpected,
+  ) => {
+    if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
+    const expectedPrevious = replacementExpected ? previousHostEpoch : undefined;
+    try {
+      await runtimeHostManager.waitUntilReady(
+        profileId,
+        expectedPrevious,
+        AbortSignal.timeout(MANAGED_UPDATE_RECONNECT_TIMEOUT_MS),
+      );
+      if (runtimeHostManager.current(profileId)?.hostId !== expectedHostId) {
+        throw new Error('Runtime Host profile changed while its service was updating');
+      }
+    } catch {
+      await runtimeHostProfileService.reconnect(profileId, expectedHostId);
+      const current = runtimeHostManager.current(profileId);
+      if (
+        current?.hostId !== expectedHostId ||
+        !current.candidate ||
+        (expectedPrevious !== undefined && current.candidate.client.hostEpoch === expectedPrevious)
+      ) {
+        throw new Error('Desktop reconnected to an unexpected Runtime Host generation');
+      }
+    }
+  },
   sendProgress: (progress) =>
     mainWindowController.send("runtime-host-management:progress", progress),
   runAccessManagement: runtimeHostSshTerminal.runAccessManagement,

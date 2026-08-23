@@ -64,6 +64,11 @@ export interface RuntimeHostDesktopManager {
     remote: DesktopRuntimeHostCandidateStartInput['remote'],
   ): Promise<void>;
   disable(profileId: string): Promise<void>;
+  waitUntilReady(
+    profileId: string,
+    previousHostEpoch?: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
   setDefaultProfile(profileId: string): void;
   prepareForUpdate(
     allowInterruptActiveTasks: boolean,
@@ -455,6 +460,26 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   async disable(profileId: string): Promise<void> {
     return this.#mutateTarget(profileId, () => this.#disable(profileId));
+  }
+
+  async waitUntilReady(
+    profileId: string,
+    previousHostEpoch?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const target = this.#requireTarget(profileId);
+    let candidate = await this.#waitForReadyCandidate(
+      this.#requireLifecycle(target),
+      undefined,
+      signal,
+    );
+    while (previousHostEpoch !== undefined && candidate.client.hostEpoch === previousHostEpoch) {
+      candidate = await this.#waitForReadyCandidate(
+        this.#requireLifecycle(target),
+        candidate,
+        signal,
+      );
+    }
   }
 
   async #disable(profileId: string): Promise<void> {

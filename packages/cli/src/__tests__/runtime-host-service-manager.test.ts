@@ -36,6 +36,7 @@ import {
   decodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import { RUNTIME_HOST_RETIREMENT_EXIT_CODE } from '@maka/runtime-host/server';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
@@ -541,6 +542,19 @@ describe('managed Runtime Host service', () => {
       release.backend,
       ready,
     );
+    const releaseConfig = (
+      await manageRuntimeHostService({ ...input(releaseRoot), action: 'status' }, release.backend)
+    ).service.config;
+    assert.ok(releaseConfig);
+    await release.backend.verifyDeployment(releaseConfig);
+    const unit = await readFile(release.unitPath, 'utf8');
+    await writeFile(release.unitPath, `${unit}# stale change\n`);
+    await assert.rejects(
+      release.backend.verifyDeployment(releaseConfig),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'target_mismatch',
+    );
+    await writeFile(release.unitPath, unit);
     await manageRuntimeHostService(
       { ...input(developmentRoot), action: 'install' },
       development.backend,
@@ -1269,7 +1283,7 @@ describe('managed Runtime Host service', () => {
     assert.equal(config.launch.cliPath, await realpath(targetCli));
   });
 
-  it('updates through the current operator before activating the target service', async () => {
+  it('updates through the current operator and preserves exact update outcomes', async () => {
     const clientDataRoot = '/home/ada/.config/maka';
     const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
     const deploymentRoot = '/home/ada/.local/share/Maka/runtime-host-services/service';
@@ -1308,6 +1322,8 @@ describe('managed Runtime Host service', () => {
     let statusReads = 0;
     let observedVersion = '1.0.0';
     let observedState: 'running' | 'stopped' = 'running';
+    let readyChecks = 0;
+    let operatorFailure: Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> | undefined;
     let insideLifecycle = false;
     let output = '';
     const options = {
@@ -1351,6 +1367,7 @@ describe('managed Runtime Host service', () => {
       runOperator: async (_operatorPath: string, args: readonly string[]) => {
         order.push('retire');
         assert.ok(args.includes('--allow-interrupt-active-tasks'));
+        if (operatorFailure) return operatorFailure;
         return {
           schemaVersion: 1 as const,
           kind: 'result' as const,
@@ -1368,6 +1385,9 @@ describe('managed Runtime Host service', () => {
           },
           retirement: { kind: 'retired' as const, hostEpoch: 'host-1', pid: 42 },
         };
+      },
+      verifyReady: async () => {
+        readyChecks += 1;
       },
       manage: async (input: Parameters<typeof manageRuntimeHostService>[0]) => {
         if (input.action === 'status') {
@@ -1413,6 +1433,34 @@ describe('managed Runtime Host service', () => {
         ? recovery.update.kind
         : undefined,
       'repaired',
+    );
+
+    order.length = 0;
+    statusReads = 0;
+    observedState = 'running';
+    output = '';
+    assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
+    assert.equal(readyChecks, 1);
+    assert.deepEqual(order, []);
+
+    statusReads = 0;
+    observedVersion = '1.0.0';
+    output = '';
+    operatorFailure = {
+      schemaVersion: 1,
+      kind: 'error',
+      action: 'retire',
+      error: { code: 'retirement_failed', message: 'The old Host rejected retirement' },
+    };
+    assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 1);
+    assert.deepEqual(order, ['retire', 'rollback']);
+    const retirementFailure = decodeRuntimeHostServiceManagementFrame(
+      output.trim().split('\n').at(-1) ?? '',
+    );
+    assert.equal(retirementFailure?.kind, 'error');
+    assert.equal(
+      retirementFailure?.kind === 'error' ? retirementFailure.error.code : undefined,
+      'retirement_failed',
     );
   });
 
@@ -1605,6 +1653,8 @@ function createFakeSystemd(unitPath: string): {
             `ActiveState=${active ? 'active' : 'inactive'}`,
             `SubState=${active ? 'running' : 'dead'}`,
             `UnitFileState=${enabled ? 'enabled' : 'disabled'}`,
+            `FragmentPath=${loaded ? unitPath : ''}`,
+            'NeedDaemonReload=no',
             `MainPID=${active ? '4242' : '0'}`,
             'ExecMainStatus=0',
             '',
@@ -1624,6 +1674,7 @@ function createUnusedBackend(): RuntimeHostServiceBackend {
   return {
     preflightInstall: unexpected,
     install: unexpected,
+    verifyDeployment: unexpected,
     status: unexpected,
     start: unexpected,
     stop: unexpected,
@@ -1653,6 +1704,7 @@ function createReadyBackend(): RuntimeHostServiceBackend {
   return {
     preflightInstall: async () => undefined,
     install: async () => ({ rollback: async () => undefined }),
+    verifyDeployment: async () => undefined,
     status,
     start: async () => undefined,
     stop: async () => undefined,

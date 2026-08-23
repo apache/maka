@@ -31,7 +31,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_SERVICE_LOG_MAX_BYTES } from '@maka/runtime-host/operator';
-import { withFileUpdateLock } from '@maka/storage/file-update-lock';
+import { withProcessLifetimeFileUpdateLock } from '@maka/storage/process-lifetime-file-update-lock';
 import {
   resolveExistingStorageRoot,
   tryAcquireInteractiveRootOwner,
@@ -94,6 +94,7 @@ export interface RuntimeHostServiceBackend {
     config: RuntimeHostManagedServiceConfig,
     options?: { readonly restoreOnFailure?: boolean },
   ): Promise<RuntimeHostServiceDeployment>;
+  verifyDeployment(config: RuntimeHostManagedServiceConfig): Promise<void>;
   status(): Promise<RuntimeHostServiceBackendStatus>;
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -223,7 +224,7 @@ export async function manageRuntimeHostService(
 ): Promise<RuntimeHostManagedServiceResult> {
   const deps: RuntimeHostServiceManagerDeps = {
     allocateLoopbackPort,
-    waitForReady: waitForManagedRuntimeHostReady,
+    waitForReady: verifyRuntimeHostManagedServiceReady,
     prepareRetirement: prepareRuntimeHostRetirement,
     environment: process.env,
     homeDir: homedir(),
@@ -236,7 +237,7 @@ export async function manageRuntimeHostService(
   }
   await mkdir(configDirectory, { recursive: true, mode: 0o700 });
 
-  return withFileUpdateLock(
+  return withProcessLifetimeFileUpdateLock(
     configPath,
     () => manageRuntimeHostServiceLocked(input, backend, deps, configPath),
     SERVICE_OPERATION_LOCK_TIMEOUT_MS,
@@ -249,7 +250,7 @@ export async function withRuntimeHostManagedServiceLifecycleLock<T>(
   timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
 ): Promise<T> {
   await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });
-  return withFileUpdateLock(
+  return withProcessLifetimeFileUpdateLock(
     join(clientDataRoot, SERVICE_LIFECYCLE_LOCK_FILE),
     operation,
     timeoutMs,
@@ -262,7 +263,7 @@ export async function withRuntimeHostManagedServiceDeploymentLock<T>(
   timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
 ): Promise<T> {
   await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });
-  return withFileUpdateLock(
+  return withProcessLifetimeFileUpdateLock(
     join(clientDataRoot, SERVICE_DEPLOYMENT_LOCK_FILE),
     operation,
     timeoutMs,
@@ -276,7 +277,7 @@ export async function cleanupRuntimeHostManagedDeployment(
   await withRuntimeHostManagedServiceLifecycleLock(input.clientDataRoot, async () => {
     const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
     await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
-    await withFileUpdateLock(
+    await withProcessLifetimeFileUpdateLock(
       configPath,
       async () => {
         const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
@@ -882,10 +883,11 @@ function isWithin(root: string, candidate: string): boolean {
   );
 }
 
-async function waitForManagedRuntimeHostReady(
+export async function verifyRuntimeHostManagedServiceReady(
   config: RuntimeHostManagedServiceConfig,
   backend: RuntimeHostServiceBackend,
 ): Promise<void> {
+  await backend.verifyDeployment(config);
   const deadline = Date.now() + SERVICE_READY_TIMEOUT_MS;
   let lastFailure = 'not available';
   while (Date.now() < deadline) {

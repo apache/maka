@@ -60,6 +60,7 @@ interface ActiveTerminal {
   phase: 'connecting' | 'connected';
   revealed: boolean;
   dismissed: boolean;
+  presentationSuppressed: boolean;
   output: string;
 }
 
@@ -207,6 +208,23 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       clearTimeout(terminal.revealTimer);
       terminal.revealTimer = undefined;
     }
+    if (terminal.revealed && !terminal.presentationSuppressed) {
+      input.send('runtime-host-ssh-terminal:event', {
+        kind: 'connected',
+        revision,
+        sessionId: terminal.sessionId,
+      });
+    }
+  }
+  function suppressPresentation(terminal: ActiveTerminal): void {
+    if (active !== terminal || terminal.phase !== 'connecting') return;
+    terminal.presentationSuppressed = true;
+    presentation = undefined;
+    revision += 1;
+    if (terminal.revealTimer !== undefined) {
+      clearTimeout(terminal.revealTimer);
+      terminal.revealTimer = undefined;
+    }
     if (terminal.revealed) {
       input.send('runtime-host-ssh-terminal:event', {
         kind: 'connected',
@@ -249,6 +267,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       phase: 'connecting',
       revealed: false,
       dismissed: false,
+      presentationSuppressed: false,
       output: '',
     };
     active = terminal;
@@ -257,7 +276,8 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         active !== terminal ||
         terminal.phase !== 'connecting' ||
         terminal.revealed ||
-        terminal.dismissed
+        terminal.dismissed ||
+        terminal.presentationSuppressed
       ) {
         return;
       }
@@ -270,7 +290,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     pty.onData((data) => {
       if (active !== terminal || terminal.phase !== 'connecting' || terminal.dismissed) return;
       const visible = transformOutput(data);
-      if (!visible) return;
+      if (!visible || terminal.presentationSuppressed) return;
       terminal.output = `${terminal.output}${visible}`.slice(-TERMINAL_OUTPUT_MAX);
       reveal();
       revision += 1;
@@ -396,6 +416,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     let frame: Frame | undefined;
     let failure: Error | undefined;
     let activeTerminal: ActiveTerminal | undefined;
+    let receivedProgress = false;
     const filter = createFramedOutputFilter({
       prefix: options.prefix,
       pendingMaxBytes: options.pendingMaxBytes,
@@ -408,6 +429,8 @@ export function createDesktopRuntimeHostSshTerminal(input: {
           return;
         }
         if (options.isTerminalFrame && !options.isTerminalFrame(next)) {
+          receivedProgress = true;
+          if (activeTerminal) suppressPresentation(activeTerminal);
           options.onProgress?.(next);
           return;
         }
@@ -430,6 +453,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     );
     activeTerminal = terminal;
     if (frame) completePresentation(terminal);
+    else if (receivedProgress) suppressPresentation(terminal);
     const wait = await waitForTerminalProcess(process, {
       signal: options.signal,
       timeoutMs: options.timeoutMs ?? input.managementTimeoutMs ?? MANAGEMENT_TIMEOUT_MS,
