@@ -24,7 +24,7 @@ import type {
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
 } from '@maka/runtime/stream-graph-read-model';
-import type { GoalState } from '@maka/runtime/goal-state';
+import { DEFAULT_MAX_ITERATIONS, type GoalState } from '@maka/runtime/goal-state';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
 import type {
   GoalProjection,
@@ -33,10 +33,16 @@ import type {
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';
-import { GOAL_ARM_REQUEST_KEYS } from '../shared/goal-arm.js';
+import {
+  GOAL_ARM_REQUEST_KEYS,
+  type GoalArmOutcome,
+} from '../shared/goal-arm.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
 import {
+  handleReconciledControl,
   handleReconnectableRead,
+  isDispatchedControlConnectionLoss,
+  rethrowReconnectableReadFailure,
   type ReconnectableReadIpcMain,
 } from './ipc-reconnect-policy.js';
 import {
@@ -121,13 +127,53 @@ export function registerRuntimeHostSessionDomainsIpc(
   ipcMain.handle('goal:resume', async (_event, sessionId: unknown) => {
     await deps.client.controlGoalWithRetry(requiredId(sessionId, 'Session'), 'resume');
   });
-  ipcMain.handle('goal:arm', async (_event, sessionId: unknown, input: unknown) => {
-    const result = await deps.client.armGoal({
-      sessionId: requiredId(sessionId, 'Session'),
-      ...requireGoalArmBudgets(input),
-    });
-    return toDesktopGoal(result.goal);
-  });
+  handleReconciledControl<GoalArmReconciliationContext, GoalArmOutcome>(
+    ipcMain,
+    'goal:arm',
+    {
+      dispatch: async (_event, ...args) => {
+        const request = canonicalGoalArmRequest(args[0], args[1]);
+        const previous = await deps.client.queryGoal(request.sessionId);
+        try {
+          const result = await deps.client.armGoal(request);
+          return {
+            kind: 'completed',
+            value: { kind: 'armed', goal: toDesktopGoal(result.goal) },
+          };
+        } catch (error) {
+          if (!isDispatchedControlConnectionLoss(error)) throw error;
+          return {
+            kind: 'reconcile',
+            context: Object.freeze({
+              request,
+              previousGoal:
+                previous.goal === null ? null : Object.freeze({ ...previous.goal }),
+            }),
+          };
+        }
+      },
+      reconcile: async (context) => {
+        try {
+          const result = await deps.client.queryGoal(context.request.sessionId);
+          return {
+            kind: 'reconciled',
+            currentGoal: result.goal === null ? null : toDesktopGoal(result.goal),
+            matchesRequestedState: goalMatchesArmRequest(
+              result.goal,
+              context.request,
+              context.previousGoal,
+            ),
+          };
+        } catch (error) {
+          rethrowReconnectableReadFailure(error);
+          return { kind: 'reconciliation_unavailable' };
+        }
+      },
+      reconciliationUnavailable: async () => ({
+        kind: 'reconciliation_unavailable',
+      }),
+    },
+  );
 
   handleReconnectableRead(ipcMain, 'plan-mode:getState', (_event, sessionId: unknown) =>
     deps.client.getPlanState(requiredId(sessionId, 'Session')),
@@ -332,6 +378,46 @@ async function refreshRuntimeResources(
       deps.onError?.(error);
     }
   }
+}
+
+interface CanonicalGoalArmRequest {
+  readonly sessionId: string;
+  readonly condition: string;
+  readonly maxIterations: number | null;
+  readonly tokenBudget: number | null;
+}
+
+interface GoalArmReconciliationContext {
+  readonly request: CanonicalGoalArmRequest;
+  readonly previousGoal: GoalProjection | null;
+}
+
+function canonicalGoalArmRequest(
+  sessionId: unknown,
+  input: unknown,
+): CanonicalGoalArmRequest {
+  const budgets = requireGoalArmBudgets(input);
+  return Object.freeze({
+    sessionId: requiredId(sessionId, 'Session'),
+    condition: budgets.condition.trim(),
+    maxIterations: budgets.maxIterations,
+    tokenBudget: budgets.tokenBudget,
+  });
+}
+
+function goalMatchesArmRequest(
+  current: GoalProjection | null,
+  request: CanonicalGoalArmRequest,
+  previous: GoalProjection | null,
+): boolean {
+  return (
+    current !== null &&
+    current.goalId !== previous?.goalId &&
+    current.sessionId === request.sessionId &&
+    current.condition === request.condition &&
+    current.maxIterations === (request.maxIterations ?? DEFAULT_MAX_ITERATIONS) &&
+    current.tokenBudget === request.tokenBudget
+  );
 }
 
 /**

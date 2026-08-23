@@ -57,7 +57,7 @@ export type RuntimeHostCliCommand =
     }
   | {
       kind: 'runtime-host-service-manage';
-      action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'logs' | 'uninstall';
+      action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'retire' | 'logs' | 'uninstall';
       json: boolean;
       framed?: true;
       clientDataRoot?: string;
@@ -67,10 +67,17 @@ export type RuntimeHostCliCommand =
       websocketPath?: string;
       expectedTarget?: RuntimeHostManagedServiceTarget;
       retainManagedDeployment?: true;
+      allowInterruptActiveTasks?: true;
+    }
+  | {
+      kind: 'runtime-host-managed-deployment-cleanup';
+      clientDataRoot?: string;
+      expectedTarget: RuntimeHostManagedServiceTarget;
     }
   | {
       kind: 'runtime-host-access-issue';
       rootPath?: string;
+      expectedRootId?: string;
       principalKind: 'remote_owner' | 'capability_provider';
       principalId: string;
       operationGrants: string[];
@@ -78,7 +85,26 @@ export type RuntimeHostCliCommand =
       canUseHostPaths: boolean;
       preset?: 'desktop-client' | 'terminal-client';
     }
-  | { kind: 'runtime-host-access-revoke'; rootPath?: string; credentialId: string }
+  | {
+      kind: 'runtime-host-access-prepare';
+      rootPath?: string;
+      expectedRootId?: string;
+      currentCredentialFingerprint: string;
+    }
+  | {
+      kind: 'runtime-host-access-list';
+      rootPath?: string;
+      expectedRootId?: string;
+      framed: boolean;
+    }
+  | {
+      kind: 'runtime-host-access-revoke';
+      rootPath?: string;
+      expectedRootId?: string;
+      credentialId: string;
+      currentCredentialFingerprint?: string;
+      framed: boolean;
+    }
   | { kind: 'runtime-host-project-list'; rootPath?: string }
   | { kind: 'runtime-host-project-add'; rootPath?: string; path: string }
   | {
@@ -170,24 +196,68 @@ function parseSetupCommand(argv: string[]): RuntimeHostCliCommand {
 
 function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   const action = argv[0];
+  if (action === 'cleanup-deployment') {
+    let clientDataRoot: string | undefined;
+    const options = parseManagedServiceOptions(argv.slice(1), {
+      allowConfiguration: false,
+      valueOptions: {
+        '--client-data-root': (value) => {
+          if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
+          if (!isSafeAbsolutePath(value))
+            return error('--client-data-root must be an absolute path');
+          clientDataRoot = value;
+        },
+      },
+    });
+    if ('kind' in options) return options;
+    if (options.json) return error('Unexpected argument: --json');
+    if (!options.expectedTarget) {
+      return error('runtime-host service cleanup-deployment requires an expected target');
+    }
+    return {
+      kind: 'runtime-host-managed-deployment-cleanup',
+      ...(clientDataRoot ? { clientDataRoot } : {}),
+      expectedTarget: options.expectedTarget,
+    };
+  }
   if (
     action !== 'install' &&
     action !== 'status' &&
     action !== 'start' &&
     action !== 'stop' &&
     action !== 'restart' &&
+    action !== 'retire' &&
     action !== 'logs' &&
     action !== 'uninstall'
   ) {
     return error(
       action
         ? `Unexpected runtime-host service command: ${action}`
-        : 'runtime-host service requires install, status, start, stop, restart, logs, or uninstall',
+        : 'runtime-host service requires install, status, start, stop, restart, retire, logs, or uninstall',
     );
   }
 
   let retainManagedDeployment = false;
+  let allowInterruptActiveTasks = false;
   let clientDataRoot: string | undefined;
+  const flagOptions: Readonly<Record<string, () => void | RuntimeHostCliError>> =
+    action === 'uninstall'
+      ? {
+          '--retain-managed-deployment': () => {
+            if (retainManagedDeployment) return error('Duplicate --retain-managed-deployment');
+            retainManagedDeployment = true;
+          },
+        }
+      : action === 'retire'
+        ? {
+            '--allow-interrupt-active-tasks': () => {
+              if (allowInterruptActiveTasks) {
+                return error('Duplicate --allow-interrupt-active-tasks');
+              }
+              allowInterruptActiveTasks = true;
+            },
+          }
+        : {};
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: action === 'install',
     allowFramed: true,
@@ -198,24 +268,19 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
         clientDataRoot = value;
       },
     },
-    ...(action === 'uninstall'
-      ? {
-          flagOptions: {
-            '--retain-managed-deployment': () => {
-              if (retainManagedDeployment) return error('Duplicate --retain-managed-deployment');
-              retainManagedDeployment = true;
-            },
-          },
-        }
-      : {}),
+    flagOptions,
   });
   if ('kind' in options) return options;
+  if (action === 'retire' && !options.expectedTarget) {
+    return error('runtime-host service retire requires an expected target');
+  }
   return {
     kind: 'runtime-host-service-manage',
     action,
     ...options,
     ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(retainManagedDeployment ? { retainManagedDeployment: true } : {}),
+    ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
   };
 }
 
@@ -719,24 +784,32 @@ function parseProjectRoot(value: string): { label: string; path: string } | Runt
 
 function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   const action = argv[0];
-  if (action !== 'issue' && action !== 'revoke') {
+  if (action !== 'list' && action !== 'issue' && action !== 'prepare' && action !== 'revoke') {
     return error(
       action
         ? `Unexpected runtime-host access command: ${action}`
-        : 'runtime-host access requires the issue or revoke command',
+        : 'runtime-host access requires list, issue, prepare, or revoke',
     );
   }
   let rootPath: string | undefined;
+  let expectedRootId: string | undefined;
+  let framed = false;
   let principalId: string | undefined;
   let principalKind: 'remote_owner' | 'capability_provider' = 'remote_owner';
   let principalKindSpecified = false;
   let credentialId: string | undefined;
+  let currentCredentialFingerprint: string | undefined;
   const operationGrants: string[] = [];
   let canPublishClientCapabilities = false;
   let canUseHostPaths = false;
   let preset: 'desktop-client' | 'terminal-client' | undefined;
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === '--framed') {
+      if (framed) return error('Duplicate --framed');
+      framed = true;
+      continue;
+    }
     if (argument === '--publish-client-capabilities') {
       canPublishClientCapabilities = true;
       continue;
@@ -747,15 +820,18 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     }
     if (
       argument === '--root' ||
+      argument === '--expected-root' ||
       argument === '--kind' ||
       argument === '--preset' ||
       argument === '--principal' ||
       argument === '--grant' ||
-      argument === '--credential'
+      argument === '--credential' ||
+      argument === '--current-fingerprint'
     ) {
       const parsed = optionValue(argv, index, argument);
       if (typeof parsed !== 'string') return parsed;
       if (argument === '--root') rootPath = parsed;
+      if (argument === '--expected-root') expectedRootId = parsed;
       if (argument === '--kind') {
         if (parsed !== 'remote-owner' && parsed !== 'capability-provider') {
           return error('--kind must be remote-owner or capability-provider');
@@ -772,14 +848,65 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       if (argument === '--principal') principalId = parsed;
       if (argument === '--grant') operationGrants.push(parsed);
       if (argument === '--credential') credentialId = parsed;
+      if (argument === '--current-fingerprint') currentCredentialFingerprint = parsed;
       index += 1;
       continue;
     }
     return error(`Unexpected argument: ${argument ?? ''}`);
   }
+  if (expectedRootId && !/^[a-f0-9]{64}$/u.test(expectedRootId)) {
+    return error('--expected-root must be a Runtime Host root identity');
+  }
+  if (action === 'list') {
+    if (
+      principalId ||
+      principalKindSpecified ||
+      operationGrants.length > 0 ||
+      canPublishClientCapabilities ||
+      canUseHostPaths ||
+      preset ||
+      credentialId ||
+      currentCredentialFingerprint
+    ) {
+      return error('Credential mutation options are not valid for access list');
+    }
+    return {
+      kind: 'runtime-host-access-list',
+      ...(rootPath ? { rootPath } : {}),
+      ...(expectedRootId ? { expectedRootId } : {}),
+      framed,
+    };
+  }
+  if (action === 'prepare') {
+    if (!framed) return error('access prepare is reserved for framed operator management');
+    if (!currentCredentialFingerprint) return error('--current-fingerprint is required');
+    if (!/^[a-f0-9]{32}$/u.test(currentCredentialFingerprint)) {
+      return error('--current-fingerprint must be a Runtime Host credential fingerprint');
+    }
+    if (
+      principalId ||
+      principalKindSpecified ||
+      operationGrants.length > 0 ||
+      canPublishClientCapabilities ||
+      canUseHostPaths ||
+      preset ||
+      credentialId
+    ) {
+      return error('Credential issue options are not valid for access prepare');
+    }
+    return {
+      kind: 'runtime-host-access-prepare',
+      ...(rootPath ? { rootPath } : {}),
+      ...(expectedRootId ? { expectedRootId } : {}),
+      currentCredentialFingerprint,
+    };
+  }
   if (action === 'issue') {
+    if (framed) return error('--framed is only valid for access management');
     if (!principalId) return error('--principal is required');
-    if (credentialId) return error('--credential is only valid for access revoke');
+    if (credentialId || currentCredentialFingerprint) {
+      return error('Credential target options are only valid for access revoke');
+    }
     if (
       preset &&
       (principalKindSpecified ||
@@ -793,6 +920,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       return {
         kind: 'runtime-host-access-issue',
         ...(rootPath ? { rootPath } : {}),
+        ...(expectedRootId ? { expectedRootId } : {}),
         principalKind: 'remote_owner',
         principalId,
         operationGrants,
@@ -818,6 +946,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     return {
       kind: 'runtime-host-access-issue',
       ...(rootPath ? { rootPath } : {}),
+      ...(expectedRootId ? { expectedRootId } : {}),
       principalKind,
       principalId,
       operationGrants,
@@ -826,6 +955,12 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     };
   }
   if (!credentialId) return error('--credential is required');
+  if (framed && !currentCredentialFingerprint) {
+    return error('--current-fingerprint is required for framed access revoke');
+  }
+  if (currentCredentialFingerprint && !/^[a-f0-9]{32}$/u.test(currentCredentialFingerprint)) {
+    return error('--current-fingerprint must be a Runtime Host credential fingerprint');
+  }
   if (
     principalId ||
     principalKindSpecified ||
@@ -839,7 +974,10 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   return {
     kind: 'runtime-host-access-revoke',
     ...(rootPath ? { rootPath } : {}),
+    ...(expectedRootId ? { expectedRootId } : {}),
     credentialId,
+    ...(currentCredentialFingerprint ? { currentCredentialFingerprint } : {}),
+    framed,
   };
 }
 

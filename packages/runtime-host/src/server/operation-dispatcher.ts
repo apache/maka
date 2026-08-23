@@ -85,7 +85,12 @@ export type ConnectionEffectOperationKey = Extract<
 >;
 export type MessageOperationKey = Extract<
   OperationKey,
-  'turn.message.submit' | 'queue.retract' | 'turn.interrupt'
+  | 'turn.message.submit'
+  | 'queue.retract'
+  | 'queue.entry.retract'
+  | 'queue.entry.promote'
+  | 'queue.entries.reorder'
+  | 'turn.interrupt'
 >;
 export type InteractionOperationKey = Extract<OperationKey, `interaction.${string}`>;
 export type GoalOperationKey = Extract<OperationKey, `goal.${string}`>;
@@ -279,6 +284,20 @@ export function createUnavailableAccessAuthorityOperationHandlers(): AccessAutho
       },
     }),
     'access.credential.revoke': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
+    'access.credential.rotation.prepare': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
+    'access.credential.rotation.revoke': async () => ({
       ok: false,
       error: {
         code: 'operation_unavailable',

@@ -16,9 +16,8 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
-import { app, nativeImage } from 'electron';
-import { join } from 'node:path';
+import { app } from 'electron';
+import { applyAppIcon } from './app-icon-surface.js';
 import { installApplicationMenu } from './application-menu.js';
 import { resolveDockPresentation } from './dock-presentation.js';
 import type { createMainWindowController } from './main-window.js';
@@ -42,18 +41,13 @@ export function installDesktopShellPresentation(
     if (dockPresentation === 'hide') {
       app.dock.hide();
     } else if (dockPresentation === 'icon') {
-      try {
-        const iconPath = join(
-          import.meta.dirname,
-          '..',
-          '..',
-          'assets',
-          'icon.png',
-        );
-        app.dock.setIcon(nativeImage.createFromPath(iconPath));
-      } catch (error) {
-        deps.onIconError(error);
-      }
+      // The DEFAULT mark, synchronously, even when the user picked another
+      // one: reading the persisted choice means awaiting the settings store,
+      // and a dock that shows the generic Electron rocket until that resolves
+      // is the exact regression PR-GRAY-CARD-LIFT-0 fixed. The persisted
+      // choice lands a tick later, from the same client-settings effect that
+      // applies it when the user switches (see client-settings-effects.ts).
+      applyAppIcon('default', deps.onIconError);
     }
   }
 

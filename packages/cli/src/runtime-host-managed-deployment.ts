@@ -283,19 +283,15 @@ async function writeOperatorLauncher(
   clientDataRoot: string,
 ): Promise<void> {
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
-  const deploymentRoot = dirname(path);
   const contents = [
     '#!/bin/sh',
-    'if [ "$#" -eq 1 ] && [ "$1" = "__cleanup-managed-deployment" ]; then',
-    `  for entry in ${quotePosix(deploymentRoot)}/* ${quotePosix(deploymentRoot)}/.[!.]* ${quotePosix(deploymentRoot)}/..?*; do`,
-    `    [ "$entry" = ${quotePosix(path)} ] && continue`,
-    '    if [ -e "$entry" ] || [ -L "$entry" ]; then',
-    '      rm -rf -- "$entry" || exit 1',
-    '    fi',
-    '  done',
-    `  rm -f -- ${quotePosix(path)} || exit 1`,
-    `  rmdir -- ${quotePosix(deploymentRoot)} || exit 1`,
-    '  exit 0',
+    'if [ "$#" -ge 1 ] && [ "$1" = "__cleanup-managed-deployment" ]; then',
+    '  shift',
+    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service cleanup-deployment "$@" --client-data-root ${quotePosix(clientDataRoot)}`,
+    'fi',
+    'if [ "$#" -ge 1 ] && [ "$1" = "access" ]; then',
+    '  shift',
+    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host access "$@"`,
     'fi',
     `exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service "$@" --client-data-root ${quotePosix(clientDataRoot)}`,
     '',

@@ -28,7 +28,257 @@ import {
   readWithFallback,
   tryReconnectableReadResult,
 } from "../ipc-reconnect-policy.js";
-import { RuntimeHostReconnectingIpcMain } from "../runtime-host-reconnecting-ipc-main.js";
+import * as ipcReconnectPolicy from "../ipc-reconnect-policy.js";
+import {
+  RuntimeHostReconnectingIpcMain,
+  RuntimeHostTargetChangedError,
+} from "../runtime-host-reconnecting-ipc-main.js";
+
+test("classifies only dispatched control connection loss for reconciliation", () => {
+  const predicate = (
+    ipcReconnectPolicy as typeof ipcReconnectPolicy & {
+      isDispatchedControlConnectionLoss?: (error: unknown) => boolean;
+    }
+  ).isDispatchedControlConnectionLoss;
+  assert.equal(typeof predicate, "function");
+  assert.equal(
+    predicate?.(
+      new RuntimeHostRequestInterruptedError(
+        "goal.arm",
+        "control",
+        "dispatched",
+        "connection_lost",
+      ),
+    ),
+    true,
+  );
+  for (const error of [
+    new RuntimeHostRequestInterruptedError(
+      "goal.arm",
+      "control",
+      "not_dispatched",
+      "connection_lost",
+    ),
+    new RuntimeHostRequestInterruptedError(
+      "goal.arm",
+      "control",
+      "dispatched",
+      "timeout",
+    ),
+    new RuntimeHostRequestInterruptedError(
+      "goal.query",
+      "query",
+      "dispatched",
+      "connection_lost",
+    ),
+    new RuntimeHostRequestInterruptedError(
+      "web-search.execute",
+      "command",
+      "dispatched",
+      "connection_lost",
+    ),
+    new Error("ordinary failure"),
+  ]) {
+    assert.equal(predicate?.(error), false);
+  }
+});
+
+test("reconciles a dispatched control on a replacement without replaying it", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const firstTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  assert.equal(typeof firstTarget.handleReconciledControl, "function");
+  let dispatches = 0;
+  firstTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => {
+      dispatches += 1;
+      return {
+        kind: "reconcile",
+        context: { condition: "All tests pass" },
+      };
+    },
+    reconcile: async () => assert.fail("The closed candidate must not reconcile"),
+  });
+  router.activate("target-a");
+
+  const arming = ipc.invoke("goal:arm", scope("target-a"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  firstTarget.removeHandler("goal:arm");
+  const replacementTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  let reconciliations = 0;
+  replacementTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => assert.fail("The mutation must not be replayed"),
+    reconcile: async (context) => {
+      reconciliations += 1;
+      assert.deepEqual(context, { condition: "All tests pass" });
+      return { kind: "reconciled", currentGoal: "goal-1" };
+    },
+  });
+
+  assert.deepEqual(await arming, {
+    kind: "reconciled",
+    currentGoal: "goal-1",
+  });
+  assert.equal(dispatches, 1);
+  assert.equal(reconciliations, 1);
+  router.close();
+});
+
+test("bounds reconciliation when no replacement candidate becomes available", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc, {
+    reconciliationWaitTimeoutMs: 5,
+  });
+  const firstTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  let dispatches = 0;
+  firstTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => {
+      dispatches += 1;
+      return { kind: "reconcile", context: { sessionId: "session-1" } };
+    },
+    reconcile: async () => assert.fail("The unavailable candidate must not reconcile"),
+    reconciliationUnavailable: async () => ({ kind: "reconciliation_unavailable" }),
+  });
+  router.activate("target-a");
+
+  const arming = ipc.invoke("goal:arm", scope("target-a"));
+  const settled = arming.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  firstTarget.removeHandler("goal:arm");
+
+  try {
+    assert.deepEqual(
+      await Promise.race([
+        settled,
+        new Promise<{ readonly timedOut: true }>((resolve) =>
+          setTimeout(() => resolve({ timedOut: true }), 25),
+        ),
+      ]),
+      {
+        ok: true,
+        value: { kind: "reconciliation_unavailable" },
+      },
+    );
+    assert.equal(dispatches, 1);
+  } finally {
+    router.close();
+    await settled;
+  }
+});
+
+test("retries only reconciliation when its replacement connection is lost", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const firstTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  let dispatches = 0;
+  firstTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => {
+      dispatches += 1;
+      return { kind: "reconcile", context: { sessionId: "session-1" } };
+    },
+    reconcile: async () => assert.fail("The closed candidate must not reconcile"),
+  });
+  router.activate("target-a");
+
+  const arming = ipc.invoke("goal:arm", scope("target-a"));
+  const settled = arming.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  firstTarget.removeHandler("goal:arm");
+  const failedTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  const reconciliationEntered = deferred();
+  const failReconciliation = deferred();
+  failedTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => assert.fail("The mutation must not be replayed"),
+    reconcile: async () => {
+      reconciliationEntered.resolve();
+      await failReconciliation.promise;
+      throw new RuntimeHostRequestInterruptedError(
+        "goal.query",
+        "query",
+        "dispatched",
+        "connection_lost",
+      );
+    },
+  });
+  await reconciliationEntered.promise;
+  failReconciliation.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  failedTarget.removeHandler("goal:arm");
+  const recoveredTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  let reconciliations = 0;
+  recoveredTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => assert.fail("The mutation must not be replayed"),
+    reconcile: async (context) => {
+      reconciliations += 1;
+      assert.deepEqual(context, { sessionId: "session-1" });
+      return { kind: "reconciled", currentGoal: "goal-1" };
+    },
+  });
+
+  assert.deepEqual(await settled, {
+    ok: true,
+    value: { kind: "reconciled", currentGoal: "goal-1" },
+  });
+  assert.equal(dispatches, 1);
+  assert.equal(reconciliations, 1);
+  router.close();
+});
+
+test("never reconciles a control through a different target epoch", async () => {
+  const ipc = ipcHarness();
+  const router = new RuntimeHostReconnectingIpcMain(ipc);
+  const firstTarget = router.createTarget("target-a") as ReconciledControlTarget;
+  let dispatches = 0;
+  firstTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => {
+      dispatches += 1;
+      return { kind: "reconcile", context: { sessionId: "session-1" } };
+    },
+    reconcile: async () => assert.fail("The closed candidate must not reconcile"),
+  });
+  router.activate("target-a");
+
+  const arming = ipc.invoke("goal:arm", scope("target-a"));
+  const settled = arming.then(
+    () => ({ settled: true }),
+    (error: unknown) => ({ settled: true, error }),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  firstTarget.removeHandler("goal:arm");
+  const otherTarget = router.createTarget("target-b") as ReconciledControlTarget;
+  let otherReconciliations = 0;
+  otherTarget.handleReconciledControl("goal:arm", {
+    dispatch: async () => assert.fail("The mutation must not be replayed"),
+    reconcile: async () => {
+      otherReconciliations += 1;
+      return { kind: "reconciled" };
+    },
+  });
+  router.activate("target-b");
+  const pending = Promise.race([
+    settled,
+    new Promise<{ settled: false }>((resolve) =>
+      setImmediate(() => resolve({ settled: false })),
+    ),
+  ]);
+  assert.deepEqual(await pending, { settled: false });
+
+  router.deactivate("target-a");
+  const result = await settled;
+  assert.equal(result.settled, true);
+  assert.ok(
+    "error" in result && result.error instanceof RuntimeHostTargetChangedError,
+  );
+  assert.equal(dispatches, 1);
+  assert.equal(otherReconciliations, 0);
+  router.close();
+});
 
 test("holds an invocation across a Runtime Host candidate replacement", async () => {
   const ipc = ipcHarness();
@@ -275,6 +525,22 @@ test("read adapters project ordinary failures without hiding reconnectable failu
 });
 
 type IpcHandler = Parameters<IpcMain["handle"]>[1];
+
+type ReconciledControlTarget = ReturnType<
+  RuntimeHostReconnectingIpcMain["createTarget"]
+> & {
+  handleReconciledControl(
+    channel: string,
+    handlers: {
+      dispatch: IpcHandler;
+      reconcile: (context: unknown, ...args: Parameters<IpcHandler>) => Promise<unknown>;
+      reconciliationUnavailable?: (
+        context: unknown,
+        ...args: Parameters<IpcHandler>
+      ) => Promise<unknown>;
+    },
+  ): void;
+};
 
 function ipcHarness() {
   const handlers = new Map<string, IpcHandler>();

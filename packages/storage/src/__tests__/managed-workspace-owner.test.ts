@@ -39,6 +39,10 @@ import {
 } from '../managed-workspace-execution-authority-internal.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
 
 const execFileAsync = promisify(execFile);
 const cleanup: string[] = [];
@@ -55,12 +59,21 @@ before(async () => {
 });
 
 afterEach(async () => {
-  await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  await Promise.all(
+    cleanup.splice(0).map(async (path) => {
+      await rm(path, { recursive: true, force: true });
+    }),
+  );
+  // Control directories live outside the temporary roots, so they outlive the
+  // removal above and have to be reclaimed from the recorded rootIds.
+  await removeTrackedControlDirectories();
 });
 
 test('admits exactly one managed workspace owner for an interactive root owner', async () => {
   const storageRoot = await temporaryRoot();
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   try {
@@ -91,7 +104,9 @@ test('admits exactly one managed workspace owner for an interactive root owner',
 
 test('releases a partial owner claim when pinned Git initialization fails', async () => {
   const storageRoot = await temporaryRoot();
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   try {
@@ -124,7 +139,9 @@ test('creates an accepted managed baseline only through the active owner', async
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -160,7 +177,9 @@ test('publishes only a revocable execution scope through its accepted handle', a
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -231,7 +250,9 @@ test('does not let caller-mutated head state or a shadowed public reader forge e
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -280,7 +301,9 @@ test('quarantines drift introduced after execution artifact verification before 
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -341,7 +364,9 @@ test('rejects execution when runtime.sqlite detaches from its canonical path aft
   const storageRoot = join(root, 'storage');
   const databasePath = join(storageRoot, 'runtime.sqlite');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(databasePath);
@@ -386,7 +411,9 @@ test('rejects execution when runtime.sqlite detaches from its canonical path aft
 
 test('rejects a forged execution handle before invoking the tool callback', async () => {
   const storageRoot = await temporaryRoot();
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   let callbackCalled = false;
@@ -421,14 +448,12 @@ test('rejects a forged execution handle before invoking the tool callback', asyn
 test('rejects an execution handle issued by another managed workspace owner', async () => {
   const root = await temporaryRoot();
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const leftCapability = await resolveStorageRoot({
-    path: join(root, 'left-storage'),
-    kind: 'interactive',
-  });
-  const rightCapability = await resolveStorageRoot({
-    path: join(root, 'right-storage'),
-    kind: 'interactive',
-  });
+  const leftCapability = trackControlDirectory(
+    await resolveStorageRoot({ path: join(root, 'left-storage'), kind: 'interactive' }),
+  );
+  const rightCapability = trackControlDirectory(
+    await resolveStorageRoot({ path: join(root, 'right-storage'), kind: 'interactive' }),
+  );
   const leftRootOwner = await tryAcquireInteractiveRootOwner(leftCapability);
   const rightRootOwner = await tryAcquireInteractiveRootOwner(rightCapability);
   assert.ok(leftRootOwner);
@@ -472,7 +497,9 @@ test('drains an admitted managed execution before owner close completes', async 
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -534,7 +561,9 @@ test('routes read-only execution through the owner-bound worker bridge', async (
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -582,7 +611,9 @@ test('revokes the scope and releases owner residency when the filesystem worker 
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -634,7 +665,9 @@ test('rejects owner close reentrancy from an active execution callback', async (
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -675,7 +708,9 @@ test('allows concurrent read-only scopes for one handle and close drains both', 
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -749,7 +784,9 @@ test('expires the execution scope and releases owner residency when its callback
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -792,7 +829,9 @@ test('drains an admitted workspace operation before closing and rejects new work
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -868,7 +907,9 @@ test('rejects external drift instead of reopening a non-ready workspace', async 
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));

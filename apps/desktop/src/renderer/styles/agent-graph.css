@@ -68,7 +68,7 @@
   transition: transform var(--duration-quick) var(--ease-out-strong);
 }
 
-.maka-agent-graph-collapse-toggle[aria-expanded="true"] svg {
+.maka-agent-graph-collapse-toggle[aria-expanded="false"] svg {
   transform: rotate(180deg);
 }
 

@@ -27,6 +27,7 @@ test('applies each client settings snapshot once across local writes and file wa
   const keepAwake: boolean[] = [];
   let botApplications = 0;
   let rendererEvents = 0;
+  const appIcons: string[] = [];
   const effects = createClientSettingsEffects({
     settingsStore: { get: async () => current },
     applyKeepSystemAwake: async (enabled) => {
@@ -34,6 +35,9 @@ test('applies each client settings snapshot once across local writes and file wa
     },
     applyBotSettings: async () => {
       botApplications += 1;
+    },
+    applyAppIcon: async (icon) => {
+      appIcons.push(icon);
     },
     observeLocale: () => undefined,
     emitExternalChanged: () => {
@@ -54,4 +58,33 @@ test('applies each client settings snapshot once across local writes and file wa
   assert.deepEqual(keepAwake, [false, true]);
   assert.equal(botApplications, 1);
   assert.equal(rendererEvents, 1);
+  // The shipped default is already on screen before the first snapshot is
+  // read, so a run that never leaves it must not touch the OS icon at all.
+  assert.deepEqual(appIcons, []);
+});
+
+test('applies a chosen app icon once, and again only when the choice changes', async () => {
+  let current = createDefaultSettings();
+  const appIcons: string[] = [];
+  const effects = createClientSettingsEffects({
+    settingsStore: { get: async () => current },
+    applyKeepSystemAwake: async () => undefined,
+    applyBotSettings: async () => undefined,
+    applyAppIcon: async (icon) => {
+      appIcons.push(icon);
+    },
+    observeLocale: () => undefined,
+    emitExternalChanged: () => undefined,
+  });
+
+  await effects.refresh(false);
+  current = { ...current, appearance: { ...current.appearance, appIcon: 'mono' } };
+  assert.equal(await effects.apply(current, false), true);
+  // The file watcher echoes the same write back; the OS call must not repeat.
+  assert.equal(await effects.refresh(false), false);
+
+  current = { ...current, appearance: { ...current.appearance, appIcon: 'default' } };
+  assert.equal(await effects.apply(current, false), true);
+
+  assert.deepEqual(appIcons, ['mono', 'default']);
 });

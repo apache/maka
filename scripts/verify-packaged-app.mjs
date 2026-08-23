@@ -718,6 +718,16 @@ export async function assertPackagedDependencyClosure(
   }
 }
 
+/** Icon files the app ships, named by the artwork that exists in the repo. */
+async function packagedIconCatalog() {
+  const directory = new URL('../apps/desktop/assets/app-icons/', import.meta.url);
+  const entries = await readdir(directory).catch(() => []);
+  return entries
+    .filter((name) => name.endsWith('.png'))
+    .sort()
+    .map((name) => join('assets', 'app-icons', name));
+}
+
 export async function assertPackagedResources(
   resourcesPath,
   {
@@ -738,6 +748,12 @@ export async function assertPackagedResources(
     // reads it at runtime, so current builds must carry it — but a
     // previously released baseline predates it.
     requireCanonicalIcon = true,
+    // Same shape again, for the picker's catalog: `assets/app-icons/` arrived
+    // with the icon picker, so a previously released baseline necessarily
+    // lacks all of it, and requiring it there would fail an upgrade check over
+    // artifacts that were correct when they shipped. The canonical icon itself
+    // is `requireCanonicalIcon` above, not this.
+    requireAppIconCatalog = true,
   } = {},
 ) {
   if (bundledGitContract !== 'forbidden' && bundledGitContract !== 'legacy-required') {
@@ -758,6 +774,16 @@ export async function assertPackagedResources(
       : []),
     ...(requireCanonicalIcon ? [join('assets', 'icon.png')] : []),
     join('workers', 'filesystem-worker.js'),
+    // The picker's catalog is read at runtime, and Electron reports a missing
+    // file as an empty image rather than an error — a packaging change that
+    // dropped one would ship a blank tile silently.
+    //
+    // The list comes from the artwork directory rather than from `APP_ICONS`,
+    // because that enum only exists as build output: importing it would make
+    // this verifier — and its test — unable to even load before a compile. The
+    // other half of the chain is covered where it belongs, by the desktop test
+    // that walks `APP_ICONS` and requires a 1024px master for every id.
+    ...(requireAppIconCatalog ? await packagedIconCatalog() : []),
     join('licenses', 'maka', 'LICENSE'),
     join('licenses', 'maka', 'NOTICE'),
     ...(requireDisclaimer ? [join('licenses', 'maka', 'DISCLAIMER-WIP')] : []),

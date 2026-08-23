@@ -7,7 +7,7 @@ counterpart: ./agent-graph-stream-scheduling-draft.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-07-28
+last_verified: 2026-08-23
 owners:
   - maka-backend
 ---
@@ -36,7 +36,7 @@ owners:
 
 本章直接建立在第一章之上。Runtime Event Log 仍然是“Agent 实际做了什么”的语义 authority。Graph 只是增加了一组 identity 和 projection，用来回答另外几类问题：哪个 child Session 是一个 operator、哪些已提交 record 会流向另一个 operator、supervisor 请求了哪些 work、哪个 intent 被精确 admission 一次，以及何时应该唤醒 root Agent 检查一个稳定 checkpoint。
 
-本文面向修改 Graph contract、child Session、调度、恢复或 Desktop 接线的工程师，描述截至 2026-07-28 已验证的实现。它不描述任意有环 workflow、分布式执行、图级资源优化，也不把当前实现说成可视化 workflow authoring system。
+本文面向修改 Graph contract、child Session、调度、恢复或 Desktop 接线的工程师，描述截至 2026-08-23 已验证的实现。它不描述任意有环 workflow、分布式执行、图级资源优化，也不把当前实现说成可视化 workflow authoring system。
 
 ## 从运行中才逐渐显形的工作开始
 
@@ -558,15 +558,14 @@ sequenceDiagram
 
 这些都是有意保留的边界。它们让 Graph 有用，同时不把 workflow semantic、resource management 或 product presentation 塞进 Agent runtime。
 
-## Graph、Swarm、Agent Team 与 Rive
+## Graph、Swarm、agent_spawn 与 Rive
 
 四种机制解决不同的协调问题。
 
 | 需求 | 机制 | Ownership model |
 |---|---|---|
-| 有限独立 fan-out，随后一次 synthesis | Agent Swarm | 一个 foreground tool call 拥有有界 worker pool |
+| 有限独立 fan-out，随后一次 synthesis | Swarm 模式 | 主 Agent 把独立 item 排进同一张 Graph，并异步监督 |
 | 一次 linked specialist execution 或 follow-up | `agent_spawn` / child Session | Parent Agent 显式拥有 delegation |
-| Role、mailbox collaboration 与 Task Ledger coordination | Agent Team | Team member 拥有持久 collaboration state |
 | 从 root conversation 监督动态依赖 Agent work | Agent Graph | Child Session 与 Runtime record 之上的 SQLite schedule/control plane |
 | 显式 workflow step、任意 resume policy 或分布式 workflow authority | Rive | Workflow runtime 拥有 workflow state |
 
@@ -591,7 +590,7 @@ Graph 位于 foreground fan-out 与独立 workflow runtime 之间：足够动态
 13. `packages/runtime/src/agent-graph-timeline.ts`：reference-only control/data-plane reconstruction、stable order、coverage 与 pagination。
 14. `packages/runtime/src/agent-graph-supervisor-wake.ts`：回到 root Agent 的持久路径。
 15. `packages/storage/src/sqlite-session-metadata-schema.ts` 与 `sqlite-session-metadata-store.ts`：Graph control-plane transaction 与 timeline metadata snapshot。
-16. `apps/desktop/src/main/main.ts`、`agent-graph-ipc-main.ts` 与 `apps/desktop/src/renderer/agent-graph-panel.tsx`：产品组合与 bounded UI。
+16. `apps/desktop/src/main/main.ts`、`runtime-host-session-domains-ipc-main.ts` 与 `apps/desktop/src/renderer/agent-graph-panel.tsx`：产品组合与 bounded UI。Graph 变更事件走通用 session-domains 桥接的 `agentGraphChanged`，没有 Graph 专属的主进程 IPC 模块。
 
 最相关的 contract tests 位于：
 
@@ -601,7 +600,6 @@ Graph 位于 foreground fan-out 与独立 workflow runtime 之间：足够动态
 - `packages/runtime/src/__tests__/session-manager.test.ts`
 - `packages/storage/src/__tests__/sqlite-session-metadata-store.test.ts`
 - `packages/storage/src/__tests__/agent-graph-timeline-metadata.test.ts`
-- `apps/desktop/src/main/__tests__/graph-mode-host-contract.test.ts`
 
 ## 总结
 

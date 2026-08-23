@@ -17,8 +17,9 @@
  * under the License.
  */
 
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
+import { runtimeHostAccessCredentialHash } from '../access-credential-identity.js';
 import {
   type AccessCredentialIssueInput,
   type AccessCredentialIssueResult,
@@ -29,6 +30,10 @@ import {
   type AccessCredentialReplaceResult,
   type AccessCredentialRevokeInput,
   type AccessCredentialRevokeResult,
+  type AccessCredentialRotationPrepareInput,
+  type AccessCredentialRotationPrepareResult,
+  type AccessCredentialRotationRevokeInput,
+  type AccessCredentialRotationRevokeResult,
 } from '../protocol/index.js';
 import {
   createRuntimeHostConnectionAuthority,
@@ -67,6 +72,12 @@ export interface RuntimeHostAccessAuthority {
   replace(input: AccessCredentialReplaceInput): Promise<AccessCredentialReplaceResult>;
   prepare(input: AccessCredentialPrepareInput): Promise<AccessCredentialPrepareResult>;
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult>;
+  prepareRotation(
+    input: AccessCredentialRotationPrepareInput,
+  ): Promise<AccessCredentialRotationPrepareResult>;
+  revokeRotation(
+    input: AccessCredentialRotationRevokeInput,
+  ): Promise<AccessCredentialRotationRevokeResult>;
   finalize(credentialId: string): Promise<AccessCredentialFinalizeResult>;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
   close(): Promise<void>;
@@ -113,7 +124,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
 
   authenticate(credential: string): RuntimeHostConnectionAuthority | undefined {
     if (this.#closed) return undefined;
-    const candidate = hashCredential(credential);
+    const candidate = runtimeHostAccessCredentialHash(credential);
     let match: StoredAccessCredential | undefined;
     for (const stored of this.#file.credentials) {
       const storedHash = Buffer.from(stored.credentialHash, 'hex');
@@ -151,110 +162,170 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     return this.#issue(input, 'prepare');
   }
 
+  prepareRotation(
+    input: AccessCredentialRotationPrepareInput,
+  ): Promise<AccessCredentialRotationPrepareResult> {
+    return this.#mutate(async () => {
+      const current = this.#file.credentials.find(
+        (credential) =>
+          credential.credentialId === input.replacementOfCredentialId &&
+          credential.status === 'active',
+      );
+      if (!current) {
+        throw new RuntimeHostAccessInputError('The credential being rotated is no longer active');
+      }
+      return this.#createCredential(current, 'prepare', current.operationGrants);
+    });
+  }
+
   #issue(
     input: AccessCredentialIssueInput,
     mode: 'issue' | 'replace' | 'prepare',
   ): Promise<AccessCredentialIssueResult> {
-    return this.#mutate(async () => {
-      const operationGrants = issuedAccessGrants(input.operationGrants);
-      assertCredentialAuthority(input, operationGrants);
-      if (
-        mode === 'prepare' &&
-        (input.principalKind !== 'remote_owner' ||
-          !operationGrants.includes('access.credential.finalize'))
-      ) {
-        throw new RuntimeHostAccessInputError(
-          'A pairing candidate must be a remote owner that can finalize its pairing',
-        );
-      }
-      const credentialId = randomUUID();
-      createRuntimeHostConnectionAuthority({
-        principalKind: input.principalKind,
-        principalId: input.principalId,
-        credentialId,
-        operationGrants,
-        canPublishClientCapabilities: input.canPublishClientCapabilities,
-        canUseHostPaths: input.canUseHostPaths,
-      });
-      const credential = `${ACCESS_CREDENTIAL_PREFIX}${randomBytes(32).toString('base64url')}`;
-      const createdAt = new Date();
-      const stored: StoredAccessCredential = {
-        credentialId,
-        credentialHash: hashCredential(credential).toString('hex'),
-        principalId: input.principalId,
-        principalKind: input.principalKind,
-        status: mode === 'prepare' ? 'pending' : 'active',
-        operationGrants,
-        canPublishClientCapabilities: input.canPublishClientCapabilities,
-        canUseHostPaths: input.canUseHostPaths,
-        createdAt: createdAt.toISOString(),
-        ...(mode === 'prepare'
-          ? {
-              expiresAt: new Date(
-                createdAt.getTime() + PENDING_CREDENTIAL_LIFETIME_MS,
-              ).toISOString(),
-            }
-          : {}),
-      };
-      const replaced = this.#file.credentials.filter(
-        (candidate) =>
-          candidate.principalKind === input.principalKind &&
-          candidate.principalId === input.principalId &&
-          ((mode === 'replace' && candidate.status !== 'revoked') ||
-            (mode === 'prepare' && candidate.status === 'pending')),
+    return this.#mutate(() => this.#createCredential(input, mode));
+  }
+
+  async #createCredential(
+    input: AccessCredentialIssueInput,
+    mode: 'issue' | 'replace' | 'prepare',
+    operationGrants = issuedAccessGrants(input.operationGrants),
+  ): Promise<AccessCredentialIssueResult> {
+    assertCredentialAuthority(input, operationGrants);
+    if (
+      mode === 'prepare' &&
+      (input.principalKind !== 'remote_owner' ||
+        !operationGrants.includes('access.credential.finalize'))
+    ) {
+      throw new RuntimeHostAccessInputError(
+        'A pairing candidate must be a remote owner that can finalize its pairing',
       );
-      const retained =
-        replaced.length === 0
-          ? this.#file.credentials
-          : this.#file.credentials.filter((candidate) => !replaced.includes(candidate));
-      const nextFile = createAccessCredentialFile([...retained, stored]);
-      assertAccessCredentialFileCapacity(nextFile);
-      const deliveryId = await createAccessCredentialDelivery(
-        this.#controlDirectory,
-        credentialId,
-        credential,
-      );
-      try {
-        await this.#commit(
-          nextFile,
-          replaced.map((credential) => credential.credentialId),
-        );
-      } catch (error) {
-        await discardAccessCredentialDelivery(this.#controlDirectory, deliveryId);
-        throw error;
-      }
-      return {
-        credentialId,
-        deliveryId,
-        principalId: stored.principalId,
-        principalKind: stored.principalKind,
-        operationGrants,
-        canPublishClientCapabilities: stored.canPublishClientCapabilities,
-        canUseHostPaths: stored.canUseHostPaths,
-      };
+    }
+    const credentialId = randomUUID();
+    createRuntimeHostConnectionAuthority({
+      principalKind: input.principalKind,
+      principalId: input.principalId,
+      credentialId,
+      operationGrants,
+      canPublishClientCapabilities: input.canPublishClientCapabilities,
+      canUseHostPaths: input.canUseHostPaths,
     });
+    const credential = `${ACCESS_CREDENTIAL_PREFIX}${randomBytes(32).toString('base64url')}`;
+    const createdAt = new Date();
+    const stored: StoredAccessCredential = {
+      credentialId,
+      credentialHash: runtimeHostAccessCredentialHash(credential).toString('hex'),
+      principalId: input.principalId,
+      principalKind: input.principalKind,
+      status: mode === 'prepare' ? 'pending' : 'active',
+      operationGrants,
+      canPublishClientCapabilities: input.canPublishClientCapabilities,
+      canUseHostPaths: input.canUseHostPaths,
+      createdAt: createdAt.toISOString(),
+      ...(mode === 'prepare'
+        ? {
+            expiresAt: new Date(createdAt.getTime() + PENDING_CREDENTIAL_LIFETIME_MS).toISOString(),
+          }
+        : {}),
+    };
+    const replaced = this.#file.credentials.filter(
+      (candidate) =>
+        candidate.principalKind === input.principalKind &&
+        candidate.principalId === input.principalId &&
+        ((mode === 'replace' && candidate.status !== 'revoked') ||
+          (mode === 'prepare' && candidate.status === 'pending')),
+    );
+    const retained =
+      replaced.length === 0
+        ? this.#file.credentials
+        : this.#file.credentials.filter((candidate) => !replaced.includes(candidate));
+    const nextFile = createAccessCredentialFile([...retained, stored]);
+    assertAccessCredentialFileCapacity(nextFile);
+    const deliveryId = await createAccessCredentialDelivery(
+      this.#controlDirectory,
+      credentialId,
+      credential,
+    );
+    try {
+      await this.#commit(
+        nextFile,
+        replaced.map((credential) => credential.credentialId),
+      );
+    } catch (error) {
+      await discardAccessCredentialDelivery(this.#controlDirectory, deliveryId);
+      throw error;
+    }
+    return {
+      credentialId,
+      deliveryId,
+      principalId: stored.principalId,
+      principalKind: stored.principalKind,
+      operationGrants,
+      canPublishClientCapabilities: stored.canPublishClientCapabilities,
+      canUseHostPaths: stored.canUseHostPaths,
+    };
   }
 
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult> {
     return this.#mutate(async () => {
-      const index = this.#file.credentials.findIndex(
-        (credential) => credential.credentialId === input.credentialId,
+      return this.#revoke(input.credentialId);
+    });
+  }
+
+  revokeRotation(
+    input: AccessCredentialRotationRevokeInput,
+  ): Promise<AccessCredentialRotationRevokeResult> {
+    return this.#mutate(async () => {
+      const requiredActiveCredential = this.#file.credentials.find(
+        (credential) => credential.credentialId === input.requiredActiveCredentialId,
       );
-      if (index === -1 || this.#file.credentials[index]?.status === 'revoked') {
-        return { credentialId: input.credentialId, revoked: false };
+      if (!requiredActiveCredential || requiredActiveCredential.status !== 'active') {
+        throw new RuntimeHostAccessInputError(
+          'The required credential is no longer active on this Runtime Host',
+        );
       }
-      const current = this.#file.credentials[index]!;
-      const credentials =
-        current.status === 'pending'
-          ? this.#file.credentials.filter((credential) => credential !== current)
-          : this.#file.credentials.map((credential, candidateIndex) =>
-              candidateIndex === index
-                ? { ...credential, status: 'revoked' as const, revokedAt: new Date().toISOString() }
+      if (input.credentialId === input.requiredActiveCredentialId) {
+        throw new RuntimeHostAccessInputError('A credential cannot revoke itself');
+      }
+      return this.#revoke(input.credentialId);
+    });
+  }
+
+  async #revoke(credentialId: string): Promise<AccessCredentialRevokeResult> {
+    const index = this.#file.credentials.findIndex(
+      (credential) => credential.credentialId === credentialId,
+    );
+    if (index === -1 || this.#file.credentials[index]?.status === 'revoked') {
+      return { credentialId, revoked: false };
+    }
+    const current = this.#file.credentials[index]!;
+    const pendingForPrincipal =
+      current.status === 'active'
+        ? this.#file.credentials.filter(
+            (credential) =>
+              credential.status === 'pending' &&
+              credential.principalKind === current.principalKind &&
+              credential.principalId === current.principalId,
+          )
+        : [];
+    const credentials =
+      current.status === 'pending'
+        ? this.#file.credentials.filter((credential) => credential !== current)
+        : this.#file.credentials
+            .filter((credential) => !pendingForPrincipal.includes(credential))
+            .map((credential) =>
+              credential === current
+                ? {
+                    ...credential,
+                    status: 'revoked' as const,
+                    revokedAt: new Date().toISOString(),
+                  }
                 : credential,
             );
-      await this.#commit(createAccessCredentialFile(credentials), [input.credentialId]);
-      return { credentialId: input.credentialId, revoked: true };
-    });
+    await this.#commit(
+      createAccessCredentialFile(credentials),
+      [current, ...pendingForPrincipal].map((credential) => credential.credentialId),
+    );
+    return { credentialId, revoked: true };
   }
 
   finalize(credentialId: string): Promise<AccessCredentialFinalizeResult> {
@@ -474,6 +545,25 @@ export async function prepareAccessCredential(
   }
 }
 
+export async function prepareAccessCredentialRotation(
+  authority: RuntimeHostAccessAuthority | undefined,
+  input: AccessCredentialRotationPrepareInput,
+): Promise<OperationOutcome<'access.credential.rotation.prepare'>> {
+  if (!authority) return unavailable('rotation.prepare');
+  try {
+    return { ok: true, result: await authority.prepareRotation(input) };
+  } catch (error) {
+    if (error instanceof RuntimeHostAccessInputError) {
+      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+    }
+    return accessPersistenceFailure(
+      error,
+      'Access credential rotation preparation outcome is unknown',
+      'Access credential rotation could not begin',
+    );
+  }
+}
+
 export async function revokeAccessCredential(
   authority: RuntimeHostAccessAuthority | undefined,
   input: AccessCredentialRevokeInput,
@@ -482,9 +572,31 @@ export async function revokeAccessCredential(
   try {
     return { ok: true, result: await authority.revoke(input) };
   } catch (error) {
+    if (error instanceof RuntimeHostAccessInputError) {
+      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+    }
     return accessPersistenceFailure(
       error,
       'Access credential revocation outcome is unknown',
+      'Access credential could not be revoked',
+    );
+  }
+}
+
+export async function revokeAccessCredentialRotation(
+  authority: RuntimeHostAccessAuthority | undefined,
+  input: AccessCredentialRotationRevokeInput,
+): Promise<OperationOutcome<'access.credential.rotation.revoke'>> {
+  if (!authority) return unavailable('rotation.revoke');
+  try {
+    return { ok: true, result: await authority.revokeRotation(input) };
+  } catch (error) {
+    if (error instanceof RuntimeHostAccessInputError) {
+      return { ok: false, error: { code: 'invalid_request', message: error.message } };
+    }
+    return accessPersistenceFailure(
+      error,
+      'Access credential rotation revocation outcome is unknown',
       'Access credential could not be revoked',
     );
   }
@@ -529,14 +641,29 @@ function unavailable(operation: 'issue'): OperationOutcome<'access.credential.is
 function unavailable(operation: 'replace'): OperationOutcome<'access.credential.replace'>;
 function unavailable(operation: 'prepare'): OperationOutcome<'access.credential.prepare'>;
 function unavailable(operation: 'revoke'): OperationOutcome<'access.credential.revoke'>;
+function unavailable(
+  operation: 'rotation.prepare',
+): OperationOutcome<'access.credential.rotation.prepare'>;
+function unavailable(
+  operation: 'rotation.revoke',
+): OperationOutcome<'access.credential.rotation.revoke'>;
 function unavailable(operation: 'finalize'): OperationOutcome<'access.credential.finalize'>;
 function unavailable(
-  _operation: 'issue' | 'replace' | 'prepare' | 'revoke' | 'finalize',
+  _operation:
+    | 'issue'
+    | 'replace'
+    | 'prepare'
+    | 'revoke'
+    | 'rotation.prepare'
+    | 'rotation.revoke'
+    | 'finalize',
 ):
   | OperationOutcome<'access.credential.issue'>
   | OperationOutcome<'access.credential.replace'>
   | OperationOutcome<'access.credential.prepare'>
   | OperationOutcome<'access.credential.revoke'>
+  | OperationOutcome<'access.credential.rotation.prepare'>
+  | OperationOutcome<'access.credential.rotation.revoke'>
   | OperationOutcome<'access.credential.finalize'> {
   return {
     ok: false,
@@ -545,8 +672,4 @@ function unavailable(
       message: 'Runtime Host access credentials are unavailable in this composition',
     },
   };
-}
-
-function hashCredential(credential: string): Buffer {
-  return createHash('sha256').update(credential, 'utf8').digest();
 }

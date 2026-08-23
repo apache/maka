@@ -194,6 +194,24 @@ test('Desktop packaging does not distribute the retired bundled Git runtime', ()
   );
 });
 
+test('a successful Windows upgrade invalidates stale backup authority before best-effort cleanup', async () => {
+  const source = await readFile(
+    join(repoRoot, 'apps', 'desktop', 'build', 'installer.nsh'),
+    'utf8',
+  );
+  const macroStart = source.indexOf('!macro customInstall');
+  const macroEnd = source.indexOf('!macroend', macroStart);
+  assert.ok(macroStart >= 0 && macroEnd > macroStart);
+  const cleanup = source.slice(macroStart, macroEnd);
+  const markerInvalidation = cleanup.indexOf('Delete "$makaBackupDir\\${MAKA_BACKUP_MARKER}"');
+  const backupRemoval = cleanup.indexOf('RMDir /r "$makaBackupDir"');
+  const snapshotRemoval = cleanup.indexOf('DeleteRegKey SHELL_CONTEXT "${MAKA_SNAPSHOT_REG_KEY}"');
+
+  assert.ok(markerInvalidation >= 0);
+  assert.ok(backupRemoval > markerInvalidation);
+  assert.ok(snapshotRemoval > markerInvalidation);
+});
+
 test('platform package verifiers keep Git checks out of current artifacts', async () => {
   const windowsSource = await readFile(join(repoRoot, 'scripts', 'verify-windows-x64.mjs'), 'utf8');
   assert.match(
@@ -620,7 +638,11 @@ test('one product workflow gates one draft release on every required artifact', 
   const desktopStepNames = jobs.desktop.steps.map((step) => step.name);
   const uploadIndex = desktopStepNames.indexOf('Upload the verified release assets');
   assert.ok(uploadIndex >= 0);
-  for (const verifier of ['Verify the final DMG', 'Verify the Windows release']) {
+  for (const verifier of [
+    'Verify the final DMG',
+    'Verify the Windows release',
+    'Prove deterministic mid-install failure rollback',
+  ]) {
     const verifierIndex = desktopStepNames.indexOf(verifier);
     assert.ok(verifierIndex >= 0 && verifierIndex < uploadIndex);
   }
@@ -649,9 +671,10 @@ test('one product workflow gates one draft release on every required artifact', 
     .filter((run) => typeof run === 'string')
     .join('\n');
   assert.equal((commands.match(/gh release create/gu) ?? []).length, 1);
-  assert.equal(jobs.desktop['timeout-minutes'], 60);
+  assert.equal(jobs.desktop['timeout-minutes'], 75);
   assert.match(commands, /npm run package:windows-autoupdate-next/u);
   assert.match(commands, /npm run verify:windows-autoupdate/u);
+  assert.match(commands, /npm run verify:windows-installer-rollback/u);
   assert.match(commands, /product-release-tag\.mjs ensure/u);
   assert.doesNotMatch(commands, /RECOVERY_SOURCE|inputs\.source_commit/u);
   assert.match(commands, /if gh release view "\$TAG"/u);

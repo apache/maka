@@ -43,6 +43,27 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+const requiresBypassItem: ToolActivityItem = {
+  toolUseId: 'client-capability-boundary',
+  toolName: 'maka_computer',
+  displayName: '列出打开的应用',
+  activityKind: 'computer',
+  status: 'errored',
+  args: { action: 'list_apps' },
+  result: {
+    kind: 'text',
+    text: [
+      'Client Capability tools require the Bypass execution boundary because their',
+      'client-side effects cannot be sandboxed by the Host. Switch this Session',
+      'to Bypass and retry.',
+    ].join(' '),
+    sandboxFailure: {
+      reason: 'requires_bypass',
+      source: 'client_capability',
+    },
+  },
+};
+
 /**
  * One row per item. The product groups a contiguous run into a single
  * `ToolTrow`, which collapses to its latest row; rendering one trow per item
@@ -138,6 +159,20 @@ function Board(props: { children: React.ReactNode; width?: number }) {
 export const ErrorsAndPermissionDenied: Story = {
   args: { items: errorsAndPermissionDeniedItems },
   render: (args) => <ToolRowBoard items={args.items} width={860} />,
+};
+
+// Real path: a client capability is invoked from an Ask-mode task. The product
+// replaces the model-facing diagnostic with a localized recovery action.
+export const RequiresBypassRecovery: Story = {
+  args: { items: [requiresBypassItem] },
+  render: (args) => (
+    <Board width={860}>
+      <ToolTrow
+        items={args.items}
+        onSwitchToBypassAndRetry={async () => undefined}
+      />
+    </Board>
+  ),
 };
 
 // Real path: a turn that mixes many tool kinds — the density case reviewers compare

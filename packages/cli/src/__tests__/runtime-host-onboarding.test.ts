@@ -34,7 +34,7 @@ const live = {
   providerType: 'openai',
   enabled: true,
   enabledModelIds: ['gpt-5-mini'],
-  models: [{ id: 'gpt-5-mini' }],
+  models: [{ id: 'gpt-5-mini', displayName: 'GPT-5 Mini' }],
 } as const;
 
 describe('projectRuntimeHostModelChoices', () => {
@@ -70,5 +70,11 @@ describe('projectRuntimeHostModelChoices', () => {
       choices.map(({ connectionSlug }) => connectionSlug),
       ['openai'],
     );
+  });
+
+  test('projects the catalog display name onto each model choice', () => {
+    const choices = projectRuntimeHostModelChoices(catalog([live]));
+
+    assert.equal(choices[0]?.displayName, 'GPT-5 Mini');
   });
 });

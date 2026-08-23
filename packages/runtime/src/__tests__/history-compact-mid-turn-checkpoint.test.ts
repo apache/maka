@@ -27,7 +27,7 @@ import {
   projectHistoryCompactCheckpointReplay,
   validateHistoryCompactCheckpointShape,
 } from '../history-compact-checkpoint.js';
-import { applyRuntimeEventHistoryCompact } from '../history-compact.js';
+import { applyRuntimeEventHistoryCompact } from '../history-compaction.js';
 
 describe('mid-turn history compact checkpoint', () => {
   test('builds a mid_turn checkpoint that re-renders the covered head anchor verbatim', () => {
@@ -300,7 +300,7 @@ describe('mid-turn history compact checkpoint', () => {
     // covered raw span may never be re-injected on recovery.
     const replay = applyRuntimeEventHistoryCompact(
       events,
-      { enabled: true, mode: 'read_write', checkpoint },
+      { enabled: true, checkpoint },
       1,
       10_000,
     );

@@ -76,6 +76,7 @@ apps/desktop/src/renderer/settings/settings-route-header.tsx
 apps/desktop/src/renderer/settings/settings-rows.tsx
 apps/desktop/src/renderer/settings/settings-section.tsx
 apps/desktop/src/renderer/settings/settings-skeleton.tsx
+apps/desktop/src/renderer/settings/settings-status-summary-filter.tsx
 apps/desktop/src/renderer/settings/settings-surface.tsx
 apps/desktop/src/renderer/settings/subagent-settings-page.tsx
 apps/desktop/src/renderer/settings/tasks-settings-page.tsx

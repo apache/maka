@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 import { openStorageWriterComposition } from '../storage-writer-composition.js';
 import {
@@ -29,11 +29,21 @@ import {
   runWithStorageRootLease,
   tryAcquireInteractiveRootOwner,
 } from '../root-authority.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 test('storage writer composition rejects reuse until close completes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-composition-'));
   try {
-    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: root, kind: 'interactive' }),
+    );
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {
@@ -58,7 +68,9 @@ test('storage writer composition rejects reuse until close completes', async () 
 test('opening a second storage writer composition creates a usable lifecycle', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-composition-failure-'));
   try {
-    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: root, kind: 'interactive' }),
+    );
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {
@@ -79,7 +91,9 @@ test('opening a second storage writer composition creates a usable lifecycle', a
 test('a failed close keeps the lease unavailable', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-composition-close-failure-'));
   try {
-    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: root, kind: 'interactive' }),
+    );
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {
@@ -108,7 +122,9 @@ test('a failed close keeps the lease unavailable', async () => {
 test('a failed runtime-policy hook rolls back before reopening', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-composition-hook-failure-'));
   try {
-    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: root, kind: 'interactive' }),
+    );
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {

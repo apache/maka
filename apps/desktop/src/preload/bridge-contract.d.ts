@@ -27,6 +27,8 @@ import type {
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import type {
+  AppIcon,
+  AppIconChoice,
   AppSettings,
   ChatDefaultsSettings,
   SettingsTestResult,
@@ -119,6 +121,33 @@ import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
+/**
+ * Outcome of importing artwork. `cancelled` is the user closing the dialog and
+ * is not an error; the rest name why the file could not become an icon, so the
+ * picker can say which rather than showing one generic failure.
+ */
+export type AppIconSelectResult =
+  | { readonly ok: true; readonly selection: AppIconChoice }
+  | { readonly ok: false; readonly reason: 'invalid_id' | 'missing_artwork' | 'write_failed' };
+
+export type AppIconRemoveResult =
+  | { readonly ok: true; readonly selection: AppIconChoice }
+  | { readonly ok: false; readonly reason: 'invalid_id' | 'reset_failed' | 'remove_failed' };
+
+export type AppIconImportResult =
+  | { readonly ok: true; readonly icon: AppIconChoice }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | 'cancelled'
+        | 'too_large'
+        | 'too_many_pixels'
+        | 'unsupported_format'
+        | 'unreadable'
+        | 'too_small'
+        | 'write_failed';
+    };
+
 export type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
 import type { DesktopExternalSessionCatalogItem } from './external-session-catalog.js';
@@ -394,14 +423,32 @@ export type DesktopRuntimeHostManagementAction =
 export type DesktopRuntimeHostManagementResult = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result' }
->;
+> & {
+  readonly accessManagementAvailable: boolean;
+};
 
 export type DesktopRuntimeHostManagementResponse =
-  | RuntimeHostServiceManagementFrame
+  | DesktopRuntimeHostManagementResult
+  | Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }>
   | {
       readonly kind: 'uninstalled';
       readonly retainedStateRoot: string;
     };
+
+export interface DesktopRuntimeHostAccessCredential {
+  readonly credentialId: string;
+  readonly principalKind: 'remote_owner' | 'capability_provider';
+  readonly principalId: string;
+  readonly status: 'active' | 'pending';
+  readonly createdAt: string;
+  readonly expiresAt?: string;
+  readonly isCurrentDesktop: boolean;
+}
+
+export interface DesktopRuntimeHostAccessSnapshot {
+  readonly canRotate: boolean;
+  readonly credentials: readonly DesktopRuntimeHostAccessCredential[];
+}
 
 export interface DesktopProjectCapabilities {
   readonly chooseClientDirectory: boolean;
@@ -515,6 +562,12 @@ export interface MakaBridge {
       profileId: string,
       action: DesktopRuntimeHostManagementAction,
     ): Promise<DesktopRuntimeHostManagementResponse>;
+    listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
+    rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
+    revokeCredential(
+      profileId: string,
+      credentialId: string,
+    ): Promise<DesktopRuntimeHostAccessSnapshot>;
   };
 
   newTasks: {
@@ -678,7 +731,9 @@ export interface MakaBridge {
       attachments: import('@maka/core/events').AttachmentRef[];
       inlineReferences: import('@maka/core/events').InlineReference[];
     }>;
-    retractQueue(sessionId: string): Promise<MessageContent>;
+    retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
+    promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
+    reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;
     subscribeActiveInteractions(
@@ -689,7 +744,7 @@ export interface MakaBridge {
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     listTurnLandmarks(sessionId: string): Promise<OperationOutput<'session.turn_landmarks.query'>>;
-    compact(sessionId: string): Promise<void>;
+    compact(sessionId: string): Promise<OperationOutput<'context.compact'>>;
     resumeLatest(sessionId: string): Promise<
       | { disposition: 'started'; runId: string; turnId: string }
       | { disposition: 'park'; rejectionReasons: string[]; diagnostics: unknown[] }
@@ -855,7 +910,7 @@ export interface MakaBridge {
     arm(
       sessionId: string,
       goal: import('../shared/goal-arm').GoalArmRequest,
-    ): Promise<import('@maka/runtime/goal-state').GoalState>;
+    ): Promise<import('../shared/goal-arm').GoalArmOutcome>;
     /** Clear the active goal, stopping autonomous continuation. */
     clear(sessionId: string): Promise<void>;
     /** Pause the active goal without spending a model turn. */
@@ -1175,6 +1230,28 @@ export interface MakaBridge {
   };
   app: {
     info(host?: DesktopRuntimeHostRef): Promise<DesktopAppInfo>;
+    /**
+     * Every selectable icon — the shipped set plus whatever the user imported
+     * — each with a thumbnail for the Settings picker. `removable` marks the
+     * imported ones; the shipped set is not the user's to delete.
+     */
+    iconPreviews(): Promise<
+      ReadonlyArray<{ id: AppIconChoice; dataUrl: string; removable?: boolean }>
+    >;
+    /**
+     * Persists the icon choice. Selection goes through here rather than the
+     * generic settings channel so it queues behind import and removal in the
+     * main process, and so a choice whose artwork is gone can be refused.
+     */
+    selectIcon(icon: AppIconChoice): Promise<AppIconSelectResult>;
+    /** Opens a file picker in the main process and stores a normalized copy. */
+    importIcon(): Promise<AppIconImportResult>;
+    /**
+     * Deletes imported artwork. Shipped ids are refused. The main process
+     * resets the selection first when the artwork is the current choice, and
+     * reports the selection it settled on.
+     */
+    removeIcon(icon: AppIconChoice): Promise<AppIconRemoveResult>;
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void;
     updateStatus(): Promise<AppUpdateStatus>;
     checkForUpdates(): Promise<AppUpdateStatus>;

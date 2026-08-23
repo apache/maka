@@ -61,6 +61,13 @@ describe('responses wire contract', () => {
     }
   });
 
+  test('keeps Qwen3.8 Max on Alibaba (China) Chat until the provider adapter supports Responses', () => {
+    assert.equal(
+      resolveModelRuntime({ providerType: 'alibaba-cn' }, 'qwen3.8-max').wire,
+      'openai-chat',
+    );
+  });
+
   test('normalizes the upstream Open Responses endpoint exactly once', () => {
     assert.equal(
       openResponsesUrl('https://api.deepseek.com/v1'),

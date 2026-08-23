@@ -108,6 +108,7 @@ import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
+import { sessionStatusBadge } from './tui-session-status.js';
 import {
   AttentionController,
   DISABLE_FOCUS_REPORTING,
@@ -346,8 +347,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       }
     | undefined;
   let turnRunning = false;
+  // Monotonic generation for visible agent turns. A mid-turn `/session`
+  // switch-away (#3380) bumps it to orphan the in-flight drain: every callback
+  // of that runAgentTurn (events, failures, queue flushes) captured the epoch
+  // at start and becomes a no-op once superseded, so nothing from the
+  // abandoned Session reaches the adopted one's transcript.
+  let turnEpoch = 0;
   let turnStartedAt: number | undefined;
   let interruptRequested = false;
+  // True while a mid-turn detach-switch is in flight: an interrupt issued in
+  // that window would target the freshly attached Session instead of the Turn
+  // being left behind.
+  let detaching = false;
+  // True while the /session picker is open mid-turn: Escape must close the
+  // overlay, not arm the double-Escape interrupt for the running Turn (#3380).
+  let sessionPickerOverlayOpen = false;
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
@@ -804,7 +818,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const requestTurnInterrupt = () => {
-    if (interruptRequested) return;
+    // A detach in flight is not the running Turn's owner acting on it — the
+    // driver already points at the next Session, so a stop here would abort
+    // whatever that Session has attached. Swallow until the handoff settles.
+    if (interruptRequested || detaching) return;
     interruptRequested = true;
     // The convergence window (stop issued, turn not yet terminal) accepts no
     // new input: submits would race the abort and could open work the user
@@ -1119,14 +1136,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // Known slash commands typed mid-turn follow the disposition declared on
       // the command itself (`midTurn`, review finding on turnRunning routing):
       // 'local' commands answer immediately because their handler is
-      // independent of the running turn; every other known command is refused
-      // with a clear message, since it would either mutate session state
-      // behind the turn's back, open a picker the turn would race, or silently
-      // no-op on the runControl busy gate. ('intercepted' commands — /exit,
-      // /swarm, /graph — were claimed by their dedicated checks above and
-      // reaching the refusal here only means an unrecognized form.) Unknown
-      // slash-prefixed text still steers: it may be intended prompt text (a
-      // skill invocation such as `/skill:<name>`, or a path).
+      // independent of the running turn; 'switch' commands detach this
+      // client's view from the running Turn and adopt another Session (#3380);
+      // every other known command is refused with a clear message, since it
+      // would either mutate session state behind the turn's back, open a
+      // picker the turn would race, or silently no-op on the runControl busy
+      // gate. ('intercepted' commands — /exit, /swarm, /graph — were claimed
+      // by their dedicated checks above and reaching the refusal here only
+      // means an unrecognized form.) Unknown slash-prefixed text still
+      // steers: it may be intended prompt text (a skill invocation such as
+      // `/skill:<name>`, or a path).
       const commandToken = prompt.trim().split(/\s+/, 1)[0] ?? '';
       const knownCommand = slashCommands.find(
         (candidate) =>
@@ -1135,7 +1154,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       );
       if (knownCommand) {
         editor.addToHistory(prompt);
-        if (knownCommand.midTurn === 'local') {
+        // 'switch' dispositions route through like 'local': their handlers are
+        // busy-aware and detach from the running Turn instead of touching it
+        // (#3380).
+        if (knownCommand.midTurn === 'local' || knownCommand.midTurn === 'switch') {
           handleSlashCommand(prompt, 0);
         } else {
           state.entries.push({
@@ -1159,6 +1181,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     authoritativeAttachedTurn?: MakaAttachedSessionTurn,
   ): Promise<GoalTurnOutcome> {
     busy = true;
+    const epoch = ++turnEpoch;
+    // A mid-turn /session switch-away (#3380) bumps turnEpoch and orphans this
+    // drain: from that point every callback below must stop touching shared
+    // runner state — the adopted Session owns it now.
+    const superseded = () => epoch !== turnEpoch;
     const activity = beginActivity();
     turnRunning = true;
     turnStartedAt = Date.now();
@@ -1201,6 +1228,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
       },
       onPrepared: async (turn) => {
+        // Orphaned by a mid-turn detach: this can still fire after the
+        // switch resolved (preparePrompt was in flight), and the abandoned
+        // Turn's metadata must not overwrite the adopted Session's view.
+        if (superseded()) return;
         if (authoritativeAttachedTurn) {
           adoptSessionMetadata(authoritativeAttachedTurn.summary);
           replaceTranscript(authoritativeAttachedTurn.messages);
@@ -1215,6 +1246,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (turn.summary) adoptSessionMetadata(turn.summary);
       },
       onSkillInvocation: (skillInvocation) => {
+        // Same mid-turn detach fence as onPrepared/onEvent: a skill card
+        // belonging to the abandoned Session must not land on the adopted
+        // viewport (covers the blocked-invocation path too).
+        if (superseded()) return;
         if (
           skillInvocation.loaded.length === 0 &&
           skillInvocation.failed.length > 0 &&
@@ -1227,6 +1262,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         showSkillInvocation(skillInvocation);
       },
       onEvent: (event) => {
+        // Orphaned by a mid-turn detach: the abandoned Session's stream must
+        // not reach the adopted Session's transcript or overlays.
+        if (superseded()) return;
         if (
           (event.type === 'sandbox_boundary_request' || event.type === 'user_question_request') &&
           resolvedInteractionIds.delete(event.requestId)
@@ -1259,6 +1297,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       // A turn failing is worth pulling the user back, regardless of how long it
       // ran — a quick failure in a background tab would otherwise stay silent.
       onFailure: (error) => {
+        // Orphaned by a mid-turn detach: the abandoned drain ends without a
+        // terminal event (channel close finishes its queue), which surfaces
+        // here as "ended without completion" — never report that against the
+        // adopted Session.
+        if (superseded()) return;
         appendTurnFailureToTranscript(state, error);
         attention.attentionNeeded();
         shellRunElapsedTicker.sync();
@@ -1271,6 +1314,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (closed) {
           busy = false;
           activity.finish();
+          return outcome;
+        }
+        if (superseded()) {
+          // Orphaned by a mid-turn detach (#3380): the Session this turn ran
+          // on is no longer adopted. Skip every continuation that belongs to
+          // it — queue flushes would steer the NEW Session, fallback texts
+          // would refill the editor with abandoned-session context, and a
+          // failure notice would misreport the still-running Host Turn. Only
+          // release the slot and hand the freshly attached Turn its start;
+          // startPendingAttachedTurn no-ops until applySwitchResult has
+          // installed it and we are idle, and the detach path re-arms it, so
+          // exactly one side starts it whichever unwinds first.
+          busy = false;
+          activity.finish();
+          requestRender();
+          startPendingAttachedTurn();
           return outcome;
         }
 
@@ -1529,6 +1588,80 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       });
     }
     requestRender();
+  };
+
+  // Mid-turn `/session` switch-away (#3380): adopt another Session while a
+  // Turn is still running on the current one. In Runtime Host mode the Turn is
+  // Host-owned — this TUI was only its viewport — so detaching the view must
+  // not stop it (unlike the interrupt path, driver.stop() is never called
+  // here). Bumping turnEpoch orphans the in-flight drain; its runAgentTurn
+  // tail unwinds through the superseded branch and releases busy/activity,
+  // then either that tail or the startPendingAttachedTurn below starts the
+  // freshly attached Turn, whichever observes an idle runner first.
+  const switchAwayMidTurn = async (sessionId: string) => {
+    resolvedInteractionIds.clear();
+    detaching = true;
+    try {
+      // Fence only after the driver confirms the switch: a failed switch must
+      // leave the in-flight drain fully live. Events the abandoned queue
+      // yields between the channel closing inside switchSession and
+      // replaceTranscript below are wiped by that replacement; everything
+      // after it hits the superseded fence.
+      const result = await input.driver.switchSession(sessionId);
+      turnEpoch += 1;
+      await applySwitchResult(result);
+      // Same adoption-time announcement as the idle path: applySwitchResult
+      // replaced the transcript, so a live durable Goal on the adopted Session
+      // must be re-announced here rather than silently auto-continuing.
+      currentGoal = input.driver.getGoal?.() ?? null;
+      if (
+        currentGoal !== null &&
+        (currentGoal.status === 'active' || currentGoal.status === 'waiting')
+      ) {
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: goalAttachedNoticeText(currentGoal),
+        });
+      }
+      if (result.messages.length === 0) {
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: `Resumed session "${result.summary.name}"`,
+        });
+      }
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: 'Detached from the running Turn — it keeps running. /session back to reattach.',
+      });
+      requestRender();
+    } finally {
+      detaching = false;
+      startPendingAttachedTurn();
+    }
+  };
+
+  // `/session` is view navigation (#3380). Idle, it runs under runControl's
+  // serial lock like any control action; mid-turn that lock is held by the
+  // running Turn, so the switch goes through the detach path instead of
+  // silently no-oping on the busy gate.
+  const goToSession = async (sessionId: string): Promise<void> => {
+    if (!turnRunning) {
+      await runControl(() => switchSession(sessionId));
+      return;
+    }
+    // One detach at a time (#3380): a second mid-turn switch while the first
+    // is still handing the view over would clear `detaching` early, reopen
+    // the interrupt window, and double-apply the adoption.
+    if (detaching) return;
+    await switchAwayMidTurn(sessionId).catch(reportError);
+  };
+  const openSessionPicker = (): Promise<void> => {
+    if (!turnRunning) return runControl(showSessionList);
+    // The picker itself is a passive overlay; only its selection detaches.
+    return showSessionList().catch(reportError);
   };
 
   // Rewind branches the active session to just before the chosen turn and
@@ -2040,7 +2173,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           ] as const;
         }),
       ),
-      input.foreignSessions
+      // Foreign (Claude Code / Codex) rows are an import flow: it starts a NEW
+      // Session and hands off a turn, which cannot detach from the running
+      // one (#3380). Skip the scan mid-turn instead of offering rows whose
+      // selection would silently no-op on importForeignSession's busy guard.
+      input.foreignSessions && !turnRunning
         ? input.foreignSessions.listSessions({ cwd }).then(
             (summaries) => ({ summaries }),
             (error: unknown) => ({ error }),
@@ -2073,18 +2210,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           : projectedSessions;
       const items: SelectItem[] = visibleSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
+        const statusBadge = sessionStatusBadge(session, locale);
+        const statusDetail = statusBadge ? ` · ${statusBadge}` : '';
         const location =
           sessionListScope === 'all' && session.cwd ? ` ${basename(session.cwd)}` : '';
         const childDetail = session.subagentRuntime
-          ? ` subagent:${session.subagentRuntime.profile} ${session.status}`
+          ? ` subagent:${session.subagentRuntime.profile}`
           : '';
         return {
           value: session.id,
           label: `${depth > 0 ? `${'  '.repeat(depth - 1)}↳ ` : ''}${session.name || session.id}`,
           description:
             state?.available === false
-              ? `${shortSessionId(session.id)} ${state.reason}`
-              : `${shortSessionId(session.id)}${location}${childDetail} ${session.llmConnectionSlug} ${session.model}`,
+              ? `${shortSessionId(session.id)}${statusDetail} ${state.reason}`
+              : `${shortSessionId(session.id)}${statusDetail}${location}${childDetail} ${session.llmConnectionSlug} ${session.model}`,
         };
       });
       // Foreign sessions are cwd-scoped; show them in both scope views (they
@@ -2101,18 +2240,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         maxPrimaryColumnWidth: Math.max(20, terminal.columns - 30),
       });
       let overlay: OverlayHandle | undefined;
+      const closeOverlay = () => {
+        sessionPickerOverlayOpen = false;
+        overlay?.hide();
+      };
       list.onSelect = (item) => {
         const foreign = foreignByValue.get(item.value);
         if (foreign) {
-          overlay?.hide();
+          closeOverlay();
           void importForeignSession(foreign);
           return;
         }
         if (availability.get(item.value)?.available === false) return;
-        overlay?.hide();
-        void runControl(() => switchSession(item.value));
+        closeOverlay();
+        void goToSession(item.value);
       };
-      list.onCancel = () => overlay?.hide();
+      list.onCancel = () => closeOverlay();
+      sessionPickerOverlayOpen = true;
       overlay = showBottomPicker(
         new PickerOverlay(list, {
           title: 'Resume Session',
@@ -3044,10 +3188,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     session: {
       description: primaryGuidance.commands.session,
-      midTurn: 'refuse',
+      // View navigation, not a session mutation: mid-turn it detaches from the
+      // running Turn instead of touching it (#3380), so it is allowed through
+      // where mutating commands are refused.
+      midTurn: 'switch',
       run: (parts: string[]) => {
         if (parts.length === 1) {
-          void runControl(showSessionList);
+          void openSessionPicker();
           return;
         }
         const sessionId = parts.length === 2 ? parts[1] : undefined;
@@ -3060,7 +3207,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           requestRender();
           return;
         }
-        void runControl(() => switchSession(sessionId));
+        void goToSession(sessionId);
       },
     },
     graph: {
@@ -3216,6 +3363,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // boundary branch so Escape keeps meaning "deny" while a prompt is
     // pending, and it only arms while a prompt turn is actually running.
     if (turnRunning && matchesKey(data, Key.escape)) {
+      // The mid-turn /session picker owns Escape while it is open — closing
+      // it must never arm an interrupt for the Turn being left running.
+      if (sessionPickerOverlayOpen) return undefined;
       // Once an interrupt is issued, swallow further Escapes until the turn
       // ends so a still-settling stop is not requested twice. A rejected stop
       // re-arms interruption so the user can retry within the same turn.

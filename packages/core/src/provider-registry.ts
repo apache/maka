@@ -477,6 +477,18 @@ if (
 const alibabaModelIds = toolCallingModelIds('Alibaba', GENERATED_MODELS_DEV_METADATA.alibaba, [
   'qwen3.7-plus',
 ]);
+const alibabaCn = GENERATED_MODELS_DEV_PROVIDER_FACTS['alibaba-cn'];
+if (
+  alibabaCn.id !== 'alibaba-cn' ||
+  alibabaCn.api !== 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+) {
+  throw new Error('models.dev Alibaba (China) provider facts are missing the stable id or API');
+}
+const alibabaCnModelIds = toolCallingModelIds(
+  'Alibaba (China)',
+  GENERATED_MODELS_DEV_METADATA['alibaba-cn'],
+  ['qwen3.8-max'],
+);
 const alibabaCodingPlanCn = GENERATED_MODELS_DEV_PROVIDER_FACTS['alibaba-coding-plan-cn'];
 if (
   alibabaCodingPlanCn.id !== 'alibaba-coding-plan-cn' ||
@@ -1583,6 +1595,26 @@ const providerRegistry = {
     modelsDevId: alibaba.id,
     readyOrder: 41,
     catalogOrder: 41,
+  },
+  'alibaba-cn': {
+    label: alibabaCn.name,
+    description:
+      'Alibaba Cloud Qwen models on the China platform for multimodal reasoning, coding, and tool use.',
+    baseUrl: alibabaCn.api,
+    authKind: 'api_key',
+    backendKind: 'ai-sdk',
+    fallbackModels: alibabaCnModelIds,
+    status: 'ready',
+    protocol: 'openai',
+    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    modelDiscovery: { kind: 'protocol' },
+    category: 'domestic',
+    catalogGroup: 'api',
+    catalogBadge: 'API',
+    signupUrl: 'https://bailian.console.aliyun.com/',
+    modelsDevId: alibabaCn.id,
+    readyOrder: 41.05,
+    catalogOrder: 41.05,
   },
   'alibaba-coding-plan-cn': {
     label: alibabaCodingPlanCn.name,

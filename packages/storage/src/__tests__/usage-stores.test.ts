@@ -52,6 +52,7 @@ import {
   openInteractiveUsageStoresForWrite,
 } from '../usage-stores.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
+import { removeControlDirectory } from './fixtures/control-directory-hygiene.js';
 
 describe('InteractiveUsageStores', () => {
   test('classifies facade failures without exposing concrete errors to callers', () => {
@@ -466,7 +467,11 @@ async function withInteractiveRoot(
   try {
     const root = join(base, 'interactive');
     const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-    await run({ root, capability });
+    try {
+      await run({ root, capability });
+    } finally {
+      await removeControlDirectory(capability.rootId);
+    }
   } finally {
     await rm(base, { recursive: true, force: true });
   }

@@ -30,6 +30,7 @@ import {
 } from '../live-turn-projection.js';
 import { overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
 import { redactSecrets } from '../redact.js';
+import { getConversationCopy } from '../conversation-copy.js';
 
 // A client that just sent cannot read "has my turn started" off session status:
 // it is the same before the turn starts and after it ends. The arm carries
@@ -64,6 +65,16 @@ describe('the unconfirmed claim an arm carries', () => {
     });
 
     assert.equal(streamed.unconfirmed, undefined);
+  });
+});
+
+describe('provider retry copy', () => {
+  it('describes capacity retries without collapsing them into generic unavailability', () => {
+    assert.match(getConversationCopy('zh').messages.providerRetryReason.provider_capacity, /满载/);
+    assert.match(
+      getConversationCopy('en').messages.providerRetryReason.provider_capacity,
+      /capacity/,
+    );
   });
 });
 
@@ -194,7 +205,16 @@ describe('applyLiveTurnEvent', () => {
       maxAttempts: 10,
       reason: 'rate_limit',
     });
-    assert.equal(started?.providerRetry?.phase, 'started');
+    assert.deepEqual(started?.providerRetry, {
+      type: 'provider_retry',
+      id: 'retry-2',
+      turnId: 'turn-1',
+      ts: 101,
+      phase: 'started',
+      attempt: 2,
+      maxAttempts: 10,
+      reason: 'rate_limit',
+    });
 
     const streamed = applyLiveTurnEvent(started, {
       type: 'text_delta',
@@ -205,6 +225,33 @@ describe('applyLiveTurnEvent', () => {
       text: '恢复',
     });
     assert.equal(streamed?.providerRetry, undefined);
+  });
+
+  it('keeps provider capacity visible through retry projection', () => {
+    const live = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+      type: 'provider_retry',
+      id: 'retry-capacity',
+      turnId: 'turn-1',
+      ts: 100,
+      phase: 'scheduled',
+      attempt: 2,
+      maxAttempts: 10,
+      delayMs: 4_000,
+      reason: 'provider_capacity',
+    });
+
+    const started = applyLiveTurnEvent(live, {
+      type: 'provider_retry',
+      id: 'retry-capacity-started',
+      turnId: 'turn-1',
+      ts: 101,
+      phase: 'started',
+      attempt: 2,
+      maxAttempts: 10,
+      reason: 'provider_capacity',
+    });
+
+    assert.equal(started?.providerRetry?.reason, 'provider_capacity');
   });
 
 

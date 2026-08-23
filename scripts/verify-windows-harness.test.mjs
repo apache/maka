@@ -36,6 +36,10 @@ import {
 } from './verify-packaged-app.mjs';
 import { waitForInstalledProductVersion } from './verify-windows-autoupdate.mjs';
 import {
+  deleteUninstallRegistrationForInstall,
+  readUninstallDisplayVersionsForInstall,
+} from './verify-windows-installer-rollback.mjs';
+import {
   completeInstalledApplicationUninstall,
   installerVersion,
   listInstalledProcesses,
@@ -52,6 +56,31 @@ import {
 const temporaryRoots = [];
 const delay = (milliseconds) =>
   new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+
+it('scopes rollback registration reads and deletion to the fixture uninstaller', async () => {
+  const calls = [];
+  const uninstaller = 'C:\\fixture\\installed\\Uninstall Maka.exe';
+  const run = async (command, args, options) => {
+    calls.push({ command, args, options });
+    return { stdout: '0.1.11', stderr: '' };
+  };
+
+  assert.equal(await readUninstallDisplayVersionsForInstall(uninstaller, { run }), '0.1.11');
+  await deleteUninstallRegistrationForInstall(uninstaller, { run });
+
+  assert.equal(calls.length, 2);
+  for (const { command, args, options } of calls) {
+    assert.equal(command, 'powershell');
+    assert.equal(options.timeoutMs, 30_000);
+    const script = args.at(-1);
+    assert.match(script, /UninstallString/u);
+    assert.ok(script.includes('[StringComparison]::OrdinalIgnoreCase'));
+    assert.match(script, /C:\\fixture\\installed\\Uninstall Maka\.exe/u);
+    assert.doesNotMatch(script, /DisplayName/u);
+  }
+  assert.match(calls[0].args.at(-1), /\.DisplayVersion/u);
+  assert.match(calls[1].args.at(-1), /Remove-Item -LiteralPath \$_\.Path/u);
+});
 
 it('uses the product SemVer contract throughout Windows release verification', () => {
   assert.equal(installerVersion('Maka-1.2.3-beta.2-win-x64.exe'), '1.2.3-beta.2');

@@ -38,7 +38,10 @@ on:
       - 'scripts/verify-windows-sandbox-e2e.mjs'
       - 'scripts/verify-windows-installer-lifecycle.mjs'
       - 'scripts/verify-windows-autoupdate.mjs'
+      - 'scripts/verify-windows-installer-rollback.mjs'
       - 'scripts/package-windows-autoupdate-next.mjs'
+      # The Abort-path rollback hook ships inside the installer itself.
+      - 'apps/desktop/build/installer.nsh'
       # The packaged updater's feed behavior — and the boot wiring that hands
       # MAKA_UPDATE_TEST_FEED to it — is only observable on this path.
       - 'apps/desktop/src/main/app-update-service.ts'
@@ -70,7 +73,7 @@ concurrency:
 jobs:
   package:
     runs-on: windows-2025
-    timeout-minutes: 75
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -120,5 +123,12 @@ jobs:
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-autoupdate -- \
+            "apps/desktop/release/Maka-${version}-win-x64.exe" \
+            apps/desktop/release-autoupdate-next
+
+      - name: Prove deterministic mid-install failure rollback
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          npm run verify:windows-installer-rollback -- \
             "apps/desktop/release/Maka-${version}-win-x64.exe" \
             apps/desktop/release-autoupdate-next

@@ -23,13 +23,25 @@ import { join } from 'node:path';
 import { resolveBuildInfo } from './build-info.js';
 import {
   captureDesktopDiagnosticEnvironment,
+  copyDesktopDiagnosticReport,
+  createDesktopPreviousMainProcessDiagnosticInput,
   installMainProcessLogCapture,
   mainProcessLogBuffer,
 } from './main-process-diagnostics.js';
-import { showFatalStartupError } from './native-diagnostic-dialog.js';
+import {
+  appendUncaughtMainProcessError,
+  createMainProcessRecoveryJournal,
+  presentPendingMainProcessRecovery,
+  type MainProcessRecoveryJournal,
+} from './main-process-recovery-journal.js';
+import {
+  showFatalStartupError,
+  showPreviousMainProcessInterruptionDialog,
+} from './native-diagnostic-dialog.js';
 import { isIsolatedE2e } from './startup-context.js';
 
-installMainProcessLogCapture();
+let recoveryJournal: MainProcessRecoveryJournal | undefined;
+installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDirty());
 
 // The macOS app menu title and app.getName() consumers read this name. Set it
 // before ready, unchanged from its historical pre-ready position.
@@ -57,6 +69,28 @@ if (isIsolatedE2e && process.env.MAKA_E2E_USER_DATA_DIR) {
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
+  const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
+  try {
+    recoveryJournal = createMainProcessRecoveryJournal({
+      root: join(app.getPath('userData'), 'main-process-recovery'),
+      appVersion: app.getVersion(),
+      buildMode: buildInfo.mode,
+      buildCommit: buildInfo.commit,
+      logs: () => mainProcessLogBuffer.snapshot(),
+      onError: (error) => console.error('[diagnostics] main-process recovery failed:', error),
+    });
+    const journal = recoveryJournal;
+    process.on('uncaughtExceptionMonitor', (error, origin) => {
+      appendUncaughtMainProcessError(mainProcessLogBuffer, journal, error, origin);
+    });
+    app.on('quit', () => journal.markClean());
+    app.on('browser-window-created', (_event, window) => {
+      window.on('session-end', () => journal.markClean());
+    });
+  } catch (error) {
+    console.error('[diagnostics] main-process recovery unavailable:', error);
+  }
+
   // The full boot must not run in the top-level module-evaluation chain:
   // Electron ESM emits `ready` only after the entry module finishes
   // evaluating, so a top-level `await app.whenReady()` (which the
@@ -66,8 +100,47 @@ if (!app.requestSingleInstanceLock()) {
   // store/db write".
   app
     .whenReady()
-    .then(() => {
+    .then(async () => {
       console.log('[startup] app ready');
+      const journal = recoveryJournal;
+      if (journal?.pending) {
+        if (isIsolatedE2e) {
+          journal.discardPending();
+        } else {
+          await presentPendingMainProcessRecovery(
+            journal,
+            (pending) =>
+              showPreviousMainProcessInterruptionDialog({
+                locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+                copyDiagnostics: () =>
+                  copyDesktopDiagnosticReport(
+                    {
+                      environment: () =>
+                        captureDesktopDiagnosticEnvironment({
+                          appVersion: app.getVersion(),
+                          buildMode: buildInfo.mode,
+                          buildCommit: buildInfo.commit,
+                          locale: app.getLocale(),
+                          workspacePath: join(
+                            app.getPath('userData'),
+                            'workspaces',
+                            'default',
+                          ),
+                        }),
+                      mainLogs: () => mainProcessLogBuffer.snapshot(),
+                      resolveActiveRuntimeHost: () => undefined,
+                      resolveRuntimeHost: () => undefined,
+                      writeClipboard: (report) => clipboard.writeText(report),
+                    },
+                    createDesktopPreviousMainProcessDiagnosticInput(pending),
+                  ),
+                showMessageBox: (options) => dialog.showMessageBox(options),
+              }),
+            (error) =>
+              console.error('[diagnostics] previous-session recovery dialog failed:', error),
+          );
+        }
+      }
       return import('./runtime-host-boot.js');
     })
     .catch(async (error: unknown) => {
@@ -93,6 +166,7 @@ if (!app.requestSingleInstanceLock()) {
           });
         }
       } finally {
+        recoveryJournal?.markClean();
         app.exit(1);
       }
     });

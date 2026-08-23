@@ -44,51 +44,40 @@
   width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-6))));
   max-width: var(--maka-chat-measure);
   margin: 0 auto var(--space-1);
-  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-2);
+  padding: var(--space-1);
   box-sizing: border-box;
-  display: flex;
-  align-items: flex-end;
-  gap: var(--space-1);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-chat);
   background: var(--background-elevated);
   box-shadow: inset 0 0 0 var(--border-width-hairline) var(--border);
+  /* Concentric with the plate, mirroring what ChatComposer derives for its
+     own footer buttons: max(--radius-element, radius - padding). The plate
+     sits outside the card, so the row ghost buttons must read it here. */
+  --_button-radius: max(var(--radius-element), calc(var(--radius-chat) - var(--spacing-3)));
 }
 
 .maka-composer-queue-list {
   min-width: 0;
-  flex: 1 1 auto;
   max-height: 132px;
   overflow-y: auto;
 }
 
-.maka-composer-queue-row {
-  min-width: 0;
-  min-height: var(--h-control-sm);
+.maka-composer-queue-grip {
   display: grid;
-  grid-template-columns: 16px auto minmax(0, 1fr);
-  align-items: center;
-  gap: var(--space-1);
-  padding: 0 var(--space-1);
-  color: var(--foreground-secondary);
-}
-
-.maka-composer-queue-kind {
+  place-items: center;
+  width: 16px;
   color: var(--muted-foreground);
-  font: var(--maka-text-supporting);
-  white-space: nowrap;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 120ms ease;
 }
 
-.maka-composer-queue-text {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--foreground);
-  font: var(--maka-text-label);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.maka-composer-queue-list li:hover .maka-composer-queue-grip,
+.maka-composer-queue-grip:focus-visible {
+  opacity: 1;
 }
 
-.maka-composer-follow-up-mode {
-  flex: 0 0 auto;
+.maka-composer-queue-grip:active {
+  cursor: grabbing;
 }
 
 @media (max-width: 640px) {
@@ -192,8 +181,7 @@
   min-width: 0;
 }
 
-.maka-composer-left-controls,
-.maka-composer-right-controls {
+.maka-composer-left-controls {
   display: flex;
   align-items: center;
   /* PR-REFERENCE-PIXEL-8 (WAWQAQ msg `f79de85f` round 8): reference implementation's
@@ -217,11 +205,6 @@
 .maka-composer-left-controls {
   flex: 1 1 auto;
   min-width: 0;
-}
-
-.maka-composer-right-controls {
-  flex: 0 0 auto;
-  justify-content: flex-end;
 }
 
 /* Quiet footer: ＋ and permission are both ghost icon buttons. */

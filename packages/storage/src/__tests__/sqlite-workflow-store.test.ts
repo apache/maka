@@ -21,12 +21,20 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import { createSqliteDeepResearchStore } from '../deep-research-store.js';
 import { openInteractiveScheduledTaskStoreForWrite } from '../scheduled-task-store.js';
 import { createSqlitePlanStore } from '../plan-store.js';
 import { createSqliteTaskLedgerStore } from '../task-ledger-store.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 const SESSION_ID = 'session-workflow';
 
@@ -427,7 +435,9 @@ describe('SQLite workflow stores', () => {
 });
 
 async function scheduledTaskStoreRoot(root: string) {
-  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: root, kind: 'interactive' }),
+  );
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) throw new Error('Unable to acquire the ScheduledTask test root');

@@ -30,7 +30,12 @@ import {
 } from 'react';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import type { ProjectRecord } from '@maka/core/project';
-import type { FollowUpMode, InlineReference, QuoteRef } from '@maka/core/events';
+import type {
+  FollowUpMode,
+  InlineReference,
+  MessageQueueEntryProjection,
+  QuoteRef,
+} from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
@@ -102,6 +107,7 @@ import {
   mergeWorkspaceReferences,
   resolveFollowUpModeAtSubmit,
 } from './follow-up-submit-routing';
+import { retractQueueEntryToDraft } from './app-shell-queue-entry-actions';
 import {
   PlanExecutionPanel,
   PlanProposalCard,
@@ -147,6 +153,10 @@ import {
 } from './session-list-layout';
 import { modelSetupToastCopy } from './model-connection-errors';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
+import {
+  createContextCompactionPresentation,
+  presentContextCompactionResult,
+} from './app-shell-context-compaction';
 import { AppShellTopbarActions } from './app-shell-chrome-actions';
 import { updateReminderFromStatus } from './app-shell-app-update';
 import { useBuildStamp } from './app-shell-build-stamp';
@@ -412,7 +422,6 @@ function AppShellContent({
   } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
   // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
-  const [followUpMode, setFollowUpMode] = useState<FollowUpMode>('queue');
   // What a new chat will start with, held the way the Session holds it: a
   // Plan toggle and one orchestration value, not one fused choice.
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
@@ -693,6 +702,16 @@ function AppShellContent({
   const [viewMode, setViewMode] = useState<SessionViewMode>(() => readSessionListViewMode());
   const composerRef = useRef<ComposerHandle>(null);
   const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
+  const queueEntryDraftDeps = {
+    activeIdRef,
+    composerRef,
+    restoreAttachments,
+    restoreQuotes,
+    setRestoredWorkspaceReferences: (sessionId, references) => {
+      retractedWorkspaceReferencesRef.current[sessionId] = [...references];
+    },
+    requestFocus: (callback) => window.requestAnimationFrame(callback),
+  } satisfies Parameters<typeof retractQueueEntryToDraft>[0];
   // The rail's toggle has to reach Astryx's resizable state, not just this
   // boolean — see the prop's note on SessionListPanel. The sidenav is mounted
   // for the whole shell, so the handle is always live by the time it is called.
@@ -1753,6 +1772,20 @@ function AppShellContent({
 
   const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
   const shellObscured = hasModalOpen || settingsOpen;
+  const contextCompactionPresentation = useMemo(
+    () =>
+      createContextCompactionPresentation({
+        toastApi,
+        presentTerminal(sessionId, notice) {
+          if (notice.level === 'error') {
+            toastApi.error(notice.title, notice.description, undefined, { sessionId });
+            return;
+          }
+          toastApi[notice.level](notice.title, notice.description);
+        },
+      }),
+    [toastApi],
+  );
   const reportWorkbarError = useCallback(
     (title: string, description: string, sessionId: string) =>
       toastApi.error(title, description, undefined, { sessionId }),
@@ -1892,6 +1925,16 @@ function AppShellContent({
     toastApi,
     upsertSessionSummary,
   });
+  const handleSwitchToBypassAndRetry = useCallback(
+    async (turnId: string) => {
+      const sessionId = activeIdRef.current;
+      if (!sessionId) return;
+      const switched = await setPermissionMode('bypass');
+      if (!switched || activeIdRef.current !== sessionId) return;
+      await handleTurnFooterAction(turnId, 'regenerate');
+    },
+    [handleTurnFooterAction, setPermissionMode],
+  );
 
   const {
     beginEditUserMessage,
@@ -2010,7 +2053,6 @@ function AppShellContent({
     const followUpAtSubmit = !slashCommand
       ? resolveFollowUpModeAtSubmit({
           requestedMode: metadata?.followUpMode,
-          defaultMode: followUpMode,
           hasActiveTurn: hasActiveTurnAtSubmit({ liveTurn, runningTurnIds }),
         })
       : undefined;
@@ -2048,8 +2090,13 @@ function AppShellContent({
       const sessionId = activeIdRef.current;
       if (!sessionId) return true;
       try {
-        await window.maka.sessions.compact(sessionId);
-        return true;
+        const result = await window.maka.sessions.compact(sessionId);
+        return presentContextCompactionResult(
+          contextCompactionPresentation,
+          sessionId,
+          result,
+          uiLocale,
+        );
       } catch (error) {
         if (activeIdRef.current !== sessionId) return false;
         if (isSessionWorkspaceUnavailableError(error)) {
@@ -2205,42 +2252,42 @@ function AppShellContent({
     return ok;
   }
 
-  async function retractQueuedMessages(): Promise<void> {
+  async function retractQueuedEntry(entry: MessageQueueEntryProjection): Promise<void> {
+    await runQueueEntryAction((sessionId) =>
+      retractQueueEntryToDraft(queueEntryDraftDeps, sessionId, entry)
+    );
+  }
+
+  // Surfaces the failure, then rethrows so the pending plate can settle its
+  // in-flight action state without guessing with a timer.
+  async function runQueueEntryAction(action: (sessionId: string) => Promise<void>): Promise<void> {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     try {
-      const content = await window.maka.sessions.retractQueue(sessionId);
-      setMessageQueueBySession((current) => {
-        if (!(sessionId in current)) return current;
-        const next = { ...current };
-        delete next[sessionId];
-        return next;
-      });
-      if (activeIdRef.current !== sessionId) return;
-      const displayText = content.displayText ?? content.text;
-      const before = composerRef.current?.getText() ?? '';
-      composerRef.current?.appendDraft?.(sessionId, displayText);
-      const after = composerRef.current?.getText() ?? displayText;
-      const insertionStart = Math.max(0, after.lastIndexOf(displayText, before.length + 2));
-      retractedWorkspaceReferencesRef.current[sessionId] = (
-        content.inlineReferences ?? []
-      ).flatMap((reference) =>
-        reference.kind === 'workspace_file'
-          ? [{ ...reference, start: insertionStart + reference.start }]
-          : [],
-      );
-      restoreAttachments(content.attachments ?? []);
-      restoreQuotes(content.quotes ?? []);
-      window.requestAnimationFrame(() => composerRef.current?.focus());
+      await action(sessionId);
     } catch (error) {
-      if (activeIdRef.current !== sessionId) return;
-      const copy = getDesktopConversationCopy(uiLocale).actions;
-      showSessionError(
-        sessionId,
-        copy.operationFailedTitle,
-        localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
-      );
+      if (activeIdRef.current === sessionId) {
+        const copy = getDesktopConversationCopy(uiLocale).actions;
+        showSessionError(
+          sessionId,
+          copy.operationFailedTitle,
+          localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+        );
+      }
+      throw error;
     }
+  }
+
+  async function promoteQueuedEntry(entryId: string): Promise<void> {
+    await runQueueEntryAction((sessionId) =>
+      window.maka.sessions.promoteQueueEntry(sessionId, entryId).then(() => undefined)
+    );
+  }
+
+  async function reorderQueuedEntries(entryIds: readonly string[]): Promise<void> {
+    await runQueueEntryAction((sessionId) =>
+      window.maka.sessions.reorderQueueEntries(sessionId, entryIds).then(() => undefined)
+    );
   }
 
   const stop = createAppShellStopAction({
@@ -2273,6 +2320,8 @@ function AppShellContent({
     displayBatch: sessionDisplayBatch,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
+    onContextCompactionOutcome: (sessionId, turnId, outcome) =>
+      contextCompactionPresentation.finished(sessionId, turnId, outcome, uiLocale),
     showModelSetupToast,
     toastApi,
     notifyRunEnded: ({ kind, sessionId, body }) => {
@@ -3009,10 +3058,10 @@ function AppShellContent({
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendOwningItsTarget}
                   onStop={stop}
-                  followUpMode={followUpMode}
                   queuedMessages={activeMessageQueue}
-                  onFollowUpModeChange={setFollowUpMode}
-                  onRetractQueued={activeId ? retractQueuedMessages : undefined}
+                  onPromoteQueuedEntry={activeId ? promoteQueuedEntry : undefined}
+                  onRetractQueuedEntry={activeId ? retractQueuedEntry : undefined}
+                  onReorderQueuedEntries={activeId ? reorderQueuedEntries : undefined}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
                       ? {
@@ -3100,7 +3149,9 @@ function AppShellContent({
                   }
                   onPermissionModeChange={
                     activeBoundarySurface.localInteractionAvailable
-                      ? (mode) => setPermissionMode(mode)
+                      ? async (mode) => {
+                          await setPermissionMode(mode);
+                        }
                       : undefined
                   }
                   planModeActive={activePlanMode}
@@ -3238,6 +3289,7 @@ function AppShellContent({
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
                 deriveTurnPresentation={deriveTurnPresentation}
                 onTurnFooterAction={handleTurnFooterAction}
+                onSwitchToBypassAndRetry={handleSwitchToBypassAndRetry}
                 onEditUserMessage={(turnId) => { void beginEditUserMessage(turnId); }}
                 safeResumeAction={activeId ? {
                   pending: resumePendingSessionId === activeId,

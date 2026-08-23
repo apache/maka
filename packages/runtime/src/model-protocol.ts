@@ -333,6 +333,7 @@ export type ModelFailureKind =
   | 'auth'
   | 'context_overflow'
   | 'network'
+  | 'provider_capacity'
   | 'provider_billing'
   | 'provider_unavailable'
   | 'rate_limit'

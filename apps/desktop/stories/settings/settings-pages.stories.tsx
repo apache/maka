@@ -67,6 +67,10 @@ import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-
  * text has to source that text where the UI does.
  */
 const DAILY_REVIEW_DEFAULT_MODEL_LABEL = getDailyReviewSettingsCopy('zh').defaultModel;
+/** A 1×1 transparent PNG: the picker needs a valid data URL, not real art. */
+const STORY_ICON_PREVIEW =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
 const STORY_PLATFORM = 'darwin' as const;
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -683,6 +687,33 @@ const makaBridge = {
         '/Users/storybook-fixture-user/Library/Application Support/Maka/workspaces/infra-observability-platform-desktop',
     }),
     openPath: async () => ({ ok: true as const, opened: '/Users/storybook' }),
+    // The 外观 page mounts the app-icon picker as soon as it opens. Without
+    // these the story throws on mount rather than degrading: calling a bridge
+    // method the fixture does not define is a synchronous TypeError, which the
+    // effect's own `.catch()` never sees.
+    //
+    // The set deliberately spans one shipped icon per group plus an imported
+    // one, so the smoke covers the group headings and the remove affordance
+    // rather than an empty picker.
+    iconPreviews: async () => [
+      { id: 'default' as const, dataUrl: STORY_ICON_PREVIEW },
+      { id: 'mono' as const, dataUrl: STORY_ICON_PREVIEW },
+      { id: 'sky' as const, dataUrl: STORY_ICON_PREVIEW },
+      { id: 'ink' as const, dataUrl: STORY_ICON_PREVIEW },
+      { id: 'pencil-kraft' as const, dataUrl: STORY_ICON_PREVIEW },
+      { id: 'alpine' as const, dataUrl: STORY_ICON_PREVIEW },
+      {
+        id: `custom:${'a'.repeat(32)}` as const,
+        dataUrl: STORY_ICON_PREVIEW,
+        removable: true,
+      },
+    ],
+    selectIcon: async (icon: Parameters<typeof window.maka.app.selectIcon>[0]) => ({
+      ok: true as const,
+      selection: icon,
+    }),
+    importIcon: async () => ({ ok: false as const, reason: 'cancelled' as const }),
+    removeIcon: async () => ({ ok: true as const, selection: 'default' as const }),
     // About mounts update status + subscribe on open (Settings → 关于).
     updateStatus: async () => ({ state: 'idle' as const, currentVersion: '0.9.0-dev' }),
     subscribeUpdateStatus: () => () => undefined,
@@ -1452,6 +1483,21 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="permissions" />,
   play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const grantedFilter = await canvas.findByRole('button', { name: /^仅显示已授权权限/ });
+    expect(grantedFilter).toHaveAttribute('aria-pressed', 'false');
+    await userEvent.click(grantedFilter);
+    await waitFor(() => {
+      expect(grantedFilter).toHaveAttribute('aria-pressed', 'true');
+      expect(canvasElement.querySelectorAll('[data-permission-id]')).toHaveLength(2);
+      expect(canvasElement.querySelector('[data-permission-id="screen_recording"]')).not.toBeInTheDocument();
+    });
+    await userEvent.click(grantedFilter);
+    await waitFor(() => {
+      expect(grantedFilter).toHaveAttribute('aria-pressed', 'false');
+      expect(canvasElement.querySelectorAll('[data-permission-id]')).toHaveLength(4);
+    });
+
     // Scoped through `data-readiness` — the capability rows' own attribute — so
     // the story cannot latch onto some other expandable button on the page.
     const trigger = await waitForStoryButton(
@@ -1473,6 +1519,24 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
 export const HealthCenter: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="health" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const errorFilter = await canvas.findByRole('button', { name: /^仅显示错误健康信号/ });
+    expect(errorFilter).toHaveAttribute('aria-pressed', 'false');
+    await userEvent.click(errorFilter);
+    await waitFor(() => {
+      expect(errorFilter).toHaveAttribute('aria-pressed', 'true');
+      expect(canvas.getByText('OpenAI Review')).toBeInTheDocument();
+      expect(canvas.queryByText('Z.AI Live')).not.toBeInTheDocument();
+      expect(canvas.getByText('全部健康信号中，1/6 条会阻塞发送')).toBeInTheDocument();
+      expect(canvas.getByText('全部健康信号中，1/6 条会阻塞能力')).toBeInTheDocument();
+    });
+    await userEvent.click(errorFilter);
+    await waitFor(() => {
+      expect(errorFilter).toHaveAttribute('aria-pressed', 'false');
+      expect(canvas.getByText('Z.AI Live')).toBeInTheDocument();
+    });
+  },
 };
 // Real path: 设置 → 关于 (also reachable from 反馈 in the topbar).
 export const About: Story = {

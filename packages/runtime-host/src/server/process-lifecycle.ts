@@ -22,13 +22,16 @@ import {
   type RuntimeHostKernel,
 } from './host-kernel.js';
 
+export const RUNTIME_HOST_RETIREMENT_EXIT_CODE = 3;
+
 export interface RuntimeHostProcessLifecycleOptions {
   closeOnDisconnect?: boolean;
   onReady?: () => void;
 }
 
 export async function runRuntimeHostProcessLifecycle(
-  host: Pick<RuntimeHostKernel, 'close' | 'closed'>,
+  host: Pick<RuntimeHostKernel, 'close' | 'closed'> &
+    Partial<Pick<RuntimeHostKernel, 'shutdownReason'>>,
   options: RuntimeHostProcessLifecycleOptions = {},
 ): Promise<void> {
   let closing = false;
@@ -45,7 +48,9 @@ export async function runRuntimeHostProcessLifecycle(
     options.onReady?.();
     await host.closed;
   } catch (error) {
-    if (error instanceof RuntimeHostProcessTerminationRequiredError) process.exit(1);
+    if (error instanceof RuntimeHostProcessTerminationRequiredError) {
+      process.exit(host.shutdownReason === 'retirement' ? RUNTIME_HOST_RETIREMENT_EXIT_CODE : 1);
+    }
     throw error;
   } finally {
     process.off('SIGINT', close);

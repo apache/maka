@@ -146,7 +146,7 @@ describe('recordLlmCall', () => {
       {
         sessionId: 'session-1',
         turnId: 'turn-1',
-        callKind: 'semantic_compact',
+        callKind: 'history_compact',
         callId: 'compact-1',
         connectionSlug: 'connection-1',
         providerId: 'anthropic',

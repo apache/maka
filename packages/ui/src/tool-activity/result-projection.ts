@@ -58,6 +58,12 @@ export function isPermissionDeniedToolResult(result: ToolActivityItem['result'])
   return /^(User denied permission(?: request)?|用户已拒绝权限请求)$/.test(result.text.trim());
 }
 
+export function isRequiresBypassToolResult(result: ToolActivityItem['result']): boolean {
+  return result?.kind === 'text'
+    && result.sandboxFailure?.reason === 'requires_bypass'
+    && result.sandboxFailure.source === 'client_capability';
+}
+
 /**
  * Result kinds (or tool-specific cards) that already paint their own chrome —
  * never nest them inside the shared quiet well.

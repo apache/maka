@@ -22,7 +22,6 @@ import type { IpcMainInvokeEvent } from "electron";
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
-import { aggregateMessageContents } from '@maka/core/events';
 import {
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -73,7 +72,9 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "queryTurnResume"
   | "readExecutionBoundary"
   | "regenerateTurn"
-  | "retractQueue"
+  | "retractQueueEntry"
+  | "promoteQueueEntry"
+  | "reorderQueueEntries"
   | "setSessionReadMarker"
   | "startTurn"
   | "startTurnResume"
@@ -439,13 +440,48 @@ export function registerRuntimeHostSessionExecutionIpc(
       };
     },
   );
-  ipcMain.handle("sessions:retractQueue", async (_event, sessionId: string) => {
-    const result = await deps.client.retractQueue({
-      sessionId,
-      retractId: newId(),
-    });
-    return aggregateMessageContents(result.retracted.map((entry) => entry.content));
-  });
+  ipcMain.handle(
+    "sessions:retractQueueEntry",
+    async (_event, sessionId: string, entryId: unknown) => {
+      if (typeof entryId !== "string") {
+        throw new TypeError("Invalid queue entry identity");
+      }
+      await deps.client.retractQueueEntry({
+        sessionId,
+        entryId,
+        retractId: newId(),
+      });
+    },
+  );
+  ipcMain.handle(
+    "sessions:promoteQueueEntry",
+    async (_event, sessionId: string, entryId: unknown) => {
+      if (typeof entryId !== "string") {
+        throw new TypeError("Invalid queue entry identity");
+      }
+      await deps.client.promoteQueueEntry({
+        sessionId,
+        entryId,
+        promoteId: newId(),
+      });
+    },
+  );
+  ipcMain.handle(
+    "sessions:reorderQueueEntries",
+    async (_event, sessionId: string, entryIds: unknown) => {
+      if (
+        !Array.isArray(entryIds) ||
+        entryIds.some((entryId) => typeof entryId !== "string")
+      ) {
+        throw new TypeError("Invalid queue entry order");
+      }
+      await deps.client.reorderQueueEntries({
+        sessionId,
+        reorderId: newId(),
+        entryIds,
+      });
+    },
+  );
   ipcMain.handle("sessions:stop", async (_event, sessionId: string) =>
     stopSession(sessionId),
   );
@@ -506,8 +542,9 @@ export function registerRuntimeHostSessionExecutionIpc(
 
   ipcMain.handle("sessions:compact", async (_event, sessionId: string) => {
     const turnId = newId();
-    await deps.client.compactContext({ sessionId, turnId });
+    const result = await deps.client.compactContext({ sessionId, turnId });
     deps.emitSessionsChanged("status-change", sessionId, { turnId });
+    return result;
   });
   ipcMain.handle("sessions:resumeLatest", async (_event, sessionId: string) => {
     const plan = await deps.client.queryTurnResume({ sessionId });

@@ -40,6 +40,7 @@ export interface DetachedCandidateInput {
 
 export interface DetachedCandidateAttempt {
   pid: number;
+  startupAttemptId?: string;
   exited?: Promise<CandidateProcessExit>;
   startupFailure?: Promise<CandidateStartupFailureReport | undefined>;
 }
@@ -69,7 +70,7 @@ export function launchDetachedRuntimeHostCandidate(
   const startupFailure = readStartupFailure(child, exited, startupAttemptId);
   const spawned = spawnedPid(child).then(({ pid }) => {
     child.unref();
-    return { pid, exited, startupFailure };
+    return { pid, startupAttemptId, exited, startupFailure };
   });
   return { spawned };
 }
@@ -84,6 +85,7 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
   return {
     spawned: spawnedPid(child).then(({ pid }) => ({
       pid,
+      startupAttemptId,
       exited,
       startupFailure,
       releaseToEnvironment(): void {

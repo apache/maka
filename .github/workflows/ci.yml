@@ -96,10 +96,6 @@ jobs:
           node-version: '24'
           cache: npm
 
-      - name: Verify ASF source release mechanics
-        if: steps.plan.outputs.asf_source == 'true'
-        run: npm run check:asf-source
-
       - name: Select the release npm toolchain
         if: steps.plan.outputs.cli_package == 'true'
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
@@ -129,8 +125,15 @@ jobs:
           fi
 
       - name: Install dependencies
-        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
+
+      # The header audit above remains install-free. The complete source gate
+      # also exercises generation and therefore runs after its pinned formatter
+      # dependency is installed, matching the source-candidate workflow.
+      - name: Verify ASF source release mechanics
+        if: steps.plan.outputs.asf_source == 'true'
+        run: npm run check:asf-source
 
       - name: Lint
         if: steps.plan.outputs.code == 'true'

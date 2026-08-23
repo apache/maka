@@ -113,7 +113,7 @@ export interface AppShellCommandListOptions {
     input: DailyReviewMarkdownActionInput,
   ) => Promise<void>;
   setNavSelection: (selection: NavSelection) => void;
-  setPermissionMode: (mode: PermissionMode) => Promise<void>;
+  setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
   setThemePref: (themePref: ThemePreference) => void;
   toastApi: ToastApi;
 }
@@ -334,7 +334,9 @@ export function buildAppShellCommandList(
       }
     },
     onSetPermissionMode: options.canSetPermissionMode
-      ? (mode) => optionsRef.current.setPermissionMode(mode)
+      ? async (mode) => {
+          await optionsRef.current.setPermissionMode(mode);
+        }
       : undefined,
     activePermissionMode: options.activePermissionMode,
     onCopyTodayDailyReview: async () => {

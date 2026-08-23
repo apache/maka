@@ -161,17 +161,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## GitHub Copilot brand mark
-
-- Repository: https://github.com/primer/octicons
-- Covered vendored file:
-  - `apps/desktop/src/renderer/assets/provider-brands/github-copilot.svg`
-    - Immutable source: https://github.com/primer/octicons/blob/2ed936e7759451e80ae38b8147cbe2c89de6cc7a/icons/copilot-24.svg
-    - Upstream commit: `2ed936e7759451e80ae38b8147cbe2c89de6cc7a`
-    - Upstream path: `icons/copilot-24.svg`
-    - SHA-256: `eeafb3c2f333e04ccf7d031ae215f7adafaed4c6352556b0bf79496e048bcdd7`
-- Trademark boundary: GitHub and GitHub Copilot names and logos are GitHub trademarks. The Octicons repository states that its MIT license does not grant rights to GitHub logos. Maka vendors this upstream monochrome mark unmodified only to identify the GitHub Copilot service; this notice does not claim an MIT trademark or logo grant.
-
 ## Simple Icons brand marks
 
 - Repository: https://github.com/simple-icons/simple-icons

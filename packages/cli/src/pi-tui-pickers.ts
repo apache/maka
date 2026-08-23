@@ -277,16 +277,19 @@ export interface MakaSlashCommandMetadata {
  * /exit with arguments, which isExitPrompt does not match — can still reach
  * the disposition, where it falls through to 'refuse'.
  */
-export type SlashCommandMidTurnDisposition = 'local' | 'refuse' | 'intercepted';
+export type SlashCommandMidTurnDisposition = 'local' | 'switch' | 'refuse' | 'intercepted';
 
 export interface MakaSlashCommand extends MakaSlashCommandMetadata {
   /**
    * Mid-turn disposition. 'local' requires the handler to be independent of
    * the running turn — it must not enter runControl, whose busy gate would
-   * silently no-op. 'refuse' is the safe default for anything that mutates
-   * session state or opens a picker the turn would race. Declared on every
-   * handler so a newly added command must state its answer instead of
-   * inheriting one from the routing call site.
+   * silently no-op. 'switch' is allowed mid-turn because it detaches this
+   * client's VIEW from the running Turn without touching it (Runtime Host
+   * mode keeps the Turn alive; #3380) — its handler must route through the
+   * detach path, not runControl, while a turn runs. 'refuse' is the safe
+   * default for anything that mutates session state or opens a picker the
+   * turn would race. Declared on every handler so a newly added command must
+   * state its answer instead of inheriting one from the routing call site.
    */
   midTurn: SlashCommandMidTurnDisposition;
   run(parts: string[], rawTail: string | undefined, context: { idleMs: number }): void;
@@ -598,18 +601,22 @@ function modelChoicePickerItems(
     const tags = [choice.connectionName || choice.connectionSlug];
     if (isCurrent) tags.push('current');
     else if (choice.isDefaultConnection) tags.push('default');
-    return { value: String(index), label: choice.model, description: tags.join(' · ') };
+    return {
+      value: String(index),
+      label: choice.displayName?.trim() || choice.model,
+      description: tags.join(' · '),
+    };
   });
 }
 
 /**
  * Case-insensitive substring match for the `/model` search field, against every
  * criterion the issue names: model id, provider label/type, and connection
- * name/slug. `ModelChoice` carries no display name, so the model id is the only
- * model-side match target; a display-name enrichment would slot in here.
+ * name/slug. Model ids and display names are both model-side match targets.
  */
 function matchesModelChoice(choice: ModelChoice, query: string): boolean {
   if (choice.model.toLowerCase().includes(query)) return true;
+  if (choice.displayName?.toLowerCase().includes(query)) return true;
   if (choice.connectionName.toLowerCase().includes(query)) return true;
   if (choice.connectionSlug.toLowerCase().includes(query)) return true;
   if (choice.providerType.toLowerCase().includes(query)) return true;

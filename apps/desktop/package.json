@@ -2,7 +2,7 @@
   "name": "@maka/desktop",
   "productName": "Maka",
   "description": "A local-first agent workspace built for real work.",
-  "version": "0.1.11",
+  "version": "0.2.0",
   "author": "The Maka Authors",
   "license": "Apache-2.0",
   "private": true,

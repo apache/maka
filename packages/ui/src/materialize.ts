@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deriveTurnRecords, STEP_LIMIT_NOTICE_TEXT } from '@maka/core/session';
+import { deriveTurnRecords } from '@maka/core/session';
 import {
   isInFlightToolStatus,
   toolResultActivityStatus,
@@ -39,10 +39,12 @@ import type {
 import type { ToolActivityStatus } from '@maka/core/tool-result-status';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
 import type { StoredMessage, TurnRecord, TurnStatus, UserMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   LiveSteeringProjection,
   LiveTurnProjection,
 } from "./live-turn-projection.js";
+import { getConversationCopy } from "./conversation-copy.js";
 
 export { isCancelledToolResultContent, isInFlightToolStatus, toolResultActivityStatus } from '@maka/core/tool-result-status';
 
@@ -139,18 +141,17 @@ const VISIBLE_SYSTEM_NOTES = new Set<string>([
   "step_limit",
 ]);
 
-const SYSTEM_NOTE_LABELS: Record<string, string> = {
-  context_compacted:
-    "Context compacted to keep this session within the model window.",
-  context_compaction_failed_open:
-    "Context summary failed; the session continued without a new summary.",
-  step_limit: STEP_LIMIT_NOTICE_TEXT,
-  mode_change: "Permission mode changed",
-  turn_aborted: "Turn aborted",
-};
+function systemNoteLabel(kind: string, locale: UiLocale): string {
+  const copy = getConversationCopy(locale).messages.systemNotes;
+  if (kind === "context_compacted") return copy.contextCompacted;
+  if (kind === "context_compaction_failed_open") return copy.contextCompactionFailedOpen;
+  if (kind === "step_limit") return copy.stepLimit;
+  return kind;
+}
 
 export function materializeChat(
   messages: readonly StoredMessage[],
+  locale: UiLocale = "en",
 ): ChatItem[] {
   const items: ChatItem[] = [];
   for (const message of messages) {
@@ -186,7 +187,7 @@ export function materializeChat(
       items.push({
         id: message.id,
         role: "system",
-        text: SYSTEM_NOTE_LABELS[message.kind] ?? message.kind,
+        text: systemNoteLabel(message.kind, locale),
         ts: message.ts,
       });
     }
@@ -628,6 +629,7 @@ export function applyShellRunOverlayEntry(
  */
 export function materializeTurns(
   messages: readonly StoredMessage[],
+  locale: UiLocale = "en",
 ): TurnViewModel[] {
   const turnRecords = deriveTurnRecords(messages);
   const turnRecordById = new Map(
@@ -735,7 +737,7 @@ export function materializeTurns(
       turn.notes.push({
         id: message.id,
         role: "system",
-        text: SYSTEM_NOTE_LABELS[message.kind] ?? message.kind,
+        text: systemNoteLabel(message.kind, locale),
         ts: message.ts,
       });
     } else if (message.type === "token_usage") {

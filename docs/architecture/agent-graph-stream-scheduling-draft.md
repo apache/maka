@@ -7,7 +7,7 @@ counterpart: ./agent-graph-stream-scheduling-draft.zh-CN.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-07-28
+last_verified: 2026-08-23
 owners:
   - maka-backend
 ---
@@ -36,7 +36,7 @@ owners:
 
 This chapter builds directly on Chapter 1. The Runtime Event Log remains the semantic authority for what an Agent did. Graph adds identities and projections that answer different questions: which child Session is one operator, which committed records flow to another operator, which work the supervisor requested, which intent was admitted exactly once, and when the root Agent should be woken to inspect a stable checkpoint.
 
-It is written for engineers changing Graph contracts, child Sessions, scheduling, recovery, or Desktop integration. It describes the implementation verified on 2026-07-28. The chapter does not describe arbitrary cyclic workflows, distributed execution, graph-wide resource optimization, or a visual workflow authoring system.
+It is written for engineers changing Graph contracts, child Sessions, scheduling, recovery, or Desktop integration. It describes the implementation verified on 2026-08-23. The chapter does not describe arbitrary cyclic workflows, distributed execution, graph-wide resource optimization, or a visual workflow authoring system.
 
 ## Start with work that changes shape while it runs
 
@@ -561,15 +561,14 @@ The current Graph should not be mistaken for a general distributed stream proces
 
 These are deliberate boundaries. They keep Graph useful without moving workflow semantics, resource management, or product presentation into the Agent runtime.
 
-## Graph, Swarm, Agent Team, and Rive
+## Graph, Swarm, agent_spawn, and Rive
 
 The four mechanisms solve different coordination problems.
 
 | Need | Mechanism | Ownership model |
 |---|---|---|
-| Finite independent fan-out followed by one synthesis | Agent Swarm | One foreground tool call owns a bounded worker pool |
+| Finite independent fan-out followed by one synthesis | Swarm mode | The main Agent schedules independent items into one Graph and supervises them asynchronously |
 | One linked specialist execution or follow-up | `agent_spawn` / child Session | Parent Agent owns explicit delegation |
-| Roles, mailbox collaboration, and Task Ledger coordination | Agent Team | Team members own durable collaboration state |
 | Dynamic dependent Agent work supervised from a root conversation | Agent Graph | SQLite schedule/control plane over child Sessions and Runtime records |
 | Explicit workflow steps, arbitrary resume policy, or distributed workflow authority | Rive | Workflow runtime owns workflow state |
 
@@ -594,7 +593,7 @@ Read the implementation in this order:
 13. `packages/runtime/src/agent-graph-timeline.ts`: reference-only control/data-plane reconstruction, stable order, coverage, and pagination.
 14. `packages/runtime/src/agent-graph-supervisor-wake.ts`: durable return path to the root Agent.
 15. `packages/storage/src/sqlite-session-metadata-schema.ts` and `sqlite-session-metadata-store.ts`: Graph control-plane transactions and timeline metadata snapshot.
-16. `apps/desktop/src/main/main.ts`, `agent-graph-ipc-main.ts`, and `apps/desktop/src/renderer/agent-graph-panel.tsx`: product composition and bounded UI.
+16. `apps/desktop/src/main/main.ts`, `runtime-host-session-domains-ipc-main.ts`, and `apps/desktop/src/renderer/agent-graph-panel.tsx`: product composition and bounded UI. Graph change events travel through the generic session-domains bridge as `agentGraphChanged`; there is no Graph-specific main-process IPC module.
 
 The most relevant contract tests are colocated under:
 
@@ -604,7 +603,6 @@ The most relevant contract tests are colocated under:
 - `packages/runtime/src/__tests__/session-manager.test.ts`
 - `packages/storage/src/__tests__/sqlite-session-metadata-store.test.ts`
 - `packages/storage/src/__tests__/agent-graph-timeline-metadata.test.ts`
-- `apps/desktop/src/main/__tests__/graph-mode-host-contract.test.ts`
 
 ## Summary
 

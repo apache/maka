@@ -58,6 +58,51 @@ test('a fresh Host starts with one anonymous runnable target', async () => {
   });
 });
 
+test('reconciles retired OpenCode Free models without removing user models', async () => {
+  await withFixture(async ({ root, stores }) => {
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'opencode-free',
+        name: 'OpenCode Free',
+        providerType: 'opencode-free',
+        enabled: true,
+        enabledModelIds: ['nemotron-3-ultra-free', 'deepseek-v4-flash-free', 'user-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    const connection = created.snapshot.connections[0]!;
+    const updated = await stores.connectionCatalog.update({
+      expected: { connectionId: connection.connectionId, revision: connection.revision },
+      changes: {
+        name: connection.name,
+        enabled: true,
+        enabledModelIds: connection.enabledModelIds,
+      },
+    });
+    assert.equal(updated.kind, 'committed');
+    const updatedConnection = updated.snapshot.connections[0]!;
+    const defaulted = await stores.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: updated.snapshot.revision,
+      target: { connectionId: updatedConnection.connectionId, modelId: 'deepseek-v4-flash-free' },
+    });
+    assert.equal(defaulted.kind, 'committed');
+
+    await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });
+
+    const migrated = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ slug }) => slug === 'opencode-free',
+    );
+    assert.deepEqual(migrated?.enabledModelIds, ['nemotron-3-ultra-free', 'user-model']);
+    assert.ok(migrated?.models.some(({ id }) => id === 'big-pickle'));
+    assert.ok(!migrated?.models.some(({ id }) => id === 'deepseek-v4-flash-free'));
+    assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, {
+      connectionId: migrated?.connectionId,
+      modelId: 'nemotron-3-ultra-free',
+    });
+  });
+});
+
 test('bootstrap resumes after interruption and prefers the supported environment key', async () => {
   await withFixture(async ({ root, stores }) => {
     const created = await stores.connectionCatalog.create({
@@ -280,7 +325,7 @@ test('a user-modified opencode-free inventory is never migrated', async () => {
   // the (documented, lossy) proof a row is still system-owned.
   for (const enabledModelIds of [
     ['nemotron-3-ultra-free', 'big-pickle'],
-    ['deepseek-v4-flash-free', 'nemotron-3-ultra-free', 'mimo-v2.5-free'],
+    ['mimo-v2.5-free', 'nemotron-3-ultra-free', 'user-model'],
   ]) {
     await withFixture(async ({ root, stores }) => {
       const created = await stores.connectionCatalog.create({

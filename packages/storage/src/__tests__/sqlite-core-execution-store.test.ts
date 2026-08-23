@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core/agent-run';
 import {
@@ -40,6 +40,14 @@ import {
 import { createSqliteMessageReceiptStore } from '../message-receipt-store.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import { createSqliteShellRunStore } from '../shell-run-store.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 describe('SQLite core execution stores', () => {
   test('persists AgentRun header and events', async () => {
@@ -343,7 +351,9 @@ describe('SQLite core execution stores', () => {
 
   test('persists interaction request and outcome', async () => {
     await withRoot(async (root) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const capability = trackControlDirectory(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;

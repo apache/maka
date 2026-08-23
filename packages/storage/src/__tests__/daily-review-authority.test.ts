@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import type { DailyReviewArchive } from '@maka/core/daily-review';
 import {
   authenticateInteractiveDailyReviewAuthorityWriter,
@@ -32,6 +32,14 @@ import {
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
 } from '../root-authority.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 test('Daily Review authority serializes config revisions and preserves archives', async () => {
   await withInteractiveRoot(async ({ capability }) => {
@@ -179,10 +187,9 @@ async function withInteractiveRoot(
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-daily-review-authority-'));
   try {
-    const capability = await resolveStorageRoot({
-      path: join(base, 'interactive'),
-      kind: 'interactive',
-    });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: join(base, 'interactive'), kind: 'interactive' }),
+    );
     await run({ capability });
   } finally {
     await rm(base, { recursive: true, force: true });

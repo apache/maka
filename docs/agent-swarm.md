@@ -17,235 +17,179 @@
   under the License.
 -->
 
+
 # Agent Swarm
 
-Agent Swarm is Maka's bounded foreground fan-out for independent child work. The
-main Agent plans the batch, calls `agent_swarm` once, waits for every settled
-item, and remains responsible for semantic synthesis.
+Agent Swarm is an orchestration mode, not a tool. When a Session runs in swarm
+mode, the main Agent is instructed to prefer the durable asynchronous Agent
+Graph whenever a request splits into independent work, and to supervise that
+graph asynchronously instead of blocking on it.
 
-It is intentionally a structured-concurrency convenience over existing child
-`AgentRun`s, not a workflow runtime:
+There is no `agent_swarm` tool. A synchronous fan-out tool of that name existed
+until #2384, which removed it in favour of asynchronous supervision over the
+graph. `agent_swarm` survives only as a tool-result kind on historical records.
 
-- every started item is an ordinary child `AgentRun`;
-- the parent tool result is an ordered projection over those child facts;
-- there is no `SwarmRun`, second event ledger, checkpoint, or background owner;
-- child toolsets exclude `agent_swarm`, so batches cannot nest.
+Swarm adds no execution machinery of its own. There is one scheduler, one
+ledger, and one control plane, and they are the graph's:
+
+- items are ordinary child Sessions and their `AgentRun`s, scheduled as graph work;
+- durable schedule, admission, and wake state are stored in the SQLite graph
+  control plane;
+- `agent_swarm_status` is a compact projection over the same graph snapshot —
+  its `swarmId` is the `graphId`;
+- there is no `SwarmRun`, second event ledger, or background owner.
+
+What the mode does add is supervision policy over that machinery: which tools
+are guaranteed, what the Agent is told to do with them, why the mode was
+authorized, and when a checkpoint is worth waking the Agent for. Those four are
+described below.
+
+For the mechanism underneath, see
+[Graph Is a Schedule, Not a Second Runtime](./architecture/agent-graph-stream-scheduling-draft.md).
+
+## Enabling the mode
+
+`/swarm` is parsed by `parseSwarmCommand` in `packages/core/src/swarm-command.ts`:
+
+| Input | Effect |
+| --- | --- |
+| `/swarm on` | Set the Session orchestration mode to `swarm` |
+| `/swarm off` | Set the Session orchestration mode back to `default` |
+| `/swarm` or `/swarm status` | Report the current mode |
+| `/swarm <task>` | Run one task in swarm mode without changing the Session mode |
+
+`ORCHESTRATION_MODES` is `['default', 'swarm', 'graph']`.
+
+## What the mode changes
+
+Swarm mode is mostly instruction, but not only instruction. Four things follow
+from it:
+
+1. **System prompt.** `AiSdkBackend` appends `renderSwarmModePrompt()`.
+2. **Guaranteed tools.** The mode forces `agent_list`, `update_agent_graph`,
+   `yield_agent_graph`, `agent_swarm_status` and `agent_output` into the turn's
+   tool catalog. Graph mode requires the same set plus `view_agent_graph`; swarm
+   deliberately omits it, matching the instruction to read compact status rather
+   than the whole graph.
+3. **Durable authorization.** `agentSwarmAuthorization` is recorded on the
+   `AgentRun` header as `session_mode` (the Session is in swarm mode),
+   `turn_override` (one `/swarm <task>` turn), or `none`. It records why swarm
+   was authorized, not merely that it was.
+4. **Wake policy.** Wake *state* is stored by the graph control plane like any
+   other graph wake, but the *trigger* is mode-specific:
+   `isSwarmCheckpointTransition` wakes the supervisor when the swarm first
+   reaches `settled`, or when the set of `blocked` / `failed` / `aborted` /
+   `cancelled` items changes.
+
+## What the prompt instructs
+
+`packages/runtime/src/swarm-mode.ts` is the entire feature: one function
+returning an `<orchestration_mode>` block. It asks the main Agent to:
+
+1. decide first whether parallel delegation would materially improve speed,
+   quality, coverage, or independent verification, and to continue directly when
+   the request is small, conversational, latency-sensitive, or indivisible;
+2. keep exploration light, and make every item bounded and self-contained with an
+   explicit scope, expected output, and constraints;
+3. avoid overlapping writes, preferring read-only investigation unless isolated
+   workspaces are available;
+4. call `agent_list`, then schedule all independent items together with
+   `update_agent_graph` using `target_kind=new_preset` and a user-approved
+   `subagent_id`;
+5. call `yield_agent_graph`, and **not** poll, sleep, watch child logs, or wait
+   synchronously — the host wakes the Agent only when work needs attention or the
+   whole swarm has settled;
+6. on wake, read `agent_swarm_status` for compact statuses, and reach for
+   `agent_output view=result` only for completed final results or narrow
+   diagnosis of a failed item;
+7. replace failed work with `update_agent_graph` using `replaces=<failed work id>`
+   and `replacement_mode=replace`, so a failed item stops holding the swarm in
+   `needs_attention`;
+8. finish the graph once useful work has settled, then deduplicate, verify, and
+   semantically synthesize.
+
+The prompt also states the limit explicitly: do not manufacture parallelism or
+create duplicate busywork merely because swarm mode is enabled.
 
 ## Choosing the execution model
 
 | Need | Prefer | Why |
 | --- | --- | --- |
 | One small task or tightly coupled reasoning | Main Agent directly | Delegation overhead would exceed the useful parallelism. |
-| One specialist result, or the next task depends on the previous result | `agent_spawn` sequentially | The dependency is explicit and each result can refine the next prompt. |
-| Several finite, independent items with one final synthesis | `agent_swarm` | Bounded worker-pool execution, stable ordered results, and isolated failures. |
-| Durable ownership, task claiming, or worker communication | Agent Team | Members have roles, mailbox collaboration, and Task Ledger coordination. |
-| Dynamic dependent Agent work supervised from the root conversation | Agent Graph | Child Sessions are operators, committed RuntimeEvents are records, and SQLite owns durable schedule and admission state. |
+| One specialist result, or the next task depends on the previous one | `agent_spawn` | The dependency is explicit and each result can refine the next prompt. |
+| Several independent items with one final synthesis | Swarm mode | The Agent schedules them as graph work and supervises asynchronously. |
+| Dynamic dependent Agent work supervised from the root conversation | Agent Graph directly | Same machinery; the graph tools are used without the swarm prompt. |
 | Explicit workflow steps, arbitrary workflow resume, or distributed execution | Rive | Workflow state and recovery need a dedicated workflow authority. |
 
-The main Agent should call Swarm deliberately. The runtime does not infer that a
-request is parallelizable and does not automatically fan work out.
+Swarm mode and graph mode differ only in instruction, not in mechanism. Swarm
+mode biases the Agent toward fan-out for every new request; graph mode leaves
+the decision to the Agent.
 
-For the deeper boundary between foreground fan-out and durable dynamic
-scheduling, see [Graph Is a Schedule, Not a Second Runtime](./architecture/agent-graph-stream-scheduling-draft.md).
+## Status projection
 
-## Contract
-
-One call accepts `1..32` items. Local concurrency defaults to `3` and is capped
-at `32`. The entire input is validated before any child starts. Results retain
-input order even when children finish out of order.
-
-New work has two mutually exclusive forms. Callers may provide the explicit
-structured items shown below, or use a homogeneous template batch with one
-shared selector, a `prompt_template` containing `{{item}}`, and string
-`items`. Template batches replace every placeholder occurrence, reject
-duplicate expanded tasks, generate stable ordered IDs (`item-1`, `item-2`,
-...), and then enter the same preflight and execution path as explicit items.
-They are input shorthand, not a separate scheduler.
-
-### Configurable subagent model routes
-
-Settings → Models can define multiple user-approved subagent presets. Each
-preset has a stable `subagent_id`, a capability `profile`, and its own model
-connection/model pair. The main Agent discovers these routes with `agent_list`
-and selects one by `subagent_id`; it cannot supply an arbitrary provider or
-model in a tool call.
-
-The runtime resolves the id against the host-owned catalog and freezes the
-resolved connection, model, thinking level, and profile into the new child
-Session. Editing or deleting a preset therefore affects future spawns only;
-resume and retry continue to use the child Session's durable target. The
-legacy `profile` selector remains supported and inherits the parent target.
-
-For a configured route, replace `profile` with `subagent_id` in either an
-explicit item or a template batch:
+`agent_swarm_status` takes no parameters and returns a bounded snapshot
+(`packages/runtime/src/agent-swarm-status-tool.ts`):
 
 ```ts
-agent_swarm({
-  prompt_template: "Review {{item}} and return concrete evidence.",
-  subagent_id: "fast-reader",
-  items: ["runtime", "desktop", "tests"],
-  max_concurrency: 3
-})
+interface AgentSwarmStatusResult {
+  kind: 'agent_swarm_status';
+  swarmId: string;                                   // the graphId
+  status: 'running' | 'needs_attention' | 'settled';
+  counts: Record<AgentSwarmItemStatus, number>;
+  items: AgentSwarmStatusItem[];
+}
+
+interface AgentSwarmStatusItem {
+  workId: string;
+  status: AgentSwarmItemStatus;
+  operatorId?: string;
+  childSessionId?: string;
+  runId?: string;
+  failurePhase?: 'schedule' | 'topology' | 'stop' | 'render' | 'dispatch';
+  failureReason?: string;
+}
 ```
 
-Either form may also include `resume_run_ids`, a map from an existing child
-`runId` to the new prompt that should continue it. A call may contain only
-resumes. Resume entries count toward the same 32-item bound, are presented
-before new items in map insertion order, and use the same local and shared
-concurrency limits as newly spawned children.
+Item status is one of `queued`, `running`, `blocked`, `completed`, `failed`,
+`aborted`, `cancelled`, `stopped`, `superseded`. The terminal set is everything
+except `queued`, `running`, and `blocked`.
 
-## Resuming child runs
+The three swarm-level values are derived, not stored:
 
-Resume creates a fresh child `AgentRun` whose durable lineage names the source
-in `resumedFromRunId`. It replays the complete RuntimeEvent history of that
-source and its resume ancestors, then sends the new prompt. It does not mutate
-or restart the original run, and it does not approximate continuation by
-concatenating a summary into a fresh prompt.
+- `running` — work remains and nothing needs the supervisor;
+- `needs_attention` — at least one item is `blocked`, `failed`, `aborted`, or `cancelled`;
+- `settled` — every item reached a terminal status.
 
-The runtime preflights every resume entry before any resumed or new child
-starts. Resume fails closed unless all of these invariants hold:
+`settled` is a statement about the current items, not about the user's task.
+Closing the graph is still the supervisor's explicit `finish` decision.
 
-- the source and every resume ancestor are built-in child runs in this session;
-- every run has the same Agent profile and current backend, connection, model,
-  working directory, and child permission mode;
-- every RuntimeEvent ledger has a valid terminal fact and a user-anchored,
-  model-replayable history with no indeterminate tool boundary;
-- the immediate source does not already have a resume successor.
+The result carries identity, not payload: `childSessionId` and `runId` are
+references into the authoritative Runtime read path. Child output is read with
+`agent_output` only when it is actually needed, which is what keeps a large
+fan-out from consuming the main Agent's context.
 
-Completed, failed, and cancelled child runs may be continued. Each source has
-at most one direct successor, while that successor may itself be resumed to
-form an auditable linear chain. The API deliberately uses `resume_run_ids`
-rather than `resume_agent_ids`: built-in `agentId`s identify reusable profiles
-such as `local-read`, while `runId`s identify the unique execution and history
-being continued.
+## Example
 
-```ts
-agent_swarm({
-  resume_run_ids: {
-    "child-run-123": "Re-check the failing assertion and propose the smallest fix.",
-    "child-run-456": "Continue from your findings and inspect the UI projection."
-  },
-  items: [
-    {
-      item_id: "fresh-review",
-      profile: "local_read",
-      task: "Independently review the updated cancellation invariant."
-    }
-  ],
-  max_concurrency: 3
-})
+```text
+User:    /swarm on
+User:    Review the three packages and report concrete evidence.
+
+Agent:   agent_list
+         update_agent_graph  target_kind=new_preset  subagent_id=reviewer  (x3)
+         yield_agent_graph
+
+         ... host wakes the Agent ...
+
+Agent:   agent_swarm_status
+         -> status=needs_attention, 2 completed, 1 failed
+         agent_output view=result   (failed item only)
+         update_agent_graph  replaces=<failed work id>  replacement_mode=replace
+         yield_agent_graph
+
+         ... host wakes the Agent ...
+
+Agent:   agent_swarm_status
+         -> status=settled, 3 completed
+         agent_output view=result   (each completed item)
+         finish, deduplicate, verify, synthesize
 ```
-
-Three separate concurrency boundaries remain observable:
-
-1. **Subagent tool admission** limits how many subagent tool calls the model may
-   open in one turn.
-2. **Local Swarm concurrency** limits workers claimed inside one batch.
-3. **Shared child-run permits** cap real child executions across
-   `agent_spawn` and `agent_swarm`.
-
-Partial child failure does not erase successful siblings. Parent cancellation
-signals active children, prevents locally queued items from starting, joins
-active work, and returns explicit cancelled rows for both started and
-never-started items.
-
-## Provider backpressure
-
-Swarm uses Kimi-compatible, batch-local rate-limit handling after the backend's
-ordinary request retry policy is exhausted:
-
-- launch up to five initial items, then admit one additional pending item every
-  700 ms;
-- when a child settles with `failureClass: RateLimit`, suspend that item and
-  requeue it at the front with a 3 s, 6 s, 12 s, ... retry delay;
-- reduce the batch's effective capacity by one (never below one), at most once
-  every 2 s;
-- after three minutes without another rate limit, recover capacity one slot at
-  a time;
-- if the rate-limited item is the only unfinished item, fail it instead of
-  leaving the foreground tool suspended indefinitely.
-
-A retry is a fresh child `AgentRun` linked through `retriedFromRunId`. It
-replays the safely materialized RuntimeEvent history and sends no second user
-prompt. This keeps each attempt inspectable while preventing duplicated task
-instructions. Artifacts from all attempts are retained in the final ordered
-item result, and parent cancellation still covers queued retries and active
-retry runs through the shared child-run permit pool.
-
-This mechanism is deliberately reactive and local to one Swarm call. It is not
-a provider-global RPM/TPM admission controller and does not coordinate capacity
-between independent sessions or processes.
-
-## Presentation and evidence
-
-Desktop and CLI project the same settled `agent_swarm` result:
-
-- aggregate status and completed/failed/cancelled counts;
-- bounded per-item summaries;
-- child status, profile, duration, failure class, and artifact count;
-- real child `runId` and `turnId` references for inspection.
-
-The presentation never copies child prompts, tool arguments, or raw child tool
-output. Desktop summaries are bounded per row, the card is scroll-bounded, and
-CLI output has per-item and aggregate character caps.
-
-Tool telemetry stores only a bounded result summary: result kind/status, item
-counts, started count, and artifact count. Run trace events reuse the existing
-parent `AgentRun` diagnostic stream and identify these boundaries with stable
-data fields:
-
-| Evidence | Trace data |
-| --- | --- |
-| Tool-call admission rejection | `boundary: subagent_tool_admission` |
-| Local item queued or started | `swarmStage: item_queued` / `item_started`, `boundary: local_swarm_concurrency` |
-| Provider-limited item suspended | `swarmStage: item_suspended`, `failureClass: RateLimit`, plus attempt and retry delay |
-| Adaptive batch capacity | `swarmStage: capacity_changed`, direction, and effective capacity |
-| Waiting for shared capacity | `boundary: shared_child_run_permit`, `stage: waiting` |
-| Real child execution | `boundary: child_run_execution`, `stage: started` / `completed` |
-| Settled batch | `swarmStage: batch_completed` plus the aggregate projection |
-
-These are diagnostic projections only. Child `AgentRun`s and their artifact
-references remain the lifecycle and evidence authority.
-
-## Example: review fan-out and synthesis
-
-For a cross-cutting change, the main Agent can create independent review items:
-
-```ts
-agent_swarm({
-  items: [
-    {
-      item_id: "runtime",
-      profile: "local_read",
-      task: "Review concurrency and cancellation invariants."
-    },
-    {
-      item_id: "presentation",
-      profile: "local_read",
-      task: "Review bounded UI and CLI result presentation."
-    },
-    {
-      item_id: "tests",
-      profile: "local_read",
-      task: "Review regression coverage and identify missing cases."
-    }
-  ],
-  max_concurrency: 3
-})
-```
-
-The same read-only batch can use Kimi-compatible single-placeholder expansion:
-
-```ts
-agent_swarm({
-  prompt_template: "Review {{item}} and report concrete file or symbol evidence.",
-  profile: "local_read",
-  items: ["runtime concurrency and cancellation", "UI and CLI presentation", "regression coverage"],
-  max_concurrency: 3
-})
-```
-
-After the batch settles, the main Agent should compare the three summaries,
-inspect referenced child runs when evidence conflicts, deduplicate overlapping
-findings, rank them by severity, and produce one coherent review. Swarm owns
-finite execution and settlement; the main Agent owns judgment.

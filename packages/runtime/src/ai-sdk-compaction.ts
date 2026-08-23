@@ -21,7 +21,7 @@
  * AiSdkCompaction — history-compaction / context-budget orchestrator extracted
  * from AiSdkBackend (issue #1084, runtime/compaction lane, slice 2).
  *
- * Owns the compact/synthesis-cache load and write paths that AiSdkBackend's
+ * Owns the compaction planning and persistence paths that AiSdkBackend's
  * Runtime request projection drives. Behavior-neutral collaborator: methods move
  * verbatim, turn-scoped state (abortSignal, requestShapeHashBefore) is passed
  * per call, and replay/telemetry capabilities that stay on AiSdkBackend are
@@ -37,35 +37,25 @@ import type {
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
-import {
-  compactionDecisionDiagnosticPatch,
-  historyCompactBlockToCompactionBoundary,
-} from './compaction-boundary.js';
+import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
-  applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
   estimateRuntimeEventsTokens,
   mergeContextBudgetDiagnostic,
-  mergeContextBudgetDiagnosticPatches,
   type ActiveArchivedToolResultPlaceholder,
-  type ArchiveRetrievalMode,
   type ContextBudgetPolicy,
-  type HistoryCompactBlock,
-  type SynthesisSourceRef,
   type ToolResultArchiveRef,
 } from './context-budget.js';
 import {
   evaluateHistoryCompactCheckpointReplay,
   isHistoryCompactContentEvent,
-} from './history-compact.js';
-import { HistoryCompactSummarizerError } from './history-compact-error.js';
-import { findCheckpointSummaryDefect } from './history-compact-summary-validation.js';
+} from './history-compaction.js';
 import {
-  buildHistoryCompactCheckpoint,
   canContinueHistoryCompactCheckpointForModel,
   canReplayHistoryCompactCheckpointForModel,
   matchHistoryCompactCheckpointPrefix,
+  projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
   type HistoryCompactMemoryExtractionBoundary,
 } from './history-compact-checkpoint.js';
@@ -79,17 +69,10 @@ import type {
   RequestProjectionStage,
 } from './request-projection.js';
 import {
-  activeToolResultLineageIdentity,
   rewriteActiveToolResultsInMessages,
   type ActiveToolResultArchiveCandidate,
   type ActiveToolResultPruneDiagnosticPatch,
 } from './active-tool-result-prune.js';
-import type { ActiveCompactionHeadAnchor } from './active-compaction-kernel.js';
-import {
-  rewriteSemanticCompactInMessages,
-  type SemanticCompactBlock,
-  type SemanticCompactControllerState,
-} from './semantic-compact.js';
 import { collectStaleToolResultArchiveCandidates } from './tool-result-archive.js';
 
 import type { ContextBudgetExhaustedDetail, SessionEvent } from '@maka/core/events';
@@ -106,8 +89,8 @@ import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import {
   estimateNextRequestTokens,
   exceedsHighWater,
-  planMidTurnCapacityCompaction,
-} from './mid-turn-capacity-compact.js';
+  planHistoryCompaction,
+} from './history-compaction.js';
 import {
   resolveContextBudgetCapacity,
   type ContextBudgetCapacity,
@@ -231,767 +214,218 @@ export class AiSdkCompaction {
     this.historyCompactAbortController?.abort();
   }
 
-  public async loadHistoryCompactBlocks(
-    policy: ContextBudgetPolicy,
-  ): Promise<{ policy: ContextBudgetPolicy; diagnosticPatch?: Partial<ContextBudgetDiagnostic> }> {
-    const historyCompact = policy.historyCompact;
-    if (
-      historyCompact?.enabled !== true ||
-      (!this.input.loadHistoryCompactCheckpoint && !this.input.loadHistoryCompact)
-    ) {
-      return { policy };
-    }
-    if (historyCompact.checkpoint !== undefined || (historyCompact.blocks?.length ?? 0) > 0) {
-      return { policy };
-    }
-    let loadFailures = 0;
-    let checkpoint: HistoryCompactCheckpoint | undefined;
-    try {
-      checkpoint = await Promise.resolve(this.input.loadHistoryCompactCheckpoint?.());
-    } catch {
-      loadFailures += 1;
-    }
-    if (checkpoint) {
-      return {
-        policy: {
-          ...policy,
-          historyCompact: { ...historyCompact, checkpoint },
-        },
-        diagnosticPatch: {
-          historyCompactEnabled: true,
-          historyCompactMode: historyCompact.mode ?? 'deterministic',
-          historyCompactBlocksLoaded: 1,
-          historyCompactBlocksAvailable: 1,
-        },
-      };
-    }
-    if (!this.input.loadHistoryCompact) {
-      return loadFailures > 0
-        ? {
-            policy,
-            diagnosticPatch: {
-              historyCompactEnabled: true,
-              historyCompactMode: historyCompact.mode ?? 'deterministic',
-              historyCompactLoadFailures: loadFailures,
-            },
-          }
-        : { policy };
-    }
-    try {
-      // No maxBytes here: the block JSON carries per-event provenance and
-      // legitimately outgrows the token budget; the loader caps reads by
-      // storage size, and token limits are enforced on the loaded blocks.
-      const result = await Promise.resolve(
-        this.input.loadHistoryCompact({
-          sessionId: this.sessionId,
-          maxBlocks: historyCompact.maxBlocks,
-          maxEstimatedTokens: historyCompact.maxEstimatedTokens,
-        }),
-      );
-      const blocks = result.blocks ?? [];
-      return {
-        policy: {
-          ...policy,
-          historyCompact: {
-            ...historyCompact,
-            blocks,
-          },
-        },
-        diagnosticPatch: {
-          historyCompactEnabled: true,
-          historyCompactMode: historyCompact.mode ?? 'deterministic',
-          historyCompactBlocksLoaded: blocks.length,
-          historyCompactBlocksAvailable: blocks.length,
-          ...(loadFailures > 0 ? { historyCompactLoadFailures: loadFailures } : {}),
-          ...(result.skipped && result.skipped > 0
-            ? { historyCompactLoadSkipped: result.skipped }
-            : {}),
-          ...(result.skippedReasonCounts
-            ? { historyCompactLoadSkippedReasonCounts: result.skippedReasonCounts }
-            : {}),
-        },
-      };
-    } catch {
-      loadFailures += 1;
-      return {
-        policy,
-        diagnosticPatch: {
-          historyCompactEnabled: true,
-          historyCompactMode: historyCompact.mode ?? 'deterministic',
-          historyCompactLoadFailures: loadFailures,
-        },
-      };
-    }
-  }
-
-  public async loadSynthesisCacheBlocks(
-    policy: ContextBudgetPolicy,
-  ): Promise<{ policy: ContextBudgetPolicy; diagnosticPatch?: Partial<ContextBudgetDiagnostic> }> {
-    const synthesisCache = policy.synthesisCache;
-    if (synthesisCache?.enabled !== true || !this.input.loadSynthesisCache) {
-      return { policy };
-    }
-    if ((synthesisCache.blocks?.length ?? 0) > 0) {
-      return { policy };
-    }
-    try {
-      const result = await Promise.resolve(
-        this.input.loadSynthesisCache({
-          sessionId: this.sessionId,
-          maxBlocks: synthesisCache.maxBlocks,
-          maxEstimatedTokens: synthesisCache.maxEstimatedTokens,
-          maxBytes: (synthesisCache.maxEstimatedTokens ?? 2_048) * (policy.charsPerToken ?? 4),
-        }),
-      );
-      const blocks = result.blocks ?? [];
-      return {
-        policy: {
-          ...policy,
-          synthesisCache: {
-            ...synthesisCache,
-            blocks,
-          },
-        },
-        diagnosticPatch: {
-          synthesisCacheEnabled: true,
-          synthesisCacheMode: synthesisCache.mode ?? 'lookup',
-          synthesisCacheBlocksLoaded: blocks.length,
-          synthesisCacheBlocksAvailable: blocks.length,
-          ...(result.skipped && result.skipped > 0
-            ? { synthesisCacheLoadSkipped: result.skipped }
-            : {}),
-          ...(result.skippedReasonCounts
-            ? { synthesisCacheLoadSkippedReasonCounts: result.skippedReasonCounts }
-            : {}),
-          ...(result.evicted && result.evicted > 0
-            ? { synthesisCacheEvicted: result.evicted }
-            : {}),
-          ...(result.evictionReasonCounts
-            ? { synthesisCacheEvictionReasonCounts: result.evictionReasonCounts }
-            : {}),
-        },
-      };
-    } catch {
-      return {
-        policy,
-        diagnosticPatch: {
-          synthesisCacheEnabled: true,
-          synthesisCacheMode: synthesisCache.mode ?? 'lookup',
-          synthesisCacheLoadFailures: 1,
-        },
-      };
-    }
-  }
-
-  public async writeSynthesisCacheBlocks(input: {
-    requestShapeHashBefore?: string;
-    turnId: string;
-    query: string;
-    hydratedRuntimeEvents: RuntimeEvent[];
-    retrievedArchiveRefs: SynthesisSourceRef[];
-    archiveRetrievalMode: ArchiveRetrievalMode;
-    contextBudget: ContextBudgetPolicy;
-  }): Promise<Partial<ContextBudgetDiagnostic>> {
-    const synthesisCache = input.contextBudget.synthesisCache;
-    if (
-      synthesisCache?.enabled !== true ||
-      synthesisCache.mode !== 'read_write' ||
-      !this.input.writeSynthesisCache
-    ) {
-      return {};
-    }
-    const limits = {
-      maxBlocks: synthesisCache.maxBlocks ?? 1,
-      maxBlockEstimatedTokens: synthesisCache.maxBlockEstimatedTokens ?? 1_024,
-      maxEstimatedTokens: synthesisCache.maxEstimatedTokens ?? 2_048,
-      charsPerToken: input.contextBudget.charsPerToken ?? 4,
-    };
-    try {
-      const result = await Promise.resolve(
-        this.input.writeSynthesisCache({
-          sessionId: this.sessionId,
-          turnId: input.turnId,
-          source: {
-            createdFrom:
-              input.archiveRetrievalMode === 'history_search_gated'
-                ? 'gated_archive_retrieval'
-                : 'eager_archive_retrieval',
-            query: input.query,
-            hydratedRuntimeEvents: input.hydratedRuntimeEvents,
-            retrievedArchiveRefs: input.retrievedArchiveRefs,
-            archiveRetrievalMode: input.archiveRetrievalMode,
-          },
-          limits,
-          requestShapeHashBefore: input.requestShapeHashBefore,
-        }),
-      );
-      const blocks = result?.blocks ?? [];
-      const estimatedTokens = blocks.reduce(
-        (total, block) => total + (block.estimatedTokens ?? 0),
-        0,
-      );
-      return {
-        synthesisCacheEnabled: true,
-        synthesisCacheMode: 'read_write',
-        synthesisCacheWritesAttempted: 1,
-        synthesisCacheBlocksWritten: blocks.length,
-        ...(blocks.length > 0
-          ? {
-              synthesisCacheWrittenBlockIds: blocks.map((block) => block.blockId),
-              synthesisCacheWriteEstimatedTokens: estimatedTokens,
-              highWaterName: blocks[0]!.highWaterName,
-              highWaterSeq: blocks[0]!.highWaterSeq,
-              highWaterReason: 'synthesis_cache_write',
-            }
-          : {}),
-        ...(result?.skipped && result.skipped > 0
-          ? { synthesisCacheWriteSkipped: result.skipped }
-          : {}),
-        ...(result?.skippedReasonCounts
-          ? { synthesisCacheWriteSkippedReasonCounts: result.skippedReasonCounts }
-          : {}),
-      };
-    } catch {
-      return {
-        synthesisCacheEnabled: true,
-        synthesisCacheMode: 'read_write',
-        synthesisCacheWritesAttempted: 1,
-        synthesisCacheWriteFailures: 1,
-      };
-    }
-  }
-
-  public async writeHistoryCompactCheckpoint(input: {
-    requestShapeHashBefore?: string;
-    automaticMemoryBoundary?: HistoryCompactMemoryExtractionBoundary;
-    turnId: string;
-    /**
-     * The run this summarization is billed to. Always stated by the caller:
-     * mid-send the backend cannot resolve it, because one backend instance
-     * serves several concurrent runs (#1990). Required-but-nullable so a call
-     * site cannot drop attribution by omission.
-     */
-    runId: string | undefined;
-    contextBudget: ContextBudgetPolicy;
-    priorRuntimeContext: readonly RuntimeEvent[];
-    draftBlock: HistoryCompactBlock;
-    abortSignal?: AbortSignal;
-  }): Promise<{
-    diagnosticPatch: Partial<ContextBudgetDiagnostic>;
-    replacementCheckpoint?: HistoryCompactCheckpoint;
-    fallbackCheckpoint?: HistoryCompactCheckpoint;
-  }> {
-    const summarizer = this.input.summarizeHistoryCompact;
-    const recorder = this.input.recordHistoryCompactCheckpoint;
-    if (!summarizer || !recorder) return { diagnosticPatch: {} };
-    // One tracker for this summarization, built where every input lives.
-    const historyCompactTracker = this.createProviderRequestTracker({
-      turnId: input.turnId,
-      callKind: 'history_compact',
-      modelId: this.input.modelId,
-      runId: input.runId,
-      ...(this.input.historyCompactRoute
-        ? { historyCompactRoute: this.input.historyCompactRoute }
-        : {}),
-    });
-    const foldedIds = new Set(input.draftBlock.coverage.runtimeEventIds);
-    const foldedRuntimeEvents = input.priorRuntimeContext.filter((event) =>
-      foldedIds.has(event.id),
-    );
-    if (foldedRuntimeEvents.length === 0) {
-      return {
-        diagnosticPatch: {
-          historyCompactWritesAttempted: 0,
-          historyCompactWriteSkipped: 1,
-          historyCompactWriteSkippedReasonCounts: { source_missing: 1 },
-        },
-      };
-    }
-    const loadedCheckpoint = input.contextBudget.historyCompact?.checkpoint;
-    const checkpointMatch = loadedCheckpoint
-      ? matchHistoryCompactCheckpointPrefix(loadedCheckpoint, foldedRuntimeEvents)
-      : undefined;
-    const previousCheckpoint =
-      checkpointMatch &&
-      !checkpointMatch.reason &&
-      loadedCheckpoint &&
-      canContinueHistoryCompactCheckpointForModel(
-        loadedCheckpoint,
-        this.input.connection,
-        this.input.modelId,
-      )
-        ? loadedCheckpoint
-        : undefined;
-    const newlyFoldedRuntimeEvents = previousCheckpoint
-      ? checkpointMatch!.successorRuntimeEvents
-      : foldedRuntimeEvents;
-    const retainedRuntimeEvents = input.priorRuntimeContext.filter(
-      (event) => !foldedIds.has(event.id) && !event.id.startsWith('history-compact:'),
-    );
-    const previousCheckpointFitsCurrentLimits =
-      previousCheckpoint !== undefined &&
-      evaluateHistoryCompactCheckpointReplay(
-        previousCheckpoint,
-        retainedRuntimeEvents,
-        input.contextBudget?.charsPerToken,
-        input.contextBudget?.maxHistoryEstimatedTokens,
-        { sourceReplayEvents: [...foldedRuntimeEvents, ...retainedRuntimeEvents] },
-      ).fits;
-    if (
-      previousCheckpoint &&
-      newlyFoldedRuntimeEvents.length === 0 &&
-      previousCheckpointFitsCurrentLimits
-    ) {
-      return {
-        fallbackCheckpoint: previousCheckpoint,
-        diagnosticPatch: {
-          historyCompactEnabled: true,
-          historyCompactMode: 'read_write',
-          historyCompactWritesAttempted: 0,
-          historyCompactWriteSkipped: 1,
-          historyCompactWriteSkippedReasonCounts: { already_compacted: 1 },
-          historyCompactBlocksAvailable: 1,
-          historyCompactBlocksSelected: 1,
-          historyCompactBlockIds: [previousCheckpoint.checkpointId],
-          historyCompactedTurns: previousCheckpoint.coverage.turnCount,
-          historyCompactedEvents: previousCheckpoint.coverage.eventCount,
-          historyCompactedEstimatedTokensAfter: previousCheckpoint.estimatedTokens,
-          historyCompactCoverageHashes: [previousCheckpoint.coverage.sourceDigest],
-          ...compactionDecisionDiagnosticPatch({
-            stage: 'priorReplay',
-            sourceKind: 'runtimeEvents',
-            decision: 'unchanged',
-            boundaryKind: 'historyCompact',
-            boundaryIds: [previousCheckpoint.checkpointId],
-            reason: 'already_compacted',
-          }),
-        },
-      };
-    }
-    try {
-      const compacted = await Promise.resolve(
-        summarizer({
-          sessionId: this.sessionId,
-          turnId: input.turnId,
-          source: { foldedRuntimeEvents },
-          ...(previousCheckpoint ? { previousCheckpoint } : {}),
-          newlyFoldedRuntimeEvents,
-          ...(input.contextBudget.maxHistoryEstimatedTokens !== undefined
-            ? {
-                inputBudget: {
-                  maxEstimatedTokens: input.contextBudget.maxHistoryEstimatedTokens,
-                  charsPerToken: input.contextBudget.charsPerToken ?? 4,
-                },
-              }
-            : {}),
-          requestShapeHashBefore: input.requestShapeHashBefore,
-          abortSignal: input.abortSignal,
-          ...(historyCompactTracker ? { providerRequestTracker: historyCompactTracker } : {}),
-        }),
-      );
-      if (compacted === undefined || (typeof compacted === 'string' && !compacted.trim())) {
-        return {
-          ...(previousCheckpoint ? { fallbackCheckpoint: previousCheckpoint } : {}),
-          diagnosticPatch: {
-            historyCompactEnabled: true,
-            historyCompactMode: 'read_write',
-            historyCompactWritesAttempted: 1,
-            historyCompactWriteFailures: 1,
-            historyCompactWriteSkippedReasonCounts: { empty_summary: 1 },
-            ...compactionDecisionDiagnosticPatch({
-              stage: 'priorReplay',
-              sourceKind: 'runtimeEvents',
-              decision: 'failedOpen',
-              boundaryKind: 'historyCompact',
-              failOpenReason: 'empty_summary',
-            }),
-          },
-        };
-      }
-      // The write gate enforces the invariant regardless of which summarizer
-      // produced the text (#3029): a malformed summary must not replace
-      // folded history. The default summarizer already threw with the same
-      // reasons; any other producer is validated here, and the enclosing
-      // catch maps the reason into the fail-open diagnostics.
-      if (typeof compacted === 'string') {
-        const defect = findCheckpointSummaryDefect(compacted, {
-          coveredRuntimeEvents: foldedRuntimeEvents,
-          ...(input.contextBudget.charsPerToken !== undefined
-            ? { charsPerToken: input.contextBudget.charsPerToken }
-            : {}),
-        });
-        if (defect) throw new HistoryCompactSummarizerError(defect);
-      }
-      const checkpoint = buildHistoryCompactCheckpoint({
-        sessionId: this.sessionId,
-        coveredRuntimeEvents: foldedRuntimeEvents,
-        ...(typeof compacted === 'string' ? { summary: compacted } : { providerState: compacted }),
-        highWaterName: input.draftBlock.highWaterName,
-        highWaterSeq: input.draftBlock.highWaterSeq,
-        ...(previousCheckpoint ? { previousCheckpointId: previousCheckpoint.checkpointId } : {}),
-        ...(input.automaticMemoryBoundary
-          ? { memoryExtractionBoundary: input.automaticMemoryBoundary }
-          : {}),
-        charsPerToken: input.contextBudget.charsPerToken,
-        now: this.now(),
-      });
-      const replayFit = evaluateHistoryCompactCheckpointReplay(
-        checkpoint,
-        retainedRuntimeEvents,
-        input.contextBudget?.charsPerToken,
-        input.contextBudget?.maxHistoryEstimatedTokens,
-        { sourceReplayEvents: [...foldedRuntimeEvents, ...retainedRuntimeEvents] },
-      );
-      const rejectedReason = !replayFit.fits ? replayFit.reason : undefined;
-      if (rejectedReason) {
-        return {
-          ...(previousCheckpoint ? { fallbackCheckpoint: previousCheckpoint } : {}),
-          diagnosticPatch: {
-            historyCompactEnabled: true,
-            historyCompactMode: 'read_write',
-            historyCompactWritesAttempted: 1,
-            historyCompactWriteFailures: 1,
-            historyCompactWriteSkippedReasonCounts: { [rejectedReason]: 1 },
-            ...compactionDecisionDiagnosticPatch({
-              stage: 'priorReplay',
-              sourceKind: 'runtimeEvents',
-              decision: 'failedOpen',
-              boundaryKind: 'historyCompact',
-              failOpenReason: rejectedReason,
-            }),
-          },
-        };
-      }
-      await Promise.resolve(recorder(checkpoint, input.turnId));
-      return {
-        replacementCheckpoint: checkpoint,
-        diagnosticPatch: {
-          historyCompactEnabled: true,
-          historyCompactMode: 'read_write',
-          historyCompactWritesAttempted: 1,
-          historyCompactBlocksWritten: 1,
-          historyCompactWrittenBlockIds: [checkpoint.checkpointId],
-          historyCompactWriteEstimatedTokens: checkpoint.estimatedTokens,
-          historyCompactBlockIds: [checkpoint.checkpointId],
-          historyCompactedEstimatedTokensAfter: checkpoint.estimatedTokens,
-          highWaterName: checkpoint.highWaterName,
-          highWaterSeq: checkpoint.highWaterSeq,
-          highWaterReason: 'history_compact',
-        },
-      };
-    } catch (error) {
-      const failureReason =
-        error instanceof HistoryCompactSummarizerError ? error.reason : 'write_failed';
-      return {
-        ...(previousCheckpoint ? { fallbackCheckpoint: previousCheckpoint } : {}),
-        diagnosticPatch: {
-          historyCompactEnabled: true,
-          historyCompactMode: 'read_write',
-          historyCompactWritesAttempted: 1,
-          historyCompactWriteFailures: 1,
-          historyCompactWriteSkippedReasonCounts: { [failureReason]: 1 },
-          ...compactionDecisionDiagnosticPatch({
-            stage: 'priorReplay',
-            sourceKind: 'runtimeEvents',
-            decision: 'failedOpen',
-            boundaryKind: 'historyCompact',
-            failOpenReason: failureReason,
-          }),
-        },
-      };
-    }
-  }
-
-  public async writeHistoryCompactBlocks(input: {
-    requestShapeHashBefore?: string;
-    turnId: string;
-    contextBudget: ContextBudgetPolicy;
-    priorRuntimeContext: readonly RuntimeEvent[];
-    draftBlocks: HistoryCompactBlock[];
-    abortSignal?: AbortSignal;
-  }): Promise<{
-    diagnosticPatch: Partial<ContextBudgetDiagnostic>;
-    replacementBlocks: HistoryCompactBlock[];
-  }> {
-    const historyCompact = input.contextBudget.historyCompact;
-    if (
-      historyCompact?.enabled !== true ||
-      historyCompact.mode !== 'read_write' ||
-      !this.input.writeHistoryCompact
-    ) {
-      return { diagnosticPatch: {}, replacementBlocks: [] };
-    }
-    const limits = {
-      maxBlocks: historyCompact.maxBlocks ?? 1,
-      maxBlockEstimatedTokens:
-        historyCompact.maxBlockEstimatedTokens ?? historyCompact.maxSummaryEstimatedTokens ?? 1_024,
-      maxEstimatedTokens: historyCompact.maxEstimatedTokens ?? 2_048,
-      charsPerToken: input.contextBudget.charsPerToken ?? 4,
-    };
-    const replacementBlocks: HistoryCompactBlock[] = [];
-    let writesAttempted = 0;
-    let written = 0;
-    let skipped = 0;
-    const skippedReasonCounts: Record<string, number> = {};
-    try {
-      for (const draftBlock of input.draftBlocks.slice(0, limits.maxBlocks)) {
-        const foldedIds = new Set(draftBlock.coverage.runtimeEventIds);
-        const foldedRuntimeEvents = input.priorRuntimeContext.filter((event) =>
-          foldedIds.has(event.id),
-        );
-        if (foldedRuntimeEvents.length === 0) {
-          skipped += 1;
-          incrementRecord(skippedReasonCounts, 'source_missing');
-          continue;
-        }
-        writesAttempted += 1;
-        const result = await Promise.resolve(
-          this.input.writeHistoryCompact({
-            sessionId: this.sessionId,
-            turnId: input.turnId,
-            source: {
-              draftBlock,
-              foldedRuntimeEvents,
-            },
-            limits,
-            requestShapeHashBefore: input.requestShapeHashBefore,
-            abortSignal: input.abortSignal,
-          }),
-        );
-        const blocks = result?.blocks ?? [];
-        if (result?.skipped && result.skipped > 0) {
-          skipped += result.skipped;
-          mergeCountsInto(skippedReasonCounts, result.skippedReasonCounts);
-        }
-        for (const block of blocks) {
-          replacementBlocks.push(block);
-          written += 1;
-        }
-      }
-      const estimatedTokens = replacementBlocks.reduce(
-        (total, block) => total + (block.estimatedTokens ?? 0),
-        0,
-      );
-      const replacementRuntimeEventIds = new Set(
-        replacementBlocks.flatMap((block) => block.coverage.runtimeEventIds),
-      );
-      const estimatedTokensBefore = estimateRuntimeEventsTokens(
-        input.priorRuntimeContext.filter((event) => replacementRuntimeEventIds.has(event.id)),
-        limits.charsPerToken,
-      );
-      const replacementDecisionPatch =
-        replacementBlocks.length > 0
-          ? compactionDecisionDiagnosticPatch({
-              stage: 'priorReplay',
-              sourceKind: 'runtimeEvents',
-              decision: 'replaced',
-              boundaryKind: 'historyCompact',
-              boundaryIds: replacementBlocks.map(
-                (block) => historyCompactBlockToCompactionBoundary(block).boundaryId,
-              ),
-              coverage: {
-                turnIds: Array.from(
-                  new Set(replacementBlocks.flatMap((block) => block.coverage.turnIds)),
-                ),
-                runtimeEventIds: Array.from(replacementRuntimeEventIds),
-                contentKinds: Array.from(
-                  new Set(replacementBlocks.flatMap((block) => block.coverage.contentKinds)),
-                ),
-                bodySha256: replacementBlocks.flatMap((block) => block.coverage.bodySha256),
-              },
-              estimatedTokensBefore,
-              estimatedTokensAfter: estimatedTokens,
-            })
-          : compactionDecisionDiagnosticPatch({
-              stage: 'priorReplay',
-              sourceKind: 'runtimeEvents',
-              decision: 'failedOpen',
-              boundaryKind: 'historyCompact',
-              failOpenReason: Object.keys(skippedReasonCounts)[0] ?? 'write_empty',
-              ...(Object.keys(skippedReasonCounts).length > 0 ? { skippedReasonCounts } : {}),
-            });
-      return {
-        replacementBlocks,
-        diagnosticPatch: {
-          historyCompactEnabled: true,
-          historyCompactMode: 'read_write',
-          historyCompactWritesAttempted: writesAttempted,
-          historyCompactBlocksWritten: written,
-          ...(replacementBlocks.length > 0
-            ? {
-                historyCompactWrittenBlockIds: replacementBlocks.map((block) => block.blockId),
-                historyCompactWriteEstimatedTokens: estimatedTokens,
-                historyCompactBlockIds: replacementBlocks.map((block) => block.blockId),
-                historyCompactedEstimatedTokensAfter: estimatedTokens,
-                highWaterName: replacementBlocks[0]!.highWaterName,
-                highWaterSeq: replacementBlocks[0]!.highWaterSeq,
-                highWaterReason: 'history_compact',
-              }
-            : {}),
-          ...(skipped > 0 ? { historyCompactWriteSkipped: skipped } : {}),
-          ...(Object.keys(skippedReasonCounts).length > 0
-            ? { historyCompactWriteSkippedReasonCounts: skippedReasonCounts }
-            : {}),
-          ...replacementDecisionPatch,
-        },
-      };
-    } catch {
-      return {
-        replacementBlocks: [],
-        diagnosticPatch: {
-          historyCompactEnabled: true,
-          historyCompactMode: 'read_write',
-          historyCompactWritesAttempted: writesAttempted || 1,
-          historyCompactWriteFailures: 1,
-          ...compactionDecisionDiagnosticPatch({
-            stage: 'priorReplay',
-            sourceKind: 'runtimeEvents',
-            decision: 'failedOpen',
-            boundaryKind: 'historyCompact',
-            failOpenReason: 'write_failed',
-          }),
-        },
-      };
-    }
-  }
-
   public async compactHistory(
-    input: BackendCompactHistoryInput,
+    input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
     requestShapeHashBefore?: string,
-  ): Promise<BackendCompactHistoryResult> {
+    automaticMemoryBoundary?: HistoryCompactMemoryExtractionBoundary,
+  ): Promise<AiSdkCompactHistoryResult> {
     const historyCompactAbortController = new AbortController();
     this.historyCompactAbortController = historyCompactAbortController;
     try {
-      const runtimeContext = input.runtimeContext.filter((event) => event.turnId !== input.turnId);
-      const policy = this.buildManualHistoryCompactPolicy(runtimeContext, input.minRecentTurns);
-      if (!policy) return {};
+      const policy = this.input.contextBudget;
+      const summarizer = this.input.summarizeHistoryCompact;
+      const recorder = this.input.recordHistoryCompactCheckpoint;
+      const runtimeContext = input.runtimeContext
+        .filter((event) => event.turnId !== input.turnId)
+        .filter(isHistoryCompactContentEvent);
+      if (!policy || !summarizer || !recorder) {
+        return { outcome: { kind: 'unchanged', reason: 'operation_unavailable' } };
+      }
+      if (runtimeContext.length === 0) {
+        return { outcome: { kind: 'unchanged', reason: 'empty_history' } };
+      }
 
-      const contextBudget = policy;
-      const budgeted = applyRuntimeEventContextBudget(runtimeContext, contextBudget, {
-        historyCompactProtocol: this.hasHistoryCompactCheckpointWriter()
-          ? 'checkpoint_v2'
-          : 'legacy_v1',
-      });
-      let contextBudgetDiagnostic = budgeted?.diagnostic;
+      const charsPerToken = policy.charsPerToken ?? 4;
+      const estimatedTokensBefore = Math.max(
+        1,
+        estimateRuntimeEventsTokens(runtimeContext, charsPerToken),
+      );
+      let previousCheckpoint: HistoryCompactCheckpoint | undefined;
+      try {
+        const loaded = await Promise.resolve(this.input.loadHistoryCompactCheckpoint?.());
+        if (
+          loaded &&
+          canContinueHistoryCompactCheckpointForModel(
+            loaded,
+            this.input.connection,
+            this.input.modelId,
+          )
+        ) {
+          previousCheckpoint = loaded;
+        }
+      } catch {
+        // The current durable RuntimeEvents remain sufficient for a fresh checkpoint.
+      }
 
-      if (
-        budgeted?.historyCompactBlocks?.length &&
-        contextBudget.historyCompact?.mode === 'read_write' &&
-        this.hasHistoryCompactWriter()
-      ) {
-        const loadedBlockIds = new Set(
-          (contextBudget.historyCompact.blocks ?? []).map((block) => block.blockId),
-        );
-        const draftBlocks = budgeted.historyCompactBlocks.filter(
-          (block) => !loadedBlockIds.has(block.blockId),
-        );
-        if (draftBlocks.length > 0) {
-          if (this.input.summarizeHistoryCompact && this.input.recordHistoryCompactCheckpoint) {
-            let writeContextBudget = contextBudget;
-            try {
-              const checkpoint = await Promise.resolve(this.input.loadHistoryCompactCheckpoint?.());
-              if (checkpoint) {
-                writeContextBudget = {
-                  ...contextBudget,
-                  historyCompact: { ...contextBudget.historyCompact!, checkpoint },
-                };
-              }
-            } catch {
-              // A missing previous checkpoint only loses rolling reuse; the current fold remains safe to summarize.
-            }
-            const writePatch = await this.writeHistoryCompactCheckpoint({
-              turnId: input.turnId,
-              // A manual compaction names its own run: nothing else can (#1679).
-              runId: input.runId,
-              contextBudget: writeContextBudget,
-              priorRuntimeContext: runtimeContext,
-              draftBlock: draftBlocks[0]!,
-              abortSignal: historyCompactAbortController.signal,
-              requestShapeHashBefore,
-            });
-            if (historyCompactAbortController.signal.aborted) return {};
-            contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
-              contextBudgetDiagnostic ??
-                buildContextBudgetDiagnosticShell(runtimeContext, budgeted.events, contextBudget),
-              writePatch.diagnosticPatch,
+      if (previousCheckpoint) {
+        const match = matchHistoryCompactCheckpointPrefix(previousCheckpoint, runtimeContext);
+        if (!match.reason && match.successorRuntimeEvents.length === 0) {
+          const fit = evaluateHistoryCompactCheckpointReplay(
+            previousCheckpoint,
+            [],
+            charsPerToken,
+            policy.maxHistoryEstimatedTokens,
+            { sourceReplayEvents: runtimeContext },
+          );
+          if (fit.fits) {
+            const projectedEvents = projectHistoryCompactCheckpointReplay(
+              previousCheckpoint,
+              match.coveredRuntimeEvents,
+              [],
             );
-          } else {
-            const writePatch = await this.writeHistoryCompactBlocks({
-              turnId: input.turnId,
-              contextBudget,
-              priorRuntimeContext: runtimeContext,
-              draftBlocks,
-              abortSignal: historyCompactAbortController.signal,
-              requestShapeHashBefore,
-            });
-            if (historyCompactAbortController.signal.aborted) return {};
-            if (writePatch.replacementBlocks.length === 0) {
-              contextBudgetDiagnostic = buildContextBudgetDiagnosticShell(
-                runtimeContext,
-                runtimeContext,
-                contextBudget,
-              );
-            }
-            contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
-              contextBudgetDiagnostic ??
-                buildContextBudgetDiagnosticShell(runtimeContext, budgeted.events, contextBudget),
-              writePatch.diagnosticPatch,
-            );
+            return {
+              outcome: { kind: 'unchanged', reason: 'already_compacted' },
+              contextBudget: mergeContextBudgetDiagnostic(
+                buildContextBudgetDiagnosticShell(runtimeContext, projectedEvents, policy),
+                {
+                  ...compactionDecisionDiagnosticPatch({
+                    stage: 'priorReplay',
+                    sourceKind: 'runtimeEvents',
+                    decision: 'unchanged',
+                    phase: 'pre_turn',
+                    boundaryKind: 'historyCompact',
+                    boundaryIds: [previousCheckpoint.checkpointId],
+                    reason: 'already_compacted',
+                  }),
+                },
+              ),
+            };
           }
         }
       }
 
-      return contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {};
+      const tracker = this.createProviderRequestTracker({
+        turnId: input.turnId,
+        callKind: 'history_compact',
+        modelId: this.input.modelId,
+        runId: input.runId,
+        ...(this.input.historyCompactRoute
+          ? { historyCompactRoute: this.input.historyCompactRoute }
+          : {}),
+      });
+      const plan = await planHistoryCompaction({
+        sessionId: this.sessionId,
+        phase: 'standalone',
+        orderedEvents: runtimeContext,
+        reserveTailEvents: 0,
+        charsPerToken,
+        now: this.now(),
+        ...(policy.historyCompact?.highWaterName !== undefined
+          ? { highWaterName: policy.historyCompact.highWaterName }
+          : {}),
+        ...(automaticMemoryBoundary ? { memoryExtractionBoundary: automaticMemoryBoundary } : {}),
+        ...(previousCheckpoint ? { previousCheckpoint } : {}),
+        summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) =>
+          await Promise.resolve(
+            summarizer({
+              sessionId: this.sessionId,
+              turnId: input.turnId,
+              source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
+              newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+              ...(previousCheckpoint ? { previousCheckpoint } : {}),
+              inputBudget: {
+                maxEstimatedTokens: policy.maxHistoryEstimatedTokens ?? estimatedTokensBefore,
+                charsPerToken,
+              },
+              ...(requestShapeHashBefore ? { requestShapeHashBefore } : {}),
+              abortSignal: historyCompactAbortController.signal,
+              ...(tracker ? { providerRequestTracker: tracker } : {}),
+            }),
+          ),
+      });
+      if (historyCompactAbortController.signal.aborted) {
+        return { outcome: { kind: 'failed', reason: 'aborted' } };
+      }
+
+      const diagnosticShell = (events: readonly RuntimeEvent[]) =>
+        buildContextBudgetDiagnosticShell(runtimeContext, events, policy);
+      if (plan.decision !== 'compacted') {
+        const failureReason = plan.diagnosticReason ?? plan.reason;
+        return {
+          outcome: { kind: 'failed', reason: failureReason },
+          contextBudget: mergeContextBudgetDiagnostic(diagnosticShell(runtimeContext), {
+            ...compactionDecisionDiagnosticPatch({
+              stage: 'priorReplay',
+              sourceKind: 'runtimeEvents',
+              decision: 'failedOpen',
+              phase: 'pre_turn',
+              boundaryKind: 'historyCompact',
+              failOpenReason: failureReason,
+            }),
+          }),
+        };
+      }
+
+      const replayFit = evaluateHistoryCompactCheckpointReplay(
+        plan.checkpoint,
+        plan.tailRuntimeEvents,
+        charsPerToken,
+        policy.maxHistoryEstimatedTokens,
+        { sourceReplayEvents: runtimeContext },
+      );
+      if (!replayFit.fits) {
+        return {
+          outcome: { kind: 'failed', reason: replayFit.reason },
+          contextBudget: mergeContextBudgetDiagnostic(diagnosticShell(runtimeContext), {
+            ...compactionDecisionDiagnosticPatch({
+              stage: 'priorReplay',
+              sourceKind: 'runtimeEvents',
+              decision: 'failedOpen',
+              phase: 'pre_turn',
+              boundaryKind: 'historyCompact',
+              failOpenReason: replayFit.reason,
+            }),
+          }),
+        };
+      }
+
+      try {
+        await Promise.resolve(recorder(plan.checkpoint, input.turnId));
+      } catch {
+        return {
+          outcome: { kind: 'failed', reason: 'write_failed' },
+          contextBudget: mergeContextBudgetDiagnostic(diagnosticShell(runtimeContext), {
+            ...compactionDecisionDiagnosticPatch({
+              stage: 'priorReplay',
+              sourceKind: 'runtimeEvents',
+              decision: 'failedOpen',
+              phase: 'pre_turn',
+              boundaryKind: 'historyCompact',
+              failOpenReason: 'write_failed',
+            }),
+          }),
+        };
+      }
+
+      return {
+        outcome: { kind: 'compacted', checkpointId: plan.checkpoint.checkpointId },
+        checkpoint: plan.checkpoint,
+        contextBudget: mergeContextBudgetDiagnostic(diagnosticShell(plan.replacementEvents), {
+          ...compactionDecisionDiagnosticPatch({
+            stage: 'priorReplay',
+            sourceKind: 'runtimeEvents',
+            decision: 'replaced',
+            phase: 'pre_turn',
+            boundaryKind: 'historyCompact',
+            boundaryIds: [plan.checkpoint.checkpointId],
+            coverage: {
+              turnIds: Array.from(new Set(plan.coveredRuntimeEvents.map((event) => event.turnId))),
+              runtimeEventIds: plan.coveredRuntimeEvents.map((event) => event.id),
+              contentKinds: Array.from(
+                new Set(plan.coveredRuntimeEvents.flatMap((event) => event.content?.kind ?? [])),
+              ),
+              bodySha256: [],
+            },
+            estimatedTokensBefore: plan.estimatedTokensBefore,
+            estimatedTokensAfter: plan.estimatedTokensAfter,
+          }),
+        }),
+      };
     } finally {
       if (this.historyCompactAbortController === historyCompactAbortController) {
         this.historyCompactAbortController = null;
       }
     }
-  }
-
-  private buildManualHistoryCompactPolicy(
-    runtimeContext: readonly RuntimeEvent[],
-    minRecentTurnsOverride?: number,
-  ): ContextBudgetPolicy | undefined {
-    if (runtimeContext.length === 0 || !this.input.contextBudget || !this.hasHistoryCompactWriter())
-      return undefined;
-    const base = this.input.contextBudget;
-    const charsPerToken = base.charsPerToken ?? 4;
-    const estimatedTokens = Math.max(1, estimateRuntimeEventsTokens(runtimeContext, charsPerToken));
-    const current = base.historyCompact;
-    const currentWithoutBlocks = { ...current };
-    delete currentWithoutBlocks.blocks;
-    delete currentWithoutBlocks.checkpoint;
-    const maxHistoryEstimatedTokens =
-      base.maxHistoryEstimatedTokens ?? Math.max(estimatedTokens, 32_000);
-    return {
-      name: base.name ?? 'manual-history-compact',
-      ...(base.charsPerToken !== undefined ? { charsPerToken: base.charsPerToken } : {}),
-      maxHistoryEstimatedTokens,
-      minRecentTurns: minRecentTurnsOverride ?? current?.minRecentTurns ?? base.minRecentTurns ?? 1,
-      historyCompact: {
-        ...currentWithoutBlocks,
-        enabled: true,
-        mode: 'read_write',
-        highWaterRatio: 0.000001,
-        targetRatio: current?.targetRatio ?? 0.2,
-        tailEstimatedTokens: 1,
-        minRecentTurns:
-          minRecentTurnsOverride ?? current?.minRecentTurns ?? base.minRecentTurns ?? 1,
-        maxBlocks: current?.maxBlocks ?? 1,
-        maxEstimatedTokens: current?.maxEstimatedTokens ?? 2048,
-        maxBlockEstimatedTokens:
-          current?.maxBlockEstimatedTokens ?? current?.maxSummaryEstimatedTokens ?? 1024,
-        highWaterName: current?.highWaterName ?? `${base.name ?? 'manual'}-manual-history-compact`,
-      },
-    };
-  }
-
-  public hasHistoryCompactWriter(): boolean {
-    return Boolean(
-      this.input.writeHistoryCompact ||
-        (this.input.summarizeHistoryCompact && this.input.recordHistoryCompactCheckpoint),
-    );
   }
 
   public hasHistoryCompactCheckpointWriter(): boolean {
@@ -1011,7 +445,6 @@ export class AiSdkCompaction {
         runtimeContext,
         policy?.staleToolResultPrune,
         policy?.charsPerToken ?? 4,
-        policy?.minRecentTurns,
       );
       if (candidates.length > 0) {
         const archiveRefs = new Map<string, ToolResultArchiveRef>();
@@ -1055,30 +488,26 @@ export class AiSdkCompaction {
       }
     }
 
-    const compactLoadPatch = await this.loadHistoryCompactBlocks(nextPolicy);
-    if (compactLoadPatch.policy !== nextPolicy) nextPolicy = compactLoadPatch.policy;
-    const loadedCheckpoint = nextPolicy.historyCompact?.checkpoint;
+    let loadedCheckpoint: HistoryCompactCheckpoint | undefined;
+    try {
+      loadedCheckpoint = await Promise.resolve(this.input.loadHistoryCompactCheckpoint?.());
+    } catch {
+      loadedCheckpoint = undefined;
+    }
     if (
       loadedCheckpoint &&
-      !canReplayHistoryCompactCheckpointForModel(
+      canReplayHistoryCompactCheckpointForModel(
         loadedCheckpoint,
         this.input.connection,
         this.input.modelId,
       )
     ) {
-      const { checkpoint: _incompatibleCheckpoint, ...historyCompact } = nextPolicy.historyCompact!;
-      nextPolicy = { ...nextPolicy, historyCompact };
+      nextPolicy = {
+        ...nextPolicy,
+        historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
+      };
     }
-    const loadPatch = await this.loadSynthesisCacheBlocks(nextPolicy);
-    if (loadPatch.policy !== nextPolicy) nextPolicy = loadPatch.policy;
-    const diagnosticPatch = mergeContextBudgetDiagnosticPatches(
-      compactLoadPatch.diagnosticPatch,
-      loadPatch.diagnosticPatch,
-    );
-    return {
-      policy: nextPolicy,
-      ...(diagnosticPatch ? { diagnosticPatch } : {}),
-    };
+    return { policy: nextPolicy };
   }
 
   public buildActiveToolResultPruneProjection(
@@ -1127,135 +556,6 @@ export class AiSdkCompaction {
       }
       return rewritten.rewritten > 0 ? { messages: rewritten.messages } : undefined;
     };
-  }
-
-  public buildSemanticCompactProjection(
-    turnId: string,
-    model: unknown,
-    runtimeEvents: readonly RuntimeEvent[] | undefined,
-    headAnchor: ActiveCompactionHeadAnchor | undefined,
-    requestShapeHashForMessages: (
-      messages: readonly ModelMessage[],
-      activeToolsForStep: readonly string[] | undefined,
-    ) => string,
-    onDiagnosticPatch: ((patch: Partial<ContextBudgetDiagnostic>) => void) | undefined,
-    origin: ProviderRequestOrigin,
-    abortSignal?: AbortSignal,
-  ): RequestProjectionStage | undefined {
-    const policy = this.input.contextBudget?.semanticCompact;
-    if (policy?.enabled !== true || policy.mode === 'off' || !headAnchor) return undefined;
-
-    let acceptedProjection: AcceptedActiveCompactionProjection | undefined;
-    const controllerState: SemanticCompactControllerState = {
-      consecutiveInvalidSummaries: 0,
-      totalInvalidSummaries: 0,
-      compactCallCount: 0,
-      compactCallTotalTokens: 0,
-      acceptedEstimatedTokensSaved: 0,
-    };
-    // One auxiliary trace per turn rather than per call: a step that summarizes
-    // is a step of that trace, so a retried summarization is another attempt of
-    // the same logical call. Built on first use — most turns never summarize,
-    // and an unused trace id is a trace that never happened.
-    const summarizerModelId = policy.summarizerModel ?? this.input.modelId;
-    let summaryTracker: ProviderRequestTracker | undefined;
-    let summaryTrackerBuilt = false;
-    const resolveSummaryTracker = (): ProviderRequestTracker | undefined => {
-      if (!summaryTrackerBuilt) {
-        summaryTrackerBuilt = true;
-        summaryTracker = this.createProviderRequestTracker({
-          turnId,
-          callKind: 'semantic_compact',
-          modelId: summarizerModelId,
-          runId: origin.runId,
-        });
-      }
-      return summaryTracker;
-    };
-    return async (options) => {
-      const activeToolsForStep = options.activeTools;
-      const dryRun = policy.mode === 'validate_only' || policy.mode === 'prepare_step_dry_run';
-      const incomingMessages = options.messages;
-      const projectedMessages = dryRun
-        ? undefined
-        : projectAcceptedActiveCompactionMessages(incomingMessages, acceptedProjection);
-      const messagesForRewrite = projectedMessages ?? incomingMessages;
-      const summarizerModel = policy.summarizerModel
-        ? this.input.modelFactory({
-            connection: this.input.connection,
-            apiKey: this.input.apiKey,
-            modelId: policy.summarizerModel,
-          })
-        : model;
-      const rewritten = await rewriteSemanticCompactInMessages({
-        sessionId: this.sessionId,
-        turnId,
-        messages: messagesForRewrite,
-        policy,
-        controllerState,
-        runtimeEvents: runtimeEvents?.filter((event) => event.turnId === turnId),
-        stepNumber: options.stepNumber,
-        now: this.now(),
-        charsPerToken: this.input.contextBudget?.charsPerToken,
-        requestShapeHashForMessages: (messages) =>
-          requestShapeHashForMessages(messages, activeToolsForStep),
-        headAnchor,
-        ...(acceptedProjection?.semanticBlock
-          ? { predecessorBlock: acceptedProjection.semanticBlock }
-          : {}),
-        abortSignal: abortSignal,
-        summarizer: async (request) => {
-          // The tracker settles this call itself, on the success, failure, and
-          // abort paths alike, so the summarization is metered as the physical
-          // provider request it is instead of a hand-built row (#1679).
-          const tracker = resolveSummaryTracker();
-          tracker?.setStep(options.stepNumber);
-          return await this.modelAdapter.generateCompactSummary({
-            model: summarizerModel,
-            system: request.system,
-            messages: request.messages,
-            maxOutputTokens: request.maxOutputTokens,
-            abortSignal: request.abortSignal,
-            ...(tracker ? { providerRequestTracker: tracker } : {}),
-          });
-        },
-      });
-      onDiagnosticPatch?.({
-        semanticCompactEnabled: true,
-        semanticCompactMode: policy.mode ?? 'replace',
-        ...rewritten.diagnosticPatch,
-      });
-      if (!dryRun && rewritten.decision === 'replaced') {
-        if (rewritten.block) this.recordSemanticCompactBlock(rewritten.block);
-        acceptedProjection = {
-          sourceSignatures: incomingMessages.map(projectionSourceMessageSignature),
-          sourceSignatureMode: 'active_prune_lineage',
-          projectedMessages: rewritten.messages,
-          ...(rewritten.block ? { semanticBlock: rewritten.block } : {}),
-        };
-        return {
-          messages: rewritten.messages,
-        };
-      }
-      return !dryRun && projectedMessages ? { messages: projectedMessages } : undefined;
-    };
-  }
-
-  private recordSemanticCompactBlock(block: SemanticCompactBlock): void {
-    const recorder = this.input.recordSemanticCompactBlock;
-    if (!recorder) return;
-    try {
-      const result = recorder(block);
-      if (result && typeof (result as PromiseLike<void>).then === 'function') {
-        void Promise.resolve(result).catch(() => {
-          // Semantic compact persistence is diagnostic/storage-only and must
-          // never perturb provider request projection or tool-loop progress.
-        });
-      }
-    } catch {
-      // Semantic compact persistence is diagnostic/storage-only and must never
-      // perturb provider request projection or tool-loop progress.
-    }
   }
 
   /**
@@ -1342,11 +642,11 @@ export class AiSdkCompaction {
     const midTurn = compactPolicy.midTurn!;
     const charsPerToken = policy.charsPerToken ?? 4;
     const reserveTokens = midTurn.reserveTokens ?? 16_384;
-    let acceptedProjection: AcceptedActiveCompactionProjection | undefined;
+    let acceptedProjection: AcceptedMidTurnCompactionProjection | undefined;
 
     return async (options) => {
       const incomingMessages = options.messages;
-      let projectedMessages = projectAcceptedActiveCompactionMessages(
+      let projectedMessages = projectAcceptedMidTurnCompactionMessages(
         incomingMessages,
         acceptedProjection,
       );
@@ -1390,17 +690,9 @@ export class AiSdkCompaction {
           : undefined;
 
       // A skipped trigger is never silent: every failure-driven skip records a
-      // failedOpen decision. Recorder counters are attached ONLY on the tiers
-      // where the recorder was actually invoked — the diagnostics must never
-      // claim a write that did not happen.
-      const failOpen = (
-        failOpenReason: string,
-        recorderCounters: Partial<ContextBudgetDiagnostic> = {},
-      ): RequestProjection | undefined => {
+      // failedOpen decision.
+      const failOpen = (failOpenReason: string): RequestProjection | undefined => {
         onDiagnosticPatch({
-          historyCompactEnabled: true,
-          historyCompactMode: 'read_write',
-          ...recorderCounters,
           ...compactionDecisionDiagnosticPatch({
             stage: 'activeStep',
             sourceKind: 'runtimeEvents',
@@ -1421,10 +713,9 @@ export class AiSdkCompaction {
       const shapeFailure = (
         detail: ContextBudgetExhaustedDetail,
         diagnosticReason: string,
-        recorderCounters: Partial<ContextBudgetDiagnostic> = {},
       ): RequestProjection | undefined => {
         state.lastShapeFailure = { stepNumber: options.stepNumber, detail, diagnosticReason };
-        return failOpen(diagnosticReason, recorderCounters);
+        return failOpen(diagnosticReason);
       };
 
       // Trigger estimate: the last request's input tokens plus a SIGNED char/4 delta of
@@ -1466,13 +757,12 @@ export class AiSdkCompaction {
       // replacement projection (validate → persist), shared with the reactive
       // overflow path. This stage maps the outcome to the request-projection contract:
       // keep the raw projection on skip/fail, apply the fold on success.
-      const outcome = await this.computeMidTurnCompactionReplacement({
+      const outcome = await this.compactActiveRequestHistory({
         turnId,
         origin,
         state,
         queue,
         minFlushedSteps: options.stepNumber,
-        estimatedNextRequestTokens: estimate,
         referencePayloadChars: payloadChars,
         providerTools,
         activeToolsForStep,
@@ -1482,18 +772,16 @@ export class AiSdkCompaction {
         onMemoryCompaction,
         abortSignal,
       });
-      if (outcome.decision === 'skip') return keepProjection();
       if (outcome.decision === 'fail') {
-        return shapeFailure(outcome.detail, outcome.diagnosticReason, outcome.recorderCounters);
+        return shapeFailure(outcome.detail, outcome.diagnosticReason);
       }
       acceptedProjection = {
         sourceSignatures: incomingMessages.map(modelMessageSignature),
-        sourceSignatureMode: 'exact',
         projectedMessages: outcome.replacementMessages,
       };
       state.replacedStepNumber = options.stepNumber;
       onDiagnosticPatch(
-        buildMidTurnReplacedDiagnosticPatch({
+        buildActiveRequestCompactionDiagnosticPatch({
           checkpoint: outcome.checkpoint,
           estimatedTokensBefore: outcome.estimatedTokensBefore,
           estimatedTokensAfter: outcome.estimatedTokensAfter,
@@ -1515,14 +803,13 @@ export class AiSdkCompaction {
    * recovery re-projection never re-injects a covered raw span. It only shapes:
    * the pass/terminate verdict and the diagnostic emission are the caller's.
    */
-  public async computeMidTurnCompactionReplacement(input: {
+  public async compactActiveRequestHistory(input: {
     turnId: string;
     state: MidTurnCapacityCompactState;
     /** The turn this replacement request is built for. */
     origin: ProviderRequestOrigin;
     queue: AsyncEventQueue<SessionEvent>;
     minFlushedSteps: number;
-    estimatedNextRequestTokens: number;
     referencePayloadChars: number;
     providerTools: readonly MakaTool[];
     activeToolsForStep: readonly string[];
@@ -1532,7 +819,7 @@ export class AiSdkCompaction {
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void;
     phase?: 'pre_turn' | 'mid_turn';
     abortSignal?: AbortSignal;
-  }): Promise<MidTurnCompactionOutcome> {
+  }): Promise<ActiveRequestCompactionOutcome> {
     const {
       turnId,
       state,
@@ -1627,14 +914,11 @@ export class AiSdkCompaction {
     }
     const orderedEvents = [...state.priorContentEvents, ...currentTurnEvents];
     const memoryDecision = input.memoryCompactionDecision?.();
-    const plan = await planMidTurnCapacityCompaction({
+    const plan = await planHistoryCompaction({
       sessionId: this.sessionId,
       phase: input.phase ?? 'mid_turn',
       orderedEvents,
       headAnchor: { runtimeEventId: state.headAnchor.id, turnId },
-      estimatedNextRequestTokens: input.estimatedNextRequestTokens,
-      contextWindow: state.capacity.tokens,
-      reserveTokens,
       reserveTailEvents: midTurn.reserveTailEvents ?? 1,
       charsPerToken,
       now: this.now(),
@@ -1671,7 +955,6 @@ export class AiSdkCompaction {
       },
     });
 
-    if (plan.decision === 'skip') return { decision: 'skip' };
     if (plan.decision === 'fail_open') {
       return {
         decision: 'fail',
@@ -1762,7 +1045,6 @@ export class AiSdkCompaction {
         decision: 'fail',
         detail: 'summarizer_failed',
         diagnosticReason: 'write_failed',
-        recorderCounters: { historyCompactWritesAttempted: 1, historyCompactWriteFailures: 1 },
       };
     }
     if (memoryDecision?.dispatch && input.onMemoryCompaction) {
@@ -1851,7 +1133,7 @@ export class AiSdkCompaction {
         input.systemPromptChars,
       );
     const phase = input.stepNumber === 0 ? 'pre_turn' : 'mid_turn';
-    const outcome = await this.computeMidTurnCompactionReplacement({
+    const outcome = await this.compactActiveRequestHistory({
       turnId: input.turnId,
       phase,
       origin: input.origin,
@@ -1860,9 +1142,6 @@ export class AiSdkCompaction {
       // The stream has ended, so every completed step is already flushed; wait
       // only for the consumer to drain the durable ledger up to date.
       minFlushedSteps: state.flushedSteps,
-      // The provider rejected the request outright, so force the fold past the
-      // high water regardless of the (evidently under-counting) estimate.
-      estimatedNextRequestTokens: state.capacity.tokens + 1,
       referencePayloadChars,
       providerTools: input.providerTools,
       activeToolsForStep: input.activeTools,
@@ -1877,11 +1156,6 @@ export class AiSdkCompaction {
       // request; record the failed overflow attempt and let the caller surface
       // the real provider error.
       input.onDiagnosticPatch({
-        historyCompactEnabled: true,
-        historyCompactMode: 'read_write',
-        ...(outcome.decision === 'fail' && outcome.recorderCounters
-          ? outcome.recorderCounters
-          : {}),
         ...compactionDecisionDiagnosticPatch({
           stage: 'activeStep',
           sourceKind: 'runtimeEvents',
@@ -1900,7 +1174,7 @@ export class AiSdkCompaction {
       return undefined;
     }
     input.onDiagnosticPatch(
-      buildMidTurnReplacedDiagnosticPatch({
+      buildActiveRequestCompactionDiagnosticPatch({
         checkpoint: outcome.checkpoint,
         estimatedTokensBefore: outcome.estimatedTokensBefore,
         estimatedTokensAfter: outcome.estimatedTokensAfter,
@@ -2045,8 +1319,6 @@ export class AiSdkCompaction {
             : (failure?.diagnosticReason ?? 'no_safe_completed_span');
           state.exhaustedDetail = detail;
           onDiagnosticPatch({
-            historyCompactEnabled: true,
-            historyCompactMode: 'read_write',
             ...compactionDecisionDiagnosticPatch({
               stage: 'activeStep',
               sourceKind: 'runtimeEvents',
@@ -2119,11 +1391,9 @@ function collectPrunableCompletedStepToolCallIds(
   return out;
 }
 
-interface AcceptedActiveCompactionProjection {
+interface AcceptedMidTurnCompactionProjection {
   sourceSignatures: readonly string[];
-  sourceSignatureMode: 'exact' | 'active_prune_lineage';
   projectedMessages: readonly ModelMessage[];
-  semanticBlock?: SemanticCompactBlock;
 }
 
 function projectHistoricalImageOmissions(
@@ -2135,18 +1405,16 @@ function projectHistoricalImageOmissions(
   return omission.omittedParts > 0 ? omission.messages : undefined;
 }
 
-function projectAcceptedActiveCompactionMessages(
+function projectAcceptedMidTurnCompactionMessages(
   incomingMessages: readonly ModelMessage[],
-  acceptedProjection: AcceptedActiveCompactionProjection | undefined,
+  acceptedProjection: AcceptedMidTurnCompactionProjection | undefined,
 ): ModelMessage[] | undefined {
   if (!acceptedProjection) return undefined;
-  const sourceSignature =
-    acceptedProjection.sourceSignatureMode === 'active_prune_lineage'
-      ? projectionSourceMessageSignature
-      : modelMessageSignature;
   if (incomingMessages.length < acceptedProjection.sourceSignatures.length) return undefined;
   for (let index = 0; index < acceptedProjection.sourceSignatures.length; index += 1) {
-    if (sourceSignature(incomingMessages[index]!) !== acceptedProjection.sourceSignatures[index]) {
+    if (
+      modelMessageSignature(incomingMessages[index]!) !== acceptedProjection.sourceSignatures[index]
+    ) {
       return undefined;
     }
   }
@@ -2162,29 +1430,6 @@ function sha256(text: string): string {
 
 function modelMessageSignature(message: ModelMessage): string {
   return sha256(stableStringifyForSignature(message));
-}
-
-/**
- * A projection source signature must survive representation-only active
- * pruning. Preserve every message field except a tool-result payload, whose
- * raw body and archive placeholder are normalized to the same stable lineage
- * identity (tool call + original body hash). Any other source mutation still
- * invalidates the accepted projection.
- */
-function projectionSourceMessageSignature(message: ModelMessage): string {
-  if (message.role !== 'tool' || !Array.isArray(message.content)) {
-    return modelMessageSignature(message);
-  }
-  const normalizedContent = (message.content as unknown[]).map((part) => {
-    const lineage = activeToolResultLineageIdentity(part);
-    if (!lineage || !part || typeof part !== 'object') return part;
-    const { output: _output, result: _result, ...metadata } = part as Record<string, unknown>;
-    return {
-      ...metadata,
-      makaProjectionToolResultLineage: lineage,
-    };
-  });
-  return modelMessageSignature({ ...message, content: normalizedContent } as ModelMessage);
 }
 
 function stableStringifyForSignature(value: unknown): string {
@@ -2315,13 +1560,11 @@ function midTurnRequestPayloadChars(
  * recovery (which maps it to a retry / a real error terminal, with an
  * `overflow` reason). The verdict/diagnostic is the caller's; this only shapes.
  */
-type MidTurnCompactionOutcome =
-  | { decision: 'skip' }
+type ActiveRequestCompactionOutcome =
   | {
       decision: 'fail';
       detail: ContextBudgetExhaustedDetail;
       diagnosticReason: string;
-      recorderCounters?: Partial<ContextBudgetDiagnostic>;
     }
   | {
       decision: 'compacted';
@@ -2336,7 +1579,7 @@ type MidTurnCompactionOutcome =
  * shared by the proactive (`reason: 'context_limit'`) and reactive
  * (`reason: 'overflow'`) triggers so both report the fold identically.
  */
-function buildMidTurnReplacedDiagnosticPatch(input: {
+function buildActiveRequestCompactionDiagnosticPatch(input: {
   checkpoint: HistoryCompactCheckpoint;
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
@@ -2344,20 +1587,6 @@ function buildMidTurnReplacedDiagnosticPatch(input: {
 }): Partial<ContextBudgetDiagnostic> {
   const { checkpoint, estimatedTokensBefore, estimatedTokensAfter, reason } = input;
   return {
-    historyCompactEnabled: true,
-    historyCompactMode: 'read_write',
-    historyCompactWritesAttempted: 1,
-    historyCompactBlocksWritten: 1,
-    historyCompactWrittenBlockIds: [checkpoint.checkpointId],
-    historyCompactWriteEstimatedTokens: checkpoint.estimatedTokens,
-    historyCompactBlockIds: [checkpoint.checkpointId],
-    historyCompactedTurns: checkpoint.coverage.turnCount,
-    historyCompactedEvents: checkpoint.coverage.eventCount,
-    historyCompactedEstimatedTokensBefore: estimatedTokensBefore,
-    historyCompactedEstimatedTokensAfter: estimatedTokensAfter,
-    highWaterName: checkpoint.highWaterName,
-    highWaterSeq: checkpoint.highWaterSeq,
-    highWaterReason: 'history_compact',
     ...compactionDecisionDiagnosticPatch({
       stage: 'activeStep',
       sourceKind: 'runtimeEvents',
@@ -2407,3 +1636,6 @@ export function hasBlockingReplayDiagnostics(plan: RuntimeEventModelReplayPlan):
       diagnostic.code === 'tool_id_mismatch',
   );
 }
+type AiSdkCompactHistoryResult = BackendCompactHistoryResult & {
+  checkpoint?: HistoryCompactCheckpoint;
+};

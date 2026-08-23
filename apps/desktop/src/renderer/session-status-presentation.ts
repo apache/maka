@@ -204,6 +204,9 @@ export function deriveFailedTurnRecovery(input: FailedTurnRecoveryInput, locale:
   if (input.toolActivityCount > 0) {
     return { action: 'inspect_tool', label: copy.toolRecord };
   }
+  if (lower === 'provider_capacity') {
+    return { action: 'retry', label: copy.capacity };
+  }
   if (lower === 'context_overflow') {
     return { action: 'continue', label: copy.contextOverflow };
   }

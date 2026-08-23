@@ -679,7 +679,7 @@ test("keeps the busy failure for a Skill send instead of degrading it to steerin
   assert.deepEqual(submits, []);
 });
 
-test("queues explicit Desktop follow-ups and retracts their full content", async () => {
+test("queues explicit Desktop follow-ups", async () => {
   const submits: unknown[] = [];
   let sequence = 0;
   const ipc = ipcHarness();
@@ -691,28 +691,6 @@ test("queues explicit Desktop follow-ups and retracts their full content", async
           submits.push(input);
           return { disposition: "followup", queueRevision: 4 };
         },
-        retractQueue: async (input) => ({
-          queueRevision: 5,
-          retracted: [
-            {
-              entryId: "entry-1",
-              messageId: "message-1",
-              content: {
-                text: "first",
-                quotes: [{ text: "context" }],
-              },
-              placement: "next_turn",
-              state: "retracted",
-            },
-            {
-              entryId: "entry-2",
-              messageId: "message-2",
-              content: { text: "second" },
-              placement: "next_turn",
-              state: "retracted",
-            },
-          ],
-        }),
       }),
       observer: unusedObserver(),
       attachmentApprovals: createAttachmentApprovalRegistry(),
@@ -786,12 +764,71 @@ test("queues explicit Desktop follow-ups and retracts their full content", async
       placement: "next_turn",
     },
   ]);
-  assert.deepEqual(
-    await ipc.invoke("sessions:retractQueue", "session-1"),
+});
+
+test("routes per-entry queue mutations to the Runtime Host", async () => {
+  const calls: unknown[] = [];
+  let sequence = 0;
+  const ipc = ipcHarness();
+  registerExecutionIpc(
     {
-      text: "first\n\nsecond",
-      quotes: [{ text: "context" }],
+      client: executionClient({
+        retractQueueEntry: async (input) => {
+          calls.push({ operation: "retract", ...input });
+          return { queueRevision: 3 };
+        },
+        promoteQueueEntry: async (input) => {
+          calls.push({ operation: "promote", ...input });
+          return { queueRevision: 4 };
+        },
+        reorderQueueEntries: async (input) => {
+          calls.push({ operation: "reorder", ...input });
+          return { queueRevision: 5 };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => `id-${++sequence}`,
     },
+    ipc,
+  );
+
+  assert.equal(await ipc.invoke("sessions:retractQueueEntry", "session-1", "entry-1"), undefined);
+  await ipc.invoke("sessions:promoteQueueEntry", "session-1", "entry-2");
+  await ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-3", "entry-2"]);
+
+  assert.deepEqual(calls, [
+    {
+      operation: "retract",
+      sessionId: "session-1",
+      entryId: "entry-1",
+      retractId: "id-1",
+    },
+    {
+      operation: "promote",
+      sessionId: "session-1",
+      entryId: "entry-2",
+      promoteId: "id-2",
+    },
+    {
+      operation: "reorder",
+      sessionId: "session-1",
+      reorderId: "id-3",
+      entryIds: ["entry-3", "entry-2"],
+    },
+  ]);
+
+  await assert.rejects(
+    () => ipc.invoke("sessions:promoteQueueEntry", "session-1", 42),
+    /Invalid queue entry identity/,
+  );
+  await assert.rejects(
+    () => ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-1", 42]),
+    /Invalid queue entry order/,
   );
 });
 
@@ -886,7 +923,9 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,
-    retractQueue: unavailable,
+    retractQueueEntry: unavailable,
+    promoteQueueEntry: unavailable,
+    reorderQueueEntries: unavailable,
     setSessionReadMarker: unavailable,
     startTurn: unavailable,
     startTurnResume: unavailable,

@@ -164,10 +164,55 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 38);
   });
 
+  test('adds credential rotation without changing existing credential inputs', () => {
+    const issueInput = {
+      principalKind: 'remote_owner',
+      principalId: 'desktop:test',
+      operationGrants: ['host.status'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    };
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput(issueInput),
+      issueInput,
+    );
+    assert.throws(() =>
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput({
+        replacementOfCredentialId: 'credential-current',
+      }),
+    );
+    assert.throws(() =>
+      HOST_OPERATION_SPECS['access.credential.revoke'].decodeInput({
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      }),
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.rotation.prepare'].decodeInput({
+        replacementOfCredentialId: 'credential-current',
+      }),
+      { replacementOfCredentialId: 'credential-current' },
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.rotation.revoke'].decodeInput({
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      }),
+      {
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      },
+    );
+  });
+
+  test('publishes a new compatibility epoch for provider capacity retry progress', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 41);
+  });
+
   test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
-    // Epoch 39 does not offer `github-copilot`, so such a Host rejects a login
+    // Epoch 42 does not offer `github-copilot`, so such a Host rejects a login
     // start for it rather than failing the pair at connect.
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 39);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 42);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -927,6 +972,71 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(decodeClientFrame(submit), submit);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);
+    const entryRetract = {
+      requestId: 'entry-retract-request-1',
+      operation: 'queue.entry.retract' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        retractId: 'retract-2',
+      },
+    };
+    const entryPromote = {
+      requestId: 'entry-promote-request-1',
+      operation: 'queue.entry.promote' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        promoteId: 'promote-1',
+      },
+    };
+    const entriesReorder = {
+      requestId: 'entries-reorder-request-1',
+      operation: 'queue.entries.reorder' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        reorderId: 'reorder-1',
+        entryIds: ['entry-2', 'entry-1'],
+      },
+    };
+    assert.deepEqual(decodeClientFrame(entryRetract), entryRetract);
+    assert.deepEqual(decodeClientFrame(entryPromote), entryPromote);
+    assert.deepEqual(decodeClientFrame(entriesReorder), entriesReorder);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entriesReorder,
+          input: { ...entriesReorder.input, entryIds: ['entry-1', 'entry-1'] },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entriesReorder,
+          input: { ...entriesReorder.input, entryIds: ['not/a/semantic/id'] },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entryRetract,
+          input: { ...entryRetract.input, generation: 1 },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entryPromote,
+          input: { ...entryPromote.input, entryId: 'not/a/semantic/id' },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeClientFrame({ ...submit, input: { ...submit.input, originHostEpoch: undefined } }),
@@ -1236,6 +1346,30 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+    for (const [operation, requestId] of [
+      ['queue.entry.retract', 'entry-retract-response'],
+      ['queue.entry.promote', 'entry-promote-response'],
+      ['queue.entries.reorder', 'entries-reorder-response'],
+    ] as const) {
+      assert.doesNotThrow(() =>
+        decodeHostFrame({
+          requestId,
+          operation,
+          ok: true,
+          result: { queueRevision: 8 },
+        }),
+      );
+      assert.throws(
+        () =>
+          decodeHostFrame({
+            requestId,
+            operation,
+            ok: true,
+            result: { queueRevision: 8, retracted: [] },
+          }),
+        isInvalidFrame,
+      );
+    }
     const retracted = [retractedMessage()];
     assert.doesNotThrow(() =>
       decodeHostFrame({

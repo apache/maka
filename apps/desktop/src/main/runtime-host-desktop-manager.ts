@@ -115,8 +115,8 @@ export class RuntimeHostUpgradeCancelledError extends RuntimeHostPermanentReconn
 }
 
 export class RuntimeHostPairingFinalizationInterruptedError extends Error {
-  constructor() {
-    super('Runtime Host pairing finalization was deferred until the next startup');
+  constructor(options?: ErrorOptions) {
+    super('Runtime Host pairing finalization was deferred until the next startup', options);
     this.name = 'RuntimeHostPairingFinalizationInterruptedError';
   }
 }
@@ -275,6 +275,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       throw new Error('Only remote Runtime Host profiles can finalize pairing');
     }
     const lifecycle = this.#requireLifecycle(target);
+    const deadline = Date.now() + this.pairingFinalizationTimeoutMs;
     const timeout = new AbortController();
     const timer = setTimeout(
       () => timeout.abort(new RuntimeHostPairingFinalizationInterruptedError()),
@@ -292,9 +293,14 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
           throw new Error('Runtime Host target changed before pairing was finalized');
         }
         try {
-          await candidate.client.finalizeAccessCredential();
+          const remainingMs = deadline - Date.now();
+          if (remainingMs <= 0) throw new RuntimeHostPairingFinalizationInterruptedError();
+          await candidate.client.finalizeAccessCredential(remainingMs);
           return;
         } catch (error) {
+          if (pairingFinalizeTimedOut(error)) {
+            throw new RuntimeHostPairingFinalizationInterruptedError({ cause: error });
+          }
           const retry = pairingFinalizeRetry(error);
           if (!retry) throw error;
           candidate = await this.#waitForReadyCandidate(lifecycle, candidate, signal);
@@ -623,7 +629,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         await this.waitForHostRetirement(result.registration, signal);
         continue;
       }
-      throw runtimeHostStartupError(result.reason);
+      throw runtimeHostStartupError(result.reason, result.diagnostic);
     }
   }
 
@@ -819,6 +825,14 @@ function pairingFinalizeRetry(error: unknown): boolean {
     return error.code === 'commit_outcome_unknown';
   }
   return false;
+}
+
+function pairingFinalizeTimedOut(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostRequestInterruptedError &&
+    error.operation === 'access.credential.finalize' &&
+    error.reason === 'timeout'
+  );
 }
 
 function withRuntimeHostTarget(

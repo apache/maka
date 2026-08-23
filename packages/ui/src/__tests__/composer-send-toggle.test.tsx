@@ -20,13 +20,18 @@
 /**
  * The composer's send slot holds ONE control (Astryx's send/stop toggle), and
  * mid-turn it reads Stop while the draft is empty. This is the shape the slot
- * drifted out of once already — a Stop button and a Steer button side by side —
- * so the count is asserted, not just the label.
+ * drifted out of more than once — a Stop button and a Steer button side by
+ * side, then a Queue/Steer mode switch beside Send — so the count is asserted,
+ * not just the label. Queue affordances live in the pending plate above the
+ * card, never in the send slot.
  */
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { parseHTML } from 'linkedom';
 import { Composer } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
 
@@ -38,90 +43,87 @@ function renderComposer(streaming: boolean): string {
   );
 }
 
-function sendSlotButtons(markup: string): string[] {
-  const slot = markup.split('class="maka-composer-right-controls"').pop() ?? '';
-  return slot.match(/aria-label="[^"]*"/g) ?? [];
+function sendSlotControls(markup: string): string[] {
+  return markup.match(/aria-label="(?:Send|Stop)"/g) ?? [];
 }
 
 test('an idle composer offers Send alone', () => {
-  const buttons = sendSlotButtons(renderComposer(false));
-  assert.deepEqual(buttons, ['aria-label="Send"']);
+  const controls = sendSlotControls(renderComposer(false));
+  assert.deepEqual(controls, ['aria-label="Send"']);
 });
 
 test('a turn in flight turns the same single control into Stop', () => {
-  const buttons = sendSlotButtons(renderComposer(true));
-  assert.deepEqual(buttons, ['aria-label="Stop"']);
+  const controls = sendSlotControls(renderComposer(true));
+  assert.deepEqual(controls, ['aria-label="Stop"']);
 });
 
-test('a running composer exposes Queue and Steer when the host supports follow-ups', () => {
-  const markup = renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Composer
-        streaming
-        followUpMode="queue"
-        onFollowUpModeChange={() => undefined}
-        onSend={() => undefined}
-        onStop={() => undefined}
-      />
-    </LocaleProvider>,
-  );
-
-  assert.match(markup, /aria-label="Follow-up behavior"/);
-  assert.match(markup, />Queue</);
-  assert.match(markup, />Steer</);
+test('a running composer keeps Send alone — no mode switch in the send slot', () => {
+  const markup = renderComposer(true);
+  assert.deepEqual(sendSlotControls(markup), ['aria-label="Stop"']);
+  assert.doesNotMatch(markup, /Follow-up behavior/);
+  assert.doesNotMatch(markup, /SegmentedControl/);
 });
 
-test('renders authoritative queued messages with one retract action', () => {
-  const markup = renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Composer
-        streaming
-        followUpMode="queue"
-        queuedMessages={{
-          steering: [],
-          followup: [{
-            entryId: 'entry-1',
-            messageId: 'message-1',
-            content: { text: 'do this next' },
+test('keeps Host order visible until the reordered projection arrives', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  let requestedOrder: readonly string[] | undefined;
+
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <Composer
+          streaming
+          queuedMessages={['first', 'second'].map((entryId) => ({
+            entryId,
+            messageId: `message-${entryId}`,
+            content: { text: entryId },
             placement: 'next_turn',
             state: 'queued',
-          }],
-        }}
-        onRetractQueued={() => undefined}
-        onSend={() => undefined}
-        onStop={() => undefined}
-      />
-    </LocaleProvider>,
-  );
+          }))}
+          onPromoteQueuedEntry={() => undefined}
+          onRetractQueuedEntry={() => undefined}
+          onReorderQueuedEntries={(entryIds) => {
+            requestedOrder = entryIds;
+            return new Promise<void>(() => undefined);
+          }}
+          onSend={() => undefined}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+    assert.equal(container.querySelectorAll('[aria-label="Send now"]').length, 2);
+    assert.equal(container.querySelectorAll('[aria-label="Restore to draft"]').length, 2);
+    const grips = [...container.querySelectorAll<HTMLElement>('.maka-composer-queue-grip')];
+    assert.equal(grips.length, 2);
+    const dragStart = new window.Event('dragstart', { bubbles: true });
+    Object.defineProperty(dragStart, 'dataTransfer', {
+      value: { effectAllowed: '', setData() {} },
+    });
+    await act(() => grips[1]?.dispatchEvent(dragStart));
+    const firstRow = grips[0]?.closest('li')?.parentElement;
+    assert.ok(firstRow);
+    await act(() => firstRow.dispatchEvent(new window.Event('drop', { bubbles: true })));
 
-  assert.match(markup, /1 queued message/);
-  assert.match(markup, /do this next/);
-  assert.match(markup, /aria-label="Retract all"/);
-});
-
-test('does not offer retract when only an in-flight steering message remains', () => {
-  const markup = renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Composer
-        streaming
-        followUpMode="steer"
-        queuedMessages={{
-          steering: [{
-            entryId: 'entry-1',
-            messageId: 'message-1',
-            content: { text: 'adjust this run' },
-            placement: 'current_turn',
-            state: 'in_flight',
-          }],
-          followup: [],
-        }}
-        onRetractQueued={() => undefined}
-        onSend={() => undefined}
-        onStop={() => undefined}
-      />
-    </LocaleProvider>,
-  );
-
-  assert.match(markup, /adjust this run/);
-  assert.doesNotMatch(markup, /aria-label="Retract all"/);
+    assert.deepEqual(requestedOrder, ['second', 'first']);
+    assert.deepEqual(
+      [...container.querySelectorAll('li')].map((row) =>
+        row.textContent?.includes('first') ? 'first' : 'second'
+      ),
+      ['first', 'second'],
+    );
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
 });

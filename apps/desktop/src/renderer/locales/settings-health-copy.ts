@@ -44,7 +44,11 @@ export type HealthCenterCopy = {
   lastRead: string;
   refresh: string;
   summaryAria: string;
-  blockers: { send(count: number): string; capability(count: number): string };
+  summaryFilterAria(label: string, count: number, selected: boolean): string;
+  blockers: {
+    send(count: number, totalCount: number): string;
+    capability(count: number, totalCount: number): string;
+  };
   layerAria(label: string): string;
   layerListAria(label: string): string;
   footnote: string;
@@ -86,8 +90,11 @@ const SETTINGS_HEALTH_COPY = {
   zh: {
     loading: '正在加载健康快照', readFailed: '无法读取健康快照', noData: '健康服务未返回数据。', readAgain: '重新读取',
     title: '健康中心', subtitle: '各项能力当前的运行状况检查。',
-    badge: '只读快照', lastRead: '最近一次读取：', refresh: '刷新', summaryAria: '健康摘要',
-    blockers: { send: (count) => `${count} 条健康信号会阻塞发送`, capability: (count) => `${count} 条健康信号会阻塞能力` },
+    badge: '只读快照', lastRead: '最近一次读取：', refresh: '刷新', summaryAria: '按状态筛选健康信号', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 项，当前筛选；再次按下显示全部` : `仅显示${label}健康信号，共 ${count} 项`,
+    blockers: {
+      send: (count, totalCount) => `全部健康信号中，${count}/${totalCount} 条会阻塞发送`,
+      capability: (count, totalCount) => `全部健康信号中，${count}/${totalCount} 条会阻塞能力`,
+    },
     layerAria: (label) => `${label}健康信号`, layerListAria: (label) => `${label}健康信号列表`,
     footnote: '本页不直接执行测试、修复或权限变更；它只汇总当前已记录的健康信号。需要处理问题时，请进入对应设置页或重新触发相关功能。',
     layers: layersZh,
@@ -102,8 +109,11 @@ const SETTINGS_HEALTH_COPY = {
   en: {
     loading: 'Loading health snapshot', readFailed: 'Could not read health snapshot', noData: 'The health service returned no data.', readAgain: 'Read again',
     title: 'Health center', subtitle: 'How each capability is currently doing.',
-    badge: 'Read-only snapshot', lastRead: 'Last read: ', refresh: 'Refresh', summaryAria: 'Health summary',
-    blockers: { send: (count) => `${count} health ${count === 1 ? 'signal blocks' : 'signals block'} sending`, capability: (count) => `${count} health ${count === 1 ? 'signal blocks' : 'signals block'} capabilities` },
+    badge: 'Read-only snapshot', lastRead: 'Last read: ', refresh: 'Refresh', summaryAria: 'Filter health signals by status', summaryFilterAria: (label, count, selected) => selected ? `${label}, ${count}; filter selected. Press again to show all signals` : `Show only ${label.toLowerCase()} health signals, ${count}`,
+    blockers: {
+      send: (count, totalCount) => `Across all health signals, ${count} of ${totalCount} ${count === 1 ? 'blocks' : 'block'} sending`,
+      capability: (count, totalCount) => `Across all health signals, ${count} of ${totalCount} ${count === 1 ? 'blocks' : 'block'} capabilities`,
+    },
     layerAria: (label) => `${label} health signals`, layerListAria: (label) => `${label} health signal list`,
     footnote: 'This page does not run tests, repairs, or permission changes. It only summarizes recorded health signals. Open the relevant settings page or retry the related feature to address an issue.',
     layers: layersEn,
@@ -128,7 +138,20 @@ function englishSignalLabel(signal: HealthSignal): string {
 
 function englishSignalMessage(signal: HealthSignal): string {
   if (signal.scope === 'llm_connection') {
-    if (signal.layer === 'configuration') return signal.status === 'info' ? 'Connection is disabled.' : 'Select a default model.';
+    if (signal.layer === 'configuration') {
+      // Three-way split matching the producer's configuration states
+      // (packages/core/src/health.ts) — the message string is the anchor,
+      // the same way the runtime_probe branch below parses the producer's
+      // detail. Falling back on status alone described an enabled
+      // non-default connection as disabled.
+      if (signal.message === '不是工作区的默认模型来源。') {
+        return 'Not the workspace default model source.';
+      }
+      if (signal.message === '没有启用任何模型。') {
+        return 'No models are enabled on this connection.';
+      }
+      return signal.status === 'info' ? 'Connection is disabled.' : 'Select a default model.';
+    }
     if (signal.layer === 'runtime_probe') {
       return { ok: 'The latest send completed.', info: 'The latest send was stopped by the user.', warning: 'The latest send failed.', error: 'The latest send failed.', unknown: 'Waiting for a send-path runtime probe.' }[signal.status];
     }
@@ -151,6 +174,14 @@ function englishSignalDetail(signal: HealthSignal): string | undefined {
     const errorClass = signal.detail.match(/错误类型=([^·]+)/)?.[1]?.trim();
     const parts = [model && `Model=${model}`, latency && `Latency=${latency}`, errorClass && `Error type=${errorClass}`].filter(Boolean);
     return parts.length > 0 ? parts.join(' · ') : 'Runtime details are available in Usage settings.';
+  }
+  if (signal.scope === 'llm_connection' && signal.layer === 'configuration') {
+    if (signal.message === '不是工作区的默认模型来源。') {
+      return 'Models on this connection stay usable when selected explicitly in a task; the default model for new chats lives in Settings · General.';
+    }
+    if (signal.message === '没有启用任何模型。') {
+      return "Enable at least one model in this connection's detail view under Settings · Models.";
+    }
   }
   return 'See the corresponding settings page for details.';
 }

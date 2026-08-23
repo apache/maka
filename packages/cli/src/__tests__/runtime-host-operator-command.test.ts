@@ -125,6 +125,8 @@ describe('Runtime Host operator commands', () => {
       assert.equal(resolved.operationGrants.includes('access.credential.prepare'), false);
       assert.equal(resolved.operationGrants.includes('access.credential.replace'), false);
       assert.equal(resolved.operationGrants.includes('access.credential.revoke'), false);
+      assert.equal(resolved.operationGrants.includes('access.credential.rotation.prepare'), false);
+      assert.equal(resolved.operationGrants.includes('access.credential.rotation.revoke'), false);
       assert.equal(resolved.operationGrants.includes('host.upgrade.prepare'), false);
       assert.equal(resolved.operationGrants.includes('turn.start'), true);
       assert.equal(resolved.operationGrants.includes('project.catalog.query'), true);
@@ -147,6 +149,50 @@ describe('Runtime Host operator commands', () => {
       'error',
     );
     assert.deepEqual(
+      parseRuntimeHostCommand([
+        'access',
+        'prepare',
+        '--current-fingerprint',
+        'a'.repeat(32),
+        '--root',
+        '/srv/maka',
+        '--expected-root',
+        'a'.repeat(64),
+        '--framed',
+      ]),
+      {
+        kind: 'runtime-host-access-prepare',
+        rootPath: '/srv/maka',
+        expectedRootId: 'a'.repeat(64),
+        currentCredentialFingerprint: 'a'.repeat(32),
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand(['access', 'prepare', '--current-fingerprint', 'a'.repeat(32)]).kind,
+      'error',
+    );
+    assert.deepEqual(parseRuntimeHostCommand(['access', 'list', '--framed']), {
+      kind: 'runtime-host-access-list',
+      framed: true,
+    });
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'access',
+        'revoke',
+        '--credential',
+        'credential-1',
+        '--current-fingerprint',
+        'a'.repeat(32),
+        '--framed',
+      ]),
+      {
+        kind: 'runtime-host-access-revoke',
+        credentialId: 'credential-1',
+        currentCredentialFingerprint: 'a'.repeat(32),
+        framed: true,
+      },
+    );
+    assert.deepEqual(
       Object.keys(HOST_OPERATION_SPECS)
         .filter(
           (operation) =>
@@ -160,6 +206,8 @@ describe('Runtime Host operator commands', () => {
         'access.credential.prepare',
         'access.credential.replace',
         'access.credential.revoke',
+        'access.credential.rotation.prepare',
+        'access.credential.rotation.revoke',
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',

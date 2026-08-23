@@ -35,11 +35,43 @@ import {
   renderMakaPiTranscript,
   reconcileToolsWithStoredMessages,
   replaceTranscriptWithStoredMessages,
+  submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
 } from '../pi-transcript.js';
 
 describe('Maka Pi TUI transcript', () => {
+  test('renders manual compaction from the typed terminal outcome', async () => {
+    for (const [outcome, expected] of [
+      [{ kind: 'compacted' as const, checkpointId: 'checkpoint-1' }, 'Context compacted.'],
+      [{ kind: 'unchanged' as const, reason: 'already_compacted' }, 'Nothing to compact.'],
+      [
+        { kind: 'failed' as const, reason: 'write_failed' },
+        'Context compaction failed: write_failed.',
+      ],
+    ] as const) {
+      const state = createMakaPiTranscriptState();
+      await submitCompactToTranscript({
+        state,
+        driver: {
+          compactSession: async function* () {
+            yield {
+              type: 'complete' as const,
+              id: 'complete-1',
+              turnId: 'compact-1',
+              ts: 1,
+              stopReason: 'end_turn' as const,
+              contextCompactionOutcome: outcome,
+            };
+          },
+        },
+      });
+      const notice = state.entries.at(-1);
+      assert.equal(notice?.kind, 'notice');
+      assert.equal(notice?.kind === 'notice' ? notice.text : '', expected);
+    }
+  });
+
   test('renders stored legacy Automation prompts as read-only provenance', () => {
     const state = createMakaPiTranscriptState();
     replaceTranscriptWithStoredMessages(state, [

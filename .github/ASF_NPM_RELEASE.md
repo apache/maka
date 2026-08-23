@@ -53,7 +53,7 @@ Dispatch **Validate ASF npm package from source RC** from the exact source
 candidate tag:
 
 ```sh
-version=0.1.11
+version="$(node -p 'require("./package.json").version')"
 rc=1
 source_reference_tag="v${version}-incubating-rc${rc}"
 gh workflow run asf-npm-candidate.yml --ref "$source_reference_tag"

@@ -35,9 +35,7 @@ import { useMountedRef } from './use-mounted-ref.js';
 import {
   ICON_SIZE,
   ArrowUp,
-  CornerDownRight,
   FileText,
-  ListEnd,
   ListTodo,
   Network,
   Pencil,
@@ -92,8 +90,6 @@ import {
   ChatComposerInput,
   IconButton,
   Lightbox,
-  SegmentedControl,
-  SegmentedControlItem,
   Token,
   Tooltip,
   useChatPasteAsToken,
@@ -250,13 +246,13 @@ export const Composer = forwardRef<
     continuing?: boolean;
     /** True while the current streaming session is processing a stop request. */
     stopPending?: boolean;
-    followUpMode?: FollowUpMode;
-    queuedMessages?: {
-      steering: readonly MessageQueueEntryProjection[];
-      followup: readonly MessageQueueEntryProjection[];
-    };
-    onFollowUpModeChange?(mode: FollowUpMode): void;
-    onRetractQueued?(): void | Promise<void>;
+    queuedMessages?: readonly MessageQueueEntryProjection[];
+    /** Promote a queued follow-up into the active Turn (立即发送). */
+    onPromoteQueuedEntry?(entryId: string): void | Promise<void>;
+    /** Retract one queued entry back into the draft (收回草稿). */
+    onRetractQueuedEntry?(entry: MessageQueueEntryProjection): void | Promise<void>;
+    /** Reorder the follow-up queue; entryIds is the full intended order. */
+    onReorderQueuedEntries?(entryIds: readonly string[]): void | Promise<void>;
     /** Runtime-only key used to keep unsent drafts isolated per session. */
     draftKey?: string;
     /** Optional host persistence for reload-safe draft scopes. */
@@ -1180,7 +1176,9 @@ export const Composer = forwardRef<
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    void sendCurrent(props.streaming ? props.followUpMode : undefined);
+    // Mid-turn the host queues the draft as a follow-up by default; only
+    // Shift+Enter (see onInputKeyDown) steers it into the active Turn.
+    void sendCurrent();
   }
 
   async function runImportAction(actionId: ComposerImportActionId, action: (() => void | Promise<void>) | undefined) {
@@ -1238,21 +1236,14 @@ export const Composer = forwardRef<
     }
     if (event.key !== 'Enter') return;
     // Alt+Enter always inserts a line break. During a running turn, Shift+Enter
-    // sends once using the opposite Queue/Steer mode.
+    // steers this one draft into the active Turn; plain Enter queues it.
     if (event.altKey || (event.shiftKey && !props.streaming)) {
       event.preventDefault();
       document.execCommand('insertLineBreak');
       return;
     }
     event.preventDefault();
-    const selectedMode = props.followUpMode ?? 'queue';
-    const submitMode =
-      props.streaming && event.shiftKey
-        ? selectedMode === 'queue' ? 'steer' : 'queue'
-        : props.streaming
-          ? selectedMode
-          : undefined;
-    void sendCurrent(submitMode);
+    void sendCurrent(props.streaming && event.shiftKey ? 'steer' : undefined);
   }
 
   function onInputChange(next: string) {
@@ -1330,13 +1321,13 @@ export const Composer = forwardRef<
   // One slot, one button, two states — Astryx's send/stop toggle. Mid-turn an
   // empty draft has nothing to submit, so the slot is Stop; the moment there is
   // a draft, handing it over is the only meaningful action there and the button
-  // returns to Send (the host reads that as steering). Stop is not lost in that
-  // window: Esc interrupts from the input, which is where the hands already are.
+  // returns to Send (the host queues it as a follow-up). Stop is not lost in
+  // that window: Esc interrupts from the input, which is where the hands already
+  // are.
   const stopShown = props.streaming === true && !text.trim();
-  const queueCount =
-    (props.queuedMessages?.steering.length ?? 0) +
-    (props.queuedMessages?.followup.length ?? 0);
-  const selectedFollowUpMode = props.followUpMode ?? 'queue';
+  // The pending plate renders the follow-up queue only: steering entries are
+  // already handed to the active Turn and leave the plate at that moment.
+  const queueCount = props.queuedMessages?.length ?? 0;
   const modelChipLabel = props.modelLabel?.trim() || copy.selectModel;
   // Mid-turn the model and thinking menus stay mounted but locked, each
   // carrying the reason in its own words (model vs thinking level) — the
@@ -1544,7 +1535,9 @@ export const Composer = forwardRef<
         <ComposerMessageQueue
           queuedMessages={props.queuedMessages!}
           copy={copy}
-          onRetractQueued={props.onRetractQueued}
+          onPromoteEntry={props.onPromoteQueuedEntry}
+          onRetractEntry={props.onRetractQueuedEntry}
+          onReorderEntries={props.onReorderQueuedEntries}
         />
       ) : null}
       <form
@@ -2007,30 +2000,6 @@ export const Composer = forwardRef<
               ))}
             </div>
           )}
-          sendActions={(
-            <div className="maka-composer-right-controls">
-              {props.streaming && props.onFollowUpModeChange ? (
-                <SegmentedControl
-                  value={selectedFollowUpMode}
-                  onChange={(value) => props.onFollowUpModeChange?.(value as FollowUpMode)}
-                  label={copy.followUpModeLabel}
-                  size="sm"
-                  className="maka-composer-follow-up-mode"
-                >
-                  <SegmentedControlItem
-                    value="queue"
-                    label={copy.queueLabel}
-                    icon={<ListEnd size={14} aria-hidden="true" />}
-                  />
-                  <SegmentedControlItem
-                    value="steer"
-                    label={copy.steerLabel}
-                    icon={<CornerDownRight size={14} aria-hidden="true" />}
-                  />
-                </SegmentedControl>
-              ) : null}
-            </div>
-          )}
           sendButton={stopShown ? (
             <IconButton
               variant="secondary"
@@ -2047,33 +2016,20 @@ export const Composer = forwardRef<
               icon={<Square size={ICON_SIZE.control} aria-hidden="true" />}
             />
           ) : (
+            // GLOBAL ANCHOR — DO NOT RESTYLE. This Send/Stop slot (its size,
+            // shape, glyph, and placement) is the one control the whole app
+            // navigates by; it has regressed multiple times from well-meaning
+            // "improvements". Queue affordances live in the pending plate
+            // above the card, never in this button.
             <IconButton
               variant="primary"
               type="submit"
               isDisabled={sendDisabled}
-              label={
-                props.streaming
-                  ? selectedFollowUpMode === 'queue'
-                    ? copy.queueLabel
-                    : copy.steerLabel
-                  : copy.sendLabel
-              }
+              label={copy.sendLabel}
               aria-busy={sendPending ? 'true' : undefined}
               data-pending={sendPending ? 'true' : undefined}
-              tooltip={
-                props.streaming
-                  ? selectedFollowUpMode === 'queue'
-                    ? copy.queueTooltip
-                    : copy.steerTooltip
-                  : sendTitle
-              }
-              icon={
-                props.streaming
-                  ? selectedFollowUpMode === 'queue'
-                    ? <ListEnd size={ICON_SIZE.chrome} aria-hidden="true" />
-                    : <CornerDownRight size={ICON_SIZE.chrome} aria-hidden="true" />
-                  : <ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />
-              }
+              tooltip={sendTitle}
+              icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
             />
           )}
         />

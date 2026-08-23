@@ -195,6 +195,74 @@ describe('Provider error classification', () => {
     assert.equal(providerFailureDiagnostic(delayedRateLimit).retryable, true);
   });
 
+  test('classifies provider capacity errors and retries with backoff', () => {
+    const capacity = () =>
+      Object.assign(new Error('The model is currently at capacity due to high demand.'), {
+        name: 'AI_APICallError',
+        data: { error: { code: 'resource-exhausted' } },
+      });
+
+    assert.equal(classifyError(capacity()), 'ProviderCapacity');
+    assert.deepEqual(providerRetryMetadata(capacity()), { retryable: true });
+    assert.deepEqual(
+      providerRetryMetadata(
+        Object.assign(capacity(), {
+          responseHeaders: { 'retry-after': '12' },
+        }),
+      ),
+      { retryable: true, retryAfterMs: 12_000 },
+    );
+    assert.deepEqual(
+      providerRetryMetadata(
+        Object.assign(capacity(), {
+          responseHeaders: { 'retry-after': 'not-a-delay' },
+        }),
+      ),
+      { retryable: true },
+    );
+
+    const topLevelCode = Object.assign(new Error('The model is currently at capacity'), {
+      code: 'resource-exhausted',
+    });
+    assert.equal(classifyError(topLevelCode), 'ProviderCapacity');
+
+    const capacityWithAbortText = Object.assign(new Error('Request aborted by upstream'), {
+      name: 'AI_APICallError',
+      data: { error: { code: 'resource-exhausted' } },
+    });
+    assert.equal(classifyError(capacityWithAbortText), 'ProviderCapacity');
+
+    const capacityWithRateLimitStatus = Object.assign(new Error('Too many requests'), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      data: { error: { code: 'resource-exhausted' } },
+    });
+    assert.equal(classifyError(capacityWithRateLimitStatus), 'ProviderCapacity');
+    assert.deepEqual(providerRetryMetadata(capacityWithRateLimitStatus), { retryable: true });
+    assert.deepEqual(providerFailureDiagnostic(capacityWithRateLimitStatus), {
+      errorClass: 'ProviderCapacity',
+      httpStatus: 429,
+      providerCode: 'resource-exhausted',
+      retryable: true,
+    });
+    assert.equal(
+      providerFailureDiagnostic(
+        Object.assign(new Error('The model is at capacity'), {
+          name: 'AI_APICallError',
+          statusCode: 503,
+          data: { error: { code: 'resource-exhausted' } },
+        }),
+      ).errorClass,
+      'ProviderCapacity',
+    );
+
+    const ambiguousQuotaCode = Object.assign(new Error('resource exhausted'), {
+      name: 'AI_APICallError',
+      data: { error: { code: 'resource_exhausted' } },
+    });
+    assert.notEqual(classifyError(ambiguousQuotaCode), 'ProviderCapacity');
+  });
+
   test('classifies context overflow by predicate, carrier shape, and evidence precedence', () => {
     const overflow = (message: string, extra: Record<string, unknown> = {}) =>
       classifyError(Object.assign(new Error(message), { name: 'AI_APICallError', ...extra }));

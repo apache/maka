@@ -17,6 +17,10 @@
  * under the License.
  */
 
+/**
+ * Stored model-call kinds. `semantic_compact` is decode-only for historical
+ * usage records; the Runtime no longer has a writer or execution path for it.
+ */
 export const MODEL_CALL_KINDS = [
   'main',
   'semantic_compact',
@@ -281,7 +285,6 @@ export interface ContextBudgetDiagnostic {
   enabled: boolean;
   policyName?: string;
   maxHistoryEstimatedTokens?: number;
-  maxHistoryTurns?: number;
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
   keptTurns: number;
@@ -300,89 +303,7 @@ export interface ContextBudgetDiagnostic {
   activeDuplicateToolResults?: number;
   activeArchiveFailures?: number;
   activeEstimatedTokensSaved?: number;
-  semanticCompactEnabled?: boolean;
-  semanticCompactMode?: 'off' | 'validate_only' | 'prepare_step_dry_run' | 'replace';
   compactionDecisions?: CompactionDecisionDiagnostic[];
-  archiveRetrievalMode?: 'eager' | 'history_search_gated';
-  archiveRetrievalEligibleTurns?: number;
-  retrievedArchiveToolResults?: number;
-  retrievedArchiveEstimatedTokens?: number;
-  archiveRetrievalSkipped?: number;
-  archiveRetrievalFailures?: number;
-  archiveRetrievalSkippedReasonCounts?: Record<string, number>;
-  archiveRetrievalFailureReasonCounts?: Record<string, number>;
-  historySearchMatches?: number;
-  historyAroundRetrievedEvents?: number;
-  historyAroundEstimatedTokens?: number;
-  historyAroundSkippedEvents?: number;
-  synthesisCacheEnabled?: boolean;
-  synthesisCacheMode?:
-    | 'off'
-    | 'lookup'
-    | 'read_write'
-    | 'write_only'
-    | 'fallback_archive_retrieval';
-  synthesisCacheBlocksLoaded?: number;
-  synthesisCacheLoadSkipped?: number;
-  synthesisCacheLoadSkippedReasonCounts?: Record<string, number>;
-  synthesisCacheLoadFailures?: number;
-  synthesisCacheBlocksAvailable?: number;
-  synthesisCacheBlocksSelected?: number;
-  synthesisCacheBlockIds?: string[];
-  synthesisCacheEstimatedTokens?: number;
-  synthesisCacheSkipped?: number;
-  synthesisCacheSkippedReasonCounts?: Record<string, number>;
-  synthesisCacheInvalidated?: number;
-  synthesisCacheInvalidationReasonCounts?: Record<string, number>;
-  synthesisCacheWritesAttempted?: number;
-  synthesisCacheBlocksWritten?: number;
-  synthesisCacheWrittenBlockIds?: string[];
-  synthesisCacheWriteEstimatedTokens?: number;
-  synthesisCacheWriteSkipped?: number;
-  synthesisCacheWriteSkippedReasonCounts?: Record<string, number>;
-  synthesisCacheWriteFailures?: number;
-  synthesisCacheEvicted?: number;
-  synthesisCacheEvictionReasonCounts?: Record<string, number>;
-  historyCompactEnabled?: boolean;
-  historyCompactMode?: 'off' | 'deterministic' | 'lookup' | 'read_write';
-  historyCompactBlocksLoaded?: number;
-  historyCompactLoadSkipped?: number;
-  historyCompactLoadSkippedReasonCounts?: Record<string, number>;
-  historyCompactLoadFailures?: number;
-  historyCompactBlocksAvailable?: number;
-  historyCompactBlocksSelected?: number;
-  historyCompactBlockIds?: string[];
-  historyCompactedTurns?: number;
-  historyCompactedEvents?: number;
-  historyCompactedEstimatedTokensBefore?: number;
-  historyCompactedEstimatedTokensAfter?: number;
-  historyCompactSkipped?: number;
-  historyCompactSkippedReasonCounts?: Record<string, number>;
-  historyCompactCoverageHashes?: string[];
-  historyCompactWritesAttempted?: number;
-  historyCompactBlocksWritten?: number;
-  historyCompactWrittenBlockIds?: string[];
-  historyCompactWriteEstimatedTokens?: number;
-  historyCompactWriteSkipped?: number;
-  historyCompactWriteSkippedReasonCounts?: Record<string, number>;
-  historyCompactWriteFailures?: number;
-  highWaterName?: string;
-  highWaterSeq?: number;
-  highWaterReason?:
-    | 'archive_prune'
-    | 'history_search_gated_retrieval'
-    | 'synthesis_cache_write'
-    | 'synthesis_cache_select'
-    | 'history_compact'
-    | 'manual_reset'
-    | 'system_change'
-    | 'tools_change'
-    | 'log_rewrite';
-  highWaterRequestShapeHashBefore?: string;
-  highWaterRequestShapeHashAfter?: string;
-  historyRewriteVersion?: string;
-  historyRewriteResetReason?: string;
-  historyRewriteGate?: string;
 }
 
 export interface ToolInvocationResultSummary {

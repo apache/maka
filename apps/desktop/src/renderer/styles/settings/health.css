@@ -32,7 +32,7 @@
 ============================================================================= */
 
 /* One quiet tabular line instead of a five-tile dashboard. Color only where
-   it is a signal: warning/error counts above zero. */
+   it is a signal: non-zero success/warning/error counts. */
 .settingsHealthSummaryLine {
     margin: 0;
     padding-block: var(--space-2);
@@ -44,12 +44,33 @@
     color: var(--foreground-secondary);
   }
 
+.settingsHealthSummaryLine [data-tone="success"] {
+    color: var(--success-text);
+  }
+
 .settingsHealthSummaryLine [data-tone="warning"] {
     color: var(--warning-text, var(--info-text));
   }
 
 .settingsHealthSummaryLine [data-tone="destructive"] {
     color: var(--destructive-text);
+  }
+
+.settingsStatusSummaryFilters {
+    gap: var(--space-1);
+  }
+
+.settingsStatusSummaryFilter {
+    border: var(--border-width-hairline) solid transparent;
+    font-variant-numeric: inherit;
+    transition:
+      background-color var(--duration-quick) var(--ease-standard),
+      border-color var(--duration-quick) var(--ease-standard);
+  }
+
+.settingsStatusSummaryFilter[aria-pressed="true"] {
+    border-color: var(--border);
+    background: var(--state-selected-bg);
   }
 
 .settingsHealthSignalIdentity,

@@ -59,6 +59,7 @@ function createHarness(options: {
   confirm?: () => Promise<boolean>;
   connections?: LlmConnection[];
   messages?: StoredMessage[];
+  permissionModeResult?: 'ask' | 'bypass';
 } = {}) {
   const activeIdRef = { current: 'session-a' as string | undefined };
   const sessions = [session('session-a'), session('session-b')];
@@ -82,7 +83,10 @@ function createHarness(options: {
         sessions: {
           setPermissionMode: async (sessionId: string, mode: 'ask' | 'bypass') => {
             permissionCalls.push(`${sessionId}:${mode}`);
-            return { ...session(sessionId), permissionMode: mode };
+            return {
+              ...session(sessionId),
+              permissionMode: options.permissionModeResult ?? mode,
+            };
           },
           setModel: async (sessionId: string) => {
             modelCalls.push(sessionId);
@@ -138,6 +142,7 @@ function createHarness(options: {
     pending,
     pendingBySession,
     permissionCalls,
+    sessionsRef,
     thinkingCalls,
     thinkingResult,
     successes,
@@ -149,8 +154,9 @@ describe('AppShell session settings actions', () => {
     const harness = createHarness();
     harness.activeIdRef.current = undefined;
 
-    await harness.actions.setPermissionMode('bypass');
+    const switched = await harness.actions.setPermissionMode('bypass');
 
+    assert.equal(switched, true);
     assert.deepEqual(harness.newTaskPermissionModes, ['bypass']);
     assert.deepEqual(harness.permissionCalls, []);
   });
@@ -164,9 +170,48 @@ describe('AppShell session settings actions', () => {
       },
     });
 
-    await harness.actions.setPermissionMode('bypass');
+    const switched = await harness.actions.setPermissionMode('bypass');
 
+    assert.equal(switched, false);
     assert.equal(confirmations, 1);
+    assert.deepEqual(harness.permissionCalls, []);
+  });
+
+  it('reports a confirmed bypass switch as successful', async () => {
+    const harness = createHarness();
+
+    const switched = await harness.actions.setPermissionMode('bypass');
+
+    assert.equal(switched, true);
+    assert.deepEqual(harness.permissionCalls, ['session-a:bypass']);
+  });
+
+  it('does not report success when the Host returns another permission mode', async () => {
+    const harness = createHarness({ permissionModeResult: 'ask' });
+
+    const switched = await harness.actions.setPermissionMode('bypass');
+
+    assert.equal(switched, false);
+    assert.deepEqual(harness.permissionCalls, ['session-a:bypass']);
+  });
+
+  it('treats an already-active permission mode as successful without prompting', async () => {
+    let confirmations = 0;
+    const harness = createHarness({
+      confirm: async () => {
+        confirmations += 1;
+        return true;
+      },
+    });
+    harness.sessionsRef.current = [{
+      ...session('session-a'),
+      permissionMode: 'bypass',
+    }];
+
+    const switched = await harness.actions.setPermissionMode('bypass');
+
+    assert.equal(switched, true);
+    assert.equal(confirmations, 0);
     assert.deepEqual(harness.permissionCalls, []);
   });
 

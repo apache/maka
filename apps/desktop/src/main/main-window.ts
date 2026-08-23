@@ -22,7 +22,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { AppSettings } from '@maka/core/settings';
-import { desktopAssetPath } from './desktop-assets.js';
+import { readableAppIconPath } from './app-icon-surface.js';
 import { isExternalUrl } from './external-link-guard.js';
 import { readSavedBounds, writeSavedBounds, SAFE_MIN_HEIGHT, SAFE_MIN_WIDTH, type SavedBounds } from './window-state.js';
 import { BrowserViewController } from './browser/controller.js';
@@ -248,7 +248,8 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // pref. This guarantees the BrowserWindow backgroundColor matches the
     // theme variant we're about to screenshot, so the very first frame
     // doesn't capture a light-on-dark or dark-on-light flash.
-    const persistedTheme = (await settingsStore.get()).appearance?.theme ?? 'auto';
+    const persistedAppearance = (await settingsStore.get()).appearance;
+    const persistedTheme = persistedAppearance?.theme ?? 'auto';
     // Quit cleanup permanently closes process-scoped stores. Re-check after
     // asynchronous preparation so an in-flight request cannot attach a new
     // renderer to resources that teardown has already started closing.
@@ -285,12 +286,16 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       ...(bounds.x !== undefined && bounds.y !== undefined ? { x: bounds.x, y: bounds.y } : {}),
       title: 'Maka',
       // PR-GRAY-CARD-LIFT-0 (WAWQAQ msg `0eb99429` 2026-06-20): the
-      // app icon ships as a 1024px PNG under apps/desktop/assets/icon.png.
-      // BrowserWindow accepts a PNG path directly on macOS for the dock
-      // / window title bar; .icns / .ico packaging will come with the
-      // installer build pass. The asset path resolves from the built
-      // dist/main/main.js (two levels up to apps/desktop, then assets).
-      icon: desktopAssetPath({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath }, 'assets', 'icon.png'),
+      // app icon ships as a 1024px PNG under apps/desktop/assets/. BrowserWindow
+      // accepts a PNG path directly on macOS for the dock / window title bar;
+      // .icns / .ico packaging will come with the installer build pass. The
+      // asset path resolves from the built dist/main/main.js (two levels up to
+      // apps/desktop, then assets).
+      //
+      // Windows and Linux draw this icon per window, so a window opened after
+      // the user switched icons must be born with the chosen one — waiting for
+      // the client-settings effect to catch up would show the default first.
+      icon: readableAppIconPath(persistedAppearance?.appIcon),
       // PR-WINDOW-TITLEBAR-0: hide the native title bar so the renderer
       // chrome can extend to the top edge on every platform. macOS keeps
       // `hiddenInset` + traffic-light buttons (top-left); Windows uses

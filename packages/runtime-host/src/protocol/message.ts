@@ -100,6 +100,31 @@ export interface QueueRetractResult {
   readonly retracted: readonly RetractedMessageSnapshot[];
 }
 
+export interface QueueEntryRetractInput {
+  readonly originHostEpoch: string;
+  readonly sessionId: string;
+  readonly entryId: string;
+  readonly retractId: string;
+}
+
+export interface QueueMutationResult {
+  readonly queueRevision: number;
+}
+
+export interface QueueEntryPromoteInput {
+  readonly originHostEpoch: string;
+  readonly sessionId: string;
+  readonly entryId: string;
+  readonly promoteId: string;
+}
+
+export interface QueueEntriesReorderInput {
+  readonly originHostEpoch: string;
+  readonly sessionId: string;
+  readonly reorderId: string;
+  readonly entryIds: readonly string[];
+}
+
 export interface TurnInterruptInput {
   readonly originHostEpoch: string;
   readonly sessionId: string;
@@ -140,6 +165,27 @@ export const MESSAGE_OPERATION_SPECS = {
     errors: MESSAGE_OPERATION_ERRORS,
     decodeInput: decodeQueueRetractInput,
     decodeOutput: decodeQueueRetractResult,
+  }),
+  'queue.entry.retract': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeQueueEntryRetractInput,
+    decodeOutput: decodeQueueMutationResult,
+  }),
+  'queue.entry.promote': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeQueueEntryPromoteInput,
+    decodeOutput: decodeQueueMutationResult,
+  }),
+  'queue.entries.reorder': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeQueueEntriesReorderInput,
+    decodeOutput: decodeQueueMutationResult,
   }),
   'turn.interrupt': defineOperation({
     mode: 'control',
@@ -231,6 +277,62 @@ function decodeQueueRetractResult(value: unknown): QueueRetractResult {
   };
   requireEncodedByteLimit(result, 'queue.retract result', MESSAGE_OPERATION_RESULT_MAX_BYTES);
   return result;
+}
+
+function decodeQueueEntryRetractInput(value: unknown): QueueEntryRetractInput {
+  const record = requireExactRecord(value, 'queue.entry.retract input', [
+    'originHostEpoch',
+    'sessionId',
+    'entryId',
+    'retractId',
+  ]);
+  return {
+    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    entryId: requireEntityId(record.entryId, 'entryId'),
+    retractId: requireEntityId(record.retractId, 'retractId'),
+  };
+}
+
+function decodeQueueMutationResult(value: unknown): QueueMutationResult {
+  const record = requireExactRecord(value, 'queue mutation result', ['queueRevision']);
+  return { queueRevision: requireCount(record.queueRevision, 'queueRevision') };
+}
+
+function decodeQueueEntryPromoteInput(value: unknown): QueueEntryPromoteInput {
+  const record = requireExactRecord(value, 'queue.entry.promote input', [
+    'originHostEpoch',
+    'sessionId',
+    'entryId',
+    'promoteId',
+  ]);
+  return {
+    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    entryId: requireEntityId(record.entryId, 'entryId'),
+    promoteId: requireEntityId(record.promoteId, 'promoteId'),
+  };
+}
+
+function decodeQueueEntriesReorderInput(value: unknown): QueueEntriesReorderInput {
+  const record = requireExactRecord(value, 'queue.entries.reorder input', [
+    'originHostEpoch',
+    'sessionId',
+    'reorderId',
+    'entryIds',
+  ]);
+  const entryIds = requireBoundedArray(record.entryIds, 'reorder entry identities').map((entryId) =>
+    requireEntityId(entryId, 'entryId'),
+  );
+  if (new Set(entryIds).size !== entryIds.length) {
+    throw invalidProtocolFrame('Invalid reorder entry identities');
+  }
+  return {
+    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    reorderId: requireEntityId(record.reorderId, 'reorderId'),
+    entryIds,
+  };
 }
 
 function decodeTurnInterruptInput(value: unknown): TurnInterruptInput {

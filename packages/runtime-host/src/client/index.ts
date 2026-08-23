@@ -92,6 +92,7 @@ export {
   connectOrSpawnRuntimeHost,
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
+  type RuntimeHostElectionDiagnostic,
 } from './connect-or-spawn.js';
 export {
   createRuntimeHostCandidateLaunchBarrier,

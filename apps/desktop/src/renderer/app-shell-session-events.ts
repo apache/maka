@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { SessionEvent } from '@maka/core/events';
+import type { ContextCompactionOutcome, SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
@@ -87,6 +87,11 @@ export function createAppShellSessionEventHandlers(options: {
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
+  onContextCompactionOutcome?: (
+    sessionId: string,
+    turnId: string,
+    outcome: ContextCompactionOutcome,
+  ) => void;
   showModelSetupToast: (
     description: string,
     reason?: string,
@@ -108,6 +113,7 @@ export function createAppShellSessionEventHandlers(options: {
     setMessageQueueBySession,
     onInteractionChanged,
     onExecutionBoundaryChanged,
+    onContextCompactionOutcome,
     showModelSetupToast,
     toastApi,
     notifyRunEnded,
@@ -286,29 +292,7 @@ export function createAppShellSessionEventHandlers(options: {
           }
           return {
             ...current,
-            [sessionId]: {
-              ...(event.queueRevision !== undefined
-                ? { queueRevision: event.queueRevision }
-                : {}),
-              steering:
-                event.steeringEntries?.map((entry) => structuredClone(entry)) ??
-                event.steering.map((text, index) => ({
-                  entryId: `legacy-steering-${index}`,
-                  messageId: `legacy-steering-${index}`,
-                  content: { text },
-                  placement: 'current_turn' as const,
-                  state: 'queued' as const,
-                })),
-              followup:
-                event.followupEntries?.map((entry) => structuredClone(entry)) ??
-                event.followup.map((text, index) => ({
-                  entryId: `legacy-followup-${index}`,
-                  messageId: `legacy-followup-${index}`,
-                  content: { text },
-                  placement: 'next_turn' as const,
-                  state: 'queued' as const,
-                })),
-            },
+            [sessionId]: event.followupEntries?.map((entry) => structuredClone(entry)) ?? [],
           };
         });
         break;
@@ -378,6 +362,9 @@ export function createAppShellSessionEventHandlers(options: {
       case 'complete': {
         onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
+        if (event.contextCompactionOutcome) {
+          onContextCompactionOutcome?.(sessionId, event.turnId, event.contextCompactionOutcome);
+        }
         if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
           const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;
           notifyRunEnded?.({ kind: 'completed', sessionId, body });

@@ -62,17 +62,13 @@ test('queue_update events drive the independent desktop queue projection', () =>
     }],
   });
 
-  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
-    queueRevision: 3,
-    steering: [steeringEntry],
-    followup: [{
-      entryId: 'entry-next',
-      messageId: 'message-next',
-      content: { text: 'do this next' },
-      placement: 'next_turn',
-      state: 'queued',
-    }],
-  });
+  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], [{
+    entryId: 'entry-next',
+    messageId: 'message-next',
+    content: { text: 'do this next' },
+    placement: 'next_turn',
+    state: 'queued',
+  }]);
 
   handlers.handleEvent('session-1', {
     type: 'queue_update',
@@ -84,4 +80,40 @@ test('queue_update events drive the independent desktop queue projection', () =>
     followup: [],
   });
   assert.equal(controller.getState().messageQueueBySession['session-1'], undefined);
+});
+
+test('complete events deliver the durable context compaction outcome to Desktop', () => {
+  const controller = createAppShellSessionUiStateController();
+  const outcomes: unknown[] = [];
+  const handlers = createAppShellSessionEventHandlers({
+    uiLocale: 'en',
+    activeIdRef: { current: 'session-1' },
+    liveTurnBySessionRef: controller.liveTurnBySessionRef,
+    refreshMessages: async () => true,
+    refreshSessions: async () => [],
+    setLiveTurnBySession: controller.setLiveTurnBySession,
+    setInteractionBySession: controller.setInteractionBySession,
+    showModelSetupToast() {},
+    toastApi: { error() {} },
+    onContextCompactionOutcome(sessionId, turnId, outcome) {
+      outcomes.push({ sessionId, turnId, outcome });
+    },
+  });
+
+  handlers.handleEvent('session-1', {
+    type: 'complete',
+    id: 'complete-1',
+    turnId: 'compact-turn-1',
+    ts: 1,
+    stopReason: 'end_turn',
+    contextCompactionOutcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
+  });
+
+  assert.deepEqual(outcomes, [
+    {
+      sessionId: 'session-1',
+      turnId: 'compact-turn-1',
+      outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
+    },
+  ]);
 });

@@ -992,12 +992,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     execution: PendingExecutionClaim,
   ): AsyncIterable<SessionEvent> {
     await this.enterExecutionClaim(execution);
-    if (
-      input.minRecentTurns !== undefined &&
-      (!Number.isSafeInteger(input.minRecentTurns) || input.minRecentTurns < 0)
-    ) {
-      throw new Error('Runtime compaction minRecentTurns must be a non-negative safe integer');
-    }
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
       throw new RuntimeContextCompactError(
         'operation_unavailable',
@@ -1078,7 +1072,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
         turnId: run.turnId,
         runId: run.runId,
         runtimeContext: begin.runtimeContext,
-        ...(input.minRecentTurns !== undefined ? { minRecentTurns: input.minRecentTurns } : {}),
       });
       if (run.isStopped()) return;
       const tokenUsageEvent: TokenUsageEvent = {
@@ -1096,6 +1089,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         turnId: run.turnId,
         ts: this.deps.now(),
         stopReason: 'end_turn',
+        contextCompactionOutcome: result.outcome,
       };
       const invocation = this.compactInvocationContext({
         sessionId,
@@ -1111,7 +1105,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       if (run.isStopped()) return;
       await run.recordStoredSessionEvent(tokenUsageEvent);
       if (run.isStopped()) return;
-      if (shouldAppendContextCompactionFailedOpenNote(result.contextBudget)) {
+      if (result.outcome.kind === 'failed') {
         const note: SystemNoteMessage = {
           type: 'system_note',
           id: this.deps.newId(),
@@ -1687,6 +1681,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
           ? { orchestration: begin.backendInput.orchestration }
           : {}),
         ...(begin.backendInput.toolMode ? { toolMode: begin.backendInput.toolMode } : {}),
+        ...(begin.backendInput.maxSteps !== undefined
+          ? { maxSteps: begin.backendInput.maxSteps }
+          : {}),
         text: input.text,
         ...(begin.backendInput.attachments ? { attachments: begin.backendInput.attachments } : {}),
         ...(begin.backendInput.quotes ? { quotes: begin.backendInput.quotes } : {}),
@@ -2803,7 +2800,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     | 'loadHistoryCompactCheckpoint'
     | 'recordHistoryCompactCheckpoint'
     | 'loadTurnRuntimeEvents'
-    | 'recordSemanticCompactBlock'
   > {
     const { resolveActive, sessionId } = input;
     const runFor = (turnId: string): AgentRun | undefined => {
@@ -2856,9 +2852,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
             },
           }
         : {}),
-      recordSemanticCompactBlock: (block) => {
-        runFor(block.turnId)?.recordSemanticCompactBlock(block);
-      },
     };
   }
 

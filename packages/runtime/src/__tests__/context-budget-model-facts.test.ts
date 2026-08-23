@@ -33,10 +33,7 @@ test('context budgeting prefers a model input limit over its context window', ()
   };
 
   assert.equal(resolveSelectedModelContextWindow(connection, undefined), 600);
-  assert.equal(
-    buildDefaultContextBudgetPolicy(connection, { env: {} })?.maxHistoryEstimatedTokens,
-    450,
-  );
+  assert.equal(buildDefaultContextBudgetPolicy(connection)?.maxHistoryEstimatedTokens, 450);
 });
 
 test('invalid zero input limits do not disable the context-window fallback', () => {

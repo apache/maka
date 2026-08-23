@@ -61,8 +61,10 @@ import {
   issueAccessCredential,
   finalizeAccessCredential,
   prepareAccessCredential,
+  prepareAccessCredentialRotation,
   replaceAccessCredential,
   revokeAccessCredential,
+  revokeAccessCredentialRotation,
   type RuntimeHostAccessAuthority,
 } from './access-authority.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
@@ -197,6 +199,7 @@ export class RuntimeHostKernel {
   #initialConnectionDeadline: NodeJS.Timeout | undefined;
   #initialConnectionDeadlineDeferrals = 0;
   #shutdownRequested = false;
+  #shutdownReason: 'retirement' | undefined;
   #shutdownTask: Promise<void> | undefined;
   #shutdownDeadlineTimer: NodeJS.Timeout | undefined;
   #terminationRequired: RuntimeHostProcessTerminationRequiredError | undefined;
@@ -261,6 +264,10 @@ export class RuntimeHostKernel {
 
   get state(): HostLifecycleState {
     return this.#state;
+  }
+
+  get shutdownReason(): 'retirement' | undefined {
+    return this.#shutdownReason;
   }
 
   get endpoint(): string {
@@ -621,15 +628,6 @@ export class RuntimeHostKernel {
           },
         }),
         'host.upgrade.prepare': async (input) => {
-          if (this.#lifecycle.kind !== 'ephemeral') {
-            return {
-              ok: false,
-              error: {
-                code: 'operation_unavailable',
-                message: 'Runtime Host service lifecycle cannot be replaced by a Client',
-              },
-            };
-          }
           if (input.expectedHostEpoch !== this.hostEpoch) {
             return {
               ok: false,
@@ -642,6 +640,7 @@ export class RuntimeHostKernel {
           if (!input.allowInterruptActiveTasks && this.#hasUpgradeBlockingActivity()) {
             return { ok: true, result: { kind: 'active_tasks' } };
           }
+          this.#shutdownReason = 'retirement';
           this.#requestDrain();
           return { ok: true, result: { kind: 'prepared', pid: process.pid } };
         },
@@ -660,6 +659,14 @@ export class RuntimeHostKernel {
         'access.credential.revoke': async (input) =>
           this.#settleAccessCredentialMutation(
             revokeAccessCredential(this.#options.accessAuthority, input),
+          ),
+        'access.credential.rotation.prepare': async (input) =>
+          this.#settleAccessCredentialMutation(
+            prepareAccessCredentialRotation(this.#options.accessAuthority, input),
+          ),
+        'access.credential.rotation.revoke': async (input) =>
+          this.#settleAccessCredentialMutation(
+            revokeAccessCredentialRotation(this.#options.accessAuthority, input),
           ),
         'access.credential.finalize': async (_input, context) =>
           this.#settleAccessCredentialMutation(
