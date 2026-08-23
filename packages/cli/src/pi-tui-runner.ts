@@ -48,7 +48,7 @@ import {
 } from '@maka/core/slash-command-catalog';
 import { type QueueEnqueueOutcome, type ShellRunUpdate } from '@maka/core/events';
 import {
-  deriveModelSwitchTranscript,
+  latestAssistantModelId,
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
@@ -1462,7 +1462,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const setModel = async (nextModel: string) => {
     if (nextModel === model) return;
-    const previousModel = deriveModelSwitchTranscript(transcriptMessages).lastUsedModel ?? model;
+    const previousModel = latestAssistantModelId(transcriptMessages) ?? model;
     await input.driver.setModel(nextModel);
     model = nextModel;
     // Same-connection switch: scope the choice lookup to the live connection
@@ -1488,7 +1488,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Updates the provider (and thus the thinking variants) and the status line.
   const setModelChoice = async (choice: ModelChoice) => {
     if (choice.model === model && choice.connectionSlug === connectionSlug) return;
-    const previousModel = deriveModelSwitchTranscript(transcriptMessages).lastUsedModel ?? model;
+    const previousModel = latestAssistantModelId(transcriptMessages) ?? model;
     const previousConnectionSlug = connectionSlug;
     const previousChoice = modelChoices?.find(
       (candidate) =>
