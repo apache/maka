@@ -70,6 +70,63 @@ server.setRequestHandler(ListToolsRequestSchema, async ({ params }) => {
                 type: 'string' as const,
               },
             },
+            patternProperties: {
+              '^tag:': {
+                $comment: 'Matches tagged string properties.',
+                type: 'string' as const,
+              },
+            },
+            dependentSchemas: {
+              value: {
+                $schema: 'https://json-schema.org/draft/2020-12/schema',
+                required: ['dependent'],
+              },
+            },
+            dependencies: {
+              value: {
+                $schema: 'http://json-schema.org/draft-07/schema#',
+                required: ['detail'],
+              },
+              detail: ['value'],
+            },
+            prefixItems: [
+              {
+                $comment: 'The first tuple item.',
+                type: 'string' as const,
+              },
+            ],
+            additionalItems: {
+              $comment: 'Constrain additional tuple items.',
+              type: 'integer' as const,
+            },
+            unevaluatedItems: {
+              $schema: 'https://json-schema.org/draft/2020-12/schema',
+              type: 'boolean' as const,
+            },
+            contains: {
+              $schema: 'https://json-schema.org/draft/2020-12/schema',
+              type: 'number' as const,
+            },
+            not: {
+              $comment: 'Disallow the forbidden property.',
+              required: ['forbidden'],
+            },
+            if: {
+              $schema: 'https://json-schema.org/draft/2020-12/schema',
+              required: ['value'],
+            },
+            then: {
+              $comment: 'Require detail when value is present.',
+              required: ['detail'],
+            },
+            else: {
+              $schema: 'https://json-schema.org/draft/2020-12/schema',
+              required: ['fallback'],
+            },
+            unevaluatedProperties: {
+              $comment: 'Constrain unevaluated properties.',
+              type: 'boolean' as const,
+            },
           },
         },
       ],

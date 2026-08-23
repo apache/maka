@@ -1016,6 +1016,21 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
         $id: 'https://example.com/annotated.schema.json',
         type: 'object',
         properties: { value: { type: 'string' } },
+        patternProperties: { '^tag:': { type: 'string' } },
+        dependentSchemas: { value: { required: ['dependent'] } },
+        dependencies: {
+          value: { required: ['detail'] },
+          detail: ['value'],
+        },
+        prefixItems: [{ type: 'string' }],
+        additionalItems: { type: 'integer' },
+        unevaluatedItems: { type: 'boolean' },
+        contains: { type: 'number' },
+        not: { required: ['forbidden'] },
+        if: { required: ['value'] },
+        then: { required: ['detail'] },
+        else: { required: ['fallback'] },
+        unevaluatedProperties: { type: 'boolean' },
       });
     });
 
