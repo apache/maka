@@ -147,6 +147,61 @@ test('today paste captures its composer claim before reading and drops a late re
   assert.deepEqual(successes, []);
 });
 
+test('today paste rechecks its composer claim after an async failure Host fence', async () => {
+  const { root } = installReactRenderer();
+  const host = { profileId: 'profile-a', hostId: 'host-a' };
+  const finalHostRecheck = deferred<typeof host>();
+  const errors: string[] = [];
+  let claimCurrent = true;
+  let hostReads = 0;
+  const services = createFakeModuleHubServices({
+    runtimeHosts: {
+      getDefault: async () => {
+        hostReads += 1;
+        return hostReads === 3 ? finalHostRecheck.promise : host;
+      },
+      subscribeChanges: () => () => undefined,
+    },
+    dailyReview: dailyReviewService(async () => {
+      throw new Error('offline');
+    }),
+  });
+  let controller: DailyReviewController | undefined;
+
+  function Probe() {
+    controller = useDailyReviewController({
+      services,
+      uiLocale: 'en',
+      toastApi: {
+        success: () => undefined,
+        error: (title) => errors.push(title),
+      },
+      appendComposerText: () => undefined,
+      captureActiveComposerClaim: () => ({
+        isCurrent: () => claimCurrent,
+        append: () => undefined,
+      }),
+      isDailyReviewSurfaceActive: () => false,
+    });
+    return null;
+  }
+
+  await act(async () => root.render(createElement(Probe)));
+  const paste = controller!.pasteToday();
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  assert.equal(hostReads, 3);
+
+  claimCurrent = false;
+  finalHostRecheck.resolve(host);
+  await act(async () => paste);
+
+  assert.deepEqual(errors, []);
+});
+
 test('page actions suppress late feedback after leaving Daily Review', async () => {
   const { root } = installReactRenderer();
   const clipboard = deferred<void>();
@@ -233,7 +288,8 @@ test('current default-Host Daily Review failures retain their diagnostic target'
         error: (title, _description, _details, target) =>
           errors.push({
             title,
-            profileId: target && 'profileId' in target ? target.profileId : undefined,
+            profileId:
+              target && 'profileId' in target ? target.profileId : undefined,
           }),
       },
       appendComposerText: () => undefined,
@@ -246,7 +302,9 @@ test('current default-Host Daily Review failures retain their diagnostic target'
   await act(async () => root.render(createElement(Probe)));
   await act(async () => controller!.copyToday());
 
-  assert.deepEqual(errors, [{ title: 'Copy failed', profileId: 'remote-profile' }]);
+  assert.deepEqual(errors, [
+    { title: 'Copy failed', profileId: 'remote-profile' },
+  ]);
 });
 
 afterEach(() => cleanupFakeDom());

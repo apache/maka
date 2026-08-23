@@ -18,7 +18,10 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import type { ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
+import type {
+  ScheduledTask,
+  UpdateScheduledTaskInput,
+} from '@maka/core/scheduled-task';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection, ToastApi } from '@maka/ui';
 import { useMountedRef } from '@maka/ui';
@@ -75,7 +78,9 @@ export function useScheduledTasksController(options: {
   const selectModuleRef = useRef(options.selectModule);
   const toastApiRef = useRef(toastApi);
   const notificationsCopyRef = useRef(notificationsCopy);
-  const refreshRef = useRef<(options?: { shouldShowError?: () => boolean }) => Promise<void>>(async () => {});
+  const refreshRef = useRef<
+    (options?: { shouldShowError?: () => boolean }) => Promise<void>
+  >(async () => {});
   scheduledTasksRef.current = scheduledTasks;
   selectionRef.current = options.selection;
   selectModuleRef.current = options.selectModule;
@@ -108,15 +113,21 @@ export function useScheduledTasksController(options: {
         },
       );
     } catch (error) {
+      if (!mountedRef.current || generation !== refreshGenerationRef.current)
+        return;
+      const operationHost = defaultRuntimeHostOperationHost(error);
+      const hostIsCurrent = operationHost
+        ? await isDefaultRuntimeHostCurrent(
+            services.runtimeHosts,
+            operationHost,
+          )
+        : true;
       if (
         !mountedRef.current ||
-        generation !== refreshGenerationRef.current
-      ) return;
-      const operationHost = defaultRuntimeHostOperationHost(error);
-      if (
-        operationHost &&
-        !(await isDefaultRuntimeHostCurrent(services.runtimeHosts, operationHost))
-      ) return;
+        generation !== refreshGenerationRef.current ||
+        !hostIsCurrent
+      )
+        return;
       if (refreshOptions.shouldShowError?.() ?? true) {
         toastApi.error(
           copy.refreshFailed,
@@ -142,22 +153,27 @@ export function useScheduledTasksController(options: {
         services.runtimeHosts,
         mutation.run,
       );
-      if (
-        !mountedRef.current ||
-        !(await isDefaultRuntimeHostCurrent(services.runtimeHosts, result.host))
-      ) return false;
+      if (!mountedRef.current) return false;
+      const hostIsCurrent = await isDefaultRuntimeHostCurrent(
+        services.runtimeHosts,
+        result.host,
+      );
+      if (!mountedRef.current || !hostIsCurrent) return false;
       await refreshRef.current({ shouldShowError: isSurfaceActive });
-      if (mutation.successTitle && isSurfaceActive()) {
+      if (mountedRef.current && mutation.successTitle && isSurfaceActive()) {
         toastApi.success(mutation.successTitle, mutation.successDetail);
       }
       return true;
     } catch (error) {
       if (!mountedRef.current) return false;
       const operationHost = defaultRuntimeHostOperationHost(error);
-      if (
-        operationHost &&
-        !(await isDefaultRuntimeHostCurrent(services.runtimeHosts, operationHost))
-      ) return false;
+      const hostIsCurrent = operationHost
+        ? await isDefaultRuntimeHostCurrent(
+            services.runtimeHosts,
+            operationHost,
+          )
+        : true;
+      if (!mountedRef.current || !hostIsCurrent) return false;
       if (isSurfaceActive()) {
         toastApi.error(
           mutation.errorTitle,

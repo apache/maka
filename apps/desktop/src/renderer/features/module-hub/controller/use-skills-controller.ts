@@ -193,7 +193,12 @@ export function useSkillsController(
       } catch (error) {
         if (!mountedRef.current || generation !== generationsRef.current.skills)
           return;
-        if (await shouldReportRefreshError(options, error)) {
+        const shouldReport = await shouldReportRefreshError(options, error);
+        if (
+          mountedRef.current &&
+          generation === generationsRef.current.skills &&
+          shouldReport
+        ) {
           reportRuntimeHostError(
             copy.refreshSkillsFailedTitle,
             copy.refreshSkillsFallback,
@@ -239,7 +244,12 @@ export function useSkillsController(
         ) {
           return;
         }
-        if (await shouldReportRefreshError(options, error)) {
+        const shouldReport = await shouldReportRefreshError(options, error);
+        if (
+          mountedRef.current &&
+          generation === generationsRef.current.managedSkillSources &&
+          shouldReport
+        ) {
           reportRuntimeHostError(
             copy.refreshSourcesFailedTitle,
             copy.refreshSourcesFallback,
@@ -285,7 +295,12 @@ export function useSkillsController(
         ) {
           return;
         }
-        if (await shouldReportRefreshError(options, error)) {
+        const shouldReport = await shouldReportRefreshError(options, error);
+        if (
+          mountedRef.current &&
+          generation === generationsRef.current.bundledSkillCatalog &&
+          shouldReport
+        ) {
           reportRuntimeHostError(
             copy.refreshBundledFailedTitle,
             copy.refreshBundledFallback,

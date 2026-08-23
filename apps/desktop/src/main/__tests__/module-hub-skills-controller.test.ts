@@ -417,3 +417,48 @@ test("Skills errors recheck the active surface after an async Host fence", async
   await act(async () => pendingOpen);
   assert.deepEqual(records, []);
 });
+
+test("stale Skills refresh errors do not outlive a newer successful generation", async () => {
+  const { root } = installReactRenderer();
+  const records: ToastRecord[] = [];
+  const host = { profileId: "profile-a", hostId: "host-a" };
+  const staleHostRecheck = deferred<typeof host>();
+  let hostReads = 0;
+  let skillReads = 0;
+  const defaults = createFakeModuleHubServices();
+  const services = createFakeModuleHubServices({
+    runtimeHosts: {
+      ...defaults.runtimeHosts,
+      getDefault: async () => {
+        hostReads += 1;
+        return hostReads === 2 ? staleHostRecheck.promise : host;
+      },
+    },
+    skills: {
+      ...defaults.skills,
+      list: async () => {
+        skillReads += 1;
+        if (skillReads === 1) throw new Error("stale refresh failed");
+        return [skill("fresh")];
+      },
+    },
+  });
+
+  await act(async () => renderController(root, services, input(records)));
+  const staleRefresh = controller().host.onRefreshSkills();
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  assert.equal(hostReads, 2);
+
+  await act(async () => controller().host.onRefreshSkills());
+  assert.deepEqual(
+    controller().host.skills.map(({ id }) => id),
+    ["fresh"],
+  );
+
+  staleHostRecheck.resolve(host);
+  await act(async () => staleRefresh);
+  assert.deepEqual(records, []);
+});

@@ -64,7 +64,12 @@ function task(id: string, title = id): ScheduledTask {
 }
 
 type ToastRecord =
-  | { kind: 'success' | 'error'; title: string; detail?: string; profileId?: string }
+  | {
+      kind: 'success' | 'error';
+      title: string;
+      detail?: string;
+      profileId?: string;
+    }
   | { kind: 'toast'; input: ToastInput };
 
 function toastRecorder(
@@ -170,16 +175,18 @@ test('Scheduled Tasks read uses generation and current-default-Host fences', asy
 
   const stale = controller().refresh();
   await act(async () => controller().refresh());
-  assert.deepEqual(controller().scheduledTasks.map(({ id }) => id), [
-    'current-host-a',
-  ]);
+  assert.deepEqual(
+    controller().scheduledTasks.map(({ id }) => id),
+    ['current-host-a'],
+  );
   await act(async () => {
     first.resolve([task('same-host-stale')]);
     await stale;
   });
-  assert.deepEqual(controller().scheduledTasks.map(({ id }) => id), [
-    'current-host-a',
-  ]);
+  assert.deepEqual(
+    controller().scheduledTasks.map(({ id }) => id),
+    ['current-host-a'],
+  );
 
   const pendingOldHost = controller().refresh();
   currentHost = hostB;
@@ -187,9 +194,61 @@ test('Scheduled Tasks read uses generation and current-default-Host fences', asy
     oldHost.resolve([task('old-host')]);
     await pendingOldHost;
   });
-  assert.deepEqual(controller().scheduledTasks.map(({ id }) => id), [
-    'current-host-a',
-  ]);
+  assert.deepEqual(
+    controller().scheduledTasks.map(({ id }) => id),
+    ['current-host-a'],
+  );
+  assert.deepEqual(records, []);
+});
+
+test('stale Scheduled Task refresh errors do not outlive a newer generation', async () => {
+  const { root } = installReactRenderer();
+  const records: ToastRecord[] = [];
+  const host = { profileId: 'profile-a', hostId: 'host-a' };
+  const staleHostRecheck = deferred<typeof host>();
+  let hostReads = 0;
+  let reads = 0;
+  const defaults = createFakeModuleHubServices();
+  const services = createFakeModuleHubServices({
+    runtimeHosts: {
+      ...defaults.runtimeHosts,
+      getDefault: async () => {
+        hostReads += 1;
+        return hostReads === 2 ? staleHostRecheck.promise : host;
+      },
+    },
+    scheduledTasks: {
+      ...defaults.scheduledTasks,
+      list: async () => {
+        reads += 1;
+        if (reads === 1) throw new Error('stale refresh failed');
+        return [task('fresh')];
+      },
+    },
+  });
+  await act(async () =>
+    renderController(root, services, {
+      selection: activeSelection,
+      selectModule: () => undefined,
+      toastApi: toastRecorder(records),
+    }),
+  );
+
+  const staleRefresh = controller().refresh();
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  assert.equal(hostReads, 2);
+
+  await act(async () => controller().refresh());
+  assert.deepEqual(
+    controller().scheduledTasks.map(({ id }) => id),
+    ['fresh'],
+  );
+
+  staleHostRecheck.resolve(host);
+  await act(async () => staleRefresh);
   assert.deepEqual(records, []);
 });
 
@@ -230,8 +289,7 @@ test('mutations keep titles current, preserve refreshes, and fence confirm conti
   assert.deepEqual(calls, ['list', 'trigger:task-a', 'list']);
   assert.ok(
     records.some(
-      (record) =>
-        record.kind === 'success' && record.detail === 'Latest title',
+      (record) => record.kind === 'success' && record.detail === 'Latest title',
     ),
   );
 
@@ -280,7 +338,8 @@ test('subscriptions refresh, due navigation action is live, disposers run, and n
   let changeHandler:
     | Parameters<ModuleHubServices['scheduledTasks']['subscribeChanges']>[0]
     | undefined;
-  let dueHandler: ((task: Pick<ScheduledTask, 'id' | 'title'>) => void) | undefined;
+  let dueHandler:
+    ((task: Pick<ScheduledTask, 'id' | 'title'>) => void) | undefined;
   let disposals = 0;
   let reads = 0;
   const defaults = createFakeModuleHubServices();

@@ -68,7 +68,10 @@ export interface ActiveComposerClaim {
 /** Structural equivalent of the UI bridge; kept here so @maka/ui stays leaf-only. */
 export interface DailyReviewBridge {
   fetchDay(offsetDays: number, daySpan?: number): Promise<DailyReviewSummary>;
-  runOnce?(input: { range: DailyReviewRange; offsetDays?: number }): Promise<{ archiveId: string }>;
+  runOnce?(input: {
+    range: DailyReviewRange;
+    offsetDays?: number;
+  }): Promise<{ archiveId: string }>;
   listArchives?(): Promise<DailyReviewArchiveSummary[]>;
   getArchive?(archiveId: string): Promise<DailyReviewArchive>;
 }
@@ -125,8 +128,13 @@ async function readCurrentDefaultHost<T>(
 ): Promise<T> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const result = await runOnDefaultRuntimeHost(services.runtimeHosts, operation);
-      if (await isDefaultRuntimeHostCurrent(services.runtimeHosts, result.host)) {
+      const result = await runOnDefaultRuntimeHost(
+        services.runtimeHosts,
+        operation,
+      );
+      if (
+        await isDefaultRuntimeHostCurrent(services.runtimeHosts, result.host)
+      ) {
         return result.value;
       }
     } catch (error) {
@@ -144,7 +152,11 @@ export function createDailyReviewBridge(
   return {
     async fetchDay(offsetDays: number, daySpan?: number) {
       return readCurrentDefaultHost(services, async (host) => {
-        const result = await services.dailyReview.day(offsetDays, daySpan, host);
+        const result = await services.dailyReview.day(
+          offsetDays,
+          daySpan,
+          host,
+        );
         if (!result.ok) throw new Error(result.error.message);
         return result.data;
       });
@@ -179,6 +191,15 @@ export function useDailyReviewController(
     const copy = getShellCopy(input.uiLocale).commandActions;
     const showIfMounted = (predicate: () => boolean = () => true) =>
       mountedRef.current && predicate();
+    const shouldReportOperationFailure = async (
+      error: unknown,
+      predicate: () => boolean = () => true,
+    ) => {
+      if (!showIfMounted(predicate)) return false;
+      if (!(await operationFailureIsCurrent(input.services, error)))
+        return false;
+      return showIfMounted(predicate);
+    };
 
     async function copyMarkdown(
       markdownInput: DailyReviewMarkdownActionInput,
@@ -202,7 +223,11 @@ export function useDailyReviewController(
         if (showIfMounted(shouldShowPageFeedback)) {
           inputRef.current.toastApi.error(
             copy.copyFailedTitle,
-            dailyReviewActionErrorMessage(error, copy.clipboardDenied, input.uiLocale),
+            dailyReviewActionErrorMessage(
+              error,
+              copy.clipboardDenied,
+              input.uiLocale,
+            ),
           );
         }
       }
@@ -213,7 +238,10 @@ export function useDailyReviewController(
       if (showIfMounted(inputRef.current.isDailyReviewSurfaceActive)) {
         inputRef.current.toastApi.success(
           copy.reviewPasted(markdownInput.label),
-          copy.reviewSummary(markdownInput.totals.sessionCount, markdownInput.totals.requestCount),
+          copy.reviewSummary(
+            markdownInput.totals.sessionCount,
+            markdownInput.totals.requestCount,
+          ),
         );
       }
     }
@@ -240,16 +268,26 @@ export function useDailyReviewController(
             ),
           );
         } else if (result.reason === 'invalid_input') {
-          inputRef.current.toastApi.error(copy.saveFailedTitle, copy.invalidExport);
+          inputRef.current.toastApi.error(
+            copy.saveFailedTitle,
+            copy.invalidExport,
+          );
         } else if (result.reason === 'write_failed') {
-          inputRef.current.toastApi.error(copy.saveFailedTitle, copy.writeFailed);
+          inputRef.current.toastApi.error(
+            copy.saveFailedTitle,
+            copy.writeFailed,
+          );
         }
         // A canceled save dialog deliberately has no feedback.
       } catch (error) {
         if (showIfMounted(shouldShowFeedback)) {
           inputRef.current.toastApi.error(
             copy.saveFailedTitle,
-            dailyReviewActionErrorMessage(error, copy.reviewSaveFallback, input.uiLocale),
+            dailyReviewActionErrorMessage(
+              error,
+              copy.reviewSaveFallback,
+              input.uiLocale,
+            ),
           );
         }
       }
@@ -262,7 +300,8 @@ export function useDailyReviewController(
       const shouldShowFeedback = options.shouldShowFeedback ?? (() => true);
       await persistMarkdown(
         markdownInput,
-        () => inputRef.current.isDailyReviewSurfaceActive() && shouldShowFeedback(),
+        () =>
+          inputRef.current.isDailyReviewSurfaceActive() && shouldShowFeedback(),
       );
     }
 
@@ -279,10 +318,14 @@ export function useDailyReviewController(
       try {
         summary = await readToday();
       } catch (error) {
-        if (showIfMounted() && (await operationFailureIsCurrent(input.services, error))) {
+        if (await shouldReportOperationFailure(error)) {
           inputRef.current.toastApi.error(
             copy.copyFailedTitle,
-            dailyReviewActionErrorMessage(error, copy.reviewCopyFallback, input.uiLocale),
+            dailyReviewActionErrorMessage(
+              error,
+              copy.reviewCopyFallback,
+              input.uiLocale,
+            ),
             undefined,
             defaultRuntimeHostDiagnosticTarget(error),
           );
@@ -291,19 +334,30 @@ export function useDailyReviewController(
       }
 
       try {
-        const markdown = formatDailyReviewMarkdown(summary, copy.today, input.uiLocale);
+        const markdown = formatDailyReviewMarkdown(
+          summary,
+          copy.today,
+          input.uiLocale,
+        );
         await input.services.clipboard.writeText(markdown);
         if (showIfMounted()) {
           inputRef.current.toastApi.success(
             copy.reviewCopiedTitle,
-            copy.reviewSummary(summary.totals.sessionCount, summary.totals.requestCount),
+            copy.reviewSummary(
+              summary.totals.sessionCount,
+              summary.totals.requestCount,
+            ),
           );
         }
       } catch (error) {
         if (showIfMounted()) {
           inputRef.current.toastApi.error(
             copy.copyFailedTitle,
-            dailyReviewActionErrorMessage(error, copy.clipboardDenied, input.uiLocale),
+            dailyReviewActionErrorMessage(
+              error,
+              copy.clipboardDenied,
+              input.uiLocale,
+            ),
           );
         }
       }
@@ -318,21 +372,26 @@ export function useDailyReviewController(
       try {
         const summary = await readToday();
         if (!claim.isCurrent() || !showIfMounted()) return;
-        claim.append(formatDailyReviewMarkdown(summary, copy.today, input.uiLocale));
+        claim.append(
+          formatDailyReviewMarkdown(summary, copy.today, input.uiLocale),
+        );
         if (!claim.isCurrent() || !showIfMounted()) return;
         inputRef.current.toastApi.success(
           copy.reviewPastedTitle,
-          copy.reviewSummary(summary.totals.sessionCount, summary.totals.requestCount),
+          copy.reviewSummary(
+            summary.totals.sessionCount,
+            summary.totals.requestCount,
+          ),
         );
       } catch (error) {
-        if (
-          claim.isCurrent() &&
-          showIfMounted() &&
-          (await operationFailureIsCurrent(input.services, error))
-        ) {
+        if (await shouldReportOperationFailure(error, claim.isCurrent)) {
           inputRef.current.toastApi.error(
             copy.pasteFailedTitle,
-            dailyReviewActionErrorMessage(error, copy.reviewUnavailable, input.uiLocale),
+            dailyReviewActionErrorMessage(
+              error,
+              copy.reviewUnavailable,
+              input.uiLocale,
+            ),
             undefined,
             defaultRuntimeHostDiagnosticTarget(error),
           );
@@ -345,17 +404,25 @@ export function useDailyReviewController(
       try {
         summary = await readToday();
       } catch (error) {
-        if (showIfMounted() && (await operationFailureIsCurrent(input.services, error))) {
+        if (await shouldReportOperationFailure(error)) {
           inputRef.current.toastApi.error(
             copy.saveFailedTitle,
-            dailyReviewActionErrorMessage(error, copy.reviewUnavailable, input.uiLocale),
+            dailyReviewActionErrorMessage(
+              error,
+              copy.reviewUnavailable,
+              input.uiLocale,
+            ),
             undefined,
             defaultRuntimeHostDiagnosticTarget(error),
           );
         }
         return;
       }
-      const markdown = formatDailyReviewMarkdown(summary, copy.today, input.uiLocale);
+      const markdown = formatDailyReviewMarkdown(
+        summary,
+        copy.today,
+        input.uiLocale,
+      );
       await persistMarkdown(
         {
           day: summary.day,
