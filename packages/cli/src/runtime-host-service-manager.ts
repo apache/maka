@@ -387,6 +387,7 @@ async function manageRuntimeHostServiceLocked(
         return { schemaVersion: 1, action: input.action, service, retirement };
       }
       prepared = retirement;
+      rootFence = await acquirePreparedRuntimeHostRootRetirementFence(root, prepared.pid, backend);
     } else if (service.active) {
       throw new RuntimeHostServiceManagerError(
         'retirement_failed',
@@ -946,6 +947,31 @@ async function acquireRuntimeHostRootRetirementFence(
       { cause: error },
     );
   }
+}
+
+async function acquirePreparedRuntimeHostRootRetirementFence(
+  root: StorageRootCapability<'interactive'>,
+  expectedPid: number,
+  backend: RuntimeHostServiceBackend,
+): Promise<InteractiveRootOwner> {
+  const deadline = Date.now() + SERVICE_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const owner = await tryAcquireInteractiveRootOwner(root);
+    const status = await backend.status();
+    if (status.pid !== null && status.pid !== expectedPid) {
+      await owner?.close().catch(() => undefined);
+      throw new RuntimeHostServiceManagerError(
+        'retirement_failed',
+        'Runtime Host service identity changed before retirement could stop the prepared Host',
+      );
+    }
+    if (owner) return owner;
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, SERVICE_READY_POLL_MS));
+  }
+  throw new RuntimeHostServiceManagerError(
+    'retirement_failed',
+    'The prepared Runtime Host did not release the State Root writer before retirement timed out',
+  );
 }
 
 async function releaseRuntimeHostRootRetirementFence(owner: InteractiveRootOwner): Promise<void> {
