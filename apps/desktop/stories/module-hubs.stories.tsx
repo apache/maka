@@ -668,6 +668,7 @@ const oauthMcpStatuses: McpServerStatus[] = [
 ];
 
 const withOAuthMcpBridge = withScopedMakaBridge({
+  runtimeHostProfiles: storyRuntimeHostProfilesBridge,
   mcp: {
     getConfig: async () => oauthMcpConfig,
     add: async () => ({ status: 'added' as const, config: oauthMcpConfig }),
