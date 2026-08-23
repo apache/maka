@@ -3465,6 +3465,35 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('/resume opens a picker containing only resumable sessions when none is attached', async () => {
+    const terminal = new FakeTerminal();
+    const resumable = fakeSessionSummary('resumable', '/repo');
+    const unavailable = fakeSessionSummary('unavailable', '');
+    const driver = new SlashCommandDriver([resumable, unavailable]);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    const output = plainTerminalOutput(terminal.output());
+    assert.match(output, /resumabl/);
+    assert.doesNotMatch(output, /unavailable/);
+
+    terminal.input('\x1b');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
   test('surfaces a notice when the foreign-session scan fails', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);

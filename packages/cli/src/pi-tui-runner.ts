@@ -2262,6 +2262,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const resumeSession = async () => {
+    if (!input.driver.getSessionId()) {
+      await showSessionList({ onlyResumable: true });
+      return;
+    }
     if (!input.driver.resumeLatest) {
       throw new Error('Safe-boundary resume is unavailable on this runtime.');
     }
@@ -2279,7 +2283,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
-  const showSessionList = async () => {
+  const showSessionList = async (options: { onlyResumable?: boolean } = {}) => {
     const sessions = await input.driver.listSessions();
     const sessionTree = projectRevisionLinkedSessionTree(
       sessions,
@@ -2337,7 +2341,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         sessionListScope === 'current'
           ? projectedSessions.filter(({ session }) => session.cwd === cwd)
           : projectedSessions;
-      const items: SelectItem[] = visibleSessions.map(({ session, depth }) => {
+      const selectableSessions = options.onlyResumable
+        ? visibleSessions.filter(({ session }) => availability.get(session.id)?.available === true)
+        : visibleSessions;
+      const items: SelectItem[] = selectableSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
         const statusBadge = sessionStatusBadge(session, locale);
         const statusDetail = statusBadge ? ` · ${statusBadge}` : '';
@@ -2402,6 +2409,30 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       );
     };
     renderScope();
+  };
+
+  const announceResumeAvailability = async (): Promise<void> => {
+    const sessionId = input.driver.getSessionId();
+    try {
+      const sessions = await input.driver.listSessions();
+      const session =
+        sessions.find((candidate) => candidate.id === sessionId) ??
+        sessions.find((candidate) => candidate.cwd === cwd);
+      if (!session) return;
+      const availability =
+        (await input.driver.getSessionResumeAvailability?.(session)) ??
+        (await inspectSessionResumeAvailability(session));
+      if (availability.available) {
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: 'This session has an interrupted run — /resume to continue from the safe boundary.',
+        });
+        requestRender();
+      }
+    } catch {
+      // Resume discovery is advisory and must never prevent the TUI from starting.
+    }
   };
 
   const showRewindPicker = async () => {
@@ -3640,6 +3671,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // line discipline and leaks onto the screen as a stray `^[[I` on launch.
     terminal.write(ENABLE_FOCUS_REPORTING);
     if (input.firstRun) void showSetupWizard();
+    setTimeout(() => void announceResumeAvailability(), 0);
   } catch (error) {
     beginClose(error instanceof Error ? error : new Error(String(error)));
   }
