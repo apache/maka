@@ -154,6 +154,60 @@ test('prepares a fresh Agent Graph epoch before durable external Turn admission'
   }
 });
 
+test('turn.start enforces the admitted step cap at the backend boundary', async () => {
+  let backend: StepCapProbeBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => {
+      backends.register('ai-sdk', (context) => {
+        backend = new StepCapProbeBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  try {
+    const turnId = 'turn-step-cap';
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'Keep calling Read.' },
+        maxSteps: 1,
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      turnId,
+    );
+    assert.equal(
+      admission?.execution.kind === 'external_message' ? admission.execution.maxSteps : undefined,
+      1,
+    );
+    assert.equal(backend?.sendInputs[0]?.maxSteps, 1);
+    assert.equal(backend?.providerSteps, 1);
+
+    const runtimeEvents = await fixture.stores.runtimeEventStore.readRuntimeEvents(
+      fixture.sessionId,
+      started.result.turn.runId,
+    );
+    assert.equal(
+      runtimeEvents.filter((event) => event.content?.kind === 'function_call').length,
+      1,
+    );
+    assert.deepEqual(runtimeEvents.at(-1)?.actions?.stateDelta, {
+      stopReason: 'step_limit',
+      failureClass: 'tool_step_cap_reached',
+    });
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('does not advance a finished graph for an ordinary default Turn', async () => {
   let cutovers = 0;
   const fixture = await createFailureFixture({
@@ -5077,6 +5131,52 @@ class LinkedChildAuthorityBackend implements AgentBackend {
   async dispose(): Promise<void> {
     this.releaseWait?.();
   }
+}
+
+class StepCapProbeBackend implements AgentBackend {
+  readonly kind = 'ai-sdk' as const;
+  readonly sendInputs: BackendSendInput[] = [];
+  providerSteps = 0;
+
+  constructor(readonly sessionId: string) {}
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    this.sendInputs.push(input);
+    const stepLimit = input.maxSteps ?? 3;
+    for (let step = 1; step <= stepLimit; step += 1) {
+      this.providerSteps += 1;
+      const toolUseId = `tool-${step}`;
+      yield {
+        type: 'tool_start',
+        id: randomUUID(),
+        turnId: input.turnId,
+        ts: Date.now(),
+        toolUseId,
+        toolName: 'Read',
+        args: { path: `notes-${step}.md` },
+      };
+      yield {
+        type: 'tool_result',
+        id: randomUUID(),
+        turnId: input.turnId,
+        ts: Date.now(),
+        toolUseId,
+        isError: false,
+        content: { kind: 'text', text: 'ok' },
+      };
+    }
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'step_limit',
+    };
+  }
+
+  async stop(): Promise<void> {}
+  async respondToSandboxBoundary(): Promise<void> {}
+  async dispose(): Promise<void> {}
 }
 
 class BlockingRootBackend implements AgentBackend {

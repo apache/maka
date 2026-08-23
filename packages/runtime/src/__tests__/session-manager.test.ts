@@ -5531,6 +5531,92 @@ describe('SessionManager permission mode updates', () => {
     expect(runtimeEvents[2]?.status).toBe('completed');
   });
 
+  test('RuntimeKernel preserves the per-turn step cap through RuntimeRunner', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    let providerSteps = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        providerSteps += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: `tool-${providerSteps}`,
+                toolName: 'Read',
+                input: JSON.stringify({ path: `notes-${providerSteps}.md` }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ] as LanguageModelV4StreamPart[],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    backends.register('ai-sdk', (ctx) =>
+      createTestAiSdkBackend({
+        sessionId: ctx.sessionId,
+        header: ctx.header,
+        appendMessage: ctx.appendMessage ?? (async () => {}),
+        connection: {
+          slug: 'mock-main',
+          providerType: 'anthropic',
+          defaultModel: 'mock-model-id',
+        },
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [
+          {
+            name: 'Read',
+            description: 'Read a file',
+            parameters: z.object({ path: z.string() }),
+            impl: async () => ({ ok: true }),
+          },
+        ],
+        maxSteps: 3,
+        ...(ctx.loadTurnRuntimeEvents ? { loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents } : {}),
+        newId: nextId(),
+        now: nextNow(1),
+      }),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(6_525),
+      runtimeSource: 'test',
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'bypass' }));
+
+    const events = await collectSessionEvents(
+      manager.sendMessage(session.id, {
+        turnId: 'turn-step-cap',
+        text: 'Keep calling Read.',
+        maxSteps: 1,
+      }),
+    );
+
+    expect(providerSteps).toBe(1);
+    expect(
+      events.find((event) => event.type === 'token_usage' && event.runtimeSteps !== undefined),
+    ).toMatchObject({ type: 'token_usage', runtimeSteps: 1 });
+    expect(events.at(-1)).toMatchObject({ type: 'complete', stopReason: 'step_limit' });
+  });
+
   test('executes an approved continuation after a path move without another user message', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
