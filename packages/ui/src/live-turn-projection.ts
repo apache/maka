@@ -373,6 +373,7 @@ export function applyLiveTurnEvent(
       ...(event.activityKind !== undefined ? { activityKind: event.activityKind } : {}),
       ...(event.displayName !== undefined ? { displayName: event.displayName } : {}),
       ...(event.intent !== undefined ? { intent: event.intent } : {}),
+      ...(event.argsPreview !== undefined ? { argsPreview: event.argsPreview } : {}),
       ...projectToolActivityIdentity(event),
       ...(event.stepId !== undefined ? { stepId: event.stepId } : {}),
       status: 'running',

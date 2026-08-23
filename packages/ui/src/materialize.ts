@@ -85,6 +85,12 @@ export interface ToolActivityItem {
   activityKind?: ToolActivityKind;
   displayName?: string;
   intent?: string;
+  /**
+   * Live-only bounded/redacted args subset from the Runtime Host wire (full
+   * args arrive with the durable transcript at turn end). Display formatters
+   * read `args ?? argsPreview`; never rendered as raw JSON.
+   */
+  argsPreview?: unknown;
   origin?: 'provider' | 'code_mode';
   modelVisibility?: 'visible' | 'hidden';
   parentToolCallId?: string;

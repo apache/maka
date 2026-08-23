@@ -814,14 +814,16 @@ export function applyMakaSessionEventToTranscript(
       const suppressed =
         (event.toolName === 'Read' || event.toolName === 'StopBackgroundTask') &&
         !!ref &&
-        !!findShellRunParent(state, ref, event.toolUseId);
-      state.entries.push({
+        !!findShellRunParent(state, ref, event.toolUseId);      state.entries.push({
         kind: 'tool',
         turnId: event.turnId,
         toolUseId: event.toolUseId,
         toolName: event.toolName,
         ...(event.displayName ? { title: event.displayName } : {}),
-        input: projectToolActivityArgs(event.toolName, event.args),
+        // Live Runtime Host frames omit full args; the bounded wire preview
+        // still lets the compact row name the call. The turn-end reconcile
+        // replaces it with the durable full args.
+        input: projectToolActivityArgs(event.toolName, event.args ?? event.argsPreview),
         resultVersion: 0,
         progress: createProgressBuffer(),
         outputDeltas: createOutputBuffer(),

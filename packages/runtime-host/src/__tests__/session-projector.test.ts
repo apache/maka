@@ -798,3 +798,39 @@ function assistant(id: string, text: string): Extract<StoredMessage, { type: 'as
     modelId: 'gpt-5',
   };
 }
+
+test('live tool_start keeps intent and argsPreview, and never fabricates args', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+    [],
+  );
+
+  const update = projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'tool_start',
+      id: 'event-1',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      toolName: 'Bash',
+      intent: '只读探索:检查渲染入口',
+      argsPreview: { command: 'git status --porcelain' },
+    },
+  });
+
+  assert.equal(update.events.length, 1);
+  const event = update.events[0]!;
+  assert.equal(event.type, 'tool_start');
+  if (event.type !== 'tool_start') return;
+  assert.equal(event.intent, '只读探索:检查渲染入口');
+  assert.deepEqual(event.argsPreview, { command: 'git status --porcelain' });
+  assert.equal(event.args, undefined);
+});

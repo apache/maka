@@ -564,6 +564,12 @@ export interface ToolStartEvent extends BaseEvent, ToolActivityIdentity {
   displayName?: string;
   intent?: string;
   /**
+   * Transient, never persisted: a bounded/redacted args subset synthesized at
+   * the Runtime Host client seam (live `tool_start` frames omit full args).
+   * Display formatters read `args ?? argsPreview`; durable replay never has it.
+   */
+  argsPreview?: unknown;
+  /**
    * Id of the assistant step this tool call belongs to (equals the step's
    * AssistantMessage id / the step's text+thinking messageId). Lets model
    * replay group a step's reasoning + text + tool calls into one provider
