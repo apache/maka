@@ -384,7 +384,11 @@ export function reconcileToolsWithStoredMessages(
     entry.result = durable.result ? structuredClone(durable.result) : undefined;
     entry.durationMs = durable.durationMs;
     entry.status = durable.status;
-    entry.hidden = durable.hidden;
+    // An unfinished durable call has no presentation authority: hidden is
+    // live-only state for internal shell polls. A settled durable result may
+    // reveal the entry when it cannot fold into its Bash parent (for example,
+    // an error or a missing parent).
+    if (durable.result !== undefined) entry.hidden = durable.hidden;
     entry.resultVersion += 1;
     changed = true;
     reconciled.push(entry);

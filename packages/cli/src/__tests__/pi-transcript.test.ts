@@ -383,6 +383,29 @@ describe('Maka Pi TUI transcript', () => {
     assert.equal(state.entries.at(-1)?.kind, 'notice');
   });
 
+  test('keeps an in-flight background poll hidden during settlement reconciliation', () => {
+    const { state, messages } = inFlightBackgroundPollFixture();
+    reconcileToolsWithStoredMessages(state, 'turn-1', messages);
+
+    const poll = state.entries.find(
+      (entry) => entry.kind === 'tool' && entry.toolUseId === 'read-bg',
+    );
+    assert.equal(poll?.kind === 'tool' ? poll.hidden : undefined, true);
+    assert.equal(poll?.kind === 'tool' ? poll.status : undefined, 'running');
+  });
+
+  test('drops a reconciled in-flight background poll on abort', () => {
+    const { state, messages } = inFlightBackgroundPollFixture();
+    reconcileToolsWithStoredMessages(state, 'turn-1', messages);
+
+    applyMakaSessionEventToTranscript(state, event({ type: 'abort', reason: 'user_stop' }));
+
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.toolUseId === 'read-bg'),
+      false,
+    );
+  });
+
   test('removes a live poll card that the durable transcript folds into its Bash parent', () => {
     const state = createMakaPiTranscriptState();
     for (const tool of [
@@ -3352,6 +3375,62 @@ function event(input: { type: SessionEvent['type'] } & Record<string, unknown>):
     ts: 1,
     ...input,
   } as SessionEvent;
+}
+
+function inFlightBackgroundPollFixture(): {
+  state: ReturnType<typeof createMakaPiTranscriptState>;
+  messages: StoredMessage[];
+} {
+  const state = createMakaPiTranscriptState();
+  const ref = 'maka://runtime/background-tasks/bg-1';
+  applyMakaSessionEventToTranscript(
+    state,
+    event({ type: 'tool_start', toolUseId: 'bash-bg', toolName: 'Bash', args: {} }),
+  );
+  applyMakaSessionEventToTranscript(
+    state,
+    event({
+      type: 'tool_result',
+      toolUseId: 'bash-bg',
+      isError: false,
+      content: shellRun({ ref }),
+    }),
+  );
+  applyMakaSessionEventToTranscript(
+    state,
+    event({ type: 'tool_start', toolUseId: 'read-bg', toolName: 'Read', args: { ref } }),
+  );
+  return {
+    state,
+    messages: [
+      {
+        type: 'turn_state',
+        id: 'turn-state-1',
+        turnId: 'turn-1',
+        ts: 1,
+        status: 'running',
+        partialOutputRetained: true,
+      },
+      { type: 'tool_call', id: 'bash-bg', turnId: 'turn-1', ts: 2, toolName: 'Bash', args: {} },
+      {
+        type: 'tool_result',
+        id: 'bash-bg-result',
+        turnId: 'turn-1',
+        ts: 3,
+        toolUseId: 'bash-bg',
+        isError: false,
+        content: shellRun({ ref }),
+      },
+      {
+        type: 'tool_call',
+        id: 'read-bg',
+        turnId: 'turn-1',
+        ts: 4,
+        toolName: 'Read',
+        args: { ref },
+      },
+    ],
+  };
 }
 
 function subagentResult(
