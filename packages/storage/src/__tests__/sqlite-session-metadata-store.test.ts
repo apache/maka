@@ -104,6 +104,10 @@ describe('SqliteSessionMetadataStore', () => {
         columns.some(({ name }) => name === 'external_source_session_id'),
         true,
       );
+      assert.equal(
+        columns.some(({ name }) => name === 'last_used_at'),
+        false,
+      );
       const externalOriginIndex = schema
         .prepare(
           `SELECT sql FROM sqlite_master

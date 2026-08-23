@@ -3648,7 +3648,6 @@ export class SqliteSessionMetadataStore {
           session_id,
           payload_json,
           created_at,
-          last_used_at,
           last_message_at,
           name,
           is_flagged,
@@ -3672,14 +3671,13 @@ export class SqliteSessionMetadataStore {
           model,
           metadata_version,
           committed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       )
       .run(
         header.id,
         JSON.stringify(header),
         header.createdAt,
-        header.lastMessageAt ?? header.createdAt,
         header.lastMessageAt ?? null,
         header.name,
         booleanInteger(header.isFlagged),
@@ -3943,7 +3941,6 @@ export class SqliteSessionMetadataStore {
         SET
           payload_json = ?,
           created_at = ?,
-          last_used_at = last_used_at,
           last_message_at = ?,
           name = ?,
           is_flagged = ?,

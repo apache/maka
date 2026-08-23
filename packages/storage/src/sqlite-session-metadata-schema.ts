@@ -1143,6 +1143,19 @@ export function migrateSqliteSessionMetadataDatabase(
   if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
   try {
     const current = readSqliteSessionMetadataSchemaVersion(db);
+    if (
+      current > 0 &&
+      current < 29 &&
+      hasColumn(db, 'session_metadata', 'session_id') &&
+      !hasColumn(db, 'session_metadata', 'last_used_at')
+    ) {
+      db.exec(`
+        ALTER TABLE session_metadata
+          ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0;
+        UPDATE session_metadata
+        SET last_used_at = COALESCE(last_message_at, created_at);
+      `);
+    }
     if (current > SQLITE_SESSION_METADATA_SCHEMA_VERSION) {
       throw new Error(
         `SQLite session metadata schema ${current} is newer than supported version ${SQLITE_SESSION_METADATA_SCHEMA_VERSION}`,
@@ -1156,6 +1169,9 @@ export function migrateSqliteSessionMetadataDatabase(
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
       db.exec(sql);
+      if (version === 29 && hasColumn(db, 'session_metadata', 'last_used_at')) {
+        db.exec('ALTER TABLE session_metadata DROP COLUMN last_used_at');
+      }
       db.prepare(`
         INSERT INTO session_metadata_schema(scope, version)
         VALUES ('session_metadata', ?)
@@ -1167,6 +1183,11 @@ export function migrateSqliteSessionMetadataDatabase(
     if (ownsTransaction) rollback(db);
     throw error;
   }
+}
+
+function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>;
+  return rows.some((row) => row.name === column);
 }
 
 export function readSqliteSessionMetadataSchemaVersion(db: DatabaseSync): number {
