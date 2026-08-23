@@ -32,7 +32,12 @@ const PROTOCOL = {
 
 export type RuntimeHostProjectCommand =
   | { readonly kind: 'list'; readonly rootPath: string }
-  | { readonly kind: 'add'; readonly rootPath: string; readonly path: string };
+  | {
+      readonly kind: 'add';
+      readonly rootPath: string;
+      readonly path: string;
+      readonly prefer: boolean;
+    };
 
 interface RuntimeHostProjectCommandDeps {
   readonly connect: (rootPath: string) => Promise<RuntimeHostConnection>;
@@ -52,6 +57,7 @@ export async function runRuntimeHostProjectCli(
         : await connection.request('project.catalog.mutate', {
             kind: 'register',
             path: resolve(command.path),
+            prefer: command.prefer,
           });
     deps.write(`${JSON.stringify(result, null, 2)}\n`);
     return 0;

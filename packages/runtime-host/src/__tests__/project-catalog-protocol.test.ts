@@ -109,6 +109,23 @@ describe('Project catalog protocol', () => {
     );
   });
 
+  test('decodes an optional project registration preference and rejects non-booleans', () => {
+    const frame = {
+      requestId: 'request-register-preference',
+      operation: 'project.catalog.mutate' as const,
+      input: { kind: 'register' as const, path: projectPath, prefer: false },
+    };
+    assert.deepEqual(decodeClientFrame(frame), frame);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...frame,
+          input: { ...frame.input, prefer: 'false' },
+        }),
+      isProtocolError,
+    );
+  });
+
   test('rejects relative paths, open records, oversized pages, and stale shapes', () => {
     assert.throws(
       () =>

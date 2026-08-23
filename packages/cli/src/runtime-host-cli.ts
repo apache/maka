@@ -127,7 +127,7 @@ export type RuntimeHostCliCommand =
       framed: boolean;
     }
   | { kind: 'runtime-host-project-list'; rootPath?: string }
-  | { kind: 'runtime-host-project-add'; rootPath?: string; path: string }
+  | { kind: 'runtime-host-project-add'; rootPath?: string; path: string; prefer: boolean }
   | {
       kind: 'runtime-host-capability-provider-serve';
       url: string;
@@ -512,6 +512,7 @@ function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {
   }
   let rootPath: string | undefined;
   let path: string | undefined;
+  let prefer = false;
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--root') {
@@ -519,6 +520,10 @@ function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {
       if (typeof parsed !== 'string') return parsed;
       rootPath = parsed;
       index += 1;
+      continue;
+    }
+    if (action === 'add' && argument === '--prefer') {
+      prefer = true;
       continue;
     }
     if (action === 'add' && path === undefined) {
@@ -531,7 +536,12 @@ function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {
     return { kind: 'runtime-host-project-list', ...(rootPath ? { rootPath } : {}) };
   }
   if (!path) return error('runtime-host project add requires a path');
-  return { kind: 'runtime-host-project-add', path, ...(rootPath ? { rootPath } : {}) };
+  return {
+    kind: 'runtime-host-project-add',
+    path,
+    prefer,
+    ...(rootPath ? { rootPath } : {}),
+  };
 }
 
 function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {

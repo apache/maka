@@ -23,6 +23,7 @@ import {
   requireEntityId,
   requireExactRecord,
   requireRecord,
+  requireShapedRecord,
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -136,7 +137,7 @@ type ProjectCatalogListQueryResult =
     };
 
 export type ProjectCatalogMutateInput =
-  | { readonly kind: 'register'; readonly path: string }
+  | { readonly kind: 'register'; readonly path: string; readonly prefer?: boolean }
   | ({ readonly kind: 'register_directory' } & ProjectDirectoryRegisterInput)
   | { readonly kind: 'relink'; readonly projectId: string; readonly path: string }
   | { readonly kind: 'rename'; readonly projectId: string; readonly name: string }
@@ -423,8 +424,19 @@ export function decodeProjectCatalogMutateInput(value: unknown): ProjectCatalogM
   const record = requireRecord(value, 'project catalog mutation input');
   switch (record.kind) {
     case 'register': {
-      const input = requireExactRecord(record, 'project register input', ['kind', 'path']);
-      return { kind: 'register', path: absolutePath(input.path, 'project path') };
+      const input = requireShapedRecord(
+        record,
+        'project register input',
+        ['kind', 'path'],
+        ['prefer'],
+      );
+      return {
+        kind: 'register',
+        path: absolutePath(input.path, 'project path'),
+        ...(Object.hasOwn(input, 'prefer')
+          ? { prefer: boolean(input.prefer, 'project preference') }
+          : {}),
+      };
     }
     case 'register_directory': {
       return {
