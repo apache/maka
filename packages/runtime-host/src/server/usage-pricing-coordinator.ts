@@ -67,10 +67,6 @@ import {
   type CanonicalUsageRepairStats,
 } from './canonical-usage-reader.js';
 
-export type { RunEventReader } from './canonical-usage-reader.js';
-
-const NO_REPAIR: CanonicalUsageRepairStats = { remaining: 0, unreadableEvents: 0 };
-
 /** One bounded repair pass plus the snapshot ticket that owns it. */
 interface UsageRepairEntry {
   readonly snapshot: string | undefined;
@@ -118,8 +114,6 @@ export class HostUsagePricingCoordinator {
     return readCanonicalUsage(this.#stores, query, now, repair);
   }
 
-  }
-
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
     this.#activeUsageQueries += 1;
     try {
@@ -127,7 +121,10 @@ export class HostUsagePricingCoordinator {
       // one qualified pending-repair observation. The fence itself only reads:
       // repair writes advance the snapshot revision, and fencing them in would
       // retry forever whenever more than one pass's worth of runs remain.
-      const repair = await this.#sharedUsageRepair(input.snapshot);
+      // Only the ledger query carries a Session scope; tool logs are not
+      // session-partitioned, so their repair pass is unscoped.
+      const repairScope = 'sessionId' in input.query ? input.query.sessionId : undefined;
+      const repair = await this.#sharedUsageRepair(input.snapshot, repairScope);
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const before = await this.#stores.usageSnapshotRevision();
         const result = await this.#queryUsageResult(input, before, repair);
@@ -174,16 +171,21 @@ export class HostUsagePricingCoordinator {
     }
   }
 
-  #sharedUsageRepair(snapshot: string | undefined): Promise<CanonicalUsageRepairStats> {
+  #sharedUsageRepair(
+    snapshot: string | undefined,
+    sessionId: string | undefined,
+  ): Promise<CanonicalUsageRepairStats> {
     const current = this.#usageRepairTask;
     if (current !== undefined) {
       if (!current.settled) return current.task;
       if (snapshot !== undefined && current.snapshot === snapshot) return current.task;
       if (snapshot === undefined && this.#activeUsageQueries > 1) return current.task;
     }
-    // One global pass: the pending backlog spans sessions, and a paginating
-    // reader must see one consistent qualification across its pages.
-    const task = repairCanonicalUsageProjection(this.#stores, undefined);
+    // One pass per snapshot ticket, scoped to the queried Session: repair
+    // writes must never leak another Session's qualification into this
+    // answer, and a paginating reader must see one consistent qualification
+    // across its pages.
+    const task = repairCanonicalUsageProjection(this.#stores, sessionId);
     const entry: UsageRepairEntry = { snapshot, settled: false, task };
     void task.then(
       () => {
@@ -195,7 +197,6 @@ export class HostUsagePricingCoordinator {
     );
     this.#usageRepairTask = entry;
     return task;
-  }
   }
 
   async #queryUsageResult(

@@ -144,7 +144,6 @@ test('rejects an epoch-39 Host before any domain command', async () => {
   );
   assert.equal(admittedRequest, undefined);
 });
-
 test('rejects the previous compatibility epoch before any domain command', async () => {
   let admittedRequest: RequestFrame | undefined;
   await withForgedHandshakePeer(

@@ -17,12 +17,16 @@
  * under the License.
  */
 
+import { join } from 'node:path';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
-import type { PersistedToolInvocationRecord } from '@maka/storage';
+import {
+  acquireOperationalStateDatabase,
+  type PersistedToolInvocationRecord,
+} from '@maka/storage';
 import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
@@ -220,7 +224,12 @@ export function usageStatsSessions(
   ];
 }
 
-/** Seeds the Host-owned Usage stores the settings screen actually reads. */
+/**
+ * Seeds the Host-owned Usage the settings screen actually reads. The ledger
+ * has no independent write path: attempts are committed to the AgentRun event
+ * stream as `model_call_attempt_recorded` events and projected in via catch-up,
+ * exactly like production writes.
+ */
 export async function seedUsageStatsFixture(workspaceRoot: string, now: number): Promise<void> {
   const capability = await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -228,14 +237,43 @@ export async function seedUsageStatsFixture(workspaceRoot: string, now: number):
     throw new Error('e2e fixture could not acquire the interactive Usage write lease');
   }
   const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+  const lease = acquireOperationalStateDatabase(join(workspaceRoot, 'interactive-root'));
   try {
-    await Promise.all([
-      ...MODEL_CALLS.map((spec) => stores.modelCalls.recordModelCallAttempt(modelCallAttempt(now, spec))),
-      ...TOOL_INVOCATIONS.map((spec) =>
-        stores.telemetry.recordToolInvocation(toolInvocationRecord(now, spec)),
-      ),
-    ]);
+    lease.transaction('write', () => {
+      for (const spec of MODEL_CALLS) {
+        const attempt = modelCallAttempt(now, spec);
+        lease.database
+          .prepare(
+            `
+            INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
+            VALUES (?, ?, ?, '{}')
+          `,
+          )
+          .run(attempt.sessionId, attempt.runId, attempt.completedAt);
+        lease.database
+          .prepare(
+            `
+            INSERT INTO core_agent_run_events(
+              session_id, run_id, sequence, event_id, event_type, event_ts, record_json
+            ) VALUES (?, ?, ?, ?, 'model_call_attempt_recorded', ?, ?)
+          `,
+          )
+          .run(
+            attempt.sessionId,
+            attempt.runId,
+            0,
+            `${attempt.attemptId}-event`,
+            attempt.completedAt,
+            JSON.stringify({ data: attempt }),
+          );
+      }
+    });
+    await stores.modelCalls.catchUpModelCallProjection({ limit: MODEL_CALLS.length });
+    for (const spec of TOOL_INVOCATIONS) {
+      await stores.telemetry.recordToolInvocation(toolInvocationRecord(now, spec));
+    }
   } finally {
+    lease.close();
     await stores.close().catch(() => undefined);
     await owner.close();
   }

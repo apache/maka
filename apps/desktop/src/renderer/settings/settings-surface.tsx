@@ -774,12 +774,6 @@ export function SettingsSurface(props: {
       void reloadUsage(settings.usage.range, selectedRuntimeHost);
     }
   }, [section, selectedRuntimeHost, settings.usage.range]);
-    usageReloadTicketRef.current += 1;
-    setUsageStats(null);
-    if (section === 'usage' && selectedRuntimeHost) {
-      void reloadUsage(settings.usage.range, selectedRuntimeHost);
-    }
-  }, [section, selectedRuntimeHost, settings.usage.range]);
 
   // PR-SETTINGS-HEADER-COPY-MAP-0 (U1): the page header derives its title
   // and description from the section→copy map keyed by the active section,

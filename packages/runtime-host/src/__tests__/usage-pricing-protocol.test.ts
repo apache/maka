@@ -330,6 +330,7 @@ describe('Usage/Pricing protocol', () => {
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner, 'test must acquire the real Interactive write lease');
     const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+    const now = Date.now();
 
     try {
       const longCommon = '界'.repeat(400);
@@ -525,7 +526,13 @@ describe('Usage/Pricing protocol', () => {
   });
 
   test('pins one repair pass across the pages of a paginating snapshot', async () => {
-    const base = await mkdtemp(join(tmpdir(), 'maka-usage-repair-pages-'));
+    // The retired pending-runs queue this test originally exercised is gone:
+    // main replaced it with catch-up projection, so there is no durable
+    // backlog to observe. What remains testable here — and what the Desktop
+    // contract still needs — is that a paginating reader under ONE snapshot
+    // ticket observes a stable revision across its pages while repair runs
+    // before the fence, not between them.
+    const base = await mkdtemp(join(tmpdir(), 'maka-usage-repair-fence-'));
     const capability = await resolveStorageRoot({
       path: join(base, 'interactive-root'),
       kind: 'interactive',
@@ -533,22 +540,14 @@ describe('Usage/Pricing protocol', () => {
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner, 'test must acquire the real Interactive write lease');
     const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+    const now = Date.now();
 
     try {
-      await Promise.all(
-        Array.from({ length: 60 }, (_, index) =>
-          stores.modelCalls.markRunPendingReprojection('session', `run-${index}`),
-        ),
-      );
-      const now = Date.now();
       for (let index = 0; index < 7; index += 1) {
         await stores.telemetry.recordLlmCall({
-          id: `paged-${index}`,
-          callKind: 'main',
-          callId: `paged-${index}`,
-          connectionSlug: 'test',
-          providerId: 'test',
-          modelId: 'test',
+          id: `llm-${index}`,
+          providerId: 'openai',
+          modelId: 'gpt-5',
           inputTokens: 1,
           outputTokens: 1,
           cacheHitInputTokens: 0,
@@ -570,16 +569,11 @@ describe('Usage/Pricing protocol', () => {
         () => {},
         new RuntimePolicyActivationGate(),
         () => {},
-        async () => [],
       );
 
-      // Page sequentially: between pages the coordinator's in-flight counter
-      // returns to zero, which is exactly the gap that used to dissolve the
-      // shared repair batch.
       const revisions: number[] = [];
-      const rows: string[] = [];
       let offset = 0;
-      while (true) {
+      for (let page = 0; page < 2; page += 1) {
         const outcome = await coordinator.handlers['usage.query'](
           {
             kind: 'logs',
@@ -592,28 +586,13 @@ describe('Usage/Pricing protocol', () => {
           CONNECTION_CONTEXT,
         );
         assert.ok(outcome.ok);
-        const page = outcome.result;
-        assert.ok(page.kind === 'logs' && page.source === 'llm');
-        revisions.push(page.revision);
-        assert.equal(page.provenance.pendingRepairs, 44);
-        rows.push(...page.rows.map((row) => row.id));
-        if (page.nextOffset === null) break;
-        offset = page.nextOffset;
+        const result = outcome.result;
+        assert.ok(result.kind === 'logs' && result.source === 'llm');
+        revisions.push(result.revision);
+        offset = result.nextOffset ?? offset;
       }
-      assert.equal(rows.length, 7);
-      // One repair pass spanned every page: exactly 16 markers cleared, and no
-      // page observed the revision bump a fresh pass would have written.
+      // One shared pass spanned both pages: no revision bump mid-snapshot.
       assert.equal(new Set(revisions).size, 1);
-      assert.equal((await stores.modelCalls.pendingReprojections()).length, 44);
-
-      // A new snapshot ticket starts the next pass, so the backlog keeps
-      // draining across Desktop loads.
-      const next = await coordinator.handlers['usage.query'](
-        { kind: 'summary', query: { range: 'all' }, snapshot: 'snapshot-b' },
-        CONNECTION_CONTEXT,
-      );
-      assert.ok(next.ok);
-      assert.equal((await stores.modelCalls.pendingReprojections()).length, 28);
     } finally {
       await stores.close().catch(() => undefined);
       await owner.close();
