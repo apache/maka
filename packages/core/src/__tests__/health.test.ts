@@ -59,18 +59,20 @@ describe('HealthSignal contract', () => {
 
     // With NO default anywhere, a new chat cannot start: that is the
     // actionable, send-blocking configuration gap.
-    const noDefaultAnywhere = healthSignalFromConnection(
-      connection({ defaultModel: '' }),
-      20,
-      { workspaceHasDefaultTarget: false },
-    );
+    const noDefaultAnywhere = healthSignalFromConnection(connection({ defaultModel: '' }), 20, {
+      workspaceHasDefaultTarget: false,
+    });
     expect(noDefaultAnywhere.status).toBe('warning');
     expect(noDefaultAnywhere.blocksSend).toBe(true);
 
     // The informational note must not paper over real per-connection
     // blockers: failing validation still wins on a non-default connection…
     const reauth = healthSignalFromConnection(
-      connection({ defaultModel: '', enabledModelIds: ['glm-4.7'], lastTestStatus: 'needs_reauth' }),
+      connection({
+        defaultModel: '',
+        enabledModelIds: ['glm-4.7'],
+        lastTestStatus: 'needs_reauth',
+      }),
       20,
       { workspaceHasDefaultTarget: true },
     );
