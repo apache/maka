@@ -173,6 +173,38 @@ test('an explicitly fetched empty inventory remains authoritative', () => {
   );
 });
 
+test('a persisted empty discovery result preserves the connection fallback through the public catalog path', () => {
+  const connection: LlmConnection = {
+    slug: 'custom-relay',
+    name: 'Custom relay',
+    providerType: 'openai',
+    defaultModel: 'gpt-5.4',
+    enabled: true,
+    models: [],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  const entries = buildConnectionModelCatalogEntries({
+    connection,
+    fallbackModels: ['gpt-5.4', 'gpt-5-mini'],
+    providerAvailable: true,
+    authOk: true,
+  });
+
+  assert.deepEqual(
+    entries.map(({ id, unavailableReason, provenance }) => [
+      id,
+      unavailableReason,
+      provenance.modelSource,
+    ]),
+    [
+      ['gpt-5.4', 'none', 'fallback'],
+      ['gpt-5-mini', 'none', 'fallback'],
+    ],
+  );
+});
+
 test('connection catalogs preserve user-choice provenance without inventing availability', () => {
   const connection: LlmConnection = {
     slug: 'zai-live',
