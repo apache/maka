@@ -882,7 +882,7 @@ export function projectSessionCatalogRecord(
       hostCwd: header.cwd,
     },
     createdAt: header.createdAt,
-    lastUsedAt: header.lastUsedAt,
+    activityAt: record.activityAt,
     name: header.name,
     isFlagged: header.isFlagged,
     isArchived: header.isArchived,
@@ -1025,7 +1025,7 @@ function encodeCursor(record: SessionCatalogRecord): string {
   return Buffer.from(
     JSON.stringify({
       version: 1,
-      activityAt: catalogActivityAt(record.header),
+      activityAt: record.activityAt,
       sessionId: record.header.id,
     }),
     'utf8',

@@ -190,6 +190,7 @@ export interface SessionMetadataRecord {
 }
 
 export interface SessionMetadataCatalogRecord extends SessionMetadataRecord {
+  readonly activityAt: number;
   readonly lastMessagePreview?: string;
 }
 
@@ -1039,6 +1040,7 @@ export class SqliteSessionMetadataStore {
           metadata.payload_json,
           metadata.metadata_version,
           metadata.committed_at,
+          projection.activity_at,
           projection.last_message_preview
         FROM session_catalog_projection projection
         JOIN session_metadata metadata
@@ -4977,6 +4979,7 @@ interface OrphanedAgentGraphOperatorRow extends OwnedAgentGraphOperatorRow {
 }
 
 interface SessionMetadataCatalogRow extends SessionMetadataRow {
+  activity_at: number;
   last_message_preview: string | null;
 }
 
@@ -5281,9 +5284,13 @@ function decodeRecord(row: SessionMetadataRow): SessionMetadataRecord {
 }
 
 function decodeCatalogRecord(row: SessionMetadataCatalogRow): SessionMetadataCatalogRecord {
+  if (!Number.isSafeInteger(row.activity_at) || row.activity_at < 0) {
+    throw new Error(`Invalid SQLite Session catalog activity for ${row.session_id}`);
+  }
   const lastMessagePreview = decodeCatalogPreview(row.last_message_preview, row.session_id);
   return {
     ...decodeRecord(row),
+    activityAt: row.activity_at,
     ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
   };
 }

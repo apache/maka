@@ -92,7 +92,7 @@ const PROJECTION_REQUIRED_FIELDS = [
   'revision',
   'workspace',
   'createdAt',
-  'lastUsedAt',
+  'activityAt',
   'name',
   'isFlagged',
   'isArchived',
@@ -211,7 +211,7 @@ export interface SessionCatalogProjection {
   readonly revision: number;
   readonly workspace: WorkspaceProjection;
   readonly createdAt: number;
-  readonly lastUsedAt: number;
+  readonly activityAt: number;
   readonly name: string;
   readonly isFlagged: boolean;
   readonly isArchived: boolean;
@@ -646,7 +646,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     revision: positiveRevision(record.revision, 'Session revision'),
     workspace: decodeWorkspaceProjection(record.workspace),
     createdAt: timestamp(record.createdAt, 'Session createdAt'),
-    lastUsedAt: timestamp(record.lastUsedAt, 'Session lastUsedAt'),
+    activityAt: timestamp(record.activityAt, 'Session activityAt'),
     name: sessionName(record.name),
     isFlagged: boolean(record.isFlagged, 'Session flagged state'),
     isArchived: boolean(record.isArchived, 'Session archived state'),

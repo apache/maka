@@ -195,6 +195,7 @@ describe('SQLite SessionStore', () => {
       assert.equal(page.kind, 'page');
       if (page.kind !== 'page') assert.fail('expected a catalog page');
       assert.equal(page.records[0]?.summary.lastMessagePreview, 'hello from SQLite');
+      assert.equal(page.records[0]?.activityAt, 10);
     } finally {
       await store.close?.();
     }

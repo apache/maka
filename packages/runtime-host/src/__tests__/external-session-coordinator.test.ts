@@ -500,6 +500,7 @@ function coordinatorFixture(
       header,
       revision: 1,
       committedAt: 1,
+      activityAt: header.lastMessageAt ?? header.lastUsedAt ?? header.createdAt,
       summary: headerToSummary(header),
     });
     return header;

@@ -1344,6 +1344,7 @@ function headerSnapshot(header: SessionHeader, revision: number) {
 function catalogRecord(header: SessionHeader, revision: number): SessionCatalogRecord {
   return {
     ...headerSnapshot(header, revision),
+    activityAt: header.lastMessageAt ?? header.lastUsedAt ?? header.createdAt,
     summary: headerToSummary(header),
   };
 }

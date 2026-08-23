@@ -126,6 +126,7 @@ export type ProbeSessionRemovalResult =
   | { readonly kind: 'absent' };
 
 export interface SessionCatalogRecord extends SessionHeaderSnapshot {
+  readonly activityAt: number;
   readonly summary: SessionSummary;
 }
 
@@ -726,6 +727,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       revision,
       records: page.records.map((record) => ({
         ...projectHeaderSnapshot(record),
+        activityAt: record.activityAt,
         summary: toCatalogSummary(record.header, record.lastMessagePreview),
       })),
       hasMore: page.hasMore,
@@ -764,6 +766,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     const record = await this.metadata.readCatalogRecord(sessionId);
     return {
       ...projectHeaderSnapshot(record),
+      activityAt: record.activityAt,
       summary: toCatalogSummary(record.header, record.lastMessagePreview),
     };
   }
