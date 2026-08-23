@@ -352,37 +352,53 @@ export class ConnectionCatalogDocumentOwner {
       (item) => item.slug === input.slug && item.providerType === input.providerType,
     );
     const previous = current.connections[index];
+    const retired = new Set(input.retiredModelIds);
     const sameIds = (left: readonly string[], right: readonly string[]) =>
       left.length === right.length && left.every((id, position) => id === right[position]);
-    if (
-      !previous ||
-      sameIds(previous.enabledModelIds, input.enabledModelIds) ||
-      !input.legacyEnabledModelIds.some((seed) => sameIds(previous.enabledModelIds, seed))
-    ) {
+    const isLegacySeed = previous
+      ? input.legacyEnabledModelIds.some((seed) => sameIds(previous.enabledModelIds, seed))
+      : false;
+    const hasRetiredModels = previous
+      ? previous.enabledModelIds.some((id) => retired.has(id)) ||
+        previous.models.some((model) => retired.has(model.id))
+      : false;
+    if (!previous || (!isLegacySeed && !hasRetiredModels)) {
       return committed(current);
     }
-    const fallbackModels = fallbackInventory(previous.providerType);
+    const fallbackModels = isLegacySeed
+      ? fallbackInventory(previous.providerType)
+      : previous.models.filter((model) => !retired.has(model.id));
     const {
       lastTest: _lastTest,
       modelSource: _modelSource,
       modelsFetchedAt: _modelsFetchedAt,
       ...retained
     } = previous;
+    const migratedEnabledModelIds = isLegacySeed
+      ? [...input.enabledModelIds]
+      : previous.enabledModelIds.filter((id) => !retired.has(id));
     const connections = [...current.connections];
+    const relayModelProfiles = pruneRelayModelProfiles(
+      previous.relayModelProfiles,
+      migratedEnabledModelIds,
+    );
     connections[index] = {
       ...retained,
       revision: nextRevision(previous.revision),
-      enabledModelIds: [...input.enabledModelIds],
+      enabledModelIds: migratedEnabledModelIds,
       models: fallbackModels,
-      ...(fallbackModels.length > 0
+      ...(isLegacySeed && fallbackModels.length > 0
         ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
-        : {}),
+        : previous.modelSource === undefined
+          ? {}
+          : { modelSource: previous.modelSource, modelsFetchedAt: previous.modelsFetchedAt }),
+      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
     };
     const target = current.defaultTarget;
     const defaultTarget =
       target !== null &&
       target.connectionId === previous.connectionId &&
-      !input.enabledModelIds.includes(target.modelId)
+      !migratedEnabledModelIds.includes(target.modelId)
         ? { connectionId: previous.connectionId, modelId: input.defaultModelId }
         : target;
     const next = this.nextDocument(current, connections, defaultTarget);

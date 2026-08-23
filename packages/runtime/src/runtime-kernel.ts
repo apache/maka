@@ -1687,6 +1687,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
           ? { orchestration: begin.backendInput.orchestration }
           : {}),
         ...(begin.backendInput.toolMode ? { toolMode: begin.backendInput.toolMode } : {}),
+        ...(begin.backendInput.maxSteps !== undefined
+          ? { maxSteps: begin.backendInput.maxSteps }
+          : {}),
         text: input.text,
         ...(begin.backendInput.attachments ? { attachments: begin.backendInput.attachments } : {}),
         ...(begin.backendInput.quotes ? { quotes: begin.backendInput.quotes } : {}),

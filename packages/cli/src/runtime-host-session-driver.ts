@@ -176,6 +176,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #startedTurnReattachTails = new Map<number, Promise<void>>();
   #sessionGeneration = 0;
   #channelGeneration = 0;
+  #liveTranscriptRefreshSequence = 0;
   readonly #startedTurnListeners = new Set<(turn: MakaAttachedSessionTurn) => void>();
   readonly #goalListeners = new Set<(goal: GoalProjection | null) => void>();
   readonly #pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
@@ -1028,6 +1029,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       },
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
       onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn),
+      onToolResult: (turnId) => this.#refreshLiveTranscript(sessionId, sessionGeneration, turnId),
       onTranscriptReplaced: (turnId, messages) =>
         this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect'),
       onGoalChanged: (goal) => {
@@ -1075,6 +1077,22 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .then((messages) => {
         if (this.#sessionId !== turn.sessionId) return;
         this.#publishTranscriptReplacement(turn.sessionId, turn.turnId, messages, 'terminal');
+      })
+      .catch(() => undefined);
+  }
+
+  #refreshLiveTranscript(sessionId: string, sessionGeneration: number, turnId: string): void {
+    const refreshSequence = ++this.#liveTranscriptRefreshSequence;
+    void loadCurrentMessages(this.#connection, sessionId)
+      .then((messages) => {
+        if (
+          this.#sessionId !== sessionId ||
+          this.#sessionGeneration !== sessionGeneration ||
+          refreshSequence !== this.#liveTranscriptRefreshSequence
+        ) {
+          return;
+        }
+        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'tool_result');
       })
       .catch(() => undefined);
   }

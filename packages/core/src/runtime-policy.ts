@@ -308,6 +308,7 @@ export interface MigrateSystemSeedInput {
   readonly legacyEnabledModelIds: readonly (readonly string[])[];
   readonly enabledModelIds: readonly string[];
   readonly defaultModelId: string;
+  readonly retiredModelIds: readonly string[];
 }
 
 export interface SetDefaultConnectionTargetInput {

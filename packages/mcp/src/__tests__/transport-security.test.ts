@@ -69,6 +69,46 @@ describe('transport security provenance', () => {
     );
   });
 
+  it('refuses IPv6-mapped spellings of machine-local and private destinations', () => {
+    // WHATWG canonicalizes `[::ffff:127.0.0.1]` to `[::ffff:7f00:1]` before
+    // the gate ever sees it — the classification is by parsed bytes, so
+    // every spelling of the same address lands on the same side. Note the
+    // asymmetry: these are caught as PRIVATE (isLoopbackHost deliberately
+    // stays spelling-strict, so cleartext to the mapped loopback is still
+    // refused by the http branch).
+    for (const url of [
+      'https://[::ffff:127.0.0.1]:8443/latest/meta-data/',
+      'https://[::ffff:192.168.1.1]/router',
+      'https://[0:0:0:0:0:ffff:10.0.0.5]/internal',
+      'https://[64:ff9b::192.168.1.1]/nat64',
+      'https://[fe9a::1]/link-local',
+      // Deprecated IPv4-compatible ::/96 — the third byte-level embedding,
+      // arriving through the same remote-provenance path a real one would.
+      'https://[::192.168.1.1]/compat',
+      'https://[::127.0.0.1]:8443/compat-loopback',
+      'https://[::]/unspecified',
+      'https://[::ffff:0:0]:8443/mapped-unspecified',
+      'https://[64:ff9b:1:c0a8:1:100::]/local-nat64',
+      'https://[0::ffff:0:192.168.1.1]/siit',
+      // `https://0/` canonicalizes to 0.0.0.0 and reaches the local machine.
+      'https://0.0.0.0:8443/unspecified-v4',
+      'https://0/short-form',
+    ]) {
+      assert.throws(() => assertTransportSecurity(new URL(url), remoteRoot), /refused remotely/u);
+    }
+    // Public IPv6 stays reachable — that is what real OAuth endpoints on
+    // IPv6 look like.
+    assert.doesNotThrow(() =>
+      assertTransportSecurity(new URL('https://[2606:4700::1]/token'), remoteRoot),
+    );
+    // Cleartext to the mapped loopback is refused by the strict loopback
+    // predicate, exactly as before.
+    assert.throws(
+      () => assertTransportSecurity(new URL('http://[::ffff:127.0.0.1]:8080/mcp'), remoteRoot),
+      /non-loopback hosts require https/u,
+    );
+  });
+
   it('never allows cleartext http off the machine', () => {
     assert.throws(
       () => assertTransportSecurity(new URL('http://api.example.com/mcp'), remoteRoot),

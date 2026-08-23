@@ -128,7 +128,20 @@ function englishSignalLabel(signal: HealthSignal): string {
 
 function englishSignalMessage(signal: HealthSignal): string {
   if (signal.scope === 'llm_connection') {
-    if (signal.layer === 'configuration') return signal.status === 'info' ? 'Connection is disabled.' : 'Select a default model.';
+    if (signal.layer === 'configuration') {
+      // Three-way split matching the producer's configuration states
+      // (packages/core/src/health.ts) — the message string is the anchor,
+      // the same way the runtime_probe branch below parses the producer's
+      // detail. Falling back on status alone described an enabled
+      // non-default connection as disabled.
+      if (signal.message === '不是工作区的默认模型来源。') {
+        return 'Not the workspace default model source.';
+      }
+      if (signal.message === '没有启用任何模型。') {
+        return 'No models are enabled on this connection.';
+      }
+      return signal.status === 'info' ? 'Connection is disabled.' : 'Select a default model.';
+    }
     if (signal.layer === 'runtime_probe') {
       return { ok: 'The latest send completed.', info: 'The latest send was stopped by the user.', warning: 'The latest send failed.', error: 'The latest send failed.', unknown: 'Waiting for a send-path runtime probe.' }[signal.status];
     }
@@ -151,6 +164,14 @@ function englishSignalDetail(signal: HealthSignal): string | undefined {
     const errorClass = signal.detail.match(/错误类型=([^·]+)/)?.[1]?.trim();
     const parts = [model && `Model=${model}`, latency && `Latency=${latency}`, errorClass && `Error type=${errorClass}`].filter(Boolean);
     return parts.length > 0 ? parts.join(' · ') : 'Runtime details are available in Usage settings.';
+  }
+  if (signal.scope === 'llm_connection' && signal.layer === 'configuration') {
+    if (signal.message === '不是工作区的默认模型来源。') {
+      return 'Models on this connection stay usable when selected explicitly in a task; the default model for new chats lives in Settings · General.';
+    }
+    if (signal.message === '没有启用任何模型。') {
+      return "Enable at least one model in this connection's detail view under Settings · Models.";
+    }
   }
   return 'See the corresponding settings page for details.';
 }

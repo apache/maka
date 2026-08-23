@@ -277,16 +277,19 @@ export interface MakaSlashCommandMetadata {
  * /exit with arguments, which isExitPrompt does not match — can still reach
  * the disposition, where it falls through to 'refuse'.
  */
-export type SlashCommandMidTurnDisposition = 'local' | 'refuse' | 'intercepted';
+export type SlashCommandMidTurnDisposition = 'local' | 'switch' | 'refuse' | 'intercepted';
 
 export interface MakaSlashCommand extends MakaSlashCommandMetadata {
   /**
    * Mid-turn disposition. 'local' requires the handler to be independent of
    * the running turn — it must not enter runControl, whose busy gate would
-   * silently no-op. 'refuse' is the safe default for anything that mutates
-   * session state or opens a picker the turn would race. Declared on every
-   * handler so a newly added command must state its answer instead of
-   * inheriting one from the routing call site.
+   * silently no-op. 'switch' is allowed mid-turn because it detaches this
+   * client's VIEW from the running Turn without touching it (Runtime Host
+   * mode keeps the Turn alive; #3380) — its handler must route through the
+   * detach path, not runControl, while a turn runs. 'refuse' is the safe
+   * default for anything that mutates session state or opens a picker the
+   * turn would race. Declared on every handler so a newly added command must
+   * state its answer instead of inheriting one from the routing call site.
    */
   midTurn: SlashCommandMidTurnDisposition;
   run(parts: string[], rawTail: string | undefined, context: { idleMs: number }): void;

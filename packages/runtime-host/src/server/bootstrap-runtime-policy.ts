@@ -71,6 +71,7 @@ export async function ensureBootstrapRuntimePolicy(input: {
         legacyEnabledModelIds: LEGACY_OPENCODE_FREE_SEEDS,
         enabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
         defaultModelId: OPENCODE_FREE_DEFAULT_MODEL,
+        retiredModelIds: retiredOpencodeFreeModelIds(),
       });
     } catch (error) {
       input.onDeferredError?.(error);
@@ -195,6 +196,11 @@ const LEGACY_OPENCODE_FREE_SEEDS: readonly (readonly string[])[] = [
   ['nemotron-3-ultra-free'],
   ['nemotron-3-ultra-free', 'mimo-v2.5-free', 'deepseek-v4-flash-free'],
 ];
+
+function retiredOpencodeFreeModelIds(): readonly string[] {
+  const current = new Set(OPENCODE_FREE_DEFAULT_ENABLED_MODELS);
+  return [...new Set(LEGACY_OPENCODE_FREE_SEEDS.flat())].filter((id) => !current.has(id));
+}
 
 async function removeFailedBootstrapConnection(
   stores: RuntimePolicyStoresWriter,
