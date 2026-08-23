@@ -3488,7 +3488,8 @@ describe('Maka Pi TUI runner', () => {
     assert.match(output, /resumabl/);
     assert.doesNotMatch(output, /unavailable/);
 
-    terminal.input('\x1b');
+    terminal.input('\r');
+    await waitFor(() => driver.resumeCalls === 1);
     terminal.input('/exit');
     terminal.input('\r');
     await run;

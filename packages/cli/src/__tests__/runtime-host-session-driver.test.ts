@@ -1768,6 +1768,15 @@ class FakeConnection {
         goal: this.goalQueryResults.shift() ?? null,
       } as OperationOutput<K>;
     }
+    if (operation === 'turn.resume.query') {
+      return {
+        sessionId: (input as OperationInput<'turn.resume.query'>).sessionId,
+        disposition: 'ready',
+        sourceRunId: 'source-run-1',
+        sourceTurnId: 'source-turn-1',
+        sourceRuntimeEventHighWater: 1,
+      } as OperationOutput<K>;
+    }
     if (operation === 'session.configuration.update') {
       const update = input as OperationInput<'session.configuration.update'>;
       return {

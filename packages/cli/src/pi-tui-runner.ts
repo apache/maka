@@ -2387,9 +2387,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           void importForeignSession(foreign);
           return;
         }
-        if (availability.get(item.value)?.available === false) return;
+        if (options.onlyResumable && availability.get(item.value)?.available === false) return;
         closeOverlay();
-        void goToSession(item.value);
+        void (async () => {
+          await goToSession(item.value);
+          if (options.onlyResumable) await runControl(resumeSession);
+        })().catch(reportError);
       };
       list.onCancel = () => closeOverlay();
       sessionPickerOverlayOpen = true;
