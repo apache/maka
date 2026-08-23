@@ -2609,6 +2609,31 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.doesNotMatch(output.value[0]?.text ?? '', /super-secret-value/);
   });
 
+  test('keeps PiP-only screenshots out of semantic action model output', () => {
+    const [tool] = buildComputerUseTools({ backend: fakeBackend() });
+    const output = {
+      text: 'persisted result',
+      modelText: 'fresh semantic observation',
+      screenshot: { base64: 'AA==', mimeType: 'image/png' },
+    };
+    const project = (input: unknown) =>
+      tool.toModelOutput?.({
+        toolCallId: 'tool-1',
+        input,
+        output,
+      }) as { value: Array<{ type: string }> };
+
+    assert.deepEqual(project({ action: 'element_sequence' }).value, [
+      { type: 'text', text: 'fresh semantic observation' },
+    ]);
+    assert.deepEqual(project({ action: 'observe', include_screenshot: false }).value, [
+      { type: 'text', text: 'fresh semantic observation' },
+    ]);
+    assert.equal(project({ action: 'observe', include_screenshot: true }).value[1]?.type, 'file');
+    assert.equal(project({ action: 'screenshot' }).value[1]?.type, 'file');
+    assert.equal(project({ action: 'left_click' }).value[1]?.type, 'file');
+  });
+
   test('S18: an already-aborted signal short-circuits before any dispatch', async () => {
     const ac = new AbortController();
     ac.abort();

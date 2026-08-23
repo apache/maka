@@ -330,8 +330,9 @@ export const computerWireParams = z
  * Raw result of the `computer` tool. `text` is the S16-safe summary the runtime
  * records to session history (via coerceResultContent's text-only projection:
  * this object has no `kind`, so only `text` survives). `screenshot`, when
- * present, rides along ONLY to feed `toModelOutput` — it never enters `text`, so
- * the bounded frame base64 stays out of session history.
+ * present, feeds the local presentation layer and, only for explicitly visual
+ * actions, `toModelOutput`. It never enters `text`, so the bounded frame base64
+ * stays out of session history.
  */
 interface ComputerToolResult {
   text: string;
@@ -339,6 +340,31 @@ interface ComputerToolResult {
   error?: ComputerUseErrorCode;
   failureClass?: 'ambiguous_target';
   screenshot?: { base64: string; mimeType: string };
+}
+
+const MODEL_SCREENSHOT_ACTIONS: ReadonlySet<string> = new Set([
+  'screenshot',
+  'zoom',
+  'mouse_move',
+  'left_click',
+  'right_click',
+  'middle_click',
+  'double_click',
+  'triple_click',
+  'left_mouse_down',
+  'left_mouse_up',
+  'left_click_drag',
+  'type',
+  'key',
+  'hold_key',
+  'scroll',
+]);
+
+function shouldSendScreenshotToModel(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false;
+  const record = input as { action?: unknown; include_screenshot?: unknown };
+  if (record.action === 'observe') return record.include_screenshot === true;
+  return typeof record.action === 'string' && MODEL_SCREENSHOT_ACTIONS.has(record.action);
 }
 
 export interface ComputerUseToolSet extends Array<MakaTool> {
@@ -2711,11 +2737,11 @@ export function buildComputerUseTools(deps: {
                 state.reobserveRequired();
               }
             }
-            // Carry the screenshot base64 on the raw result (which becomes the ai-sdk
-            // tool `output`) so `toModelOutput` below can hand the vision model an image
-            // block. Kept OFF `text`: coerceResultContent projects this object to a
-            // text-only session-log entry (no `kind` ⇒ only `text` survives), so the
-            // bounded frame never bloats history.
+            // Carry the screenshot base64 on the raw result for the local mirror.
+            // `toModelOutput` below sends it to the provider only for actions that
+            // explicitly need pixels. Kept OFF `text`: coerceResultContent projects
+            // this object to a text-only session-log entry (no `kind` => only `text`
+            // survives), so the bounded frame never bloats durable history.
             let bindingResult: BindingFailureReason | undefined;
             if (boundAction) bindingResult = consumeBoundAction(record, boundAction);
             if (bindingResult && !hasUncertainDeliveredOutcome(result)) {
@@ -2785,11 +2811,11 @@ export function buildComputerUseTools(deps: {
         releasePendingInvocation();
       }
     },
-    // Map the raw result into model-visible content: the summary as text, plus the
-    // screenshot as a native file block when present. Robust to the runtime's synthetic
-    // failure return shape ({ error }) from permission/loop-gate blocks, which
-    // reaches here as `output` too.
-    toModelOutput: ({ output }) => {
+    // Map the raw result into model-visible content. Semantic actions already
+    // return a fresh accessibility observation, so their automatically captured
+    // PiP frame stays local. Explicit visual requests and legacy coordinate
+    // actions still receive the native image block.
+    toModelOutput: ({ input, output }) => {
       const o = (output ?? {}) as Partial<ComputerToolResult> & { error?: unknown };
       const text =
         typeof o.modelText === 'string'
@@ -2803,7 +2829,7 @@ export function buildComputerUseTools(deps: {
         type: 'content',
         value: [
           { type: 'text', text },
-          ...(o.screenshot
+          ...(o.screenshot && shouldSendScreenshotToModel(input)
             ? [
                 {
                   type: 'file' as const,
