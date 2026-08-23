@@ -1,6 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { userEvent } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { ToastProvider, useToast } from '@maka/ui';
 import type {
   AppSettings,
@@ -8,6 +27,7 @@ import type {
   ThemePalette,
   ThemePreference,
   UpdateAppSettingsResult,
+  UsageRange,
   UsageStats,
 } from '@maka/core/settings';
 import type {
@@ -596,6 +616,7 @@ let storyRuntimeHostSettings = createDefaultSettings();
 
 const makaBridge = {
   runtimeHostProfiles: {
+    getDefaultHost: async () => ({ profileId: 'local', hostId: 'storybook-local-host' }),
     getSnapshot: async () => runtimeHostProfiles,
     addAndEnable: async () => ({ kind: 'connected' as const, snapshot: runtimeHostProfiles }),
     remove: async () => runtimeHostProfiles,
@@ -631,13 +652,6 @@ const makaBridge = {
   // mount, the Claude card never appears, and every other card stays at its
   // static 可用 label. Each card's login modal has its own fixture in
   // Product/Settings/Providers.
-  claudeSubscription: {
-    isExperimentalEnabled: async () => true,
-    getAccountState: async () => ({
-      runtimeState: 'authenticated',
-      profile: { email: 'claude@example.com' },
-    }),
-  },
   openAiCodex: {
     getAccountState: async () => ({
       runtimeState: 'authenticated',
@@ -710,9 +724,17 @@ const makaBridge = {
   // judge.
   externalSessions: {
     listSources: async () => ({ adapterIds: ['codex'] }),
-    list: async (input: { includeArchived?: boolean; cursor?: string }) => {
+    list: async (input: { includeArchived?: boolean; cursor?: string; text?: string }) => {
+      // The stub honours `text` because the real Host applies it before
+      // paging. A stub that ignored it would render a search box that looks
+      // wired and is not, and the story would certify that.
+      const term = input.text?.trim().toLowerCase();
       const visible = externalConversations.filter(
-        (conversation) => input.includeArchived || !conversation.archived,
+        (conversation) =>
+          (input.includeArchived || !conversation.archived) &&
+          (!term ||
+            conversation.name.toLowerCase().includes(term) ||
+            conversation.cwd.toLowerCase().includes(term)),
       );
       const start = input.cursor === EXTERNAL_SECOND_PAGE ? EXTERNAL_PAGE_SIZE : 0;
       const end = start + EXTERNAL_PAGE_SIZE;
@@ -1185,6 +1207,8 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           onOpenSession={noop}
           archivedTasks={archivedTasks}
           onTaskImported={noop}
+          onRemoteHostAdded={noop}
+          onSelectedRuntimeHostProfileIdChange={noop}
         />
       </div>
     </>
@@ -1297,6 +1321,51 @@ export const UsageNarrow: Story = {
   ...UsageLongTail,
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
+
+/** The persisted range lands with the async CLIENT settings load — usage
+ * is client-owned (settings-ownership.ts), so getClient() is the channel
+ * that carries it — after the section effect's first fetch already ran
+ * with the '24h' default. A Settings window restored directly onto
+ * 使用统计 must refetch when the persisted range arrives — without that,
+ * the page shows the default range's (empty) numbers under the persisted
+ * range's selected chip until a manual refresh. The bridge makes the race
+ * explicit: stats exist only for the persisted 'all' range, and the
+ * client settings resolve a beat late. */
+const withUsagePersistedRangeBridge = (() => {
+  const clientSettings = mergeSettings(createDefaultSettings(), { usage: { range: 'all' } });
+  return withScopedMakaBridge({
+    ...makaBridge,
+    settings: {
+      ...makaBridge.settings,
+      getClient: async () => {
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 30));
+        return clientSettings;
+      },
+      updateClient: async (
+        patch: Parameters<typeof window.maka.settings.updateClient>[0],
+      ): Promise<UpdateAppSettingsResult> => ({
+        settings: mergeSettings(clientSettings, patch),
+      }),
+      usageStats: async (range?: UsageRange): Promise<UsageStats> =>
+        range === 'all' ? usageStats : emptyUsageStats,
+    },
+  } satisfies Record<string, unknown>);
+})();
+
+// Real path: 设置 remembers 使用统计 as the last-open page and restores
+// straight onto it, with 全部 as the persisted range.
+export const UsagePersistedRangeRestore: Story = {
+  decorators: [withUsagePersistedRangeBridge],
+  render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement }) => {
+    // The totals must come from the PERSISTED range's dataset, not the
+    // '24h' default the section effect first fired with.
+    await waitForStoryCondition(
+      () => (canvasElement.textContent ?? '').includes('420'),
+      'Usage totals for the persisted range did not render',
+    );
+  },
+};
 /**
  * #1364: entry list (long title / content / tag set), archived group, and
  * backup-candidate rows. The bridge used to lack the `memory` channel
@@ -1306,6 +1375,29 @@ export const UsageNarrow: Story = {
 export const MemoryPopulated: Story = {
   decorators: [withMemoryPopulatedBridge],
   render: () => <SettingsStory section="memory" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const archiveButtons = await canvas.findAllByRole('button', { name: /^归档：/ });
+    expect(archiveButtons).toHaveLength(2);
+    for (const button of archiveButtons) {
+      expect(button).toHaveTextContent(/^归档$/);
+    }
+    const restoreButton = await canvas.findByRole('button', { name: /^恢复：/ });
+    expect(restoreButton).toHaveTextContent(/^恢复$/);
+    expect(canvas.getByRole('group', {
+      name: /^部署流程要走灰度队列.*手动记录.*记忆操作$/,
+    })).toBeInTheDocument();
+
+    const stableButton = archiveButtons.find((button) =>
+      button.getAttribute('aria-label')?.includes('用户偏好中文回复'));
+    const stableName = stableButton?.getAttribute('aria-label');
+    expect(stableName).toBeTruthy();
+    await userEvent.type(
+      canvas.getByRole('textbox', { name: '筛选本地记忆' }),
+      '用户偏好中文回复',
+    );
+    expect(await canvas.findByRole('button', { name: stableName! })).toHaveTextContent(/^归档$/);
+  },
 };
 // Real path: 设置 → 联网搜索.
 export const WebSearch: Story = {
@@ -1400,6 +1492,32 @@ export const ArchivedTasks: Story = {
 export const ImportTasks: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="import-tasks" />,
+};
+
+// Real path: 设置 → 导入任务 → type into 搜索. The catalog pages 16 at a time
+// over a source that can hold a thousand sessions, so the term is the only way
+// to reach one by name. Typing here proves the box reaches the query rather
+// than filtering the page already on screen.
+export const ImportTasksSearch: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="import-tasks" />,
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body);
+    const search = await body.findByRole('textbox', { name: '搜索' });
+    // `worktree` appears in exactly one fixture title, so a working search
+    // narrows three rows to one. Filtering the assembled page would too — the
+    // difference is that this term reaches the query, which is what the
+    // stub asserts by honouring it.
+    await userEvent.type(search, 'worktree');
+    // Debounced, so the list settles a moment after the last keystroke.
+    await waitFor(async () => {
+      const rows = body.queryAllByRole('listitem');
+      await expect(rows).toHaveLength(1);
+    });
+    await expect(
+      await body.findByText('Trace the flaky worktree teardown in CI'),
+    ).toBeInTheDocument();
+  },
 };
 
 function importOutcomeRecoveryBridge(): Record<string, unknown> {

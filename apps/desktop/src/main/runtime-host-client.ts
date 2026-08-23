@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash, randomUUID } from "node:crypto";
 import type { AttachmentRef, ShellRunUpdate } from "@maka/core/events";
 import type { PlanSessionState, PlanUserControlInput } from "@maka/core/plan";
@@ -236,6 +255,12 @@ export class DesktopRuntimeHostClient {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
   }
 
+  finalizeAccessCredential(
+    timeoutMs?: number,
+  ): Promise<OperationOutput<'access.credential.finalize'>> {
+    return this.request('access.credential.finalize', {}, timeoutMs);
+  }
+
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeConfigurationChanges(listener);
@@ -398,12 +423,6 @@ export class DesktopRuntimeHostClient {
     attemptId: string,
   ): Promise<OperationOutput<"oauth.login.cancel">> {
     return this.request("oauth.login.cancel", { attemptId });
-  }
-
-  fetchOAuthAccountUsage(
-    connectionId: string,
-  ): Promise<OperationOutput<"oauth.account.usage.fetch">> {
-    return this.request("oauth.account.usage.fetch", { connectionId });
   }
 
   async loadSkillCatalog(
@@ -1183,6 +1202,16 @@ export class DesktopRuntimeHostClient {
     return this.request("goal.query", { sessionId });
   }
 
+  /**
+   * Arm a Goal the user asked for. No optimistic retry loop like `clearGoal`:
+   * arming names no revision, so there is no stale one to refresh — a Session
+   * that already has an unfinished Goal fails with `operation_conflict`, and
+   * that is an answer for the user, not a race to re-run.
+   */
+  armGoal(input: OperationInput<"goal.arm">): Promise<OperationOutput<"goal.arm">> {
+    return this.request("goal.arm", input);
+  }
+
   controlGoal(
     goal: Pick<GoalProjection, "sessionId" | "goalId" | "revision">,
     action: GoalControlAction,
@@ -1553,9 +1582,10 @@ export class DesktopRuntimeHostClient {
   request<K extends DirectRequestOperationKey>(
     operation: K,
     input: OperationInput<K>,
+    timeoutMs?: number,
   ): Promise<OperationOutput<K>> {
     this.#assertOpen();
-    return this.connection.request(operation, input);
+    return this.connection.request(operation, input, timeoutMs);
   }
 
   #assertOpen(): void {

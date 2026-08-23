@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from "node:assert/strict";
 import { EventEmitter } from 'node:events';
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -660,6 +679,122 @@ test("keeps the busy failure for a Skill send instead of degrading it to steerin
   assert.deepEqual(submits, []);
 });
 
+test("queues explicit Desktop follow-ups and retracts their full content", async () => {
+  const submits: unknown[] = [];
+  let sequence = 0;
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "followup", queueRevision: 4 };
+        },
+        retractQueue: async (input) => ({
+          queueRevision: 5,
+          retracted: [
+            {
+              entryId: "entry-1",
+              messageId: "message-1",
+              content: {
+                text: "first",
+                quotes: [{ text: "context" }],
+              },
+              placement: "next_turn",
+              state: "retracted",
+            },
+            {
+              entryId: "entry-2",
+              messageId: "message-2",
+              content: { text: "second" },
+              placement: "next_turn",
+              state: "retracted",
+            },
+          ],
+        }),
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => `id-${++sequence}`,
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke("sessions:enqueue", "session-1", "next_turn", {
+      text: "do this next",
+      quotes: [{ text: "quoted context" }],
+      retainedAttachments: [
+        {
+          kind: "other",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          bytes: 5,
+          ref: {
+            kind: "session_file",
+            sessionId: "session-1",
+            relativePath: "attachments/notes.txt",
+          },
+        },
+      ],
+    }),
+    {
+      kind: "queued",
+      attachments: [
+        {
+          kind: "other",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          bytes: 5,
+          ref: {
+            kind: "session_file",
+            sessionId: "session-1",
+            relativePath: "attachments/notes.txt",
+          },
+        },
+      ],
+      inlineReferences: [],
+    },
+  );
+  assert.deepEqual(submits, [
+    {
+      sessionId: "session-1",
+      messageId: "id-2",
+      content: {
+        text: "do this next",
+        attachments: [
+          {
+            kind: "other",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            bytes: 5,
+            ref: {
+              kind: "session_file",
+              sessionId: "session-1",
+              relativePath: "attachments/notes.txt",
+            },
+          },
+        ],
+        quotes: [{ text: "quoted context" }],
+        inlineReferences: [],
+      },
+      placement: "next_turn",
+    },
+  ]);
+  assert.deepEqual(
+    await ipc.invoke("sessions:retractQueue", "session-1"),
+    {
+      text: "first\n\nsecond",
+      quotes: [{ text: "context" }],
+    },
+  );
+});
+
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
@@ -751,6 +886,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,
+    retractQueue: unavailable,
     setSessionReadMarker: unavailable,
     startTurn: unavailable,
     startTurnResume: unavailable,

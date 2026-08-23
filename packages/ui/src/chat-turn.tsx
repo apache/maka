@@ -1,11 +1,35 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { ICON_SIZE, AlertOctagon, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
-import { formatTurnDuration, turnAbortMarkerLabel } from './chat-display-helpers.js';
+import {
+  formatAbsoluteTimestamp,
+  formatTurnDuration,
+  turnAbortMarkerLabel,
+} from './chat-display-helpers.js';
 import { redactSecrets } from './redact.js';
 import { isProgressiveStreamingEnabled, isTimeDrivenMotionEnabled } from './streaming-presentation.js';
+import { computerRunningLabel } from './tool-activity/computer-action-label.js';
 import {
   Badge,
   Banner,
@@ -17,6 +41,7 @@ import {
   ChatTokenizedText,
   HStack,
   IconButton as UiIconButton,
+  Spinner,
   Thumbnail,
   Timestamp,
   Token,
@@ -41,7 +66,7 @@ import { foldTimeline, type FoldedTimelineChild, type FoldedTimelineEntry } from
 import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants } from './primitives/chat.js';
-import { ToolTrow } from './tool-activity.js';
+import { ToolTrow, toolTrowHasVisibleSpinner } from './tool-activity.js';
 import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -141,6 +166,7 @@ function LoadedAttachmentImage(props: { src: string; name: string }) {
  * affordance. Memoized so streaming re-renders do not rebuild settled asks.
  */
 const UserMessageBody = memo(function UserMessageBody(props: {
+  messageId: string;
   text: string;
   ts?: number;
   attachments?: readonly AttachmentRef[];
@@ -172,10 +198,17 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       }
       footer={
         <>
-          <MessageCopyButton text={props.text} />
+          <MessageCopyButton
+            messageId={props.messageId}
+            text={props.text}
+            ts={props.ts}
+          />
           {props.onEditUserMessage ? (
             <UiIconButton
-              label={editActionLabel}
+              label={copyText.messageActionAriaLabel(
+                editActionLabel,
+                accessibleActionContext(props.text, props.ts, locale),
+              )}
               tooltip={editActionLabel}
               icon={<Pencil size={ICON_SIZE.control} aria-hidden="true" />}
               variant="ghost"
@@ -183,6 +216,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
               className={markerVariants({ variant: 'footer-action' })}
               aria-disabled={props.editDisabled === true ? 'true' : undefined}
               data-action="edit"
+              data-message-id={props.messageId}
               onClick={() => {
                 if (props.editDisabled) return;
                 props.onEditUserMessage?.();
@@ -243,8 +277,27 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 });
 
 
-function MessageCopyButton(props: { text: string }) {
-  const copyText = getConversationCopy(useUiLocale()).messages;
+function accessibleTextExcerpt(text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  return normalized.length > 48 ? `${normalized.slice(0, 47)}…` : normalized;
+}
+
+function accessibleActionContext(text: string, ts: number | undefined, locale: 'zh' | 'en'): string {
+  return [
+    accessibleTextExcerpt(text),
+    ts === undefined ? undefined : formatAbsoluteTimestamp(ts, locale),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' · ');
+}
+
+function MessageCopyButton(props: {
+  messageId: string;
+  text: string;
+  ts?: number;
+}) {
+  const locale = useUiLocale();
+  const copyText = getConversationCopy(locale).messages;
   const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
   const copyPhase = copyFeedback.phaseFor('message');
   const copyPending = copyPhase === 'pending';
@@ -268,7 +321,11 @@ function MessageCopyButton(props: { text: string }) {
 
   return (
     <UiIconButton
-      label={baseLabel}
+      label={copyText.messageActionAriaLabel(
+        baseLabel,
+        accessibleActionContext(props.text, props.ts, locale),
+      )}
+      data-message-id={props.messageId}
       tooltip={actionLabel}
       icon={icon}
       variant="ghost"
@@ -396,9 +453,13 @@ export const TurnView = memo(function TurnView(props: {
   // flat timeline. Settled turn identities are stable (memoized projections),
   // so this only recomputes for the turn whose timeline actually changed.
   const foldedTimeline = useMemo(() => foldTimeline(turn.timeline), [turn.timeline]);
+  const runningToolLabel = computerRunningLabel(turn.tools, locale);
   const conversationSegments = useMemo(
     () => splitTimelineAtUserMessages(foldedTimeline, showAssistantMessage),
     [foldedTimeline, showAssistantMessage],
+  );
+  const toolSurfaceOwnsSpinner = turn.timeline.some(
+    (item) => item.kind === 'tools' && toolTrowHasVisibleSpinner(item.items),
   );
   return (
     <section
@@ -479,6 +540,7 @@ export const TurnView = memo(function TurnView(props: {
           className="maka-chat-message maka-user-message"
         >
           <UserMessageBody
+            messageId={turn.user.id}
             text={turn.user.text}
             ts={turn.user.ts}
             attachments={turn.user.attachments}
@@ -534,6 +596,7 @@ export const TurnView = memo(function TurnView(props: {
               className="maka-chat-message maka-user-message maka-steering-message"
             >
               <UserMessageBody
+                messageId={message.id}
                 text={message.text}
                 ts={message.ts}
                 attachments={message.attachments}
@@ -620,7 +683,11 @@ export const TurnView = memo(function TurnView(props: {
                     <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
                   ) : (
                     props.liveStreaming.runningStatus && (
-                      <TurnRunningStatus startedAt={turn.startedAt} />
+                      <TurnRunningStatus
+                        startedAt={turn.startedAt}
+                        showSpinner={!toolSurfaceOwnsSpinner}
+                        activityLabel={runningToolLabel}
+                      />
                     )
                   )}
                 </>
@@ -657,6 +724,11 @@ export const TurnView = memo(function TurnView(props: {
                 props.footerActions.length > 0 && (
                   <TurnFooterActions
                     actions={props.footerActions}
+                    context={accessibleActionContext(
+                      turn.user?.text ?? finalAssistantReplyText(turn) ?? '',
+                      turn.startedAt,
+                      locale,
+                    )}
                     onAction={
                       props.onFooterAction
                         ? (actionId) => props.onFooterAction?.(turn.turnId, actionId)
@@ -765,6 +837,7 @@ export type TurnPresentationDeriver = (turns: readonly TurnViewModel[]) => TurnP
 
 function TurnFooterActions(props: {
   actions: ReadonlyArray<TurnFooterActionMeta>;
+  context: string;
   onAction?: (actionId: TurnFooterActionMeta['id']) => void;
   /** Assistant text used by the inline copy action. */
   assistantText?: string;
@@ -825,7 +898,7 @@ function TurnFooterActions(props: {
     <ChatMessageMetadata
       className={markerVariants({ variant: 'footer' })}
       role="toolbar"
-      aria-label={copy.answerActionsAriaLabel}
+      aria-label={copy.answerActionsAriaLabel(props.context)}
       footer={
         <>
           {props.actions.map((action) => {
@@ -850,7 +923,10 @@ function TurnFooterActions(props: {
             return (
               <UiIconButton
                 key={action.id}
-                label={action.label}
+                label={copy.answerActionAriaLabel(
+                  action.label,
+                  props.context,
+                )}
                 tooltip={tooltipText}
                 icon={icon}
                 variant="ghost"
@@ -901,7 +977,11 @@ const ELAPSED_TICK_MS = 1_000;
  * rare fallback path where streaming beat the user turn into the transcript;
  * the phrase then stands alone.
  */
-export function TurnRunningStatus(props: { startedAt?: number }) {
+export function TurnRunningStatus(props: {
+  startedAt?: number;
+  showSpinner?: boolean;
+  activityLabel?: string;
+}) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const phrases = copy.workingPhrases;
   const { startedAt } = props;
@@ -943,24 +1023,21 @@ export function TurnRunningStatus(props: { startedAt?: number }) {
   }, [phrases.length]);
 
   return (
-    /* This row runs no animation of its own. Both idioms above it are already
-       spoken for — a running tool card spins, and `ChatReasoning` shimmers its
-       label while reasoning streams — and Astryx's guidance is not to stack a
-       second instance of either in one view. What moves here is the content:
-       the phrase every 20s, the seconds every second. The seconds are the
-       better proof anyway, because a spinner turns and a shimmer sweeps at the
-       same rate whether or not anything is happening. */
-    <div className="maka-turn-processing" role="status" aria-label={copy.processing} ref={rootRef}>
+    <div
+      className="maka-turn-processing"
+      role="status"
+      aria-label={props.activityLabel ?? copy.processing}
+      ref={rootRef}
+    >
+      {props.showSpinner !== false && (
+        <Spinner size="md" shade="subtle" aria-hidden="true" />
+      )}
       {/* Every visible token here moves on the clock. Announcing either would
           talk over the answer being streamed beside it, so the row's label is
           its whole accessible name and the text is decoration. */}
       <span className="maka-turn-indicator-text" aria-hidden="true">
-        {/* No sweep here. Astryx already owns that idiom: `ChatReasoning`
-            shimmers its own label while reasoning streams, a few pixels above
-            this row. Running a second one, at a second speed, made the two
-            read as competing rather than as one turn working. */}
         <span className="maka-turn-working-phrase" data-fading={phraseFading || undefined}>
-          {phrases[phraseIndex] ?? copy.processing}
+          {props.activityLabel ?? phrases[phraseIndex] ?? copy.processing}
         </span>
         {elapsedMs !== undefined && (
           <>
@@ -1057,6 +1134,16 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
         text={props.text}
         streaming={props.phase === 'streaming'}
         settledText={settledText}
+        // Names the surface, and not exclusively: the desktop Artifact
+        // Preview asks for compact too and takes the same rules, so retuning
+        // them here is retuning them there. What this prop does NOT do is set
+        // this turn's block spacing. Every top-level gap in a transcript turn
+        // comes from the rhythm table in styles.css, which keys on the
+        // `data-density="compact"` this prop reflects and overrides Astryx's
+        // own margins outright. So `compact` still buys the transcript
+        // heading scale and the tighter rhythm inside a list item or a quote,
+        // and reading it as "paragraphs are squeezed here" is the wrong
+        // file — retune `--md-gap-block` instead.
         density="compact"
       />
       {truncated && (

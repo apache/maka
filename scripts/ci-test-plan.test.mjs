@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -63,6 +82,12 @@ test('Storybook catalog changes avoid real-window E2E and workspace tests', () =
   assert.deepEqual(plan.workspaces, []);
 });
 
+test('AX audit contract test edits avoid the Storybook browser pipeline', () => {
+  const plan = planTests(['scripts/ax-tree-audit.test.mjs'], { graph });
+  assert.equal(plan.storybook, false);
+  assert.equal(plan.e2e, false);
+});
+
 test('runtime changes retain the dedicated Runtime Host lane', () => {
   const plan = planTests(['packages/runtime/src/runtime.ts'], { graph });
 
@@ -81,8 +106,65 @@ test('release metadata selects only the gate that consumes it', () => {
   for (const path of ['LICENSE', 'NOTICE']) {
     const plan = planTests([path], { graph });
     assert.equal(plan.cliPackage, true, path);
+    assert.equal(plan.releaseContract, true, path);
     assert.equal(plan.asfSource, false, path);
   }
+});
+
+test('release authority changes select their dedicated contract gate', () => {
+  for (const path of [
+    'apps/desktop/build/entitlements.mac.plist',
+    'apps/desktop/electron-builder.config.mjs',
+    'apps/desktop/package.json',
+    '.github/workflows/cli-package-validation.yml',
+    '.github/workflows/release-cli-finalize.yml',
+    '.github/workflows/release-cli-stage.yml',
+    '.github/workflows/release.yml',
+    'scripts/package-macos-arm64.mjs',
+    'scripts/package-macos-arm64-cli.mjs',
+    'scripts/package-windows-x64.mjs',
+    'scripts/prepare-windows-upgrade-baseline.mjs',
+    'scripts/product-release-artifacts.mjs',
+    'scripts/product-release-artifacts.test.mjs',
+    'scripts/product-release-authority.mjs',
+    'scripts/product-release-authority.test.mjs',
+    'scripts/product-release-identity.mjs',
+    'scripts/product-release-tag.mjs',
+    'scripts/product-release.test.mjs',
+    'scripts/release-eval-smoke-sitecustomize.py',
+    'scripts/release-version.mjs',
+    'scripts/release-cli-publication.test.mjs',
+    'scripts/verify-macos-arm64-cli.mjs',
+    'scripts/verify-macos-arm64-dmg.mjs',
+    'scripts/verify-packaged-app.mjs',
+    'scripts/verify-windows-x64.mjs',
+    'scripts/windows-upgrade-baseline.json',
+  ]) {
+    assert.equal(planTests([path], { graph }).releaseContract, true, path);
+  }
+  assert.equal(planTests(['.github/RELEASE_CHECKLIST.md'], { graph }).releaseContract, false);
+});
+
+// Both notices are committed generator output. A hand edit or a merge-conflict
+// resolution can corrupt either one, and `check:release` is what regenerates
+// and diffs them, so both must reach that gate — the desktop notice lives
+// outside `packages/cli/**` and would otherwise reach no gate at all.
+test('both committed third-party notices reach the release gate', () => {
+  for (const path of [
+    'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
+    'packages/cli/THIRD_PARTY_NOTICES.txt',
+  ]) {
+    assert.equal(planTests([path], { graph }).releaseContract, true, path);
+  }
+});
+
+// The test only reads the generator, so it belongs to the release contract and
+// not to the CLI package gate, whose tarball build and install smoke prove
+// nothing about a test-only edit.
+test('the notice regression test selects the release gate alone', () => {
+  const plan = planTests(['scripts/generate-third-party-notices.test.mjs'], { graph });
+  assert.equal(plan.releaseContract, true);
+  assert.equal(plan.cliPackage, false);
 });
 
 test('ASF source authority changes select their dedicated gate', () => {
@@ -96,6 +178,12 @@ test('ASF source authority changes select their dedicated gate', () => {
   }
   assert.equal(planTests(['.github/ASF_SOURCE_RELEASE.md'], { graph }).asfSource, false);
   assert.equal(planTests(['scripts/audit-alignment.mjs'], { graph }).asfSource, false);
+});
+
+test('shared CLI validation changes select installed-package validation', () => {
+  const plan = planTests(['.github/workflows/cli-package-validation.yml'], { graph });
+
+  assert.equal(plan.cliPackage, true);
 });
 
 test('desktop-only changes skip installed-package validation', () => {
@@ -112,6 +200,7 @@ test('full selection covers every live surface', () => {
   assert.equal(plan.e2e, true);
   assert.equal(plan.storybook, true);
   assert.equal(plan.runtimeHost, true);
+  assert.equal(plan.releaseContract, true);
   assert.deepEqual(plan.workspaces, dirs);
 });
 
@@ -163,10 +252,14 @@ test('contract checks run before dependency setup and can fail the job', () => {
   const workflow = readWorkflow('ci.yml');
   const setupNodeStart = workflow.indexOf('      - uses: actions/setup-node@');
 
-  // Both contracts need nothing but the checkout, so they run on every change
+  // These contracts need nothing but the checkout, so they run on every change
   // rather than behind a surface flag — and a gate that cannot fail the job is
   // not a gate.
-  for (const name of ['Test CI planner', 'Check Windows test inventory']) {
+  for (const name of [
+    'Test CI planner',
+    'Check Windows test inventory',
+    'Verify ASF npm preflight policy',
+  ]) {
     const start = workflow.indexOf(`      - name: ${name}\n`);
     assert.ok(start >= 0, name);
     assert.ok(start < setupNodeStart, name);
@@ -188,6 +281,21 @@ test('core CI validates affected installed CLI packages on its existing runner',
   assert.ok(toolchain >= 0);
   assert.ok(toolchain < pack);
   assert.match(workflow, /run: npm run release:cli:smoke/u);
+});
+
+test('release contracts run against built CLI outputs', () => {
+  const workflow = readWorkflow('ci.yml');
+  const buildIndex = workflow.indexOf('      - name: Build\n');
+  const buildEnd = workflow.indexOf('\n      - ', buildIndex + 1);
+  const releaseIndex = workflow.indexOf('      - name: Release contracts\n');
+
+  assert.ok(buildIndex >= 0);
+  assert.match(workflow.slice(buildIndex, buildEnd), /release_contract == 'true'/u);
+  assert.ok(buildIndex < releaseIndex);
+  assert.match(
+    workflow.slice(releaseIndex),
+    /if: steps\.plan\.outputs\.release_contract == 'true'/u,
+  );
 });
 
 test('pull request triggers stay on an explicit allowlist', () => {
@@ -212,6 +320,13 @@ test('the sandbox lane pairs its path filter with a nightly run', () => {
   // dropping the filter would put the whole runtime back on pull requests.
   assert.match(workflow, /\n {2}pull_request:\n {4}paths:/u);
   assert.match(workflow, /\n {2}schedule:/u);
+});
+
+test('the packaged Windows gate owns Runtime Host candidate election changes', () => {
+  const workflow = readWorkflow('release-windows-check.yml');
+
+  assert.match(workflow, /'packages\/runtime-host\/src\/client\/connect-or-spawn\.ts'/u);
+  assert.match(workflow, /'packages\/runtime-host\/src\/client\/launcher\.ts'/u);
 });
 
 test('specialized platform workflows stay reachable without pull requests', () => {

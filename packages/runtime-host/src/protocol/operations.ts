@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from './access-authority.js';
 import { AGENT_GRAPH_OPERATION_SPECS } from './agent-graph.js';
@@ -200,6 +219,7 @@ export type OperationKey = keyof OperationSpecMap;
 // Remote credentials are fail-closed: adding a protocol operation does not
 // grant it to remote owners until this policy is deliberately updated.
 export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
+  'access.credential.finalize',
   'agent.graph.epochs.query',
   'agent.graph.operator.query',
   'agent.graph.query',
@@ -234,6 +254,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'external-session.catalog.query',
   'external-session.import',
   'external-session.source.query',
+  'goal.arm',
   'goal.control',
   'goal.query',
   'host.diagnostics.query',
@@ -243,7 +264,6 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'memory.mutate',
   'memory.query',
   'network-proxy.test',
-  'oauth.account.usage.fetch',
   'oauth.login.cancel',
   'oauth.login.query',
   'oauth.login.start',

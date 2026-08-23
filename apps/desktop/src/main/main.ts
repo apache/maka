@@ -1,8 +1,47 @@
-import { app, dialog } from 'electron';
-import { installMainProcessLogCapture } from './main-process-diagnostics.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { resolveSystemUiLocale } from '@maka/core/ui-locale';
+import { app, clipboard, dialog } from 'electron';
+import { join } from 'node:path';
+import { resolveBuildInfo } from './build-info.js';
+import {
+  captureDesktopDiagnosticEnvironment,
+  copyDesktopDiagnosticReport,
+  createDesktopPreviousMainProcessDiagnosticInput,
+  installMainProcessLogCapture,
+  mainProcessLogBuffer,
+} from './main-process-diagnostics.js';
+import {
+  appendUncaughtMainProcessError,
+  createMainProcessRecoveryJournal,
+  presentPendingMainProcessRecovery,
+  type MainProcessRecoveryJournal,
+} from './main-process-recovery-journal.js';
+import {
+  showFatalStartupError,
+  showPreviousMainProcessInterruptionDialog,
+} from './native-diagnostic-dialog.js';
 import { isIsolatedE2e } from './startup-context.js';
 
-installMainProcessLogCapture();
+let recoveryJournal: MainProcessRecoveryJournal | undefined;
+installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDirty());
 
 // The macOS app menu title and app.getName() consumers read this name. Set it
 // before ready, unchanged from its historical pre-ready position.
@@ -30,6 +69,28 @@ if (isIsolatedE2e && process.env.MAKA_E2E_USER_DATA_DIR) {
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
+  const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
+  try {
+    recoveryJournal = createMainProcessRecoveryJournal({
+      root: join(app.getPath('userData'), 'main-process-recovery'),
+      appVersion: app.getVersion(),
+      buildMode: buildInfo.mode,
+      buildCommit: buildInfo.commit,
+      logs: () => mainProcessLogBuffer.snapshot(),
+      onError: (error) => console.error('[diagnostics] main-process recovery failed:', error),
+    });
+    const journal = recoveryJournal;
+    process.on('uncaughtExceptionMonitor', (error, origin) => {
+      appendUncaughtMainProcessError(mainProcessLogBuffer, journal, error, origin);
+    });
+    app.on('quit', () => journal.markClean());
+    app.on('browser-window-created', (_event, window) => {
+      window.on('session-end', () => journal.markClean());
+    });
+  } catch (error) {
+    console.error('[diagnostics] main-process recovery unavailable:', error);
+  }
+
   // The full boot must not run in the top-level module-evaluation chain:
   // Electron ESM emits `ready` only after the entry module finishes
   // evaluating, so a top-level `await app.whenReady()` (which the
@@ -39,18 +100,74 @@ if (!app.requestSingleInstanceLock()) {
   // store/db write".
   app
     .whenReady()
-    .then(() => {
+    .then(async () => {
       console.log('[startup] app ready');
+      const journal = recoveryJournal;
+      if (journal?.pending) {
+        if (isIsolatedE2e) {
+          journal.discardPending();
+        } else {
+          await presentPendingMainProcessRecovery(
+            journal,
+            (pending) =>
+              showPreviousMainProcessInterruptionDialog({
+                locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+                copyDiagnostics: () =>
+                  copyDesktopDiagnosticReport(
+                    {
+                      environment: () =>
+                        captureDesktopDiagnosticEnvironment({
+                          appVersion: app.getVersion(),
+                          buildMode: buildInfo.mode,
+                          buildCommit: buildInfo.commit,
+                          locale: app.getLocale(),
+                          workspacePath: join(
+                            app.getPath('userData'),
+                            'workspaces',
+                            'default',
+                          ),
+                        }),
+                      mainLogs: () => mainProcessLogBuffer.snapshot(),
+                      resolveActiveRuntimeHost: () => undefined,
+                      resolveRuntimeHost: () => undefined,
+                      writeClipboard: (report) => clipboard.writeText(report),
+                    },
+                    createDesktopPreviousMainProcessDiagnosticInput(pending),
+                  ),
+                showMessageBox: (options) => dialog.showMessageBox(options),
+              }),
+            (error) =>
+              console.error('[diagnostics] previous-session recovery dialog failed:', error),
+          );
+        }
+      }
       return import('./runtime-host-boot.js');
     })
-    .catch((error: unknown) => {
+    .catch(async (error: unknown) => {
       console.error('[startup] fatal:', error);
-      // E2E runs must not hang on a modal error box (same reasoning as the
-      // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
-      if (!isIsolatedE2e) {
-        const message = error instanceof Error ? error.message : String(error);
-        dialog.showErrorBox('Maka failed to start', message);
+      try {
+        // E2E runs must not hang on a modal error box (same reasoning as the
+        // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
+        if (!isIsolatedE2e) {
+          const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
+          await showFatalStartupError(error, {
+            locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+            environment: () =>
+              captureDesktopDiagnosticEnvironment({
+                appVersion: app.getVersion(),
+                buildMode: buildInfo.mode,
+                buildCommit: buildInfo.commit,
+                locale: app.getLocale(),
+                workspacePath: join(app.getPath('userData'), 'workspaces', 'default'),
+              }),
+            mainLogs: () => mainProcessLogBuffer.snapshot(),
+            writeClipboard: (report) => clipboard.writeText(report),
+            showMessageBox: (options) => dialog.showMessageBox(options),
+          });
+        }
+      } finally {
+        recoveryJournal?.markClean();
+        app.exit(1);
       }
-      app.exit(1);
     });
 }

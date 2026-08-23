@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useState, type ReactNode } from 'react';
 import {
   Banner,
@@ -12,6 +31,7 @@ import {
   VStack,
 } from '@astryxdesign/core';
 import { isRelayProviderType, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { hasModelMetadata } from '@maka/core/model-metadata';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   THINKING_LEVELS,
@@ -33,9 +53,13 @@ import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { providerDisplay } from './provider-display';
+import { AddModelDialog } from './provider-add-model-dialog';
 import { EnabledModelManager } from './provider-enabled-model-manager';
 import { useActionGuard } from './use-action-guard';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
   providerPanelActionErrorMessage,
@@ -56,6 +80,7 @@ import {
   savedRequestHeaderDrafts,
   type RequestHeaderDraft,
 } from './request-customization-editor';
+import { bulkThinkingLevelStates } from './relay-thinking-bulk';
 
 export function ConnectionDetail(props: ConnectionDetailProps) {
   const defaults = PROVIDER_DEFAULTS[props.connection.providerType];
@@ -68,6 +93,7 @@ export function ConnectionDetail(props: ConnectionDetailProps) {
 }
 
 function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
@@ -92,7 +118,10 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
       await props.onDeleted();
     } catch (error) {
       if (!mounted.current) return;
-      toast.error(copy.deleteFailed, providerPanelActionErrorMessage(error, locale));
+      reportHostError(
+        copy.deleteFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
     } finally {
       if (mounted.current) setDeleting(false);
     }
@@ -114,6 +143,7 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
 }
 
 function ConnectionDetailInner(props: ConnectionDetailProps) {
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
@@ -134,6 +164,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     detailActionBusy,
     supportsApiKey,
     needsOAuth,
+    retired,
     usesGitHubCopilotLogin,
     oauthLoginService,
     supportsRemoteDiscovery,
@@ -148,9 +179,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     savedBaseUrl,
     save,
     updateEnabledModels,
+    addDeclaredModel,
     relayProfileDraft,
     hasRelayProfileChanges,
     setDraftThinkingLevels,
+    setDraftThinkingLevelForAll,
     setDraftVision,
     setDraftContextWindow,
     setDraftServiceTier,
@@ -160,22 +193,38 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
-  // Capability switches only exist for custom OpenAI relays: built-in
-  // providers declare their thinking support in model metadata, a custom
-  // relay's backing model is unknown until the user says what it can do. The
-  // declaration is per model — a relay can front both a reasoner and a plain
-  // instruct model.
-  const showsCapabilities = isRelayProviderType(connection.providerType);
+  // A model gets capability switches when Maka cannot describe it otherwise.
+  // On a custom OpenAI relay that is every model: the id is whatever the
+  // operator chose, so even one that collides with a known name may front
+  // something else entirely. Elsewhere it is the models the bundled metadata
+  // has never heard of — a model newer than this build, or one the user typed
+  // in on a provider whose key cannot call a model-list endpoint, which no
+  // refresh will ever describe (#1584).
+  //
+  // A model that already carries a declaration always keeps its row, or a
+  // stale declaration would be uneditable and unclearable.
+  const isRelay = isRelayProviderType(connection.providerType);
   // Rows are the enabled models, exactly — the store prunes a model's profile
   // the moment it is disabled, so no declaration can ever belong to a row
   // this list does not show. The editor edits the per-model draft; 保存
   // commits the whole table in one write.
-  const capabilityModelIds = enabledModelIds;
+  const capabilityModelIds = enabledModelIds.filter(
+    (modelId) =>
+      isRelay ||
+      relayProfileDraft[modelId] !== undefined ||
+      !hasModelMetadata(connection.providerType, modelId),
+  );
+  const showsCapabilities = capabilityModelIds.length > 0;
+  // The bulk control shares the 思考档位 row's relay gate — it edits exactly
+  // that row — and needs repetition to be worth a control at all: with one
+  // row it would be a second widget doing what the row under it already does.
+  const showsThinkingBulk = isRelay && capabilityModelIds.length > 1;
   // One row is a form at a time, the way the settings-sidebar template does it.
   // Opening a row discards the other's draft: leaving an abandoned draft in
   // state meant it reappeared when the user came back to that row, and — until
   // `save` became per-field — rode along with the next save.
   const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | 'headers' | 'body' | null>(null);
+  const [addModelOpen, setAddModelOpen] = useState(false);
   const [savedHeaderNames, setSavedHeaderNames] = useState<readonly string[]>([]);
   const [headerDrafts, setHeaderDrafts] = useState<RequestHeaderDraft[]>([]);
   const savedBodyText = formatRequestBodyOverlay(connection.requestBodyOverlay);
@@ -207,7 +256,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       })
       .catch((error) => {
         if (!current) return;
-        toast.error(copy.requestCustomizationInvalid, providerPanelActionErrorMessage(error, locale));
+        reportHostError(
+          copy.requestCustomizationInvalid,
+          providerPanelActionErrorMessage(error, locale),
+        );
       });
     return () => {
       current = false;
@@ -240,7 +292,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       return true;
     } catch (error) {
       if (mounted.current) {
-        toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+        reportHostError(
+          copy.saveFailed,
+          providerPanelActionErrorMessage(error, locale),
+        );
       }
       return false;
     } finally {
@@ -263,7 +318,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       return true;
     } catch (error) {
       if (mounted.current) {
-        toast.error(copy.saveFailed, providerPanelActionErrorMessage(error, locale));
+        reportHostError(
+          copy.saveFailed,
+          providerPanelActionErrorMessage(error, locale),
+        );
       }
       return false;
     } finally {
@@ -296,7 +354,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
            machine. The endpoint is not a secret, so it did not need a variant. */
         description={supportsApiKey ? copy.credentialsHelp : copy.credentialsHelpAccount}
       >
-        {issue && (
+        {/* The list row needs a compact status to mark itself with; here the
+            retirement notice below already carries it, in full sentences. Two
+            stacked red banners saying the same thing is not twice as clear. */}
+        {issue && !retired && (
           <Banner
             status={connectionIssueStatus(issue.tone)}
             role="status"
@@ -311,7 +372,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           />
         )}
         {needsOAuth && (
-          usesGitHubCopilotLogin ? (
+          retired ? (
+            <Banner status="error" role="alert" title={copy.oauthRetired} description={copy.oauthRetiredDetail} />
+          ) : usesGitHubCopilotLogin ? (
             <GitHubCopilotReloginNotice hasSecret={hasSecret} onRelogin={refreshAfterRelogin} />
           ) : oauthLoginService ? (
             <OAuthReloginNotice
@@ -420,7 +483,14 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       {/* The rows draw the closing rule themselves; without them the section
           still needs one. Two rules with a gap between them read as an empty
           row, so only ever one. */}
-      {!supportsApiKey && !showsEndpoint && <Divider />}
+      {!supportsApiKey && !showsEndpoint && !retired && <Divider />}
+      {/* Everything below writes to the connection, and a retired one accepts
+          no writes: the catalog refuses a model or request-body change, and the
+          credential vault refuses a request header. Rendering the editors would
+          offer work that either fails or — worse, before the vault refused it —
+          saves something that can never reach a request. What remains is the
+          retirement notice above and the deletion below. */}
+      {!retired && (
       <DetailSection title={copy.advancedRequest} description={copy.advancedRequestHelp}>
         <VStack gap={0}>
               <SettingsExpandableRow
@@ -491,6 +561,8 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               <Divider />
         </VStack>
       </DetailSection>
+      )}
+      {!retired && (
       <DetailSection title={copy.modelManagement} description={copy.modelManagementHelp}>
         <EnabledModelManager
           modelChoices={modelChoices}
@@ -506,16 +578,100 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             would pass a MouseEvent as `opts`. */}
         <HStack gap={2} vAlign="center" wrap="wrap">
           <Button variant="secondary" isDisabled={allActionsBusy || !hasUsableCredential} clickAction={() => runTest()} label={copy.testConnection} />
+          {/* Both, wherever refresh exists. Refresh is the fast path and stays
+              first, but having a model-list endpoint does not mean the endpoint
+              answers for this account: a self-hosted gateway on
+              `openai-compatible` may not serve /models at all, and a provider's
+              list can lag a model the account already has. Making the two
+              alternatives left those users with no way in (#1584). */}
           {supportsRemoteDiscovery && (
             <Button variant="ghost" isDisabled={allActionsBusy || !hasUsableCredential} clickAction={() => refreshModels()} label={copy.updateModels} />
           )}
+          <Button variant="ghost" isDisabled={allActionsBusy} clickAction={() => setAddModelOpen(true)} label={copy.addModel} />
         </HStack>
+        <AddModelDialog
+          isOpen={addModelOpen}
+          /* The catalog, not just the selection: `models` is usually a proper
+             superset of what the user enabled. Checking only the selection lets
+             a listed-but-unchecked id through, and the dialog then requires a
+             hand-typed context window that overrides the one Maka already
+             knows. */
+          existingModelIds={[...enabledModelIds, ...(connection.models ?? []).map(({ id }) => id)]}
+          /* A write started after the dialog opened would make the store drop
+             this submission silently, taking the typed id with it. */
+          isSubmitDisabled={allActionsBusy}
+          onOpenChange={setAddModelOpen}
+          onSubmit={addDeclaredModel}
+        />
       </DetailSection>
-      {showsCapabilities && (
+      )}
+      {showsCapabilities && !retired && (
         <>
           <Divider />
           <DetailSection title={copy.capabilities} description={copy.capabilitiesHelp}>
             <VStack gap={4}>
+              {/* One control for the whole table, above the rows it edits. A
+                  relay usually fronts one model family that accepts the same
+                  reasoning_effort values, and declaring that per row was
+                  models × levels clicks for a single fact. */}
+              {showsThinkingBulk && (
+                <CapabilityRow label={copy.thinkingBulk} description={copy.thinkingBulkHelp}>
+                  <DropdownMenu
+                    button={{
+                      variant: 'secondary',
+                      size: 'sm',
+                      label: copy.thinkingBulkTrigger,
+                      // Starts with the visible label so voice control can
+                      // act on what the button says, then names the thing it
+                      // sets — the row's heading is beside it visually but is
+                      // not attached to the control.
+                      'aria-label': `${copy.thinkingBulkTrigger} — ${copy.thinkingBulk}`,
+                      isDisabled: allActionsBusy,
+                    }}
+                    hasChevron
+                    menuWidth={240}
+                  >
+                    {/* The declarable vocabulary, which is the whole of what
+                        a draft can hold: the seed sanitizes through
+                        `normalizeRelayModelProfiles`, so `off` — a disable
+                        wire no generic relay is presumed to speak — cannot
+                        reach a row here either. */}
+                    {bulkThinkingLevelStates(
+                      capabilityModelIds,
+                      relayProfileDraft,
+                      DECLARABLE_RELAY_THINKING_LEVELS,
+                    ).map((state) => (
+                      <DropdownMenuCheckboxItem
+                        key={state.level}
+                        label={state.level}
+                        /* The box only ticks at full coverage, so the count
+                           is the sole place partial coverage is legible —
+                           without it "3 of 5 declare high" and "none do"
+                           present as the same empty box. */
+                        description={copy.thinkingBulkCoverage(state.declaredCount, state.total)}
+                        aria-label={`${copy.thinkingBulk} ${state.level}`}
+                        /* The item's `description` is visible text only — the
+                           component does not wire it to `aria-describedby`,
+                           and this item's own `aria-label` replaces the name
+                           the description would otherwise have joined. Without
+                           this, "1/4 个模型" and "全部未声明" both reach a screen
+                           reader as an unchecked box with the same name, which
+                           is exactly the partial state the count exists to
+                           show. */
+                        aria-description={copy.thinkingBulkCoverage(
+                          state.declaredCount,
+                          state.total,
+                        )}
+                        value={state.checked}
+                        onChange={(checked) => {
+                          setDraftThinkingLevelForAll(capabilityModelIds, state.level, checked);
+                        }}
+                        isDisabled={allActionsBusy}
+                      />
+                    ))}
+                  </DropdownMenu>
+                </CapabilityRow>
+              )}
               {capabilityModelIds.map((modelId, modelIndex) => {
                 const declared: RelayModelProfile | undefined = relayProfileDraft[modelId];
                 // Vision resolves to one of three states: absent (Auto),
@@ -546,12 +702,18 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 );
                 return (
                   <VStack key={modelId} gap={3}>
-                    {modelIndex > 0 && <Divider />}
+                    {(modelIndex > 0 || showsThinkingBulk) && <Divider />}
                     <Text weight="semibold">{modelId}</Text>
                     {/* One row per declaration: label + what it does on the
                         left, one compact control on the right (the 模型功能
                         row language). A CheckboxList wall was the reason this
                         section looked like a form from a different app. */}
+                    {/* Relay-only, like 快速模式 below: a declared level encodes
+                        into `reasoning_effort`, a wire field only the
+                        OpenAI-compatible relays accept. The catalog codec
+                        refuses to persist one elsewhere, so offering the
+                        control would promise an edit that cannot be saved. */}
+                    {isRelay && (
                     <CapabilityRow label={copy.thinkingEffort} description={copy.thinkingEffortHelp}>
                       {/* DropdownMenu, not MultiSelector: levels have a
                           canonical order (low → max) that must not shuffle —
@@ -593,6 +755,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                         ))}
                       </DropdownMenu>
                     </CapabilityRow>
+                    )}
                     <CapabilityRow label={copy.visionInput} description={copy.visionInputHelp}>
                       <Selector
                         label={`${copy.visionInput} — ${modelId}`}
@@ -618,7 +781,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                       <DeclaredContextWindowField
                         declared={declared?.contextWindow}
                         disabled={allActionsBusy}
-                        label={copy.contextWindow}
+                        /* Named per model, like the three controls around it:
+                           the visible label is the row's, but the field's own
+                           name is all a screen reader gets, and every row in
+                           the section carries the same one. */
+                        label={`${copy.contextWindow} — ${modelId}`}
                         onCommit={(value) =>
                           setDraftContextWindow(modelId, value ?? undefined)
                         }
@@ -784,7 +951,7 @@ function GitHubCopilotReloginNotice(props: {
   // the whole visible story.
   const connectGuard = useActionGuard<'connect'>();
   const mountedRef = useMountedRef();
-  const toast = useToast();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const loggedIn = props.hasSecret === true;
   const loading = props.hasSecret === 'loading';
 
@@ -793,13 +960,16 @@ function GitHubCopilotReloginNotice(props: {
     try {
       const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
       if (!result.ok) {
-        toast.error(copy.copilotImportFailed, result.message);
+        reportHostError(copy.copilotImportFailed, result.message);
         return;
       }
       await props.onRelogin();
     } catch (error) {
       if (mountedRef.current) {
-        toast.error(copy.copilotImportFailed, providerPanelActionErrorMessage(error, locale));
+        reportHostError(
+          copy.copilotImportFailed,
+          providerPanelActionErrorMessage(error, locale),
+        );
       }
     } finally {
       connectGuard.finish();

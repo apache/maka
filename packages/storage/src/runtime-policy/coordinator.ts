@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import {
   decodeConnectionModelId,
@@ -29,10 +48,12 @@ import {
   type RequestHeaderUpdate,
   type SavedRequestHeaders,
   type SetCredentialInput,
+  type MigrateSystemSeedInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
 import { deriveProviderAuthContract, type ProviderAuthAction } from '@maka/core/provider-auth';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
   deriveConnectionSlug,
   effectiveBaseUrl,
@@ -295,6 +316,10 @@ export class RuntimePolicyCoordinator {
     return this.inLane((root) => this.catalog.setDefaultTarget(root, input));
   }
 
+  migrateSystemSeed(input: MigrateSystemSeedInput) {
+    return this.inLane((root) => this.catalog.migrateSystemSeed(root, input));
+  }
+
   setCredential(rawInput: SetCredentialInput) {
     return this.setCredentialWithAuthority(rawInput, 'client');
   }
@@ -323,6 +348,7 @@ export class RuntimePolicyCoordinator {
         if (!connection) {
           return deepFreeze({ kind: 'connection_not_found' as const });
         }
+        assertConnectionIsWritable(connection);
         const required = connectionCredentialLocator(
           connection.connectionId,
           PROVIDER_DEFAULTS[connection.providerType].authKind,
@@ -381,6 +407,12 @@ export class RuntimePolicyCoordinator {
       const catalog = await this.catalog.read(root);
       const connection = findConnection(catalog, input.locator);
       if (!connection) return deepFreeze({ kind: 'superseded' as const });
+      // Refreshing a token is a write like any other, and this path validated
+      // only the auth kind — so a retired provider whose contract still says
+      // `oauth_token` could have its credential rotated. No production caller
+      // reaches it today (execution resolution refuses first), which is
+      // exactly why it would have stayed open.
+      assertConnectionIsWritable(connection);
       if (PROVIDER_DEFAULTS[connection.providerType].authKind !== 'oauth_token') {
         throw codecError(
           'invalid_credential_input',
@@ -566,6 +598,14 @@ export class RuntimePolicyCoordinator {
       const connection = catalog.connections.find((candidate) => candidate.slug === connectionSlug);
       if (!connection) return deepFreeze({ kind: 'not_found' as const });
       if (!connection.enabled) return deepFreeze({ kind: 'disabled' as const });
+      // Ahead of the credential material: a retired connection keeps its stored
+      // token, so `requiresSecret` is satisfied and every later check passes.
+      // Answering `ready` here is what let Bot, CLI and scheduled-task session
+      // creation persist a session that could only fail once a backend was
+      // built for it.
+      if (isRetiredProvider(connection.providerType)) {
+        return deepFreeze({ kind: 'provider_retired' as const });
+      }
 
       const contract = deriveProviderAuthContract({
         providerType: connection.providerType,
@@ -626,9 +666,11 @@ export class RuntimePolicyCoordinator {
       );
       const updates = decodeRequestHeaderUpdates(rawUpdates);
       const catalog = await this.catalog.read(root);
-      if (!findConnection(catalog, { connectionId })) {
+      const connection = findConnection(catalog, { connectionId });
+      if (!connection) {
         return deepFreeze({ kind: 'connection_not_found' as const });
       }
+      assertConnectionIsWritable(connection);
 
       const locator = connectionRequestHeadersLocator(connectionId);
       const vault = await this.vault.read(root);
@@ -1390,10 +1432,12 @@ function isCanonicalConnectionTestModel(
   modelId: string,
 ): boolean {
   const basis = connectionTestModelBasis(connection);
-  const inCanonicalModels = basis.models.some((model) => model.id === modelId);
-  return basis.modelSource === 'fetched'
-    ? inCanonicalModels
-    : inCanonicalModels || basis.enabledModelIds.includes(modelId);
+  // Either source admits: testing a discovered model before enabling it is the
+  // point of the button, and the user's own selection is authorization no
+  // catalog overrules (#1584).
+  return (
+    basis.models.some((model) => model.id === modelId) || basis.enabledModelIds.includes(modelId)
+  );
 }
 
 function canonicalEffectiveEndpoint(connection: ConnectionCatalogEntry): string {
@@ -1506,6 +1550,22 @@ function sameCredentialLocator(actual: CredentialLocator, expected: CredentialLo
   );
 }
 
+/**
+ * A retired provider's connection is a tombstone: it may be decoded, queried
+ * and deleted, and nothing else. Every write a connection owns funnels through
+ * here rather than growing its own guard — the catalog update, the credential
+ * vault, and the request-header replacement are siblings, and guarding them one
+ * at a time is what left the last two open.
+ */
+function assertConnectionIsWritable(connection: { readonly providerType: ProviderType }): void {
+  if (isRetiredProvider(connection.providerType)) {
+    throw codecError(
+      'invalid_connection_input',
+      `"${connection.providerType}" is retired; its connections can only be read or deleted`,
+    );
+  }
+}
+
 function ticketLabel(kind: ConnectionTicketKind): string {
   return kind === 'model_fetch' ? 'model fetch' : 'connection test';
 }
@@ -1521,9 +1581,5 @@ function requiresNetworkProxyCredential(networkProxy: RuntimePolicy['networkProx
 function isInteractiveOAuthLoginProvider(
   providerType: ProviderType,
 ): providerType is InteractiveOAuthLoginProvider {
-  return (
-    providerType === 'claude-subscription' ||
-    providerType === 'openai-codex' ||
-    providerType === 'xai-oauth'
-  );
+  return providerType === 'openai-codex' || providerType === 'xai-oauth';
 }

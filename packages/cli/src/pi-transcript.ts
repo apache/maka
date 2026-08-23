@@ -1,4 +1,23 @@
-import { Markdown } from '@earendil-works/pi-tui';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
 import type {
   ProviderRetryEvent,
   SandboxBoundaryRequestEvent,
@@ -1253,22 +1272,42 @@ function renderTranscriptEntryMemoized(
 }
 
 function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number): string[] {
-  switch (entry.kind) {
-    case 'user':
-      return renderUserBlock(entry.text, width);
-    case 'legacy_automation':
-      return renderLegacyAutomationBlock(entry.text, width);
-    case 'goal_continuation':
-      return renderGoalContinuationBlock(entry.text, width);
-    case 'assistant':
-      return renderAssistantBlock(entry.text, width);
-    case 'thinking':
-      return renderThinkingBlock(entry, width, entry.expanded);
-    case 'tool':
-      return renderToolBlock(entry, width, entry.expanded);
-    case 'notice':
-      return renderNotice(entry, width);
-  }
+  // Keep the conversation stream inside a one-cell gutter. The editor owns
+  // the full terminal width, so this makes the two surfaces align without
+  // changing any of the individual block renderers' internal prefixes.
+  const contentWidth = Math.max(1, width - 2);
+  const lines = (() => {
+    switch (entry.kind) {
+      case 'user':
+        return renderUserBlock(entry.text, contentWidth);
+      case 'legacy_automation':
+        return renderLegacyAutomationBlock(entry.text, contentWidth);
+      case 'goal_continuation':
+        return renderGoalContinuationBlock(entry.text, contentWidth);
+      case 'assistant':
+        return renderAssistantBlock(entry.text, contentWidth);
+      case 'thinking':
+        return renderThinkingBlock(entry, contentWidth, entry.expanded);
+      case 'tool':
+        return renderToolBlock(entry, contentWidth, entry.expanded);
+      case 'notice':
+        return renderNotice(entry, contentWidth);
+    }
+  })();
+
+  // Markdown preserves a final blank paragraph. It should not become part of
+  // the block's vertical footprint because renderMakaPiTranscript already
+  // inserts the single separator row between entries.
+  let end = lines.length;
+  while (end > 0 && isBlankTranscriptLine(lines[end - 1]!)) end -= 1;
+  return lines.slice(0, end).map((line) => {
+    if (isBlankTranscriptLine(line)) return '';
+    return fitLine(` ${line}`, width);
+  });
+}
+
+function isBlankTranscriptLine(line: string): boolean {
+  return line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim().length === 0;
 }
 
 function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): string {
@@ -1359,22 +1398,29 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
     );
   }
   const usage = metadata.usage;
+  // ctx segment: only show "used" when contextRemaining is available, since
+  // token_usage.input is a billing-cumulative sum across tool-loop steps,
+  // not the last request's context size. Using it as a proxy for "used"
+  // would produce misleading percentages (potentially >100%).
+  const contextRemaining = usage?.contextRemaining;
+  if (metadata.modelContextWindow !== undefined && contextRemaining !== undefined) {
+    const used = Math.max(0, metadata.modelContextWindow - contextRemaining);
+    const pct = Math.round((used / metadata.modelContextWindow) * 100);
+    // #1064: color warning — yellow >80%, red >95%, dim otherwise.
+    const ctxColor = pct > 95 ? ansi.red : pct > 80 ? ansi.yellow : ansi.dim;
+    parts.push(
+      ctxColor(
+        `ctx ${formatTokenCount(used)}/${formatTokenCount(metadata.modelContextWindow)} ${pct}%`,
+      ),
+    );
+  } else if (metadata.modelContextWindow !== undefined) {
+    // #3371: the window is known but no usage has arrived yet (fresh session,
+    // or the provider doesn't report per-step input tokens). Degrade
+    // explicitly, pi-style, instead of hiding the segment silently — the user
+    // can then tell "not measured yet" apart from "window unknown".
+    parts.push(ansi.dim(`ctx ?/${formatTokenCount(metadata.modelContextWindow)}`));
+  }
   if (usage) {
-    // ctx segment: only show when contextRemaining is available, since
-    // token_usage.input is a billing-cumulative sum across tool-loop steps,
-    // not the last request's context size. Using it as a proxy for "used"
-    // would produce misleading percentages (potentially >100%).
-    if (metadata.modelContextWindow !== undefined && usage.contextRemaining !== undefined) {
-      const used = Math.max(0, metadata.modelContextWindow - usage.contextRemaining);
-      const pct = Math.round((used / metadata.modelContextWindow) * 100);
-      // #1064: color warning — yellow >80%, red >95%, dim otherwise.
-      const ctxColor = pct > 95 ? ansi.red : pct > 80 ? ansi.yellow : ansi.dim;
-      parts.push(
-        ctxColor(
-          `ctx ${formatTokenCount(used)}/${formatTokenCount(metadata.modelContextWindow)} ${pct}%`,
-        ),
-      );
-    }
     if (usage.costUsd > 0) {
       parts.push(ansi.dim(`$${formatCost(usage.costUsd)}`));
     }

@@ -1,6 +1,34 @@
-import { app, clipboard, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import {
+  app,
+  clipboard,
+  dialog,
+  ipcMain,
+  powerSaveBlocker,
+  shell,
+  type MessageBoxOptions,
+  type MessageBoxReturnValue,
+} from "electron";
 import { randomUUID } from "node:crypto";
-import { arch as osArch, homedir, release as osRelease } from "node:os";
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import type { UsageRange } from '@maka/core/settings';
@@ -18,16 +46,22 @@ import {
 } from '@maka/runtime/scheduled-task-tools';
 import { buildMcpTools } from '@maka/runtime/mcp-tools';
 import {
+  createClientRuntimeHostCredentialStore,
+  createClientRuntimeHostProfileCatalog,
+  createRuntimeHostCandidateLaunchBarrier,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
 } from "@maka/runtime-host/client";
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
-import { McpClientManager } from "@maka/mcp";
+import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
 import {
   createSettingsStore,
   createMcpConfigStore,
+  createFileCredentialStore,
 } from "@maka/storage";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
+
+import { createMcpOAuthController } from "./mcp-oauth-controller.js";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
@@ -56,11 +90,22 @@ import {
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
 import { createMainWindowController } from "./main-window.js";
-import { mainProcessLogBuffer } from "./main-process-diagnostics.js";
+import {
+  captureDesktopDiagnosticEnvironment,
+  copyDesktopDiagnosticReport,
+  createDesktopMainRendererDiagnosticInput,
+  createDesktopStartupDiagnosticInput,
+  mainProcessLogBuffer,
+  type DesktopDiagnosticsDeps,
+} from "./main-process-diagnostics.js";
+import {
+  showMainRendererProcessGoneDialog,
+  showMessageBoxWithDiagnostics,
+} from "./native-diagnostic-dialog.js";
 import {
   resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
-import { registerMcpIpcMain } from "./mcp-ipc-main.js";
+import { createMcpExclusiveLane, registerMcpIpcMain } from "./mcp-ipc-main.js";
 import { createOnboardingService } from "./onboarding-service.js";
 import { registerOnboardingIpc } from "./onboarding-ipc-main.js";
 import {
@@ -114,7 +159,13 @@ import {
   registerDesktopRuntimeHostProfileIpc,
   resolveDesktopRuntimeHostStartup,
 } from "./runtime-host-profile-service.js";
-import { createDesktopRuntimeHostSshTerminal } from "./runtime-host-ssh-terminal.js";
+import {
+  createDesktopRuntimeHostSshTerminal,
+  isExactRuntimeHostSetupPackageSpecifier,
+  type DesktopRuntimeHostSetupPackage,
+} from "./runtime-host-ssh-terminal.js";
+import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
+import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -142,7 +193,7 @@ import {
   isIsolatedE2e,
 } from "./startup-context.js";
 import { resolveDesktopStorageRoot } from "./storage-root-startup.js";
-import { startupStep, whileAwaitingPerson } from "./startup-step.js";
+import { startupStep } from "./startup-step.js";
 import { registerWorkspaceSearchIpc } from "./workspace-search-ipc-main.js";
 import {
   projectDesktopUsageStats,
@@ -160,7 +211,16 @@ const userDataDir = app.getPath("userData");
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
-const runtimeHostStartup = await resolveDesktopRuntimeHostStartup(userDataDir);
+const runtimeHostCandidateLaunchBarrier = createRuntimeHostCandidateLaunchBarrier();
+const runtimeHostCredentialStore = createClientRuntimeHostCredentialStore(userDataDir);
+const runtimeHostProfileCatalog = createClientRuntimeHostProfileCatalog(
+  userDataDir,
+  runtimeHostCredentialStore,
+);
+const runtimeHostStartup = await resolveDesktopRuntimeHostStartup(userDataDir, {
+  catalog: runtimeHostProfileCatalog,
+  credentialStore: runtimeHostCredentialStore,
+});
 let runtimeHostManager: RuntimeHostDesktopManager | undefined;
 function activeRuntimeHostRef(): DesktopTargetScope | undefined {
   const current = runtimeHostManager?.current();
@@ -176,6 +236,42 @@ const workspaceRoot = join(
   "workspaces",
   e2eFixture?.workspaceName ?? "default",
 );
+const desktopDiagnostics: DesktopDiagnosticsDeps = {
+  environment: () =>
+    captureDesktopDiagnosticEnvironment({
+      appVersion: app.getVersion(),
+      buildMode: buildInfo.mode,
+      buildCommit: buildInfo.commit,
+      locale: app.getLocale(),
+      workspacePath: workspaceRoot,
+    }),
+  mainLogs: () => mainProcessLogBuffer.snapshot(),
+  resolveActiveRuntimeHost: () => {
+    const scope = activeRuntimeHostRef();
+    return scope ? resolveRuntimeHostDiagnostics(scope) : undefined;
+  },
+  resolveRuntimeHost: resolveRuntimeHostDiagnostics,
+  writeClipboard: (report) => clipboard.writeText(report),
+};
+
+function showStartupDiagnosticDialog(
+  options: MessageBoxOptions,
+  locale: ReturnType<typeof resolveSystemUiLocale>,
+): Promise<MessageBoxReturnValue> {
+  return showMessageBoxWithDiagnostics(options, {
+    locale,
+    showMessageBox: (next) => dialog.showMessageBox(next),
+    copyDiagnostics: () =>
+      copyDesktopDiagnosticReport(
+        desktopDiagnostics,
+        createDesktopStartupDiagnosticInput({
+          title: options.title || options.message,
+          description: options.message,
+          ...(options.detail ? { details: options.detail } : {}),
+        }),
+      ),
+  });
+}
 if (e2eFixture) {
   console.log(
     `[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`,
@@ -194,7 +290,7 @@ const resolveLocalStorageRoot = () =>
 const startupLocalStorageRoot =
   await resolveLocalStorageRoot();
 if (!startupLocalStorageRoot) {
-  app.exit(0);
+  app.quit();
   await new Promise<never>(() => {});
   throw new Error("Desktop storage root resolution did not complete");
 }
@@ -208,6 +304,23 @@ const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
   clientVersion: app.getVersion(),
+  oauthStorage: createCredentialMcpOAuthStorage(
+    createFileCredentialStore(workspaceRoot),
+  ),
+});
+// One lane shared by config transactions and login claims: "no login is
+// active" checked inside a transaction cannot be invalidated by a claim
+// landing between the check and the write.
+const mcpExclusiveLane = createMcpExclusiveLane();
+const mcpOAuthController = createMcpOAuthController({
+  manager: mcpManager,
+  claimLane: mcpExclusiveLane,
+  openExternal: (url) => shell.openExternal(url),
+  ensureReady: () => ensureMcpReady(),
+  callbackPort: async (serverId) => {
+    const server = (await mcpConfigStore.get()).mcpServers[serverId];
+    return server && "url" in server ? server.oauth?.callbackPort : undefined;
+  },
 });
 let mcpStartup: Promise<void> | undefined;
 function ensureMcpReady(): Promise<void> {
@@ -233,6 +346,21 @@ const mainWindowController = createMainWindowController({
   settingsStore,
   startHidden,
   onClose: () => onMainWindowClose(),
+  onRendererProcessGone: async (details) => {
+    const diagnosticInput = createDesktopMainRendererDiagnosticInput({
+      title: "Maka main Renderer process exited unexpectedly",
+      description: `Reason: ${details.reason}`,
+      details: `Exit code: ${details.exitCode}`,
+    });
+    const decision = await showMainRendererProcessGoneDialog({
+      locale: desktopLocale.current(),
+      copyDiagnostics: () =>
+        copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
+      showMessageBox: (options) => dialog.showMessageBox(options),
+    });
+    if (decision === "relaunch") app.relaunch();
+    app.quit();
+  },
 });
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,
@@ -271,8 +399,10 @@ const oauthPresentation = new RuntimeHostOAuthPresentation((url) => shell.openEx
 const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   clientDataRoot: userDataDir,
   startup: runtimeHostStartup,
+  catalog: runtimeHostProfileCatalog,
+  credentialStore: runtimeHostCredentialStore,
   states: () => runtimeHostManager?.entries() ?? [],
-  enable: async (target) => {
+  enable: async (target, sshInteraction) => {
     if (target.profile.kind !== "remote" || !target.credential) {
       throw new Error("A resolved remote Runtime Host profile is required");
     }
@@ -280,20 +410,61 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
     await runtimeHostManager.enable({
       profile: target.profile,
       credential: target.credential,
-      ...(target.profile.transport.kind === "ssh"
-        ? { sshInteraction: "terminal" as const }
-        : {}),
+      ...(target.profile.transport.kind === "ssh" ? { sshInteraction } : {}),
     });
   },
   disable: async (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     await runtimeHostManager.disable(profileId);
   },
+  finalizePairing: async (profileId) => {
+    if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
+    await runtimeHostManager.finalizePairing(profileId);
+  },
   setDefault: (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     runtimeHostManager.setDefaultProfile(profileId);
   },
 });
+const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
+  ipcMain,
+  clientInstanceId: runtimeHostClientInstanceId,
+  profiles: runtimeHostProfileService,
+  runSetup: runtimeHostSshTerminal.runSetup,
+  resolveSetupPackage: runtimeHostSetupPackage,
+  send: (snapshot) =>
+    mainWindowController.send("runtime-host-onboarding:changed", snapshot),
+});
+const runtimeHostManagement = createDesktopRuntimeHostManagement({
+  ipcMain,
+  profiles: runtimeHostProfileService,
+  runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
+  runAccessManagement: runtimeHostSshTerminal.runAccessManagement,
+  cleanupManagedDeployment: runtimeHostSshTerminal.cleanupManagedDeployment,
+});
+
+function runtimeHostSetupPackage(): DesktopRuntimeHostSetupPackage {
+  if (!app.isPackaged && process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE) {
+    return { kind: "development_archive", path: process.env.MAKA_RUNTIME_HOST_SETUP_ARCHIVE };
+  }
+  const manifestPath = app.isPackaged
+    ? join(app.getAppPath(), "package.json")
+    : join(app.getAppPath(), "..", "..", "packages", "cli", "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    name?: unknown;
+    version?: unknown;
+    runtimeHostSetupPackage?: unknown;
+  };
+  const specifier = app.isPackaged
+    ? manifest.runtimeHostSetupPackage
+    : manifest.name === "maka-agent" && typeof manifest.version === "string"
+      ? `maka-agent@${manifest.version}`
+      : undefined;
+  if (!isExactRuntimeHostSetupPackageSpecifier(specifier)) {
+    throw new Error("Desktop does not declare an exact Runtime Host setup package");
+  }
+  return { kind: "npm", specifier };
+}
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>
     runtimeHostManager?.defaultProfileId() ??
@@ -457,6 +628,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
     generation: runtimeHostGeneration,
+    candidateLaunchBarrier: runtimeHostCandidateLaunchBarrier,
     // The Desktop E2E composition lives behind its own entry module, which
     // release packaging drops: picking it here is what keeps FakeBackend and
     // the E2E bootstrap out of the shipped Runtime Host.
@@ -577,7 +749,10 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     openSshTunnel: runtimeHostSshTerminal.openSshTunnel,
   },
   {
-    upgradePrompts: createRuntimeHostUpgradePrompts(() => desktopLocale.resolve()),
+    upgradePrompts: createRuntimeHostUpgradePrompts(
+      () => desktopLocale.resolve(),
+      showStartupDiagnosticDialog,
+    ),
     onTargetStateChanged: (state) => {
       const hostId = state.readiness === "ready"
         ? state.candidate.client.hostId
@@ -666,13 +841,14 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
   },
 ).catch((error: unknown) => {
   if (error instanceof RuntimeHostUpgradeCancelledError) {
-    app.exit(0);
+    app.quit();
     return new Promise<never>(() => undefined);
   }
   throw error;
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+void runtimeHostProfileService.startEnabledProfiles();
 const unavailableDefault = runtimeHostStartup.unavailable.get(
   runtimeHostStartup.preferences.defaultProfileId,
 );
@@ -692,24 +868,6 @@ if (unavailableDefault) {
       console.error("[runtime-host] failed to resolve unavailable default Host:", error),
     );
 }
-// Startup may present one interactive SSH prompt without serializing every
-// enabled Host behind it. Other SSH targets fail batch-mode and remain retryable.
-for (const target of runtimeHostStartup.remotes) {
-  if (target.profile.kind !== "remote" || !target.credential) continue;
-  void runtimeHostManager
-    .enable({
-      profile: target.profile,
-      credential: target.credential,
-      ...(target.profile.transport.kind === "ssh" &&
-      target.profile.id === runtimeHostStartup.preferences.defaultProfileId
-        ? { sshInteraction: "terminal" as const }
-        : {}),
-    })
-    .catch((error) =>
-      console.error(`[runtime-host] ${target.profile.name} is unavailable:`, error),
-    );
-}
-
 const stopComputerUseSession = (sessionId: string): void => {
   const ref = parseDesktopSessionResourceKey(sessionId);
   void runtimeHostManager
@@ -723,6 +881,33 @@ updateService.start();
 void ensureMcpReady()
   .then(() => mcpCapabilityPublisher.refreshIfChanged())
   .catch((error) => console.error("[runtime-host] MCP startup failed:", error));
+// A login round persists its verifier and callback port; if the app
+// restarted mid-round, rebind the listener so the browser's redirect still
+// lands instead of hitting a dead port. Deliberately NOT chained behind the
+// connect/publish sequence above: a slow server or a publish failure must
+// not delay or block the rebind — it needs only the persisted state, and
+// the controller awaits readiness itself before the token exchange.
+void mcpConfigStore
+  .get()
+  .then((config) => {
+    for (const serverId of Object.keys(config.mcpServers)) {
+      void mcpOAuthController
+        .resumeLogin(serverId)
+        // No explicit mcp:changed here: a successful resume ends in
+        // finishAuthorization → reconnect, whose onChange handler already
+        // emits AND refreshes capabilities — a second identical emit here
+        // was strictly weaker.
+        .catch((error) =>
+          console.error(
+            `[runtime-host] MCP login resume failed for ${serverId}:`,
+            error,
+          ),
+        );
+    }
+  })
+  .catch((error) =>
+    console.error("[runtime-host] MCP login resume scan failed:", error),
+  );
 
 void clientSettingsEffects
   .refresh(false)
@@ -837,6 +1022,8 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     store: mcpConfigStore,
     manager: mcpManager,
+    oauth: mcpOAuthController,
+    exclusiveLane: mcpExclusiveLane,
     ensureReady: ensureMcpReady,
     publishCapabilities: mcpCapabilityPublisher.refreshIfChanged,
     onPublicationError: (error) =>
@@ -1179,27 +1366,7 @@ function registerPersistentClientIpc(): void {
       }];
     }),
   );
-  registerDesktopDiagnosticsIpc({
-    ipcMain,
-    environment: () => ({
-      appVersion: app.getVersion(),
-      buildMode: buildInfo.mode,
-      buildCommit: buildInfo.commit,
-      electronVersion: process.versions.electron ?? "",
-      nodeVersion: process.versions.node,
-      chromeVersion: process.versions.chrome ?? "",
-      platform: process.platform,
-      arch: osArch(),
-      osRelease: osRelease(),
-      locale: app.getLocale(),
-      workspacePath: workspaceRoot,
-      homePath: homedir(),
-      processUptimeSeconds: process.uptime(),
-    }),
-    mainLogs: () => mainProcessLogBuffer.snapshot(),
-    resolveRuntimeHost: resolveRuntimeHostDiagnostics,
-    writeClipboard: (report) => clipboard.writeText(report),
-  });
+  registerDesktopDiagnosticsIpc({ ipcMain, ...desktopDiagnostics });
   ipcMain.handle("attachments:pickFiles", async (event) => {
     const result = await mainWindowController.showOpenDialog({
       title: "Add attachments",
@@ -1245,12 +1412,12 @@ function resolveRuntimeHostDiagnostics(scope: DesktopTargetScope) {
   const client = current.client;
   return {
     getDiagnostics: () => client.queryHostDiagnostics(),
-    getTurnTrace: async (sessionId: string, turnId: string) => {
+    getTurnTrace: async (sessionId: string, turnId: string, timeoutMs: number) => {
       const result = await client.request('execution.inspect.query', {
         kind: "turn_trace",
         sessionId,
         turnId,
-      });
+      }, timeoutMs);
       return result.kind === "turn_trace" ? result.turn : undefined;
     },
   };
@@ -1293,10 +1460,12 @@ function wireLifecycle(): void {
     cleanup: closeRuntimeHostDesktop,
     focusOrCreateWindow: (signal) => {
       if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
-      else void mainWindowController.createWindow(signal);
+      else return mainWindowController.createWindow(signal);
     },
     onCleanupError: (error) =>
       console.error("[runtime-host] shutdown failed:", error),
+    onWindowCreationError: (error) =>
+      console.error("[window] creation failed:", error),
     resumeQuit: () => app.quit(),
   });
   installDesktopShellPresentation({
@@ -1317,8 +1486,7 @@ function wireLifecycle(): void {
     if (process.platform !== "darwin") app.quit();
   });
   app.on("before-quit", quitCoordinator.handleBeforeQuit);
-  const initialWindowSignal = quitCoordinator.getWindowCreationSignal();
-  if (initialWindowSignal) void mainWindowController.createWindow(initialWindowSignal);
+  quitCoordinator.focusOrCreateWindow();
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {
@@ -1327,7 +1495,9 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   settingsBotsIpc?.dispose();
   permissionOverlay.dismiss();
   const results = await Promise.allSettled([
+    Promise.resolve().then(() => runtimeHostManagement.close()),
     runtimeHostManager?.close(),
+    runtimeHostOnboarding.close(),
     runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),
     mcpManager.close(),
@@ -1373,8 +1543,8 @@ async function confirmDesktopStorageRootRepair(
   );
   const isChinese =
     resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
-  const { response } = await whileAwaitingPerson(
-    dialog.showMessageBox({
+  const { response } = await showStartupDiagnosticDialog(
+    {
       type: "warning",
       title: isChinese ? "Maka 工作区需要修复" : "Maka workspace needs repair",
       message: isChinese
@@ -1389,7 +1559,8 @@ async function confirmDesktopStorageRootRepair(
       defaultId: 1,
       cancelId: 1,
       noLink: true,
-    }),
+    },
+    isChinese ? "zh" : "en",
   );
   return response === 0;
 }
@@ -1400,8 +1571,8 @@ async function promptForDefaultRuntimeHostRecovery(input: {
 }): Promise<"retry" | "use_local" | "keep_offline"> {
   const isChinese =
     resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
-  const { response } = await whileAwaitingPerson(
-    dialog.showMessageBox({
+  const { response } = await showStartupDiagnosticDialog(
+    {
       type: "warning",
       title: isChinese
         ? "默认 Runtime Host 无法连接"
@@ -1418,7 +1589,8 @@ async function promptForDefaultRuntimeHostRecovery(input: {
       defaultId: 0,
       cancelId: 2,
       noLink: true,
-    }),
+    },
+    isChinese ? "zh" : "en",
   );
   return response === 0 ? "retry" : response === 1 ? "use_local" : "keep_offline";
 }

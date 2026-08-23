@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // The 身份 group of the 通用 page: how Maka addresses you, the interface
 // language, and the assistant tone.
 //
@@ -18,6 +37,7 @@ import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { TextArea, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
+import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 
 // PR-TONE-AUTOSAVE-0: the personalization block used to be the page's ONLY
 // control with an explicit 保存 button + helper line — every neighboring row
@@ -33,6 +53,7 @@ export function PersonalizationSettingsSection(props: {
   runtimeHostAvailable: boolean;
   onUpdate(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
 }) {
+  const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).personalization;
   const sections = getSettingsPreferencesCopy(locale).sections;
@@ -112,7 +133,14 @@ export function PersonalizationSettingsSection(props: {
         setUiLocale(value.uiLocale);
       }
       if (ticket === persistTicketRef.current) {
-        toast.error(copy.saveFailed, settingsActionErrorMessage(error, locale));
+        const targetsRuntimeHost =
+          patch.displayName !== undefined || patch.assistantTone !== undefined;
+        toast.error(
+          copy.saveFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          targetsRuntimeHost && host ? { profileId: host.profileId } : undefined,
+        );
       }
       return false;
     } finally {

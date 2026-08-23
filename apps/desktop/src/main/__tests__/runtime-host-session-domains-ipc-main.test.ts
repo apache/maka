@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
@@ -16,6 +35,65 @@ import {
 } from '../runtime-host-session-domains-ipc-main.js';
 
 type DomainClient = RuntimeHostSessionDomainsIpcDeps['client'];
+
+test('goal:arm takes the Session from the scoped channel and refuses any other key', async () => {
+  const armed: unknown[] = [];
+  const client = domainClient({
+    armGoal: async (input) => {
+      armed.push(input);
+      return { sessionId: input.sessionId, goal: goalProjection() };
+    },
+  });
+  const ipc = ipcHarness();
+  registerDomainsIpc({ client, emitModeChanged() {} }, ipc);
+
+  const goal = await ipc.invoke('goal:arm', 'session-1', {
+    condition: 'Finish the adapter',
+    maxIterations: 20,
+    tokenBudget: 1_000,
+  });
+  assert.deepEqual(armed, [
+    {
+      sessionId: 'session-1',
+      condition: 'Finish the adapter',
+      maxIterations: 20,
+      tokenBudget: 1_000,
+    },
+  ]);
+  assert.equal((goal as { id: string }).id, 'goal-1');
+
+  // Omitted budgets are "not chosen", which the Host reads as its defaults.
+  await ipc.invoke('goal:arm', 'session-1', { condition: 'Finish the adapter' });
+  assert.deepEqual(armed[1], {
+    sessionId: 'session-1',
+    condition: 'Finish the adapter',
+    maxIterations: null,
+    tokenBudget: null,
+  });
+
+  await assert.rejects(ipc.invoke('goal:arm', 'session-1', { condition: '   ' }));
+  await assert.rejects(
+    ipc.invoke('goal:arm', 'session-1', { condition: 'Finish', maxIterations: 0 }),
+  );
+  await assert.rejects(ipc.invoke('goal:arm', 'session-1', 'not-an-object'));
+
+  // Any key this frame does not carry is a caller mistake. Dropping it would
+  // send the Host a frame the caller did not write, so it is refused instead.
+  await assert.rejects(
+    ipc.invoke('goal:arm', 'session-1', { condition: 'Finish', blockCap: 5 }),
+    /Invalid Goal arm input/,
+  );
+  // The Session is one of those keys: it comes from the scoped channel, so a
+  // renderer-side Session id cannot redirect the operation even by matching.
+  await assert.rejects(
+    ipc.invoke('goal:arm', 'session-1', {
+      sessionId: 'session-somewhere-else',
+      condition: 'Finish',
+    }),
+    /Invalid Goal arm input/,
+  );
+  assert.equal(armed.length, 2);
+});
 
 test('adapts Host Goal, Task, Deep Research, and Resource projections', async () => {
   const controls: unknown[] = [];
@@ -566,6 +644,7 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
   handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'task' });
   handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'deep_research' });
   handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'plan' });
+  handle.sessionDomainChanged({ sessionId: 'session-1', domain: 'usage' });
   handle.sessionDomainChanged({
     sessionId: 'session-1',
     domain: 'runtime_resource',
@@ -597,6 +676,10 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
     },
     {
       channel: 'plan-mode:changed',
+      payload: { sessionId: 'session-1' },
+    },
+    {
+      channel: 'usage:changed',
       payload: { sessionId: 'session-1' },
     },
     {
@@ -636,6 +719,10 @@ test('publishes typed invalidations and refreshes only changed Runtime Resources
     },
     {
       channel: 'plan-mode:changed',
+      payload: { sessionId: 'session-1' },
+    },
+    {
+      channel: 'usage:changed',
       payload: { sessionId: 'session-1' },
     },
     {
@@ -720,6 +807,7 @@ function domainClient(overrides: Partial<DomainClient>): DomainClient {
     throw new Error('Unexpected domain operation');
   };
   return {
+    armGoal: unavailable,
     clearGoal: unavailable,
     acquireRuntimeResourceController: unavailable,
     controlPlan: unavailable,

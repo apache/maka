@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from "node:crypto";
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
@@ -13,6 +32,7 @@ import {
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostConnection,
+  type RuntimeHostCandidateLaunchBarrier,
   type RemoteRuntimeHostProfile,
   type CandidateExitDetails,
 } from "@maka/runtime-host/client";
@@ -141,6 +161,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   readonly signal?: AbortSignal;
   /** Candidate-exit sink forwarded to the launcher; the Desktop owns the sink. */
   readonly onExit?: (details: CandidateExitDetails) => void;
+  readonly candidateLaunchBarrier?: RuntimeHostCandidateLaunchBarrier;
   readonly remote?: {
     readonly profile: RemoteRuntimeHostProfile;
     readonly credential: string;
@@ -262,7 +283,9 @@ export async function startDesktopRuntimeHostCandidate(
       ipcMain,
     );
   }
-  const connection = await connectOrSpawnRuntimeHost(connectInput(input));
+  const connection = input.candidateLaunchBarrier
+    ? await input.candidateLaunchBarrier.connect(connectInput(input))
+    : await connectOrSpawnRuntimeHost(connectInput(input));
   if (connection.kind !== "connected") return connection;
   try {
     return {

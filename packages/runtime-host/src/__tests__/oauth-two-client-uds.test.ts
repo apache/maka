@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -41,11 +60,11 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
     const created = await stores.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
-        slug: 'uds-claude',
+        slug: 'uds-codex',
         name: 'UDS Claude',
-        providerType: 'claude-subscription',
+        providerType: 'openai-codex',
         enabled: true,
-        enabledModelIds: ['claude-sonnet-4-5'],
+        enabledModelIds: ['gpt-5.6-sol'],
       },
     });
     assert.equal(created.kind, 'committed');
@@ -69,11 +88,23 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
           acquireResidency: () => context.acquireResidency('oauth'),
           invalidateBackends: async () => undefined,
           onFatal: () => context.requestDrain(),
-          exchangeCode: async () => ({
+          // Codex enrolls through device authorization, presented via
+          // `openExternal`.
+          startCodexAuthorization: async () => ({
+            deviceAuthId: 'uds-deviceauth',
+            userCode: 'UDS-CODE',
+            verificationUrl: 'https://auth.openai.com/codex/device',
+            expiresAt: 1_900_000_000_000,
+            intervalMs: 1_000,
+          }),
+          pollCodexAuthorization: async () => ({
+            authorizationCode: 'uds-authorization-code',
+            codeVerifier: 'uds-verifier',
+          }),
+          exchangeCodexCode: async () => ({
             access_token: 'host-access-token',
             refresh_token: 'host-refresh-token',
             expires_at: 1_900_000_000_000,
-            account_uuid: 'host-account',
           }),
         });
         const handlers = {
@@ -105,22 +136,12 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
         openExternal: async () => {
           presentations.push('desktop');
         },
-        requestAuthorizationCode: async () => {
-          presentations.push('desktop');
-          throw new Error('Wrong Client presentation was selected');
-        },
       }),
     );
     await second.replaceClientCapabilities(
       createOAuthPresentationClientProvider({
         openExternal: async () => {
           presentations.push('tui');
-        },
-        requestAuthorizationCode: async (url) => {
-          presentations.push('tui');
-          const state = new URL(url).searchParams.get('state');
-          assert.ok(state);
-          return `authorization-code#${state}`;
         },
       }),
     );
@@ -142,7 +163,6 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
           access_token: 'host-access-token',
           refresh_token: 'host-refresh-token',
           expires_at: 1_900_000_000_000,
-          account_uuid: 'host-account',
         },
       );
     }
@@ -154,20 +174,17 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
   }
 });
 
-test('OAuth enrollment honors Claude and Codex opt-out flags over the real endpoint', {
+test('OAuth enrollment honors the Codex opt-out flag over the real endpoint', {
   timeout: 30_000,
 }, async () => {
-  const cases = [
-    ['claude-subscription', { MAKA_CLAUDE_SUBSCRIPTION_EXPERIMENTAL: '0' }],
-    ['openai-codex', { MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL: '0' }],
-  ] as const;
+  const cases = [['openai-codex', { MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL: '0' }]] as const;
   for (const [provider, environment] of cases) {
     await assertProviderDisabledOverUds(provider, environment);
   }
 });
 
 async function assertProviderDisabledOverUds(
-  provider: 'claude-subscription' | 'openai-codex',
+  provider: 'openai-codex',
   environment: Readonly<Record<string, string | undefined>>,
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), `maka-oauth-disabled-${provider}-`));
@@ -213,9 +230,6 @@ async function assertProviderDisabledOverUds(
           acquireResidency: () => context.acquireResidency('oauth'),
           invalidateBackends: async () => undefined,
           onFatal: () => context.requestDrain(),
-          exchangeCode: async () => {
-            throw new Error('Disabled enrollment must not exchange credentials');
-          },
         });
         return {
           handlers: {
@@ -243,10 +257,6 @@ async function assertProviderDisabledOverUds(
       createOAuthPresentationClientProvider({
         openExternal: async () => {
           presentations += 1;
-        },
-        requestAuthorizationCode: async () => {
-          presentations += 1;
-          return 'unused-code';
         },
       }),
     );

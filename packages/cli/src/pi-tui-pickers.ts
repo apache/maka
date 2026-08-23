@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   CombinedAutocompleteProvider,
   Editor,
@@ -250,7 +269,26 @@ export interface MakaSlashCommandMetadata {
   description: string;
 }
 
+/**
+ * How the TUI treats a slash command submitted while a turn is running:
+ * 'local' answers it immediately, 'refuse' rejects it with a notice, and
+ * 'intercepted' commands are claimed by dedicated checks ahead of generic
+ * slash routing (/exit, /swarm, /graph). Only an unrecognized form — e.g.
+ * /exit with arguments, which isExitPrompt does not match — can still reach
+ * the disposition, where it falls through to 'refuse'.
+ */
+export type SlashCommandMidTurnDisposition = 'local' | 'refuse' | 'intercepted';
+
 export interface MakaSlashCommand extends MakaSlashCommandMetadata {
+  /**
+   * Mid-turn disposition. 'local' requires the handler to be independent of
+   * the running turn — it must not enter runControl, whose busy gate would
+   * silently no-op. 'refuse' is the safe default for anything that mutates
+   * session state or opens a picker the turn would race. Declared on every
+   * handler so a newly added command must state its answer instead of
+   * inheriting one from the routing call site.
+   */
+  midTurn: SlashCommandMidTurnDisposition;
   run(parts: string[], rawTail: string | undefined, context: { idleMs: number }): void;
   /** Alternate names that dispatch to this command without appearing in
    *  completion or the /help menu (e.g. /quit as an alias of /exit). */
@@ -560,18 +598,22 @@ function modelChoicePickerItems(
     const tags = [choice.connectionName || choice.connectionSlug];
     if (isCurrent) tags.push('current');
     else if (choice.isDefaultConnection) tags.push('default');
-    return { value: String(index), label: choice.model, description: tags.join(' · ') };
+    return {
+      value: String(index),
+      label: choice.displayName?.trim() || choice.model,
+      description: tags.join(' · '),
+    };
   });
 }
 
 /**
  * Case-insensitive substring match for the `/model` search field, against every
  * criterion the issue names: model id, provider label/type, and connection
- * name/slug. `ModelChoice` carries no display name, so the model id is the only
- * model-side match target; a display-name enrichment would slot in here.
+ * name/slug. Model ids and display names are both model-side match targets.
  */
 function matchesModelChoice(choice: ModelChoice, query: string): boolean {
   if (choice.model.toLowerCase().includes(query)) return true;
+  if (choice.displayName?.toLowerCase().includes(query)) return true;
   if (choice.connectionName.toLowerCase().includes(query)) return true;
   if (choice.connectionSlug.toLowerCase().includes(query)) return true;
   if (choice.providerType.toLowerCase().includes(query)) return true;
@@ -709,11 +751,10 @@ export class ModelSearchOverlay implements Component {
  * #1611: `current` marks an option that is genuinely in force, so choosing it
  * is a no-op. A read-only session is neither of these options, and marking
  * Auto as current there turned "confirm what I already have" into a silent
- * widening of the boundary. Legacy `execute` has no boundary of its own and
- * really does resolve to Auto, so it still marks Auto.
+ * widening of the boundary.
  */
 export function permissionModePickerItems(currentMode: PermissionMode): SelectItem[] {
-  const autoIsCurrent = currentMode === 'ask' || currentMode === 'execute';
+  const autoIsCurrent = currentMode === 'ask';
   return [
     {
       value: 'auto',

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { mkdir, realpath, stat, readFile } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
@@ -34,7 +53,14 @@ export interface MakaActivationOptions {
   input: string;
   timeoutMs?: number;
   maxSteps?: number;
-  permissionMode?: Exclude<PermissionMode, 'ask'>;
+  /**
+   * `ask` was excluded here while `execute` existed, but the two compiled to
+   * the same workspace-write profile and the same confirmation behavior — the
+   * exclusion separated the names, not the boundaries. With `execute` gone,
+   * `ask` is that boundary, and an activation asking for it gets exactly what
+   * `--permission-mode execute` always gave it.
+   */
+  permissionMode?: PermissionMode;
   connection?: string;
   model?: string;
 }
@@ -205,14 +231,19 @@ export function parseMakaActivateArgs(argv: readonly string[]): ParseMakaActivat
   if (parsedMaxSteps !== undefined && (!Number.isInteger(parsedMaxSteps) || parsedMaxSteps < 1)) {
     return { kind: 'error', message: '--max-steps must be a positive integer' };
   }
-  const permissionMode = values.get('permission-mode');
+  // `execute` stays accepted as an alias for `ask`: this is a public
+  // subcommand whose callers live outside this repo, and the two named the
+  // same boundary for as long as both existed. It is not offered in the error
+  // message, so nothing new learns to send it.
+  const requestedPermissionMode = values.get('permission-mode');
+  const permissionMode = requestedPermissionMode === 'execute' ? 'ask' : requestedPermissionMode;
   if (
     permissionMode !== undefined &&
     permissionMode !== 'explore' &&
-    permissionMode !== 'execute' &&
+    permissionMode !== 'ask' &&
     permissionMode !== 'bypass'
   ) {
-    return { kind: 'error', message: '--permission-mode must be explore, execute, or bypass' };
+    return { kind: 'error', message: '--permission-mode must be explore, ask, or bypass' };
   }
   return {
     kind: 'activate',
@@ -772,7 +803,7 @@ function makaActivateHelpText(): string {
     '  --input <path>            JSON request file, or - for stdin (default: -)',
     '  --timeout <seconds>       Invocation timeout',
     '  --max-steps <count>       Tool-step cap',
-    '  --permission-mode <mode>  explore|execute|bypass',
+    '  --permission-mode <mode>  explore|ask|bypass',
     '  --connection <slug>       Model connection override',
     '  --model <id>              Model override',
   ].join('\n');

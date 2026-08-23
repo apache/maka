@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { setImmediate as flushMacrotask } from 'node:timers/promises';
@@ -86,6 +105,7 @@ type CallKind =
   | 'gated'
   | 'done'
   | 'overflow'
+  | 'overflow503'
   | 'overflowPart'
   | 'overflowPartResponses'
   | 'toolThenOverflowPart'
@@ -107,6 +127,12 @@ interface ReactiveFixtureOptions {
   midTurnEnabled?: boolean;
   withoutPriorTurns?: boolean;
   bigPriors?: boolean;
+  /** Add one hydrated historical image that fits the proactive capacity estimate. */
+  imagePrior?: boolean;
+  /** Put one image attachment on the durable current-turn user anchor. */
+  currentImage?: boolean;
+  /** Make Read return a newly produced image during this turn. */
+  liveImageResult?: boolean;
   summarize?: () =>
     | Promise<string | HistoryCompactProviderState | undefined>
     | string
@@ -227,6 +253,12 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       throw Object.assign(new Error(OVERFLOW_MESSAGE), {
         name: 'AI_APICallError',
         statusCode: 400,
+      });
+    }
+    if (kind === 'overflow503') {
+      throw Object.assign(new Error(OVERFLOW_MESSAGE), {
+        name: 'AI_APICallError',
+        statusCode: 503,
       });
     }
     if (kind === 'error500') {
@@ -375,21 +407,78 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
   const priorChars = options.bigPriors ? 4_000 : 120;
   const priorEvents: RuntimeEvent[] = options.withoutPriorTurns
     ? []
-    : [
-        runtimeTextEvent(
-          'prior-user',
-          'turn-0',
-          'user',
-          `PRIOR_FACT question ${'p'.repeat(priorChars)}`,
-        ),
-        runtimeTextEvent(
-          'prior-model',
-          'turn-0',
-          'model',
-          `PRIOR_FACT answer ${'q'.repeat(priorChars)}`,
-        ),
-      ];
-  const anchor = runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT);
+    : options.imagePrior
+      ? [
+          runtimeTextEvent('prior-user', 'turn-0', 'user', 'inspect the screenshot'),
+          {
+            ...runtimeTextEvent('prior-call', 'turn-0', 'model', ''),
+            content: {
+              kind: 'function_call' as const,
+              id: 'prior-image-call',
+              name: 'Read',
+              args: { path: 'screenshot.png' },
+            },
+          },
+          {
+            ...runtimeTextEvent('prior-result', 'turn-0', 'model', ''),
+            role: 'tool' as const,
+            author: 'tool' as const,
+            content: {
+              kind: 'function_response' as const,
+              id: 'prior-image-call',
+              name: 'Read',
+              result: {
+                kind: 'image' as const,
+                mimeType: 'image/png',
+                ref: {
+                  kind: 'session_file' as const,
+                  sessionId: 'session-1',
+                  relativePath: 'screenshot.png',
+                },
+              },
+              isError: false,
+            },
+          },
+          runtimeTextEvent('prior-model', 'turn-0', 'model', 'screenshot inspected'),
+        ]
+      : [
+          runtimeTextEvent(
+            'prior-user',
+            'turn-0',
+            'user',
+            `PRIOR_FACT question ${'p'.repeat(priorChars)}`,
+          ),
+          runtimeTextEvent(
+            'prior-model',
+            'turn-0',
+            'model',
+            `PRIOR_FACT answer ${'q'.repeat(priorChars)}`,
+          ),
+        ];
+  const anchor: RuntimeEvent = {
+    ...runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT),
+    ...(options.currentImage
+      ? {
+          content: {
+            kind: 'text' as const,
+            text: ANCHOR_TEXT,
+            attachments: [
+              {
+                kind: 'image' as const,
+                name: 'current.png',
+                mimeType: 'image/png',
+                bytes: 8,
+                ref: {
+                  kind: 'session_file' as const,
+                  sessionId: 'session-1',
+                  relativePath: 'current.png',
+                },
+              },
+            ],
+          },
+        }
+      : {}),
+  };
 
   const ledger: RuntimeEvent[] = [anchor];
   const ledgerCtx: InvocationContext = {
@@ -462,6 +551,15 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
     modelFactory: () => model,
+    ...(options.imagePrior || options.currentImage || options.liveImageResult
+      ? {
+          supportsVision: true,
+          readAttachmentBytes: async () => ({
+            ok: true as const,
+            bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]),
+          }),
+        }
+      : {}),
     ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
     tools: [
       {
@@ -470,6 +568,17 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
         parameters: z.object({ path: z.string() }),
         impl: async (args: { path: string }) => {
           toolExecutions.push(args.path);
+          if (options.liveImageResult) {
+            return {
+              kind: 'image' as const,
+              mimeType: 'image/png',
+              ref: {
+                kind: 'session_file' as const,
+                sessionId: 'session-1',
+                relativePath: 'live.png',
+              },
+            };
+          }
           return { body: args.path === 'big.md' ? BIG_RESULT : RAW_SPAN_ONE };
         },
       },
@@ -917,6 +1026,68 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(lastCall?.inputTokens, 220);
     assert.equal(lastCall?.outputTokens, 30);
     assert.equal(lastCall?.totalTokens, 250);
+  });
+
+  test('drops hydrated images before the single overflow retry without rerunning tools', async () => {
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      imagePrior: true,
+      currentImage: true,
+      liveImageResult: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.deepEqual(fixture.toolExecutions, ['one.md']);
+    assert.equal(fixture.summarizerCalls(), 0);
+    assert.equal(fixture.recorded.length, 0);
+
+    const rejectedPrompt = JSON.stringify(fixture.model.doStreamCalls[1]?.prompt);
+    const retryPrompt = JSON.stringify(fixture.model.doStreamCalls[2]?.prompt);
+    assert.equal(rejectedPrompt.match(/"mediaType":"image\/png"/g)?.length, 3);
+    assert.equal(retryPrompt.match(/"mediaType":"image\/png"/g)?.length, 2);
+    assert.match(
+      retryPrompt,
+      /Image artifact \\"screenshot\.png\\" omitted after provider context overflow/,
+    );
+  });
+
+  test('surfaces a retryable second overflow after the image-only retry without another loop', async () => {
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow503', 'overflow503'],
+      imagePrior: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(complete(fixture)?.stopReason, 'error');
+    assert.deepEqual(fixture.toolExecutions, ['one.md']);
+    assert.equal(fixture.summarizerCalls(), 0);
+    assert.equal(fixture.recorded.length, 0);
+  });
+
+  test('keeps only the historical image omitted after the overflow retry returns a tool call', async () => {
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'tool', 'done'],
+      imagePrior: true,
+      currentImage: true,
+      liveImageResult: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 4);
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(fixture.summarizerCalls(), 0);
+    const expectedImages = [2, 3];
+    for (const [index, call] of fixture.model.doStreamCalls.slice(2).entries()) {
+      const prompt = JSON.stringify(call.prompt);
+      assert.equal(prompt.match(/"mediaType":"image\/png"/g)?.length, expectedImages[index]);
+      assert.match(
+        prompt,
+        /Image artifact \\"screenshot\.png\\" omitted after provider context overflow/,
+      );
+    }
   });
 
   test('keeps a step-0 overflow checkpoint projected after the retry returns a tool call', async () => {

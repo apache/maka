@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { BackendKind } from './session.js';
 import {
   GENERATED_MODELS_DEV_METADATA,
@@ -6,11 +25,6 @@ import {
 } from './model-metadata.generated.js';
 
 export const OPENCODE_FREE_DEFAULT_MODEL = 'nemotron-3-ultra-free';
-export const OPENCODE_FREE_DEFAULT_ENABLED_MODELS = [
-  OPENCODE_FREE_DEFAULT_MODEL,
-  'mimo-v2.5-free',
-  'deepseek-v4-flash-free',
-] as const;
 
 export type ProviderCategory = 'oauth' | 'domestic' | 'overseas' | 'local' | 'custom';
 export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregators' | 'local';
@@ -29,7 +43,11 @@ export type ProviderResponsesContract =
 
 type ProviderRuntimeAdapterDefinition =
   | { kind: 'anthropic'; auth: 'api-key' | 'bearer'; normalizeBaseUrl: boolean }
-  | { kind: 'claude-subscription' }
+  /**
+   * No Runtime adapter claims this provider, so nothing can be sent through it.
+   * Distinct from a provider that was never wired: see `retired`.
+   */
+  | { kind: 'unavailable' }
   | { kind: 'openai'; apiProtocol?: 'openai-chat' | 'openai-responses' }
   | { kind: 'openai-codex' }
   | { kind: 'google'; normalizeBaseUrl?: boolean }
@@ -54,11 +72,11 @@ export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
 export type ProviderModelDiscovery =
   | {
       kind: 'protocol';
-      auth?: 'claude-subscription' | 'github-copilot' | 'oauth-bearer' | 'openai-codex' | 'none';
+      auth?: 'github-copilot' | 'oauth-bearer' | 'openai-codex' | 'none';
       path?: string;
       query?: Readonly<Record<string, string>>;
       responseShape?: 'array-or-data';
-      filter?: 'fallback-models' | 'language-models' | 'tool-capable';
+      filter?: 'language-models' | 'tool-capable';
     }
   | {
       kind: 'fireworks';
@@ -83,8 +101,20 @@ export interface ProviderDefaults {
   status: 'ready' | 'phase3-experimental';
   protocol: 'anthropic' | 'openai' | 'google' | 'cohere';
   runtimeAdapter: ProviderRuntimeAdapter;
+  /**
+   * Maka used to offer this provider and no longer does. The entry stays
+   * registered so stored connections still decode; it just cannot be used.
+   */
+  retired?: true;
   /** User-declared per-model capabilities are authoritative for this provider. */
   relayModelProfiles?: boolean;
+  /**
+   * Models with dated evidence of persistent breakage whose failure shape the
+   * send itself cannot surface (e.g. empty completions that still bill).
+   * Vetoed in `authorizeConnectionModel` and omitted from catalog offers —
+   * the one exception to "the user's selection is the authorization".
+   */
+  brokenModelIds?: readonly string[];
   modelDiscovery: ProviderModelDiscovery;
   category: ProviderCategory;
   catalogGroup?: ProviderCatalogGroup;
@@ -118,7 +148,7 @@ if (xiaomi.id !== 'xiaomi' || !xiaomi.api) {
 }
 const xiaomiModelIds = toolCallingModelIds('Xiaomi', GENERATED_MODELS_DEV_METADATA.xiaomi, [
   'mimo-v2.5',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.xiaomi[id]?.lifecycle !== 'deprecated');
 // Keep the bootstrap snapshot limited to the two documented MiMo chat models. The remote
 // /models response becomes authoritative as soon as the user saves a working plan credential.
 const xiaomiTokenPlanModelIds = ['mimo-v2.5-pro', 'mimo-v2.5'] as const;
@@ -170,14 +200,14 @@ if (nvidia.id !== 'nvidia')
 if (!nvidia.api) throw new Error('models.dev NVIDIA provider facts are missing api');
 const nvidiaModelIds = toolCallingModelIds('NVIDIA', GENERATED_MODELS_DEV_METADATA.nvidia, [
   'nvidia/nemotron-3-super-120b-a12b',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.nvidia[id]?.lifecycle !== 'deprecated');
 
 const mistral = GENERATED_MODELS_DEV_PROVIDER_FACTS.mistral;
 if (mistral.id !== 'mistral')
   throw new Error('models.dev Mistral provider facts are missing stable id mistral');
 const mistralModelIds = toolCallingModelIds('Mistral', GENERATED_MODELS_DEV_METADATA.mistral, [
   'mistral-large-latest',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.mistral[id]?.lifecycle !== 'deprecated');
 const cohere = GENERATED_MODELS_DEV_PROVIDER_FACTS.cohere;
 if (cohere.id !== 'cohere')
   throw new Error('models.dev Cohere provider facts are missing stable id cohere');
@@ -238,7 +268,7 @@ const zenmuxOpenAICompatibleMetadata = Object.fromEntries(
 );
 const zenmuxModelIds = toolCallingModelIds('ZenMux', zenmuxOpenAICompatibleMetadata, [
   'moonshotai/kimi-k2.5',
-]);
+]).filter((id) => GENERATED_MODELS_DEV_METADATA.zenmux[id]?.lifecycle !== 'deprecated');
 const fireworks = GENERATED_MODELS_DEV_PROVIDER_FACTS['fireworks-ai'];
 if (fireworks.id !== 'fireworks-ai') {
   throw new Error('models.dev Fireworks AI provider facts are missing stable id fireworks-ai');
@@ -411,7 +441,7 @@ const togetherModelIds = toolCallingModelIds(
   'Together AI',
   GENERATED_MODELS_DEV_METADATA.togetherai,
   ['MiniMaxAI/MiniMax-M3'],
-);
+).filter((id) => GENERATED_MODELS_DEV_METADATA.togetherai[id]?.lifecycle !== 'deprecated');
 const deepinfra = GENERATED_MODELS_DEV_PROVIDER_FACTS.deepinfra;
 if (deepinfra.id !== 'deepinfra') {
   throw new Error('models.dev DeepInfra provider facts are missing stable id deepinfra');
@@ -420,7 +450,7 @@ const deepinfraModelIds = toolCallingModelIds(
   'DeepInfra',
   GENERATED_MODELS_DEV_METADATA.deepinfra,
   ['moonshotai/Kimi-K2.7-Code', 'moonshotai/Kimi-K2.6'],
-);
+).filter((id) => GENERATED_MODELS_DEV_METADATA.deepinfra[id]?.lifecycle !== 'deprecated');
 const groq = GENERATED_MODELS_DEV_PROVIDER_FACTS.groq;
 if (groq.id !== 'groq') {
   throw new Error('models.dev Groq provider facts are missing stable id groq');
@@ -596,27 +626,39 @@ const opencodeGoModelIds = toolCallingModelIds(
   ['minimax-m3'],
 ).filter((id) => GENERATED_MODELS_DEV_METADATA['opencode-go'][id]?.lifecycle !== 'deprecated');
 // opencode-free is Maka's first-class free anonymous default. It shares the
-// OpenCode Zen endpoint and model ids, but exposes only the active free
-// (cost.input === 0) models from the models.dev opencode snapshot. The
-// snapshot carries no cost field, so the free set is pinned here; each id is
-// validated against the opencode snapshot for active + tool-capable, mirroring
-// the bootstrap validation every other opencode plan entry performs.
-const opencodeFreeModelIds = [
-  OPENCODE_FREE_DEFAULT_MODEL,
-  'mimo-v2.5-free',
-  'big-pickle',
-  'deepseek-v4-flash-free',
-  'north-mini-code-free',
-  'laguna-s-2.1-free',
-] as const;
-for (const id of opencodeFreeModelIds) {
-  const model = GENERATED_MODELS_DEV_METADATA.opencode[id];
-  if (!model?.capabilities?.functionCalling || model.lifecycle === 'deprecated') {
-    throw new Error(
-      `models.dev opencode snapshot is missing an active tool-capable free model ${id} for opencode-free`,
-    );
-  }
+// OpenCode Zen endpoint and model ids, exposing the active tool-capable
+// models the models.dev snapshot marks `isFree` (zero input cost). Deriving
+// the set from the snapshot lets routine metadata refreshes rotate free
+// models in and out instead of letting a hardcoded pin rot (#3409).
+//
+// Persistently broken free models, excluded with dated evidence. Deny-only:
+// a stale entry hides at most one healthy model, the opposite failure mode of
+// the allow-list pin this replaced. Entries should be re-probed on snapshot
+// refreshes and removed once the model produces content again.
+// 2026-08-21 muse-spark-1.2-contributor-free: anonymous completions return
+// 200 with an empty message and bill the full token budget (4 consecutive
+// probes, max_tokens 8–200) — a failure shape that even "the send settles it"
+// cannot surface, which is why these ids are also vetoed in
+// `authorizeConnectionModel` rather than merely dropped from this derivation.
+const OPENCODE_FREE_BROKEN_MODEL_IDS = new Set(['muse-spark-1.2-contributor-free']);
+const opencodeFreeModelIds = toolCallingModelIds(
+  'OpenCode Free',
+  Object.fromEntries(
+    Object.entries(GENERATED_MODELS_DEV_METADATA.opencode).filter(
+      ([id, model]) =>
+        model.isFree === true &&
+        model.lifecycle !== 'deprecated' &&
+        !OPENCODE_FREE_BROKEN_MODEL_IDS.has(id),
+    ),
+  ),
+  [OPENCODE_FREE_DEFAULT_MODEL],
+);
+if (opencodeFreeModelIds[0] !== OPENCODE_FREE_DEFAULT_MODEL) {
+  throw new Error(
+    `models.dev opencode snapshot no longer serves ${OPENCODE_FREE_DEFAULT_MODEL} as an active tool-capable free model; pick a new OPENCODE_FREE_DEFAULT_MODEL`,
+  );
 }
+export const OPENCODE_FREE_DEFAULT_ENABLED_MODELS: readonly string[] = opencodeFreeModelIds;
 const githubCopilot = GENERATED_MODELS_DEV_PROVIDER_FACTS['github-copilot'];
 if (githubCopilot.id !== 'github-copilot') {
   throw new Error('models.dev GitHub Copilot provider facts are missing stable id github-copilot');
@@ -770,7 +812,7 @@ const providerRegistry = {
     modelDiscovery: {
       kind: 'fallback',
       reason:
-        'Agent Plan inference data plane does not expose a model-list endpoint for its dedicated API key',
+        'Agent Plan model discovery is a control-plane API that requires AK/SK signing; the plan API key reaches only the inference data plane',
     },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -804,7 +846,7 @@ const providerRegistry = {
     baseUrl: 'https://api.openai.com/v1',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
-    fallbackModels: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-5'],
+    fallbackModels: ['gpt-4o-mini', 'gpt-4o', 'gpt-5'],
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai', applyPatchProtocol: 'openai-structured' },
@@ -824,7 +866,7 @@ const providerRegistry = {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
-    fallbackModels: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+    fallbackModels: ['gemini-2.5-flash'],
     status: 'ready',
     protocol: 'google',
     runtimeAdapter: { kind: 'google' },
@@ -1213,7 +1255,7 @@ const providerRegistry = {
       replayAssistantReasoningAs: 'reasoning',
       replayAssistantReasoningDetails: true,
     },
-    modelDiscovery: { kind: 'protocol', auth: 'none', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol', auth: 'none' },
     category: 'overseas',
     catalogGroup: 'aggregators',
     catalogBadge: 'Gateway',
@@ -1269,13 +1311,14 @@ const providerRegistry = {
     backendKind: 'ai-sdk',
     fallbackModels: [...opencodeFreeModelIds],
     defaultEnabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+    brokenModelIds: [...OPENCODE_FREE_BROKEN_MODEL_IDS],
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
     modelDiscovery: {
       kind: 'fallback',
       reason:
-        'OpenCode Free anonymous access serves a fixed set of free models; the inference endpoint has no anonymous model-list contract.',
+        'The anonymous /models listing describes the full Zen catalog with no cost facts; which models are FREE is a models.dev fact, so the derived candidates are the inventory and the send settles availability.',
     },
     category: 'overseas',
     catalogGroup: 'plans',
@@ -1339,7 +1382,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
     catalogBadge: 'API',
@@ -1475,7 +1518,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', path: '/v1/models', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol', path: '/v1/models' },
     category: 'overseas',
     catalogGroup: 'api',
     catalogBadge: 'API',
@@ -1494,7 +1537,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
     catalogBadge: 'API',
@@ -1513,7 +1556,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'aggregators',
     catalogBadge: '聚合',
@@ -1532,7 +1575,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'protocol', filter: 'fallback-models' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
     catalogBadge: 'API',
@@ -1794,7 +1837,8 @@ const providerRegistry = {
   },
   'claude-subscription': {
     label: 'Claude Subscription (Pro / Max OAuth)',
-    description: 'Claude app subscription auth path, hidden behind the internal experimental gate.',
+    description:
+      'Retired. Anthropic Consumer Terms do not permit programmatic use of a Claude subscription.',
     baseUrl: 'https://api.anthropic.com',
     authKind: 'oauth_token',
     backendKind: 'ai-sdk',
@@ -1808,7 +1852,8 @@ const providerRegistry = {
     ],
     status: 'phase3-experimental',
     protocol: 'anthropic',
-    runtimeAdapter: { kind: 'claude-subscription' },
+    runtimeAdapter: { kind: 'unavailable' },
+    retired: true,
     modelDiscovery: {
       kind: 'fallback',
       reason:
@@ -1848,5 +1893,14 @@ function providerTypesByOrder(
 }
 
 export const READY_PROVIDER_TYPES = providerTypesByOrder('readyOrder');
+/**
+ * A provider Maka used to offer and no longer does. Read this rather than
+ * inferring retirement from an unavailable adapter: a provider that was never
+ * wired looks identical from there and is not the same thing.
+ */
+export function isRetiredProvider(providerType: ProviderType): boolean {
+  return PROVIDER_REGISTRY[providerType]?.retired === true;
+}
+
 export const CATALOG_PROVIDER_TYPES = providerTypesByOrder('catalogOrder');
 export const RECOMMENDED_PROVIDER_TYPES = providerTypesByOrder('recommendedOrder');

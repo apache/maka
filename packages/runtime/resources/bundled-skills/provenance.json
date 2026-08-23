@@ -27,8 +27,12 @@
       },
       "contributorConfirmedOn": "2026-08-11",
       "review": {
-        "status": "pending-independent-review",
-        "requirement": "A human reviewer other than the contributor must verify the origin and release conclusion."
+        "status": "independently-reviewed",
+        "reviewer": "Astro-Han",
+        "pullRequest": 2676,
+        "commit": "3c7683b9793e97cba7d8536f6864da0e38f24c30",
+        "reviewedOn": "2026-08-12",
+        "scope": "Accuracy of the Skill origin record. This review is not a legal or ASF release determination for inputs to the Computer Use implementation."
       }
     }
   ],

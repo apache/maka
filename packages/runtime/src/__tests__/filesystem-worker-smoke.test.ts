@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -46,6 +65,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       operation: { kind: 'write', path: insidePath, content: 'inside-ok' },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(await readFile(insidePath, 'utf8'), 'inside-ok');
 
@@ -54,6 +74,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
         operation: { kind: 'write', path: outsidePath, content: 'blocked' },
         cwd: workspace,
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) =>
         error instanceof FilesystemWorkerClientError && error.reason === 'path_denied',
@@ -72,6 +93,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
 
     assert.equal(await readFile(target, 'utf8'), 'created');
@@ -82,11 +104,16 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
     const aliasedTarget = target.replace(/^\/private(?=\/)/, '');
     assert.notEqual(aliasedTarget, target);
     await writeFile(target, 'delete me', 'utf8');
+    // Capture the identity at T0 (the boundary executor does this in production).
+    const { lstat } = await import('node:fs/promises');
+    const meta = await lstat(target, { bigint: true });
+    const expectedIdentity = { dev: String(meta.dev), ino: String(meta.ino) };
 
     await client.execute({
       operation: { kind: 'apply_patch', path: aliasedTarget, action: 'delete' },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity,
     });
 
     await assert.rejects(readFile(target, 'utf8'), { code: 'ENOENT' });
@@ -102,6 +129,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
         cwd: workspace,
         mode: 'ask',
         executionBoundary,
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -119,6 +147,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       cwd: workspace,
       mode: 'ask',
       executionBoundary,
+      expectedIdentity: 'unchecked',
     });
     assert.equal(await readFile(allowedPath, 'utf8'), 'outside-ok');
   });
@@ -133,6 +162,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       operation: grepOperation(sourceFile, 'healthSignal'),
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(fileResult.kind, 'grep');
     if (fileResult.kind === 'grep') {
@@ -144,6 +174,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       operation: grepOperation(sourceDirectory, 'healthSignal'),
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(directoryResult.kind, 'grep');
     if (directoryResult.kind === 'grep') {
@@ -155,6 +186,7 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
       operation: grepOperation(sourceDirectory, 'does-not-exist'),
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
     assert.deepEqual(emptyResult, { kind: 'grep', matches: [] });
   });

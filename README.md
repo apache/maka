@@ -1,26 +1,64 @@
-# Maka
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
 
-[![CI](https://github.com/apache/maka/actions/workflows/ci.yml/badge.svg)](https://github.com/apache/maka/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
-[![docs](https://img.shields.io/badge/docs-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue?logo=googletranslate&logoColor=white)](./README.zh-CN.md)
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
+<h1 align="center">
+  <img src="apps/desktop/assets/icon.png" alt="Maka" width="72" valign="middle" /> Apache Maka (Incubating)
+</h1>
+
+<p align="center"><sub>Incubating at The Apache Software Foundation</sub></p>
+
+<p align="center">
+  <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=4C8DFF" alt="GitHub stars" /></a>
+  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/github/downloads/apache/maka/total?style=flat&label=downloads&color=4C8DFF" alt="GitHub downloads" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
+  <img src="https://img.shields.io/badge/macOS-arm64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+  <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows unsigned preview" />
+  <img src="https://img.shields.io/badge/Linux-soon-D0D4DA?style=flat&logo=linux&logoColor=6B7280" alt="Linux not yet supported" />
+</p>
+
+<p align="center">
+  <sub><a href="./README.zh-CN.md">简体中文</a></sub>
+</p>
+
+<p align="center">
+  <strong>A local-first Agent workspace built for real work.</strong><br/>
+  Maka inspects projects, runs tools under a sandbox boundary, and records
+  model messages and tool calls as recoverable execution facts — on your
+  machine, through one Runtime Host.
+</p>
 
 ![Maka — Your work. Your agent.](./.github/assets/maka-hero.en.png)
 
-**A local-first Agent workspace built for real work.**
-
-Maka does more than answer questions. With controlled permissions, it can inspect projects, execute tools, produce artifacts, and preserve model messages and tool calls as recoverable execution facts. Desktop, the terminal TUI, the non-interactive CLI, and Maka evaluation subjects all execute through Runtime Host.
+> [!NOTE]
+> Apache Maka (Incubating) is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF. [DISCLAIMER-WIP](./DISCLAIMER-WIP) records the issues the project is currently aware of.
 
 > [!IMPORTANT]
 > Maka is under active development. The macOS Apple Silicon desktop build is an early public release; data formats, CLI commands, and experimental capabilities may still change.
 
 ## Why Maka
 
-- **Local-first instead of hosted-first**: sessions, settings, and run records stay on your machine by default. You choose the model connection: cloud API, local model, or compatible gateway.
-- **Log is the Runtime**: model messages, Tool Calls, Tool Results, and termination facts enter Runtime Event Log. Sessions, UI, model context, and recovery are projections over that log.
-- **Context is not history**: Tool Result pruning and LLM Compaction change what the next inference sees without treating recorded evidence as disposable context.
-- **One execution authority**: Runtime Host owns Session, Turn, agent lifecycle, continuation, tools, and events. Eval owns only experiment semantics and results.
+- **Your machine, your data.** Sessions, settings, and run records stay local by default. You bring the model: a cloud API, a local model, or a compatible gateway.
+- **The record is kept.** Model messages, tool calls, tool results, and how a turn ended are written down. The UI and the next model call are views of that record, not the only copy.
+- **Shorter context is not deleted history.** Maka can omit old tool output from the next prompt without throwing away the saved evidence.
+- **One place runs the agent.** Desktop, the terminal, and Maka evaluation all go through Runtime Host. Eval only owns the experiment and its scores.
 
-Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
+Read [Maka Backend Architecture](./ARCHITECTURE.md) for the design.
 
 ## Surfaces
 
@@ -34,45 +72,34 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 
 ### Agent Runtime
 
-- Multiple model connections, streaming output, thinking, usage accounting, and provider-error normalization;
-- Local tools including `Read`, `Write`, `Edit`, `Bash`, `Glob`, and `Grep`;
-- Tool schema validation, dynamic availability, permission policy, watchdogs, abort, and error classification;
-- Runtime Event Log, AgentRun ledger, startup recovery, Turn Evidence, active Tool Result pruning, and history compaction.
+- Multiple model connections, streaming output, thinking, usage, and clearer provider errors;
+- Built-in tools: `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`. Computer Use and catalog skills are optional and not on by default;
+- Tools that leave the sandbox must be approved; runs can be aborted; failures are classified;
+- A durable execution record, crash recovery, and optional resume of an interrupted turn.
 
 ### Desktop workspace
 
 - Create, archive, search, rename, retry, regenerate, and branch sessions from a Turn;
-- Artifact lists and previews, workspace instructions, model settings, and permission settings;
-- Local memory, web search, and bot entry points;
-- Integrations are configured independently, and not every experimental entry is available by default.
+- Artifact lists and previews, workspace instructions, model settings, and sandbox settings;
+- Local memory and web search when configured;
+- Chat apps (IM bots) are experimental. See [IM onboarding](./docs/architecture/bot-onboarding-runtime.zh-CN.md).
 
 ### Evaluation
 
 - Declarative multi-arm experiments expanded into task × repetition × subject cells;
 - Immutable per-cell attempts with targeted infrastructure replacement and earliest-valid selection;
 - A small result kernel for score, normalized usage, attributable cost, duration, status, failure reason, and artifacts;
-- Maka subjects execute only through Runtime Host; external competitors use generic external subject adapters.
+- Maka subjects execute only through Runtime Host; external subjects use generic external subject adapters.
 
 ## Quick start
 
-### Download Desktop for macOS
+### Releases and downloads
 
-The signed and notarized Desktop app is available from [GitHub Releases](https://github.com/apache/maka/releases/latest) for Apple Silicon Macs only (`arm64`).
+Apache Maka has not made an Apache release yet. Everything currently published from this repository or from a package registry was produced before or during incubation, is not an Apache Software Foundation release, and has not been reviewed or voted on by the Incubator PMC.
 
-1. Download `Maka-<version>-mac-arm64.dmg`;
-2. Open the DMG and drag Maka to Applications;
-3. Install `ripgrep` with `brew install ripgrep` to enable Runtime's `Grep` tool;
-4. Launch Maka and configure your own model connection under `Settings → Models`.
+Once Apache releases exist, the official release is the source release published by the ASF and approved by the podling PPMC and the Incubator PMC. A package built from that source and distributed elsewhere, for example through a package registry or as a Desktop installer, is a convenience artifact rather than the release itself, and it is valid only when it is built from an approved source release. [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) holds the candidate contract, signing path, and verification steps.
 
-Computer Use is not included in this first public build. Intel Macs, Windows, and Linux packages are not supported yet.
-
-### Windows x64 preview
-
-Windows is still an unsigned preview, not a supported release tier. When a release includes Windows
-assets, follow the [Windows preview installation and verification guide](docs/windows-support.md#install-the-windows-x64-preview)
-before running `Maka-<version>-win-x64.exe`. SmartScreen will identify the installer as coming from
-an unknown publisher; do not bypass that warning unless the downloaded SHA-256 matches the checksum
-published with the same release.
+Until an approved source release exists, this README recommends no prebuilt download. Build and run Maka from source as described below. Desktop currently targets Apple Silicon Macs (`arm64`). Intel Macs and Linux are not supported yet. [Windows](docs/windows-support.md) is an unsigned preview, not a supported release tier.
 
 ### Requirements
 
@@ -176,9 +203,9 @@ docs/               Architecture, product, security, privacy, and test contracts
 scripts/            Build hygiene, visual checks, smoke tests, and release helpers
 ```
 
-## Local data and security boundary
+## Local data and recovery
 
-Maka stores workspace data under Electron `userData` by default:
+Workspace data lives under Electron `userData` by default:
 
 ```text
 <Electron userData>/workspaces/default/
@@ -189,54 +216,12 @@ Maka stores workspace data under Electron `userData` by default:
   artifacts/
 ```
 
-Current boundaries that matter:
+- API keys and similar secrets are a local plaintext file (`credential-vault.json`), readable only by your OS account. The renderer never sees them.
+- Tools that write files or run a shell must pass the sandbox boundary first.
+- `runtime.sqlite` is the live record. Older JSONL transcripts and Electron `safeStorage` credential files are not imported; an upgraded workspace can show empty threads, and those credentials must be entered again.
+- Resuming an interrupted turn is off by default. Set `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` only if you want Desktop **Safe resume**, CLI `/resume`, and startup auto-resume — those calls hit the model and use tokens.
 
-- The current connection catalog is `connection-catalog.json`. Existing `llm-connections.json` files stay on disk and are not imported;
-- Sessions, messages, execution ledgers, workflows, usage, Automations, and Daily Review live in `runtime.sqlite`;
-- Runtime Policy credentials, including Connection API/OAuth material, request headers, web-search keys, and proxy passwords, live in local plaintext `credential-vault.json`, behind the OS account boundary, with POSIX directory mode `0700` and file mode `0600` enforced;
-- Runtime Host client profile access credentials are separate and live under `<Electron userData>/runtime-host-client/credentials.json`. Pre-existing Electron `safeStorage` credential/token files are not imported; affected users must re-authenticate;
-- Renderer does not receive plaintext credentials. File writes, Shell, and dangerous tool calls pass through the permission engine;
-- Eval does not construct Runtime or read Runtime storage. Maka subjects connect to an existing Runtime Host.
-
-Read [SECURITY.md](./SECURITY.md) for security reporting and policy, and [docs/README.md](./docs/README.md) for current privacy and sandbox contracts.
-
-## Runtime storage and recovery
-
-`runtime.sqlite` is the sole operational authority. It owns RuntimeEvents,
-session metadata and message history, Agent Graph control, core execution state,
-workflow state, usage and pricing, Artifact metadata, Automations, Daily Review,
-and Runtime continuation records. Artifact payload bytes remain regular files under
-`artifacts/`; connections, credentials, settings, MCP configuration, skills,
-and device identity remain configuration files.
-
-This storage generation does not import earlier File/JSONL authorities. On
-upgrade, legacy session titles may still be discoverable through current
-metadata, but conversation history that exists only in legacy transcript files
-is not copied into `session_messages` and opens as an empty thread. Likewise,
-pre-version or `safeStorage`-encrypted credential/token files are not migrated;
-users with only those copies must re-authenticate. This data-loss boundary is
-intentional for this release and must be considered before upgrading an
-existing workspace.
-
-Full operational backup uses the database owner's online SQLite backup API and
-copies canonical Artifact payloads under the Artifact writer lock. Its manifest
-binds every file by size and SHA-256. Validation checks the standalone SQLite
-snapshot's integrity, foreign keys, schema registry and required tables,
-decodes canonical session-message and Artifact records, and verifies Artifact
-payload sizes against SQLite metadata before restore. Backup and restore use
-owner-only file modes, file and directory synchronization, staging, and atomic
-publication.
-
-Runtime continuation remains opt-in:
-
-- `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` enables the Desktop interrupted-turn
-  **Safe resume** action, CLI/TUI `/resume`, and Desktop startup auto-resume.
-  These paths may call the configured model provider and consume tokens. Enable
-  the flag only when that behavior is explicitly desired.
-
-Phase 2 provides the durable write-side boundary and fail-closed safe-boundary
-continuation. Phase 3 reconciliation for indeterminate tool side effects is not
-implemented yet; ambiguous tool outcomes remain parked rather than retried.
+Details: [SECURITY.md](./SECURITY.md), [privacy](./docs/workspace-privacy-context.md), [resume](./docs/architecture/runtime-resume-architecture.md).
 
 ## Development and verification
 
@@ -288,3 +273,5 @@ Before submitting code, run typecheck, build, and focused tests proportionate to
 Maka is licensed under the [Apache License 2.0](./LICENSE). See
 [NOTICE](./NOTICE) for attribution information. Third-party components remain
 subject to their respective licenses and notices.
+
+Apache Maka, Maka, Apache, the Apache feather, and the Apache Maka project logo are either registered trademarks or trademarks of The Apache Software Foundation.

@@ -1,19 +1,104 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
-import { ToolCallDetail } from '../tool-activity.js';
+import { computerUseModelCallArgs } from '@maka/core/computer-use';
+import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
+import {
+  computerActionLabel,
+  computerRunningLabel,
+  isComputerTool,
+} from '../tool-activity/computer-action-label.js';
 
-function renderToStaticMarkup(node: ReactNode): string {
+function renderToStaticMarkup(node: ReactNode, locale: 'zh' | 'en' = 'zh'): string {
   return renderReactToStaticMarkup(createElement(LocaleProvider, {
-    locale: 'zh',
+    locale,
     children: node,
   }));
 }
 
 describe('tool activity presentation', () => {
+  it('describes Computer Use proxy calls by action instead of the generic tool name', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'computer-observe',
+      toolName: 'mcp__desktop_computer_use__maka_computer',
+      displayName: 'Maka Computer',
+      activityKind: 'tool',
+      status: 'completed',
+      args: computerUseModelCallArgs({
+        action: 'observe',
+        app: '计算器',
+        window_id: 7,
+      }),
+    };
+
+    assert.equal(isComputerTool(item), true);
+    assert.equal(computerActionLabel(item, 'zh'), '观察「计算器」窗口');
+    const markup = renderToStaticMarkup(
+      createElement(ToolTrow, { items: [item] }),
+    );
+    assert.match(markup, /观察「计算器」窗口/);
+    assert.doesNotMatch(markup, /Maka Computer/);
+  });
+
+  it('inherits the confirmed target and exposes live sequence progress', () => {
+    const observed: ToolActivityItem = {
+      toolUseId: 'computer-observe',
+      toolName: 'maka_computer',
+      activityKind: 'computer',
+      status: 'completed',
+      args: computerUseModelCallArgs({
+        action: 'observe',
+        app: '计算器',
+        window_id: 7,
+      }),
+    };
+    const sequence: ToolActivityItem = {
+      toolUseId: 'computer-sequence',
+      toolName: 'maka_computer',
+      activityKind: 'computer',
+      status: 'running',
+      args: computerUseModelCallArgs({
+        action: 'element_sequence',
+        observation_id: '00000000-0000-0000-0000-000000000001',
+        steps: Array.from({ length: 11 }, (_, index) => ({ label: String(index) })),
+      }),
+      progress: { current: 7, total: 11 },
+    };
+
+    const markup = renderToStaticMarkup(
+      createElement(ToolTrow, { items: [observed, sequence] }),
+    );
+    assert.match(markup, /连续操作 11 个控件/);
+    assert.match(markup, /「计算器」窗口/);
+    assert.match(markup, />7\/11</);
+    assert.equal(
+      computerRunningLabel([observed, sequence], 'zh'),
+      '正在操作「计算器」窗口 · 连续操作第 7/11 步',
+    );
+  });
+
   it('contains a malformed persisted terminal result instead of crashing the renderer', () => {
     const malformed = {
       kind: 'terminal',
@@ -127,5 +212,56 @@ describe('tool activity presentation', () => {
     assert.match(markup, /输出已截断/);
     const panels = markup.match(/data-slot="tool-output"/g) ?? [];
     assert.equal(panels.length, 1);
+  });
+
+  it('keeps provider call ids out of output action names', () => {
+    const render = (toolUseId: string) =>
+      renderToStaticMarkup(createElement(ToolCallDetail, {
+        item: {
+          toolUseId,
+          toolName: 'Bash',
+          status: 'running',
+          args: { command: 'npm test' },
+          outputChunks: [
+            { seq: 1, stream: 'stdout', text: 'running\n', redacted: false, createdAt: 1 },
+          ],
+        } satisfies ToolActivityItem,
+      }));
+    const firstId = 'provider-call-first-12345678';
+    const secondId = 'provider-call-second-12345678';
+
+    assert.doesNotMatch(render(firstId), new RegExp(firstId));
+    assert.doesNotMatch(render(secondId), new RegExp(secondId));
+    assert.match(render(firstId), /Bash/);
+  });
+
+  it('disambiguates code copy actions by their tool call', () => {
+    const details = createElement('div', null,
+      createElement(ToolCallDetail, {
+        item: {
+          toolUseId: 'tool-alpha',
+          toolName: 'AlphaTool',
+          status: 'completed',
+          args: {},
+          result: { kind: 'json', value: { ok: true } },
+        } satisfies ToolActivityItem,
+      }),
+      createElement(ToolCallDetail, {
+        item: {
+          toolUseId: 'tool-beta',
+          toolName: 'BetaTool',
+          status: 'completed',
+          args: {},
+          result: { kind: 'json', value: { ok: true } },
+        } satisfies ToolActivityItem,
+      }),
+    );
+    const zhMarkup = renderToStaticMarkup(details);
+    const enMarkup = renderToStaticMarkup(details, 'en');
+
+    assert.match(zhMarkup, /aria-label="复制：AlphaTool"/);
+    assert.match(zhMarkup, /aria-label="复制：BetaTool"/);
+    assert.match(enMarkup, /aria-label="Copy: AlphaTool"/);
+    assert.match(enMarkup, /aria-label="Copy: BetaTool"/);
   });
 });

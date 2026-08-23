@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * The composer's send slot holds ONE control (Astryx's send/stop toggle), and
  * mid-turn it reads Stop while the draft is empty. This is the shape the slot
@@ -32,4 +51,77 @@ test('an idle composer offers Send alone', () => {
 test('a turn in flight turns the same single control into Stop', () => {
   const buttons = sendSlotButtons(renderComposer(true));
   assert.deepEqual(buttons, ['aria-label="Stop"']);
+});
+
+test('a running composer exposes Queue and Steer when the host supports follow-ups', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        streaming
+        followUpMode="queue"
+        onFollowUpModeChange={() => undefined}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  assert.match(markup, /aria-label="Follow-up behavior"/);
+  assert.match(markup, />Queue</);
+  assert.match(markup, />Steer</);
+});
+
+test('renders authoritative queued messages with one retract action', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        streaming
+        followUpMode="queue"
+        queuedMessages={{
+          steering: [],
+          followup: [{
+            entryId: 'entry-1',
+            messageId: 'message-1',
+            content: { text: 'do this next' },
+            placement: 'next_turn',
+            state: 'queued',
+          }],
+        }}
+        onRetractQueued={() => undefined}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  assert.match(markup, /1 queued message/);
+  assert.match(markup, /do this next/);
+  assert.match(markup, /aria-label="Retract all"/);
+});
+
+test('does not offer retract when only an in-flight steering message remains', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        streaming
+        followUpMode="steer"
+        queuedMessages={{
+          steering: [{
+            entryId: 'entry-1',
+            messageId: 'message-1',
+            content: { text: 'adjust this run' },
+            placement: 'current_turn',
+            state: 'in_flight',
+          }],
+          followup: [],
+        }}
+        onRetractQueued={() => undefined}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  assert.match(markup, /adjust this run/);
+  assert.doesNotMatch(markup, /aria-label="Retract all"/);
 });

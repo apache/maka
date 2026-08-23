@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import type { AgentGraphClientChangedEvent } from '@maka/runtime/stream-graph-coordinator';
 import type {
@@ -14,6 +33,7 @@ import type {
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';
+import { GOAL_ARM_REQUEST_KEYS } from '../shared/goal-arm.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
 import {
   handleReconnectableRead,
@@ -27,6 +47,7 @@ import {
 type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
   Pick<
     DesktopRuntimeHostClient,
+    | 'armGoal'
     | 'clearGoal'
   | 'controlGoalWithRetry'
   | 'controlPlan'
@@ -99,6 +120,13 @@ export function registerRuntimeHostSessionDomainsIpc(
   });
   ipcMain.handle('goal:resume', async (_event, sessionId: unknown) => {
     await deps.client.controlGoalWithRetry(requiredId(sessionId, 'Session'), 'resume');
+  });
+  ipcMain.handle('goal:arm', async (_event, sessionId: unknown, input: unknown) => {
+    const result = await deps.client.armGoal({
+      sessionId: requiredId(sessionId, 'Session'),
+      ...requireGoalArmBudgets(input),
+    });
+    return toDesktopGoal(result.goal);
   });
 
   handleReconnectableRead(ipcMain, 'plan-mode:getState', (_event, sessionId: unknown) =>
@@ -262,6 +290,9 @@ export function registerRuntimeHostSessionDomainsIpc(
       case 'plan':
         deps.sendToRenderer?.('plan-mode:changed', { sessionId: change.sessionId });
         break;
+      case 'usage':
+        deps.sendToRenderer?.('usage:changed', { sessionId: change.sessionId });
+        break;
       case 'runtime_resource':
         void refreshRuntimeResources(deps, change.sessionId, change.resources);
         break;
@@ -280,6 +311,7 @@ export function registerRuntimeHostSessionDomainsIpc(
       sessionDomainChanged({ sessionId, domain: 'task' });
       sessionDomainChanged({ sessionId, domain: 'deep_research' });
       sessionDomainChanged({ sessionId, domain: 'plan' });
+      sessionDomainChanged({ sessionId, domain: 'usage' });
       deps.sendToRenderer?.('graphs:resync', { rootSessionId: sessionId });
       deps.sendToRenderer?.('shell-runs:resync', { sessionId });
     },
@@ -300,6 +332,44 @@ async function refreshRuntimeResources(
       deps.onError?.(error);
     }
   }
+}
+
+/**
+ * The renderer sends what the user typed; the Host owns every bound. This only
+ * gets the frame into the shape the protocol decodes — numbers stay numbers,
+ * "not chosen" stays null — so an out-of-range budget is refused once, by the
+ * Host, instead of being clamped here into something the user did not ask for.
+ * The Session comes from the scoped IPC argument, not from this frame, so a
+ * renderer-side Session id can never redirect the operation.
+ */
+function requireGoalArmBudgets(value: unknown): {
+  condition: string;
+  maxIterations: number | null;
+  tokenBudget: number | null;
+} {
+  if (typeof value !== 'object' || value === null) {
+    throw new TypeError('Goal arm input must be an object');
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !GOAL_ARM_REQUEST_KEYS.includes(key as never))) {
+    throw new TypeError('Invalid Goal arm input');
+  }
+  if (typeof record.condition !== 'string' || record.condition.trim().length === 0) {
+    throw new TypeError('Goal condition is required');
+  }
+  return {
+    condition: record.condition,
+    maxIterations: optionalCount(record.maxIterations, 'Goal maxIterations'),
+    tokenBudget: optionalCount(record.tokenBudget, 'Goal tokenBudget'),
+  };
+}
+
+function optionalCount(value: unknown, label: string): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new TypeError(`${label} must be a positive integer`);
+  }
+  return value;
 }
 
 function toDesktopGoal(goal: GoalProjection): GoalState {

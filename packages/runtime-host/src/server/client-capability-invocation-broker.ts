@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import {
@@ -58,8 +77,10 @@ interface InvocationState<Registration extends ClientCapabilityInvocationRegistr
   readonly reject: (error: Error) => void;
   readonly signal?: AbortSignal;
   readonly onAbort?: () => void;
+  readonly onProgress?: (current: number, total: number) => void;
   readonly timer: NodeJS.Timeout;
   phase: 'dispatched' | 'accepted' | 'chunks';
+  progress?: { current: number; total: number };
   chunks?: {
     readonly byteLength: number;
     readonly chunkCount: number;
@@ -95,8 +116,9 @@ export class ClientCapabilityInvocationBroker<
     context: ClientCapabilityInvocationContext,
     signal: AbortSignal | undefined,
     timeoutMs: number,
+    onProgress?: (current: number, total: number) => void,
   ): Promise<ClientCapabilityCallResult> {
-    return this.#invoke(registration, signal, timeoutMs, (invocationId) => ({
+    return this.#invoke(registration, signal, timeoutMs, onProgress, (invocationId) => ({
       kind: 'client.capability.call',
       invocationId,
       registrationId: registration.registrationId,
@@ -120,7 +142,7 @@ export class ClientCapabilityInvocationBroker<
     signal: AbortSignal | undefined,
     timeoutMs: number,
   ): Promise<ClientCapabilityCallResult> {
-    return this.#invoke(registration, signal, timeoutMs, (invocationId) => ({
+    return this.#invoke(registration, signal, timeoutMs, undefined, (invocationId) => ({
       kind: 'client.capability.service_call',
       invocationId,
       registrationId: registration.registrationId,
@@ -135,6 +157,7 @@ export class ClientCapabilityInvocationBroker<
     registration: Registration,
     signal: AbortSignal | undefined,
     timeoutMs: number,
+    onProgress: ((current: number, total: number) => void) | undefined,
     frameFor: (invocationId: string) => ClientCapabilityHostFrame,
   ): Promise<ClientCapabilityCallResult> {
     const sender = this.#senderFor(registration.connectionId);
@@ -203,6 +226,7 @@ export class ClientCapabilityInvocationBroker<
         reject,
         signal,
         onAbort,
+        onProgress,
         timer,
         phase: 'dispatched',
       };
@@ -292,6 +316,20 @@ export class ClientCapabilityInvocationBroker<
           new ClientCapabilityInvocationError('provider_failed', frame.message),
           true,
         );
+        return;
+      case 'client.capability.progress':
+        if (invocation.phase !== 'accepted' && invocation.phase !== 'chunks') {
+          throw new Error('Client Capability progress arrived before acceptance');
+        }
+        if (
+          invocation.progress &&
+          (frame.total !== invocation.progress.total || frame.current < invocation.progress.current)
+        ) {
+          throw new Error('Client Capability progress moved backwards or changed total');
+        }
+        if (frame.current === invocation.progress?.current) return;
+        invocation.progress = { current: frame.current, total: frame.total };
+        invocation.onProgress?.(frame.current, frame.total);
         return;
       case 'client.capability.result':
         if (invocation.phase !== 'accepted') {

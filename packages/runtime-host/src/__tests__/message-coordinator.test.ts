@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { MessageContent } from '@maka/core/events';
@@ -10,6 +29,7 @@ import type {
 import {
   MESSAGE_OPERATION_RESULT_MAX_BYTES,
   MESSAGE_QUEUE_PROJECTION_MAX_BYTES,
+  decodeSessionMessageQueueProjection,
   type SessionMessageQueueProjection,
   type TurnSnapshot,
 } from '../protocol/index.js';
@@ -1841,3 +1861,41 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+test('a lone folded steering entry leaves the queue projection decodable', async () => {
+  // A steer the run never pulls is folded into `followup` at the terminal
+  // transition. It has to arrive there as a followup entry: the wire decoder
+  // requires `next_turn`, and an undecodable projection takes down the whole
+  // Host by way of the session continuity snapshot (#3530).
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const submitted = await submitContent(
+    fixture,
+    'lone-steer',
+    { text: 'late steer', displayText: 'late steer' },
+    'current_turn',
+  );
+  assert.equal(submitted.ok, true, JSON.stringify(submitted));
+
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+
+  const projection = fixture.coordinator.projection(ROOT.sessionId);
+  assert.deepEqual(projection.steering, []);
+  assert.equal(projection.followup.length, 1);
+  assert.equal(projection.followup[0]?.placement, 'next_turn');
+  assert.doesNotThrow(() => decodeSessionMessageQueueProjection(projection));
+
+  // Durable provenance is unchanged: the source still records where the
+  // message was aimed, which is what makes the fold auditable.
+  assert.equal(batch.sources.length, 1);
+  assert.equal(batch.sources[0]?.placement, 'current_turn');
+  assert.equal(batch.sources[0]?.disposition, 'steering');
+
+  fixture.coordinator.commitNextRoot(batch, {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+});

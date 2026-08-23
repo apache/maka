@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type WidenCopy<T> = T extends string
@@ -15,6 +34,11 @@ const zhCapabilitiesCopy = {
   thinkingEffortHelp: '勾选需要的思考强度档位，不勾选即为不声明。',
   thinkingUndeclared: '未声明',
   thinkingSelectedCount: (count: number) => `已选择 ${count} 个`,
+  thinkingBulk: '批量设置思考档位',
+  thinkingBulkHelp: '勾选写入下方全部已启用模型，取消勾选则从全部模型移除；其余档位不受影响。',
+  thinkingBulkTrigger: '应用到全部模型',
+  thinkingBulkCoverage: (declared: number, total: number) =>
+    declared === 0 ? '全部未声明' : `${declared}/${total} 个模型`,
   visionInput: '视觉输入（vision）',
   visionInputHelp: '「自动」跟随内置元数据；「启用/禁用」是显式声明，覆盖自动判断。',
   visionAuto: '自动',
@@ -34,6 +58,12 @@ const enCapabilitiesCopy = {
   thinkingEffortHelp: 'Tick the thinking levels this model supports; none ticked means undeclared.',
   thinkingUndeclared: 'Undeclared',
   thinkingSelectedCount: (count: number) => `${count} selected`,
+  thinkingBulk: 'Set thinking levels for all models',
+  thinkingBulkHelp:
+    'Ticking adds the level to every enabled model below; unticking removes it from all of them. Other levels are left alone.',
+  thinkingBulkTrigger: 'Apply to all models',
+  thinkingBulkCoverage: (declared: number, total: number) =>
+    declared === 0 ? 'On no model' : `On ${declared} of ${total} models`,
   visionInput: 'Vision input',
   visionInputHelp: 'Auto follows built-in metadata; Enabled/Disabled overrides it explicitly.',
   visionAuto: 'Auto',
@@ -62,10 +92,23 @@ const zhCopy = {
     oauthLoadingDetail: '正在读取本机 OAuth 登录状态，读取完成前不会把未知状态显示成未登录。',
     oauthUnknownDetail: '暂时无法读取本机 OAuth 登录状态；请刷新页面或重新打开设置。',
     oauthWaitingDetail: '请到账号连接完成登录；登录成功后会自动出现在模型连接里。',
+    oauthRetired: '此登录方式已停用',
+    oauthRetiredDetail:
+      '这条连接使用的登录方式已从 Maka 移除，无法再登录，也无法用于对话。改用 Anthropic API Key 连接即可继续使用 Claude 模型；删除这条连接会一并清除本机保存的登录凭据。',
     credentialLoadingDetail: '正在读取模型凭据状态，读取完成前暂不测试连接或刷新模型。',
     credentialUnknownDetail: '模型凭据状态暂时没刷新成功，已避免把未知状态显示成未登录或未配置。',
     testConnection: '测试连接',
     updateModels: '更新模型目录', endpoint: '服务地址',
+    addModel: '添加模型',
+    addModelConfirm: '添加',
+    addModelIdField: '模型 ID',
+    addModelIdFieldHelp: '需与服务商完全一致，区分大小写。',
+    addModelIdPlaceholder: 'deepseek-v4-pro-beta',
+    addModelIdRequired: '请填写模型 ID。',
+    addModelIdDuplicate: '该模型已在列表中。',
+    addModelContextWindow: '上下文窗口',
+    addModelContextWindowHelp: '服务商模型页给出的最大 token 数。缺少它 Maka 只能按 32k 处理，长对话会被提前截断。',
+    addModelContextWindowRequired: '请填写上下文窗口。',
     credentials: '连接', dangerZone: '删除连接', deleteRowHelp: '此操作不可撤销。',
     credentialsHelp: '密钥只保存在本机。',
     credentialsHelpAccount: '登录令牌只保存在本机。',
@@ -112,7 +155,7 @@ const zhCopy = {
     timeout: '请求超时，请检查网络或代理后重试。', unavailable: '模型服务暂时不可用，请稍后重试。',
     network: '网络错误，请检查服务地址或代理设置后重试。', statusUnavailable: '连接测试状态暂时无法显示，请重新测试。',
     categories: { oauth: 'OAuth', domestic: '国内', overseas: '海外', local: '本地', custom: 'Custom' },
-    connectionStatuses: { reauth: '需要重新登录', disabledFailed: '暂不可用 · 上次连接失败', disabled: '暂不可用', failed: '上次连接失败' },
+    connectionStatuses: { retired: '已停用 · 请删除', reauth: '需要重新登录', disabledFailed: '暂不可用 · 上次连接失败', disabled: '暂不可用', failed: '上次连接失败' },
     lastTest: {
       '连接已验证': '连接已验证', '鉴权失败': '鉴权失败', '请求超时': '请求超时', '网络错误': '网络错误', '模型服务返回错误': '模型服务返回错误', '连接测试失败': '连接测试失败',
       'connection verified': '连接已验证', 'authentication failed': '鉴权失败', 'request timed out': '请求超时', 'network error': '网络错误', 'provider returned an error': '模型服务返回错误', 'connection test failed': '连接测试失败',
@@ -149,7 +192,7 @@ const zhCopy = {
     accountIdPlaceholder: '填写账户 ID',
     saving: '保存中…', save: '保存供应商', keyRequired: (name: string) => `请填写 ${name} API Key`,
     apiKeyLabel: 'API Key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: '服务地址',
-    defaultModel: '默认模型', defaultModelPlaceholder: '填写你的中转站模型 ID，例如 gpt-4o、claude-sonnet-4-5 或自定义模型名', defaultModelHelp: '用于首次连接测试和模型选择器兜底；保存后仍会自动拉取模型目录。', defaultModelRequired: '请填写默认模型 ID。保存后仍会自动拉取模型目录。',
+    defaultModel: '默认模型', defaultModelPlaceholder: '留空即可，保存后自动拉取', defaultModelHelp: '保存后 Maka 会向该端点拉取模型目录。只有当端点不提供目录时，才需要在这里手填一个模型 ID。',
     ...zhCapabilitiesCopy,
   },
   oauthFlow: {
@@ -163,11 +206,11 @@ const zhCopy = {
     logoutTitle: (name: string) => `退出 ${name} 登录？`,
   },
   oauthSection: {
-    signedIn: '已登录', claudeDescription: 'Claude Pro / Max 订阅账号登录。', codexDescription: 'ChatGPT Plus / Pro 订阅账号登录。', xaiDescription: 'SuperGrok / X Premium 账号登录。',
+    signedIn: '已登录', codexDescription: 'ChatGPT Plus / Pro 订阅账号登录。', xaiDescription: 'SuperGrok / X Premium 账号登录。',
     copilotDescription: '导入兼容 GitHub 凭据连接 Copilot 订阅。', serviceUnavailable: '登录服务暂时不可用，请检查网络后重试。',
     aria: 'OAuth 登录',
-    staleState: 'OAuth 登录状态暂时没刷新成功，已保留上一次状态。', claudeSubtitle: '登录 Claude Pro / Max 后，会同步成模型连接。',
-    codexDetail: '点击下方按钮打开设备授权页，并在页面中输入这里显示的登录码。', xaiDetail: '点击下方按钮打开浏览器登录，授权完成后会自动回写。', deviceCode: '登录码：', stateHint: '提示：state 以', startsWith: '开头。',
+    staleState: 'OAuth 登录状态暂时没刷新成功，已保留上一次状态。',
+    codexDetail: '点击下方按钮打开设备授权页，并在页面中输入这里显示的登录码。', xaiDetail: '点击下方按钮打开浏览器登录，授权完成后会自动回写。', deviceCode: '登录码：',
     openingBrowser: '打开浏览器…', logout: '退出登录', loggingOut: '退出中…',
     copilotSubtitle: '导入兼容的 GitHub 登录；token 不会暴露给渲染进程。', copilotImported: '已导入 GitHub Copilot 订阅账号。',
     copilotSetup: '请配置具有 Copilot Requests 权限的 fine-grained PAT；普通 gh auth login 可能不包含该权限。', importing: '导入中…',
@@ -176,23 +219,6 @@ const zhCopy = {
     cardAria: (name: string, status: string | undefined, description: string) => `打开 OAuth 登录：${name}${status ? `，状态：${status}` : ''}，${description.replace(/[。.!！？?]+$/u, '')}`,
     connectTitle: (name: string) => `连接 ${name}`, login: (name: string) => `登录 ${name}`, signedOut: (name: string) => `${name} 尚未登录。`,
     storageFailed: (name: string) => `${name} 本地凭据读取失败，请重新登录。`, providerUnavailable: (name: string) => `${name} 已登录，但当前 provider 状态不可用。`,
-  },
-  claude: {
-    refreshFailed: '刷新登录状态失败', gateReadFailed: '读取 Claude 登录开关失败', title: 'Claude 订阅 (Pro / Max)',
-    gateUnknown: '无法确认 Claude OAuth 是否可用。没有登录动作会被执行。', readFailed: '读取失败', gateError: 'Claude 登录开关读取失败：', retry: '重试',
-    startFailed: '无法开始登录', retryLater: '请稍后再试。', startFailedRetry: '无法开始登录，请稍后再试。', openFailed: '无法打开浏览器', openFailedRetry: '无法打开浏览器，请稍后重试。',
-    loginSuccess: '登录成功', bound: '已绑定 Claude 订阅。', submitFailed: '授权码提交失败', submitFailedRetry: '授权码提交失败，请重新登录后再试。',
-    cancelFailed: '取消登录失败', logoutTitle: '退出 Claude Code 登录？', logoutDescription: '将删除本机保存的订阅凭据，之后需要重新登录才能继续使用 Claude OAuth 模型。',
-    logout: '退出登录', cancel: '取消', loggedOut: '已退出登录', cleared: '本地凭据已清除。', logoutFailed: '退出失败', logoutFailedRetry: '退出登录失败，请稍后重试。',
-    quotaFailed: '刷新配额失败', loading: '加载中…', section: '订阅', subtitle: '通过 Anthropic 官方 OAuth 登录使用订阅配额。',
-    fiveHour: '5 小时窗口', sevenDay: '7 天窗口', updated: '数据更新于 ', openingBrowser: '打开浏览器…', loggingIn: '登录中…', relogin: '重新登录', loginSubscription: '登录订阅',
-    refreshing: '刷新中…', refreshQuota: '刷新配额', loggingOut: '退出中…', pasteAria: '粘贴授权码', pasteHelpBefore: '在 Claude.ai 完成登录后，会跳转到 Anthropic 控制台显示一段授权码（含',
-    pasteHelpAfter: '分隔符），把它粘贴到下面：', stateHint: '提示：你的 state 以', startsWith: '开头。', codePlaceholder: '粘贴授权码（格式：xxx#yyy）', codeAria: '授权码',
-    submitting: '提交中…', submitCode: '提交授权码', cancelling: '取消中…', signedOut: '未登录', signedOutDetail: '使用 Claude 订阅配额前需要先登录。',
-    authorizing: '登录中…', authorizingDetail: '请在弹出的浏览器窗口完成登录并粘贴授权码。', signedIn: '已登录', signedInDetail: '已绑定 Claude 订阅，并会同步到“模型连接”。',
-    tokenRefreshing: '刷新中…', tokenRefreshingDetail: '正在刷新访问令牌。', tokenRefreshFailed: '刷新失败', tokenRefreshFailedDetail: '令牌刷新失败，请重新登录。',
-    storageFailed: '凭据读取失败', storageFailedDetail: '本地 OAuth 凭据读取失败，请重新登录。', quotaUnavailable: '等待获取配额', quotaUnavailableDetail: '已登录；配额接口当前没有返回可用数据。',
-    providerRejected: '订阅 API 拒绝', providerRejectedDetail: '订阅端点拒绝了请求，可能需要重新登录。', unknown: '未知状态',
   },
 } as const;
 
@@ -212,10 +238,24 @@ const enCopy: ProviderSettingsCopy = {
     oauthLoadingDetail: 'Reading the local OAuth status. An unknown state will not be shown as signed out.',
     oauthUnknownDetail: 'The local OAuth status is temporarily unavailable. Refresh the page or reopen Settings.',
     oauthWaitingDetail: 'Complete sign-in under account connections. The model connection appears automatically afterward.',
+    oauthRetired: 'This sign-in path is retired',
+    oauthRetiredDetail:
+      'The sign-in this connection uses was removed from Maka. It can no longer be signed into or used in a conversation. Add an Anthropic API key connection to keep using Claude models; deleting this connection also clears the sign-in credential stored on this machine.',
     credentialLoadingDetail: 'Reading model credential status. Connection tests and model refresh are paused until it finishes.',
     credentialUnknownDetail: 'Model credential status could not be refreshed, so the connection is not being mislabeled as signed out or unconfigured.',
     testConnection: 'Test connection',
     updateModels: 'Update model catalog', endpoint: 'Service URL',
+    addModel: 'Add model',
+    addModelConfirm: 'Add',
+    addModelIdField: 'Model ID',
+    addModelIdFieldHelp: 'Must match the provider exactly, including case.',
+    addModelIdPlaceholder: 'deepseek-v4-pro-beta',
+    addModelIdRequired: 'Enter a model ID.',
+    addModelIdDuplicate: 'This model is already in the list.',
+    addModelContextWindow: 'Context window',
+    addModelContextWindowHelp:
+      "The maximum token count from the provider's model page. Without it Maka can only assume 32k, and long conversations get truncated early.",
+    addModelContextWindowRequired: 'Enter a context window.',
     credentials: 'Connection', dangerZone: 'Delete connection', deleteRowHelp: 'This cannot be undone.',
     credentialsHelp: 'The key stays on this machine.',
     credentialsHelpAccount: 'The sign-in token stays on this machine.',
@@ -260,7 +300,7 @@ const enCopy: ProviderSettingsCopy = {
     timeout: 'The request timed out. Check the network or proxy and try again.', unavailable: 'The model service is temporarily unavailable. Try again later.',
     network: 'Network error. Check the service URL or proxy settings and try again.', statusUnavailable: 'The connection test status is temporarily unavailable. Test again.',
     categories: { oauth: 'OAuth', domestic: 'China', overseas: 'Global', local: 'Local', custom: 'Custom' },
-    connectionStatuses: { reauth: 'Sign-in required', disabledFailed: 'Unavailable · last connection failed', disabled: 'Unavailable', failed: 'Last connection failed' },
+    connectionStatuses: { retired: 'Retired · delete it', reauth: 'Sign-in required', disabledFailed: 'Unavailable · last connection failed', disabled: 'Unavailable', failed: 'Last connection failed' },
     lastTest: {
       '连接已验证': 'Connection verified', '鉴权失败': 'Authentication failed', '请求超时': 'Request timed out', '网络错误': 'Network error', '模型服务返回错误': 'Model service returned an error', '连接测试失败': 'Connection test failed',
       'connection verified': 'Connection verified', 'authentication failed': 'Authentication failed', 'request timed out': 'Request timed out', 'network error': 'Network error', 'provider returned an error': 'Model service returned an error', 'connection test failed': 'Connection test failed',
@@ -297,7 +337,7 @@ const enCopy: ProviderSettingsCopy = {
     accountIdPlaceholder: 'Enter account ID',
     saving: 'Saving…', save: 'Save provider', keyRequired: (name: string) => `Enter the ${name} API key`,
     apiKeyLabel: 'API key', accountIdLabel: 'Cloudflare Account ID', endpointLabel: 'Service URL',
-    defaultModel: 'Default model', defaultModelPlaceholder: 'Enter your relay model id, e.g. gpt-4o, claude-sonnet-4-5, or a custom model name', defaultModelHelp: 'Used as the first connection-test and picker fallback; Maka still fetches the model catalog after saving.', defaultModelRequired: 'Enter a default model id. Maka still fetches the model catalog after saving.',
+    defaultModel: 'Default model', defaultModelPlaceholder: 'Leave empty — fetched after saving', defaultModelHelp: 'Maka fetches the model catalog from this endpoint after saving. Type a model id here only if the endpoint serves no catalog.',
     ...enCapabilitiesCopy,
   },
   oauthFlow: {
@@ -311,11 +351,11 @@ const enCopy: ProviderSettingsCopy = {
     logoutTitle: (name: string) => `Sign out of ${name}?`,
   },
   oauthSection: {
-    signedIn: 'Signed in', claudeDescription: 'Sign in with a Claude Pro / Max subscription.', codexDescription: 'Sign in with a ChatGPT Plus / Pro subscription.', xaiDescription: 'Sign in with SuperGrok or X Premium.',
+    signedIn: 'Signed in', codexDescription: 'Sign in with a ChatGPT Plus / Pro subscription.', xaiDescription: 'Sign in with SuperGrok or X Premium.',
     copilotDescription: 'Import compatible GitHub credentials to connect a Copilot subscription.', serviceUnavailable: 'The sign-in service is temporarily unavailable. Check the network and try again.',
     aria: 'OAuth sign-in',
-    staleState: 'OAuth sign-in status could not be refreshed. The last known state is preserved. ', claudeSubtitle: 'After Claude Pro / Max sign-in, the account is synchronized as a model connection.',
-    codexDetail: 'Open the device page below and enter the sign-in code shown here.', xaiDetail: 'Open the browser below to sign in. Authorization is written back automatically.', deviceCode: 'Sign-in code:', stateHint: 'Tip: state begins with', startsWith: '.',
+    staleState: 'OAuth sign-in status could not be refreshed. The last known state is preserved. ',
+    codexDetail: 'Open the device page below and enter the sign-in code shown here.', xaiDetail: 'Open the browser below to sign in. Authorization is written back automatically.', deviceCode: 'Sign-in code:',
     openingBrowser: 'Opening browser…', logout: 'Sign out', loggingOut: 'Signing out…',
     copilotSubtitle: 'Import a compatible GitHub sign-in. The token is never exposed to the renderer.', copilotImported: 'GitHub Copilot subscription account imported.',
     copilotSetup: 'Configure a fine-grained PAT with Copilot Requests permission. A normal gh auth login may not include it.', importing: 'Importing…',
@@ -324,23 +364,6 @@ const enCopy: ProviderSettingsCopy = {
     cardAria: (name: string, status: string | undefined, description: string) => `Open OAuth sign-in: ${name}${status ? `; status: ${status}` : ''}; ${description.replace(/[。.!！？?]+$/u, '')}`,
     connectTitle: (name: string) => `Connect ${name}`, login: (name: string) => `Sign in to ${name}`, signedOut: (name: string) => `${name} is signed out.`,
     storageFailed: (name: string) => `Could not read local credentials for ${name}. Sign in again.`, providerUnavailable: (name: string) => `${name} is signed in, but the provider status is currently unavailable.`,
-  },
-  claude: {
-    refreshFailed: 'Failed to refresh sign-in status', gateReadFailed: 'Failed to read the Claude sign-in setting', title: 'Claude subscription (Pro / Max)',
-    gateUnknown: 'Claude OAuth availability could not be confirmed. No sign-in action will run.', readFailed: 'Read failed', gateError: 'Failed to read the Claude sign-in setting: ', retry: 'Retry',
-    startFailed: 'Could not start sign-in', retryLater: 'Try again later.', startFailedRetry: 'Could not start sign-in. Try again later.', openFailed: 'Could not open browser', openFailedRetry: 'Could not open the browser. Try again.',
-    loginSuccess: 'Signed in', bound: 'Claude subscription connected.', submitFailed: 'Authorization code submission failed', submitFailedRetry: 'Authorization code submission failed. Sign in again and retry.',
-    cancelFailed: 'Failed to cancel sign-in', logoutTitle: 'Sign out of Claude Code?', logoutDescription: 'This removes locally stored subscription credentials. You must sign in again to use Claude OAuth models.',
-    logout: 'Sign out', cancel: 'Cancel', loggedOut: 'Signed out', cleared: 'Local credentials cleared.', logoutFailed: 'Sign-out failed', logoutFailedRetry: 'Sign-out failed. Try again later.',
-    quotaFailed: 'Failed to refresh quota', loading: 'Loading…', section: 'Subscription', subtitle: 'Use subscription quota through official Anthropic OAuth sign-in.',
-    fiveHour: '5-hour window', sevenDay: '7-day window', updated: 'Updated ', openingBrowser: 'Opening browser…', loggingIn: 'Signing in…', relogin: 'Sign in again', loginSubscription: 'Sign in to subscription',
-    refreshing: 'Refreshing…', refreshQuota: 'Refresh quota', loggingOut: 'Signing out…', pasteAria: 'Paste authorization code', pasteHelpBefore: 'After signing in on Claude.ai, the Anthropic console shows an authorization code containing a',
-    pasteHelpAfter: 'separator. Paste it below:', stateHint: 'Tip: your state begins with', startsWith: '.', codePlaceholder: 'Paste authorization code (format: xxx#yyy)', codeAria: 'Authorization code',
-    submitting: 'Submitting…', submitCode: 'Submit authorization code', cancelling: 'Cancelling…', signedOut: 'Signed out', signedOutDetail: 'Sign in before using Claude subscription quota.',
-    authorizing: 'Signing in…', authorizingDetail: 'Complete sign-in in the browser window and paste the authorization code.', signedIn: 'Signed in', signedInDetail: 'Claude subscription connected and synchronized to Model connections.',
-    tokenRefreshing: 'Refreshing…', tokenRefreshingDetail: 'Refreshing access token.', tokenRefreshFailed: 'Refresh failed', tokenRefreshFailedDetail: 'Token refresh failed. Sign in again.',
-    storageFailed: 'Credential read failed', storageFailedDetail: 'Could not read local OAuth credentials. Sign in again.', quotaUnavailable: 'Waiting for quota', quotaUnavailableDetail: 'Signed in, but the quota endpoint did not return usable data.',
-    providerRejected: 'Subscription API rejected', providerRejectedDetail: 'The subscription endpoint rejected the request. You may need to sign in again.', unknown: 'Unknown status',
   },
 };
 

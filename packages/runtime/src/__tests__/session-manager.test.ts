@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as timerDelay } from 'node:timers/promises';
@@ -903,7 +922,7 @@ describe('SessionManager graph operator provisioning', () => {
 
     expect(provisioned).toHaveLength(1);
     expect(result.header.projectId).toBe('project-1');
-    expect(result.header.permissionMode).toBe('execute');
+    expect(result.header.permissionMode).toBe('ask');
     expect(
       result.header.subagentRuntime
         ? 'permissionCeiling' in result.header.subagentRuntime
@@ -942,7 +961,7 @@ describe('SessionManager graph operator provisioning', () => {
     const { header: child } = await store.createSubagent(
       makeInput({
         cwd: binding.worktreePath,
-        permissionMode: 'execute',
+        permissionMode: 'ask',
         subagentParent: {
           kind: 'subagent',
           parentSessionId: parent.id,
@@ -982,7 +1001,7 @@ describe('SessionManager graph operator provisioning', () => {
         completedAt: 20,
         updatedAt: 20,
         cwd: binding.worktreePath,
-        permissionMode: 'execute',
+        permissionMode: 'ask',
         agentId: IMPLEMENTATION_AGENT_ID,
         agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
       }),
@@ -1057,7 +1076,7 @@ describe('SessionManager graph operator provisioning', () => {
         completedAt: 60,
         updatedAt: 60,
         cwd: binding.worktreePath,
-        permissionMode: 'execute',
+        permissionMode: 'ask',
         agentId: IMPLEMENTATION_AGENT_ID,
         agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
         resumedFromRunId: 'child-run',
@@ -2260,8 +2279,8 @@ describe('SessionManager child-session runtime primitive', () => {
         (message) => message.type === 'user' && message.text === 'inspect the storage boundary',
       ),
     ).toBe(true);
-    await manager.setPermissionMode(result.childSessionId, 'execute');
-    expect((await store.readHeader(result.childSessionId)).permissionMode).toBe('execute');
+    await manager.setPermissionMode(result.childSessionId, 'bypass');
+    expect((await store.readHeader(result.childSessionId)).permissionMode).toBe('bypass');
     const projection = await manager.listChildAgents(parent.id);
     expect(projection.runs).toEqual([]);
     expect(projection.executions).toHaveLength(1);
@@ -3153,7 +3172,6 @@ describe('SessionManager child-session runtime primitive', () => {
               systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
               toolNames: [...LOCAL_READ_AGENT_DEFINITION.tools],
               categoryPolicy: {},
-              permissionCeiling: 'ask',
             },
             subagentSpawn: {
               schemaVersion: 1,
@@ -3476,7 +3494,6 @@ describe('SessionManager child-session runtime primitive', () => {
           systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
           toolNames: [...LOCAL_READ_AGENT_DEFINITION.tools],
           categoryPolicy: {},
-          permissionCeiling: 'ask',
         },
         subagentSpawn: {
           schemaVersion: 1,
@@ -3749,7 +3766,6 @@ describe('SessionManager child-session runtime primitive', () => {
           systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
           toolNames: ['Read', 'Glob', 'Grep'],
           categoryPolicy: { read: 'allow' },
-          permissionCeiling: 'ask',
         },
         subagentSpawn: {
           schemaVersion: 1,
@@ -5087,7 +5103,7 @@ describe('SessionManager permission mode updates', () => {
     expect(afterFirstRuns.find((run) => run.turnId === 'turn-1')?.status).toBe('completed');
     expect(afterFirstRuns.find((run) => run.turnId === 'turn-2')?.status).toBe('running');
 
-    await expectRejects(manager.setPermissionMode(session.id, 'execute'), /当前任务正在运行/);
+    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /当前任务正在运行/);
 
     secondGate.release();
     await second.next();
@@ -5103,8 +5119,8 @@ describe('SessionManager permission mode updates', () => {
     expect(firstEvents.map((event) => event.type)).toContain('run_started');
     expect(firstEvents.map((event) => event.type)).toContain('run_completed');
 
-    const summary = await manager.setPermissionMode(session.id, 'execute');
-    expect(summary.permissionMode).toBe('execute');
+    const summary = await manager.setPermissionMode(session.id, 'bypass');
+    expect(summary.permissionMode).toBe('bypass');
   });
 
   test('leaving explore clears the deep research label so visible read-only copy stays truthful', async () => {
@@ -8842,7 +8858,7 @@ describe('SessionManager permission mode updates', () => {
       id: 'legacy-note',
       ts: 104,
       kind: 'mode_change',
-      data: { from: 'ask', to: 'execute' },
+      data: { from: 'ask', to: 'bypass' },
     };
     await store.appendMessage(session.id, legacyNote);
 
@@ -10597,8 +10613,8 @@ describe('SessionManager permission mode updates', () => {
     if (!childRun) throw new Error('child run was not recorded');
     expect(childRun.status).toBe('cancelled');
     expect(store.disposeCount).toBe(1);
-    await manager.setPermissionMode(session.id, 'execute');
-    expect((await store.readHeader(session.id)).permissionMode).toBe('execute');
+    await manager.setPermissionMode(session.id, 'bypass');
+    expect((await store.readHeader(session.id)).permissionMode).toBe('bypass');
   });
 
   test('stopSession waits for a child start blocked before Run reservation', async () => {
@@ -11543,7 +11559,7 @@ describe('SessionManager permission mode updates', () => {
       now: nextNow(6_847),
       runtimeSource: 'test',
     });
-    const session = await manager.createSession(makeInput({ permissionMode: 'execute' }));
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
     await drain(manager.sendMessage(session.id, { turnId: 'parent-turn', text: 'parent context' }));
     const [parentRun] = await runStore.listSessionRuns(session.id);
     if (!parentRun) throw new Error('parent run was not recorded');
@@ -11617,7 +11633,7 @@ describe('SessionManager permission mode updates', () => {
       now: nextNow(6_848),
       runtimeSource: 'test',
     });
-    const session = await manager.createSession(makeInput({ permissionMode: 'execute' }));
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
     await seedRuntimeRun(
       runStore,
       makeRunHeader({
@@ -11803,7 +11819,7 @@ describe('SessionManager permission mode updates', () => {
       now: nextNow(6_900),
       runtimeSource: 'test',
     });
-    const session = await manager.createSession(makeInput({ permissionMode: 'execute' }));
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
     await seedRuntimeRun(
       runStore,
       makeRunHeader({
@@ -18358,7 +18374,6 @@ function createGraphOperatorSession(
         systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
         toolNames: [...LOCAL_READ_AGENT_DEFINITION.tools],
         categoryPolicy: {},
-        permissionCeiling: 'ask',
       },
     }),
   );

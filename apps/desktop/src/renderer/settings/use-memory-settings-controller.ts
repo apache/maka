@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AppSettings } from '@maka/core/settings';
 import type { LocalMemoryState } from '@maka/core/local-memory';
@@ -23,7 +42,10 @@ import { deriveMemorySettingsViewModel } from './memory-settings-view-model';
 import { useKeyedActionGuard } from './use-action-guard';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
 import { readScrollMotionBehavior } from '../scroll-motion-policy';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 
 export interface MemoryDocumentControllerProps {
   settings: AppSettings;
@@ -33,6 +55,7 @@ export interface MemoryDocumentControllerProps {
 /** Owns the MEMORY.md document lifecycle. */
 export function useMemoryDocumentController(props: MemoryDocumentControllerProps) {
   const host = useRuntimeHostSettingsTarget();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const locale = useUiLocale();
   const copy = getMemorySettingsCopy(locale);
   type MemoryWriteAction = 'reload' | 'enable' | 'agent-read' | 'save' | 'reset' | 'restore' | 'entry-status';
@@ -137,7 +160,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
       return true;
     } catch (error) {
       if (isMemoryPageCurrent(lifecycle) && ticket === memoryReloadTicketRef.current) {
-        toast.error(copy.text.loadFailed, settingsActionErrorMessage(error, locale));
+        reportHostError(copy.text.loadFailed, settingsActionErrorMessage(error, locale));
       }
       return false;
     } finally {
@@ -168,7 +191,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         setDraft(next.content);
       });
     } catch (error) {
-      toast.error(copy.text.toggleFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(copy.text.toggleFailed, settingsActionErrorMessage(error, locale));
     }
   }
 
@@ -182,7 +205,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         setDraft(next.content);
       });
     } catch (error) {
-      toast.error(copy.text.agentReadFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(copy.text.agentReadFailed, settingsActionErrorMessage(error, locale));
     }
   }
 
@@ -196,7 +219,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         setDraft(next.content);
         if (next.status === 'safe_mode') {
           setLastSaveSummary(null);
-          toast.error(copy.text.saveBlocked, copy.text.safeMode);
+          reportHostError(copy.text.saveBlocked, copy.text.safeMode);
         } else if (redacted) {
           const detail = copy.redactedDetail(formatLocalMemorySaveSummary(next, copy));
           setLastSaveSummary({
@@ -216,7 +239,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         }
       });
     } catch (error) {
-      toast.error(copy.text.saveFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(copy.text.saveFailed, settingsActionErrorMessage(error, locale));
     }
   }
 
@@ -231,7 +254,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         toast.success(copy.text.resetDone, copy.text.resetDoneDetail);
       });
     } catch (error) {
-      toast.error(copy.text.resetFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(copy.text.resetFailed, settingsActionErrorMessage(error, locale));
     }
   }
 
@@ -262,11 +285,17 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           if (result.ok) {
             toast.success(copy.text.restoredLatest, `${backupLabel} · ${copy.text.restoredDetail}`);
           } else {
-            toast.error(copy.text.restoreFailed, memoryResultMessage(result.message, locale, copy.text.restoreFailed));
+            reportHostError(
+              copy.text.restoreFailed,
+              memoryResultMessage(result.message, locale, copy.text.restoreFailed),
+            );
           }
         });
       } catch (error) {
-        toast.error(copy.text.restoreLatestFailed, settingsActionErrorMessage(error, locale));
+        reportHostError(
+          copy.text.restoreLatestFailed,
+          settingsActionErrorMessage(error, locale),
+        );
       }
     });
   }
@@ -293,11 +322,17 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
           if (result.ok) {
             toast.success(copy.text.restoredCandidate, `${backupLabel} · ${copy.text.restoredDetail}`);
           } else {
-            toast.error(copy.text.restoreFailed, memoryResultMessage(result.message, locale, copy.text.restoreFailed));
+            reportHostError(
+              copy.text.restoreFailed,
+              memoryResultMessage(result.message, locale, copy.text.restoreFailed),
+            );
           }
         });
       } catch (error) {
-        toast.error(copy.text.restoreCandidateFailed, settingsActionErrorMessage(error, locale));
+        reportHostError(
+          copy.text.restoreCandidateFailed,
+          settingsActionErrorMessage(error, locale),
+        );
       }
     });
   }
@@ -307,9 +342,16 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
       try {
         const result = await window.maka.memory.openFile(host);
         if (!isCurrent()) return;
-        if (!result.ok) toast.error(copy.text.openFailed, memoryResultMessage(result.message, locale, copy.text.openFailed));
+        if (!result.ok) {
+          reportHostError(
+            copy.text.openFailed,
+            memoryResultMessage(result.message, locale, copy.text.openFailed),
+          );
+        }
       } catch (error) {
-        if (isCurrent()) toast.error(copy.text.openFailed, settingsActionErrorMessage(error, locale));
+        if (isCurrent()) {
+          reportHostError(copy.text.openFailed, settingsActionErrorMessage(error, locale));
+        }
       }
     });
   }
@@ -319,9 +361,19 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
       try {
         const result = await window.maka.memory.openLatestBackup(host);
         if (!isCurrent()) return;
-        if (!result.ok) toast.error(copy.text.openPreviousFailed, memoryResultMessage(result.message, locale, copy.text.openPreviousFailed));
+        if (!result.ok) {
+          reportHostError(
+            copy.text.openPreviousFailed,
+            memoryResultMessage(result.message, locale, copy.text.openPreviousFailed),
+          );
+        }
       } catch (error) {
-        if (isCurrent()) toast.error(copy.text.openPreviousFailed, settingsActionErrorMessage(error, locale));
+        if (isCurrent()) {
+          reportHostError(
+            copy.text.openPreviousFailed,
+            settingsActionErrorMessage(error, locale),
+          );
+        }
       }
     });
   }
@@ -332,11 +384,17 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         const result = await window.maka.memory.openBackup(backup.kind, host);
         if (!isCurrent()) return;
         if (!result.ok) {
-          toast.error(copy.openBackupFailed(localMemoryBackupKindLabel(backup.kind, copy)), memoryResultMessage(result.message, locale, copy.text.openFailed));
+          reportHostError(
+            copy.openBackupFailed(localMemoryBackupKindLabel(backup.kind, copy)),
+            memoryResultMessage(result.message, locale, copy.text.openFailed),
+          );
         }
       } catch (error) {
         if (isCurrent())
-          toast.error(copy.openBackupFailed(localMemoryBackupKindLabel(backup.kind, copy)), settingsActionErrorMessage(error, locale));
+          reportHostError(
+            copy.openBackupFailed(localMemoryBackupKindLabel(backup.kind, copy)),
+            settingsActionErrorMessage(error, locale),
+          );
       }
     });
   }
@@ -347,11 +405,17 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         const result = await window.maka.app.openPath('memory', undefined, host);
         if (!isCurrent()) return;
         if (!result.ok) {
-          toast.error(copy.openBackupFailed(openPathActionLabel('memory', locale)), openPathFailureCopy(result.reason, locale));
+          reportHostError(
+            copy.openBackupFailed(openPathActionLabel('memory', locale)),
+            openPathFailureCopy(result.reason, locale),
+          );
         }
       } catch (error) {
         if (isCurrent())
-          toast.error(copy.openBackupFailed(openPathActionLabel('memory', locale)), settingsActionErrorMessage(error, locale));
+          reportHostError(
+            copy.openBackupFailed(openPathActionLabel('memory', locale)),
+            settingsActionErrorMessage(error, locale),
+          );
       }
     });
   }
@@ -476,7 +540,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         setState(next);
         setDraft(next.content);
         if (next.status === 'safe_mode') {
-          toast.error(copy.text.saveBlocked, copy.text.safeMode);
+          reportHostError(copy.text.saveBlocked, copy.text.safeMode);
           return;
         }
         setNewMemoryTitle('');
@@ -485,7 +549,7 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         toast.success(copy.text.addedDraft, title.trim());
       });
     } catch (error) {
-      toast.error(copy.text.saveFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(copy.text.saveFailed, settingsActionErrorMessage(error, locale));
     }
   }
 
@@ -518,13 +582,16 @@ export function useMemoryDocumentController(props: MemoryDocumentControllerProps
         setState(next);
         setDraft(next.content);
         if (next.status === 'safe_mode') {
-          toast.error(copy.text.updateBlocked, copy.text.safeMode);
+          reportHostError(copy.text.updateBlocked, copy.text.safeMode);
         } else {
           toast.success(status === 'archived' ? copy.text.archived : copy.text.restored, entry.title);
         }
       });
     } catch (error) {
-      toast.error(status === 'archived' ? copy.text.archiveFailed : copy.text.entryRestoreFailed, settingsActionErrorMessage(error, locale));
+      reportHostError(
+        status === 'archived' ? copy.text.archiveFailed : copy.text.entryRestoreFailed,
+        settingsActionErrorMessage(error, locale),
+      );
     }
   }
 

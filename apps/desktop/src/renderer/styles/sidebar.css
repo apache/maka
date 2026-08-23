@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* Sidebar — SideNav shell, session rows, footer update chip.
  * Session rows are Astryx SideNavItem; this file only owns product-only chrome. */
 .maka-session-panel {
@@ -166,8 +185,18 @@
 }
 
 .maka-sidebar-footer-row-primary {
-  flex: 1;
-  min-width: 0;
+  /* `auto` rather than `1 1 0`: the settings row asks for the width its label
+     needs and gives back the rest, so the stamp shrinks into what is left
+     instead of the label being clipped first.
+
+     `min-content`, not `0`: with `min-width: 0` BOTH items are free to shrink,
+     so at the 180px minimum with an update reminder present the Settings label
+     could still pick up an ellipsis even though the stamp had room left to
+     give. Flooring this row at its content width makes the priority
+     deterministic — the stamp is the only thing that truncates. The stamp
+     keeps `min-width: 0`, so it can still yield all the way down. */
+  flex: 1 1 auto;
+  min-width: min-content;
 }
 
 /* Stacked, the row stretches its children to the rail's width so the settings
@@ -175,6 +204,36 @@
    it is expanded, so it opts out and keeps its own width. */
 .appFrame[data-sidebar-state="collapsed"] .maka-sidebar-update-button {
   align-self: center;
+}
+
+/* A label, not a control: it takes no pointer events and no focus, so tabbing
+   through the rail still goes Settings -> update button as it did before. */
+.maka-sidebar-build-stamp {
+  /* The stamp yields first. At the 180px minimum width with an update button
+     present, something has to give, and it should be the label a user is
+     reading rather than the row they are aiming at — Settings keeps its text
+     and its hit target, the stamp ellipsises, and its `title` still carries
+     the full build. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+/* Collapsed, the rail is 48px and the footer stacks. `v0.1.11 · a1b2c3d` does
+   not fit and would either clip or force the rail wider, so it drops — the
+   About page still carries it, and a collapsed rail is a deliberate ask for
+   less. */
+.appFrame[data-sidebar-state="collapsed"] .maka-sidebar-build-stamp {
+  display: none;
 }
 
 .maka-sidebar-update-button {
@@ -226,18 +285,20 @@
 }
 
 /*
- * Project groups are a real parent-child hierarchy. Keep Astryx's standard
- * SideNav nesting step (spacing-6 / 24px) so session rows visibly belong to
- * the project above them instead of sharing the project's left edge. Pin the
- * value here because StyleX owns the unlayered default and this relationship
- * is part of the task rail's visual contract. Child combinator only — do not
- * use a descendant selector that would indent deeper nest levels twice if any
- * appear later.
+ * Project groups are a parent-child hierarchy. SideNav always nests children
+ * by spacing-6; that is a fixed inset, not a title-alignment rule. Project
+ * rows lead with a 16px folder, session rows with an 8px StatusDot, so the
+ * default 24px inset puts session titles 16px right of the project name.
+ * Product intent: keep an 8px hierarchical inset (spacing-2) so titles share
+ * one x. The whole session button, including hover/selected fill, moves with
+ * that inset; the right edge stays on the rail. Pin the value because StyleX
+ * owns the unlayered default. Child combinator only — do not use a descendant
+ * selector that would indent deeper nest levels twice if any appear later.
  * DOM: .maka-project-row > SideNavItem root > [role=group] > childrenInner
  */
 .maka-project-row > div > [role="group"] > div {
   /* !important: StyleX childrenInner paddingInlineStart is unlayered. */
-  padding-inline-start: var(--spacing-6) !important;
+  padding-inline-start: var(--spacing-2) !important;
 }
 
 .maka-session-row-end,
@@ -317,13 +378,14 @@
 
 .maka-session-row:hover > .maka-session-row-action,
 .maka-session-row:focus-within > .maka-session-row-action,
-.maka-session-row > .maka-session-row-action:has([popover]:popover-open) {
+.maka-session-row > .maka-session-row-action[data-menu-open="true"] {
   opacity: 1;
   pointer-events: auto;
 }
 
 .maka-session-row:hover .maka-session-row-time,
-.maka-session-row:focus-within .maka-session-row-time {
+.maka-session-row:focus-within .maka-session-row-time,
+.maka-session-row:has(> .maka-session-row-action[data-menu-open="true"]) .maka-session-row-time {
   visibility: hidden;
 }
 

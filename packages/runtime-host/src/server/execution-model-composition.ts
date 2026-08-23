@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
@@ -46,7 +65,6 @@ export interface HostAiSdkBackendInput {
   readonly context: BackendFactoryContext;
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
-  readonly claudeDeviceId: string;
   readonly createRunComposer: HostRunComposerFactory;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
@@ -72,7 +90,7 @@ type HostExecutionUsageAuthority = {
   readonly telemetry: Pick<InteractiveUsageStoresWriter['telemetry'], 'recordToolInvocation'>;
   readonly modelCalls: Pick<
     InteractiveUsageStoresWriter['modelCalls'],
-    'markRunPendingReprojection' | 'recordModelCallAttempt' | 'clearPendingReprojection'
+    'catchUpModelCallProjection'
   >;
   readonly pricing: Pick<InteractiveUsageStoresWriter['pricing'], 'snapshot'>;
 };
@@ -118,7 +136,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         connection: target.connection,
         sessionId: input.context.sessionId,
         modelId: target.model,
-        claudeDeviceId: input.claudeDeviceId,
         fetchFn: transport.fetch,
       });
     } catch (error) {
@@ -204,10 +221,10 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
    * writing both in parallel would make the ledger a second source of truth,
    * free to diverge with no way back.
    *
-   * A failed projection is recoverable, not lost: the run is marked so the
-   * Usage authority re-derives it from the stream, and even a lost marker is
-   * recovered by a full re-projection. Neither step may fail the turn — the
-   * provider call has already completed and billed.
+   * A failed projection is recoverable, not lost: its checkpoint remains
+   * behind the AgentRun sequence until a later catch-up consumes it. The
+   * projection may not fail the turn — the provider call has already completed
+   * and billed.
    */
   let accountingAuthorityFailed = false;
   const recordModelCallAttempt = async (
@@ -222,17 +239,8 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       accountingAuthorityFailed = true;
       throw error;
     }
-    // Mark before projecting, not after failing. A marker written only on a
-    // caught error cannot cover the case the error path never runs — the
-    // process exiting between the two writes — which would leave the record in
-    // the authority and invisible to Usage. Marking first makes this an intent
-    // record: a crash anywhere after it still leaves a run the repair finds.
     await input.usage.modelCalls
-      .markRunPendingReprojection(attempt.sessionId, attempt.runId)
-      .catch(() => undefined);
-    await input.usage.modelCalls.recordModelCallAttempt(attempt);
-    await input.usage.modelCalls
-      .clearPendingReprojection(attempt.sessionId, attempt.runId)
+      .catchUpModelCallProjection({ sessionId: attempt.sessionId, runId: attempt.runId })
       .catch(() => undefined);
   };
   /**

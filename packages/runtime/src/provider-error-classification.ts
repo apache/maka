@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { RetryError } from 'ai';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { isAuthenticationErrorText, redactSecrets } from '@maka/core/redaction';
@@ -11,6 +30,10 @@ const CONTEXT_OVERFLOW_PROVIDER_CODES: ReadonlySet<string> = new Set([
   'context_length_exceeded', // OpenAI & OpenAI-compatible: error.code
   'model_context_window_exceeded', // z.ai: error.code
   'request_too_large', // Anthropic byte-size overflow (HTTP 413): error.type
+]);
+
+const PROVIDER_UNAVAILABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
+  'server_error', // OpenAI-compatible stream errors can omit the HTTP status.
 ]);
 
 /**
@@ -125,6 +148,7 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   }
   const retryable =
     errorClass === 'Network' ||
+    errorClass === 'ProviderUnavailable' ||
     status === 408 ||
     status === 409 ||
     (status >= 500 && status <= 599);
@@ -593,6 +617,8 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   if (statusCode === '413' || code === '413') return 'ContextLength';
   // Free-text overflow relations on the composite text, veto-first inside.
   if (isContextOverflowErrorText(text)) return 'ContextLength';
+  if (structuredCodes.some((c) => PROVIDER_UNAVAILABLE_PROVIDER_CODES.has(c)))
+    return 'ProviderUnavailable';
   if (/^5\d\d$/.test(statusCode) || /^5\d\d$/.test(code)) return 'ProviderUnavailable';
   // Weak word heuristics, last: they only catch errors that carried no
   // stronger evidence for any other class. `rate` must be word-shaped

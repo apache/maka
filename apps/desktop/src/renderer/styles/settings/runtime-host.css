@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 .settingsRuntimeHostTransportField {
   padding-block: var(--space-4);
 }
@@ -59,6 +78,142 @@
 .settingsRuntimeHostSshTerminalActions {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostSetupProgress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 88px;
+}
+
+.settingsRuntimeHostManagement {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.settingsRuntimeHostManagementFacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-5);
+  margin: 0;
+}
+
+.settingsRuntimeHostManagementFacts div {
+  min-width: 0;
+}
+
+.settingsRuntimeHostManagementFacts .settingsRuntimeHostManagementFactWide {
+  grid-column: 1 / -1;
+}
+
+.settingsRuntimeHostManagementFacts dt {
+  color: var(--foreground-secondary);
+  font: var(--maka-text-supporting);
+}
+
+.settingsRuntimeHostManagementFacts dd {
+  overflow-wrap: anywhere;
+  margin: var(--space-1) 0 0;
+  color: var(--foreground-primary);
+  font: var(--maka-text-body);
+}
+
+.settingsRuntimeHostManagementRoots {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settingsRuntimeHostManagementDirectoryRoots {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostManagementRoots li {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.settingsRuntimeHostManagementRoots code,
+.settingsRuntimeHostManagementLogs {
+  overflow-wrap: anywhere;
+  color: var(--foreground-secondary);
+  font: var(--maka-text-code);
+}
+
+.settingsRuntimeHostAccess {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.settingsRuntimeHostAccessList {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settingsRuntimeHostAccessList li {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsRuntimeHostAccessIdentity,
+.settingsRuntimeHostAccessMeta,
+.settingsRuntimeHostAccessBadges {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settingsRuntimeHostAccessIdentity,
+.settingsRuntimeHostAccessMeta {
+  justify-content: space-between;
+}
+
+.settingsRuntimeHostAccessIdentity > div:first-child {
+  display: grid;
+  min-width: 0;
+}
+
+.settingsRuntimeHostAccessIdentity strong {
+  overflow-wrap: anywhere;
+  color: var(--foreground-primary);
+  font: var(--maka-text-body);
+}
+
+.settingsRuntimeHostAccessIdentity span,
+.settingsRuntimeHostAccessMeta > span {
+  color: var(--foreground-secondary);
+  font: var(--maka-text-supporting);
+}
+
+.settingsRuntimeHostManagementLogs {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+  white-space: pre-wrap;
+}
+
+.settingsRuntimeHostManagementActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 @media (max-height: 620px) {

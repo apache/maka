@@ -1,5 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import type { PermissionMode } from '@maka/core/permission';
+import {
+  createGenesisExecutionBoundary,
+  executionBoundaryDisplayMode,
+} from '@maka/core/sandbox-boundary';
 import { findProjectByIdentity } from '@maka/core/project';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
@@ -13,7 +36,11 @@ import {
   type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
 import type { AgentGraphClientSnapshot, WorkspaceTarget } from '@maka/runtime-host/protocol';
-import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
+import {
+  connectRuntimeHostCli,
+  readHostChatDefaultPermissionMode,
+  resolveRuntimeHostCliTarget,
+} from './runtime-host-cli-context.js';
 import type {
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
@@ -38,6 +65,13 @@ export interface RuntimeHostTuiContext {
   readonly model: string;
   readonly modelContextWindow?: number;
   readonly modelChoices: readonly ModelChoice[];
+  /**
+   * Mode a Session created right now would start in, for display only. The
+   * driver never receives it: an omitted create field is what lets the Host
+   * stay the authority, and this snapshot goes stale the moment another client
+   * changes the setting.
+   */
+  readonly prospectivePermissionMode: PermissionMode;
   readonly turnActivity: MakaPiTuiTurnActivitySurface;
   readonly listSkills: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
   readonly agentGraphHistory: {
@@ -76,12 +110,19 @@ export async function createRuntimeHostTuiContext(
       ? await resolveResumeTarget(connection, catalog, input.resumeSessionId)
       : resolveTarget(catalog);
     const modelChoices = projectRuntimeHostModelChoices(catalog);
+    // Display state, never a create input. Deriving it through the same
+    // boundary mapping every other surface uses keeps a prospective Session and
+    // a live one from ever labelling the same permissions differently.
+    const prospectivePermissionMode =
+      executionBoundaryDisplayMode(
+        createGenesisExecutionBoundary(await readHostChatDefaultPermissionMode(connection)),
+      ) ?? 'ask';
     const driverInput: RuntimeHostMakaSessionDriverInput = {
       connection,
       cwd: input.cwd,
       llmConnectionSlug: target.connection.slug,
       model: target.model,
-      permissionMode: 'ask',
+      prospectivePermissionMode,
       executionLocation:
         connected.profile.kind === 'local' ? { kind: 'client_path' } : { kind: 'host' },
       ...(workspace ? { workspace } : {}),
@@ -98,6 +139,7 @@ export async function createRuntimeHostTuiContext(
       modelContextWindow: target.connection.models.find((model) => model.id === target.model)
         ?.contextWindow,
       modelChoices,
+      prospectivePermissionMode,
       turnActivity: createHostOwnedTurnActivity(),
       listSkills: (cwd) =>
         listStablePresentedSkills(
@@ -105,7 +147,7 @@ export async function createRuntimeHostTuiContext(
           driver.getSessionId(),
           workspace ??
             (connected.profile.kind === 'local' ? { kind: 'host_path', path: cwd } : undefined),
-          driver.getPermissionMode?.() ?? 'ask',
+          driver.getPermissionMode?.() ?? prospectivePermissionMode,
         ),
       agentGraphHistory: createRuntimeHostAgentGraphHistory(connection),
       recap: createRuntimeHostRecapGenerator(connection),

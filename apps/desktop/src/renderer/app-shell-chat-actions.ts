@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
 import type { InlineReference, QuoteRef } from '@maka/core/events';
@@ -5,7 +25,6 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { StoredMessage } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
@@ -18,7 +37,6 @@ import {
   type LiveTurnProjection,
   type NavSelection,
 } from '@maka/ui';
-import type { RendererIngestInput } from '../preload/bridge-contract.js';
 import { messageRefreshErrorMessage } from './app-shell-copy.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 import { preflightAttachmentItems } from './attachment-preflight.js';
@@ -31,30 +49,11 @@ import {
   skillInvocationDisplayText,
 } from './skill-invocation-feedback.js';
 import type { DesktopTranscriptRangeController } from './desktop-transcript-range-store.js';
-
-export type PendingAttachment = {
-  /** Unique per staged item; keys the preview cache and its cleanup, so a
-   *  preview resolving after its item left the list can never strand an
-   *  orphan entry. */
-  stagingKey: string;
-  displayName: string;
-  mimeType?: string;
-  kind: import('@maka/core/events').AttachmentRef['kind'];
-  size: number;
-  /** Composer drawer thumbnail source for image attachments. Merged in from
-   *  the preview cache only after the URL has actually decoded as an image,
-   *  so a set previewUrl always means "renderable" — anything else keeps the
-   *  named file card. */
-  previewUrl?: string;
-  source: { type: 'approval'; approvalId: string; name: string } | { type: 'file'; file: File };
-};
-
-/** Stable identity for a staged attachment across preview-URL merges. The
- *  drawer list is re-derived when a preview lands, so submitted items must
- *  be matched by their source — never by object reference. */
-export function pendingAttachmentSourceKey(attachment: PendingAttachment): unknown {
-  return attachment.source.type === 'approval' ? `approval:${attachment.source.approvalId}` : attachment.source.file;
-}
+import {
+  retainedAttachmentRefs,
+  toComposerIngestItems,
+  type PendingAttachment,
+} from './composer-attachments.js';
 
 export interface WorkspaceFileReferencePosition {
   value: string;
@@ -92,7 +91,12 @@ type PendingNewChatModel = {
 type PendingNewChatThinkingLevel = ThinkingLevel | null;
 
 type ToastApi = {
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string } | { profileId: string },
+  ): void;
   info(title: string, description?: string): void;
 };
 
@@ -112,20 +116,6 @@ export interface AppShellChatActions {
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
   refreshMessages(sessionId: string, options?: RefreshMessagesOptions): Promise<boolean>;
   retryMessages(sessionId: string): Promise<void>;
-}
-
-export function toRendererIngestItems(
-  pending: readonly PendingAttachment[],
-): RendererIngestInput[] {
-  return pending.map((p) =>
-    p.source.type === 'approval'
-      ? {
-          approvalId: p.source.approvalId,
-          name: p.source.name,
-          ...(p.mimeType ? { mimeType: p.mimeType } : {}),
-        }
-      : { file: p.source.file },
-  );
 }
 
 export function createAppShellChatActions(deps: {
@@ -164,12 +154,27 @@ export function createAppShellChatActions(deps: {
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
-  showModelSetupToast: (description: string, reason?: string) => void;
+  showModelSetupToast: (
+    description: string,
+    reason?: string,
+    diagnosticTarget?: { sessionId: string } | { profileId: string },
+  ) => void;
   toastApi: ToastApi;
   upsertSessionSummary: (session: DesktopSessionSummary) => void;
   newChatModel: PendingNewChatModel;
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
-  newChatPermissionMode: ChatDefaultPermissionMode;
+  /**
+   * The user's explicit choice for this draft, or undefined when they made
+   * none. Undefined omits the field on create so the Host applies its own
+   * `chatDefaults`; a value is a real per-Session override and is sent once.
+   */
+  newChatPermissionChoice: ChatDefaultPermissionMode | undefined;
+  /**
+   * Drops the draft's permission choice once it has reached a created Session.
+   * The choice is keyed by Host/project target rather than by draft, so
+   * without this the next task on the same target would silently re-send it.
+   */
+  clearNewChatPermissionChoice: () => void;
   newChatCollaborationMode: CollaborationMode;
   newChatOrchestrationMode: OrchestrationMode;
   newTaskTarget: DesktopNewTaskTarget | undefined;
@@ -201,7 +206,8 @@ export function createAppShellChatActions(deps: {
     upsertSessionSummary,
     newChatModel,
     pendingNewChatThinkingLevel,
-    newChatPermissionMode,
+    newChatPermissionChoice,
+    clearNewChatPermissionChoice,
     newChatCollaborationMode,
     newChatOrchestrationMode,
     newTaskTarget,
@@ -388,18 +394,25 @@ export function createAppShellChatActions(deps: {
               }
             : {}),
           ...(pendingNewChatThinkingLevel ? { thinkingLevel: pendingNewChatThinkingLevel } : {}),
-          permissionMode: newChatPermissionMode,
+          ...(newChatPermissionChoice ? { permissionMode: newChatPermissionChoice } : {}),
           collaborationMode: newChatCollaborationMode,
           orchestrationMode: newChatOrchestrationMode,
         });
         unsentSessionId = session.id;
+        // Consumed: the choice is now the created Session's, not the next
+        // draft's. A failed create leaves it in place so a retry keeps it.
+        if (newChatPermissionChoice) clearNewChatPermissionChoice();
         upsertSessionSummary(session);
         optimisticSessionId = session.id;
         optimisticTurnId = turnId;
         armTurnActive(session.id, turnId);
         const attachmentItems =
           pending && pending.length > 0
-            ? toRendererIngestItems(pending)
+            ? toComposerIngestItems(pending)
+            : undefined;
+        const retainedAttachments =
+          pending && pending.length > 0
+            ? retainedAttachmentRefs(pending)
             : undefined;
         const sendResult = await window.maka.sessions.send(session.id, {
           type: 'send',
@@ -407,7 +420,10 @@ export function createAppShellChatActions(deps: {
           text,
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-          ...(attachmentItems ? { attachmentItems } : {}),
+          ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
+          ...(retainedAttachments && retainedAttachments.length > 0
+            ? { retainedAttachments }
+            : {}),
           ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
           ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
             ? { workspaceFileReferences: [...options.workspaceFileReferences] }
@@ -415,7 +431,12 @@ export function createAppShellChatActions(deps: {
         });
         if (!sendResult.ok) {
           if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-            showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+            showSkillInvocationFeedback(
+              uiLocale,
+              toastApi,
+              sendResult.skillInvocation,
+              session.id,
+            );
           }
           disarmTurnActive(session.id, turnId);
           await discardUnsentSession();
@@ -426,7 +447,12 @@ export function createAppShellChatActions(deps: {
         if (settledTurnId !== undefined) optimisticTurnId = settledTurnId;
         options.onSessionResolved?.(session.id);
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
-          showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+          showSkillInvocationFeedback(
+            uiLocale,
+            toastApi,
+            sendResult.skillInvocation,
+            session.id,
+          );
         }
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           setNavSelection({ section: 'sessions' });
@@ -472,7 +498,11 @@ export function createAppShellChatActions(deps: {
       armTurnActive(sessionId, turnId);
       const attachmentItems =
         pending && pending.length > 0
-          ? toRendererIngestItems(pending)
+          ? toComposerIngestItems(pending)
+          : undefined;
+      const retainedAttachments =
+        pending && pending.length > 0
+          ? retainedAttachmentRefs(pending)
           : undefined;
       const sendResult = await window.maka.sessions.send(sessionId, {
         type: 'send',
@@ -480,7 +510,10 @@ export function createAppShellChatActions(deps: {
         text,
         ...(options.displayText ? { displayText: options.displayText } : {}),
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-        ...(attachmentItems ? { attachmentItems } : {}),
+        ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
+        ...(retainedAttachments && retainedAttachments.length > 0
+          ? { retainedAttachments }
+          : {}),
         ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
         ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
           ? { workspaceFileReferences: [...options.workspaceFileReferences] }
@@ -488,7 +521,12 @@ export function createAppShellChatActions(deps: {
       });
       if (!sendResult.ok) {
         if (activeIdRef.current === sessionId) {
-          showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+          showSkillInvocationFeedback(
+            uiLocale,
+            toastApi,
+            sendResult.skillInvocation,
+            sessionId,
+          );
         }
         disarmTurnActive(sessionId, turnId);
         return false;
@@ -498,7 +536,12 @@ export function createAppShellChatActions(deps: {
       if (startedTurnId === undefined) return true;
       optimisticTurnId = startedTurnId;
       if (activeIdRef.current === sessionId) {
-        showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
+        showSkillInvocationFeedback(
+          uiLocale,
+          toastApi,
+          sendResult.skillInvocation,
+          sessionId,
+        );
       }
       showOptimisticUserMessage(
         sessionId,
@@ -535,6 +578,11 @@ export function createAppShellChatActions(deps: {
       // surface and the app is now on the session it just made, so the id is
       // taken from the flight and only the section comes from the capture.
       const feedbackSessionId = optimisticSessionId ?? initialSessionId;
+      const diagnosticTarget = feedbackSessionId
+        ? { sessionId: feedbackSessionId }
+        : initialNewTaskTarget
+          ? { profileId: initialNewTaskTarget.profileId }
+          : undefined;
       const sendStillOwnsCurrentSurface =
         (feedbackSessionId !== undefined &&
           isShellSurfaceOwnerActive({
@@ -545,11 +593,20 @@ export function createAppShellChatActions(deps: {
       if (!sendStillOwnsCurrentSurface) return false;
       if (isNoRealConnectionError(error)) {
         const reason = noRealConnectionReasonFromError(error);
-        showModelSetupToast(noRealConnectionSetupDescription(reason, uiLocale), reason);
+        showModelSetupToast(
+          noRealConnectionSetupDescription(reason, uiLocale),
+          reason,
+          diagnosticTarget,
+        );
       } else if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, diagnosticTarget);
       } else {
-        toastApi.error(copy.sendFailedTitle, localizedShellErrorMessage(error, copy.sendFailedFallback, uiLocale));
+        toastApi.error(
+          copy.sendFailedTitle,
+          localizedShellErrorMessage(error, copy.sendFailedFallback, uiLocale),
+          undefined,
+          diagnosticTarget,
+        );
       }
       return false;
     }
@@ -575,11 +632,13 @@ export function createAppShellChatActions(deps: {
       // surfaces instead of dying as UnhandledPromiseRejection.
       if (activeIdRef.current !== sessionId) return;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
       } else {
         toastApi.error(
           copy.responseFailedTitle,
           localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
+          undefined,
+          { sessionId },
         );
       }
     }
@@ -595,11 +654,13 @@ export function createAppShellChatActions(deps: {
     } catch (error) {
       if (activeIdRef.current !== sessionId) return;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
       } else {
         toastApi.error(
           copy.responseFailedTitle,
           localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
+          undefined,
+          { sessionId },
         );
       }
     }
@@ -643,7 +704,7 @@ export function createAppShellChatActions(deps: {
           ...current,
           [sessionId]: message,
         }));
-        toastApi.error(copy.refreshFailedTitle, message);
+        toastApi.error(copy.refreshFailedTitle, message, undefined, { sessionId });
       }
       return false;
     }
@@ -660,7 +721,7 @@ export function createAppShellChatActions(deps: {
         ...current,
         [sessionId]: message,
       }));
-      toastApi.error(copy.refreshFailedTitle, message);
+      toastApi.error(copy.refreshFailedTitle, message, undefined, { sessionId });
     } finally {
       clearPendingSessionAction(sessionId, messageRetryPendingRef, setMessageRetryPendingBySession);
     }

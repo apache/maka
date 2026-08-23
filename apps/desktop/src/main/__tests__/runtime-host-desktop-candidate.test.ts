@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
@@ -5,7 +24,11 @@ import type { IpcMain } from 'electron';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
-import type { ClientCapabilityProvider, RuntimeHostConnection } from '@maka/runtime-host/client';
+import type {
+  ClientCapabilityProvider,
+  ConnectOrSpawnRuntimeHostInput,
+  RuntimeHostConnection,
+} from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type ClientCapabilityCallFrame,
@@ -20,14 +43,41 @@ import { z } from 'zod';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import {
   createDesktopRuntimeHostCandidate as createCandidate,
+  startDesktopRuntimeHostCandidate,
   type DesktopRuntimeHostCandidateControls,
   type DesktopRuntimeHostCandidateDeps,
+  type DesktopRuntimeHostCandidateStartInput,
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
 const TEST_TARGET_EPOCH = 'test-target-epoch';
+
+test('uses the manager-owned launch barrier for local candidate startup', async () => {
+  let connectedRoot: string | undefined;
+  const result = await startDesktopRuntimeHostCandidate({
+    rootPath: 'C:\\workspace',
+    candidateEntrypoint: 'candidate.js',
+    ipcMain: {
+      epoch: TEST_TARGET_EPOCH,
+      isActive: () => true,
+    },
+    candidateLaunchBarrier: {
+      connect: async (input: ConnectOrSpawnRuntimeHostInput) => {
+        connectedRoot = input.rootPath;
+        return { kind: 'failed', reason: 'startup_timeout' };
+      },
+      pause: () => undefined,
+      retireExcept: async () => undefined,
+      resume: () => undefined,
+      release: () => undefined,
+    },
+  } as unknown as DesktopRuntimeHostCandidateStartInput);
+
+  assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+  assert.equal(connectedRoot, 'C:\\workspace');
+});
 
 function createDesktopRuntimeHostCandidate(
   connection: RuntimeHostConnection,

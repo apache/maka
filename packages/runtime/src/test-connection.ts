@@ -1,5 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   PROVIDER_DEFAULTS,
+  classifyConnectionModelInventory,
   connectionEnabledModelIds,
   type ConnectionTestErrorClass,
   type ConnectionTestResult,
@@ -7,7 +27,6 @@ import {
 } from '@maka/core/llm-connections';
 import { anthropicV1Url, googleApiUrl, openResponsesUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
-import { claudeSubscriptionHeaders } from './subscription-auth.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
 import {
   CONNECTION_EFFECT_ERROR_BODY_MAX_BYTES,
@@ -37,6 +56,13 @@ export interface ConnectionTestOptions extends ConnectionEffectFetchOptions {
  * Prefer an explicit model, then a still-live configured model. Legacy
  * connections without a discovered inventory keep the historical
  * default/fallback order.
+ *
+ * A `'live'` catalog ORDERS the user's own candidates, it does not filter
+ * them: a model the provider just listed is likelier to answer, so probe that
+ * one first. But no catalog removes a candidate. A snapshot would otherwise
+ * redirect the probe onto a model the user never chose (#1584), and even a
+ * live list can lag the account — when it does, the provider's own error is a
+ * better answer than a model Maka substituted silently.
  */
 function resolveConnectionTestModel(
   connection: ConnectionEffectConnection,
@@ -46,21 +72,18 @@ function resolveConnectionTestModel(
   const explicitModel = model?.trim();
   if (explicitModel) return explicitModel;
 
-  const hasAuthoritativeInventory =
-    connection.modelSource === 'fetched' && Array.isArray(connection.models);
   const discoveredIds =
     connection.models?.map(({ id }) => id.trim()).filter((id) => id.length > 0) ?? [];
-  const discovered =
-    hasAuthoritativeInventory || discoveredIds.length > 0 ? new Set(discoveredIds) : undefined;
-  const candidates = [
-    ...connectionEnabledModelIds(connection),
-    ...fallbackModels,
-    ...discoveredIds,
-  ];
+  const enabled = connectionEnabledModelIds(connection);
+  const listed =
+    classifyConnectionModelInventory(connection) === 'live' ? new Set(discoveredIds) : undefined;
+  const preferred = listed
+    ? [...enabled.filter((id) => listed.has(id)), ...enabled.filter((id) => !listed.has(id))]
+    : enabled;
+  const candidates = [...preferred, ...fallbackModels, ...discoveredIds];
   for (const candidate of candidates) {
     const id = candidate.trim();
-    if (!id || (discovered && !discovered.has(id))) continue;
-    return id;
+    if (id) return id;
   }
   return undefined;
 }
@@ -182,12 +205,22 @@ async function testConnectionModel(
   t0: number,
   timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
 ): Promise<ConnectionTestResult> {
+  // Ahead of `resolveModelRuntime`, which throws for an adapter it cannot name.
+  // A stored connection can still be opened long after its provider stopped
+  // being offered, and the caller renders this result — so a retired provider
+  // has to fail the test, not crash it.
+  if (PROVIDER_DEFAULTS[connection.providerType]?.runtimeAdapter.kind === 'unavailable') {
+    return retiredProviderTestResult(connection.providerType);
+  }
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);
 
   switch (adapter.kind) {
     case 'anthropic':
-    case 'claude-subscription':
       return await probeAnthropic(connection, baseUrl, secret, testModel, t0, fetchFn);
+    case 'unavailable':
+      // Unreachable: the guard above returns first. The arm keeps the switch
+      // exhaustive so a newly retired provider cannot slip past it.
+      return retiredProviderTestResult(connection.providerType);
     case 'openai':
       return wire === 'openai-responses'
         ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn)
@@ -282,6 +315,10 @@ async function probeCohere(
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
 }
 
+function retiredProviderTestResult(providerType: string): ConnectionTestResult {
+  return { ok: false, errorMessage: `"${providerType}" is retired and can no longer be used.` };
+}
+
 async function probeAnthropic(
   connection: Pick<ConnectionEffectConnection, 'providerType'>,
   baseUrl: string,
@@ -290,29 +327,11 @@ async function probeAnthropic(
   t0: number,
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
-  const headers: Record<string, string> =
-    connection.providerType === 'claude-subscription'
-      ? {
-          ...claudeSubscriptionHeaders(),
-          Authorization: `Bearer ${secret}`,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        }
-      : {
-          'x-api-key': secret,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        };
-
-  if (connection.providerType === 'claude-subscription') {
-    // Claude Subscription credentials are account-scoped OAuth tokens.
-    // The real send path has to use the Claude Code cloak shape; a
-    // separate `/api/oauth/profile` probe can fail with "Invalid
-    // request format" even when the stored login is usable. Treat the
-    // presence of a resolved main-process OAuth token as the connection
-    // test and let send-path failures surface during an actual turn.
-    return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
-  }
+  const headers: Record<string, string> = {
+    'x-api-key': secret,
+    'anthropic-version': '2023-06-01',
+    'content-type': 'application/json',
+  };
 
   const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/messages'), {
     method: 'POST',

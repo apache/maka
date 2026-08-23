@@ -1,22 +1,43 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, useState } from 'react';
 import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
 import { type UiLocale } from '@maka/core/ui-locale';
-import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
-
-// Shared browser-assisted OAuth login-flow controller (device-code
-// polling / loopback PKCE depending on the provider).
+// Shared browser-assisted OAuth login-flow controller (device-code polling).
 //
 // Extracted from the SubscriptionLoginModal `startLogin` flow so BOTH the
 // OAuth catalog login modals (Codex / xAI) AND the model
 // connection detail sheet's 重新登录 affordance drive the same
 // getAuthUrl -> openAuthUrl -> refresh -> completeAuthorization sequence with
 // one authRequestId lifecycle, one synchronous pending-action guard, and
-// cancellation-on-unmount. Claude's paste-code flow is deliberately NOT
-// routed through this hook -- it needs a manual authorization-code step and
-// its own experimental gate, so it keeps its bespoke card.
+// cancellation-on-unmount. Every OAuth provider hands authorization to the
+// browser, so this is the only login shape the renderer drives.
 //
 // GitHub Copilot rides the same controller through the `direct` account
 // flow (#1042): importing an existing GitHub login is one bridge call, so
@@ -107,6 +128,7 @@ export function useOAuthLoginFlow(params: {
   const copy = getProviderSettingsCopy(locale).oauthFlow;
   const direct = params.direct;
   const toast = useToast();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const [state, setState] = useState<SubscriptionSnapshot | null>(null);
   const [authRequestId, setAuthRequestId] = useState<string | null>(null);
   const [stateHint, setStateHint] = useState<string | null>(null);
@@ -125,7 +147,7 @@ export function useOAuthLoginFlow(params: {
     } catch (error) {
       if (!oauthLoginFlowMountedRef.current) return false;
       const message = subscriptionActionErrorMessage(error, locale);
-      toast.error(copy.refreshFailed, message);
+      reportHostError(copy.refreshFailed, message);
       setErrorMessage(message);
       return false;
     }
@@ -162,14 +184,20 @@ export function useOAuthLoginFlow(params: {
         const result = await direct.login();
         if (!oauthLoginFlowMountedRef.current) return;
         if (!result.ok) {
-          toast.error(copy.accountActionFailed(display.name), subscriptionResultMessage(result.message, copy.loginFailedRetry, locale));
+          reportHostError(
+            copy.accountActionFailed(display.name),
+            subscriptionResultMessage(result.message, copy.loginFailedRetry, locale),
+          );
         }
         await refresh();
         if (!oauthLoginFlowMountedRef.current) return;
         if (result.ok && params.onLoginSuccess) await params.onLoginSuccess();
       } catch (error) {
         if (!oauthLoginFlowMountedRef.current) return;
-        toast.error(copy.accountActionFailed(display.name), subscriptionActionErrorMessage(error, locale));
+        reportHostError(
+          copy.accountActionFailed(display.name),
+          subscriptionActionErrorMessage(error, locale),
+        );
       } finally {
         finishPendingAction();
       }
@@ -180,7 +208,7 @@ export function useOAuthLoginFlow(params: {
       if ('ok' in payload) {
         if (!oauthLoginFlowMountedRef.current) return;
         const failureMessage = payload.ok ? copy.retry : subscriptionResultMessage(payload.message, copy.startFailedRetry, locale);
-        toast.error(copy.startFailed, failureMessage);
+        reportHostError(copy.startFailed, failureMessage);
         setErrorMessage(failureMessage);
         return;
       }
@@ -196,7 +224,7 @@ export function useOAuthLoginFlow(params: {
       if (!oauthLoginFlowMountedRef.current) return;
       if (!opened.ok) {
         const message = subscriptionResultMessage(opened.message, copy.openFailedRetry, locale);
-        toast.error(copy.openFailed, message);
+        reportHostError(copy.openFailed, message);
         setErrorMessage(message);
         void bridge.cancelAuthorization(payload.authRequestId);
         authRequestIdRef.current = null;
@@ -206,7 +234,7 @@ export function useOAuthLoginFlow(params: {
       }
       const refreshed = await refresh();
       if (!oauthLoginFlowMountedRef.current || !refreshed) return;
-      // Loopback / polling -- wait for the backend to complete.
+      // Wait for the backend to finish polling the provider.
       const result = await bridge.completeAuthorization(payload.authRequestId);
       if (!oauthLoginFlowMountedRef.current) return;
       authRequestIdRef.current = null;
@@ -219,7 +247,7 @@ export function useOAuthLoginFlow(params: {
         if (params.onLoginSuccess) await params.onLoginSuccess();
       } else {
         const message = subscriptionResultMessage(result.message, copy.incompleteRetry, locale);
-        toast.error(copy.incomplete, message);
+        reportHostError(copy.incomplete, message);
         setErrorMessage(message);
       }
     } catch (error) {
@@ -230,7 +258,7 @@ export function useOAuthLoginFlow(params: {
       setAuthRequestId(null);
       setStateHint(null);
       const message = subscriptionActionErrorMessage(error, locale);
-      toast.error(copy.loginFailed, message);
+      reportHostError(copy.loginFailed, message);
       setErrorMessage(message);
     } finally {
       finishPendingAction();
@@ -261,16 +289,28 @@ export function useOAuthLoginFlow(params: {
         }
         await refresh();
       } else if (direct) {
-        toast.error(copy.accountActionFailed(display.name), subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale));
+        reportHostError(
+          copy.accountActionFailed(display.name),
+          subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale),
+        );
       } else {
-        toast.error(copy.logoutFailed, subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale));
+        reportHostError(
+          copy.logoutFailed,
+          subscriptionResultMessage(result.message, copy.logoutFailedRetry, locale),
+        );
       }
     } catch (error) {
       if (!oauthLoginFlowMountedRef.current) return;
       if (direct) {
-        toast.error(copy.accountActionFailed(display.name), subscriptionActionErrorMessage(error, locale));
+        reportHostError(
+          copy.accountActionFailed(display.name),
+          subscriptionActionErrorMessage(error, locale),
+        );
       } else {
-        toast.error(copy.logoutFailed, subscriptionActionErrorMessage(error, locale));
+        reportHostError(
+          copy.logoutFailed,
+          subscriptionActionErrorMessage(error, locale),
+        );
       }
     } finally {
       finishPendingAction();
@@ -284,12 +324,18 @@ export function useOAuthLoginFlow(params: {
       const result = await direct.refreshTokens();
       if (!oauthLoginFlowMountedRef.current) return;
       if (!result.ok) {
-        toast.error(copy.accountActionFailed(display.name), subscriptionResultMessage(result.message, copy.reverifyFailedRetry, locale));
+        reportHostError(
+          copy.accountActionFailed(display.name),
+          subscriptionResultMessage(result.message, copy.reverifyFailedRetry, locale),
+        );
       }
       await refresh();
     } catch (error) {
       if (!oauthLoginFlowMountedRef.current) return;
-      toast.error(copy.accountActionFailed(display.name), subscriptionActionErrorMessage(error, locale));
+      reportHostError(
+        copy.accountActionFailed(display.name),
+        subscriptionActionErrorMessage(error, locale),
+      );
     } finally {
       finishPendingAction();
     }

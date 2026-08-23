@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // PR-RUNTIME-CU — the model-facing `computer` tool + its dispatch seam.
 //
 // This is platform-agnostic: the actual host input/capture is done by an
@@ -1573,7 +1592,7 @@ export function buildComputerUseTools(deps: {
     },
     impl: async (
       args,
-      { abortSignal, sessionId, turnId, toolCallId },
+      { abortSignal, sessionId, turnId, toolCallId, emitProgress },
     ): Promise<ComputerToolResult> => {
       if (abortSignal.aborted) return { text: 'computer aborted before start' };
       const input = snapshotComputerParams(computerParams.parse(args));
@@ -1683,6 +1702,7 @@ export function buildComputerUseTools(deps: {
               : undefined;
             const done: Array<{ step: number; label: string; ok: boolean; detail?: string }> = [];
             let stopped: string | undefined;
+            emitProgress?.(0, input.steps.length);
             for (const [index, step] of input.steps.entries()) {
               // Every step after the first looks again first. The host is the
               // one holding the frame here, and it is a frame it captured a
@@ -1735,6 +1755,7 @@ export function buildComputerUseTools(deps: {
                   ok: false,
                   detail: 'no control with that label',
                 });
+                emitProgress?.(done.length, input.steps.length);
                 break;
               }
               if (matches.length > 1) {
@@ -1745,6 +1766,7 @@ export function buildComputerUseTools(deps: {
                   ok: false,
                   detail: `${matches.length} controls share that label; add a role`,
                 });
+                emitProgress?.(done.length, input.steps.length);
                 break;
               }
               const element = matches[0]!;
@@ -1808,9 +1830,11 @@ export function buildComputerUseTools(deps: {
                     ? stepResult.outcome.error
                     : 'capture_failed';
                 done.push({ step: index + 1, label: step.label, ok: false });
+                emitProgress?.(done.length, input.steps.length);
                 break;
               }
               done.push({ step: index + 1, label: step.label, ok: true });
+              emitProgress?.(done.length, input.steps.length);
             }
             // One observation at the end, whatever happened: the model needs a
             // current frame either to carry on or to work out what went wrong.

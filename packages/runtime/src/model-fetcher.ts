@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   PROVIDER_DEFAULTS,
   effectiveBaseUrl,
@@ -12,7 +31,7 @@ import {
   normalizeConnectionModelDiscoveryResult,
 } from '@maka/core/runtime-policy';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
-import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
+import { openAiCodexHeaders } from './subscription-auth.js';
 import {
   GITHUB_COPILOT_API_VERSION,
   GITHUB_COPILOT_COMPAT_HEADERS,
@@ -205,10 +224,7 @@ async function fetchProviderModelsStrict(
   switch (definition.protocol) {
     case 'anthropic': {
       const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/models'), {
-        headers: anthropicModelHeaders(
-          discovery.auth === 'claude-subscription' ? discovery.auth : undefined,
-          apiKey,
-        ),
+        headers: anthropicModelHeaders(apiKey),
         timeoutMs: MODEL_FETCH_TIMEOUT_MS,
       });
       if (!r.ok) {
@@ -219,7 +235,7 @@ async function fetchProviderModelsStrict(
       const models = providerObjectArray<RawProviderModel>(data.data, 'Anthropic models')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
-      return filterDiscoveredModels(models, discovery.filter, definition.fallbackModels);
+      return filterDiscoveredModels(models, discovery.filter);
     }
     case 'openai': {
       const r = await fetchForConnectionEffect(
@@ -257,7 +273,7 @@ async function fetchProviderModelsStrict(
         .filter((model) => discovery.filter !== 'language-models' || model.type === 'language')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
-      return filterDiscoveredModels(models, discovery.filter, definition.fallbackModels);
+      return filterDiscoveredModels(models, discovery.filter);
     }
     case 'google': {
       const r = await fetchForConnectionEffect(fetchFn, googleApiUrl(baseUrl, '/models', apiKey), {
@@ -613,17 +629,22 @@ async function fetchCohereModels(
   }
 }
 
+/**
+ * Provider-reported filters only. `tool-capable` and `language-models` keep
+ * what the provider itself said about each model; there is no filter that
+ * intersects a live response with the array this build shipped. Doing that
+ * made "the provider listed this" mean "this build has heard of it", so a
+ * model the account gained after release was dropped on arrival and could
+ * never be selected (#1584).
+ */
 function filterDiscoveredModels(
   models: ModelInfo[],
-  filter: 'fallback-models' | 'language-models' | 'tool-capable' | undefined,
-  fallbackModels: readonly string[],
+  filter: 'language-models' | 'tool-capable' | undefined,
 ): ModelInfo[] {
   if (filter === 'tool-capable') {
     return models.filter((model) => model.capabilities?.functionCalling === true);
   }
-  if (filter !== 'fallback-models') return models;
-  const supported = new Set(fallbackModels);
-  return models.filter((model) => supported.has(model.id));
+  return models;
 }
 
 function modelListUrl(
@@ -794,17 +815,7 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
   };
 }
 
-function anthropicModelHeaders(
-  auth: 'claude-subscription' | undefined,
-  apiKey: string,
-): Record<string, string> {
-  if (auth === 'claude-subscription') {
-    return {
-      ...claudeSubscriptionHeaders(),
-      Authorization: `Bearer ${apiKey}`,
-      'anthropic-version': '2023-06-01',
-    };
-  }
+function anthropicModelHeaders(apiKey: string): Record<string, string> {
   return {
     'x-api-key': apiKey,
     'anthropic-version': '2023-06-01',

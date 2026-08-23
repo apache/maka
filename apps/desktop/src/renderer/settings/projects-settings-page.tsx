@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppSettings, UpdateAppSettingsResult } from '@maka/core/settings';
 import type { ProjectRecord } from '@maka/core/project';
@@ -54,6 +73,7 @@ export function ProjectsSettingsPage(props: {
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
   onRetryRuntimeHost(): Promise<void>;
+  onRemoteHostAdded(profileId: string): void;
 }) {
   const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
@@ -69,6 +89,7 @@ export function ProjectsSettingsPage(props: {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false);
+  const directoryPickerTriggerRef = useRef<HTMLButtonElement>(null);
   const reloadGeneration = useRef(0);
 
   const reload = useCallback(async () => {
@@ -123,15 +144,41 @@ export function ProjectsSettingsPage(props: {
   const defaultResolves =
     defaultProjectId !== undefined &&
     listed.some((project) => project.id === defaultProjectId && project.available);
+  const diagnosticTarget = host ? { profileId: host.profileId } : undefined;
 
-  async function runRowAction(key: string, action: () => Promise<void>, failure: string) {
+  async function runRowAction(
+    key: string,
+    action: () => Promise<void>,
+    failure: string,
+  ) {
     const release = actionGuard.begin(key);
     if (!release) return;
     try {
-      await action();
-      await reload();
-    } catch (error) {
-      if (mountedRef.current) toast.error(failure, settingsActionErrorMessage(error, locale));
+      try {
+        await action();
+      } catch (error) {
+        if (mountedRef.current) {
+          toast.error(
+            failure,
+            settingsActionErrorMessage(error, locale),
+            undefined,
+            diagnosticTarget,
+          );
+        }
+        return;
+      }
+      try {
+        await reload();
+      } catch (error) {
+        if (mountedRef.current) {
+          toast.error(
+            failure,
+            settingsActionErrorMessage(error, locale),
+            undefined,
+            diagnosticTarget,
+          );
+        }
+      }
     } finally {
       release();
     }
@@ -144,7 +191,7 @@ export function ProjectsSettingsPage(props: {
   if (!host) {
     return (
       <SettingsPage as="section" aria-label={copy.section}>
-        <RuntimeHostProfilesSection />
+        <RuntimeHostProfilesSection onRemoteHostAdded={props.onRemoteHostAdded} />
         <Banner
           status={props.runtimeHostStatus === 'error' ? 'error' : 'warning'}
           title={props.runtimeHostStatus === 'loading'
@@ -162,10 +209,9 @@ export function ProjectsSettingsPage(props: {
       </SettingsPage>
     );
   }
-
   return (
     <SettingsPage as="section" aria-label={copy.section}>
-      <RuntimeHostProfilesSection />
+      <RuntimeHostProfilesSection onRemoteHostAdded={props.onRemoteHostAdded} />
       {/* No section title: the page header already says 项目, and repeating it
           straight above the rows is the same duplicate-heading noise we
           removed from the skills page. The rule this page exists for lives in
@@ -178,6 +224,7 @@ export function ProjectsSettingsPage(props: {
         }
         action={capabilities.chooseClientDirectory || capabilities.chooseHostDirectory ? (
           <Button
+            ref={directoryPickerTriggerRef}
             variant="secondary"
             size="sm"
             label={copy.addProject}
@@ -292,7 +339,20 @@ export function ProjectsSettingsPage(props: {
                                   // Removing the default leaves the preference
                                   // pointing at nothing; clear it in the same
                                   // action rather than leaving a dangling id.
-                                  if (isDefault) await setDefault(undefined);
+                                  if (isDefault) {
+                                    try {
+                                      await setDefault(undefined);
+                                    } catch (error) {
+                                      if (mountedRef.current) {
+                                        toast.error(
+                                          copy.setDefaultFailed,
+                                          settingsActionErrorMessage(error, locale),
+                                          undefined,
+                                          diagnosticTarget,
+                                        );
+                                      }
+                                    }
+                                  }
                                 },
                                 copy.actionFailed,
                               ),
@@ -390,6 +450,7 @@ export function ProjectsSettingsPage(props: {
       </SettingsSection>
       <RemoteProjectDirectoryDialog
         host={directoryPickerOpen ? host : undefined}
+        returnFocusTo={directoryPickerTriggerRef.current}
         onClose={() => setDirectoryPickerOpen(false)}
         onRegistered={() => {
           setDirectoryPickerOpen(false);

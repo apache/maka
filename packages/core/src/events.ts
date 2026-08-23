@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Backend → UI unified event stream.
  *
@@ -561,6 +580,39 @@ export interface ToolProgressEvent extends BaseEvent, ToolActivityIdentity {
   chunk: string | { kind: 'stdout' | 'stderr'; text: string };
 }
 
+export interface ToolStepProgress {
+  current: number;
+  total: number;
+}
+
+const TOOL_STEP_PROGRESS_PATTERN = /^steps:(\d+)\/(\d+)$/;
+
+export function encodeToolStepProgress(progress: ToolStepProgress): string | undefined {
+  return isValidToolStepProgress(progress)
+    ? `steps:${progress.current}/${progress.total}`
+    : undefined;
+}
+
+export function decodeToolStepProgress(
+  chunk: ToolProgressEvent['chunk'],
+): ToolStepProgress | undefined {
+  if (typeof chunk !== 'string') return undefined;
+  const match = TOOL_STEP_PROGRESS_PATTERN.exec(chunk);
+  if (!match) return undefined;
+  const progress = { current: Number(match[1]), total: Number(match[2]) };
+  return isValidToolStepProgress(progress) ? progress : undefined;
+}
+
+function isValidToolStepProgress(progress: ToolStepProgress): boolean {
+  return (
+    Number.isSafeInteger(progress.current) &&
+    Number.isSafeInteger(progress.total) &&
+    progress.current >= 0 &&
+    progress.total >= 1 &&
+    progress.current <= progress.total
+  );
+}
+
 /**
  * Live-only open-facts for a tool that is still running (e.g. agent_spawn child ready).
  * Not a durable transcript commit and not model-visible function_response.
@@ -1015,6 +1067,18 @@ export interface SteeringMessageEvent extends BaseEvent {
  */
 export type QueueEnqueueOutcome = { kind: 'queued' } | { kind: 'fallback' };
 
+export type MessageQueuePlacement = 'current_turn' | 'next_turn';
+export type MessageQueueEntryState = 'queued' | 'in_flight';
+export type FollowUpMode = 'queue' | 'steer';
+
+export interface MessageQueueEntryProjection {
+  entryId: string;
+  messageId: string;
+  content: MessageContent;
+  placement: MessageQueuePlacement;
+  state: MessageQueueEntryState;
+}
+
 /**
  * Authoritative queue snapshot pushed into the active turn's event stream
  * whenever either pending queue changes (enqueue, step-boundary consumption, or
@@ -1022,8 +1086,11 @@ export type QueueEnqueueOutcome = { kind: 'queued' } | { kind: 'fallback' };
  */
 export interface QueueUpdateEvent extends BaseEvent {
   type: 'queue_update';
+  queueRevision?: number;
   steering: string[];
   followup: string[];
+  steeringEntries?: MessageQueueEntryProjection[];
+  followupEntries?: MessageQueueEntryProjection[];
 }
 
 export type ProviderRetryReason =

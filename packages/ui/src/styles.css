@@ -1,5 +1,80 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* Maka product compositions shared across desktop renderer surfaces. Astryx
    owns generic component chrome; these selectors own only product semantics. */
+
+/* An Item row draws a focus ring for ITS OWN tab stop, never for a control
+   that already draws one.
+
+   Astryx's Item (and everything built on it — ListItem, and so every settings
+   row) applies `outline: 2px solid accent` at `:has(:focus-visible)`,
+   unconditionally. That is right for an interactive row: `onClick`/`href`
+   makes Item render an INVISIBLE `<button>`/`<a>` as a direct child, and the
+   row's ring is that button's only visible focus indicator. It is wrong for
+   every other row, where the focusable thing is a real control in the end slot
+   that rings itself — the row ring is then a second outline around a whole
+   label + description + control band.
+
+   Two ways this showed up, both measured in a real window:
+
+   1. Tabbing onto any settings-row control — a Selector trigger, a Switch, a
+      SegmentedControl, a ghost Button — lit the control AND the full row.
+   2. Opening the 默认模型 picker outlined the entire row and nothing else.
+      A Selector popup is a native `popover` element: the top layer moves where
+      it PAINTS, not where it sits in the DOM, so it is still a descendant of
+      the row. Focus goes to the popup's search input on open, `:has()` walks
+      up to the row, and the row rings — while the trigger, whose own wrapper
+      is a sibling of the popup, does not. Reported as "点开下拉框时外面整行
+      出现一个蓝色的框".
+
+   `:not(:has(> :is(a, button):focus-visible))` is what separates the two: the
+   only `<a>`/`<button>` that is a DIRECT child of an Item root is that
+   invisible tab stop, since start/end/label content each sit inside their own
+   span. So an interactive row keeps its ring when its own tab stop has focus,
+   and loses it only when focus is on a control that owns its indicator — which
+   is also the case for a row carrying both.
+
+   Product CSS is the last cascade layer (`components`, see
+   cascade-layers.css), so this wins over the compiled StyleX atom regardless
+   of that atom's `:not(#\#)` specificity padding.
+
+   Gated on `forced-colors: none` because the premise — "the control already
+   draws one" — is only true when the page controls its own colors. Under
+   Windows High Contrast the control's affordance is gone: forced-colors drops
+   `box-shadow` entirely and repaints every border in the same system color, so
+   an Astryx field looks identical resting and focused, and its trigger button
+   sets `outline: none` on itself (Selector.tsx: the wrapper is supposed to
+   carry the ring). The row outline is then the ONLY indicator that survives —
+   outline is the one focus property forced-colors preserves — and taking it
+   away leaves a keyboard user with no visible focus at all. So there, the
+   doubled ring is the lesser problem and the row keeps it.
+
+   Fixing it at the control instead was the other option and is not better:
+   it would mean product CSS reaching past the design system into the internals
+   of Selector, Switch, SegmentedControl and Button, one forced-colors rule per
+   control, to restore what each was supposed to draw itself. */
+@media (forced-colors: none) {
+  .astryx-item:has(:focus-visible):not(:has(> :is(a, button):focus-visible)) {
+    outline: none;
+  }
+}
 
 .maka-quote-chip-remove { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 0; color: var(--muted-foreground); background: transparent; transition: color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong); }
 .maka-quote-chip-remove:hover { color: var(--foreground); background: var(--state-hover-bg); }
@@ -193,16 +268,48 @@
    by owning every compact prose gap in one place:
 
      4px  list items   (same level)
-     8px  blocks       (paragraph, list, quote, table, code)
+     12px blocks       (paragraph, list, quote, table, code)
      16px section      (h3-h6, and either side of an `hr`)
      24px chapter      (h1, h2)
+
+   Why the block rung is 12px and not the 8px this table first shipped: 8px
+   restored the ORDER the table exists to fix, but never argued its value.
+   Body leading here is 20px, so 8px put two paragraphs 0.4 of a line apart —
+   a paragraph break narrower than the line break inside a paragraph, which is
+   the one distance a reader already knows. 12px is Astryx's own paragraph
+   rhythm at document density (spacingParagraphDefault, `--spacing-3`), so this
+   is the block step returning to the design system rather than a Maka number:
+   the transcript keeps its own HEADING scale and its own list rung, and only
+   stops being denser than the design system between two paragraphs. Measured
+   in Storybook (Product/Markdown → TranscriptTurn) rather than estimated.
+
+   It costs contrast at the top of the ladder — the section step falls from 2x
+   the block gap to 1.33x, so a heading now separates mainly on weight, size
+   and colour rather than on space. That is the price of leaving the heading
+   rungs alone, which is deliberate: heading spacing is what #1857 and this
+   table already decided, and this change is about paragraphs only.
+
+   What holds this: __tests__/markdown-rhythm-contract.test.tsx, and it pins
+   only the two ways this table can break SILENTLY — the runtime hooks these
+   selectors need still being emitted (an Astryx rename kills every rule at
+   once, and a selector that matches nothing never complains), and the
+   ListItem control padding still being neutralized (the mechanism that
+   inverted the ladder in the first place). The values below are NOT pinned,
+   deliberately: a wrong number is visible the moment anyone looks at a
+   transcript, so it does not need a test to be noticed — which is not true of
+   either of the other two.
 
    Three deliberate choices:
 
    - Only `[data-density="compact"]`. The document mode is not broken (its
      lists sit 10px apart against 12px paragraphs, which is already in order),
      and the Daily Review renders through it. Fixing only the broken half keeps
-     that surface out of the blast radius.
+     that surface out of the blast radius. Compact is not the transcript
+     alone, though — the desktop Artifact Preview asks for it too, so it takes
+     these gaps as well. For the block rung that is the point rather than a
+     cost: 12px IS the document rhythm, so the preview moves toward Astryx's
+     default rather than further from it. The heading rules below are the ones
+     where sharing is arguable, and they say so.
    - Scoped to Astryx's own `data-density`, not to a `.maka-turn` ancestor.
      `themeProps()` reflects every visual prop as a data attribute for exactly
      this ("consumers target stable data-attribute selectors"), so the rhythm
@@ -211,11 +318,11 @@
      old ancestor-scoped rules could not.
    - Top level only. `>` keeps every gap on the document's own children, so
      blocks nested inside a list item or a blockquote keep Astryx's own compact
-     4px instead of the 8px block gap. That tier difference is the point, not
-     an oversight: a list item should read as one unit, so two paragraphs
-     inside it belong closer together than two paragraphs in the transcript.
-     The ladder extends downward (4px nested < 8px block) rather than
-     inverting, which is the invariant that matters.
+     4px instead of the block gap. That tier difference is the point, not an
+     oversight: a list item should read as one unit, so two paragraphs inside
+     it belong closer together than two paragraphs in the transcript. The
+     ladder extends downward (4px nested < 12px block) rather than inverting,
+     which is the invariant that matters.
 
    A gap is a relation BETWEEN two blocks, so every gap rule is an adjacent
    sibling rule. Two consequences, both load-bearing:
@@ -232,7 +339,7 @@
      two blocks is the value declared here. */
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] {
   --md-gap-list: var(--space-1);
-  --md-gap-block: var(--space-2);
+  --md-gap-block: var(--space-3);
   --md-gap-section: var(--space-4);
   --md-gap-chapter: var(--space-6);
 }
@@ -290,14 +397,28 @@
    rather than spacing, and Astryx's density RFC (facebook/astryx#839) draws
    the line at "density shifts heights and spacing, not typography". Keying
    them on `data-density` is honest only while `compact` and "transcript" name
-   the same set — true today, since the transcript is the only caller asking
-   for compact and the Daily Review renders a document at the default. A
-   second compact surface would silently inherit transcript heading sizes and
-   dimmed deep headings. Giving typography its own surface attribute would
-   decouple them, but nothing needs it yet; the assumption is held by a test
-   instead (packages/ui/src/__tests__/markdown-rhythm-dom-contract.test.tsx,
-   "keeps compact markdown a transcript-only surface"), which fails the moment
-   the sets diverge and says what the choice is. */
+   the same set, and they DO NOT. Two surfaces ask for compact: the transcript
+   (chat-turn.tsx) and the desktop Artifact Preview
+   (apps/desktop/src/renderer/artifact-preview.tsx, since #2506), so the
+   preview pane has been rendering `.md` files at transcript heading sizes
+   with dimmed h4-h6 ever since. Nothing scopes it out: the
+   `[data-maka-contract="markdown"]` prefix is on every MarkdownBody, so
+   `density` is the whole key.
+
+   Left shared on purpose, not by omission. The preview is a narrow side pane
+   showing a document a few lines at a time, which is the shape the flattening
+   was designed for, and no report has called it wrong. Splitting the key —
+   moving these three rules onto a surface attribute the transcript sets and
+   the preview does not — is a visible change to the preview's typography and
+   belongs in its own change, argued and looked at on that surface rather
+   than smuggled in under a spacing token.
+
+   So: a THIRD compact surface inherits transcript typography silently, and
+   nothing catches it. That is unguarded, and it stays unguarded knowingly —
+   the caller set spans workspaces, so the only test that could hold it is a
+   library test grepping application source. One was written and it was wrong
+   on its first commit, passing while already false. A comment that is checked
+   when these rules are read beats an assertion that lies. */
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading:is([data-level="1"], [data-level="2"]) {
   font: var(--maka-text-heading-3);
 }

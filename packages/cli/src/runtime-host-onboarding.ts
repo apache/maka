@@ -1,4 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { deriveConnectionSlug } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
   readRuntimeHostConnectionCatalog,
@@ -56,7 +76,11 @@ export function createRuntimeHostOnboardingSurface(
 export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapshot): ModelChoice[] {
   const choices: ModelChoice[] = [];
   for (const connection of catalog.connections) {
-    if (!connection.enabled) continue;
+    // A retained retired connection stays enabled so its credential remains
+    // visible and deletable, but every send through it is refused — offering
+    // its models here would only let the user pick something that fails on
+    // selection.
+    if (!connection.enabled || isRetiredProvider(connection.providerType)) continue;
     const modelsById = new Map(connection.models.map((model) => [model.id, model]));
     const ids = new Set(connection.enabledModelIds);
     if (catalog.defaultTarget?.connectionId === connection.connectionId) {
@@ -68,6 +92,7 @@ export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapsho
         connectionName: connection.name,
         providerType: connection.providerType,
         model,
+        displayName: modelsById.get(model)?.displayName,
         isDefaultConnection: catalog.defaultTarget?.connectionId === connection.connectionId,
         contextWindow: modelsById.get(model)?.contextWindow,
       });

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { open, writeFile, mkdtemp, rm } from 'node:fs/promises';
@@ -25,7 +44,6 @@ import {
 
 const CONNECTION_SLUG = 'host-oauth-execution';
 const MODEL_ID = 'gpt-5';
-const CLAUDE_TOKEN_ENDPOINT = 'https://platform.claude.com/v1/oauth/token';
 const CODEX_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
 const FIXED_NOW = 1_785_600_000_000;
 
@@ -88,64 +106,6 @@ test('an active OAuth binding cannot use a credential generation replaced by the
   });
 });
 
-test('a rotated Claude token crosses canonical CAS into request auth and identity', async () => {
-  await withSeededOAuthCredential(
-    'claude-subscription',
-    expiredTokens('access-v1', 'account-v1'),
-    async (fixture) => {
-      const observed: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
-      let refreshCalls = 0;
-      const providerFetch: typeof fetch = async (url, init) => {
-        if (String(url) === CLAUDE_TOKEN_ENDPOINT) {
-          refreshCalls += 1;
-          return claudeRefreshResponse('access-v2', 'refresh-v2', 'account-v2');
-        }
-        observed.push({
-          headers: new Headers(init?.headers),
-          body: JSON.parse(String(init?.body)) as Record<string, unknown>,
-        });
-        return Response.json({ ok: true });
-      };
-      const binding = fixture.authority.bind({
-        providerType: 'claude-subscription',
-        connectionSlug: CONNECTION_SLUG,
-        material: fixture.material,
-        createRefreshTransport: () => testRefreshTransport(providerFetch),
-      });
-
-      const initialTokens = await binding.resolve();
-      const modelFetch = createHostOAuthModelFetch({
-        binding,
-        initialTokens,
-        connection: claudeConnection(),
-        sessionId: 'rotation-session',
-        modelId: 'claude-sonnet-4-5',
-        claudeDeviceId: 'b'.repeat(64),
-        fetchFn: providerFetch,
-      });
-      await modelFetch('https://api.anthropic.com/v1/messages', claudeRequest());
-
-      assert.equal(refreshCalls, 1);
-      assert.equal(observed[0]?.headers.get('authorization'), 'Bearer access-v2');
-      assert.deepEqual(claudeIdentity(observed[0]?.body), {
-        device_id: 'b'.repeat(64),
-        account_uuid: 'account-v2',
-        session_id: 'rotation-session',
-      });
-      const canonical = await readMaterial(fixture.stores);
-      assert.deepEqual(JSON.parse(canonical.secret), {
-        access_token: 'access-v2',
-        refresh_token: 'refresh-v2',
-        expires_at: FIXED_NOW + 3_600_000,
-        account_uuid: 'account-v2',
-      });
-      assert.equal(canonical.revision, fixture.material.revision + 2);
-      assert.equal((await binding.resolve()).access_token, initialTokens.access_token);
-      assert.equal(refreshCalls, 1);
-    },
-  );
-});
-
 test('request abort stops waiting for shared OAuth resolution without dispatching the model call', async () => {
   const pending = deferred<OAuthSubscriptionTokens>();
   const tokens = currentTokens(codexAccessToken('account-v1'));
@@ -168,7 +128,6 @@ test('request abort stops waiting for shared OAuth resolution without dispatchin
     },
     sessionId: 'abort-session',
     modelId: 'gpt-5.6-sol',
-    claudeDeviceId: 'unused',
     fetchFn: async () => {
       modelCalls += 1;
       return Response.json({ ok: true });
@@ -204,15 +163,15 @@ test('request abort stops waiting for shared OAuth resolution without dispatchin
 
 test('reconciles a published OAuth lease claim before the next demand', async () => {
   await withSeededOAuthCredential(
-    'claude-subscription',
+    'openai-codex',
     expiredTokens('claim-v1', 'account-v1'),
     async (fixture) => {
       let refreshCalls = 0;
-      const providerFetch = successfulClaudeRefresh(() => {
+      const providerFetch = successfulCodexRefresh(() => {
         refreshCalls += 1;
       });
       const binding = fixture.authority.bind({
-        providerType: 'claude-subscription',
+        providerType: 'openai-codex',
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -225,15 +184,15 @@ test('reconciles a published OAuth lease claim before the next demand', async ()
         });
         assert.equal(refreshCalls, 0);
         const secondBinding = fixture.authority.bind({
-          providerType: 'claude-subscription',
+          providerType: 'openai-codex',
           connectionSlug: CONNECTION_SLUG,
           material: await readMaterial(fixture.stores),
           createRefreshTransport: () => testRefreshTransport(providerFetch),
         });
         leaseNow += 30_001;
         const [first, second] = await Promise.all([binding.resolve(), secondBinding.resolve()]);
-        assert.equal(first.access_token, 'access-v2');
-        assert.equal(second.access_token, 'access-v2');
+        assert.equal(first.access_token, codexAccessToken('account-v2'));
+        assert.equal(second.access_token, codexAccessToken('account-v2'));
         assert.equal(refreshCalls, 1);
       } finally {
         nowMock.mock.restore();
@@ -244,15 +203,15 @@ test('reconciles a published OAuth lease claim before the next demand', async ()
 
 test('reconciles a published OAuth refresh finalization before the next demand', async () => {
   await withSeededOAuthCredential(
-    'claude-subscription',
+    'openai-codex',
     expiredTokens('finalize-v1', 'account-v1'),
     async (fixture) => {
       let refreshCalls = 0;
-      const providerFetch = successfulClaudeRefresh(() => {
+      const providerFetch = successfulCodexRefresh(() => {
         refreshCalls += 1;
       });
       const binding = fixture.authority.bind({
-        providerType: 'claude-subscription',
+        providerType: 'openai-codex',
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -261,7 +220,7 @@ test('reconciles a published OAuth refresh finalization before the next demand',
       await withPublishedSyncFailure(fixture.root, 4, async () => {
         await assert.rejects(() => binding.resolve(), isOAuthError('persistence_failed'));
       });
-      assert.equal((await binding.resolve()).access_token, 'access-v2');
+      assert.equal((await binding.resolve()).access_token, codexAccessToken('account-v2'));
       assert.equal(refreshCalls, 1);
     },
   );
@@ -269,19 +228,23 @@ test('reconciles a published OAuth refresh finalization before the next demand',
 
 test('reconciles a published OAuth lease release before retrying refresh', async () => {
   await withSeededOAuthCredential(
-    'claude-subscription',
+    'openai-codex',
     expiredTokens('release-v1', 'account-v1'),
     async (fixture) => {
       let refreshCalls = 0;
       const providerFetch: typeof fetch = async (url) => {
-        assert.equal(String(url), CLAUDE_TOKEN_ENDPOINT);
+        assert.equal(String(url), CODEX_TOKEN_ENDPOINT);
         refreshCalls += 1;
         return refreshCalls === 1
           ? Response.json({ error: 'temporary failure' }, { status: 503 })
-          : claudeRefreshResponse('access-v2', 'refresh-v2', 'account-v2');
+          : Response.json({
+              access_token: codexAccessToken('account-v2'),
+              refresh_token: 'refresh-v2',
+              expires_in: 3_600,
+            });
       };
       const binding = fixture.authority.bind({
-        providerType: 'claude-subscription',
+        providerType: 'openai-codex',
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -290,66 +253,10 @@ test('reconciles a published OAuth lease release before retrying refresh', async
       await withPublishedSyncFailure(fixture.root, 4, async () => {
         await assert.rejects(() => binding.resolve(), isOAuthError('persistence_failed'));
       });
-      assert.equal((await binding.resolve()).access_token, 'access-v2');
+      assert.equal((await binding.resolve()).access_token, codexAccessToken('account-v2'));
       assert.equal(refreshCalls, 2);
     },
   );
-});
-
-test('each Claude request uses one current token snapshot for auth and cloak identity', async () => {
-  const observed: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
-  let tokens = currentTokens('access-v1', 'account-v1');
-  const binding: HostOAuthExecutionBinding = {
-    providerType: 'claude-subscription',
-    connectionSlug: CONNECTION_SLUG,
-    resolve: async () => tokens,
-  };
-  const modelFetch = createHostOAuthModelFetch({
-    binding,
-    initialTokens: tokens,
-    connection: claudeConnection(),
-    sessionId: 'session-v1',
-    modelId: 'claude-sonnet-4-5',
-    claudeDeviceId: 'a'.repeat(64),
-    fetchFn: async (_url, init) => {
-      observed.push({
-        headers: new Headers(init?.headers),
-        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
-      });
-      return Response.json({ ok: true });
-    },
-  });
-  const request = {
-    method: 'POST',
-    headers: {
-      authorization: 'Bearer stale-sdk-token',
-      'x-api-key': 'stale-sdk-token',
-    },
-    body: JSON.stringify({
-      stream: false,
-      system: 'Use the Host prompt.',
-      messages: [{ role: 'user', content: 'hello' }],
-    }),
-  } satisfies RequestInit;
-
-  await modelFetch('https://api.anthropic.com/v1/messages', request);
-  tokens = currentTokens('access-v2', 'account-v2');
-  await modelFetch('https://api.anthropic.com/v1/messages', request);
-
-  assert.equal(observed.length, 2);
-  assert.equal(observed[0]?.headers.get('authorization'), 'Bearer access-v1');
-  assert.equal(observed[1]?.headers.get('authorization'), 'Bearer access-v2');
-  for (const item of observed) assert.equal(item.headers.get('x-api-key'), null);
-  assert.deepEqual(claudeIdentity(observed[0]?.body), {
-    device_id: 'a'.repeat(64),
-    account_uuid: 'account-v1',
-    session_id: 'session-v1',
-  });
-  assert.deepEqual(claudeIdentity(observed[1]?.body), {
-    device_id: 'a'.repeat(64),
-    account_uuid: 'account-v2',
-    session_id: 'session-v1',
-  });
 });
 
 test('Codex request auth and account identity advance from the same token snapshot', async () => {
@@ -370,7 +277,6 @@ test('Codex request auth and account identity advance from the same token snapsh
     },
     sessionId: 'codex-session',
     modelId: 'gpt-5.6-sol',
-    claudeDeviceId: 'unused',
     fetchFn: async (_url, init) => {
       observed.push(new Headers(init?.headers));
       return Response.json({ ok: true });
@@ -433,7 +339,6 @@ test('a Codex 401 force-refreshes canonical credentials and replays once', async
       },
       sessionId: 'codex-401-session',
       modelId: 'gpt-5.6-sol',
-      claudeDeviceId: 'unused',
       fetchFn: providerFetch,
     });
 
@@ -550,7 +455,7 @@ async function withCopilotCredential(
 }
 
 async function withSeededOAuthCredential(
-  providerType: 'claude-subscription' | 'openai-codex',
+  providerType: 'openai-codex' | 'openai-codex',
   tokens: OAuthSubscriptionTokens,
   run: (fixture: CopilotCredentialFixture) => Promise<void>,
 ): Promise<void> {
@@ -648,7 +553,7 @@ function currentTokens(accessToken: string, accountUuid?: string): OAuthSubscrip
 function claudeConnection(): RuntimeExecutionConnection {
   return {
     slug: CONNECTION_SLUG,
-    providerType: 'claude-subscription',
+    providerType: 'openai-codex',
     defaultModel: 'claude-sonnet-4-5',
   };
 }
@@ -668,24 +573,15 @@ function claudeRequest(): RequestInit {
   };
 }
 
-function claudeRefreshResponse(
-  accessToken: string,
-  refreshToken: string,
-  accountUuid: string,
-): Response {
-  return Response.json({
-    access_token: accessToken,
-    refresh_token: refreshToken,
-    expires_in: 3_600,
-    account: { uuid: accountUuid },
-  });
-}
-
-function successfulClaudeRefresh(onRefresh: () => void): typeof fetch {
+function successfulCodexRefresh(onRefresh: () => void): typeof fetch {
   return async (url) => {
-    assert.equal(String(url), CLAUDE_TOKEN_ENDPOINT);
+    assert.equal(String(url), CODEX_TOKEN_ENDPOINT);
     onRefresh();
-    return claudeRefreshResponse('access-v2', 'refresh-v2', 'account-v2');
+    return Response.json({
+      access_token: codexAccessToken('account-v2'),
+      refresh_token: 'refresh-v2',
+      expires_in: 3_600,
+    });
   };
 }
 

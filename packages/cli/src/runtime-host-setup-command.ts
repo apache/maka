@@ -1,24 +1,44 @@
-import { mkdir, readFile, realpath } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { join } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { connectRemoteRuntimeHost } from '@maka/runtime-host/client';
 import {
-  connectRemoteRuntimeHost,
   encodeRuntimeHostSetupFrame,
   RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
-} from '@maka/runtime-host/client';
+} from '@maka/runtime-host/operator';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
-import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
+  prepareRuntimeHostAccessCredential,
   replaceRuntimeHostAccessCredential,
+  revokeRuntimeHostAccessCredential,
   type RuntimeHostAccessPreset,
 } from './runtime-host-access-command.js';
 import {
+  isRuntimeHostDevelopmentPackageVersion,
   prepareRuntimeHostManagedPackageDeployment,
   RuntimeHostManagedDeploymentError,
 } from './runtime-host-managed-deployment.js';
@@ -27,7 +47,9 @@ import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
+  withRuntimeHostManagedServiceLifecycleLock,
   type RuntimeHostManagedServiceResult,
+  type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
 
@@ -41,17 +63,21 @@ export interface RuntimeHostSetupCliOptions {
   readonly version: string;
   readonly principalId: string;
   readonly preset: RuntimeHostAccessPreset;
+  readonly deferPairingCommit?: boolean;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocketPort?: number;
   readonly websocketPath?: string;
+  readonly expectedTarget?: RuntimeHostManagedServiceTarget;
 }
 
 interface RuntimeHostSetupDeps {
   readonly manageService: typeof manageRuntimeHostService;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
+  readonly prepareCredential: typeof prepareRuntimeHostAccessCredential;
   readonly replaceCredential: typeof replaceRuntimeHostAccessCredential;
+  readonly revokeCredential: typeof revokeRuntimeHostAccessCredential;
   readonly verifyCredential: typeof verifyRuntimeHostSetupCredential;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
@@ -76,7 +102,9 @@ export async function runRuntimeHostSetupCli(
     manageService: manageRuntimeHostService,
     createBackend: createPlatformRuntimeHostServiceBackend,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
+    prepareCredential: prepareRuntimeHostAccessCredential,
     replaceCredential: replaceRuntimeHostAccessCredential,
+    revokeCredential: revokeRuntimeHostAccessCredential,
     verifyCredential: verifyRuntimeHostSetupCredential,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
@@ -84,9 +112,8 @@ export async function runRuntimeHostSetupCli(
   };
   const emit = createEmitter(options.json, deps);
   try {
-    await mkdir(options.clientDataRoot, { recursive: true, mode: 0o700 });
-    await withFileUpdateLock(
-      join(options.clientDataRoot, 'runtime-host-setup'),
+    await withRuntimeHostManagedServiceLifecycleLock(
+      options.clientDataRoot,
       () => runRuntimeHostSetupLocked(options, deps, emit),
       SETUP_LOCK_TIMEOUT_MS,
     );
@@ -111,6 +138,7 @@ async function runRuntimeHostSetupLocked(
     defaultRootPath: options.defaultRootPath,
     nodePath: process.execPath,
     cliPath: join(options.sourcePackageRoot, 'dist', 'cli.js'),
+    ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
   } as const;
   const status = await deps.manageService({ ...common, action: 'status' }, backend);
   await assertCompatibleExistingVersion(status, options.version);
@@ -118,6 +146,7 @@ async function runRuntimeHostSetupLocked(
   emit({ kind: 'progress', phase: 'installing_package' });
   const deployment = await deps.prepareDeployment({
     serviceId,
+    clientDataRoot: options.clientDataRoot,
     sourcePackageRoot: options.sourcePackageRoot,
     version: options.version,
   });
@@ -130,7 +159,6 @@ async function runRuntimeHostSetupLocked(
         ...common,
         action: 'install',
         cliPath: deployment.cliPath,
-        managedDeploymentRoot: deployment.root,
         ...(options.rootPath ? { rootPath: options.rootPath } : {}),
         ...(options.projectDirectoryRoots
           ? { projectDirectoryRoots: options.projectDirectoryRoots }
@@ -151,11 +179,15 @@ async function runRuntimeHostSetupLocked(
       'Managed Runtime Host service did not become ready',
     );
   }
+  await deployment.commit();
 
   emit({ kind: 'progress', phase: 'pairing_client' });
-  let paired: Awaited<ReturnType<typeof replaceRuntimeHostAccessCredential>>;
+  let paired: Awaited<ReturnType<typeof prepareRuntimeHostAccessCredential>>;
   try {
-    paired = await deps.replaceCredential({
+    const pairCredential = options.deferPairingCommit
+      ? deps.prepareCredential
+      : deps.replaceCredential;
+    paired = await pairCredential({
       rootPath: config.rootPath,
       principalKind: 'remote_owner',
       principalId: options.principalId,
@@ -174,43 +206,66 @@ async function runRuntimeHostSetupLocked(
 
   const endpoint = websocketUrl(config.websocket);
   emit({ kind: 'progress', phase: 'verifying_connection' });
-  await deps.verifyCredential({
-    endpoint,
-    rootId: paired.rootId,
-    credential: paired.credential,
-  });
-  emit({
-    kind: 'complete',
-    version: deployment.version,
-    rootId: paired.rootId,
-    endpoint,
-    credentialId: paired.credentialId,
-    credential: paired.credential,
-  });
+  try {
+    await deps.verifyCredential({
+      endpoint,
+      rootId: paired.rootId,
+      credential: paired.credential,
+    });
+    emit({
+      kind: 'complete',
+      version: deployment.version,
+      serviceId,
+      operatorPath: deployment.operatorPath,
+      rootPath: config.rootPath,
+      rootId: paired.rootId,
+      endpoint,
+      credentialId: paired.credentialId,
+      credential: paired.credential,
+    });
+  } catch (error) {
+    if (options.deferPairingCommit) {
+      try {
+        await deps.revokeCredential({
+          rootPath: config.rootPath,
+          credentialId: paired.credentialId,
+        });
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          'Runtime Host pairing failed and its candidate credential could not be revoked',
+        );
+      }
+    }
+    throw error;
+  }
 }
 
 async function assertCompatibleExistingVersion(
   status: RuntimeHostManagedServiceResult,
   version: string,
 ): Promise<void> {
-  const cliPath = status.service.config?.launch.cliPath;
-  if (!cliPath) return;
-  let existingVersion: unknown;
-  try {
-    const packageRoot = dirname(dirname(await realpath(cliPath)));
-    existingVersion = (
-      JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as {
-        version?: unknown;
-      }
-    ).version;
-  } catch (error) {
+  if (!status.service.config) {
+    if (!status.service.installed) return;
+    throw new RuntimeHostSetupError(
+      'existing_installation_unknown',
+      'The installed Runtime Host configuration is unavailable; repair it before setup',
+    );
+  }
+  const existingVersion = status.service.installedVersion;
+  if (!existingVersion) {
     throw new RuntimeHostSetupError(
       'existing_installation_unknown',
       'The installed Runtime Host version could not be identified; repair it before setup',
-      { cause: error },
     );
   }
-  if (existingVersion !== version) {
+  if (
+    existingVersion !== version &&
+    !(
+      isRuntimeHostDevelopmentPackageVersion(existingVersion) &&
+      isRuntimeHostDevelopmentPackageVersion(version)
+    )
+  ) {
     throw new RuntimeHostSetupError(
       'version_change_requires_update',
       `Runtime Host ${String(existingVersion)} is already installed; changing to ${version} requires the update workflow`,

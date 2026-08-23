@@ -1,11 +1,28 @@
-import { createHash } from 'node:crypto';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   decodeModelCallAttempt,
   MODEL_CALL_ATTEMPT_EVENT_TYPE,
   type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { SessionTrace } from '@maka/core/session-trace';
 import { inspectAgentRunDocument, inspectSessionDocument } from '@maka/runtime/execution-inspect';
 import { projectSessionTrace } from '@maka/runtime/session-trace-projection';
 import {
@@ -42,6 +59,7 @@ interface InspectStores {
     | 'readRun'
     | 'findRunsById'
     | 'listSessionRunsBounded'
+    | 'listSessionRunsPage'
     | 'readEventsBounded'
     | 'readEventsByTypeBounded'
     | 'readRootTurnAdmission'
@@ -129,7 +147,9 @@ export class HostExecutionInspectCoordinator {
             ? 'Session inspection exceeds the live Host result limit; inspect one AgentRun instead'
             : input.kind === 'turn_trace'
               ? 'Turn trace exceeds the live Host result limit'
-              : 'AgentRun inspection exceeds the live Host result limit',
+              : input.kind === 'session_trace_start' || input.kind === 'session_trace_continue'
+                ? 'One Session trace page exceeds the live Host result limit'
+                : 'AgentRun inspection exceeds the live Host result limit',
         );
       }
       return { ok: true, result };
@@ -232,24 +252,86 @@ export class HostExecutionInspectCoordinator {
       { kind: 'session_trace_start' | 'session_trace_continue' }
     >,
   ): Promise<ExecutionInspectQueryResult | undefined> {
-    const trace = await this.#readSessionTrace(input.sessionId);
-    if (!trace) return undefined;
-    const revision = traceRevision(trace);
-    if (input.kind === 'session_trace_continue' && input.revision !== revision) {
-      return {
-        kind: 'session_trace_revision_changed',
-        expectedRevision: input.revision,
-        actualRevision: revision,
+    try {
+      await this.#stores.sessionStore.readHeaderSnapshot(input.sessionId);
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+    const before =
+      input.kind === 'session_trace_continue' ? decodeTraceCursor(input.cursor) : undefined;
+    const runPage = await this.#stores.agentRunStore.listSessionRunsPage(input.sessionId, {
+      ...(before ? { before } : {}),
+      limit: EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS,
+    });
+    const budget = new InspectEvidenceBudget('Session');
+    const runtimeEvents: RuntimeEvent[] = [];
+    const modelCallAttempts: ModelCallAttempt[] = [];
+    let unreadableRecords = 0;
+    let includedRuns = 0;
+    let acceptedPage: ExecutionInspectQueryResult | undefined;
+    for (const run of runPage.runs) {
+      let evidence: {
+        readonly runtimeEvents: RuntimeEvent[];
+        readonly modelCallAttempts: ModelCallAttempt[];
+        readonly unreadableRecords: number;
       };
+      try {
+        evidence = await this.#readRunTraceEvidence(input.sessionId, run.runId, budget);
+      } catch (error) {
+        if (!isInspectQueryTooLargeError(error)) throw error;
+        if (includedRuns > 0) break;
+        return oversizedTracePage(
+          input.sessionId,
+          tracePageCursorAfter(runPage.runs, 1, runPage.nextCursor),
+        );
+      }
+      const candidateRuntimeEvents = [...runtimeEvents, ...evidence.runtimeEvents];
+      const candidateModelCallAttempts = [...modelCallAttempts, ...evidence.modelCallAttempts];
+      const candidateUnreadableRecords = unreadableRecords + evidence.unreadableRecords;
+      const candidateTrace = projectSessionTrace({
+        sessionId: input.sessionId,
+        runtimeEvents: candidateRuntimeEvents,
+        modelCallAttempts: candidateModelCallAttempts,
+        ...(candidateUnreadableRecords > 0
+          ? { unreadableRecords: candidateUnreadableRecords }
+          : {}),
+      });
+      const candidateRunCount = includedRuns + 1;
+      const candidatePage: ExecutionInspectQueryResult = {
+        kind: 'session_trace_page',
+        ...candidateTrace,
+        nextCursor: tracePageCursorAfter(runPage.runs, candidateRunCount, runPage.nextCursor),
+      };
+      if (
+        candidateTrace.turns.length > EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS ||
+        encodedBytes(candidatePage) > EXECUTION_INSPECT_RESULT_MAX_BYTES
+      ) {
+        if (includedRuns === 0) {
+          return oversizedTracePage(
+            input.sessionId,
+            tracePageCursorAfter(runPage.runs, 1, runPage.nextCursor),
+          );
+        }
+        break;
+      }
+      runtimeEvents.push(...evidence.runtimeEvents);
+      modelCallAttempts.push(...evidence.modelCallAttempts);
+      unreadableRecords = candidateUnreadableRecords;
+      includedRuns = candidateRunCount;
+      acceptedPage = candidatePage;
     }
-    const offset = input.kind === 'session_trace_start' ? 0 : input.offset;
-    if (
-      offset > trace.turns.length ||
-      (input.kind === 'session_trace_continue' && (offset === 0 || offset >= trace.turns.length))
-    ) {
-      throw new InspectQueryInvalidError('Session trace continuation is out of range');
-    }
-    return createTracePage(trace, revision, offset);
+    return (
+      acceptedPage ?? {
+        kind: 'session_trace_page',
+        ...projectSessionTrace({
+          sessionId: input.sessionId,
+          runtimeEvents: [],
+          modelCallAttempts: [],
+        }),
+        nextCursor: tracePageCursorAfter(runPage.runs, 0, runPage.nextCursor),
+      }
+    );
   }
 
   async #inspectTurnTrace(
@@ -289,38 +371,6 @@ export class HostExecutionInspectCoordinator {
     return turn ? { kind: 'turn_trace', sessionId, turn } : undefined;
   }
 
-  async #readSessionTrace(sessionId: string): Promise<SessionTrace | undefined> {
-    try {
-      await this.#stores.sessionStore.readHeaderSnapshot(sessionId);
-    } catch (error) {
-      if (isMissing(error)) return undefined;
-      throw error;
-    }
-    const runPage = await this.#stores.agentRunStore.listSessionRunsBounded(
-      sessionId,
-      EXECUTION_INSPECT_SESSION_MAX_RUNS,
-    );
-    if (runPage.truncated) {
-      throw new InspectQueryTooLargeError('Session trace exceeds the live Host run limit');
-    }
-    const budget = new InspectEvidenceBudget('Session');
-    const runtimeEvents: RuntimeEvent[] = [];
-    const modelCallAttempts: ModelCallAttempt[] = [];
-    let unreadableRecords = 0;
-    for (const run of runPage.runs) {
-      const evidence = await this.#readRunTraceEvidence(sessionId, run.runId, budget);
-      runtimeEvents.push(...evidence.runtimeEvents);
-      modelCallAttempts.push(...evidence.modelCallAttempts);
-      unreadableRecords += evidence.unreadableRecords;
-    }
-    return projectSessionTrace({
-      sessionId,
-      runtimeEvents,
-      modelCallAttempts,
-      ...(unreadableRecords > 0 ? { unreadableRecords } : {}),
-    });
-  }
-
   async #readRunTraceEvidence(
     sessionId: string,
     runId: string,
@@ -347,6 +397,10 @@ export class HostExecutionInspectCoordinator {
       });
     const modelCallAttempts: ModelCallAttempt[] = [];
     for (const event of runEvents) {
+      if (event.type === 'event_corrupt') {
+        unreadableRecords += 1;
+        continue;
+      }
       if (event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE) continue;
       try {
         modelCallAttempts.push(decodeModelCallAttempt(event.data));
@@ -419,56 +473,57 @@ function encodedBytes(result: ExecutionInspectQueryResult): number {
   return Buffer.byteLength(JSON.stringify(result), 'utf8');
 }
 
-function createTracePage(
-  trace: SessionTrace,
-  revision: `sha256:${string}`,
-  offset: number,
+function oversizedTracePage(
+  sessionId: string,
+  nextCursor: string | null,
 ): ExecutionInspectQueryResult {
-  const turns = [];
-  for (
-    let index = offset;
-    index < trace.turns.length && turns.length < EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS;
-    index += 1
-  ) {
-    const candidateTurns = [...turns, trace.turns[index]!];
-    const nextOffset = offset + candidateTurns.length;
-    const candidate: ExecutionInspectQueryResult = {
-      kind: 'session_trace_page',
-      schemaVersion: trace.schemaVersion,
-      sessionId: trace.sessionId,
-      revision,
-      offset,
-      turns: candidateTurns,
-      totals: trace.totals,
-      coverage: trace.coverage,
-      nextOffset: nextOffset < trace.turns.length ? nextOffset : null,
-    };
-    if (encodedBytes(candidate) > EXECUTION_INSPECT_RESULT_MAX_BYTES) {
-      if (turns.length === 0) {
-        throw new InspectQueryTooLargeError(
-          'One Session trace turn exceeds the live Host result limit',
-        );
-      }
-      break;
-    }
-    turns.push(trace.turns[index]!);
-  }
-  const nextOffset = offset + turns.length;
   return {
     kind: 'session_trace_page',
-    schemaVersion: trace.schemaVersion,
-    sessionId: trace.sessionId,
-    revision,
-    offset,
-    turns,
-    totals: trace.totals,
-    coverage: trace.coverage,
-    nextOffset: nextOffset < trace.turns.length ? nextOffset : null,
+    ...projectSessionTrace({
+      sessionId,
+      runtimeEvents: [],
+      modelCallAttempts: [],
+      oversizedRuns: 1,
+    }),
+    nextCursor,
   };
 }
 
-function traceRevision(trace: SessionTrace): `sha256:${string}` {
-  return `sha256:${createHash('sha256').update(JSON.stringify(trace)).digest('hex')}`;
+function tracePageCursorAfter(
+  runs: readonly { readonly runId: string; readonly createdAt: number }[],
+  includedRuns: number,
+  sourceNextCursor: { readonly createdAt: number; readonly runId: string } | null,
+): string | null {
+  const last = runs[includedRuns - 1];
+  if (!last) return null;
+  const hasMore = includedRuns < runs.length || sourceNextCursor !== null;
+  return hasMore ? encodeTraceCursor({ createdAt: last.createdAt, runId: last.runId }) : null;
+}
+
+function encodeTraceCursor(cursor: { readonly createdAt: number; readonly runId: string }): string {
+  return Buffer.from(JSON.stringify({ v: 1, ...cursor }), 'utf8').toString('base64url');
+}
+
+function decodeTraceCursor(cursor: string): { readonly createdAt: number; readonly runId: string } {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<
+      string,
+      unknown
+    >;
+    if (
+      value.v !== 1 ||
+      typeof value.createdAt !== 'number' ||
+      !Number.isFinite(value.createdAt) ||
+      typeof value.runId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(value.runId) ||
+      Object.keys(value).length !== 3
+    ) {
+      throw new Error('invalid cursor');
+    }
+    return { createdAt: value.createdAt, runId: value.runId };
+  } catch {
+    throw new InspectQueryInvalidError('Session trace continuation cursor is invalid');
+  }
 }
 
 function compareCandidates(

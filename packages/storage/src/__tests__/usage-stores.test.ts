@@ -1,8 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { MODEL_CALL_ATTEMPT_SCHEMA_VERSION } from '@maka/core/model-call-attempt';
 import {
   PricingCommitUnknownError,
   PricingRevisionConflictError,
@@ -31,6 +51,7 @@ import {
   openInteractiveUsageStoresForRead,
   openInteractiveUsageStoresForWrite,
 } from '../usage-stores.js';
+import { acquireOperationalStateDatabase } from '../operational-state-store.js';
 
 describe('InteractiveUsageStores', () => {
   test('classifies facade failures without exposing concrete errors to callers', () => {
@@ -124,6 +145,52 @@ describe('InteractiveUsageStores', () => {
       try {
         assert.deepEqual(await stores.pricing.snapshot(), { revision: 0, overrides: [] });
       } finally {
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
+  test('publishes the owning Session after each durable model-usage write', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const changed: string[] = [];
+      const unsubscribe = stores.subscribeSessionUsageChanges((sessionId) =>
+        changed.push(sessionId),
+      );
+      try {
+        await stores.telemetry.recordLlmCall(llmRecord({ sessionId: 'session-legacy' }));
+        appendModelCallAuthorityEvent(root, modelCallAttempt('session-canonical'));
+        await stores.modelCalls.catchUpModelCallProjection({ sessionId: 'session-canonical' });
+        assert.deepEqual(changed, ['session-legacy', 'session-canonical']);
+      } finally {
+        unsubscribe();
+        await stores.close();
+        await owner.close();
+      }
+    });
+  });
+
+  test('does not republish idempotent model-usage mutations', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const changed: string[] = [];
+      const unsubscribe = stores.subscribeSessionUsageChanges((sessionId) =>
+        changed.push(sessionId),
+      );
+      try {
+        const record = modelCallAttempt('session-idempotent');
+        appendModelCallAuthorityEvent(root, record);
+        await stores.modelCalls.catchUpModelCallProjection({ sessionId: 'session-idempotent' });
+        await stores.modelCalls.catchUpModelCallProjection({ sessionId: 'session-idempotent' });
+
+        assert.deepEqual(changed, ['session-idempotent']);
+      } finally {
+        unsubscribe();
         await stores.close();
         await owner.close();
       }
@@ -267,6 +334,87 @@ describe('InteractiveUsageStores', () => {
     });
   });
 
+  test('legacy summary clamps each cache reading to its own input', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          id: 'malformed-cache',
+          inputTokens: 100,
+          cacheHitInputTokens: 200,
+          cachedInputTokens: 200,
+        }),
+      );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({ id: 'cache-miss', inputTokens: 100, cacheHitInputTokens: 0 }),
+      );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          id: 'impossible-cache-hit',
+          inputTokens: 0,
+          cacheHitInputTokens: 1,
+          cachedInputTokens: 1,
+          cacheMissInputTokens: 0,
+        }),
+      );
+
+      const summary = await stores.telemetry.summary({ range: 'all' });
+      assert.equal(summary.totalTokens.input, 200);
+      assert.equal(summary.totalTokens.cacheRead, 100);
+      assert.equal(summary.cacheHitRequests, 1);
+
+      await stores.close();
+      await owner.close();
+    });
+  });
+
+  test('legacy usage buckets clamp each cache reading to its own input', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordLlmCall(
+        llmRecord({
+          inputTokens: 100,
+          cacheHitInputTokens: 200,
+          cachedInputTokens: 200,
+        }),
+      );
+
+      const buckets = await stores.telemetry.buckets({ range: 'all' }, 'model');
+      assert.equal(buckets[0]?.cacheReadTokens, 100);
+
+      await stores.close();
+      await owner.close();
+    });
+  });
+
+  test('legacy summary reads only the requested Session', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordLlmCall(
+        llmRecord({ id: 'session-a-call', sessionId: 'session-a', costUsd: 1 }),
+      );
+      await stores.telemetry.recordLlmCall(
+        llmRecord({ id: 'session-b-call', sessionId: 'session-b', costUsd: 9 }),
+      );
+
+      const summary = await stores.telemetry.summary({
+        range: 'all',
+        sessionId: 'session-a',
+      });
+      assert.equal(summary.totalRequests, 1);
+      assert.equal(summary.totalCostUsd, 1);
+
+      await stores.close();
+      await owner.close();
+    });
+  });
+
   test('every facade read observes lease revocation', async () => {
     await withInteractiveRoot(async ({ capability }) => {
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -365,4 +513,74 @@ function toolRecord() {
       ReturnType<typeof openInteractiveUsageStoresForWrite>
     >['telemetry']['recordToolInvocation']
   >[0];
+}
+
+function modelCallAttempt(sessionId: string) {
+  return {
+    schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+    logicalCallId: 'call-1',
+    attemptId: 'attempt-1',
+    traceId: 'trace-1',
+    sessionId,
+    runId: 'run-1',
+    turnId: 'turn-1',
+    step: 0,
+    attempt: 0,
+    callKind: 'main' as const,
+    providerId: 'openai',
+    modelId: 'gpt-5',
+    startedAt: 1,
+    completedAt: 2,
+    latencyMs: 1,
+    status: 'completed' as const,
+    usageBasis: 'reported' as const,
+    inputTokens: 1,
+    outputTokens: 1,
+    costBasis: 'priced' as const,
+    costUsd: 0.001,
+  };
+}
+
+function appendModelCallAuthorityEvent(
+  root: string,
+  value: ReturnType<typeof modelCallAttempt>,
+): void {
+  const lease = acquireOperationalStateDatabase(root);
+  try {
+    lease.transaction('write', () => {
+      lease.database
+        .prepare(`
+          INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
+          VALUES (?, ?, 0, '{}')
+        `)
+        .run(value.sessionId, value.runId);
+      lease.database
+        .prepare(`
+          INSERT INTO core_agent_run_events(
+            session_id, run_id, sequence, event_id, event_type, event_ts, record_json
+          ) VALUES (?, ?, 0, 'model-call-1', 'model_call_attempt_recorded', 0, ?)
+        `)
+        .run(
+          value.sessionId,
+          value.runId,
+          JSON.stringify({
+            id: 'model-call-1',
+            type: 'model_call_attempt_recorded',
+            ts: 0,
+            sessionId: value.sessionId,
+            runId: value.runId,
+            turnId: value.turnId,
+            data: value,
+          }),
+        );
+      lease.database
+        .prepare(`
+          UPDATE core_agent_runs SET latest_model_call_sequence = 0
+          WHERE session_id = ? AND run_id = ?
+        `)
+        .run(value.sessionId, value.runId);
+    });
+  } finally {
+    lease.close();
+  }
 }

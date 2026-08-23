@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   PROVIDER_DEFAULTS,
   providerAuthRequiresSecret,
@@ -83,6 +102,30 @@ export function deriveProviderAuthContract(input: ProviderAuthContractInput): Pr
       },
     };
   }
+  // A provider Maka has retired. The entry stays registered so a stored
+  // connection still decodes and renders, but every action leads nowhere: no
+  // Runtime adapter to send on, no sign-in to complete, no endpoint to test.
+  // Offering any of them would point the user at a dead end, so the contract
+  // hides them all — this is what stops the storage layer from admitting a
+  // model fetch or a connection test. Deleting the connection is what clears
+  // the credential this machine still holds.
+  if (defaults.retired === true) {
+    return {
+      providerType: input.providerType,
+      setupMode: 'none',
+      state: enabled ? 'configured' : 'disabled',
+      validationStatus: 'not_required',
+      requiresSecret: true,
+      sendMayUseWithoutSecret: false,
+      actionAvailability: hiddenActions(),
+      copy: {
+        label: `${defaults.label} 已停用`,
+        detail:
+          '这条连接使用的登录方式已从 Maka 移除，无法再登录，也无法用于发送；删除这条连接会一并清除本机保存的凭据。',
+      },
+    };
+  }
+
   const supportsModelDiscovery = providerSupportsModelDiscovery(input.providerType);
   const actionAvailability = hiddenActions();
 

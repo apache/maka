@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * AiSdkCompaction — history-compaction / context-budget orchestrator extracted
  * from AiSdkBackend (issue #1084, runtime/compaction lane, slice 2).
@@ -93,6 +112,11 @@ import {
   resolveContextBudgetCapacity,
   type ContextBudgetCapacity,
 } from './context-budget-policy.js';
+import {
+  collectHistoricalImageToolResults,
+  type HistoricalImageToolResult,
+  omitHistoricalImageToolResults,
+} from './provider-image-overflow-recovery.js';
 
 /**
  * Image byte allowance for one turn, accumulated across its provider steps.
@@ -1322,10 +1346,15 @@ export class AiSdkCompaction {
 
     return async (options) => {
       const incomingMessages = options.messages;
-      const projectedMessages = projectAcceptedActiveCompactionMessages(
+      let projectedMessages = projectAcceptedActiveCompactionMessages(
         incomingMessages,
         acceptedProjection,
       );
+      projectedMessages =
+        projectHistoricalImageOmissions(
+          projectedMessages ?? incomingMessages,
+          state.omittedImageToolResults,
+        ) ?? projectedMessages;
       const keepProjection = (): RequestProjection | undefined =>
         projectedMessages ? { messages: projectedMessages } : undefined;
       // Step 0 is shaped by the pre_turn path; the mid-turn trigger only runs
@@ -1791,6 +1820,20 @@ export class AiSdkCompaction {
     if (input.retryAlreadyUsed || !state) return undefined;
     if (this.modelAdapter.classifyError(input.error) !== 'ContextLength') return undefined;
 
+    const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
+    const imageOmission = omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
+    if (imageOmission.omittedParts > 0) {
+      state.omittedImageToolResults = new Map(
+        [...imageOmission.omittedToolCallIds].flatMap((toolCallId) => {
+          const image = eligibleImages.get(toolCallId);
+          return image ? [[toolCallId, image] as const] : [];
+        }),
+      );
+      state.lastRequestPayloadChars = undefined;
+      state.lastRequestInputTokens = undefined;
+      return { messages: imageOmission.messages };
+    }
+
     // The shrink baseline is the request the provider actually rejected. Its
     // single owner is the verdict owner's per-request payload measure
     // (state.lastRequestPayloadChars), recorded at the end of every
@@ -1925,6 +1968,13 @@ export class AiSdkCompaction {
     } = input;
     return async (options) => {
       let result = await Promise.resolve(shaped(options));
+      const omissionProjection = projectHistoricalImageOmissions(
+        result?.messages ?? options.messages,
+        state.omittedImageToolResults,
+      );
+      if (omissionProjection) {
+        result = { ...(result ?? {}), messages: omissionProjection };
+      }
       const finalPayloadChars = (): number =>
         midTurnRequestPayloadChars(
           result?.messages ?? options.messages,
@@ -2076,6 +2126,15 @@ interface AcceptedActiveCompactionProjection {
   semanticBlock?: SemanticCompactBlock;
 }
 
+function projectHistoricalImageOmissions(
+  messages: readonly ModelMessage[],
+  omittedImageToolResults: ReadonlyMap<string, HistoricalImageToolResult>,
+): ModelMessage[] | undefined {
+  if (omittedImageToolResults.size === 0) return undefined;
+  const omission = omitHistoricalImageToolResults(messages, omittedImageToolResults);
+  return omission.omittedParts > 0 ? omission.messages : undefined;
+}
+
 function projectAcceptedActiveCompactionMessages(
   incomingMessages: readonly ModelMessage[],
   acceptedProjection: AcceptedActiveCompactionProjection | undefined,
@@ -2160,12 +2219,9 @@ export function hasActiveToolResultPruneDiagnosticPatch(
  */
 export class MidTurnCapacityCompactState {
   /**
-   * Chars of the final (system prompt + messages + active tool schema)
-   * payload of the LAST prepared request, recorded by the final-request
-   * estimate owner at the end of every request-projection pipeline run. All capacity estimates are signed
-   * deltas against this number, so they are anchored to the request the
-   * provider actually saw — a compacted projection, a pruned tail, or a
-   * same-turn tool-schema expansion all move the delta the same way.
+   * Raw serialized chars of the final provider request. Overflow recovery
+   * uses this as its shrink-reference baseline because it must compare the
+   * actual rejected projection with a candidate replacement.
    */
   lastRequestPayloadChars: number | undefined;
   /**
@@ -2203,6 +2259,8 @@ export class MidTurnCapacityCompactState {
    * trigger. Consumed by the capacity hook on its next invocation.
    */
   forcedTriggerEstimate: number | undefined;
+  /** Exact historical image results omitted after a provider overflow. */
+  omittedImageToolResults = new Map<string, HistoricalImageToolResult>();
   /**
    * The capacity hook's most recent shaping failure. The owner reads it (for
    * the same step only) to pick the terminal detail and diagnostic reason
@@ -2229,7 +2287,8 @@ export class MidTurnCapacityCompactState {
  * (sent through the separate `system` field), the (projected) messages, and
  * the serialized schemas of the active tool subset. The capacity trigger and
  * the final-request estimate owner both measure with this ONE function, so
- * their deltas against `lastRequestPayloadChars` are commensurable and
+ * their raw payload comparisons against `lastRequestPayloadChars` are
+ * commensurable and
  * same-turn tool-schema growth (a `load_tools` activation) is counted like
  * any other payload growth. The system prompt is constant between adjacent
  * requests — signed deltas cancel it — but the cold-start estimate (no usable

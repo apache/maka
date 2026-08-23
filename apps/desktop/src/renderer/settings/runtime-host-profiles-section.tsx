@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useCallback, useEffect, useState } from "react";
 import {
   Banner,
@@ -8,7 +27,10 @@ import {
   SegmentedControlItem,
   Switch,
 } from "@astryxdesign/core";
-import type { RuntimeHostRemoteTransport } from "@maka/runtime-host/client";
+import type {
+  RemoteRuntimeHostProfile,
+  RuntimeHostRemoteTransport,
+} from "@maka/runtime-host/client";
 import { isCanonicalRuntimeHostWebSocketPath } from "@maka/runtime-host/protocol";
 import {
   Badge,
@@ -25,6 +47,8 @@ import { getSettingsProjectsCopy } from "../locales/settings-projects-copy.js";
 import { PasswordInput } from "./password-input.js";
 import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.js";
+import { RuntimeHostOnboardingDialog } from './runtime-host-onboarding-dialog.js';
+import { RuntimeHostManagementDialog } from './runtime-host-management-dialog.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
 
@@ -44,7 +68,9 @@ function createRemoteHostDraft() {
   };
 }
 
-export function RuntimeHostProfilesSection() {
+export function RuntimeHostProfilesSection(props: {
+  readonly onRemoteHostAdded: (profileId: string) => void;
+}) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
   const mountedRef = useMountedRef();
@@ -53,6 +79,8 @@ export function RuntimeHostProfilesSection() {
     Awaited<ReturnType<typeof window.maka.runtimeHostProfiles.getSnapshot>>
   >();
   const [showAdd, setShowAdd] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [managedProfile, setManagedProfile] = useState<RemoteRuntimeHostProfile>();
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
@@ -77,7 +105,12 @@ export function RuntimeHostProfilesSection() {
     } catch (error) {
       if (mountedRef.current) {
         await reload().catch(() => undefined);
-        toast.error(copy.selectFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.selectFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId },
+        );
       }
     } finally {
       if (mountedRef.current) setSwitching(false);
@@ -91,6 +124,7 @@ export function RuntimeHostProfilesSection() {
 
   async function saveAndEnable() {
     setSwitching(true);
+    const profileId = draft.id;
     try {
       const transport = createTransport(draft);
       const result = await window.maka.runtimeHostProfiles.addAndEnable({
@@ -106,7 +140,12 @@ export function RuntimeHostProfilesSection() {
       if (!mountedRef.current) return;
       setSnapshot(result.snapshot);
       if (result.kind === "unavailable") {
-        toast.error(copy.selectFailed, result.message);
+        toast.error(
+          copy.selectFailed,
+          result.message,
+          undefined,
+          { profileId },
+        );
         return;
       }
       setShowAdd(false);
@@ -114,7 +153,12 @@ export function RuntimeHostProfilesSection() {
     } catch (error) {
       if (mountedRef.current) {
         await reload().catch(() => undefined);
-        toast.error(copy.saveFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.saveFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId },
+        );
       }
     } finally {
       if (mountedRef.current) setSwitching(false);
@@ -127,7 +171,12 @@ export function RuntimeHostProfilesSection() {
       if (mountedRef.current) setSnapshot(next);
     } catch (error) {
       if (mountedRef.current) {
-        toast.error(copy.removeFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.removeFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId },
+        );
       }
     }
   }
@@ -140,12 +189,39 @@ export function RuntimeHostProfilesSection() {
       setSnapshot(next);
       const entry = next.entries.find((candidate) => candidate.profile.id === profileId);
       if (entry?.readiness === "unavailable" && entry.message) {
-        toast.error(copy.selectFailed, entry.message);
+        toast.error(
+          copy.selectFailed,
+          entry.message,
+          undefined,
+          { profileId },
+        );
       }
     } catch (error) {
       if (mountedRef.current) {
         await reload().catch(() => undefined);
-        toast.error(copy.selectFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.selectFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId },
+        );
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
+  async function resolvePairingRecovery() {
+    setSwitching(true);
+    try {
+      const next = await window.maka.runtimeHostProfiles.resolvePairingRecovery();
+      if (mountedRef.current) setSnapshot(next);
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(
+          copy.resolvePairingRecoveryFailed,
+          settingsActionErrorMessage(error, locale),
+        );
       }
     } finally {
       if (mountedRef.current) setSwitching(false);
@@ -183,15 +259,41 @@ export function RuntimeHostProfilesSection() {
         title={copy.remoteTitle}
         description={copy.remoteDescription}
         action={
-          <Button
-            variant="secondary"
-            size="sm"
-            label={showAdd ? copy.cancel : copy.add}
-            isDisabled={switching}
-            onClick={toggleAdd}
-          />
+          <HStack gap={2} align="center">
+            <Button
+              variant="primary"
+              size="sm"
+              label={copy.addComputer}
+              isDisabled={switching}
+              onClick={() => {
+                setShowOnboarding(true);
+              }}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              label={showAdd ? copy.cancel : copy.configureManually}
+              isDisabled={switching}
+              onClick={toggleAdd}
+            />
+          </HStack>
         }
       >
+        {snapshot?.pairingRecoveryBlocked || snapshot?.pairingRecoveryPending ? (
+          <SettingsRow
+            label={copy.pairingRecoveryTitle}
+            description={copy.pairingRecoveryDescription}
+            end={(
+              <Button
+                variant="secondary"
+                size="sm"
+                label={copy.resolvePairingRecovery}
+                isDisabled={switching}
+                onClick={() => void resolvePairingRecovery()}
+              />
+            )}
+          />
+        ) : null}
         {showAdd ? (
           <>
             <SettingsRow
@@ -309,14 +411,23 @@ export function RuntimeHostProfilesSection() {
                     <MoreMenu
                       label={copy.moreActions(profile.name)}
                       size="sm"
-                      items={[{
-                        label: copy.remove,
-                        isDisabled:
-                          switching ||
-                          entry.enabled ||
-                          entry.isDefault,
-                        onClick: () => void remove(profile.id),
-                      }]}
+                      items={[
+                        ...(profile.transport.kind === "ssh" && entry.managedService
+                          ? [{
+                              label: copy.manage,
+                              isDisabled: switching,
+                              onClick: () => setManagedProfile(profile),
+                            }]
+                          : []),
+                        {
+                          label: copy.remove,
+                          isDisabled:
+                            switching ||
+                            entry.enabled ||
+                            entry.isDefault,
+                          onClick: () => void remove(profile.id),
+                        },
+                      ]}
                     />
                   </HStack>
                 }
@@ -326,6 +437,22 @@ export function RuntimeHostProfilesSection() {
           </List>
         )}
       </SettingsSection>
+      <RuntimeHostOnboardingDialog
+        isOpen={showOnboarding}
+        onClose={() => {
+          setShowOnboarding(false);
+          void reload();
+        }}
+        onRemoteHostAdded={props.onRemoteHostAdded}
+      />
+      <RuntimeHostManagementDialog
+        key={managedProfile ? `profile:${managedProfile.id}` : 'no-profile'}
+        profile={managedProfile}
+        onClose={() => {
+          setManagedProfile(undefined);
+          void reload();
+        }}
+      />
     </>
   );
 }

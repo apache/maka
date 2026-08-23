@@ -1,5 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
+import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -35,12 +55,44 @@ import {
   createExecutionRuntimeHostComposition,
   runtimeHostFilesystemWorkerRuntime,
 } from '../server/execution-composition.js';
+import {
+  createManagedWorkspaceExecutionProfile,
+  RuntimeHostWorkspaceExecutionError,
+} from '../server/workspace-execution-composition.js';
 
 const require = createRequire(import.meta.url);
 
 test('filesystem worker follows the candidate executable runtime', () => {
   assert.equal(runtimeHostFilesystemWorkerRuntime({ electron: '43.1.1' }), 'electron');
   assert.equal(runtimeHostFilesystemWorkerRuntime({}), 'node');
+});
+
+test('production composition never discovers PATH Git when no runtime is admitted', async () => {
+  await new Promise<void>((resolve, reject) => {
+    execFile('git', ['--version'], (error) => (error ? reject(error) : resolve()));
+  });
+
+  await withCompositionRoot(async ({ owner }) => {
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      assert.equal(composition.workspaceExecution.state, 'ready');
+      const managed = createManagedWorkspaceExecutionProfile(
+        Object.freeze({ kind: 'managed_workspace_execution_handle_v1' }),
+      );
+      await assert.rejects(
+        () =>
+          composition.workspaceExecution.executeReadOnly(managed, {
+            kind: 'read',
+            path: 'README.md',
+          }),
+        (error) =>
+          error instanceof RuntimeHostWorkspaceExecutionError &&
+          error.code === 'managed_workspace_profile_unavailable',
+      );
+    } finally {
+      await composition.close();
+    }
+  });
 });
 
 test('production composition owns the long-term memory database lifecycle', async () => {
@@ -981,7 +1033,6 @@ async function createClaimedGraphChild(input: {
       systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
       toolNames: [...LOCAL_READ_AGENT_DEFINITION.tools],
       categoryPolicy: {},
-      permissionCeiling: 'ask',
     },
     subagentSpawn: {
       schemaVersion: 1,

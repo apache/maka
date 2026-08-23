@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -235,12 +254,10 @@ test('rejects corrupt files and unsafe or invalid configs', async () => {
       }),
     /http or https/u,
   );
-  assert.throws(
-    () =>
-      normalizeMcpConfig({
-        version: 2,
-        mcpServers: { bad: { url: 'https://user:secret@example.com/mcp' } },
-      }),
+  await assert.rejects(
+    createMcpConfigStore(await tempRoot()).upsert('bad', {
+      url: 'https://user:secret@example.com/mcp',
+    }),
     /embedded credentials/u,
   );
   assert.throws(() => normalizeMcpConfig({ version: 3, mcpServers: {} }), /Unsupported/u);
@@ -313,6 +330,63 @@ test('full replacement can migrate an existing version 1 wrapper to version 2', 
   });
 });
 
+test('refuses cleartext http for non-loopback hosts at the write boundary', async () => {
+  const store = createMcpConfigStore(await tempRoot());
+  await assert.rejects(
+    store.upsert('bad', { url: 'http://example.com/mcp' }),
+    /https for non-loopback/u,
+  );
+  for (const url of [
+    'http://127.0.0.1:8080/mcp',
+    'http://localhost:3000/mcp',
+    'https://example.com/mcp',
+  ]) {
+    await assert.doesNotReject(store.upsert('ok', { url }));
+  }
+});
+
+test('grandfathers a pre-existing cleartext server on read and keeps the file repairable', async () => {
+  // A single entry every prior release accepted must not brick the whole
+  // file: the page would come up empty and even the remove that could fix
+  // it would take the same throwing path.
+  const root = await tempRoot();
+  const path = join(root, 'mcp.json');
+  await writeFile(
+    path,
+    `${JSON.stringify({
+      version: 2,
+      mcpServers: {
+        internal: { url: 'http://mcp.internal.corp/mcp', transport: 'auto' },
+        good: { command: 'npx' },
+      },
+    })}\n`,
+    'utf8',
+  );
+  const store = createMcpConfigStore(root);
+
+  const loaded = await store.get();
+  assert.ok(loaded.mcpServers.internal);
+  assert.ok(loaded.mcpServers.good);
+
+  // Repair paths stay open: removing either server works, and toggling the
+  // grandfathered entry (same URL) works.
+  await assert.doesNotReject(store.remove('good'));
+  await assert.doesNotReject(
+    store.upsert('internal', { url: 'http://mcp.internal.corp/mcp', enabled: false }),
+  );
+  // Introducing or repointing a cleartext endpoint still refuses.
+  await assert.rejects(
+    store.upsert('internal', { url: 'http://other.internal.corp/mcp' }),
+    /https for non-loopback/u,
+  );
+  await assert.rejects(
+    store.upsert('fresh', { url: 'http://example.com/mcp' }),
+    /https for non-loopback/u,
+  );
+  await assert.doesNotReject(store.remove('internal'));
+  assert.deepEqual((await store.get()).mcpServers, {});
+});
+
 test('normalizes and bounds the remote oauth block', async () => {
   const normalized = normalizeMcpConfig({
     version: 1,
@@ -347,6 +421,28 @@ test('normalizes and bounds the remote oauth block', async () => {
       }),
     /clientId/u,
   );
+  // Scopes join space-delimited on the wire and must be RFC 6749 §3.3
+  // scope-tokens: an empty, whitespace-containing, control-carrying,
+  // quoted/backslashed or non-ASCII entry would silently change the
+  // requested grant or come back as invalid_scope far from the mistake.
+  for (const scopes of [
+    [''],
+    ['read write'],
+    ['read', 'a\tb'],
+    ['read"admin'],
+    ['read\\admin'],
+    ['read\u0001admin'],
+    ['caf\u00e9'],
+  ]) {
+    assert.throws(
+      () =>
+        normalizeMcpConfig({
+          version: 1,
+          mcpServers: { bad: { url: 'https://example.com/mcp', oauth: { clientId: 'x', scopes } } },
+        }),
+      /scope token/u,
+    );
+  }
   // A clientSecret alone cannot form static client credentials.
   assert.throws(
     () =>
@@ -356,6 +452,28 @@ test('normalizes and bounds the remote oauth block', async () => {
       }),
     /clientId is required/u,
   );
+  // Scopes join space-delimited on the wire and must be RFC 6749 §3.3
+  // scope-tokens: an empty, whitespace-containing, control-carrying,
+  // quoted/backslashed or non-ASCII entry would silently change the
+  // requested grant or come back as invalid_scope far from the mistake.
+  for (const scopes of [
+    [''],
+    ['read write'],
+    ['read', 'a\tb'],
+    ['read"admin'],
+    ['read\\admin'],
+    ['readadmin'],
+    ['café'],
+  ]) {
+    assert.throws(
+      () =>
+        normalizeMcpConfig({
+          version: 1,
+          mcpServers: { bad: { url: 'https://example.com/mcp', oauth: { clientId: 'x', scopes } } },
+        }),
+      /scope token/u,
+    );
+  }
   // stdio servers have no oauth block; unknown fields there stay rejected
   // by the stdio branch simply dropping them.
   const stdio = normalizeMcpConfig({

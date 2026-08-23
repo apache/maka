@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ChatConfigurationReason } from '@maka/core/connection-readiness';
 
 import type { ModelCallKind } from '@maka/core/model-call-attempt';
@@ -38,6 +57,7 @@ export interface DesktopConversationCopy {
     modelReboundDescription: (modelId?: string) => string;
     messageReadFailedTitle: string;
     returnLatest: string;
+    scrollMainToBottom: string;
   };
   attachments: { tooMany: string; tooLarge: string; duplicate: string };
   model: {
@@ -161,9 +181,14 @@ export interface DesktopConversationCopy {
     /** The panel-empty (tier 2) sentence under `empty`. */
     emptyHelp: string;
     costUnavailable: string;
-    /** Labels for the two headline figures the trace always states. */
+    costEstimateHelp: string;
+    loadEarlier: string;
+    loadingEarlier: string;
+    loadingTrace: string;
+    loadingSummary: string;
+    summaryUnavailable: string;
+    /** Label for the complete Session cost estimate. */
     totals: {
-      duration: string;
       cost: string;
     };
     /**
@@ -175,6 +200,7 @@ export interface DesktopConversationCopy {
     coverageAbsent: (parts: readonly string[]) => string;
     /** Each states its own count, so English can say "1 turn" and not "1 turns". */
     unreadable: (count: number) => string;
+    oversizedRuns: (count: number) => string;
     turnsMissing: (count: number) => string;
     turnsShort: (count: number) => string;
     /**
@@ -197,16 +223,8 @@ export interface DesktopConversationCopy {
      * reader gets, with a plain fallback for a code nobody has named yet.
      */
     turnFailure: (code: string) => string;
-    filterLabel: string;
-    filterPlaceholder: string;
-    /** The failure count that doubles as the "only failures" toggle. */
-    filterFailedOnly: (count: number) => string;
-    noMatches: string;
-    /** The filter no-match's clear action. */
-    clearFilter: string;
-    hiddenByFilter: (count: number) => string;
-    /** Display name of one turn in the raw record: 第 N 轮 / Turn N. */
-    turnLabel: (index: number) => string;
+    /** Stable display name of one turn, qualified by its recorded start time. */
+    turnLabel: (startedAt: string) => string;
     /** Summary above the raw timeline. */
     overview: {
       context: string;
@@ -257,6 +275,7 @@ export interface DesktopConversationCopy {
     /** Short-lived status while the eager fork is created. */
     preparing: string;
     permissionStreaming: string;
+    scrollToBottom: string;
     closeConfirmation: {
       title(count: number): string;
       description(count: number): string;
@@ -296,7 +315,7 @@ export interface DesktopConversationCopy {
     permission: string;
     restarted: string;
     sandboxBoundaryClosed: string;
-    recovery: Record<'safeResume' | 'stepCap' | 'toolError' | 'connection' | 'partial' | 'toolRecord' | 'retry' | 'sandboxBoundaryClosed', string>;
+    recovery: Record<'safeResume' | 'stepCap' | 'toolError' | 'connection' | 'partial' | 'toolRecord' | 'retry' | 'contextOverflow' | 'sandboxBoundaryClosed', string>;
   };
 }
 
@@ -371,7 +390,7 @@ function enDetail(parts: readonly string[]): string {
 
 const COPY = {
   zh: {
-    actions: { stopFailedTitle: '停止失败', stopFailedFallback: '任务操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新任务列表失败', refreshSessionsFailedFallback: '刷新任务列表失败，请稍后重试。', conversationErrorTitle: '任务出错', conversationErrorFallback: '任务运行失败，请稍后重试。', regenerateStartedTitle: '已发起重新生成', regenerateStartedDescription: '正在生成新的一轮回答', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新任务 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原任务仍会保留；修改后发送将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；编辑后发送即可', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '包含附件的历史消息暂不支持编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '通过显式技能发送的历史消息暂不支持编辑并重发，请复制文字后重新选择技能。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionCommandUnsupported: '修改消息时不能执行 /compact、/side 或编排命令，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', revisionUnchanged: '内容没有变化。如需重新回答，请使用“重新生成”。', operationFailedTitle: '操作失败', operationFailedFallback: '任务操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原任务使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取任务失败', returnLatest: '返回最新消息' },
+    actions: { stopFailedTitle: '停止失败', stopFailedFallback: '任务操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新任务列表失败', refreshSessionsFailedFallback: '刷新任务列表失败，请稍后重试。', conversationErrorTitle: '任务出错', conversationErrorFallback: '任务运行失败，请稍后重试。', regenerateStartedTitle: '已发起重新生成', regenerateStartedDescription: '正在生成新的一轮回答', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新任务 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原任务仍会保留；修改后发送将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；编辑后发送即可', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '包含附件的历史消息暂不支持编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '通过显式技能发送的历史消息暂不支持编辑并重发，请复制文字后重新选择技能。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionCommandUnsupported: '修改消息时不能执行 /compact、/side 或编排命令，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', revisionUnchanged: '内容没有变化。如需重新回答，请使用“重新生成”。', operationFailedTitle: '操作失败', operationFailedFallback: '任务操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原任务使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取任务失败', returnLatest: '返回最新消息', scrollMainToBottom: '滚动主对话到底部' },
     attachments: { tooMany: '附件数量超过 8 个', tooLarge: '附件大小超过 50MB', duplicate: '附件来源重复，请勿重复添加同一文件。' },
     model: {
       fakeBackendLabel: '本地模拟连接',
@@ -388,6 +407,7 @@ const COPY = {
         model_not_enabled: '当前任务选择的模型未启用。请到 设置 · 模型 重新选择可用模型后再发送。',
         model_not_chat_capable: '当前任务选择的模型不能用于聊天。请到 设置 · 模型 重新选择支持聊天的模型后再发送。',
         fake_backend: '当前任务来自旧的本地模拟连接。请到 设置 · 模型 添加真实模型后新建任务。',
+        provider_retired: '当前任务绑定的连接，其登录方式已从 Maka 移除，无法用于发送。请到 设置 · 模型 改用其他连接后新建任务。',
       },
     },
     footer: { labels: { regenerate: '重新生成', branch: '分支', copy: '复制', info: '详情' }, pending: '正在处理…', regenerateRunning: '当前回答仍在进行中，结束后再重新生成', regenerateAgain: '已重新生成过，再次点击将创建新的并行回答', regenerate: '让模型重新生成本轮回答', branchRunning: '当前回答仍在进行中，结束后再分支', branchAborted: '从中断前的上下文分支出新任务', branch: '基于此回答的上下文分支出新任务', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
@@ -480,13 +500,19 @@ const COPY = {
       empty: '这个任务还没有可追踪的活动',
       emptyHelp: '任务尚无活动记录。',
       costUnavailable: '费用未知',
+      costEstimateHelp: '基于已记录用量和定价估算；缺失或未定价的调用可能未计入。',
+      loadEarlier: '加载更早记录',
+      loadingEarlier: '正在加载…',
+      loadingTrace: '正在读取时间线…',
+      loadingSummary: '正在估算完整会话用量…',
+      summaryUnavailable: '完整会话用量暂时无法估算。',
       totals: {
-        duration: '总耗时',
-        cost: '花费',
+        cost: '估算成本',
       },
-      coveragePartial: (parts) => `部分调用没有留下记录，下面的数字只少不多${zhDetail(parts)}`,
+      coveragePartial: (parts) => `部分调用未能完整显示，下面的数字只少不多${zhDetail(parts)}`,
       coverageAbsent: (parts) => `这个后端不记录每次调用的明细${zhDetail(parts)}`,
       unreadable: (count) => `${count} 条记录读不出来`,
+      oversizedRuns: (count) => `${count} 条运行记录过大，无法在线显示`,
       turnsMissing: (count) => `${count} 轮没有调用记录`,
       turnsShort: (count) => `${count} 轮的调用记录不全`,
       stepKind: { permission: '权限', compaction: '上下文压缩', error: '错误' },
@@ -495,13 +521,7 @@ const COPY = {
       recoveredAs: (disposition) => `已恢复：${ZH_RECOVERED[disposition] ?? disposition}`,
       retries: (count) => `重试 ${count} 次`,
       turnFailure: (code) => ZH_TURN_FAILURE[code] ?? '本轮失败',
-      filterLabel: '筛选追踪',
-      filterPlaceholder: '按工具、模型或轮次筛选',
-      filterFailedOnly: (count) => `${count} 轮失败`,
-      noMatches: '没有匹配的记录',
-      clearFilter: '清除筛选',
-      hiddenByFilter: (count) => `已隐藏 ${count} 项`,
-      turnLabel: (index) => `第 ${index} 轮`,
+      turnLabel: (startedAt) => `轮次 · ${startedAt}`,
       overview: {
         context: '上下文窗口',
         segment: {
@@ -533,6 +553,7 @@ const COPY = {
       namePrefix: '侧聊：',
       preparing: '正在建立侧边对话…',
       permissionStreaming: '侧边对话运行中暂时不能更改权限',
+      scrollToBottom: '滚动侧边对话到底部',
       closeConfirmation: {
         title: (count) => count > 1 ? `关闭 ${count} 个侧边对话？` : '关闭侧边对话？',
         description: (count) =>
@@ -554,6 +575,7 @@ const COPY = {
     health: {
       blocked: {
         fake_backend: { label: '任务已过期 · 请先配置真实模型', tooltip: () => '原任务使用旧的本地模拟连接，需要先到 设置 · 模型 添加并启用一个真实模型才能发送。' },
+        provider_retired: { label: '登录方式已停用', tooltip: (name) => `任务绑定的连接 "${name}" 使用的登录方式已从 Maka 移除，发送会失败。请到 设置 · 模型 改用其他连接。` },
         missing_default_connection: { label: '未配置可用模型', tooltip: () => '当前任务没有可用的模型连接，发送会失败。请到 设置 · 模型 添加并启用一个模型。' },
         connection_missing: { label: '连接已删除', tooltip: () => '此任务依赖的模型连接已被删除，发送会失败。请到 设置 · 模型 检查连接配置。' },
         connection_disabled: { label: '连接已禁用', tooltip: (name) => `任务绑定的连接 "${name}" 已禁用，发送会失败。请到 设置 · 模型 启用它或选择其他连接。` },
@@ -566,10 +588,10 @@ const COPY = {
       reauth: { label: '上次连接测试鉴权失败', tooltip: '最近一次连接测试返回鉴权失败（401 / 403），密钥可能已过期或被吊销。这不会拦截发送，但若发送失败请到 设置 · 模型 重新登录。' },
       testError: { label: '上次连接测试失败', tooltip: '最近一次连接测试因网络 / 超时 / 5xx 失败。这不会拦截发送，但若问题持续请到 设置 · 模型 检查 Base URL / 代理。' },
     },
-    turnError: { unknown: '未知错误', contextOverflow: '上下文窗口已超出限制', timeout: '请求超时', auth: '鉴权失败', providerBilling: '模型服务计费受限', rateLimit: '触发模型速率限制', network: '网络错误', provider: '模型服务返回错误', stepCap: '达到工具步骤上限', tool: '工具调用失败', permission: '等待权限确认', restarted: '本地应用重启，上一轮没有完成', sandboxBoundaryClosed: '本地应用重启，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭', recovery: { safeResume: '检查当前状态后，可尝试安全恢复', stepCap: '任务可能尚未完成，可以继续', toolError: '先检查工具结果，再决定是否重试', connection: '先检查模型连接或登录状态', partial: '已保留部分输出，可从这里继续', toolRecord: '工具记录已保留，重试前先看结果', retry: '没有执行工具，可直接重试', sandboxBoundaryClosed: '访问范围没有放开，重试本轮后可重新决定' } },
+    turnError: { unknown: '未知错误', contextOverflow: '上下文窗口已超出限制', timeout: '请求超时', auth: '鉴权失败', providerBilling: '模型服务计费受限', rateLimit: '触发模型速率限制', network: '网络错误', provider: '模型服务返回错误', stepCap: '达到工具步骤上限', tool: '工具调用失败', permission: '等待权限确认', restarted: '本地应用重启，上一轮没有完成', sandboxBoundaryClosed: '本地应用重启，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭', recovery: { safeResume: '检查当前状态后，可尝试安全恢复', stepCap: '任务可能尚未完成，可以继续', toolError: '先检查工具结果，再决定是否重试', connection: '先检查模型连接或登录状态', partial: '已保留部分输出，可从这里继续', toolRecord: '工具记录已保留，重试前先看结果', retry: '没有执行工具，可直接重试', contextOverflow: '上下文仍超出限制，请减少附件或开启新任务', sandboxBoundaryClosed: '访问范围没有放开，重试本轮后可重新决定' } },
   },
   en: {
-    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The task action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh tasks', refreshSessionsFailedFallback: 'The task list could not be refreshed. Try again later.', conversationErrorTitle: 'Task error', conversationErrorFallback: 'The task run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New task: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original task is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The task action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load task', returnLatest: 'Return to latest' },
+    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The task action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh tasks', refreshSessionsFailedFallback: 'The task list could not be refreshed. Try again later.', conversationErrorTitle: 'Task error', conversationErrorFallback: 'The task run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New task: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original task is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The task action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load task', returnLatest: 'Return to latest', scrollMainToBottom: 'Scroll main conversation to bottom' },
     attachments: { tooMany: 'You can attach at most 8 files', tooLarge: 'Attachments must be 50 MB or smaller', duplicate: 'This attachment was already added.' },
     model: {
       fakeBackendLabel: 'Local simulation',
@@ -586,6 +608,7 @@ const COPY = {
         model_not_enabled: 'The model selected for this task is disabled. Choose an enabled model in Settings · Models.',
         model_not_chat_capable: 'The model selected for this task cannot chat. Choose a chat-capable model in Settings · Models.',
         fake_backend: 'This task used the retired local simulation. Add a real model in Settings · Models, then start a new task.',
+        provider_retired: 'The sign-in this task\u2019s connection uses was removed from Maka, so it cannot send. Switch to another connection in Settings · Models, then start a new task.',
       },
     },
     footer: { labels: { regenerate: 'Regenerate', branch: 'Branch', copy: 'Copy', info: 'Details' }, pending: 'Working…', regenerateRunning: 'Wait for the current response to finish before regenerating', regenerateAgain: 'A regenerated response already exists; click again to create another parallel response', regenerate: 'Generate another response to this turn', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new task from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
@@ -680,14 +703,21 @@ const COPY = {
       empty: 'Nothing to trace in this task yet',
       emptyHelp: 'No activity recorded for this task yet.',
       costUnavailable: 'cost unknown',
+      costEstimateHelp: 'Estimated from recorded usage and pricing; missing or unpriced calls may be excluded.',
+      loadEarlier: 'Load earlier records',
+      loadingEarlier: 'Loading…',
+      loadingTrace: 'Loading timeline…',
+      loadingSummary: 'Estimating full-session usage…',
+      summaryUnavailable: 'Full-session usage is temporarily unavailable.',
       totals: {
-        duration: 'Duration',
-        cost: 'Cost',
+        cost: 'Estimated cost',
       },
       coveragePartial: (parts) =>
-        `Some calls left no record, so the numbers below only undercount${enDetail(parts)}`,
+        `Some calls could not be shown completely, so the numbers below only undercount${enDetail(parts)}`,
       coverageAbsent: (parts) => `This backend does not record per-call detail${enDetail(parts)}`,
       unreadable: (count) => `${count} record${count === 1 ? '' : 's'} could not be read`,
+      oversizedRuns: (count) =>
+        `${count} run record${count === 1 ? '' : 's'} too large to show online`,
       turnsMissing: (count) => `${count} turn${count === 1 ? '' : 's'} with no call record`,
       turnsShort: (count) =>
         `${count} turn${count === 1 ? '' : 's'} with an incomplete call record`,
@@ -697,13 +727,7 @@ const COPY = {
       recoveredAs: (disposition) => `recovered as ${disposition}`,
       retries: (count) => `${count} retr${count === 1 ? 'y' : 'ies'}`,
       turnFailure: (code) => EN_TURN_FAILURE[code] ?? 'Turn failed',
-      filterLabel: 'Filter the trace',
-      filterPlaceholder: 'Filter by tool, model or turn',
-      filterFailedOnly: (count) => `${count} failed turn${count === 1 ? '' : 's'}`,
-      noMatches: 'Nothing matches this filter',
-      clearFilter: 'Clear filters',
-      hiddenByFilter: (count) => `${count} hidden by the filter`,
-      turnLabel: (index) => `Turn ${index}`,
+      turnLabel: (startedAt) => `Turn · ${startedAt}`,
       overview: {
         context: 'Context window',
         segment: {
@@ -735,6 +759,7 @@ const COPY = {
       namePrefix: 'Side: ',
       preparing: 'Preparing side chat…',
       permissionStreaming: 'Permissions cannot change while the side chat is running',
+      scrollToBottom: 'Scroll side conversation to bottom',
       closeConfirmation: {
         title: (count) => count > 1 ? `Close ${count} side chats?` : 'Close side chat?',
         description: (count) =>
@@ -756,6 +781,7 @@ const COPY = {
     health: {
       blocked: {
         fake_backend: { label: 'Stale task · Configure a real model', tooltip: () => 'This task used the retired local simulation. Add and enable a real model in Settings · Models before sending.' },
+        provider_retired: { label: 'Sign-in retired', tooltip: (name) => `The sign-in that connection "${name}" uses was removed from Maka, so sending fails. Switch to another connection in Settings · Models.` },
         missing_default_connection: { label: 'No model configured', tooltip: () => 'This task has no available model connection. Add and enable one in Settings · Models.' },
         connection_missing: { label: 'Connection deleted', tooltip: () => 'The model connection used by this task was deleted. Check Settings · Models.' },
         connection_disabled: { label: 'Connection disabled', tooltip: (name) => `Connection "${name}" is disabled. Enable it or choose another connection in Settings · Models.` },
@@ -768,7 +794,7 @@ const COPY = {
       reauth: { label: 'Last connection test failed authentication', tooltip: 'The latest test returned 401 / 403. Sending is not blocked, but sign in again under Settings · Models if it fails.' },
       testError: { label: 'Last connection test failed', tooltip: 'The latest test failed because of a network, timeout, or 5xx error. Sending is not blocked; check Base URL or proxy settings if it persists.' },
     },
-    turnError: { unknown: 'Unknown error', contextOverflow: 'Context window exceeded', timeout: 'Request timed out', auth: 'Authentication failed', providerBilling: 'Provider billing required', rateLimit: 'Model rate limit reached', network: 'Network error', provider: 'Model service error', stepCap: 'Tool-step limit reached', tool: 'Tool call failed', permission: 'Waiting for permission', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied', recovery: { safeResume: 'Inspect the current state, then try safe recovery', stepCap: 'The task may be incomplete; continue from here', toolError: 'Inspect the tool result before retrying', connection: 'Check the model connection or sign-in status', partial: 'Partial output was retained; continue from here', toolRecord: 'Tool history was retained; inspect it before retrying', retry: 'No tools ran; retry directly', sandboxBoundaryClosed: 'Access was not widened; retry the turn to decide again' } },
+    turnError: { unknown: 'Unknown error', contextOverflow: 'Context window exceeded', timeout: 'Request timed out', auth: 'Authentication failed', providerBilling: 'Provider billing required', rateLimit: 'Model rate limit reached', network: 'Network error', provider: 'Model service error', stepCap: 'Tool-step limit reached', tool: 'Tool call failed', permission: 'Waiting for permission', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied', recovery: { safeResume: 'Inspect the current state, then try safe recovery', stepCap: 'The task may be incomplete; continue from here', toolError: 'Inspect the tool result before retrying', connection: 'Check the model connection or sign-in status', partial: 'Partial output was retained; continue from here', toolRecord: 'Tool history was retained; inspect it before retrying', retry: 'No tools ran; retry directly', contextOverflow: 'Context is still too large; reduce attachments or start a new task', sandboxBoundaryClosed: 'Access was not widened; retry the turn to decide again' } },
   },
 } satisfies UiCatalog<DesktopConversationCopy>;
 
@@ -782,9 +808,8 @@ export type InspectorCopy = DesktopConversationCopy['inspector'];
  * The name a step falls back to when it has no identifier of its own. A model
  * call and a tool call always carry one, so they never reach here.
  *
- * It lives beside the words rather than in the panel because the filter needs
- * the same string: what the reader searches has to be what the reader sees, and
- * that correspondence breaks the moment two places decide the wording.
+ * It lives beside the words rather than in the panel so fallback labels stay
+ * part of the locale's vocabulary instead of being reconstructed by the view.
  */
 export function inspectorStepKindLabel(copy: InspectorCopy, kind: string): string {
   if (kind === 'permission') return copy.stepKind.permission;

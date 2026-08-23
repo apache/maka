@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/provider';
@@ -184,6 +203,72 @@ test('denies a nested MCP call before invoking its provider', async () => {
   }
 
   assert.equal(providerCalls, 0);
+});
+
+test('bounds cells outstanding on one backend, across the host drain', async () => {
+  // The guarantee under test is the wiring, not the primitive: the permit is
+  // taken before the cell and released only once `executeCodeCell` settles,
+  // which is after its host operations have drained. Replacing the admission
+  // with a no-op must fail this test.
+  let firstToolStarted!: () => void;
+  let releaseFirstTool!: () => void;
+  const firstToolRunning = new Promise<void>((resolve) => {
+    firstToolStarted = resolve;
+  });
+  const firstToolCanFinish = new Promise<void>((resolve) => {
+    releaseFirstTool = resolve;
+  });
+  let toolCalls = 0;
+
+  const instance = backend(
+    execEveryTurnModel('return await tools.lookup({ id: "nested" })'),
+    [],
+    undefined,
+    {
+      tools: [
+        {
+          name: 'lookup',
+          description: 'Look up a node',
+          parameters: z.object({ id: z.string() }),
+          impl: async (input: { id: string }) => {
+            toolCalls += 1;
+            if (toolCalls === 1) {
+              firstToolStarted();
+              await firstToolCanFinish;
+            }
+            return input;
+          },
+        },
+      ],
+    },
+  );
+
+  const cell = (turnId: string) =>
+    collect(instance.send({ turnId, text: 'look it up', context: [], toolMode: 'code_mode' }));
+
+  const first = cell('turn-1');
+  await firstToolRunning;
+
+  const second = cell('turn-2');
+  const third = cell('turn-3');
+
+  // The third cell finds a cell active and one already queued, so it is turned
+  // away without ever reaching the sandbox.
+  const thirdEvents = await third;
+  const turnedAway = thirdEvents.find(
+    (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
+      event.type === 'tool_result' && event.toolUseId === 'exec-3',
+  );
+  assert.ok(turnedAway, 'the third cell should settle its exec call');
+  assert.match(JSON.stringify(turnedAway.content), /limit_exceeded/);
+
+  // The second cell is queued behind the first, which is still holding a host
+  // operation, so it has not started one of its own.
+  assert.equal(toolCalls, 1, 'a queued cell must not start host work');
+
+  releaseFirstTool();
+  await Promise.all([first, second]);
+  assert.equal(toolCalls, 2, 'the queued cell runs once the first releases');
 });
 
 test('routes a nested cell call back through ToolRuntime', async () => {
@@ -935,6 +1020,31 @@ function execThenStopModel(
               },
             ];
       return { stream: convertArrayToReadableStream(parts) };
+    },
+  });
+}
+
+function execEveryTurnModel(code: string): MockLanguageModelV4 {
+  let call = 0;
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      call += 1;
+      return {
+        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+          { type: 'stream-start', warnings: [] },
+          {
+            type: 'tool-call',
+            toolCallId: `exec-${call}`,
+            toolName: 'exec',
+            input: JSON.stringify({ code }),
+          },
+          {
+            type: 'finish',
+            finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+            usage: ZERO_USAGE,
+          },
+        ]),
+      };
     },
   });
 }

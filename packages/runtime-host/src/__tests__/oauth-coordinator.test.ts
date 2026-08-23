@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -5,7 +24,6 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
-import { OAuthTokenEndpointError } from '@maka/runtime/oauth-login';
 import {
   parseOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
@@ -16,12 +34,10 @@ import {
 } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
-  OAUTH_PRESENTATION_AUTHORIZATION_CODE_MAX_LENGTH,
   OAUTH_PRESENTATION_SERVICE_ID,
   OAUTH_PRESENTATION_SERVICE_VERSION,
   type ClientCapabilityServiceCallFrame,
   type OAuthLoginProjection,
-  type OAuthPresentationRequest,
 } from '../protocol/index.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import { HostOAuthCoordinator } from '../server/oauth-coordinator.js';
@@ -29,90 +45,6 @@ import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation
 import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
 
 const NOW = 1_800_000_000_000;
-
-test('OAuth login uses only the initiating Client presentation service and commits Host tokens', async () => {
-  await withFixture('claude-subscription', async (fixture) => {
-    const presentationCalls: string[] = [];
-    const first = await attachPresentation(fixture.capabilities, 'client-a', presentationCalls);
-    const second = await attachPresentation(fixture.capabilities, 'client-b', presentationCalls);
-    const tokens = tokenFixture('claude-access', { account_uuid: 'account-1' });
-    let usageTransportClosed = 0;
-    const coordinator = new HostOAuthCoordinator({
-      runtimePolicy: fixture.stores,
-      activation: fixture.activation,
-      clientCapabilities: fixture.capabilities,
-      isProviderEnabled: () => true,
-      acquireResidency: fixture.acquireResidency,
-      invalidateBackends: async () => {
-        fixture.invalidations += 1;
-      },
-      onFatal: (error) => {
-        throw error;
-      },
-      now: () => NOW,
-      exchangeCode: async (input) => {
-        assert.equal(input.provider, 'claude-subscription');
-        assert.equal(input.code, 'authorization-code');
-        return tokens;
-      },
-      createFetchTransport: () => ({
-        fetch: async () => new Response(),
-        close: async () => {
-          usageTransportClosed += 1;
-        },
-      }),
-      fetchAccountUsage: async (input) => {
-        assert.equal(input.accessToken, tokens.access_token);
-        return {
-          fiveHour: { utilization: 12, resetsAt: '2026-08-05T12:00:00.000Z' },
-          fetchedAt: NOW,
-        };
-      },
-    });
-
-    const started = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-a', connectionId: fixture.connection.connectionId },
-      operationContext('client-b', fixture.acquireResidency),
-    );
-    assert.equal(started.ok, true);
-    const terminal = await waitForTerminal(coordinator, 'attempt-a');
-    assert.equal(terminal.phase, 'authenticated');
-    assert.deepEqual(presentationCalls, ['client-b']);
-    assert.equal(fixture.invalidations, 1);
-    const resolved = await fixture.stores.operations.resolveExecutionConnection(
-      fixture.connection.slug,
-    );
-    assert.equal(resolved.kind, 'ready');
-    if (resolved.kind === 'ready') {
-      assert.deepEqual(
-        parseOAuthSubscriptionTokens(resolved.secretMaterial.connection?.secret ?? ''),
-        tokens,
-      );
-    }
-    assert.deepEqual(
-      await coordinator.handlers['oauth.account.usage.fetch'](
-        { connectionId: fixture.connection.connectionId },
-        operationContext('client-b', fixture.acquireResidency),
-      ),
-      {
-        ok: true,
-        result: {
-          kind: 'available',
-          provider: 'claude-subscription',
-          quota: {
-            fiveHour: { utilization: 12, resetsAt: '2026-08-05T12:00:00.000Z' },
-            fetchedAt: NOW,
-          },
-        },
-      },
-    );
-    assert.equal(usageTransportClosed, 1);
-    assert.equal(fixture.activeResidencies, 0);
-    await coordinator.close();
-    first.close();
-    second.close();
-  });
-});
 
 test('xAI enrollment keeps device polling and credential material in the Host', async () => {
   await withFixture('xai-oauth', async (fixture) => {
@@ -646,49 +578,8 @@ test('Codex device login presents the one-time code and commits exchanged tokens
   });
 });
 
-test('OAuth login rejects an oversized authorization code at the Host boundary', async () => {
-  await withFixture('claude-subscription', async (fixture) => {
-    const client = await attachPresentation(fixture.capabilities, 'client-oversized', [], {
-      authorizationCode: 'x'.repeat(OAUTH_PRESENTATION_AUTHORIZATION_CODE_MAX_LENGTH + 1),
-    });
-    const coordinator = new HostOAuthCoordinator({
-      runtimePolicy: fixture.stores,
-      activation: fixture.activation,
-      clientCapabilities: fixture.capabilities,
-      isProviderEnabled: () => true,
-      acquireResidency: fixture.acquireResidency,
-      invalidateBackends: async () => {
-        fixture.invalidations += 1;
-      },
-      onFatal: (error) => {
-        throw error;
-      },
-      exchangeCode: async () => {
-        throw new Error('OAuth exchange must not start');
-      },
-    });
-
-    const started = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-oversized', connectionId: fixture.connection.connectionId },
-      operationContext('client-oversized', fixture.acquireResidency),
-    );
-    assert.equal(started.ok, true);
-    assert.deepEqual(await waitForTerminal(coordinator, 'attempt-oversized'), {
-      attemptId: 'attempt-oversized',
-      connectionId: fixture.connection.connectionId,
-      provider: 'claude-subscription',
-      phase: 'failed',
-      failure: 'authorization_failed',
-    });
-    assert.equal(fixture.invalidations, 0);
-    assert.equal(fixture.activeResidencies, 0);
-    await coordinator.close();
-    client.close();
-  });
-});
-
 test('OAuth login rejects a Client without presentation before creating an effect residency', async () => {
-  await withFixture('claude-subscription', async (fixture) => {
+  await withFixture('openai-codex', async (fixture) => {
     const coordinator = new HostOAuthCoordinator({
       runtimePolicy: fixture.stores,
       activation: fixture.activation,
@@ -719,7 +610,7 @@ test('OAuth login rejects a Client without presentation before creating an effec
 });
 
 test('OAuth login rejects an experimentally disabled provider before presentation', async () => {
-  for (const provider of ['claude-subscription', 'openai-codex'] as const) {
+  for (const provider of ['openai-codex', 'xai-oauth'] as const) {
     await withFixture(provider, async (fixture) => {
       const presentationCalls: string[] = [];
       const client = await attachPresentation(
@@ -764,7 +655,7 @@ test('OAuth login rejects an experimentally disabled provider before presentatio
 });
 
 test('OAuth credential commit excludes overlapping backend activations in both directions', async () => {
-  await withFixture('claude-subscription', async (fixture) => {
+  await withFixture('openai-codex', async (fixture) => {
     const client = await attachPresentation(fixture.capabilities, 'client-activation', []);
     const precedingActivationEntered = deferred();
     const releasePrecedingActivation = deferred();
@@ -791,7 +682,18 @@ test('OAuth credential commit excludes overlapping backend activations in both d
         throw error;
       },
       now: () => NOW,
-      exchangeCode: async () => tokenFixture('gated-access', { account_uuid: 'account-1' }),
+      startCodexAuthorization: async () => ({
+        deviceAuthId: 'deviceauth-activation',
+        userCode: 'CODE-ACT',
+        verificationUrl: 'https://auth.openai.com/codex/device',
+        expiresAt: NOW + 60_000,
+        intervalMs: 1_000,
+      }),
+      pollCodexAuthorization: async () => ({
+        authorizationCode: 'activation-code',
+        codeVerifier: 'activation-verifier',
+      }),
+      exchangeCodexCode: async () => tokenFixture('gated-access'),
     });
 
     const started = await coordinator.handlers['oauth.login.start'](
@@ -819,51 +721,11 @@ test('OAuth credential commit excludes overlapping backend activations in both d
   });
 });
 
-test('paste-code presentation can outlive the generic Client Capability timeout', async (t) => {
-  await withFixture('claude-subscription', async (fixture) => {
-    const presentationCalls: string[] = [];
-    const client = await attachPresentation(
-      fixture.capabilities,
-      'client-slow-paste',
-      presentationCalls,
-      { authorizationDelayMs: 150_001 },
-    );
-    const coordinator = new HostOAuthCoordinator({
-      runtimePolicy: fixture.stores,
-      activation: fixture.activation,
-      clientCapabilities: fixture.capabilities,
-      isProviderEnabled: () => true,
-      acquireResidency: fixture.acquireResidency,
-      invalidateBackends: async () => undefined,
-      onFatal: (error) => {
-        throw error;
-      },
-      now: () => NOW,
-      exchangeCode: async () => tokenFixture('slow-access', { account_uuid: 'account-1' }),
-    });
-
-    t.mock.timers.enable({ apis: ['setTimeout'] });
-    const started = await coordinator.handlers['oauth.login.start'](
-      { attemptId: 'attempt-slow-paste', connectionId: fixture.connection.connectionId },
-      operationContext('client-slow-paste', fixture.acquireResidency),
-    );
-    assert.equal(started.ok, true);
-    assert.deepEqual(presentationCalls, ['client-slow-paste']);
-    t.mock.timers.tick(150_001);
-    for (let index = 0; index < 10; index += 1) await Promise.resolve();
-    t.mock.timers.reset();
-
-    assert.equal((await waitForTerminal(coordinator, 'attempt-slow-paste')).phase, 'authenticated');
-    await coordinator.close();
-    client.close();
-  });
-});
-
 async function attachPresentation(
   coordinator: HostClientCapabilityCoordinator,
   connectionId: string,
   calls: string[],
-  options: { authorizationCode?: string; authorizationDelayMs?: number } = {},
+  options: { authorizationDelayMs?: number } = {},
   inputCalls?: Array<{ connectionId: string; input: Record<string, unknown> }>,
 ) {
   const serviceCalls = new Map<string, ClientCapabilityServiceCallFrame>();
@@ -886,15 +748,7 @@ async function attachPresentation(
       }
       const call = serviceCalls.get(frame.invocationId);
       assert.ok(call);
-      const structuredContent =
-        call.method === 'request_authorization_code'
-          ? {
-              kind: 'authorization_code',
-              authorizationCode:
-                options.authorizationCode ??
-                `authorization-code#${new URL(String(call.input.url)).searchParams.get('state')}`,
-            }
-          : { kind: 'presented' };
+      const structuredContent = { kind: 'presented' };
       connection.accept({
         kind: 'client.capability.result',
         invocationId: frame.invocationId,
@@ -984,7 +838,7 @@ function operationContext(connectionId: string, acquireResidency: () => { releas
 }
 
 async function withFixture(
-  providerType: 'claude-subscription' | 'openai-codex' | 'xai-oauth',
+  providerType: 'openai-codex' | 'xai-oauth',
   run: (fixture: {
     stores: RuntimePolicyStoresWriter;
     connection: ConnectionCatalogEntry;

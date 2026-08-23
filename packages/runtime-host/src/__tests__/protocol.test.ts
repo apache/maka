@@ -1,9 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import {
+  decodeClientCapabilityReplaceInput,
   decodeClientFrame,
   decodeHostFrame,
   decodeHostRegistration,
@@ -14,8 +34,8 @@ import {
   MESSAGE_OPERATION_RESULT_MAX_BYTES,
   MESSAGE_QUEUE_MAX_ENTRIES,
   negotiateProtocol,
-  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RUNTIME_HOST_PROTOCOL_VERSION,
   SESSION_CONTINUITY_SCHEMA_VERSION,
   SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES,
@@ -29,7 +49,10 @@ import {
 } from '../protocol/index.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
 import { composeOperationSpecMaps } from '../protocol/operation-spec.js';
-import { runtimeHostLogBuffer } from '../process-diagnostics.js';
+import {
+  RUNTIME_HOST_DIAGNOSTIC_LOG_MAX_BYTES,
+  runtimeHostLogBuffer,
+} from '../process-diagnostics.js';
 import {
   TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH,
   TURN_MESSAGE_QUOTE_MAX_COUNT,
@@ -96,6 +119,90 @@ describe('Runtime Host bootstrap protocol', () => {
     // and Hosts from epoch 25 must fail the handshake instead of decoding each
     // other's catalog responses asymmetrically.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 25);
+  });
+
+  test('publishes a new compatibility epoch for sandbox failure results', () => {
+    // Epoch 32 rejects the bounded sandbox failure reason on live tool results,
+    // so mixed-version peers must fail the handshake. Asserted as a floor, like
+    // the epochs above: pinning an exact value breaks on every later bump.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 32);
+  });
+
+  test('publishes a new compatibility epoch for backend-free ScheduledTask templates', () => {
+    // Epoch 33 Clients require the `backend` field these templates no longer
+    // emit. Also a floor, for the same reason as above.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 33);
+  });
+
+  test('publishes a new compatibility epoch for Session trace pagination', () => {
+    // Epoch 34 peers cannot exchange the paged trace and usage frames. Also a
+    // floor, for the same reason as above.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 34);
+  });
+
+  test('publishes a new compatibility epoch for TraceTotals removal', () => {
+    // Epoch 35 peers still transport aggregate TraceTotals. Also a floor, for
+    // the same reason as above.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 35);
+  });
+
+  test('publishes a new compatibility epoch for the catalog search term', () => {
+    // Epoch 36 cannot carry the search term. Also a floor, for the same reason
+    // as above.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 36);
+  });
+
+  test('publishes a new compatibility epoch for the retired execute permission mode', () => {
+    // Epoch 37 still speaks `execute`. Frame decoders now reject it, so such a
+    // peer would fail mid-Session rather than at connect.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 37);
+  });
+
+  test('publishes a new compatibility epoch for Client Capability progress', () => {
+    // Epoch 38 peers reject the additional tool descriptor field and progress
+    // frame, so the capability must be negotiated at a newer epoch.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 38);
+  });
+
+  test('adds credential rotation without changing existing credential inputs', () => {
+    const issueInput = {
+      principalKind: 'remote_owner',
+      principalId: 'desktop:test',
+      operationGrants: ['host.status'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    };
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput(issueInput),
+      issueInput,
+    );
+    assert.throws(() =>
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput({
+        replacementOfCredentialId: 'credential-current',
+      }),
+    );
+    assert.throws(() =>
+      HOST_OPERATION_SPECS['access.credential.revoke'].decodeInput({
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      }),
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.rotation.prepare'].decodeInput({
+        replacementOfCredentialId: 'credential-current',
+      }),
+      { replacementOfCredentialId: 'credential-current' },
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.rotation.revoke'].decodeInput({
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      }),
+      {
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      },
+    );
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -255,6 +362,12 @@ describe('Runtime Host bootstrap protocol', () => {
       { ...identity, type: 'tool_result', status: 'completed', durationMs: 3 },
       {
         ...identity,
+        type: 'tool_result',
+        status: 'errored',
+        sandboxFailureReason: 'sandbox_boundary_required',
+      },
+      {
+        ...identity,
         type: 'tool_result_preview',
         isError: false,
         content: {
@@ -287,6 +400,18 @@ describe('Runtime Host bootstrap protocol', () => {
         type: 'tool_result',
         status: 'errored',
         error: 'raw provider error',
+      },
+      {
+        ...identity,
+        type: 'tool_result',
+        status: 'errored',
+        sandboxFailureReason: 'raw provider error',
+      },
+      {
+        ...identity,
+        type: 'tool_result',
+        status: 'completed',
+        sandboxFailureReason: 'requires_bypass',
       },
       {
         ...identity,
@@ -1261,9 +1386,18 @@ describe('Runtime Host bootstrap protocol', () => {
       runtimeHostLogBuffer.append('info', `entry ${index}`);
     }
     runtimeHostLogBuffer.append('error', '🚀'.repeat(3_000));
-    const logs = runtimeHostLogBuffer.snapshot();
+    const entryBoundedLogs = runtimeHostLogBuffer.snapshot();
 
-    assert.equal(logs.length, 256);
+    assert.equal(entryBoundedLogs.length, 256);
+
+    for (let index = 0; index < 256; index += 1) {
+      runtimeHostLogBuffer.append('info', `retained detail ${index} ${'x'.repeat(256)}`);
+    }
+    const logs = runtimeHostLogBuffer.snapshot();
+    const encodedLogBytes = Buffer.byteLength(JSON.stringify(logs));
+
+    assert.ok(encodedLogBytes > 48 * 1024);
+    assert.ok(encodedLogBytes <= RUNTIME_HOST_DIAGNOSTIC_LOG_MAX_BYTES);
     assert.doesNotThrow(() =>
       HOST_BOOTSTRAP_OPERATION_SPECS['host.diagnostics.query'].decodeOutput({
         hostEpoch: 'epoch-1',
@@ -1360,6 +1494,84 @@ describe('Runtime Host bootstrap protocol', () => {
         error instanceof RuntimeHostProtocolError && error.code === 'frame_too_large',
     );
   });
+});
+
+test('Client Capability tool descriptors preserve only known activity kinds', () => {
+  const input = {
+    registrationId: 'registration-1',
+    offers: [
+      {
+        offerId: 'desktop_computer_use',
+        version: '0',
+        affinity: 'session',
+        hostPathAccess: 'cwd',
+        label: 'Computer Use',
+        tools: [
+          {
+            serverId: 'desktop_computer_use',
+            name: 'maka_computer',
+            inputSchema: { type: 'object' },
+            activityKind: 'computer',
+          },
+        ],
+      },
+    ],
+  };
+
+  assert.equal(
+    decodeClientCapabilityReplaceInput(input).offers[0]?.tools[0]?.activityKind,
+    'computer',
+  );
+  assert.throws(
+    () =>
+      decodeClientCapabilityReplaceInput({
+        ...input,
+        offers: [
+          {
+            ...input.offers[0],
+            tools: [{ ...input.offers[0]!.tools[0], activityKind: 'desktop' }],
+          },
+        ],
+      }),
+    isInvalidFrame,
+  );
+});
+
+test('Client Capability progress frames require bounded monotonic coordinates', () => {
+  assert.deepEqual(
+    decodeClientFrame({
+      kind: 'client.capability.progress',
+      invocationId: 'invocation-1',
+      current: 7,
+      total: 11,
+    }),
+    {
+      kind: 'client.capability.progress',
+      invocationId: 'invocation-1',
+      current: 7,
+      total: 11,
+    },
+  );
+  assert.throws(
+    () =>
+      decodeClientFrame({
+        kind: 'client.capability.progress',
+        invocationId: 'invocation-1',
+        current: 12,
+        total: 11,
+      }),
+    isInvalidFrame,
+  );
+  assert.throws(
+    () =>
+      decodeClientFrame({
+        kind: 'client.capability.progress',
+        invocationId: 'invocation-1',
+        current: 1,
+        total: 1_025,
+      }),
+    isInvalidFrame,
+  );
 });
 
 function isInvalidFrame(error: unknown): boolean {

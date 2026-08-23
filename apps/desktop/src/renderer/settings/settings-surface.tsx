@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   Badge,
@@ -126,6 +145,8 @@ export function SettingsSurface(props: {
   onOpenSession?(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
+  onRemoteHostAdded(profileId: string): void;
+  onSelectedRuntimeHostProfileIdChange(profileId: string | undefined): void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
@@ -276,6 +297,12 @@ export function SettingsSurface(props: {
   const sectionScope = settingsSectionScope(section);
   const showsRuntimeHost = sectionScope !== 'client';
   const requiresRuntimeHost = sectionScope === 'runtime-host';
+  useEffect(() => {
+    props.onSelectedRuntimeHostProfileIdChange(
+      showsRuntimeHost ? selectedProfileId : undefined,
+    );
+    return () => props.onSelectedRuntimeHostProfileIdChange(undefined);
+  }, [props.onSelectedRuntimeHostProfileIdChange, selectedProfileId, showsRuntimeHost]);
   const runtimeHostCatalogFailed = runtimeHostCatalog.status === 'error';
   const runtimeHostSettingsLoading = Boolean(
     selectedRuntimeHostKey &&
@@ -567,8 +594,18 @@ export function SettingsSurface(props: {
   }, [connectionsBridge, selectedRuntimeHost]);
 
   useEffect(() => {
-    if (section === 'usage') void reloadUsage();
-  }, [section]);
+    // Keyed on the EFFECTIVE range, not just the section: usage is
+    // client-owned (settings-ownership.ts), and the persisted range rides
+    // in with the async getClient() load — which lands after this effect
+    // first fires when a Settings window is restored directly onto
+    // 使用统计. The initial fetch then used the '24h' default while the
+    // chip showed the persisted range, and nothing refetched — every
+    // metric read 0 until a manual refresh or a tab round-trip. With the
+    // range in the deps, the truth's arrival (or any later range change,
+    // including the page's own persisted range clicks) is the trigger, and
+    // this effect is the single owner of range-driven fetches.
+    if (section === 'usage') void reloadUsage(settings.usage.range);
+  }, [section, settings.usage.range]);
 
   // PR-SETTINGS-HEADER-COPY-MAP-0 (U1): the page header derives its title
   // and description from the section→copy map keyed by the active section,
@@ -587,19 +624,26 @@ export function SettingsSurface(props: {
     }));
 
   async function retryRuntimeHostContent(): Promise<void> {
+    let diagnosticTarget: { profileId: string } | undefined;
     try {
       if (runtimeHostCatalog.status === 'error') {
         await reloadRuntimeHosts();
         return;
       }
       if (!selectedRuntimeHost || !connectionsBridge) return;
+      diagnosticTarget = { profileId: selectedRuntimeHost.profileId };
       await Promise.all([
         reloadRuntimeHostSettings(selectedRuntimeHost),
         reloadConnections(connectionsBridge, selectedRuntimeHost),
       ]);
     } catch (error) {
       if (settingsModalMountedRef.current) {
-        toast.error(copy.settingsLoadFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.settingsLoadFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          diagnosticTarget,
+        );
       }
     }
   }
@@ -673,7 +717,10 @@ export function SettingsSurface(props: {
             aria-label={copy.contentLabel}
           >
             <Layout
-              height="fill"
+              /* The rounded main pane owns page scrolling. Keeping scroll on
+                 the centered LayoutContent made the wide gutters inert and
+                 parked the scrollbar beside the 920px content column. */
+              height="auto"
               padding={0}
               /* One column width for EVERY section. Usage used to get 920
                  while the rest sat in a 640 column, so switching pages
@@ -708,7 +755,7 @@ export function SettingsSurface(props: {
                 </LayoutHeader>
               )}
               content={(
-                <LayoutContent padding={6}>
+                <LayoutContent padding={6} isScrollable={false}>
                   {loading ? (
                     <SettingsSkeleton />
                   ) : requiresRuntimeHost && runtimeHostContentStatus === 'error' ? (
@@ -766,6 +813,7 @@ export function SettingsSurface(props: {
                         onOpenSession={props.onOpenSession}
                         archivedTasks={props.archivedTasks}
                         onTaskImported={props.onTaskImported}
+                        onRemoteHostAdded={props.onRemoteHostAdded}
                         openProviderCatalog={providerCatalogRequested}
                         initialConnectionSlug={props.initialConnectionSlug}
                         initialCreateProviderType={createProviderRequest}
@@ -807,6 +855,7 @@ function SettingsPageBody(props: {
   onOpenSession?(sessionId: string): void;
   archivedTasks: ArchivedTasksBridge;
   onTaskImported(session: DesktopSessionSummary): void;
+  onRemoteHostAdded(profileId: string): void;
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -885,6 +934,7 @@ function SettingsPageBody(props: {
           runtimeHostStatus={props.runtimeHostStatus}
           onUpdate={props.onUpdateSettings}
           onRetryRuntimeHost={props.onRetryRuntimeHost}
+          onRemoteHostAdded={props.onRemoteHostAdded}
         />
       );
     case 'appearance':

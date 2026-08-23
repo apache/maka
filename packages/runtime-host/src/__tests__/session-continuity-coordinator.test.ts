@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { setImmediate as delayImmediate } from 'node:timers/promises';
 import test from 'node:test';
@@ -526,7 +545,8 @@ test('coalesces typed domain invalidations without publishing continuity project
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'plan');
-  await waitFor(() => sink.frames.length === 2);
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'usage');
+  await waitFor(() => sink.frames.length === 3);
 
   assert.deepEqual(
     sink.frames.map((frame) =>
@@ -537,6 +557,7 @@ test('coalesces typed domain invalidations without publishing continuity project
     [
       { kind: 'subscription.session_domain_changed', sequence: 1, domain: 'task' },
       { kind: 'subscription.session_domain_changed', sequence: 2, domain: 'plan' },
+      { kind: 'subscription.session_domain_changed', sequence: 3, domain: 'usage' },
     ],
   );
   coordinator.close();
@@ -1803,6 +1824,49 @@ test('tool_result clears retained tool_result_preview so a later open does not s
     ),
     false,
   );
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('publishes only the minimal sandbox failure reason from a tool result', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_result',
+    id: 'result-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    isError: true,
+    content: {
+      kind: 'text',
+      text: 'sensitive tool output',
+      sandboxFailure: { reason: 'sandbox_boundary_required' },
+    },
+  });
+  await waitFor(() => sink.frames.length === 1);
+
+  const [frame] = sink.frames;
+  assert.equal(frame?.kind, 'subscription.session_event');
+  if (frame?.kind !== 'subscription.session_event') return;
+  assert.deepEqual(frame.event, {
+    type: 'tool_result',
+    id: 'result-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    status: 'errored',
+    sandboxFailureReason: 'sandbox_boundary_required',
+  });
 
   connection.abort(opened.subscriptionId);
   coordinator.close();

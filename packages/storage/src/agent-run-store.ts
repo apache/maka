@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -35,6 +54,7 @@ import {
 import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import { isTerminalRuntimeEvent, type RuntimeEvent } from '@maka/core/runtime-event';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
 import {
   LATEST_CONTEXT_PROJECTION_TYPE,
   supersedesLatestContext,
@@ -169,6 +189,7 @@ export interface DurableAgentRunStore
     RootTurnStartRejectionStore {
   findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
+  listSessionRunsPage(sessionId: string, input: AgentRunPageInput): Promise<AgentRunPageResult>;
   readEventsBounded(
     sessionId: string,
     runId: string,
@@ -200,6 +221,21 @@ export interface DurableAgentRunStore
 export interface AgentRunIdentitySearchResult {
   readonly runs: readonly AgentRunHeader[];
   readonly truncated: boolean;
+}
+
+export interface AgentRunPageCursor {
+  readonly createdAt: number;
+  readonly runId: string;
+}
+
+export interface AgentRunPageInput {
+  readonly before?: AgentRunPageCursor;
+  readonly limit: number;
+}
+
+export interface AgentRunPageResult {
+  readonly runs: readonly AgentRunHeader[];
+  readonly nextCursor: AgentRunPageCursor | null;
 }
 
 export type { BoundedEvidenceReadResult, EvidenceReadBudget } from './bounded-evidence.js';
@@ -414,6 +450,72 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
     });
     return { runs, truncated };
+  }
+
+  async listSessionRunsPage(
+    sessionId: string,
+    input: AgentRunPageInput,
+  ): Promise<AgentRunPageResult> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertIdentitySearchLimit(input.limit);
+    if (input.before) {
+      assertSafeId(input.before.runId, 'Invalid AgentRun page cursor');
+      if (!Number.isFinite(input.before.createdAt)) {
+        throw new Error('Invalid AgentRun page cursor');
+      }
+    }
+    const rows = this.#lease.database
+      .prepare(
+        input.before
+          ? `
+            SELECT run_id, created_at, record_json
+            FROM core_agent_runs
+            WHERE session_id = ?
+              AND (created_at < ? OR (created_at = ? AND run_id < ?))
+            ORDER BY created_at DESC, run_id DESC
+            LIMIT ?
+          `
+          : `
+            SELECT run_id, created_at, record_json
+            FROM core_agent_runs
+            WHERE session_id = ?
+            ORDER BY created_at DESC, run_id DESC
+            LIMIT ?
+          `,
+      )
+      .all(
+        ...(input.before
+          ? [
+              sessionId,
+              input.before.createdAt,
+              input.before.createdAt,
+              input.before.runId,
+              input.limit + 1,
+            ]
+          : [sessionId, input.limit + 1]),
+      ) as Array<{ run_id?: unknown; created_at?: unknown; record_json?: unknown }>;
+    const pageRows = rows.slice(0, input.limit);
+    const runs = pageRows.map((row) => {
+      if (
+        typeof row.run_id !== 'string' ||
+        typeof row.created_at !== 'number' ||
+        typeof row.record_json !== 'string'
+      ) {
+        throw new Error('Invalid SQLite AgentRun page row');
+      }
+      return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
+    });
+    const last = pageRows.at(-1);
+    return {
+      runs,
+      nextCursor:
+        rows.length > input.limit &&
+        last &&
+        typeof last.run_id === 'string' &&
+        typeof last.created_at === 'number'
+          ? { createdAt: last.created_at, runId: last.run_id }
+          : null,
+    };
   }
 
   async listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]> {
@@ -930,6 +1032,17 @@ function insertAgentRunEvent(db: DatabaseSync, event: AgentRunEvent): void {
     event.ts,
     JSON.stringify(event, sanitizeJson),
   );
+  if (event.type === MODEL_CALL_ATTEMPT_EVENT_TYPE) {
+    const updated = db
+      .prepare(`
+        UPDATE core_agent_runs
+        SET latest_model_call_sequence = ?
+        WHERE session_id = ? AND run_id = ?
+          AND (latest_model_call_sequence IS NULL OR latest_model_call_sequence < ?)
+      `)
+      .run(row.sequence, event.sessionId, event.runId, row.sequence).changes;
+    if (updated !== 1) throw new Error('Failed to advance model-call authority high-water');
+  }
 }
 
 function readSqliteAgentRunProjection(

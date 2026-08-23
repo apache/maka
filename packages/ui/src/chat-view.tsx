@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ICON_SIZE,
@@ -461,7 +480,11 @@ export function ChatView(props: {
       <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
     );
     return (
-      <main className="maka-main agents-chat-panel agents-chat-view-root">
+      <section
+        className="maka-main agents-chat-panel agents-chat-view-root"
+        role="region"
+        aria-label={conversationCopy.empty.surfaceAriaLabel}
+      >
         {/* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d 2026-06-23): the
             browser-style session tab + the duplicate "新建对话" plus
             button were removed. The session name lives in the sidebar;
@@ -479,8 +502,6 @@ export function ChatView(props: {
             owns. */}
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
-          density="compact"
-          gap={4}
           emptyState={conversationItems.length === 0 ? emptyContent : undefined}
         >
           {conversationItems.length > 0 ? (
@@ -490,7 +511,7 @@ export function ChatView(props: {
             </>
           ) : null}
         </ChatMessageList>
-      </main>
+      </section>
     );
   }
 
@@ -533,7 +554,11 @@ export function ChatView(props: {
         );
 
   return (
-    <main className="maka-main agents-chat-panel agents-chat-view-root">
+    <section
+      className="maka-main agents-chat-panel agents-chat-view-root"
+      role="region"
+      aria-label={copy.conversationAriaLabel(props.activeSession.name)}
+    >
       {props.returnToLatest ? (
         <div className="maka-transcript-history-controls">
           <Button
@@ -581,8 +606,6 @@ export function ChatView(props: {
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
           data-turn-source-count={turns.length}
-          density="compact"
-          gap={4}
           isStreaming={streamingActive}
           emptyState={showEmptyState ? emptyContent : undefined}
         >
@@ -739,7 +762,7 @@ export function ChatView(props: {
           )
         ) : null}
       </div>
-    </main>
+    </section>
   );
 }
 

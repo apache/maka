@@ -35,6 +35,7 @@ github:
     - typescript
     - cli
     - apache
+    - incubator
     - maka
   features:
     issues: true
@@ -51,7 +52,13 @@ github:
   protected_branches:
     main:
       required_pull_request_reviews:
-        dismiss_stale_reviews: true
+        # GitHub dismisses approvals on any new commit but never dismisses a
+        # requested change, so leaving this on makes the two halves of a review
+        # decay at different rates: a rebase costs the author a whole new
+        # approval round while an unresolved objection survives untouched.
+        # The head-bound guarantee lives in required_status_checks instead,
+        # which reruns test against every pushed head.
+        dismiss_stale_reviews: false
         required_approving_review_count: 1
       required_status_checks:
         strict: false
@@ -63,20 +70,42 @@ github:
         contexts:
           - test
 
+  rulesets:
+    - name: Immutable release tags
+      type: tag
+      branches:
+        includes:
+          - "v*"
+        excludes: []
+      restrict_deletion: true
+      restrict_force_push: true
+
   environments:
-    # release holds the Apple notarization and code signing credentials used by
-    # .github/workflows/release-desktop.yml. That workflow's own branch guard
-    # sits inside the file it is meant to protect, so this policy is the only
-    # boundary GitHub enforces from outside the workflow.
-    #
-    # Naming an environment here replaces its settings wholesale, so restate
-    # its full configuration when adding one. npm-release carries a required
-    # reviewer and a branch policy that live only on GitHub.
+    # These environments are the external human gates around signing secrets
+    # and npm OIDC. Naming an environment here replaces its settings wholesale,
+    # so keep every protection rule in this declarative authority.
     release:
+      required_reviewers:
+        - id: M4n5ter
+          type: User
+      wait_timer: 0
+      prevent_self_review: true
       deployment_branch_policy:
+        protected_branches: false
         policies:
-          - name: main
-            type: branch
+          - name: "v*-incubating-rc*"
+            type: tag
+    npm-release:
+      required_reviewers:
+        - id: M4n5ter
+          type: User
+      wait_timer: 0
+      prevent_self_review: true
+      deployment_branch_policy:
+        protected_branches: false
+        policies:
+          - name: "v*"
+            type: tag
 
 notifications:
   commits:      commits@maka.apache.org

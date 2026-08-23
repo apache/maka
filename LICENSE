@@ -203,6 +203,59 @@
 
 THIRD-PARTY COMPONENTS
 
+Vercel AI SDK
+
+Source: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.11
+        https://www.npmjs.com/package/@ai-sdk/provider/v/4.0.3
+Repository: https://github.com/vercel/ai/tree/main/packages/provider-utils
+            https://github.com/vercel/ai/tree/main/packages/provider
+Version: @ai-sdk/provider-utils 5.0.11, @ai-sdk/provider 4.0.3
+Copyright 2023 Vercel, Inc.
+License: Apache-2.0
+
+`packages/runtime/src/model-protocol.ts` adapts the JSON value, provider
+option, file data, content part, and message shapes from these components and
+modifies them. That file carries the required modification notice. The Apache
+License, Version 2.0 above applies to the adapted material.
+
+The pinned versions are the ones present when the adaptation was made. The
+adapted declarations are unchanged through @ai-sdk/provider-utils 5.0.25 and
+@ai-sdk/provider 4.0.7, the versions recorded by the code origin audit.
+
+Astryx
+
+Source: https://github.com/facebook/astryx
+ChatReasoning revision: c9fe4379e9959b9ba5eeff56def34c752223450e
+Theme revision: 110987b4505dc44119b94bed53d92b9840088a61
+Copyright (c) 2026 Meta Platforms, Inc.
+License: MIT
+
+Maka includes an ejected adaptation of Astryx ChatReasoning v0.1.9 and generated
+theme artifacts based on Astryx theme-neutral v0.4.0. The following MIT License
+applies to that material:
+
+MIT License
+
+Copyright (c) 2026 Meta Platforms, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 trycua/cua cursor-overlay
 
 Source: https://github.com/trycua/cua
@@ -216,6 +269,122 @@ The following MIT License applies to that material:
 MIT License
 
 Copyright (c) 2025 Cua AI, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+anomalyco/opencode (adapted source)
+
+Source: https://github.com/anomalyco/opencode
+Revision: fc80874f45a595ff6874a4d36b1090f6a64424d2
+Copyright (c) 2025 opencode
+License: MIT
+
+Maka's tool-output truncation (packages/runtime/src/tool-output.ts) and
+string-edit matching strategies (packages/runtime/src/edit-replace.ts) include
+adaptations of this software. Each file marks the adapted portion in its header;
+the surrounding Maka source stays under this repository's Apache-2.0 license.
+
+Maka took the string-edit strategies from opencode, but opencode's edit.ts
+credits cline diff-apply and the gemini-cli editCorrector upstream of itself,
+and both are Apache-2.0. That region of edit-replace.ts is therefore not
+uniformly MIT, and its header lists each piece with the license that governs
+it. The two Apache-2.0 pieces are recorded separately below. The MIT License
+here applies to the rest: tool-output.ts, and opencode's own additions and
+modifications in edit-replace.ts.
+
+MIT License
+
+Copyright (c) 2025 opencode
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+cline/cline diff-apply (adapted source, reached through opencode)
+
+Source: https://github.com/cline/cline
+Revision: 50b43c0559a9658a4fda79645b2cfe66cfa2f133
+Path: evals/diff-edits/diff-apply/diff-06-23-25.ts
+Copyright 2025 Cline Bot Inc.
+License: Apache-2.0
+
+The line-trimmed matcher in packages/runtime/src/edit-replace.ts is adapted
+from this file's lineTrimmedFallbackMatch. Maka reached it through opencode
+rather than directly. The Apache License 2.0 that governs it is the same
+license reproduced at the top of this file; cline ships no NOTICE file. The
+modifications Maka made are stated in the header of edit-replace.ts, as
+Apache-2.0 section 4(b) requires.
+
+
+google-gemini/gemini-cli editCorrector (adapted source, reached through opencode)
+
+Source: https://github.com/google-gemini/gemini-cli
+Revision: 93909a2dd3bf901e8f98a9fd41e1300faa585a84
+Path: packages/core/src/utils/editCorrector.ts
+Copyright 2025 Google LLC
+License: Apache-2.0
+
+The escape-normalizing matcher in packages/runtime/src/edit-replace.ts carries
+the regular expression and the first eight escape branches, in order, from this
+file's unescapeStringForGeminiBug. opencode added a ninth branch and changed the
+pattern; Maka took opencode's result. The Apache License 2.0 that governs it is
+the same license reproduced at the top of this file; gemini-cli ships no NOTICE
+file. The modifications Maka made are stated in the header of edit-replace.ts,
+as Apache-2.0 section 4(b) requires.
+
+
+sst/models.dev (generated model catalog snapshot)
+
+Source: https://models.dev/api.json
+Repository: https://github.com/sst/models.dev
+Copyright (c) 2025 models.dev
+License: MIT
+
+packages/core/src/model-metadata.generated.ts and
+packages/runtime/src/telemetry/model-pricing.generated.ts are generated from the
+models.dev catalog by scripts/sync-model-metadata.mjs and are redistributed with
+Maka. They copy and transform selected model and provider metadata from that
+catalog, including upstream display names and descriptive text, lifecycle status
+values, reasoning effort options, context and output limits, modalities, and
+prices. Which providers are kept, which fields are kept, and the order they
+appear in are decided by the generator. The following MIT License applies to
+the material taken from upstream:
+
+MIT License
+
+Copyright (c) 2025 models.dev
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

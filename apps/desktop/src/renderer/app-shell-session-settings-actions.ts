@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
@@ -15,7 +34,12 @@ type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Reco
 
 type ToastApi = {
   success(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
   confirm(input: {
     title: string;
     description?: string;
@@ -43,7 +67,8 @@ export function createAppShellSessionSettingsActions(deps: {
     model: { llmConnectionSlug: string; model: string };
   }) => void;
   sessionsRef: RefBox<DesktopSessionSummary[]>;
-  setNewTaskPermissionMode: (mode: ChatDefaultPermissionMode) => void;
+  /** Persists the chat default; awaited so a failure surfaces as one. */
+  setNewTaskPermissionMode: (mode: ChatDefaultPermissionMode) => void | Promise<void>;
   setPendingPermissionModeBySession: BooleanRecordUpdater;
   setPendingSessionModelBySession: BooleanRecordUpdater;
   setSessions: (
@@ -122,7 +147,7 @@ export function createAppShellSessionSettingsActions(deps: {
           prev.map((session) => (session.id === sessionId ? next : session)),
         );
       } else {
-        setNewTaskPermissionMode(mode);
+        await setNewTaskPermissionMode(mode);
       }
       toastApi.success(
         copy.permissionSwitched(copy.permissionLabels[nextMode]),
@@ -130,7 +155,12 @@ export function createAppShellSessionSettingsActions(deps: {
       );
       if (sessionId) await refreshSessions();
     } catch (error) {
-      toastApi.error(copy.permissionFailedTitle, localizedShellErrorMessage(error, copy.permissionFallback, uiLocale));
+      toastApi.error(
+        copy.permissionFailedTitle,
+        localizedShellErrorMessage(error, copy.permissionFallback, uiLocale),
+        undefined,
+        sessionId ? { sessionId } : undefined,
+      );
     } finally {
       pendingPermissionModeChangesRef.current.delete(pendingKey);
       if (sessionId) setPendingPermissionModeBySession((current) => omitSessionKey(current, sessionId));
@@ -173,7 +203,12 @@ export function createAppShellSessionSettingsActions(deps: {
       await refreshSessions();
     } catch (error) {
       if (activeIdRef.current === sessionId) {
-        toastApi.error(copy.modelFailedTitle, localizedShellErrorMessage(error, copy.modelFallback, uiLocale));
+        toastApi.error(
+          copy.modelFailedTitle,
+          localizedShellErrorMessage(error, copy.modelFallback, uiLocale),
+          undefined,
+          { sessionId },
+        );
       }
     } finally {
       pendingSessionModelChangesRef.current.delete(sessionId);
@@ -201,7 +236,12 @@ export function createAppShellSessionSettingsActions(deps: {
       await refreshSessions();
     } catch (error) {
       if (activeIdRef.current === sessionId) {
-        toastApi.error(copy.thinkingFailedTitle, localizedShellErrorMessage(error, copy.thinkingFallback, uiLocale));
+        toastApi.error(
+          copy.thinkingFailedTitle,
+          localizedShellErrorMessage(error, copy.thinkingFallback, uiLocale),
+          undefined,
+          { sessionId },
+        );
       }
     } finally {
       pendingSessionModelChangesRef.current.delete(sessionId);

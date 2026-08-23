@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -211,10 +230,13 @@ describe('declared relay context window', () => {
     assert.equal(fallback?.maxHistoryEstimatedTokens, 8_192 - 2_048);
   });
 
-  test('the same table is inert on non-relay providers', () => {
-    // Declarations are an openai-compatible feature; a profiles table riding
-    // along on another provider (stale import, provider flip) must not shadow
-    // that provider's stored rows or metadata.
+  test('a declared context window holds on any provider', () => {
+    // A context window is a fact about the model, and the reason to declare
+    // one — Maka has no other way to learn it — is not confined to relays: it
+    // holds for a model newer than the bundled snapshot, and for every model
+    // on a provider with no model-list endpoint (#1584). What stays relay-only
+    // is the wire-shaped fields, `thinkingLevels` and `serviceTier`, which the
+    // catalog codec refuses to persist on another provider.
     const other: LlmConnection = {
       slug: 'other',
       name: 'Other',
@@ -227,7 +249,14 @@ describe('declared relay context window', () => {
       relayModelProfiles: { 'reasoner-32k': { contextWindow: 131_072 } },
     };
     const policy = buildDefaultContextBudgetPolicy(other, { env: {}, modelId: 'reasoner-32k' });
-    assert.equal(policy?.maxHistoryEstimatedTokens, 8_192 - 2_048);
+    assert.equal(policy?.maxHistoryEstimatedTokens, 131_072 - 16_384);
+    // Absent stays absent: an undeclared model still reads the stored row.
+    const undeclared: LlmConnection = { ...other, relayModelProfiles: undefined };
+    assert.equal(
+      buildDefaultContextBudgetPolicy(undeclared, { env: {}, modelId: 'reasoner-32k' })
+        ?.maxHistoryEstimatedTokens,
+      8_192 - 2_048,
+    );
   });
 });
 

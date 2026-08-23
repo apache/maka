@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -239,6 +258,60 @@ test('owned Host exits promptly after its first connection closes', async () => 
   if (result.kind !== 'connected') return;
   await result.connection.close();
   assert.equal(await result.host.settle(500), true);
+});
+
+test('an exited owned Candidate permits one real successor in the same election', {
+  timeout: 25_000,
+}, async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-successor-'));
+  const attempts: OwnedCandidateAttempt[] = [];
+  let launches = 0;
+  let connection: Awaited<ReturnType<typeof connectOrSpawnRuntimeHostWithDependencies>> | undefined;
+  try {
+    connection = await connectOrSpawnRuntimeHostWithDependencies(
+      {
+        rootPath,
+        protocol: {
+          min: RUNTIME_HOST_PROTOCOL_VERSION,
+          max: RUNTIME_HOST_PROTOCOL_VERSION,
+        },
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        candidateEntrypoint: new URL('../execution-candidate-main.js', import.meta.url),
+        // This proves successor admission, not startup promptness. A full Windows
+        // suite can spend several seconds loading the real execution composition.
+        electionDeadlineMs: 15_000,
+      },
+      {
+        random: () => 0,
+        launchCandidate(input) {
+          launches += 1;
+          const launch = launchOwnedRuntimeHostCandidate(
+            launches === 1
+              ? {
+                  ...input,
+                  entrypoint: new URL('./fixtures/owned-candidate-exit.js', import.meta.url),
+                  env: { MAKA_TEST_EXIT_CODE: '2' },
+                }
+              : { ...input, idleGraceMs: 0 },
+          );
+          void launch.spawned.then((attempt) => attempts.push(attempt));
+          return launch;
+        },
+      },
+    );
+
+    assert.equal(connection.kind, 'connected', connectFailure(connection));
+    assert.equal(launches, 2);
+    assert.equal(attempts.length, 2);
+    if (connection.kind === 'connected') await connection.connection.close();
+    assert.equal(await attempts[0]?.settle(2_000), false);
+    assert.equal(await attempts[1]?.settle(5_000), true);
+  } finally {
+    if (connection?.kind === 'connected')
+      await connection.connection.close().catch(() => undefined);
+    await Promise.allSettled(attempts.map((attempt) => attempt.settle(2_000)));
+    await rm(rootPath, { recursive: true, force: true });
+  }
 });
 
 test('owned candidate settlement requires a clean process exit', async () => {

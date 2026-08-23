@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { RetryError } from 'ai';
@@ -202,6 +221,31 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(shaped.reason, 'rate_limit');
     assert.equal(shaped.code, '429');
     assert.equal(shaped.message, 'Rate limit exceeded');
+  });
+
+  test('normalizes a status-less provider server_error into a retryable outage', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    const [event] = adapter.translateChunk({
+      type: 'error',
+      error: {
+        type: 'server_error',
+        code: 'server_error',
+        message:
+          'Streaming response failed: [502] Upstream error from Nvidia: Service temporarily overloaded',
+      },
+    } as Chunk);
+
+    assert.deepEqual(event, {
+      kind: 'error',
+      failure: {
+        type: 'model_failure',
+        kind: 'provider_unavailable',
+        code: 'server_error',
+        message: 'Provider returned an error',
+        retryable: true,
+      },
+    });
   });
 
   test('preserves an explicit empty reasoning delta without inventing one for absent text', () => {

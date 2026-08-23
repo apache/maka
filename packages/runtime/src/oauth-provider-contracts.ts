@@ -1,4 +1,23 @@
-export type OAuthEnrollmentProvider = 'claude-subscription' | 'openai-codex' | 'xai-oauth';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+export type OAuthEnrollmentProvider = 'openai-codex' | 'xai-oauth';
 
 export type OAuthTokenEndpointErrorCategory =
   | 'invalid_grant'
@@ -40,21 +59,6 @@ export class OAuthDeviceAuthorizationExpiredError extends Error {
 export const OAUTH_MAX_TOKEN_CHARS = 32 * 1024;
 
 export const OAUTH_PROVIDER_CONTRACTS = {
-  'claude-subscription': {
-    clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
-    authorizationEndpoint: 'https://claude.com/cai/oauth/authorize',
-    tokenEndpoint: 'https://platform.claude.com/v1/oauth/token',
-    redirectUri: 'https://platform.claude.com/oauth/code/callback',
-    // `user:inference` is what authorizes Messages API calls; without it the
-    // granted token is session-scoped only and every inference request fails
-    // with `permission_error: OAuth token does not meet scope requirement
-    // any_of(..., user:inference, ...)`. The consent screen renders it as
-    // "Contribute to your Claude subscription usage".
-    scope: 'user:inference user:sessions:claude_code user:mcp_servers user:file_upload',
-    tokenUserAgent: 'claude-cli/2.1.153 (external, cli)',
-    presentation: 'paste-code',
-    experimentalEnvironmentVariable: 'MAKA_CLAUDE_SUBSCRIPTION_EXPERIMENTAL',
-  },
   'openai-codex': {
     clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
     tokenEndpoint: 'https://auth.openai.com/oauth/token',
@@ -69,13 +73,13 @@ export const OAUTH_PROVIDER_CONTRACTS = {
   },
   'xai-oauth': {
     clientId: 'b1a00492-073a-47ea-816f-4c329264a828',
-    authorizationEndpoint: 'https://auth.x.ai/oauth2/authorize',
+    // xAI device-code flow: request a user code at `deviceEndpoint`, then
+    // exchange it at `tokenEndpoint` under `deviceGrant`. The loopback
+    // authorize endpoint, its 127.0.0.1 redirect, and the PKCE extras left
+    // with the paste-code presentation that was the only caller.
     deviceEndpoint: 'https://auth.x.ai/oauth2/device/code',
     tokenEndpoint: 'https://auth.x.ai/oauth2/token',
-    redirectUri: 'http://127.0.0.1:56121/callback',
     scope: 'openid profile email offline_access grok-cli:access api:access',
-    presentation: 'loopback',
-    authorizationExtras: [['plan', 'generic']] as ReadonlyArray<readonly [string, string]>,
     deviceGrant: 'urn:ietf:params:oauth:grant-type:device_code',
     defaultTokenLifetimeSeconds: 3_600,
   },

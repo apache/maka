@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { relayModelProfile } from '@maka/core/model-thinking';
@@ -419,9 +438,10 @@ export function resolveSelectedModelContextWindow(
 ): number | undefined {
   const selectedModelId = modelId ?? connection.defaultModel;
   if (selectedModelId === undefined) return undefined;
-  // A user declaration outranks both the relay's /models report and generated
-  // metadata — mirrors the declared-vision precedence in model-metadata.ts,
-  // through the same provider-gated seam (relay declarations only).
+  // A user declaration outranks both the provider's /models report and
+  // generated metadata — mirrors the declared-vision precedence in
+  // model-metadata.ts. A declared context window is legal on any provider: it
+  // states a fact about the model, not a request shape (#1584).
   const declared = relayModelProfile(connection, selectedModelId)?.contextWindow;
   if (declared !== undefined) return declared;
   const model = connection.models?.find((candidate) => candidate.id === selectedModelId);

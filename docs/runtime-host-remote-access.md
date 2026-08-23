@@ -1,3 +1,22 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Connect to a remote Runtime Host
 
 [简体中文](./runtime-host-remote-access.zh-CN.md)
@@ -10,7 +29,7 @@ On a Linux machine with Node.js 22.19 or newer and a working systemd user manage
 can install and verify a persistent Runtime Host in one command:
 
 ```sh
-npx --yes maka-agent@next runtime-host setup \
+npx --yes --package maka-agent@next maka runtime-host setup \
   --principal my-desktop \
   --preset desktop-client \
   --root /srv/maka \
@@ -22,7 +41,7 @@ instead of accumulating credentials. The command installs its exact Maka package
 directory, starts a loopback-only service, verifies the new credential, and then prints the connection
 details once. Use `terminal-client` for TUI or CLI.
 
-Run `npx --yes maka-agent@next runtime-host service uninstall` on the Host to remove the service and
+Run `npx --yes --package maka-agent@next maka runtime-host service uninstall` on the Host to remove the service and
 managed package. The State Root and Project data are retained.
 
 ## Manual Host setup
@@ -69,7 +88,8 @@ maka runtime-host service status --json
 ```
 
 The install command persists the current exact Node and Maka CLI paths. Re-running it updates the
-same service; an omitted WebSocket port preserves the existing port. Before uninstalling the npm
+same systemd-supervised service; repeated startup failures stop automatic restarts and remain visible
+in `maka runtime-host service status`. An omitted WebSocket port preserves the existing port. Before uninstalling the npm
 package, remove the service with `maka runtime-host service uninstall`. Service uninstall keeps the
 State Root and Project data. Installation reports an actionable error instead of claiming persistence
 when systemd user lingering is disabled. Run service installation from a persistent global Maka
@@ -124,9 +144,15 @@ The Client Profile must separately persist the plaintext acknowledgement. Maka n
 
 ## Connect Desktop
 
-Open `Settings → Workspace → Runtime Host`, choose **Add remote Host**, select the connection method, and enter the method-specific endpoint, the ready event's `rootId`, and the issued credential. Choose **Save and enable**.
+Open `Settings → Workspace → Runtime Host` and choose **Add computer**. Enter an OpenSSH destination; Desktop runs the released setup command in an interactive SSH session, stores the resulting credential, verifies the tunnel, and then opens the remote Project picker.
+
+Use **Configure manually** for an existing TLS, SSH, or explicitly acknowledged plaintext endpoint.
 
 The credential is stored separately from the Profile. Desktop keeps Local and every enabled remote Host connected independently. Choose one as the default for new Sessions; existing Sessions continue to use their owning Host. A failed remote connection remains visible without interrupting the other Hosts. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
+
+During guided pairing, the delivered credential has the selected Client grants and expires after 15 minutes unless Desktop explicitly finalizes it after saving the local binding.
+
+For an SSH-managed computer, open its **Manage** action to inspect the installed release, service state, published directory roots, and recent logs, or to start, restart, repair, or uninstall the service. Uninstalling preserves the remote State Root and does not remove the Desktop Profile; removing a Profile does not uninstall the remote service. Manually configured direct connections remain usable but must be managed on the Host machine.
 
 ## Connect TUI or CLI
 
@@ -180,5 +206,7 @@ Remote Clients never auto-upgrade or restart the Host, downgrade the transport, 
 - Do not put credentials on the command line or in Profile JSON.
 - Plaintext requires durable Client acknowledgement and an independent Host startup flag.
 - Session responses may include a resolved `hostCwd`. Treat it as Host metadata, never as a Client filesystem path.
-- A remote Client neither upgrades nor terminates the service process.
+- Runtime Host protocol operations cannot upgrade, restart, or terminate the service process.
+  Desktop management uses the separately authenticated SSH operator channel. The Host may still
+  drain itself after an indeterminate durable commit; a managed service supervisor restarts it.
 - Revoke a credential on the Host with `maka runtime-host access revoke --root /srv/maka --credential <credentialId>`.

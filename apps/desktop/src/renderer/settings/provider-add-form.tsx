@@ -1,17 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useState, type FormEvent } from 'react';
 import {
   OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import {
-  PROVIDER_DEFAULTS,
-  deriveConnectionSlug,
-  validateSlug,
-} from '@maka/core/llm-connections';
+import { PROVIDER_DEFAULTS, deriveConnectionSlug } from '@maka/core/llm-connections';
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
-  providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
 import { Banner, HStack, VStack } from '@astryxdesign/core';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
@@ -39,15 +53,17 @@ import {
   RequestCustomizationEditor,
   type RequestHeaderDraft,
 } from './request-customization-editor';
+import {
+  createProviderWithDiscovery,
+  validateAddProviderDraft,
+  type AddProviderIssue,
+} from './provider-add-submission';
 
-type ProviderFormField =
-  | 'slug'
-  | 'apiKey'
-  | 'accountId'
-  | 'baseUrl'
-  | 'defaultModel'
-  | 'advancedRequest'
-  | 'form';
+/* No `defaultModel`: the creation gate has no rule that can fail on the model
+   id, so an error could never be reported against that field. The union is
+   kept aligned with `AddProviderIssue` plus the two form-local fields the
+   gate does not own. */
+type ProviderFormField = 'slug' | 'apiKey' | 'accountId' | 'baseUrl' | 'advancedRequest' | 'form';
 
 type ProviderFormError = {
   field: ProviderFormField;
@@ -85,9 +101,7 @@ export function AddProviderForm(props: {
   const isCloudflareWorkersAi = props.providerType === 'cloudflare-workers-ai';
   const requiresBaseUrl = !defaults.baseUrl && !isCloudflareWorkersAi;
   const showsDefaultModel = recommendedDefaultModel.trim() === '';
-  const isCustomRelay = defaults.category === 'custom';
   const isExperimental = defaults.status === 'phase3-experimental';
-  const supportsRemoteDiscovery = providerSupportsModelDiscovery(props.providerType);
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
   const usesApiKeyDialog = usesQuickApiKeyDialog(props.providerType);
@@ -98,52 +112,38 @@ export function AddProviderForm(props: {
     );
   }
 
+  // The localized sentence for one field gate. The gate itself is in
+  // provider-add-submission, so the order and the rules are testable without
+  // a locale in the assertion.
+  function issueMessage(issue: AddProviderIssue): string {
+    if (issue.field === 'slug') {
+      return issue.reason === 'duplicate'
+        ? copy.duplicateSlug
+        : locale === 'zh'
+          ? issue.detail
+          : copy.invalidSlug;
+    }
+    if (issue.field === 'apiKey') return copy.keyRequired(display.name);
+    if (issue.field === 'accountId') return copy.cloudflareAccount;
+    if (issue.field === 'baseUrl') return copy.endpointRequired;
+    return copy.accountLogin;
+  }
+
   async function submit() {
     if (submitGuard.current !== null) return;
     setError(null);
-    const slugError = validateSlug(slug);
-    if (slugError) {
-      return setError({
-        field: 'slug',
-        message: locale === 'zh' ? slugError : copy.invalidSlug,
-      });
-    }
-    if (props.existingSlugs.includes(slug)) {
-      return setError({ field: 'slug', message: copy.duplicateSlug });
-    }
+    const issue = validateAddProviderDraft({
+      providerType: props.providerType,
+      slug,
+      existingSlugs: props.existingSlugs,
+      apiKey,
+      cloudflareAccountId,
+      baseUrl,
+    });
+    if (issue) return setError({ field: issue.field, message: issueMessage(issue) });
     const normalizedApiKey = apiKey.trim();
-    if (requiresApiKey && !normalizedApiKey) {
-      return setError({
-        field: 'apiKey',
-        message: copy.keyRequired(display.name),
-      });
-    }
     const normalizedCloudflareAccountId = cloudflareAccountId.trim();
-    if (isCloudflareWorkersAi && !normalizedCloudflareAccountId) {
-      return setError({
-        field: 'accountId',
-        message: copy.cloudflareAccount,
-      });
-    }
-    if (requiresBaseUrl && !baseUrl.trim()) {
-      return setError({
-        field: 'baseUrl',
-        message: copy.endpointRequired,
-      });
-    }
     const normalizedDefaultModel = defaultModel.trim();
-    if (isCustomRelay && !normalizedDefaultModel) {
-      return setError({
-        field: 'defaultModel',
-        message: copy.defaultModelRequired,
-      });
-    }
-    if (isExperimental) {
-      return setError({
-        field: 'form',
-        message: copy.accountLogin,
-      });
-    }
     let normalizedRequestHeaders: Readonly<Record<string, string>>;
     let requestBodyOverlay: ReturnType<typeof parseRequestBodyOverlay>;
     try {
@@ -163,7 +163,7 @@ export function AddProviderForm(props: {
           )
         : baseUrl || undefined;
       const createdDefaultModel = normalizedDefaultModel || recommendedDefaultModel;
-      const connection = await props.bridge.create({
+      const created = await createProviderWithDiscovery(props.bridge, {
         slug,
         name: name || display.name,
         providerType: props.providerType,
@@ -179,16 +179,7 @@ export function AddProviderForm(props: {
         ...(requestBodyOverlay === undefined ? {} : { requestBodyOverlay }),
       });
       if (!addProviderMountedRef.current) return;
-      let modelDiscoveryError: unknown;
-      if (supportsRemoteDiscovery) {
-        try {
-          await props.bridge.fetchModels(connection.slug);
-        } catch (error) {
-          if (!isCustomRelay) modelDiscoveryError = error;
-        }
-      }
-      if (!addProviderMountedRef.current) return;
-      await props.onCreated(connection.slug, modelDiscoveryError);
+      await props.onCreated(created.connection.slug, created.modelDiscoveryError);
     } catch (err) {
       if (addProviderMountedRef.current) {
         setError({
@@ -366,20 +357,11 @@ export function AddProviderForm(props: {
         {showsDefaultModel && (
           <TextInput
             value={defaultModel}
-            onChange={(value) => {
-              setDefaultModel(value);
-              clearFieldError('defaultModel');
-            }}
+            onChange={setDefaultModel}
             placeholder={copy.defaultModelPlaceholder}
             isDisabled={isExperimental || busy}
             label={copy.defaultModel}
             description={copy.defaultModelHelp}
-            isRequired={isCustomRelay}
-            status={
-              error?.field === 'defaultModel'
-                ? { type: 'error', message: error.message }
-                : undefined
-            }
           />
         )}
         {advancedRequestEditor}

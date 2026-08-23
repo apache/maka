@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * ScheduledTask — the single product noun for "定时任务".
  *
@@ -9,9 +28,12 @@ import { compileCronExpression } from './cron-expression.js';
 import { isCollaborationMode, type CollaborationMode } from './collaboration.js';
 import { isOrchestrationMode, type OrchestrationMode } from './orchestration.js';
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
-import { isPermissionMode, type PermissionMode } from './permission.js';
+import {
+  decodePersistedPermissionMode,
+  isPermissionMode,
+  type PermissionMode,
+} from './permission.js';
 import { isBotDeliveryProvider, type BotProvider } from './bot-chat-settings.js';
-import type { PersistedBackendKind } from './session.js';
 
 export const SCHEDULED_TASK_TITLE_MAX_CHARS = 120;
 export const SCHEDULED_TASK_INTENT_MAX_CHARS = 8_000;
@@ -52,7 +74,6 @@ export type ScheduledTaskEffect =
 export interface ScheduledTaskExecutionTemplate {
   readonly cwd: string;
   readonly projectId?: string | null;
-  readonly backend: PersistedBackendKind;
   readonly llmConnectionSlug: string;
   readonly model: string;
   readonly thinkingLevel?: ThinkingLevel;
@@ -488,14 +509,6 @@ function normalizeExecution(
 ): ScheduledTaskNormalizeResult<ScheduledTaskExecutionTemplate> {
   if (!isObject(value)) return fail('agent_run requires execution template');
   if (typeof value.cwd !== 'string' || !value.cwd.trim()) return fail('execution.cwd is required');
-  if (typeof value.backend !== 'string') return fail('execution.backend is required');
-  // Create/update input, not a decoder: stored Automations are read back with
-  // `JSON.parse` in scheduled-task-store.ts and never pass through here. So the
-  // retired `'fake'` is refused (#3211) — accepting it would let a brand new
-  // Automation be written that can only fail later at activation.
-  if (value.backend !== 'ai-sdk') {
-    return fail('execution.backend is invalid');
-  }
   if (typeof value.llmConnectionSlug !== 'string' || !value.llmConnectionSlug.trim()) {
     return fail('execution.llmConnectionSlug is required');
   }
@@ -527,7 +540,6 @@ function normalizeExecution(
     value: {
       cwd: value.cwd.trim(),
       ...(projectId === undefined ? {} : { projectId }),
-      backend: value.backend,
       llmConnectionSlug: value.llmConnectionSlug.trim(),
       model: value.model.trim(),
       ...(value.thinkingLevel === undefined ? {} : { thinkingLevel: value.thinkingLevel }),
@@ -643,4 +655,28 @@ function addMonthsClamped(anchor: Date, base: Date, offset: number): number {
 
 function fail(message: string): { ok: false; message: string } {
   return { ok: false, message };
+}
+
+/**
+ * Fold retired representations in a stored ScheduledTask to their live
+ * equivalents.
+ *
+ * Stored tasks are read back with `JSON.parse` and never pass through
+ * `normalizeCreateScheduledTaskInput`, which validates *new* input and is
+ * deliberately strict. Without this fold a task written before a value was
+ * retired would carry that value straight into execution, where nothing
+ * recognizes it any more. This is not a schema validator: a record that is
+ * malformed in any other way stays as stored.
+ */
+export function decodePersistedScheduledTask(task: ScheduledTask): ScheduledTask {
+  const { effect } = task;
+  if (effect.kind !== 'agent_run') return task;
+  const permissionMode = decodePersistedPermissionMode(effect.execution.permissionMode);
+  if (permissionMode === undefined || permissionMode === effect.execution.permissionMode) {
+    return task;
+  }
+  return {
+    ...task,
+    effect: { ...effect, execution: { ...effect.execution, permissionMode } },
+  };
 }

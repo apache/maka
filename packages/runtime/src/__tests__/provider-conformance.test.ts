@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
@@ -429,13 +448,23 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.ok, false);
   });
 
-  test('connection probe does not revive fallback ids from an authoritative empty inventory', async () => {
+  test('connection probe tests the selected model even when the last inventory came back empty', async () => {
+    const requestedModels: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as { model: string };
+      requestedModels.push(body.model);
+      respondJson(response, 200, {});
+    });
+    // An empty response is the single most likely shape for a provider whose
+    // list endpoint is misconfigured, scoped, or simply unhelpful. Refusing to
+    // probe on that basis withholds the one check that would tell the user
+    // whether their model actually works (#1584).
     const result = await testConnection(
       {
         slug: 'openai-empty',
         name: 'OpenAI Empty',
         providerType: 'openai',
-        baseUrl: 'http://127.0.0.1:1/v1',
+        baseUrl: `${server.url}/v1`,
         defaultModel: 'gpt-5.5',
         enabled: false,
         models: [],
@@ -445,7 +474,8 @@ describe('models.dev provider conformance', () => {
       },
       'unused',
     );
-    assert.deepEqual(result, { ok: false, errorMessage: 'No model to test' });
+    assert.equal(result.ok, true);
+    assert.deepEqual(requestedModels, ['gpt-5.5']);
   });
 
   test('connection probe skips a stale default when a live inventory is available', async () => {
@@ -465,6 +495,10 @@ describe('models.dev provider conformance', () => {
       defaultModel: 'moonshot-v1-8k',
       enabledModelIds: ['moonshot-v1-8k', 'kimi-k2.6'],
       models: [{ id: 'kimi-k2.5' }, { id: 'kimi-k2.6' }],
+      // A non-empty catalog always carries its source — the canonical decoder
+      // rejects a row without one — and only `'fetched'` on a provider with a
+      // model-list endpoint makes this list an allowlist.
+      modelSource: 'fetched',
       enabled: true,
       createdAt: 1,
       updatedAt: 1,
@@ -514,7 +548,7 @@ describe('models.dev provider conformance', () => {
     );
   });
 
-  test('connection probe bounds a fallback snapshot to its non-empty inventory', async () => {
+  test('connection probe tests the model the user chose, not the snapshot beside it', async () => {
     const requestedModels: string[] = [];
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.method, 'POST');
@@ -540,8 +574,13 @@ describe('models.dev provider conformance', () => {
       'moonshot-key',
     );
 
-    assert.equal(result.modelTested, 'kimi-k2.6');
-    assert.deepEqual(requestedModels, ['kimi-k2.6']);
+    // The catalog here is the array this build shipped, not something the
+    // provider said about this account, so it cannot redirect the test onto one
+    // of its own ids. Doing so returned a verdict about a model the user never
+    // asked about — and on a provider with no model-list endpoint at all, that
+    // was the only verdict they could ever get (#1584).
+    assert.equal(result.modelTested, 'custom-moonshot-preview');
+    assert.deepEqual(requestedModels, ['custom-moonshot-preview']);
   });
 
   test('OpenAI routes gpt-5* through the Responses wire and other models through Chat Completions by declaration', async () => {
@@ -829,6 +868,46 @@ describe('models.dev provider conformance', () => {
 
     assert.equal((await testConnection(connection, 'ark-plan-token')).ok, true);
     assert.equal(body?.store, false);
+  });
+
+  test('an Ark plan probe tests the model the plan serves, not the shipped snapshot', async () => {
+    // The end-to-end shape of #1584. `volcengine-agent-plan` cannot enumerate
+    // an account — its discovery is a control-plane API the plan key does not
+    // reach — so its run replays `fallbackModels` and honestly records
+    // `modelSource: 'fetched'`. Reading that flag alone made every gate treat
+    // a release snapshot as provider evidence, and a user whose plan serves
+    // `deepseek-v4-pro-beta` could only ever get a verdict about a doubao
+    // model they never chose.
+    let probedModel: string | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.url, '/api/plan/v3/responses');
+      probedModel = (JSON.parse(await readBody(request)) as { model: string }).model;
+      respondJson(response, 200, {});
+    });
+    const result = await testConnection(
+      {
+        slug: 'volcengine-agent-plan',
+        name: 'Volcengine Ark Agent Plan (China)',
+        providerType: 'volcengine-agent-plan',
+        baseUrl: `${server.url}/api/plan/v3`,
+        defaultModel: 'deepseek-v4-pro-beta',
+        enabledModelIds: ['deepseek-v4-pro-beta'],
+        models: PROVIDER_DEFAULTS['volcengine-agent-plan'].fallbackModels.map((id) => ({ id })),
+        modelSource: 'fetched',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'ark-plan-token',
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.modelTested, 'deepseek-v4-pro-beta');
+    assert.equal(probedModel, 'deepseek-v4-pro-beta');
+    assert.ok(
+      !PROVIDER_DEFAULTS['volcengine-agent-plan'].fallbackModels.includes('deepseek-v4-pro-beta'),
+      'the fixture stops proving anything once the snapshot ships this id',
+    );
   });
 
   test('DeepSeek V4 Pro connection probes use its default Responses wire', async () => {

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { SessionEvent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -13,6 +32,7 @@ import {
   type InteractionQueues,
 } from '@maka/ui';
 import type { RefreshMessagesOptions } from './app-shell-chat-actions.js';
+import type { MessageQueueUiState } from './app-shell-session-ui-state.js';
 import {
   isNoRealConnectionEvent,
   noRealConnectionReasonFromEvent,
@@ -63,10 +83,15 @@ export function createAppShellSessionEventHandlers(options: {
   refreshSessions: () => Promise<unknown>;
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
+  setMessageQueueBySession?: StateUpdater<Record<string, MessageQueueUiState>>;
   onInteractionChanged?: (sessionId: string) => void;
   /** A boundary decision settled: the session's execution boundary may have moved. */
   onExecutionBoundaryChanged?: (sessionId: string) => void;
-  showModelSetupToast: (description: string, reason?: string) => void;
+  showModelSetupToast: (
+    description: string,
+    reason?: string,
+    diagnosticTarget?: { sessionId: string },
+  ) => void;
   toastApi: ToastApi;
   notifyRunEnded?: (payload: { kind: 'completed' | 'errored'; sessionId: string; body?: string }) => void;
   scheduleFrame?: (callback: () => void) => void;
@@ -80,6 +105,7 @@ export function createAppShellSessionEventHandlers(options: {
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
+    setMessageQueueBySession,
     onInteractionChanged,
     onExecutionBoundaryChanged,
     showModelSetupToast,
@@ -250,6 +276,42 @@ export function createAppShellSessionEventHandlers(options: {
     updateLiveTurn(sessionId, [...pending, event]);
 
     switch (event.type) {
+      case 'queue_update':
+        setMessageQueueBySession?.((current) => {
+          if (event.steering.length === 0 && event.followup.length === 0) {
+            if (!(sessionId in current)) return current;
+            const next = { ...current };
+            delete next[sessionId];
+            return next;
+          }
+          return {
+            ...current,
+            [sessionId]: {
+              ...(event.queueRevision !== undefined
+                ? { queueRevision: event.queueRevision }
+                : {}),
+              steering:
+                event.steeringEntries?.map((entry) => structuredClone(entry)) ??
+                event.steering.map((text, index) => ({
+                  entryId: `legacy-steering-${index}`,
+                  messageId: `legacy-steering-${index}`,
+                  content: { text },
+                  placement: 'current_turn' as const,
+                  state: 'queued' as const,
+                })),
+              followup:
+                event.followupEntries?.map((entry) => structuredClone(entry)) ??
+                event.followup.map((text, index) => ({
+                  entryId: `legacy-followup-${index}`,
+                  messageId: `legacy-followup-${index}`,
+                  content: { text },
+                  placement: 'next_turn' as const,
+                  state: 'queued' as const,
+                })),
+            },
+          };
+        });
+        break;
       case 'text_complete':
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);
         break;
@@ -288,7 +350,11 @@ export function createAppShellSessionEventHandlers(options: {
         if (activeIdRef.current === sessionId) {
           if (isNoRealConnectionEvent(event)) {
             const reason = noRealConnectionReasonFromEvent(event);
-            showModelSetupToast(noRealConnectionSetupDescription(reason, uiLocale), reason);
+            showModelSetupToast(
+              noRealConnectionSetupDescription(reason, uiLocale),
+              reason,
+              { sessionId },
+            );
           } else {
             const copy = getDesktopConversationCopy(uiLocale).actions;
             toastApi.error(

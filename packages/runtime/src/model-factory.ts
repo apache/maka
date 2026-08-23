@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createCohere } from '@ai-sdk/cohere';
 import { createGoogle } from '@ai-sdk/google';
@@ -35,7 +54,7 @@ import {
   openResponsesUrl,
 } from './provider-urls.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
-import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
+import { openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 
 export interface ModelFactoryInput {
@@ -84,13 +103,11 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         headers: { 'anthropic-beta': ANTHROPIC_BETA },
       }).chat(modelId);
 
-    case 'claude-subscription':
-      return createAnthropic({
-        authToken: apiKey,
-        baseURL: anthropicV1BaseUrl(baseURL),
-        fetch: requestFetch,
-        headers: claudeSubscriptionHeaders(),
-      }).chat(modelId);
+    case 'unavailable':
+      // A retired provider must never reach model construction. The pickers
+      // filter it out and `resolveModelRuntime` refuses earlier; this is the
+      // backstop that keeps a stored connection from silently sending.
+      throw new Error('This provider is retired and can no longer be used to send.');
 
     case 'openai-codex':
       return createOpenAI({
@@ -412,8 +429,7 @@ export function buildProviderOptions(
     // provider's native effort values pass through unchanged.
     case 'anthropic':
     case 'MiniMax':
-    case 'MiniMax-cn':
-    case 'claude-subscription': {
+    case 'MiniMax-cn': {
       let reasoning = {};
       if (level === 'off' && thinkingOptions?.offBehavior === 'anthropic-thinking-disabled') {
         reasoning = { thinking: { type: 'disabled' as const } };

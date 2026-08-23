@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   ConnectionCatalogEntry,
   ConnectionCatalogSnapshot,
@@ -122,7 +141,7 @@ export interface InteractiveOAuthLoginTicket {
 
 export type InteractiveOAuthLoginProvider = Extract<
   ConnectionCatalogEntry['providerType'],
-  'claude-subscription' | 'openai-codex' | 'xai-oauth'
+  'openai-codex' | 'xai-oauth'
 >;
 
 export type BeginInteractiveOAuthLoginResult =
@@ -212,6 +231,12 @@ export type CommitConnectionOnboardingResult =
 export type ResolveExecutionConnectionResult =
   | { readonly kind: 'not_found' }
   | { readonly kind: 'disabled' }
+  /**
+   * The provider was retired. Distinct from `disabled`, which the user chose
+   * and can undo, and from `credential_not_configured`, which a sign-in would
+   * fix — this connection keeps a usable credential and still cannot execute.
+   */
+  | { readonly kind: 'provider_retired' }
   | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   | {
       readonly kind: 'ready';

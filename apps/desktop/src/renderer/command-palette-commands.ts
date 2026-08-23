@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // apps/desktop/src/renderer/command-palette-commands.ts
 //
 // Pure builders for the command palette list. Extracted from
@@ -8,7 +27,7 @@ import {
   Blocks,
   CalendarDays,
   Clock,
-  Database,
+  Clipboard,
   Download,
   FolderOpen,
   Keyboard,
@@ -28,6 +47,7 @@ import {
 } from '@maka/ui/icons';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -108,13 +128,8 @@ export function buildCommandList(args: {
    * round-tripping the clipboard.
    */
   onSaveTodayDailyReviewToFile?(): Promise<void> | void;
-  /**
-   * PR-CMD-PALETTE-COPY-ENV-SUMMARY-0: copy the Settings → 关于
-   * environment summary (Maka version + Electron / Node / Chrome
-   * versions + platform + arch + build mode/sha) as Markdown,
-   * without having to open Settings. Useful for bug reports.
-   */
-  onCopyEnvSummary?(): Promise<void> | void;
+  /** Copy redacted Desktop and active Runtime Host diagnostics for issue reports. */
+  onCopyDiagnostics?(): Promise<void> | void;
   /**
    * PR-CMD-PALETTE-NETWORK-PROXY-TEST-0: ⌘K → 测试当前网络代理. Fires
    * `window.maka.settings.testNetworkProxy()` and surfaces the result
@@ -368,14 +383,14 @@ export function buildCommandList(args: {
       run: () => args.onSaveTodayDailyReviewToFile!(),
     });
   }
-  if (args.onCopyEnvSummary) {
+  if (args.onCopyDiagnostics) {
     cmds.push({
-      id: 'diag:copy-env-summary',
+      id: 'diag:copy-diagnostics',
       kind: 'action',
-      ...staticCopy('diag:copy-env-summary'),
-      Icon: Database,
-      keywords: [...copy.staticKeywords['diag:copy-env-summary']],
-      run: () => args.onCopyEnvSummary!(),
+      ...staticCopy('diag:copy-diagnostics'),
+      Icon: Clipboard,
+      keywords: [...copy.staticKeywords['diag:copy-diagnostics']],
+      run: () => args.onCopyDiagnostics!(),
     });
   }
   if (args.onTestNetworkProxy) {
@@ -418,7 +433,9 @@ export function buildCommandList(args: {
   }
   if (args.onTestConnection && args.defaultSlug) {
     const defaultConnection = args.connections.find((c) => c.slug === args.defaultSlug);
-    if (defaultConnection) {
+    // Loading the catalog releases a default that points at a retired
+    // connection, so this is belt-and-braces for a stale in-memory default.
+    if (defaultConnection && !isRetiredProvider(defaultConnection.providerType)) {
       cmds.push({
         id: 'diag:test-default',
         kind: 'action',
@@ -437,7 +454,11 @@ export function buildCommandList(args: {
   // 账号 just to swap.
   if (args.onSetDefaultConnection || args.onTestConnection) {
     for (const connection of args.connections) {
-      if (!connection.enabled) continue;
+      // A retained retired connection can still be enabled — the row exists so
+      // the credential stays visible and deletable — but both commands below
+      // are refused downstream (the storage default-target gate, the hidden
+      // auth actions), so offering them is a dead entry point.
+      if (!connection.enabled || isRetiredProvider(connection.providerType)) continue;
       const isDefault = connection.slug === args.defaultSlug;
       // The workspace default is the pair {connection, model}. A connection
       // with no default model cannot supply half of it, so offering the command

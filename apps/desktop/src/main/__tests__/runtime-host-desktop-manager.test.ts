@@ -1,6 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+} from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -12,6 +35,7 @@ import type {
   DesktopRuntimeHostCandidateStartResult,
 } from '../runtime-host-desktop-candidate.js';
 import {
+  RuntimeHostPairingFinalizationInterruptedError,
   RuntimeHostUpgradeCancelledError,
   startRuntimeHostDesktopManager,
 } from '../runtime-host-desktop-manager.js';
@@ -115,16 +139,108 @@ test('quiesces reconnect and waits for the Host process before update install', 
   await owner.close();
 });
 
-test('keeps the current Host when update preparation reports active tasks', async () => {
+test('retires unadopted candidates before draining the tracked Host', async () => {
+  const events: string[] = [];
+  const current = candidateHarness({
+    disconnectOnPrepare: true,
+    onPrepare: () => events.push('prepare-host'),
+  });
+  const owner = await startRuntimeHostDesktopManager({
+    candidateLaunchBarrier: {
+      connect: async () => assert.fail('mocked candidate startup bypasses the barrier'),
+      pause: () => events.push('pause-launches'),
+      retireExcept: async (pid: number) => {
+        events.push(`retire-except:${pid}`);
+      },
+      resume: () => events.push('resume-launches'),
+      release: () => events.push('release-launches'),
+    },
+  } as unknown as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async (pid) => {
+      events.push(`wait:${pid}`);
+    },
+  });
+
+  const preparation = await owner.prepareForUpdate(false);
+  assert.equal(preparation.kind, 'prepared');
+  assert.deepEqual(events, [
+    'pause-launches',
+    'retire-except:42',
+    'prepare-host',
+    'wait:42',
+  ]);
+  if (preparation.kind === 'prepared') preparation.rollback();
+  assert.equal(events.at(-1), 'resume-launches');
+  await owner.close();
+  assert.equal(events.at(-1), 'release-launches');
+});
+
+test('resumes candidate launches when active tasks block the update', async () => {
+  const events: string[] = [];
   const current = candidateHarness({ activeTasks: true });
+  const owner = await startRuntimeHostDesktopManager({
+    candidateLaunchBarrier: {
+      connect: async () => assert.fail('mocked candidate startup bypasses the barrier'),
+      pause: () => events.push('pause'),
+      retireExcept: async () => {
+        events.push('retire');
+      },
+      resume: () => events.push('resume'),
+      release: () => events.push('release'),
+    },
+  } as unknown as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+  });
+
+  assert.deepEqual(await owner.prepareForUpdate(false), { kind: 'active_tasks' });
+  assert.deepEqual(events, ['pause', 'retire', 'resume']);
+  await owner.close();
+  assert.equal(events.at(-1), 'release');
+});
+
+test('resumes candidate launches when candidate retirement fails', async () => {
+  const events: string[] = [];
+  const current = candidateHarness();
+  const owner = await startRuntimeHostDesktopManager({
+    candidateLaunchBarrier: {
+      connect: async () => assert.fail('mocked candidate startup bypasses the barrier'),
+      pause: () => events.push('pause'),
+      retireExcept: async () => {
+        events.push('retire');
+        throw new Error('retirement failed');
+      },
+      resume: () => events.push('resume'),
+      release: () => events.push('release'),
+    },
+  } as unknown as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+  });
+
+  await assert.rejects(owner.prepareForUpdate(false), /retirement failed/);
+  assert.deepEqual(events, ['pause', 'retire', 'resume']);
+  await owner.handleBotIncomingMessage({ text: 'still connected' } as BotIncomingMessage);
+  assert.equal(current.botMessages, 1);
+  await owner.close();
+});
+
+test('keeps active-task confirmation bound to the current Host', async () => {
+  const current = candidateHarness({ activeTasks: true, disconnectOnPrepare: true });
+  const waitedFor: number[] = [];
   const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async (pid) => {
+      waitedFor.push(pid);
+    },
   });
 
   assert.deepEqual(await owner.prepareForUpdate(false), { kind: 'active_tasks' });
   await owner.handleBotIncomingMessage({ text: 'still connected' } as BotIncomingMessage);
   assert.equal(current.botMessages, 1);
-  assert.deepEqual(current.prepareUpgradeAuthorities, [false]);
+  const authorized = await owner.prepareForUpdate(true);
+  assert.equal(authorized.kind, 'prepared');
+  assert.deepEqual(current.prepareUpgradeAuthorities, [false, true]);
+  assert.deepEqual(waitedFor, [42]);
   await owner.close();
 });
 
@@ -183,6 +299,201 @@ test('keeps Local and remote Hosts active and routes work by owning Host', async
     () => manager.enable(remoteTarget('duplicate', 'other-endpoint')),
     /already enabled/,
   );
+  await manager.close();
+});
+
+test('replays pairing finalization after an unknown commit and reconnect', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remoteHostId = 'a'.repeat(64);
+  const first = candidateHarness({
+    hostId: remoteHostId,
+    finalizeFailures: [
+      new RuntimeHostOperationError(
+        'access.credential.finalize',
+        'commit_outcome_unknown',
+        'finalization outcome is unknown',
+      ),
+    ],
+    disconnectOnFinalizeFailure: true,
+  });
+  const replacement = candidateHarness({ hostId: remoteHostId });
+  const queue = [local.candidate, first.candidate, replacement.candidate];
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => ready(queue.shift()!),
+      reconnectBackoff: { minMs: 0, maxMs: 0 },
+    },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  await manager.finalizePairing('office');
+
+  assert.equal(first.finalizeCalls, 1);
+  assert.equal(replacement.finalizeCalls, 1);
+  await manager.close();
+});
+
+for (const dispatch of ['not_dispatched', 'dispatched'] as const) {
+  test(`replays ${dispatch} pairing finalization after connection loss`, async () => {
+    const local = candidateHarness({ hostId: 'host-a' });
+    const remoteHostId = 'a'.repeat(64);
+    const first = candidateHarness({
+      hostId: remoteHostId,
+      finalizeFailures: [
+        new RuntimeHostRequestInterruptedError(
+          'access.credential.finalize',
+          'command',
+          dispatch,
+          'connection_lost',
+        ),
+      ],
+      disconnectOnFinalizeFailure: true,
+    });
+    const replacement = candidateHarness({ hostId: remoteHostId });
+    const queue = [local.candidate, first.candidate, replacement.candidate];
+    const manager = await startRuntimeHostDesktopManager(
+      {} as DesktopRuntimeHostCandidateStartInput,
+      {
+        startCandidate: async () => ready(queue.shift()!),
+        reconnectBackoff: { minMs: 0, maxMs: 0 },
+      },
+    );
+    await manager.enable(remoteTarget('office'));
+
+    await manager.finalizePairing('office');
+
+    assert.equal(first.finalizeCalls, 1);
+    assert.equal(replacement.finalizeCalls, 1);
+    await manager.close();
+  });
+}
+
+test('defers reconnecting pairing finalization when the manager closes', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remoteHostId = 'a'.repeat(64);
+  const remote = candidateHarness({
+    hostId: remoteHostId,
+    finalizeFailures: [
+      new RuntimeHostOperationError(
+        'access.credential.finalize',
+        'commit_outcome_unknown',
+        'finalization outcome is unknown',
+      ),
+    ],
+    disconnectOnFinalizeFailure: true,
+  });
+  let reconnectStarted!: () => void;
+  const reconnecting = new Promise<void>((resolve) => {
+    reconnectStarted = resolve;
+  });
+  let starts = 0;
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        if (starts === 2) return ready(remote.candidate);
+        reconnectStarted();
+        const signal = input.signal;
+        assert.ok(signal);
+        return await new Promise<DesktopRuntimeHostCandidateStartResult>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+      reconnectBackoff: { minMs: 0, maxMs: 0 },
+    },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  const finalization = assert.rejects(
+    () => manager.finalizePairing('office'),
+    RuntimeHostPairingFinalizationInterruptedError,
+  );
+  await reconnecting;
+  await manager.close();
+  await finalization;
+
+  assert.equal(remote.finalizeCalls, 1);
+  assert.equal(starts, 3);
+});
+
+test('defers pairing finalization when reconnect does not complete in time', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remoteHostId = 'a'.repeat(64);
+  const remote = candidateHarness({
+    hostId: remoteHostId,
+    finalizeFailures: [
+      new RuntimeHostOperationError(
+        'access.credential.finalize',
+        'commit_outcome_unknown',
+        'finalization outcome is unknown',
+      ),
+    ],
+    disconnectOnFinalizeFailure: true,
+  });
+  let starts = 0;
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        if (starts === 2) return ready(remote.candidate);
+        const signal = input.signal;
+        assert.ok(signal);
+        return await new Promise<DesktopRuntimeHostCandidateStartResult>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+      reconnectBackoff: { minMs: 0, maxMs: 0 },
+      pairingFinalizationTimeoutMs: 10,
+    },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  await assert.rejects(
+    () => manager.finalizePairing('office'),
+    RuntimeHostPairingFinalizationInterruptedError,
+  );
+
+  assert.equal(remote.finalizeCalls, 1);
+  assert.equal(starts, 3);
+  await manager.close();
+});
+
+test('bounds an in-flight pairing finalization and preserves its unknown outcome', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remote = candidateHarness({
+    hostId: 'a'.repeat(64),
+    finalizeFailures: [
+      new RuntimeHostRequestInterruptedError(
+        'access.credential.finalize',
+        'command',
+        'dispatched',
+        'timeout',
+      ),
+    ],
+  });
+  let starts = 0;
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => ready(starts++ === 0 ? local.candidate : remote.candidate),
+      pairingFinalizationTimeoutMs: 25,
+    },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  await assert.rejects(
+    () => manager.finalizePairing('office'),
+    RuntimeHostPairingFinalizationInterruptedError,
+  );
+
+  assert.equal(remote.finalizeCalls, 1);
+  assert.equal(remote.finalizeTimeouts.length, 1);
+  assert.ok(remote.finalizeTimeouts[0]! > 0 && remote.finalizeTimeouts[0]! <= 25);
   await manager.close();
 });
 
@@ -265,11 +576,11 @@ test('keeps Local explicitly usable without routing default work away from an un
     },
   );
 
-  await assert.rejects(manager.enable(remoteTarget('offline')), /stopped responding/);
+  await assert.rejects(manager.enable(remoteTarget('offline')), /did not become ready/);
   manager.setDefaultProfile('offline');
   await assert.rejects(
     manager.handleBotIncomingMessage({ text: 'default' } as BotIncomingMessage),
-    /stopped responding/,
+    /did not become ready/,
   );
 
   assert.equal(local.botMessages, 0);
@@ -504,6 +815,9 @@ function candidateHarness(
     activeTasks?: boolean;
     lifecycleMode?: 'ephemeral' | 'service' | 'remote';
     hostId?: string;
+    finalizeFailures?: Error[];
+    disconnectOnFinalizeFailure?: boolean;
+    onPrepare?: () => void;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -515,6 +829,8 @@ function candidateHarness(
   const stoppedSessions: string[] = [];
   let lifecycleState: 'ready' | 'unavailable' = 'ready';
   let prepareUpgradeCalls = 0;
+  let finalizeCalls = 0;
+  const finalizeTimeouts: number[] = [];
   const prepareUpgradeAuthorities: boolean[] = [];
   const candidate = {
     closed,
@@ -524,7 +840,11 @@ function candidateHarness(
       get lifecycleState() {
         return lifecycleState;
       },
+      async queryHostDiagnostics() {
+        return { pid: 42 };
+      },
       async prepareHostUpgrade(allowInterruptActiveTasks: boolean) {
+        options.onPrepare?.();
         prepareUpgradeCalls += 1;
         prepareUpgradeAuthorities.push(allowInterruptActiveTasks);
         if (options.activeTasks && !allowInterruptActiveTasks) {
@@ -535,6 +855,19 @@ function candidateHarness(
           resolveClosed?.();
         }
         return { kind: 'prepared' as const, pid: 42 };
+      },
+      async finalizeAccessCredential(timeoutMs?: number) {
+        finalizeCalls += 1;
+        if (timeoutMs !== undefined) finalizeTimeouts.push(timeoutMs);
+        const failure = options.finalizeFailures?.shift();
+        if (failure) {
+          if (options.disconnectOnFinalizeFailure) {
+            lifecycleState = 'unavailable';
+            resolveClosed?.();
+          }
+          throw failure;
+        }
+        return {};
       },
     },
     botIncoming: {
@@ -573,6 +906,10 @@ function candidateHarness(
     get prepareUpgradeAuthorities() {
       return prepareUpgradeAuthorities;
     },
+    get finalizeCalls() {
+      return finalizeCalls;
+    },
+    finalizeTimeouts,
   };
 }
 

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { parseHTML } from 'linkedom';
@@ -20,6 +39,7 @@ const originalGlobals = {
   matchMedia: globalThis.matchMedia,
   HTMLElement: globalThis.HTMLElement,
   HTMLIFrameElement: globalThis.HTMLIFrameElement,
+  getComputedStyle: globalThis.getComputedStyle,
   requestAnimationFrame: globalThis.requestAnimationFrame,
   cancelAnimationFrame: globalThis.cancelAnimationFrame,
   IS_REACT_ACT_ENVIRONMENT: (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -636,6 +656,10 @@ async function renderPage(options: {
     matchMedia,
     HTMLElement: window.HTMLElement,
     HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
+    // Astryx 0.4 Spinner resolves its inherited canvas color during render.
+    getComputedStyle: (element: Element) => ({
+      color: (element as HTMLElement).style?.color || 'currentColor',
+    }) as CSSStyleDeclaration,
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(callback, 0),
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),
     IS_REACT_ACT_ENVIRONMENT: true,

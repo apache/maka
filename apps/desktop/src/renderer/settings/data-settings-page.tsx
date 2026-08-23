@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useState } from 'react';
 import type { ConfigCategory } from '@maka/storage';
 import {
@@ -56,6 +75,7 @@ export function DataSettingsPage(props: {
   const [importStrategy, setImportStrategy] = useState<'skip' | 'overwrite'>('skip');
   const [configBusy, setConfigBusy] = useState<null | 'export' | 'import'>(null);
   const runtimeHostAvailable = host !== undefined && props.runtimeHostStatus === 'ready';
+  const diagnosticTarget = host ? { profileId: host.profileId } : undefined;
 
   useEffect(() => {
     if (!host) {
@@ -74,7 +94,7 @@ export function DataSettingsPage(props: {
       const message = settingsActionErrorMessage(error, locale);
       setInfo(null);
       setInfoError(message);
-      toast.error(copy.loadFailed, message);
+      toast.error(copy.loadFailed, message, undefined, diagnosticTarget);
     });
     return () => {
       cancelled = true;
@@ -107,11 +127,18 @@ export function DataSettingsPage(props: {
           toast.error(
             copy.openFailed(openPathActionLabel('workspace', locale)),
             openPathFailureCopy(result.reason, locale),
+            undefined,
+            diagnosticTarget,
           );
         }
       } catch (error) {
         if (dataPageMountedRef.current) {
-          toast.error(copy.openFailed(openPathActionLabel('workspace', locale)), settingsActionErrorMessage(error, locale));
+          toast.error(
+            copy.openFailed(openPathActionLabel('workspace', locale)),
+            settingsActionErrorMessage(error, locale),
+            undefined,
+            diagnosticTarget,
+          );
         }
       }
     });
@@ -164,10 +191,20 @@ export function DataSettingsPage(props: {
       if (res.ok) {
         toast.success(copy.exported, copy.exportedDetail(res.includedData));
       } else if (res.reason !== 'canceled') {
-        toast.error(copy.exportFailed, res.reason === 'no_categories' ? copy.noCategories : copy.tryAgain);
+        toast.error(
+          copy.exportFailed,
+          res.reason === 'no_categories' ? copy.noCategories : copy.tryAgain,
+          undefined,
+          diagnosticTarget,
+        );
       }
     } catch (error) {
-      toast.error(copy.exportFailed, settingsActionErrorMessage(error, locale));
+      toast.error(
+        copy.exportFailed,
+        settingsActionErrorMessage(error, locale),
+        undefined,
+        diagnosticTarget,
+      );
     } finally {
       setConfigBusy(null);
     }
@@ -184,10 +221,15 @@ export function DataSettingsPage(props: {
         const detail = res.message && (locale === 'zh' || !/[\u3400-\u9fff]/u.test(res.message))
           ? res.message
           : copy.invalidFile;
-        toast.error(copy.importFailed, detail);
+        toast.error(copy.importFailed, detail, undefined, diagnosticTarget);
       }
     } catch (error) {
-      toast.error(copy.importFailed, settingsActionErrorMessage(error, locale));
+      toast.error(
+        copy.importFailed,
+        settingsActionErrorMessage(error, locale),
+        undefined,
+        diagnosticTarget,
+      );
     } finally {
       setConfigBusy(null);
     }

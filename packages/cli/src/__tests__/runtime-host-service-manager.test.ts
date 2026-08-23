@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import {
   access,
@@ -13,6 +32,12 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
+import {
+  decodeRuntimeHostServiceManagementFrame,
+  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+} from '@maka/runtime-host/operator';
+import { resolveStorageRoot } from '@maka/storage/root-authority';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
 import {
   removeRuntimeHostManagedDeployment,
@@ -20,11 +45,13 @@ import {
 } from '../runtime-host-managed-deployment.js';
 import { runManagedRuntimeHostServiceCli } from '../runtime-host-service-management-command.js';
 import {
+  cleanupRuntimeHostManagedDeployment,
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceConfigPath,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
+  type RuntimeHostManagedServiceResult,
   type RuntimeHostServiceBackend,
 } from '../runtime-host-service-manager.js';
 import {
@@ -56,11 +83,87 @@ describe('managed Runtime Host service', () => {
         websocketPort: 7443,
       },
     );
+    assert.deepEqual(parseRuntimeHostCommand(['service', 'status', '--framed']), {
+      kind: 'runtime-host-service-manage',
+      action: 'status',
+      json: false,
+      framed: true,
+    });
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'service',
+        'status',
+        '--framed',
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]),
+      {
+        kind: 'runtime-host-service-manage',
+        action: 'status',
+        json: false,
+        framed: true,
+        expectedTarget: {
+          serviceId: 'b'.repeat(64),
+          rootPath: '/srv/maka',
+          rootId: 'a'.repeat(64),
+        },
+      },
+    );
     assert.deepEqual(parseRuntimeHostCommand(['service', 'uninstall', '--json']), {
       kind: 'runtime-host-service-manage',
       action: 'uninstall',
       json: true,
     });
+    assert.deepEqual(
+      parseRuntimeHostCommand(['service', 'uninstall', '--framed', '--retain-managed-deployment']),
+      {
+        kind: 'runtime-host-service-manage',
+        action: 'uninstall',
+        json: false,
+        framed: true,
+        retainManagedDeployment: true,
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'service',
+        'cleanup-deployment',
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]),
+      {
+        kind: 'runtime-host-managed-deployment-cleanup',
+        expectedTarget: {
+          serviceId: 'b'.repeat(64),
+          rootPath: '/srv/maka',
+          rootId: 'a'.repeat(64),
+        },
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'service',
+        'status',
+        '--framed',
+        '--client-data-root',
+        '/var/lib/maka-client',
+      ]),
+      {
+        kind: 'runtime-host-service-manage',
+        action: 'status',
+        json: false,
+        framed: true,
+        clientDataRoot: '/var/lib/maka-client',
+      },
+    );
     assert.equal(parseRuntimeHostCommand(['service', 'status', '--root', '/tmp']).kind, 'error');
     assert.equal(
       parseRuntimeHostCommand([
@@ -86,6 +189,7 @@ describe('managed Runtime Host service', () => {
         'desktop.client-1',
         '--preset',
         'desktop-client',
+        '--defer-pairing-commit',
         '--json',
       ]),
       {
@@ -93,6 +197,7 @@ describe('managed Runtime Host service', () => {
         json: true,
         principalId: 'desktop.client-1',
         preset: 'desktop-client',
+        deferPairingCommit: true,
       },
     );
   });
@@ -117,6 +222,7 @@ describe('managed Runtime Host service', () => {
     const cliPath = join(deploymentRoot, 'versions', '0.2.0', 'dist', 'cli.js');
     await mkdir(dirname(cliPath), { recursive: true });
     await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
+    const canonicalCliPath = await realpath(cliPath);
     const unitPath = resolveSystemdUserRuntimeHostServicePath(serviceId, env, homeDir);
     const systemd = createFakeSystemd(unitPath);
     const backend = () =>
@@ -131,8 +237,7 @@ describe('managed Runtime Host service', () => {
       clientDataRoot,
       defaultRootPath: rootPath,
       nodePath: process.execPath,
-      cliPath,
-      managedDeploymentRoot: deploymentRoot,
+      cliPath: canonicalCliPath,
     } as const;
     const managerDeps = {
       allocateLoopbackPort: async () => 49_999,
@@ -154,6 +259,9 @@ describe('managed Runtime Host service', () => {
     assert.equal(installed.service.enabled, true);
     assert.equal(installed.service.config?.websocket.port, 47_777);
     assert.match(await readFile(unitPath, 'utf8'), /ExecStart=.*runtime-host.*serve/u);
+    const resetFailed = systemd.calls.findIndex(([command]) => command === 'reset-failed');
+    const restart = systemd.calls.findIndex(([command]) => command === 'restart');
+    assert.ok(resetFailed >= 0 && resetFailed < restart);
 
     const reinstalled = await manageRuntimeHostService(
       { ...common, action: 'install' },
@@ -165,6 +273,24 @@ describe('managed Runtime Host service', () => {
       { label: 'Projects', path: await realpath(projectPath) },
     ]);
     assert.equal(reinstalled.service.lastExitCode, 0);
+
+    const root = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
+    await writeFile(configPath, '{not-json', 'utf8');
+    const repaired = await manageRuntimeHostService(
+      {
+        ...common,
+        action: 'install',
+        expectedTarget: {
+          serviceId,
+          rootPath: root.canonicalPath,
+          rootId: root.rootId,
+        },
+      },
+      backend(),
+      managerDeps,
+    );
+    assert.equal(repaired.service.config?.managedDeploymentRoot, await realpath(deploymentRoot));
+    assert.equal(repaired.service.config?.websocket.port, 49_999);
 
     const globalCliPath = join(base, 'global', 'cli.js');
     await mkdir(dirname(globalCliPath), { recursive: true });
@@ -185,37 +311,107 @@ describe('managed Runtime Host service', () => {
         error instanceof RuntimeHostServiceManagerError && error.code === 'invalid_launch',
     );
 
+    await writeFile(configPath, '{not-json', 'utf8');
+    const retained = await manageRuntimeHostService(
+      {
+        ...common,
+        action: 'uninstall',
+        retainManagedDeployment: true,
+        expectedTarget: {
+          serviceId,
+          rootPath: root.canonicalPath,
+          rootId: root.rootId,
+        },
+      },
+      backend(),
+    );
+    assert.equal(retained.service.installed, false);
+    await access(deploymentRoot);
+
+    await manageRuntimeHostService({ ...common, action: 'install' }, backend(), managerDeps);
+    const expectedTarget = {
+      serviceId,
+      rootPath: root.canonicalPath,
+      rootId: root.rootId,
+    } as const;
+    await assert.rejects(
+      cleanupRuntimeHostManagedDeployment(
+        { clientDataRoot, cliPath: canonicalCliPath, expectedTarget },
+        backend(),
+      ),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'uninstall_incomplete',
+    );
+    await access(deploymentRoot);
+    await manageRuntimeHostService(
+      {
+        ...common,
+        action: 'uninstall',
+        retainManagedDeployment: true,
+        expectedTarget,
+      },
+      backend(),
+    );
+    await cleanupRuntimeHostManagedDeployment(
+      { clientDataRoot, cliPath: canonicalCliPath, expectedTarget },
+      backend(),
+    );
+    await assert.rejects(access(deploymentRoot));
+
+    const movedRootPath = `${rootPath}-moved`;
+    await rename(rootPath, movedRootPath);
+
+    const repeatedRetain = await manageRuntimeHostService(
+      {
+        ...common,
+        action: 'uninstall',
+        retainManagedDeployment: true,
+        expectedTarget: {
+          serviceId,
+          rootPath: root.canonicalPath,
+          rootId: root.rootId,
+        },
+      },
+      backend(),
+    );
+    assert.equal(repeatedRetain.service.installed, false);
+
     const uninstalled = await manageRuntimeHostService(
-      { ...common, action: 'uninstall' },
+      {
+        ...common,
+        action: 'uninstall',
+        expectedTarget: {
+          serviceId,
+          rootPath: root.canonicalPath,
+          rootId: root.rootId,
+        },
+      },
       backend(),
     );
     assert.equal(uninstalled.service.installed, false);
     assert.equal(uninstalled.service.config, null);
     assert.equal(uninstalled.service.state, 'not_installed');
-    assert.equal(uninstalled.retainedStateRoot, await realpath(rootPath));
-    await access(rootPath);
+    assert.equal(uninstalled.retainedStateRoot, root.canonicalPath);
+    await access(movedRootPath);
     await assert.rejects(access(configPath));
     await assert.rejects(access(unitPath));
     await assert.rejects(access(deploymentRoot));
 
     const repeated = await manageRuntimeHostService({ ...common, action: 'uninstall' }, backend());
     assert.equal(repeated.service.installed, false);
-
-    await mkdir(join(clientDataRoot), { recursive: true });
-    await writeFile(configPath, '{not-json', 'utf8');
-    const repaired = await manageRuntimeHostService({ ...common, action: 'uninstall' }, backend());
-    assert.equal(repaired.service.installed, false);
-    await assert.rejects(access(configPath));
   });
 
   it('refuses to remove a managed deployment through a redirected ancestor', async (t) => {
     const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-symlink-'));
     t.after(() => rm(base, { recursive: true, force: true }));
-    const serviceId = 'maka-runtime-host-test';
+    const clientDataRoot = join(base, 'config');
+    const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
     const deploymentRoot = join(base, 'data', 'Maka', 'runtime-host-services', serviceId);
     const outsideRoot = join(base, 'outside', 'Maka', 'runtime-host-services', serviceId);
     await mkdir(deploymentRoot, { recursive: true });
-    await mkdir(outsideRoot, { recursive: true });
+    const outsideCli = join(outsideRoot, 'versions', '1.0.0', 'dist', 'cli.js');
+    await mkdir(dirname(outsideCli), { recursive: true });
+    await writeFile(outsideCli, '#!/usr/bin/env node\n', 'utf8');
     await writeFile(join(outsideRoot, 'sentinel'), 'outside', 'utf8');
     await rename(join(base, 'data', 'Maka'), join(base, 'data', 'Maka-original'));
     await symlink(join(base, 'outside', 'Maka'), join(base, 'data', 'Maka'));
@@ -223,6 +419,21 @@ describe('managed Runtime Host service', () => {
     await assert.rejects(
       removeRuntimeHostManagedDeployment(deploymentRoot, serviceId),
       /redirected managed Runtime Host deployment path/u,
+    );
+    assert.equal(await readFile(join(outsideRoot, 'sentinel'), 'utf8'), 'outside');
+    await assert.rejects(
+      manageRuntimeHostService(
+        {
+          action: 'uninstall',
+          clientDataRoot,
+          defaultRootPath: join(base, 'state'),
+          nodePath: process.execPath,
+          cliPath: join(deploymentRoot, 'versions', '1.0.0', 'dist', 'cli.js'),
+        },
+        createReadyBackend(),
+      ),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'uninstall_incomplete',
     );
     assert.equal(await readFile(join(outsideRoot, 'sentinel'), 'utf8'), 'outside');
   });
@@ -298,17 +509,22 @@ describe('managed Runtime Host service', () => {
   it('quotes systemd arguments without exposing specifier or environment expansion', () => {
     const config: RuntimeHostManagedServiceConfig = {
       schemaVersion: 1,
-      rootPath: '/srv/Maka 100%',
-      projectDirectoryRoots: [{ label: 'Cash$', path: '/home/ada/My Projects' }],
+      rootPath: '/srv/Maka $100%',
+      projectDirectoryRoots: [{ label: 'Cash$', path: '/home/$ada/My Projects' }],
       websocket: { host: '127.0.0.1', port: 7443, path: '/runtime-host' },
       launch: {
-        nodePath: '/opt/Node 24/bin/node',
-        cliPath: '/opt/Maka/current/cli.js',
+        nodePath: '/opt/$Node 24/bin/node',
+        cliPath: '/opt/Maka/$current/cli.js',
       },
     };
     const unit = renderSystemdUnit(config);
-    assert.match(unit, /"\/srv\/Maka 100%%"/u);
-    assert.match(unit, /"Cash\$\$=\/home\/ada\/My Projects"/u);
+    assert.match(unit, /"\/srv\/Maka \$\$100%%"/u);
+    assert.match(unit, /"Cash\$\$=\/home\/\$\$ada\/My Projects"/u);
+    assert.match(unit, /"\/opt\/\$\$Node 24\/bin\/node"/u);
+    assert.match(unit, /"\/opt\/Maka\/\$\$current\/cli\.js"/u);
+    assert.match(unit, /^Restart=always$/mu);
+    assert.match(unit, /^StartLimitIntervalSec=60s$/mu);
+    assert.match(unit, /^StartLimitBurst=5$/mu);
   });
 
   it('emits one stable machine error for an unmet service prerequisite', async () => {
@@ -347,6 +563,167 @@ describe('managed Runtime Host service', () => {
     });
   });
 
+  it('projects requested operator capabilities without launch configuration', async (t) => {
+    const previousCapabilityRequest = process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+    delete process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+    t.after(() => {
+      if (previousCapabilityRequest === undefined) {
+        delete process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+      } else {
+        process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] = previousCapabilityRequest;
+      }
+    });
+    const options = {
+      action: 'status' as const,
+      json: false,
+      framed: true,
+      clientDataRoot: '/config/Maka',
+      defaultRootPath: '/config/Maka/workspaces/default',
+      nodePath: '/usr/bin/node',
+      cliPath: '/opt/maka/cli.js',
+    };
+    const manage = async (): Promise<RuntimeHostManagedServiceResult> => ({
+      schemaVersion: 1 as const,
+      action: 'status' as const,
+      service: {
+        manager: 'systemd_user' as const,
+        installed: true,
+        enabled: true,
+        active: true,
+        state: 'running' as const,
+        pid: 42,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        config: {
+          schemaVersion: 1 as const,
+          rootPath: '/srv/maka',
+          projectDirectoryRoots: [{ label: 'Home', path: '/home/ada' }],
+          websocket: { host: '127.0.0.1', port: 7443, path: '/runtime-host' },
+          launch: { nodePath: '/secret/node', cliPath: '/secret/cli.js' },
+        },
+      },
+    });
+    const run = async () => {
+      let output = '';
+      const exitCode = await runManagedRuntimeHostServiceCli(options, {
+        manage,
+        createBackend: createUnusedBackend,
+        writeOutput: (value) => {
+          output += value;
+        },
+      });
+      assert.equal(exitCode, 0);
+      return output;
+    };
+
+    const legacyFrame = decodeRuntimeHostServiceManagementFrame(await run());
+    assert.equal(legacyFrame?.kind, 'result');
+    assert.equal(
+      legacyFrame?.kind === 'result' ? legacyFrame.operatorCapabilities : undefined,
+      undefined,
+    );
+
+    process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] =
+      RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY;
+    const frame = decodeRuntimeHostServiceManagementFrame(await run());
+    assert.equal(frame?.kind, 'result');
+    if (frame?.kind !== 'result') assert.fail('Expected a service result frame');
+    assert.equal(frame.service.installedVersion, '1.2.3');
+    assert.deepEqual(frame.operatorCapabilities, ['access-management-v1']);
+    assert.equal(frame.service.stateRoot, '/srv/maka');
+    assert.doesNotMatch(JSON.stringify(frame), /secret/u);
+  });
+
+  it('reads service logs when an interrupted install left no config', async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-logs-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const backend: RuntimeHostServiceBackend = {
+      ...createReadyBackend(),
+      logs: async () => 'failed before config commit',
+    };
+
+    const result = await manageRuntimeHostService(
+      {
+        action: 'logs',
+        clientDataRoot: join(base, 'config'),
+        defaultRootPath: join(base, 'state'),
+        nodePath: process.execPath,
+        cliPath: join(base, 'cli.js'),
+      },
+      backend,
+    );
+
+    assert.equal(result.logs, 'failed before config commit');
+    assert.equal(result.service.config, null);
+  });
+
+  it('verifies the bound service and State Root before management mutations', async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-binding-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const clientDataRoot = join(base, 'config');
+    const root = await resolveStorageRoot({ path: join(base, 'state'), kind: 'interactive' });
+    const cliPath = join(base, 'cli.js');
+    await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
+    let starts = 0;
+    const backend: RuntimeHostServiceBackend = {
+      ...createReadyBackend(),
+      start: async () => {
+        starts += 1;
+      },
+    };
+    const common = {
+      clientDataRoot,
+      defaultRootPath: root.canonicalPath,
+      nodePath: process.execPath,
+      cliPath,
+    } as const;
+    await manageRuntimeHostService({ ...common, action: 'install' }, backend, {
+      waitForReady: async () => undefined,
+    });
+    const binding = {
+      expectedTarget: {
+        serviceId: resolveRuntimeHostManagedServiceId(clientDataRoot),
+        rootPath: root.canonicalPath,
+        rootId: root.rootId,
+      },
+    } as const;
+
+    await manageRuntimeHostService({ ...common, ...binding, action: 'start' }, backend, {
+      waitForReady: async () => undefined,
+    });
+    assert.equal(starts, 1);
+    await assert.rejects(
+      manageRuntimeHostService(
+        {
+          ...common,
+          ...binding,
+          expectedTarget: {
+            ...binding.expectedTarget,
+            rootId: 'f'.repeat(64),
+          },
+          action: 'start',
+        },
+        backend,
+      ),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'target_mismatch',
+    );
+    assert.equal(starts, 1);
+
+    await rm(resolveRuntimeHostManagedServiceConfigPath(clientDataRoot));
+    const repaired = await manageRuntimeHostService(
+      {
+        ...common,
+        ...binding,
+        defaultRootPath: join(base, 'different-default'),
+        action: 'install',
+      },
+      backend,
+      { waitForReady: async () => undefined },
+    );
+    assert.equal(repaired.service.config?.rootPath, root.canonicalPath);
+  });
+
   it('restores the deployed service when the replacement never becomes ready', async (t) => {
     const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-rollback-'));
     t.after(() => rm(base, { recursive: true, force: true }));
@@ -380,6 +757,7 @@ describe('managed Runtime Host service', () => {
     });
     assert.equal(first.service.config?.websocket.port, 41_001);
 
+    const updateCallsStart = systemd.calls.length;
     await assert.rejects(
       manageRuntimeHostService({ ...input, websocketPort: 41_002 }, backend(), {
         waitForReady: async () => {
@@ -391,6 +769,10 @@ describe('managed Runtime Host service', () => {
       }),
       /candidate failed readiness/u,
     );
+    assert.deepEqual(systemd.calls.slice(updateCallsStart).slice(-2), [
+      ['reset-failed', basename(unitPath)],
+      ['restart', basename(unitPath)],
+    ]);
     const status = await manageRuntimeHostService({ ...input, action: 'status' }, backend());
     assert.equal(status.service.config?.websocket.port, 41_001);
     assert.match(await readFile(unitPath, 'utf8'), /--websocket-port" "41001"/u);
@@ -531,6 +913,7 @@ describe('managed Runtime Host service', () => {
 
 function createFakeSystemd(unitPath: string): {
   readonly failNext: (command: string) => void;
+  readonly calls: readonly (readonly string[])[];
   readonly run: (args: readonly string[]) => Promise<{
     exitCode: number;
     stdout: string;
@@ -541,11 +924,14 @@ function createFakeSystemd(unitPath: string): {
   let enabled = false;
   let active = false;
   let failureCommand: string | undefined;
+  const calls: string[][] = [];
   return {
+    calls,
     failNext: (command) => {
       failureCommand = command;
     },
     run: async (args) => {
+      calls.push([...args]);
       if (
         ['show', 'enable', 'disable', 'start', 'restart', 'stop', 'reset-failed'].includes(
           args[0] ?? '',
@@ -614,6 +1000,7 @@ function createUnusedBackend(): RuntimeHostServiceBackend {
     start: unexpected,
     stop: unexpected,
     restart: unexpected,
+    logs: unexpected,
     uninstall: unexpected,
   };
 }
@@ -642,6 +1029,7 @@ function createReadyBackend(): RuntimeHostServiceBackend {
     start: async () => undefined,
     stop: async () => undefined,
     restart: async () => undefined,
+    logs: async () => '',
     uninstall: async () => undefined,
   };
 }

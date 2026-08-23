@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useMemo, useState } from "react";
 import { PersonalizationSettingsSection } from "./personalization-settings-section";
 import {
@@ -46,6 +65,10 @@ import { settingsTestResultMessage } from "../locales/settings-test-result-copy.
 import { getShellCopy } from "../locales/shell-copy.js";
 import type { RuntimeHostSettingsConnectionsBridge } from './runtime-host-settings-bridge.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+import {
+  useOptionalRuntimeHostSettingsTarget,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 
 export function GeneralSettingsPage(props: {
   settings: AppSettings;
@@ -60,12 +83,15 @@ export function GeneralSettingsPage(props: {
   onRefreshConnections(): Promise<void>;
   onRetryRuntimeHost(): Promise<void>;
 }) {
+  const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
   const sections = getSettingsPreferencesCopy(locale).sections;
   const sharedCopy = getSettingsSharedCopy(locale);
   const toast = useToast();
+  const hostDiagnosticTarget = host ? { profileId: host.profileId } : undefined;
   const runtimeHostAvailable =
+    host !== undefined &&
     props.runtimeHostStatus === 'ready' &&
     props.connectionsBridge !== undefined &&
     props.testNetworkProxy !== undefined;
@@ -114,6 +140,8 @@ export function GeneralSettingsPage(props: {
                   toast.error(
                     copy.incognitoFailed,
                     settingsActionErrorMessage(error, locale),
+                    undefined,
+                    hostDiagnosticTarget,
                   );
                 }
               }}
@@ -156,6 +184,8 @@ export function GeneralSettingsPage(props: {
                   toast.error(
                     copy.workspaceInstructionsFailed,
                     settingsActionErrorMessage(error, locale),
+                    undefined,
+                    hostDiagnosticTarget,
                   );
                 }
               }}
@@ -199,6 +229,7 @@ function ShellSettingsSection(props: {
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
 }) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
   const sections = getSettingsPreferencesCopy(locale).sections;
@@ -237,6 +268,8 @@ function ShellSettingsSection(props: {
           isRejectedShellPreference(error)
             ? copy.shellExecutableRejected
             : settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
         );
       }
     } finally {
@@ -337,6 +370,7 @@ function GeneralDefaultsCard(props: {
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
 }) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
   // Level names come from the composer's own map — one vocabulary for the
@@ -396,6 +430,8 @@ function GeneralDefaultsCard(props: {
         toast.error(
           copy.saveDefaultModelFailed,
           settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
         );
       }
     } finally {
@@ -444,6 +480,8 @@ function GeneralDefaultsCard(props: {
         toast.error(
           copy.saveDefaultPermissionFailed,
           settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
         );
       }
     } finally {
@@ -460,7 +498,12 @@ function GeneralDefaultsCard(props: {
       await props.onUpdate({ chatDefaults: { thinkingLevel: next } });
     } catch (error) {
       if (mountedRef.current) {
-        toast.error(copy.saveDefaultThinkingFailed, settingsActionErrorMessage(error, locale));
+        toast.error(
+          copy.saveDefaultThinkingFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
+        );
       }
     } finally {
       releaseSave();
@@ -544,6 +587,7 @@ function NetworkProxySection(props: {
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
 }) {
+  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
   const persistedProxy = props.settings.network.proxy;
@@ -566,6 +610,8 @@ function NetworkProxySection(props: {
         toast.error(
           copy.saveNetworkFailed,
           settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
         ),
     },
   );
@@ -585,13 +631,20 @@ function NetworkProxySection(props: {
       if (result.ok && networkPageMountedRef.current) {
         toast.success(copy.proxyReachable, `${message}${latency}`);
       } else if (networkPageMountedRef.current) {
-        toast.error(copy.proxyTestFailed, message);
+        toast.error(
+          copy.proxyTestFailed,
+          message,
+          undefined,
+          { profileId: host.profileId },
+        );
       }
     } catch (error) {
       if (networkPageMountedRef.current) {
         toast.error(
           copy.proxyTestError,
           settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId: host.profileId },
         );
       }
     } finally {

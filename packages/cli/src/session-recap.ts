@@ -1,7 +1,21 @@
-import { cleanSessionRecapText, SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
-
-export const RECAP_INSTRUCTION = SESSION_RECAP_INSTRUCTION;
-export const cleanRecapText = cleanSessionRecapText;
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 
 /** Idle gap (ms) after which the first normal prompt on return triggers an automatic recap. */
 export const AUTO_RECAP_IDLE_MS = 180_000;
@@ -10,11 +24,6 @@ export const AUTO_RECAP_MIN_TURNS = 3;
 /** Raw-output size (bytes) above which an automatic recap is not surfaced in the transcript (still persisted). */
 export const AUTO_RECAP_DISPLAY_LIMIT_BYTES = 500;
 
-/**
- * Cleans a raw model recap response: collapses whitespace, strips a leading
- * `Recap:` / `Summary:` / `回顾：`-style label, strips one layer of wrapping
- * quotes, and truncates to 1200 characters (with an ellipsis) if needed.
- */
 export interface ShouldAutoRecapInput {
   /** Milliseconds since the last recorded user activity. */
   idleMs: number;

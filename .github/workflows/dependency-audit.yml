@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 name: Dependency audit
 
 on:
@@ -8,6 +25,8 @@ on:
   pull_request:
     paths:
       - .github/workflows/dependency-audit.yml
+      - scripts/audit-shipped-dependencies.mjs
+      - scripts/third-party-closure.mjs
       - package.json
       - package-lock.json
       - 'apps/*/package.json'
@@ -15,6 +34,8 @@ on:
   push:
     branches: [main]
     paths:
+      - scripts/audit-shipped-dependencies.mjs
+      - scripts/third-party-closure.mjs
       - package.json
       - package-lock.json
       - 'apps/*/package.json'
@@ -44,10 +65,20 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts --omit=dev
+        # The full tree, not --omit=dev: the shipped-closure audit below walks
+        # the renderer roots, which npm labels dev even though they ship.
+        run: npm ci --ignore-scripts
 
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=moderate
 
+      - name: Audit shipped desktop closure
+        run: node scripts/audit-shipped-dependencies.mjs
+
       - name: Verify registry signatures
-        run: npm audit signatures --omit=dev
+        # The full tree, not `--omit=dev`. Two reasons it has to be both:
+        # the renderer roots live in devDependencies while their code ships
+        # inside `dist-renderer`, and signature verification also protects
+        # everything that *executes* during the build — a tampered vite or
+        # biome can pollute the artifact without ever being packaged.
+        run: npm audit signatures

@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
-import type { ToolResultPreviewContent } from '@maka/core/events';
+import type { SandboxBoundaryFailureSignal, ToolResultPreviewContent } from '@maka/core/events';
 import { decodeToolResultPreviewContent } from '@maka/core/tool-result-preview';
 import type { ToolActivityKind } from '@maka/core/events';
 import type { SessionStatus } from '@maka/core/session';
@@ -162,6 +181,7 @@ export type SessionToolEvent =
       type: 'tool_result';
       operationId?: string;
       status: 'completed' | 'errored';
+      sandboxFailureReason?: SandboxBoundaryFailureSignal['reason'];
       durationMs?: number;
     })
   | (SessionToolEventIdentity & {
@@ -183,7 +203,13 @@ export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
   throughSequence: number;
 }
 
-export const SESSION_DOMAINS = ['task', 'plan', 'deep_research', 'runtime_resource'] as const;
+export const SESSION_DOMAINS = [
+  'task',
+  'plan',
+  'deep_research',
+  'usage',
+  'runtime_resource',
+] as const;
 export type SessionDomain = (typeof SESSION_DOMAINS)[number];
 export const SESSION_RUNTIME_RESOURCE_CHANGES_MAX = 64;
 
@@ -801,6 +827,7 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'toolUseId',
       'operationId',
       'status',
+      'sandboxFailureReason',
       'durationMs',
     ];
     assertAllowedKeys(record, 'Session tool result event', allowed);
@@ -815,6 +842,9 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
     if (record.status !== 'completed' && record.status !== 'errored') {
       throw invalidProtocolFrame('Invalid Session tool result status');
     }
+    if (record.status === 'completed' && record.sandboxFailureReason !== undefined) {
+      throw invalidProtocolFrame('Completed Session tool result cannot carry a sandbox failure');
+    }
     return {
       type: record.type,
       ...identity,
@@ -822,6 +852,9 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
         ? {}
         : { operationId: requireEntityId(record.operationId, 'operationId') }),
       status: record.status,
+      ...(record.sandboxFailureReason === undefined
+        ? {}
+        : { sandboxFailureReason: requireSandboxFailureReason(record.sandboxFailureReason) }),
       ...(record.durationMs === undefined
         ? {}
         : {
@@ -856,6 +889,11 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
     };
   }
   throw invalidProtocolFrame('Invalid Session tool event type');
+}
+
+function requireSandboxFailureReason(value: unknown): SandboxBoundaryFailureSignal['reason'] {
+  if (value === 'sandbox_boundary_required' || value === 'requires_bypass') return value;
+  throw invalidProtocolFrame('Invalid Session tool result sandbox failure reason');
 }
 
 function decodeSessionContinuityIdentity(value: unknown): SessionContinuityIdentity {

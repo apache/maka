@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Session-scoped Goal continuation coordinator.
  *
@@ -27,6 +46,7 @@ import {
 import { GoalTaskGatePolicy, type GoalTaskGateDeps } from './goal-task-gate-policy.js';
 import type { GoalTurnOutcome } from './goal-turn-lifecycle.js';
 import {
+  isDrivingGoal,
   sameGoalControlLease,
   type GoalCurrentExecution,
   type GoalExecutionRef,
@@ -402,6 +422,28 @@ export class GoalContinuationCoordinator {
     };
   }
 
+  /**
+   * Put back the drive this Goal already has, and only that.
+   *
+   * Neither caller may start a loop the Goal is not in: a restart would
+   * otherwise begin one for an armed Goal that `goal.arm` deliberately left
+   * for the user's next Turn. Resume is not an exception to that rule but a
+   * satisfier of it — resuming is the user asking for continuation, so the
+   * Goal is already driving by the time it arrives here. Two callers must obey
+   * this and a third would inherit it, so it is stated once here rather than
+   * at each door.
+   */
+  private restoreDrive(
+    lane: SessionLane,
+    goal: GoalState,
+    controlLease: GoalControlLease,
+    evaluation: GoalEvaluation,
+  ): void {
+    if (!isDrivingGoal(goal)) return;
+    lane.intent = { checkpoint: goalCheckpoint(goal), controlLease, evaluation };
+    this.scheduleDrain(lane);
+  }
+
   recoverActiveGoal(sessionId: string): void {
     if (this.disposed || this.sessionCloseFence.isClosed(sessionId)) return;
     const goal = this.deps.goalManager.get(sessionId);
@@ -409,19 +451,14 @@ export class GoalContinuationCoordinator {
     if (!goal || !controlLease || (goal.status !== 'active' && goal.status !== 'waiting')) return;
     const lane = this.laneFor(sessionId);
     if (lane.intent || lane.turns.size > 0) return;
-    lane.intent = {
-      checkpoint: goalCheckpoint(goal),
-      controlLease,
-      evaluation: {
-        met: false,
-        impossible: false,
-        progress: false,
-        waiting: goal.status === 'waiting',
-        evaluatorFailed: true,
-        reason: goal.lastReason ?? 'Goal continuation recovered after Host restart.',
-      },
-    };
-    this.scheduleDrain(lane);
+    this.restoreDrive(lane, goal, controlLease, {
+      met: false,
+      impossible: false,
+      progress: false,
+      waiting: goal.status === 'waiting',
+      evaluatorFailed: true,
+      reason: goal.lastReason ?? 'Goal continuation recovered after Host restart.',
+    });
   }
 
   /** Resume an exact paused Goal generation from Host control without a model-owned Turn. */
@@ -432,22 +469,17 @@ export class GoalContinuationCoordinator {
     const controlLease = this.deps.goalManager.getControlLease(sessionId);
     if (!controlLease) return undefined;
     const lane = this.laneFor(sessionId);
-    lane.intent = {
-      checkpoint: goalCheckpoint(resumed),
-      controlLease,
-      evaluation: {
-        met: false,
-        impossible: false,
-        progress: false,
-        waiting: false,
-        evaluatorFailed: false,
-        reason: 'Goal resumed by a connected client.',
-      },
-    };
     lane.busyWake = undefined;
     this.clearWaitingTimer(lane);
     this.resetWaitingBackoff(lane);
-    this.scheduleDrain(lane);
+    this.restoreDrive(lane, resumed, controlLease, {
+      met: false,
+      impossible: false,
+      progress: false,
+      waiting: false,
+      evaluatorFailed: false,
+      reason: 'Goal resumed by a connected client.',
+    });
     return resumed;
   }
 

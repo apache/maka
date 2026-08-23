@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,6 +27,7 @@ import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core/agent-run'
 import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   decodeModelCallAttempt,
+  type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
 import type { InteractionCanonicalOutcome, InteractionRequest } from '@maka/core/interaction';
 import type { ShellRunRecord } from '@maka/core/shell-run';
@@ -39,6 +59,128 @@ describe('SQLite core execution stores', () => {
     });
   });
 
+  test('advances the model-call high-water index with the authority append', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await store.appendEvent('session-1', 'run-1', runEvent());
+      await store.appendEvent('session-1', 'run-1', {
+        ...runEvent(),
+        id: 'model-call-event',
+        type: 'model_call_attempt_recorded',
+        data: { ...modelCallAttempt() },
+      });
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(
+          database
+            .prepare(`
+              SELECT latest_model_call_sequence AS sequence
+              FROM core_agent_runs
+              WHERE session_id = 'session-1' AND run_id = 'run-1'
+            `)
+            .get()?.sequence,
+          1,
+        );
+      } finally {
+        database.close();
+        store.close?.();
+      }
+    });
+  });
+
+  test('backfills the model-call high-water when upgrading existing AgentRun rows', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await store.appendEvent('session-1', 'run-1', {
+        ...runEvent(),
+        id: 'legacy-model-call-event',
+        type: 'model_call_attempt_recorded',
+        data: { ...modelCallAttempt() },
+      });
+      store.close?.();
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      database.exec(`
+        DROP INDEX core_agent_runs_model_call_high_water;
+        ALTER TABLE core_agent_runs DROP COLUMN latest_model_call_sequence;
+        UPDATE operational_schema_migrations SET version = 3 WHERE scope = 'core_execution';
+      `);
+      database.close();
+
+      const migrated = createSqliteAgentRunStore(root);
+      try {
+        const inspected = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+        try {
+          assert.equal(
+            inspected
+              .prepare(`
+                SELECT latest_model_call_sequence AS sequence
+                FROM core_agent_runs
+                WHERE session_id = 'session-1' AND run_id = 'run-1'
+              `)
+              .get()?.sequence,
+            0,
+          );
+        } finally {
+          inspected.close();
+        }
+      } finally {
+        migrated.close?.();
+      }
+    });
+  });
+
+  test('pages AgentRuns by stable creation and run identity order', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      try {
+        await store.createRun(runHeader({ runId: 'run-a', turnId: 'turn-a', createdAt: 1 }));
+        await store.createRun(runHeader({ runId: 'run-b', turnId: 'turn-b', createdAt: 2 }));
+        await store.createRun(runHeader({ runId: 'run-c', turnId: 'turn-c', createdAt: 2 }));
+
+        const first = await store.listSessionRunsPage('session-1', { limit: 2 });
+        assert.deepEqual(
+          first.runs.map((run) => run.runId),
+          ['run-c', 'run-b'],
+        );
+        assert.deepEqual(first.nextCursor, { createdAt: 2, runId: 'run-b' });
+
+        await store.createRun(runHeader({ runId: 'run-d', turnId: 'turn-d', createdAt: 3 }));
+        const older = await store.listSessionRunsPage('session-1', {
+          limit: 2,
+          before: first.nextCursor ?? undefined,
+        });
+        assert.deepEqual(
+          older.runs.map((run) => run.runId),
+          ['run-a'],
+        );
+        assert.equal(older.nextCursor, null);
+      } finally {
+        store.close?.();
+      }
+    });
+  });
+
+  test('rejects a non-finite AgentRun page cursor', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      try {
+        await assert.rejects(
+          store.listSessionRunsPage('session-1', {
+            limit: 1,
+            before: { createdAt: Number.NaN, runId: 'run-1' },
+          }),
+          /Invalid AgentRun page cursor/u,
+        );
+      } finally {
+        store.close?.();
+      }
+    });
+  });
+
   test('preserves provider failure diagnostics in the AgentRun authority after reopen', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);
@@ -51,31 +193,26 @@ describe('SQLite core execution stores', () => {
         turnId: 'turn-1',
         ts: 10,
         data: {
-          schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
-          logicalCallId: 'call-1',
-          attemptId: 'attempt-1',
-          traceId: 'trace-1',
-          sessionId: 'session-1',
-          runId: 'run-1',
-          turnId: 'turn-1',
-          step: 0,
-          attempt: 0,
-          callKind: 'history_compact',
-          historyCompactRoute: 'provider_native',
-          connectionSlug: 'codex-subscription',
-          providerId: 'openai-codex',
-          modelId: 'gpt-5.6-sol',
-          startedAt: 1,
-          completedAt: 10,
-          latencyMs: 9,
-          status: 'failed',
-          errorClass: 'RequestRejected',
-          httpStatus: 400,
-          providerCode: 'invalid_request_error',
-          providerRequestId: 'req-authority-1',
-          retryable: false,
-          usageBasis: 'missing',
-          costBasis: 'unpriced',
+          ...modelCallAttempt({
+            callKind: 'history_compact',
+            historyCompactRoute: 'provider_native',
+            connectionSlug: 'codex-subscription',
+            providerId: 'openai-codex',
+            modelId: 'gpt-5.6-sol',
+            completedAt: 10,
+            latencyMs: 9,
+            status: 'failed',
+            errorClass: 'RequestRejected',
+            httpStatus: 400,
+            providerCode: 'invalid_request_error',
+            providerRequestId: 'req-authority-1',
+            retryable: false,
+            usageBasis: 'missing',
+            inputTokens: undefined,
+            outputTokens: undefined,
+            costBasis: 'unpriced',
+            costUsd: undefined,
+          }),
         },
       });
       store.close?.();
@@ -235,7 +372,7 @@ async function withRoot(run: (root: string) => Promise<void>): Promise<void> {
   }
 }
 
-function runHeader(): AgentRunHeader {
+function runHeader(overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
   return {
     runId: 'run-1',
     sessionId: 'session-1',
@@ -248,6 +385,7 @@ function runHeader(): AgentRunHeader {
     permissionMode: 'ask',
     createdAt: 1,
     updatedAt: 1,
+    ...overrides,
   };
 }
 
@@ -259,6 +397,33 @@ function runEvent(): EmittedAgentRunEvent {
     sessionId: 'session-1',
     turnId: 'turn-1',
     ts: 2,
+  };
+}
+
+function modelCallAttempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
+  return {
+    schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+    logicalCallId: 'call-1',
+    attemptId: 'attempt-1',
+    traceId: 'trace-1',
+    sessionId: 'session-1',
+    runId: 'run-1',
+    turnId: 'turn-1',
+    step: 0,
+    attempt: 0,
+    callKind: 'main' as const,
+    providerId: 'openai',
+    modelId: 'gpt-5',
+    startedAt: 1,
+    completedAt: 2,
+    latencyMs: 1,
+    status: 'completed' as const,
+    usageBasis: 'reported' as const,
+    inputTokens: 1,
+    outputTokens: 1,
+    costBasis: 'priced' as const,
+    costUsd: 0.001,
+    ...overrides,
   };
 }
 

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
@@ -159,16 +178,16 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
       kind: 'committed',
       session: session('session-1', 12, {
         collaborationMode: 'plan',
-        permissionMode: 'execute',
+        permissionMode: 'ask',
       }),
     },
   ]);
 
   const updated = await client.updateSessionConfiguration('session-1', {
-    permissionMode: 'execute',
+    permissionMode: 'ask',
   });
 
-  assert.equal(updated.permissionMode, 'execute');
+  assert.equal(updated.permissionMode, 'ask');
   assert.equal(updated.collaborationMode, 'plan');
   assert.deepEqual(
     requests
@@ -185,7 +204,7 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
             model: 'test-model',
           },
           thinkingLevel: null,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           collaborationMode: 'agent',
           orchestrationMode: 'default',
         },
@@ -200,7 +219,7 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
             model: 'test-model',
           },
           thinkingLevel: null,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           collaborationMode: 'plan',
           orchestrationMode: 'default',
         },
@@ -750,6 +769,52 @@ test('controlGoalWithRetry rethrows a status refusal instead of retrying it away
   // No futile retries: exactly one control attempt.
   assert.equal(
     requests.filter(({ operation }) => operation === 'goal.control').length,
+    1,
+  );
+});
+
+test('arms a Goal in one request and reports a conflicting Goal instead of retrying', async () => {
+  const armed = goalProjection(0);
+  const { client, requests } = clientWithResponses([
+    { sessionId: 'session-1', goal: armed },
+  ]);
+
+  const result = await client.armGoal({
+    sessionId: 'session-1',
+    condition: 'All tests pass',
+    maxIterations: 20,
+    tokenBudget: null,
+  });
+
+  assert.deepEqual(result, { sessionId: 'session-1', goal: armed });
+  assert.deepEqual(
+    requests.filter(({ operation }) => operation === 'goal.arm').map(({ input }) => input),
+    [
+      {
+        sessionId: 'session-1',
+        condition: 'All tests pass',
+        maxIterations: 20,
+        tokenBudget: null,
+      },
+    ],
+  );
+
+  // Arming names no revision, so a conflict is an answer for the user — the
+  // Session already has a Goal — not a stale read to refresh and re-send.
+  const conflicted = clientWithResponses([
+    new RuntimeHostOperationError('goal.arm', 'operation_conflict', 'Goal already set'),
+  ]);
+  await assert.rejects(
+    conflicted.client.armGoal({
+      sessionId: 'session-1',
+      condition: 'All tests pass',
+      maxIterations: null,
+      tokenBudget: null,
+    }),
+    /Goal already set/,
+  );
+  assert.equal(
+    conflicted.requests.filter(({ operation }) => operation === 'goal.arm').length,
     1,
   );
 });

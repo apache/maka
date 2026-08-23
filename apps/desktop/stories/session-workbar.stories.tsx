@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { CSSProperties } from 'react';
-import type { Meta, StoryObj } from '@storybook/react-vite';
+import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { GitReviewSnapshot } from '@maka/core/git-review';
@@ -8,13 +27,21 @@ import type { Task } from '@maka/core/task-ledger';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
-import { SessionWorkbar } from '../src/renderer/session-workbar';
 import {
+  WorkbarServicesProvider,
+  WorkbarSurface,
+} from '../src/renderer/features/workbar';
+import {
+  createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
   createSessionWorkbarTabsState,
   openStaticSessionWorkbarTab,
-} from '../src/renderer/session-workbar-tabs';
-import { withScopedMakaBridge } from './maka-bridge';
+  terminalSessionWorkbarTabId,
+  type QuoteCompanionPanelState,
+  type SessionWorkbarTab,
+  type SessionWorkbarTabKind,
+  type WorkbarSessionUsageSummary,
+} from '../src/renderer/features/workbar/testing';
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
@@ -79,6 +106,13 @@ const TOOL_PICKER_SOURCE_SESSION: SessionSummary = {
   model: 'claude-sonnet-4-5',
   permissionMode: 'ask',
 };
+const SIDE_CHAT_SESSION: SessionSummary = {
+  ...TOOL_PICKER_SOURCE_SESSION,
+  id: 'session-workbar-side-chat',
+  name: '侧边对话',
+};
+const TERMINAL_REF = 'shell-run:storybook-terminal';
+const SIDE_CHAT_PANEL_ID = 'storybook-side-chat';
 
 // The record-file row reads `app:info`'s operationalStateDatabasePath (the
 // exact path main resolves). The short one is what a default workspace looks
@@ -316,16 +350,6 @@ const populatedTrace: SessionTrace = {
           checkpointId: 'checkpoint-9',
         },
       ],
-      totals: {
-        durationMs: 8_400,
-        modelAttempts: 2,
-        retries: 1,
-        compactions: 1,
-        inputTokens: 62_400,
-        outputTokens: 480,
-        costUsd: 0.0182,
-        unpricedAttempts: 1,
-      },
     },
     {
       turnId: 'turn-2',
@@ -355,15 +379,6 @@ const populatedTrace: SessionTrace = {
           message: 'sandbox denied the write',
         },
       ],
-      totals: {
-        durationMs: 4_500,
-        modelAttempts: 0,
-        retries: 0,
-        compactions: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        unpricedAttempts: 0,
-      },
       failure: { code: 'tool_failed', message: 'sandbox denied the write' },
     },
     {
@@ -407,32 +422,13 @@ const populatedTrace: SessionTrace = {
           ],
         },
       ],
-      totals: {
-        durationMs: 3_600,
-        modelAttempts: 1,
-        retries: 0,
-        compactions: 0,
-        inputTokens: 18_900,
-        outputTokens: 260,
-        costUsd: 0.0061,
-        unpricedAttempts: 0,
-      },
     },
   ],
-  totals: {
-    durationMs: 16_500,
-    modelAttempts: 3,
-    retries: 1,
-    compactions: 1,
-    inputTokens: 81_300,
-    outputTokens: 740,
-    costUsd: 0.0243,
-    unpricedAttempts: 1,
-  },
   coverage: {
     modelCalls: 'partial',
-    turnsMissingModelCalls: ['turn-2'],
+    turnsMissingModelCalls: [{ runId: 'run-2', turnId: 'turn-2' }],
     unreadableRecords: 1,
+    oversizedRuns: 0,
     turnsWithFewerModelCallsThanSteps: [],
   },
 };
@@ -506,30 +502,98 @@ const emptyTrace: SessionTrace = {
   schemaVersion: 1,
   sessionId: SESSION_ID,
   turns: [],
-  totals: {
-    durationMs: 0,
-    modelAttempts: 0,
-    retries: 0,
-    compactions: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    unpricedAttempts: 0,
-  },
   coverage: {
     modelCalls: 'none',
     turnsMissingModelCalls: [],
     unreadableRecords: 0,
+    oversizedRuns: 0,
     turnsWithFewerModelCallsThanSteps: [],
   },
 };
 
-// ---- bridge --------------------------------------------------------------
+const olderTrace: SessionTrace = {
+  ...emptyTrace,
+  turns: [
+    {
+      turnId: 'turn-older',
+      runId: 'run-older',
+      startedAt: NOW - 60_000,
+      endedAt: NOW - 60_000,
+      durationMs: 0,
+      steps: [],
+    },
+  ],
+};
+
+const emptyUsageSummary: WorkbarSessionUsageSummary = {
+  range: { from: NOW, to: NOW },
+  totalRequests: 0,
+  totalCostUsd: 0,
+  totalTokens: {
+    input: 0,
+    output: 0,
+    cacheMiss: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    reasoning: 0,
+    total: 0,
+  },
+  cacheHitRequests: 0,
+  cacheCreateRequests: 0,
+  errorRequests: 0,
+  provenance: {
+    coverage: {
+      attempts: 0,
+      pricedAttempts: 0,
+      unpricedAttempts: 0,
+      usageReportedAttempts: 0,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 0,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
+  },
+};
+
+const populatedUsageSummary: WorkbarSessionUsageSummary = {
+  range: { from: NOW, to: NOW + 43_600 },
+  totalRequests: 3,
+  totalCostUsd: 0.0243,
+  totalTokens: {
+    input: 81_300,
+    output: 740,
+    cacheMiss: 7_200,
+    cacheRead: 74_100,
+    cacheWrite: 0,
+    reasoning: 120,
+    total: 82_040,
+  },
+  cacheHitRequests: 2,
+  cacheCreateRequests: 0,
+  errorRequests: 1,
+  provenance: {
+    coverage: {
+      attempts: 3,
+      pricedAttempts: 2,
+      unpricedAttempts: 1,
+      usageReportedAttempts: 2,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 1,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 1,
+    pendingRepairs: 0,
+  },
+};
+
+// ---- services ------------------------------------------------------------
 
 const noop = () => undefined;
 const unsubscribe = () => () => undefined;
 
 /**
- * The four bridges the workbar reads at once. Needing all of them together is
+ * The four service groups the workbar reads at once. Needing all of them together is
  * why the shell had no story before; each option below is the one fact a story
  * varies, and everything else stays on the populated default.
  */
@@ -537,14 +601,15 @@ function bridge(options: {
   tasks?: Task[];
   tasksFail?: boolean;
   trace?: SessionTrace;
+  traceNextCursor?: string;
   traceFail?: boolean;
   /** The context snapshot the composition block reads (#2323). */
   context?: ContextDiagnosticsResult;
   recordFilePath?: string;
   browserState?: BrowserState;
-} = {}) {
+} = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
-  return withScopedMakaBridge({
+  const services = createFakeWorkbarServices({
     tasks: {
       list: async () => {
         if (options.tasksFail) throw new Error('读取任务失败');
@@ -554,41 +619,70 @@ function bridge(options: {
     },
     artifacts: {
       list: async () => artifacts,
-      get: async (id: string) => artifacts.find((record) => record.id === id) ?? null,
-      readText: async (id: string) => ({ ok: true, text: artifactText[id] ?? '' }),
+      readText: async (_sessionId: string, id: string) => ({ ok: true, text: artifactText[id] ?? '' }),
       readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
       delete: async () => undefined,
       subscribeChanges: unsubscribe,
-    },
-    app: {
-      // The record-file row reads only operationalStateDatabasePath; the rest
-      // of AppInfo is real-IPC data no story needs, so the mock carries just
-      // the seam.
-      info: async () => ({
-        operationalStateDatabasePath: options.recordFilePath ?? DEFAULT_RECORD_FILE_PATH,
-      }),
-      openArtifactPath: async () => ({ ok: true, opened: 'artifact-patch' }),
-      saveArtifactAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
+      openPath: async () => ({ ok: true, opened: 'artifact-patch' }),
+      saveAs: async () => ({ ok: true, saved: 'slice-9-conversation.diff' }),
     },
     inspector: {
-      trace: async () =>
+      trace: async (_sessionId, cursor) =>
         options.traceFail
-          ? { ok: false, error: { message: '追踪读取失败：无法读取运行记录' } }
-          : { ok: true, data: options.trace ?? emptyTrace },
+          ? {
+              ok: false,
+              error: { code: 'TRACE_READ_FAILED', message: '追踪读取失败：无法读取运行记录' },
+            }
+          : {
+              ok: true,
+              data: cursor
+                ? { trace: olderTrace, nextCursor: null }
+                : {
+                    trace: options.trace ?? emptyTrace,
+                    nextCursor: options.traceNextCursor ?? null,
+                  },
+            },
+      summary: async () => ({
+        ok: true,
+        data:
+          options.trace && options.trace.turns.length > 0
+            ? populatedUsageSummary
+            : emptyUsageSummary,
+      }),
+      subscribeUsageChanges: unsubscribe,
       context: async () => ({
         ok: true,
         data: options.context ?? { status: 'unavailable', reason: 'no_completed_request' },
       }),
+      subscribeSessionEvents: unsubscribe,
+      getRecordFile: async () => options.recordFilePath ?? DEFAULT_RECORD_FILE_PATH,
     },
-    gitReview: {
+    review: {
       read: async () => ({
         ok: true,
         snapshot: gitReviewSnapshot,
       }),
+      subscribeSessionEvents: unsubscribe,
+    },
+    terminal: {
+      start: async () => {
+        throw new Error('Terminal stories mount an existing resource');
+      },
+      stop: async () => null,
+      attach: async () => ({
+        sessionId: SESSION_ID,
+        ref: TERMINAL_REF,
+        sequence: 1,
+        buffer: '$ npm test\r\n✓ workbar controller\r\n',
+        size: { cols: 80, rows: 24 },
+      }),
+      detach: async () => undefined,
+      write: async () => null,
+      subscribePtyData: unsubscribe,
+      subscribeResync: unsubscribe,
     },
     browser: {
-      getState: async () => browserState,
-      onState: unsubscribe,
+      setActiveSession: noop,
       setViewport: noop,
       navigate: async () => undefined,
       back: async () => undefined,
@@ -596,9 +690,41 @@ function bridge(options: {
       reload: async () => undefined,
       stop: async () => undefined,
       close: async () => undefined,
+      getState: async () => browserState,
+      subscribeState: unsubscribe,
+      subscribeLive: unsubscribe,
     },
-    sessions: { subscribeEvents: unsubscribe },
+    sideChat: {
+      listSessions: async () => [TOOL_PICKER_SOURCE_SESSION, SIDE_CHAT_SESSION],
+      listTurns: async () => [
+        {
+          turnId: 'source-turn',
+          status: 'completed',
+          partialOutputRetained: false,
+        },
+      ],
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+      branchFromTurn: async () => SIDE_CHAT_SESSION,
+      cleanupSessionCopy: async () => undefined,
+      abandonSessionCopy: async () => undefined,
+      send: async () => ({ ok: true }),
+      stop: async () => undefined,
+      steer: async () => ({ kind: 'queued' }),
+      setPermissionMode: async (_sessionId, mode) => ({
+        ...SIDE_CHAT_SESSION,
+        permissionMode: mode,
+      }),
+      regenerateTurn: async () => undefined,
+      respondToSandboxBoundary: async () => undefined,
+      respondToUserQuestion: async () => undefined,
+      subscribeEvents: unsubscribe,
+    },
   });
+  return (Story) => (
+    <WorkbarServicesProvider services={services}>
+      <Story />
+    </WorkbarServicesProvider>
+  );
 }
 
 /**
@@ -606,15 +732,41 @@ function bridge(options: {
  * column. Its 990px media query is what stacks the column in narrow windows.
  */
 function Workbar(props: {
-  tab?: 'review' | 'tasks' | 'browser' | 'files' | 'inspector';
+  tab?: SessionWorkbarTabKind;
   sourceSession?: SessionSummary;
   /** Overrides the restored column width, the way the resize handle does. */
   width?: number;
 }) {
   const emptyTabsState = createSessionWorkbarTabsState();
-  const tabsState = props.tab
-    ? openStaticSessionWorkbarTab(emptyTabsState, props.tab)
-    : emptyTabsState;
+  let tab: SessionWorkbarTab | undefined;
+  let quotes: QuoteCompanionPanelState[] | undefined;
+  if (props.tab === 'terminal') {
+    tab = {
+      id: terminalSessionWorkbarTabId(TERMINAL_REF),
+      kind: 'terminal',
+      ordinal: 1,
+      resourceRef: TERMINAL_REF,
+      ownerSessionId: SESSION_ID,
+    };
+  } else if (props.tab === 'side-chat') {
+    tab = {
+      id: `side-chat:${SIDE_CHAT_PANEL_ID}`,
+      kind: 'side-chat',
+      ordinal: 1,
+    };
+    quotes = [
+      {
+        id: SIDE_CHAT_PANEL_ID,
+        sourceSessionId: SESSION_ID,
+        quotes: [],
+      },
+    ];
+  }
+  const tabsState = tab
+    ? createSessionWorkbarTabsState([tab], tab.id)
+    : props.tab && props.tab !== 'side-chat'
+      ? openStaticSessionWorkbarTab(emptyTabsState, props.tab)
+      : emptyTabsState;
   return (
     <ToastProvider>
       <div
@@ -627,7 +779,7 @@ function Workbar(props: {
         } as CSSProperties}
       >
         <div className="mainColumn" />
-        <SessionWorkbar
+        <WorkbarSurface
           sessionId={SESSION_ID}
           hidden={false}
           onDismissPanel={noop}
@@ -643,7 +795,11 @@ function Workbar(props: {
           onPinTab={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
-          sourceSession={props.sourceSession}
+          quotes={quotes}
+          sourceSession={
+            props.sourceSession ??
+            (props.tab === 'side-chat' ? TOOL_PICKER_SOURCE_SESSION : undefined)
+          }
         />
       </div>
     </ToastProvider>
@@ -672,6 +828,13 @@ export const ToolPicker: Story = {
 export const Changes: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="review" />,
+};
+
+// Real path: 任务工作栏 → 终端 after Desktop has created a PTY resource. The
+// service fake hydrates the real xterm surface without an Electron bridge.
+export const Terminal: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="terminal" />,
 };
 
 // Real path: sidebar → a session → 展开任务工作栏, landing on the tab the app
@@ -744,7 +907,6 @@ export const BrowserStacked: Story = {
   decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
   render: () => <Workbar tab="browser" />,
 };
-
 // Real path: 任务工作栏 → 文件, on a session whose agent wrote artifacts. The
 // count in the tab is the pane's own filtered total, reported upward.
 // The pane's empty state renders the same EmptyState as TraceEmpty below, so it
@@ -754,6 +916,13 @@ export const Files: Story = {
   render: () => <Workbar tab="files" />,
 };
 
+// Real path: 任务工作栏 → 侧边对话. The fork and transcript boundary are both
+// supplied by WorkbarServices, so the real Composer mounts without window.maka.
+export const SideChat: Story = {
+  decorators: [bridge()],
+  render: () => <Workbar tab="side-chat" />,
+};
+
 // Real path: 任务工作栏 → 追踪, on a session that has run turns — the overview
 // reads a context budget, token/cache figures and the session's facts off a
 // retried model call and a post-compaction call, while a turn that failed on a
@@ -761,6 +930,20 @@ export const Files: Story = {
 // raises when records are missing.
 export const Trace: Story = {
   decorators: [bridge({ trace: populatedTrace, context: populatedContext })],
+  render: () => <Workbar tab="inspector" />,
+};
+
+// Real path: the first bounded page of a longer trace. The continuation control
+// sits before the ascending timeline because earlier records are inserted at
+// that edge, not after the newest turn.
+export const TraceMoreHistory: Story = {
+  decorators: [
+    bridge({
+      trace: populatedTrace,
+      traceNextCursor: 'older-session-trace-page',
+      context: populatedContext,
+    }),
+  ],
   render: () => <Workbar tab="inspector" />,
 };
 

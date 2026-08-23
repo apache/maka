@@ -1,25 +1,64 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { buildProviderOptions } from '../model-factory.js';
 import { openAiCodexHeaders } from '../subscription-auth.js';
+import { resolveModelRuntime } from '../model-runtime.js';
 import { testConnection } from '../test-connection.js';
 
 describe('Claude subscription runtime wiring', () => {
-  test('testConnection treats resolved Claude OAuth token as a usable login', async () => {
-    const result = await testConnection(claudeOAuthConnection(), 'oauth-access-token');
-    assert.equal(result.ok, true);
+  test('a per-model override cannot hand a retired provider a working adapter', () => {
+    // `resolveModelRuntime` used to consult the override table before the
+    // provider's own adapter, so one generated row naming an npm package would
+    // have built an active adapter and skipped the retirement entirely. The
+    // table is generated from an external source, so no row exists today and
+    // none should be able to matter.
+    for (const modelId of ['claude-opus-5', 'a-model-an-override-could-name']) {
+      assert.throws(
+        () => resolveModelRuntime(retiredOAuthConnection(), modelId),
+        /retired/,
+        `${modelId} must be refused before any override is consulted`,
+      );
+    }
   });
 
-  test('testConnection never burns Claude OAuth quota with a synthetic messages probe', async () => {
+  test('testConnection refuses a retired provider instead of reporting it usable', async () => {
+    // The retired path used to report success whenever a token resolved, which
+    // is why a workspace could show a verified connection that could not answer
+    // a single turn. An unavailable adapter has no endpoint to probe.
+    const result = await testConnection(retiredOAuthConnection(), 'oauth-access-token');
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.errorMessage ?? '', /retired/i);
+  });
+
+  test('a retired provider is refused without reaching the network', async () => {
     let requests = 0;
-    const result = await testConnection(claudeOAuthConnection(), 'oauth-access-token', undefined, {
+    const result = await testConnection(retiredOAuthConnection(), 'oauth-access-token', undefined, {
       fetch: async () => {
         requests += 1;
-        throw new Error('Claude OAuth connection test must not issue a request');
+        throw new Error('A retired provider must not issue a connection test request');
       },
     });
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, false);
     assert.equal(requests, 0);
   });
 
@@ -95,10 +134,10 @@ describe('Claude subscription runtime wiring', () => {
   });
 });
 
-function claudeOAuthConnection(): LlmConnection {
+function retiredOAuthConnection(): LlmConnection {
   return {
     slug: 'claude-subscription',
-    name: 'Claude OAuth',
+    name: 'Retired Claude OAuth',
     providerType: 'claude-subscription',
     defaultModel: 'claude-sonnet-4-5-20250929',
     enabled: true,

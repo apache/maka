@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -14,6 +33,7 @@ import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
+import { acquireOperationalStateDatabase } from '@maka/storage';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   decodeClientFrame,
@@ -66,6 +86,7 @@ describe('Usage/Pricing protocol', () => {
           connectionSlug: 'primary',
           providerId: 'provider',
           modelId: 'model',
+          sessionId: 'session-1',
           status: 'success',
         },
         groupBy: 'model',
@@ -79,6 +100,7 @@ describe('Usage/Pricing protocol', () => {
           connectionSlug: 'primary',
           providerId: 'provider',
           modelId: 'model',
+          sessionId: 'session-1',
           status: 'success',
         },
         groupBy: 'model',
@@ -340,6 +362,74 @@ describe('Usage/Pricing protocol', () => {
       assert.deepEqual(await queryUsageRows(coordinator, 'llm'), llmRows);
       assert.deepEqual(await queryUsageRows(coordinator, 'tool'), toolRows);
       assert.deepEqual(await queryUsageBuckets(coordinator), buckets);
+    } finally {
+      await stores.close().catch(() => undefined);
+      await owner.close();
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  test('a Session summary neither repairs nor reports another Session pending projection', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-session-usage-scope-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive-root'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+    try {
+      const lease = acquireOperationalStateDatabase(join(base, 'interactive-root'));
+      try {
+        lease.transaction('write', () => {
+          lease.database
+            .prepare(`
+              INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
+              VALUES ('session-b', 'run-b', 0, '{}')
+            `)
+            .run();
+          lease.database
+            .prepare(`
+              UPDATE core_agent_runs SET latest_model_call_sequence = 0
+              WHERE session_id = 'session-b' AND run_id = 'run-b'
+            `)
+            .run();
+          lease.database
+            .prepare(`
+              INSERT INTO core_agent_run_events(
+                session_id, run_id, sequence, event_id, event_type, event_ts, record_json
+              ) VALUES (
+                'session-b', 'run-b', 0, 'corrupt-model-call',
+                'model_call_attempt_recorded', 0, '{}'
+              )
+            `)
+            .run();
+        });
+      } finally {
+        lease.close();
+      }
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+        () => {},
+      );
+
+      const outcome = await coordinator.handlers['usage.query'](
+        { kind: 'summary', query: { range: 'all', sessionId: 'session-a' } },
+        CONNECTION_CONTEXT,
+      );
+
+      assert.equal(outcome.ok, true);
+      if (!outcome.ok || outcome.result.kind !== 'summary') return;
+      assert.equal(outcome.result.provenance.pendingRepairs, 0);
+      assert.equal(outcome.result.provenance.unreadableRecords, 0);
+      const global = await stores.modelCalls.catchUpModelCallProjection();
+      assert.equal(global.unreadableEvents, 1);
     } finally {
       await stores.close().catch(() => undefined);
       await owner.close();

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
@@ -10,7 +29,8 @@ import {
   type SandboxBoundarySettlement,
   type SettleSandboxBoundaryRequest,
 } from '@maka/core/sandbox-boundary';
-import { ToolOutcomeUnknownError } from '@maka/core/events';
+import { serializedByteLength } from '@maka/core/serialized-byte-length';
+import { encodeToolStepProgress, ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
   SandboxBoundaryDecisionAckEvent,
   SandboxBoundaryRequestEvent,
@@ -46,7 +66,6 @@ import type { SessionHeader } from '@maka/core/session';
 import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { redactSecrets } from '@maka/core/redaction';
 import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core/runtime-event';
-import { serializedByteLength } from '@maka/code-mode';
 
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
 import { computerActionFields, describeComputerUseArgsViolation } from './computer-use-codec.js';
@@ -64,7 +83,7 @@ import {
   type RuntimeCommitSink,
   type ToolRecoveryMode,
 } from './runtime-commit-sink.js';
-import { ChildAgentRunLimiter } from './child-agent-run-limiter.js';
+import { AdmissionLimiter } from './admission-limiter.js';
 import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import { sandboxErrorMetadata, serializeSandboxError } from './sandbox/errors.js';
@@ -173,6 +192,8 @@ export interface MakaToolContext {
   operationId?: string;
   abortSignal: AbortSignal;
   emitOutput: (stream: ToolOutputStream, chunk: string) => void;
+  /** Live-only bounded progress for multi-step tools. */
+  emitProgress?: (current: number, total: number) => void;
   /** Diagnostic-only trace projection. It must never affect tool execution. */
   emitRunTrace?: (
     type:
@@ -483,7 +504,7 @@ export class ToolRuntime {
   private sandboxBoundaryClosureDeferred = false;
   private questionClosureDeferred = false;
   private activeSubagentToolCount = 0;
-  private childAgentRunLimiter = new ChildAgentRunLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
+  private childAgentRunLimiter = new AdmissionLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
   /**
    * Tool-availability gating for the execute boundary. Set by the backend each
    * turn from `ToolAvailabilityRuntime`. Undefined when gating is off (economy
@@ -765,7 +786,7 @@ export class ToolRuntime {
 
   resetTurnState(): void {
     const priorChildAgentRunLimiter = this.childAgentRunLimiter;
-    this.childAgentRunLimiter = new ChildAgentRunLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
+    this.childAgentRunLimiter = new AdmissionLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
     priorChildAgentRunLimiter.close(
       new Error('Child agent run permit scope ended before capacity became available'),
     );
@@ -1318,6 +1339,19 @@ export class ToolRuntime {
           ...(pushedCallEvent?.operationId ? { operationId: pushedCallEvent.operationId } : {}),
           abortSignal: ctx.abortSignal,
           emitOutput: output.emit,
+          emitProgress: (current, total) => {
+            const chunk = encodeToolStepProgress({ current, total });
+            if (!chunk) return;
+            queue.push({
+              type: 'tool_progress',
+              id: this.input.newId(),
+              turnId,
+              ts: this.input.now(),
+              toolUseId,
+              chunk,
+              ...activityIdentity,
+            });
+          },
           ...(trace
             ? {
                 emitRunTrace: (

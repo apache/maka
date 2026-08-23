@@ -1,11 +1,53 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { readFileSync } from 'node:fs';
+import { resolveProductManifestIdentity } from '../../scripts/product-release-identity.mjs';
+
+function readManifest(relativePath) {
+  return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
+}
+
+const { runtimeHostSetupPackage } = resolveProductManifestIdentity({
+  rootManifest: readManifest('../../package.json'),
+  desktopManifest: readManifest('./package.json'),
+  cliManifest: readManifest('../../packages/cli/package.json'),
+});
+
 export default {
   appId: 'com.maka.desktop',
   productName: 'Maka',
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
+  extraMetadata: { runtimeHostSetupPackage },
   directories: {
     output: 'release',
   },
+  // `files` names what to include; the production dependency closure of
+  // `package.json` comes along automatically. Renderer-only packages are kept
+  // out of that closure by living in `devDependencies` — vite bundles them into
+  // `dist-renderer`, so a second copy of their sources in `app.asar` is never
+  // loaded. A hand-written exclude list was tried first and could not hold: it
+  // has to name every transitive package too, and it silently went stale.
+  //
+  // `@xterm/headless` stays a dependency on purpose — `@maka/runtime` imports
+  // it for the PTY stack, so only the renderer-side xterm packages moved.
   files: [
     'dist/**/*',
     'dist-renderer/**/*',
@@ -14,19 +56,28 @@ export default {
     // FakeBackend and the Desktop E2E candidate bootstrap live under
     // `test-only/`; they must not reach a packaged app.
     '!**/test-only/**',
+    // `build:main` emits renderer sources as tsc side-files so main's tests can
+    // import a few helpers. The main process reaches exactly one of them at
+    // runtime — the cursor overlay engine — while the rest import `react`,
+    // `@maka/ui` and `@astryxdesign/core`, which the renderer now bundles
+    // instead of shipping under `node_modules`. Shipping those files would put
+    // ESM in the archive whose static imports cannot resolve.
+    '!dist/renderer/**',
+    'dist/renderer/computer-use-overlay/**',
   ],
   extraResources: [
     {
-      from: '../../node_modules/dugite/git',
-      to: 'git',
-    },
-    {
-      from: 'bundled-git.json',
-      to: 'bundled-git.json',
-    },
-    {
       from: 'bundled-tools.json',
       to: 'bundled-tools.json',
+    },
+    {
+      // The app icon is read at runtime by the BrowserWindow `icon` option
+      // and by the permission-overlay card, and `files` above does not carry
+      // `assets/`. Electron reports the missing file as an empty image rather
+      // than an error, so without this the packaged app just draws no window
+      // icon; `assertPackagedResources` requires it on current builds.
+      from: 'assets',
+      to: 'assets',
     },
     {
       // Menu bar status item art. Without this the packaged app resolves an
@@ -53,22 +104,6 @@ export default {
     {
       from: '../../LICENSE',
       to: 'licenses/maka/LICENSE',
-    },
-    {
-      from: '../../node_modules/dugite/LICENSE',
-      to: 'licenses/dugite/LICENSE',
-    },
-    {
-      from: 'resources/licenses/git/NOTICE.txt',
-      to: 'licenses/git/NOTICE.txt',
-    },
-    {
-      from: 'resources/licenses/git/LICENSE.txt',
-      to: 'licenses/git/LICENSE.txt',
-    },
-    {
-      from: 'resources/licenses/git/SOURCE_OFFER.txt',
-      to: 'licenses/git/SOURCE_OFFER.txt',
     },
     {
       from: '../../NOTICE',
@@ -175,8 +210,8 @@ export default {
   publish: [
     {
       provider: 'github',
-      owner: 'Maka-Agent',
-      repo: 'maka-agent',
+      owner: 'apache',
+      repo: 'maka',
     },
   ],
 };

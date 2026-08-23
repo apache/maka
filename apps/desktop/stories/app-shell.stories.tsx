@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
@@ -12,13 +31,15 @@ import {
   TitlebarSessionIdentity,
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
-import { AppShellTopbarActions, AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
+import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
+import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
 import { deriveBranchBanner } from '../src/renderer/branch-banner';
 import { deriveSessionRevisionNavigation } from '../src/renderer/session-revisions';
 import { deriveSessionRail } from '../src/renderer/session-rail';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
+import { GoalDialog } from '../src/renderer/goal-dialog';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
@@ -229,6 +250,9 @@ const baseComposerProps: ComposerProps = {
   onPlanModeChange: noop,
   orchestrationMode: 'default',
   onOrchestrationModeChange: noop,
+  // Production wires this for every Session it can interact with locally
+  // (app-shell.tsx), so the ＋ menu always carries the Goal entry.
+  onSetGoal: noop,
   // Thinking is a separate right-footer Selector when levels are offered.
   activeThinkingLevels: ['off', 'low', 'medium', 'high', 'xhigh'],
   activeThinkingLevel: 'medium',
@@ -257,7 +281,6 @@ function ShellFrame(props: {
       data-sidebar-state={props.sidebarCollapsed ? 'collapsed' : 'expanded'}
       style={
         {
-          height: '100%',
           minHeight: 640,
           /* Same publication point as production, for the same reason as
              `data-sidebar-state` above: the titlebar's first grid track is a
@@ -377,10 +400,10 @@ function ComposedShell(props: {
             })()}
           />
         )}
-        <AppShellWorkspaceTopActions
-          workbarAvailable
-          workbarCollapsed={false}
-          onToggleWorkbar={noop}
+        <WorkbarTitlebarActions
+          available
+          collapsed={false}
+          onToggle={noop}
         />
       </header>
       <AstryxAppShell
@@ -541,6 +564,65 @@ export const RunningStatusDuringToolRun: Story = {
               status: 'running',
               args: { command: 'npm test' },
             }],
+          }],
+        },
+      }}
+    />
+  ),
+};
+
+// Real path: Desktop Computer Use is exposed through the Runtime Host Client
+// Capability bridge. The settled observation establishes the confirmed target;
+// the following sequence inherits it while live progress replaces the generic
+// working phrase at the bottom of the turn.
+export const ComputerUseObservability: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'running', streaming: true }}
+      chat={{
+        runningStatus: true,
+        messages: [
+          user('msg-cu-1', 'turn-cu', 2, '在计算器里完成这组输入，并确认结果。'),
+          {
+            type: 'turn_state',
+            id: 'state-cu',
+            turnId: 'turn-cu',
+            ts: NOW - 40_000,
+            status: 'running',
+            partialOutputRetained: false,
+          },
+        ],
+        liveTurn: {
+          turnId: 'turn-cu',
+          phase: 'streamed',
+          steps: [{
+            stepId: 'msg-assistant-cu',
+            tools: [
+              {
+                toolUseId: 'tool-cu-observe',
+                toolName: 'mcp__desktop_computer_use__maka_computer',
+                activityKind: 'computer',
+                displayName: 'Maka Computer',
+                status: 'completed',
+                args: { action: 'observe', app: '计算器', window_id: 7 },
+                durationMs: 728,
+              },
+              {
+                toolUseId: 'tool-cu-sequence',
+                toolName: 'mcp__desktop_computer_use__maka_computer',
+                activityKind: 'computer',
+                displayName: 'Maka Computer',
+                status: 'running',
+                args: {
+                  action: 'element_sequence',
+                  observation_id: '00000000-0000-0000-0000-000000000001',
+                  steps: Array.from({ length: 11 }, (_, index) => ({
+                    label: `<text:${String(index).length}>`,
+                  })),
+                },
+                progress: { current: 7, total: 11 },
+              },
+            ],
           }],
         },
       }}
@@ -1026,5 +1108,25 @@ export const ModeOnWithPendingAttachments: Story = {
         onRemoveAttachment: noop,
       }}
     />
+  ),
+};
+
+// Real path: this Session already has a running Goal, which the composer shows
+// above the input. Arming refuses a second one, so the ＋ menu's Goal entry
+// says why instead of opening a dialog that would fail on submit.
+export const GoalAlreadySet: Story = {
+  render: () => <ComposedShell composer={{ goalActive: true }} />,
+};
+
+// Real path: composer ＋ → 设定 Goal…, on a Session with no Goal running and no
+// Turn in flight — app-shell mounts this dialog at the top level, over the
+// shell, exactly as composed here. It is the only place the two budgets that
+// stop a Goal are visible before one starts.
+export const GoalDialogOpen: Story = {
+  render: () => (
+    <>
+      <ComposedShell />
+      <GoalDialog sessionId="session-1" onClose={noop} />
+    </>
   ),
 };

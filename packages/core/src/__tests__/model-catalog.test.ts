@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { isConnectionReady } from '../connection-readiness.js';
@@ -13,7 +32,7 @@ function verdict(input: Parameters<typeof validateChatDefaultModel>[0]) {
   return result.ok ? { ok: true } : { ok: false, reason: result.reason };
 }
 
-test('live inventory blocks missing defaults and preserves higher-priority failures', () => {
+test('a live inventory annotates a model it omits and preserves higher-priority failures', () => {
   const input = {
     providerType: 'zai-coding-plan' as const,
     defaultModel: 'removed',
@@ -21,9 +40,14 @@ test('live inventory blocks missing defaults and preserves higher-priority failu
     modelSource: 'fetched' as const,
   };
   const [missing] = buildModelCatalogEntries(input);
-  assert.equal(missing?.availability, 'blocked');
-  assert.equal(missing?.canUseAsChatDefault, false);
-  assert.deepEqual(verdict(input), { ok: false, reason: 'not_in_live_list' });
+  // Worth saying, not worth blocking: the provider did not mention this model
+  // in its last response, which is a fact about that response and not about
+  // what the account can run (#1584). It stays selectable and the provider
+  // gets to answer for itself.
+  assert.equal(missing?.availability, 'warning');
+  assert.equal(missing?.canUseAsChatDefault, true);
+  assert.equal(missing?.unavailableReason, 'not_in_live_list');
+  assert.deepEqual(verdict(input), { ok: true });
 
   assert.equal(buildModelCatalogEntries({ ...input, authOk: false })[0]?.unavailableReason, 'auth');
   assert.equal(
@@ -75,16 +99,11 @@ test('stale provider inventory warns without blocking sends', () => {
   assert.deepEqual(verdict(input), { ok: true });
 });
 
-test('fallback missing choices agree with the connection readiness gate', () => {
-  const input = {
-    providerType: 'openai-compatible' as const,
-    defaultModel: 'custom-default',
-    models: [{ id: 'relay-static-model' }],
-    modelSource: 'fallback' as const,
-  };
-  assert.equal(buildModelCatalogEntries(input)[0]?.canUseAsChatDefault, false);
-  assert.deepEqual(verdict(input), { ok: false, reason: 'not_in_live_list' });
-  assert.deepEqual(
+test('the catalog and the readiness gate agree that no catalog is a veto', () => {
+  // The picker must not offer a model the send gate refuses, nor hide one it
+  // would accept. Since neither gate refuses on catalog membership any more,
+  // agreement means both admit and only the annotation differs.
+  const readiness = (modelSource: 'fetched' | 'fallback') =>
     isConnectionReady({
       connection: {
         slug: 'relay',
@@ -92,15 +111,34 @@ test('fallback missing choices agree with the connection readiness gate', () => 
         providerType: 'openai-compatible',
         defaultModel: 'custom-default',
         enabled: true,
-        models: input.models,
-        modelSource: 'fallback',
+        models: [{ id: 'relay-static-model' }],
+        modelSource,
         createdAt: 1,
         updatedAt: 1,
       },
       hasSecret: true,
-    }),
-    { ready: false, reason: 'model_not_enabled' },
+    });
+  const catalog = (modelSource: 'fetched' | 'fallback') => ({
+    providerType: 'openai-compatible' as const,
+    defaultModel: 'custom-default',
+    models: [{ id: 'relay-static-model' }],
+    modelSource,
+  });
+
+  // Neither gate blocks, whatever the catalog is: the selection is the
+  // authorization and no observation overrules it (#1584).
+  for (const modelSource of ['fetched', 'fallback'] as const) {
+    assert.equal(buildModelCatalogEntries(catalog(modelSource))[0]?.canUseAsChatDefault, true);
+    assert.deepEqual(verdict(catalog(modelSource)), { ok: true }, modelSource);
+    assert.deepEqual(readiness(modelSource), { ready: true, model: 'custom-default' }, modelSource);
+  }
+  // They still differ on what they SAY: a live list that omits the model has
+  // something to report, a shipped snapshot has nothing.
+  assert.equal(
+    buildModelCatalogEntries(catalog('fetched'))[0]?.unavailableReason,
+    'not_in_live_list',
   );
+  assert.equal(buildModelCatalogEntries(catalog('fallback'))[0]?.unavailableReason, 'none');
 });
 
 test('connection catalogs preserve user-choice provenance without inventing availability', () => {
@@ -120,16 +158,49 @@ test('connection catalogs preserve user-choice provenance without inventing avai
     savedModelIds: [{ id: 'session-model', source: 'session_model' }, 'glm-4.7', ' '],
   });
 
+  // All three are selectable; what differs is what the catalog knows about
+  // them. The two the live response omitted carry `not_in_live_list` so the
+  // picker can say so, but saying so is not refusing (#1584).
   assert.deepEqual(
-    entries.map(({ id, source, canUseAsChatDefault }) => [id, source, canUseAsChatDefault]),
+    entries.map(({ id, source, canUseAsChatDefault, unavailableReason }) => [
+      id,
+      source,
+      canUseAsChatDefault,
+      unavailableReason,
+    ]),
     [
-      ['saved-default', 'unknown', false],
-      ['glm-4.7', 'provider_api', true],
-      ['session-model', 'unknown', false],
+      ['saved-default', 'unknown', true, 'not_in_live_list'],
+      ['glm-4.7', 'provider_api', true, 'none'],
+      ['session-model', 'unknown', true, 'not_in_live_list'],
     ],
   );
   assert.deepEqual(entries[0]?.provenance.sources?.userChoice, ['connection_default']);
   assert.deepEqual(entries[2]?.provenance.sources?.userChoice, ['session_model']);
+});
+
+test('every picker sees a model the user enabled but no catalog describes', () => {
+  // The projection lives in the builder, not in one caller: chat, Daily Review
+  // and the settings selectors all read it. `deepseek-v4-pro-beta` is enabled
+  // but absent from the snapshot this build shipped, and the entry it gets is
+  // selectable — that is the whole of #1584 seen from the picker side.
+  const entries = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: 'ark-plan',
+      providerType: 'volcengine-agent-plan',
+      defaultModel: 'doubao-seed-2.1-turbo',
+      enabledModelIds: ['doubao-seed-2.1-turbo', 'deepseek-v4-pro-beta'],
+      models: [{ id: 'doubao-seed-2.1-turbo' }],
+      // `'fetched'` is the honest record here: a provider with no model-list
+      // endpoint still runs discovery, it just replays the array this build
+      // shipped. Provenance is not content, so the flag alone cannot say
+      // whether a provider enumerated this account.
+      modelSource: 'fetched',
+    },
+  });
+  const declared = entries.find(({ id }) => id === 'deepseek-v4-pro-beta');
+  assert.equal(declared?.canUseAsChatDefault, true);
+  assert.equal(declared?.unavailableReason, 'none');
+  assert.deepEqual(declared?.provenance.sources?.userChoice, ['saved_model']);
 });
 
 test('unknown persisted provider ids return an empty catalog', () => {

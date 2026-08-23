@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -25,6 +44,7 @@ import {
   type CreateCatalogConnectionInput,
   type RemoveCatalogConnectionInput,
   type SetDefaultConnectionTargetInput,
+  type MigrateSystemSeedInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
 import {
@@ -33,6 +53,7 @@ import {
   reconcileConnectionAfterModelFetch,
 } from '@maka/core/llm-connections';
 import { modelIdAliasesForProvider } from '@maka/core/model-metadata';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
 import { deepFreeze, nextRevision, record, revision, unique } from './codec.js';
 import {
@@ -124,7 +145,17 @@ export class ConnectionCatalogDocumentOwner {
       `${FILE} connection ids`,
       'invalid_document',
     );
-    const retiredConnectionIds = new Set(retiredConnections.map((item) => item.connectionId));
+    const retiredConnectionIds = new Set([
+      ...retiredConnections.map((item) => item.connectionId),
+      // A retired provider whose connection is *kept* — kept so the user can
+      // still see it and delete it to clear the credential. Keeping the row
+      // must not also keep it as the target new Sessions default to: it cannot
+      // execute, and the settings row has no control to move the default off a
+      // connection that can no longer be one.
+      ...connections
+        .filter((item) => isRetiredProvider(item.providerType))
+        .map((item) => item.connectionId),
+    ]);
     const decodedDefaultTarget =
       raw.defaultTarget === null
         ? null
@@ -149,6 +180,16 @@ export class ConnectionCatalogDocumentOwner {
     rawInput: CreateCatalogConnectionInput,
   ): Promise<ConnectionCatalogMutationResult> {
     const input = decodeConnectionInput(() => normalizeCreateCatalogConnectionInput(rawInput));
+    // A retired provider stays a valid `ProviderType` so existing rows keep
+    // decoding, but nothing may author a new one: it could never execute, and
+    // reading the catalog back would immediately release it as a default.
+    // Decoding and deleting are the deliberate exceptions to that.
+    if (isRetiredProvider(input.connection.providerType)) {
+      throw codecError(
+        'invalid_connection_input',
+        `"${input.connection.providerType}" is retired and cannot be added`,
+      );
+    }
     const current = await this.read(root);
     if (current.revision !== input.expectedCatalogRevision) {
       return revisionConflict(input.expectedCatalogRevision, current.revision);
@@ -193,6 +234,18 @@ export class ConnectionCatalogDocumentOwner {
     const changes = decodeConnectionInput(() =>
       normalizeConnectionCatalogEntryUpdateForProvider(input.changes, previous.providerType),
     );
+    // A retired row may be read and deleted, and it may stay exactly as it is
+    // — but it may not be edited back toward usable. Re-enabling is the one
+    // that matters (a disabled retired connection would become a default
+    // candidate again), and refusing the whole update rather than that single
+    // field keeps this a boundary rather than a field-by-field allow list: a
+    // retired connection has no edit worth committing.
+    if (isRetiredProvider(previous.providerType)) {
+      throw codecError(
+        'invalid_connection_input',
+        `"${previous.providerType}" is retired and its connections cannot be edited`,
+      );
+    }
     const endpointChanged = previous.baseUrl !== changes.baseUrl;
     const testBasisChanged =
       endpointChanged ||
@@ -277,6 +330,66 @@ export class ConnectionCatalogDocumentOwner {
     return committed(next);
   }
 
+  /**
+   * Built-in seed evolution as ONE atomic catalog mutation. A row whose
+   * `enabledModelIds` still exactly match a historical system seed is provably
+   * system-owned: it follows the current seed, its static inventory is
+   * re-derived from the current build, and a default target the migration
+   * removes is retargeted inside the same document write — so no restart can
+   * observe enabled ids without their inventory, or a nulled default awaiting
+   * a second write. Any other inventory (including a reordering) is a user
+   * selection and is never touched; an already-null default stays null.
+   */
+  async migrateSystemSeed(
+    root: string,
+    input: MigrateSystemSeedInput,
+  ): Promise<ConnectionCatalogMutationResult> {
+    if (!input.enabledModelIds.includes(input.defaultModelId)) {
+      throw codecError('invalid_connection_input', 'Seed default must be in the seed selection');
+    }
+    const current = await this.read(root);
+    const index = current.connections.findIndex(
+      (item) => item.slug === input.slug && item.providerType === input.providerType,
+    );
+    const previous = current.connections[index];
+    const sameIds = (left: readonly string[], right: readonly string[]) =>
+      left.length === right.length && left.every((id, position) => id === right[position]);
+    if (
+      !previous ||
+      sameIds(previous.enabledModelIds, input.enabledModelIds) ||
+      !input.legacyEnabledModelIds.some((seed) => sameIds(previous.enabledModelIds, seed))
+    ) {
+      return committed(current);
+    }
+    const fallbackModels = fallbackInventory(previous.providerType);
+    const {
+      lastTest: _lastTest,
+      modelSource: _modelSource,
+      modelsFetchedAt: _modelsFetchedAt,
+      ...retained
+    } = previous;
+    const connections = [...current.connections];
+    connections[index] = {
+      ...retained,
+      revision: nextRevision(previous.revision),
+      enabledModelIds: [...input.enabledModelIds],
+      models: fallbackModels,
+      ...(fallbackModels.length > 0
+        ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
+        : {}),
+    };
+    const target = current.defaultTarget;
+    const defaultTarget =
+      target !== null &&
+      target.connectionId === previous.connectionId &&
+      !input.enabledModelIds.includes(target.modelId)
+        ? { connectionId: previous.connectionId, modelId: input.defaultModelId }
+        : target;
+    const next = this.nextDocument(current, connections, defaultTarget);
+    await this.write(root, next);
+    return committed(next);
+  }
+
   async setDefaultTarget(
     root: string,
     rawInput: SetDefaultConnectionTargetInput,
@@ -289,6 +402,18 @@ export class ConnectionCatalogDocumentOwner {
     // The one call that states a target, so the one place an unusable one is
     // the caller's error rather than a consequence to release.
     if (input.target && !isValidTarget(input.target, current.connections)) {
+      return deepFreeze({ kind: 'invalid_default_target', target: input.target });
+    }
+    // Refused rather than accepted-then-released: committing it would succeed
+    // and the next read would silently rewrite it to null, which reads to the
+    // caller as the write having been lost.
+    if (
+      input.target &&
+      current.connections.some(
+        (item) =>
+          item.connectionId === input.target?.connectionId && isRetiredProvider(item.providerType),
+      )
+    ) {
       return deepFreeze({ kind: 'invalid_default_target', target: input.target });
     }
     const next = this.nextDocument(current, current.connections, input.target);
@@ -315,25 +440,19 @@ export class ConnectionCatalogDocumentOwner {
       current.defaultTarget?.connectionId === previous.connectionId
         ? current.defaultTarget
         : undefined;
-    const reconciled =
-      result.source === 'fetched'
-        ? reconcileConnectionAfterModelFetch(
-            {
-              defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0],
-              enabledModelIds: previous.enabledModelIds,
-              // An entry always carries a `models` array, so "has an inventory"
-              // has to be read off its contents: empty means this connection has
-              // never had a list to pick from and discovery may seed one. A
-              // non-empty one means an empty selection is the user's answer.
-              hasModelInventory: previous.models.length > 0,
-            },
-            result.models,
-            { aliases: modelIdAliasesForProvider(previous.providerType) },
-          )
-        : {
-            defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0] ?? '',
-            enabledModelIds: previous.enabledModelIds,
-          };
+    const reconciled = reconcileConnectionAfterModelFetch(
+      {
+        defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0],
+        enabledModelIds: previous.enabledModelIds,
+        // An entry always carries a `models` array, so "has an inventory" has
+        // to be read off its contents: empty means this connection has never
+        // had a list to pick from and discovery may seed one. A non-empty one
+        // means an empty selection is the user's answer.
+        hasModelInventory: previous.models.length > 0,
+      },
+      result.models,
+      { aliases: modelIdAliasesForProvider(previous.providerType) },
+    );
     // Discovery MOVES a target: a provider's model rename carries the default
     // across by alias. A default outside the selection the reconciler just
     // decided is its own bug — fail closed where it is still attributable.
@@ -346,10 +465,10 @@ export class ConnectionCatalogDocumentOwner {
         'Model discovery reconciled a default outside its own selection',
       );
     }
-    // A refresh is a new enabledModelIds authority on the same endpoint:
-    // profiles keyed by a model the refresh dropped would violate the
-    // subset invariant, and this write path bypasses the canonical decoder,
-    // so prune here or the persisted document is un-loadable on next read.
+    // A refresh only ever migrates a renamed id now, but that rename still
+    // rekeys the selection, and this write path bypasses the canonical
+    // decoder — so prune here or the persisted document is un-loadable on
+    // next read.
     const relayModelProfiles = pruneRelayModelProfiles(
       previous.relayModelProfiles,
       reconciled.enabledModelIds,
@@ -405,10 +524,14 @@ export class ConnectionCatalogDocumentOwner {
       );
     }
     const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
-    if (result.source !== 'fetched' || result.models.length === 0) {
+    // Non-empty is the requirement; `source` is write provenance, not a
+    // quality bar. A provider without a model-list endpoint runs discovery by
+    // replaying the array this build shipped, and that inventory onboards a
+    // connection exactly as well (#1584).
+    if (result.models.length === 0) {
       throw codecError(
         'invalid_connection_input',
-        'Onboarding requires a non-empty fetched model inventory',
+        'Onboarding requires a non-empty model inventory',
       );
     }
     const changes = decodeConnectionInput(() =>
@@ -424,30 +547,41 @@ export class ConnectionCatalogDocumentOwner {
         providerType,
       ),
     );
-    const available = new Set(result.models.map(({ id }) => id));
-    if (
-      changes.enabledModelIds.length === 0 ||
-      changes.enabledModelIds.some((modelId) => !available.has(modelId))
-    ) {
-      throw codecError(
-        'invalid_connection_input',
-        'Onboarding enabled models must come from the fetched inventory',
-      );
+    if (changes.enabledModelIds.length === 0) {
+      throw codecError('invalid_connection_input', 'Onboarding must enable a model');
     }
+    // Onboarding offers what discovery returned, so a model the user declared
+    // by hand is one the wizard never showed. Not being re-picked in a list it
+    // was absent from is not a decision to drop it (#1584).
+    const offered = new Set(result.models.map(({ id }) => id));
+    const undisplayed = (previous?.enabledModelIds ?? []).filter(
+      (modelId) => !offered.has(modelId) && !changes.enabledModelIds.includes(modelId),
+    );
+    const enabledModelIds = [...changes.enabledModelIds, ...undisplayed];
+    // Onboarding installs a new enabledModelIds authority, so a profile keyed
+    // by a model it dropped would violate the subset invariant. Like the
+    // refresh path above, this one bypasses the canonical decoder, so pruning
+    // has to happen here or the document is un-loadable on next read.
+    const relayModelProfiles = previous
+      ? pruneRelayModelProfiles(previous.relayModelProfiles, enabledModelIds)
+      : undefined;
+    const base: ConnectionCatalogEntry = previous ?? {
+      connectionId,
+      revision: 0,
+      slug,
+      name: definition.label,
+      providerType,
+      enabled: false,
+      enabledModelIds: [],
+      models: [],
+    };
+    const { relayModelProfiles: _staleProfiles, ...baseWithoutProfiles } = base;
     const finalized: ConnectionCatalogEntry = {
-      ...(previous ?? {
-        connectionId,
-        revision: 0,
-        slug,
-        name: definition.label,
-        providerType,
-        enabled: false,
-        enabledModelIds: [],
-        models: [],
-      }),
+      ...baseWithoutProfiles,
+      ...(relayModelProfiles ? { relayModelProfiles } : {}),
       revision: previous ? nextRevision(previous.revision) : 1,
       enabled: true,
-      enabledModelIds: changes.enabledModelIds,
+      enabledModelIds,
       models: result.models,
       modelSource: result.source,
       modelsFetchedAt: result.fetchedAt,
@@ -459,7 +593,7 @@ export class ConnectionCatalogDocumentOwner {
     };
     if (
       previous?.enabled &&
-      sameStringArray(previous.enabledModelIds, changes.enabledModelIds) &&
+      sameStringArray(previous.enabledModelIds, enabledModelIds) &&
       isDeepStrictEqual(previous.models, result.models) &&
       previous.modelSource === result.source &&
       previous.modelsFetchedAt === result.fetchedAt &&
@@ -521,7 +655,14 @@ export class ConnectionCatalogDocumentOwner {
     if (!previous) {
       throw codecError('invalid_document', 'Coordinator admitted an unknown connection');
     }
-    if (previous.lastTest === undefined) return false;
+    // Same tombstone rule the global sweep follows, reached one connection at
+    // a time: deleting a retained retired credential is a write the row must
+    // still accept, and invalidating its verification on the way out would
+    // bump the revision of a row nothing may rewrite — enough to make a
+    // deletion started elsewhere fail as stale. Its `lastTest` describes a
+    // provider that can no longer be tested, so there is nothing to
+    // invalidate.
+    if (previous.lastTest === undefined || isRetiredProvider(previous.providerType)) return false;
     const { lastTest: _lastTest, ...withoutLastTest } = previous;
     await this.writePatchedResult(root, current, index, {
       ...withoutLastTest,
@@ -534,9 +675,17 @@ export class ConnectionCatalogDocumentOwner {
     root: string,
     current: ConnectionCatalogDocument,
   ): Promise<boolean> {
-    if (current.connections.every((connection) => connection.lastTest === undefined)) return false;
+    // A retired row is a tombstone: byte-stable until it is deleted. Global
+    // invalidation is the indirect way back in — a user editing the network
+    // proxy would otherwise bump its revision, which is enough to make a
+    // deletion they started elsewhere fail as stale. Its `lastTest` describes
+    // a provider that can no longer be tested anyway, so there is nothing to
+    // invalidate.
+    const invalidates = (connection: ConnectionCatalogEntry): boolean =>
+      connection.lastTest !== undefined && !isRetiredProvider(connection.providerType);
+    if (!current.connections.some(invalidates)) return false;
     const connections = current.connections.map((connection) => {
-      if (connection.lastTest === undefined) return connection;
+      if (!invalidates(connection)) return connection;
       const { lastTest: _lastTest, ...withoutLastTest } = connection;
       return {
         ...withoutLastTest,

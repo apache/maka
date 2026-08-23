@@ -1,8 +1,31 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { OnboardingState } from '@maka/core/onboarding';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { OnboardingHeroCopy } from '../onboarding-hero-copy.js';
 
-type VisibleOnboardingKind = Exclude<OnboardingState['kind'], 'ready_with_history' | 'ready_empty'>;
+// Blocked states are keyed by reason, not just by kind: a new blocked reason
+// then cannot ship without its own copy.
+type VisibleOnboardingKind =
+  | Exclude<OnboardingState['kind'], 'ready_with_history' | 'ready_empty' | 'blocked'>
+  | `blocked:${Extract<OnboardingState, { kind: 'blocked' }>['reason']}`;
 type LocalizedOnboardingHeroCopy = Omit<
   OnboardingHeroCopy,
   'kind' | 'connectionSlug' | 'cta'
@@ -48,11 +71,18 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
         body: '启用一个可用于对话的模型，新任务就可以开始了。',
         cta: { label: '选择可用模型' },
       },
-      blocked: {
+      'blocked:all_connections_unhealthy': {
         eyebrow: '连接需要处理',
         title: '模型连接暂时不可用。',
         body: '现有连接都没有通过验证。检查凭据、登录状态或网络后重新测试。',
         cta: { label: '修复模型连接' },
+        tone: 'destructive',
+      },
+      'blocked:all_connections_retired': {
+        eyebrow: '连接需要处理',
+        title: '现有连接的登录方式已停用。',
+        body: '这些连接使用的登录方式已从 Maka 移除，无法再登录，也无法用于对话。添加一个新的模型连接即可继续。',
+        cta: { label: '添加模型连接' },
         tone: 'destructive',
       },
     },
@@ -90,11 +120,18 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
         body: 'Enable a conversation-capable model and your first task can begin.',
         cta: { label: 'Choose an available model' },
       },
-      blocked: {
+      'blocked:all_connections_unhealthy': {
         eyebrow: 'Connection needs attention',
         title: 'Model connections are temporarily unavailable.',
         body: 'No existing connection passed verification. Check credentials, sign-in status, or network access, then test again.',
         cta: { label: 'Fix model connections' },
+        tone: 'destructive',
+      },
+      'blocked:all_connections_retired': {
+        eyebrow: 'Connection needs attention',
+        title: 'The sign-in your connections use is retired.',
+        body: 'The sign-in these connections use was removed from Maka. They can no longer be signed into or used in a conversation. Add a new model connection to continue.',
+        cta: { label: 'Add a model connection' },
         tone: 'destructive',
       },
     },

@@ -1,11 +1,50 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { z } from 'zod';
 import { validateSandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 
-// v5 adds the provider-native single-file ApplyPatch operation.
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 5 as const;
+// v6 adds the captured target identity (opaque decimal-string dev/ino) to
+// FilesystemWorkerTarget, so the worker can compare-and-swap against the
+// inode that was authorised at lock acquisition instead of only the path
+// string. The identity is carried as strings because bigint cannot cross the
+// JSON protocol boundary.
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 7 as const;
+
+/** The single authority on which operation kinds are writes. Shared by the
+ * client (permission/identity decisions) and the worker (operation guards) so
+ * the set cannot drift. */
+export function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
+  return kind === 'write' || kind === 'apply_patch' || kind === 'edit' || kind === 'format_json'
+    ? 'write'
+    : 'read';
+}
 
 const path = z.string().min(1).max(4096);
 const cwd = z.string().min(1).max(4096);
+
+// Opaque identity strings: `String(stats.dev)` / `String(stats.ino)`. Decimal
+// only so they survive JSON round-trips; compared for equality on the worker.
+const decimalString = z.string().regex(/^\d+$/);
+const FilesystemTargetIdentitySchema = z
+  .object({ dev: decimalString, ino: decimalString })
+  .strict();
 
 const OperationBoundarySchema = z
   .object({
@@ -42,8 +81,25 @@ export const FilesystemWorkerTargetSchema = z
     access: z.enum(['read', 'write']),
     scope: z.enum(['exact', 'subtree']),
     targetType: z.enum(['file', 'directory', 'symlink', 'other', 'missing']),
+    // The execution-time identity contract, one required field (no separate
+    // T0 marker — a single three-state shape mirrors the client input, so an
+    // illegal combination cannot be expressed on the wire):
+    // - { dev, ino }: the T0 identity the worker must CAS against at T1.
+    // - 'missing': T0 saw no target; a target present at execution time was
+    //   created while the call waited and must fail.
+    // - 'unchecked': the caller does not participate in CAS; the write
+    //   proceeds without an identity comparison.
+    identity: FilesystemTargetIdentitySchema.or(z.literal('missing')).or(z.literal('unchecked')),
   })
-  .strict();
+  .strict()
+  .superRefine((target, context) => {
+    if (target.targetType === 'missing' && typeof target.identity === 'object') {
+      context.addIssue({
+        code: 'custom',
+        message: 'A missing target cannot carry an identity.',
+      });
+    }
+  });
 
 export const FilesystemWorkerOperationSchema = z.union([
   z
@@ -175,6 +231,14 @@ export const FilesystemWorkerErrorCodeSchema = z.enum([
   'sandbox_denied',
   'filesystem_denied',
   'filesystem_error',
+  // The worker may have applied the mutation before it lost the ability to
+  // report back (e.g. it wrote the file then the post-write identity check
+  // found the on-path inode no longer matches the one it wrote). The host
+  // treats this as an unknown outcome on disk, not a clean failure.
+  'outcome_unknown',
+  // The entry-delete path refuses directories outright (#2600): a directory
+  // cannot be unlinked, only recursively removed — a different operation.
+  'is_directory',
 ]);
 
 export const FilesystemWorkerResponseSchema = z.discriminatedUnion('ok', [

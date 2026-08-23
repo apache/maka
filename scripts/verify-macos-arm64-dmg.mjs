@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   access,
   mkdir,
@@ -12,8 +31,10 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
+import { readProductManifestIdentity } from './product-release-identity.mjs';
 import {
   assertMissing,
+  assertPackagedDependencyClosure,
   assertPackagedResources,
   isolatedUserEnv,
   makePtyProbe,
@@ -23,9 +44,7 @@ import {
 } from './verify-packaged-app.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const desktopRoot = join(repoRoot, 'apps', 'desktop');
 const expectedAppId = 'com.maka.desktop';
-const ptyProbe = makePtyProbe('/bin/echo', ['maka-node-pty-ok']);
 
 function runCommandFromRepo(command, args, options = {}) {
   return runCommand(command, args, { cwd: repoRoot, ...options });
@@ -56,6 +75,9 @@ export async function smokePackagedFilesystemWorker(
       access: 'write',
       scope: 'exact',
       targetType: 'missing',
+      // Protocol v7 requires the three-state identity; a write to a target
+      // approved as missing carries 'missing' (#3484 / #3487).
+      identity: 'missing',
     },
   };
 
@@ -105,7 +127,7 @@ export async function verifyPackagedMacApp(
     workingDirectory = dirname(appPath),
   } = {},
 ) {
-  const desktopManifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
+  const product = await readProductManifestIdentity();
   const contents = join(appPath, 'Contents');
   const resources = join(contents, 'Resources');
   const infoPlist = join(contents, 'Info.plist');
@@ -115,8 +137,8 @@ export async function verifyPackagedMacApp(
     throw new Error(`Expected app id ${expectedAppId}, found ${appId}.`);
   }
   const version = await readPlistValue(run, infoPlist, 'CFBundleShortVersionString');
-  if (version !== desktopManifest.version) {
-    throw new Error(`Expected app version ${desktopManifest.version}, found ${version}.`);
+  if (version !== product.version) {
+    throw new Error(`Expected app version ${product.version}, found ${version}.`);
   }
   const executableName = await readPlistValue(run, infoPlist, 'CFBundleExecutable');
   const executable = join(contents, 'MacOS', executableName);
@@ -125,7 +147,7 @@ export async function verifyPackagedMacApp(
 
   await requirePath(executable);
   await assertPackagedResources(resources, { requirePath, forbidPath });
-  await requirePath(join(resources, 'git', 'bin', 'git'));
+  await assertPackagedDependencyClosure(resources);
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
   assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable');
@@ -133,6 +155,7 @@ export async function verifyPackagedMacApp(
   await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
   await run('xcrun', ['stapler', 'validate', appPath]);
 
+  const ptyProbe = makePtyProbe('/bin/echo', ['maka-node-pty-ok'], product.runtimeHostSetupPackage);
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {
       ELECTRON_RUN_AS_NODE: '1',

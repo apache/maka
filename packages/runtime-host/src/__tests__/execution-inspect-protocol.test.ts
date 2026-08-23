@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -76,6 +95,47 @@ describe('execution inspect protocol', () => {
         result: { kind: 'turn_trace', sessionId: 'session-1', turn: turnTrace() },
       },
     );
+    assert.deepEqual(
+      decodeHostFrame({
+        requestId: 'request-trace-page',
+        operation: 'execution.inspect.query',
+        ok: true,
+        result: tracePage(),
+      }),
+      {
+        requestId: 'request-trace-page',
+        operation: 'execution.inspect.query',
+        ok: true,
+        result: tracePage(),
+      },
+    );
+  });
+
+  test('rejects legacy TraceTotals on Session pages and Turn traces', () => {
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'request-legacy-page-totals',
+          operation: 'execution.inspect.query',
+          ok: true,
+          result: { ...tracePage(), totals: legacyTraceTotals() },
+        }),
+      isProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'request-legacy-turn-totals',
+          operation: 'execution.inspect.query',
+          ok: true,
+          result: {
+            kind: 'turn_trace',
+            sessionId: 'session-1',
+            turn: { ...turnTrace(), totals: legacyTraceTotals() },
+          },
+        }),
+      isProtocolError,
+    );
   });
 
   test('rejects open shapes, inconsistent resolution, and oversized payloads', () => {
@@ -96,7 +156,7 @@ describe('execution inspect protocol', () => {
           ok: true,
           result: {
             ...tracePage(),
-            nextOffset: 2,
+            nextCursor: 'not a cursor',
           },
         }),
       isProtocolError,
@@ -217,25 +277,15 @@ function tracePage() {
     kind: 'session_trace_page' as const,
     schemaVersion: 1 as const,
     sessionId: 'session-1',
-    revision: `sha256:${'a'.repeat(64)}` as const,
-    offset: 0,
     turns: [],
-    totals: {
-      durationMs: 0,
-      modelAttempts: 0,
-      retries: 0,
-      compactions: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      unpricedAttempts: 0,
-    },
     coverage: {
       modelCalls: 'none' as const,
       turnsMissingModelCalls: [],
       unreadableRecords: 0,
+      oversizedRuns: 0,
       turnsWithFewerModelCallsThanSteps: [],
     },
-    nextOffset: null,
+    nextCursor: null,
   };
 }
 
@@ -247,15 +297,18 @@ function turnTrace(turnId = 'turn-1') {
     endedAt: 2,
     durationMs: 1,
     steps: [],
-    totals: {
-      durationMs: 1,
-      modelAttempts: 0,
-      retries: 0,
-      compactions: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      unpricedAttempts: 0,
-    },
+  };
+}
+
+function legacyTraceTotals() {
+  return {
+    durationMs: 0,
+    modelAttempts: 0,
+    retries: 0,
+    compactions: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    unpricedAttempts: 0,
   };
 }
 

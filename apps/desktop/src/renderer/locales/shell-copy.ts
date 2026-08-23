@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 
 import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
@@ -33,7 +52,7 @@ export const STATIC_COMMAND_IDS = [
   'diag:copy-today-daily-review',
   'diag:paste-today-daily-review',
   'diag:save-today-daily-review',
-  'diag:copy-env-summary',
+  'diag:copy-diagnostics',
   'diag:test-network-proxy',
   'diag:open-local-memory',
 ] as const;
@@ -102,15 +121,18 @@ const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
     '文件',
     '导出',
   ],
-  'diag:copy-env-summary': [
+  'diag:copy-diagnostics': [
     'env',
     'environment',
     'version',
+    'diagnostics',
+    'logs',
     'about',
     'bug',
     'report',
     '环境',
     '版本',
+    '日志',
     '关于',
     '诊断',
     '汇报',
@@ -221,7 +243,8 @@ type ShellCopy = {
     reviewSaveFallback: string;
     pasteFailedTitle: string;
     reviewUnavailable: string;
-    environmentCopiedTitle: string;
+    diagnosticsCopiedTitle: string;
+    diagnosticsCopiedDescription: string;
     clipboardDenied: string;
     networkPassedTitle: string;
     networkFailedTitle: string;
@@ -318,6 +341,27 @@ type ShellCopy = {
     thinkingLabels: Record<ThinkingLevel, string>;
     thinkingFailedTitle: string;
     thinkingFallback: string;
+  };
+  /**
+   * The Goal dialog. A Goal spends tokens without further prompting, so the
+   * wording states what it does and names the two budgets that stop it —
+   * silence here reads as "nothing happens until I press something else".
+   */
+  goalDialog: {
+    title: string;
+    description: string;
+    conditionLabel: string;
+    conditionDescription: string;
+    conditionPlaceholder: string;
+    maxIterationsLabel: string;
+    maxIterationsDescription: string;
+    maxIterationsInvalid(max: number): string;
+    tokenBudgetLabel: string;
+    tokenBudgetDescription: string;
+    tokenBudgetInvalid(min: number): string;
+    cancel: string;
+    submit: string;
+    failedFallback: string;
   };
   errorBoundary: {
     copyPending: string;
@@ -443,6 +487,12 @@ type ShellCopy = {
     modeChangeStreaming: string;
     modeChangeRunning: string;
     modeChangeWaiting: string;
+    /**
+     * Why the ＋ menu's Goal entry is unavailable right now. A Goal takes hold
+     * on the next Turn, so arming one mid-Turn would look like it did nothing;
+     * saying so is better than letting the user find that out afterwards.
+     */
+    goalTurnActive: string;
     planModeFailedTitle: string;
     planModeFallback: string;
     orchestrationModeFailedTitle: string;
@@ -532,9 +582,9 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: '用系统保存对话框',
     group: '诊断',
   },
-  'diag:copy-env-summary': {
-    label: '复制环境信息',
-    hint: 'Markdown · bug report 友好',
+  'diag:copy-diagnostics': {
+    label: '复制诊断信息',
+    hint: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
     group: '诊断',
   },
   'diag:test-network-proxy': {
@@ -628,9 +678,9 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: 'Use the system save dialog',
     group: 'Diagnostics',
   },
-  'diag:copy-env-summary': {
-    label: 'Copy environment information',
-    hint: 'Markdown · ready for bug reports',
+  'diag:copy-diagnostics': {
+    label: 'Copy diagnostics',
+    hint: '⇧⌘D · Redacted logs · clipboard only',
     group: 'Diagnostics',
   },
   'diag:test-network-proxy': {
@@ -806,7 +856,8 @@ const SHELL_COPY_BY_LOCALE = {
       reviewSaveFallback: '保存每日回顾失败，请稍后重试。',
       pasteFailedTitle: '粘贴失败',
       reviewUnavailable: '今日回顾暂时不可用，请稍后重试。',
-      environmentCopiedTitle: '已复制环境信息',
+      diagnosticsCopiedTitle: '已复制诊断信息',
+      diagnosticsCopiedDescription: '检查内容后，可直接粘贴到问题报告',
       clipboardDenied: '剪贴板不可用或被系统拒绝',
       networkPassedTitle: '网络代理测试通过',
       networkFailedTitle: '网络代理测试失败',
@@ -923,7 +974,6 @@ const SHELL_COPY_BY_LOCALE = {
       permissionDescriptions: {
         explore: '只读：只读取和搜索，写入文件和访问网络会先来问你。',
         ask: '自动：在 Maka 的保护层内执行；需要超出当前权限范围时会先来问你。',
-        execute: '兼容模式：等同于自动。',
         bypass: '本地工具直接访问你的文件和网络，不经 Maka 的保护层。',
       },
       bypassConfirmTitle: '切换到完全权限？',
@@ -951,6 +1001,22 @@ const SHELL_COPY_BY_LOCALE = {
       },
       thinkingFailedTitle: '切换思考级别失败',
       thinkingFallback: '思考级别暂时无法切换，请稍后重试。',
+    },
+    goalDialog: {
+      title: '设定 Goal',
+      description: 'Goal 会在每轮结束后自动续行，直到达成、判定不可行，或触及下面的预算。随时可在输入框上方停止。',
+      conditionLabel: '达成条件',
+      conditionDescription: '用一句话说明什么算做完；Maka 每轮都据此判断。',
+      conditionPlaceholder: '例如：所有测试通过，且 lint 无告警',
+      maxIterationsLabel: '最多轮数',
+      maxIterationsDescription: '留空使用默认值。',
+      maxIterationsInvalid: (max) => `请填 1 到 ${max} 之间的整数，或留空。`,
+      tokenBudgetLabel: 'Token 预算',
+      tokenBudgetDescription: '留空表示不设 token 上限。',
+      tokenBudgetInvalid: (min) => `请填不小于 ${min} 的整数，或留空。`,
+      cancel: '取消',
+      submit: '开始',
+      failedFallback: '无法设定 Goal，请稍后重试。',
     },
     errorBoundary: {
       copyPending: '复制中…',
@@ -991,10 +1057,6 @@ const SHELL_COPY_BY_LOCALE = {
       permissionModes: {
         explore: { label: '权限 · 只读', hint: '读取和搜索直通，写入和网络仍需确认' },
         ask: { label: '权限 · 自动', hint: '在 Maka 的保护层内运行；需要超出当前权限范围时再询问' },
-        execute: {
-          label: '权限 · 自动执行',
-          hint: '常见工具直通，破坏性操作仍确认',
-        },
         bypass: {
           label: '权限 · 完全权限',
           hint: '不经 Maka 的保护层，直接访问你的文件和网络',
@@ -1029,6 +1091,10 @@ const SHELL_COPY_BY_LOCALE = {
             { keys: ['?'], description: '打开 / 关闭此快捷键面板' },
             { keys: ['⌘', 'N'], description: '新建任务' },
             { keys: ['⌘', ','], description: '打开设置' },
+            {
+              keys: ['⌘', 'Shift', 'D'],
+              description: '复制当前上下文的诊断信息',
+            },
             { keys: ['Esc'], description: '关闭当前模态框' },
           ],
         },
@@ -1143,6 +1209,7 @@ const SHELL_COPY_BY_LOCALE = {
       modeChangeStreaming: '当前任务正在流式输出，等结束后再切换模式。',
       modeChangeRunning: '当前任务正在运行，等结束后再切换模式。',
       modeChangeWaiting: '当前有工具调用正在等待确认，处理后再切换模式。',
+      goalTurnActive: 'Goal 从下一轮开始生效。等当前这一轮结束后再设定。',
       planModeFailedTitle: '切换 Plan 模式失败',
       planModeFallback: 'Plan 模式暂时无法切换，请稍后重试。',
       orchestrationModeFailedTitle: '切换编排模式失败',
@@ -1289,7 +1356,8 @@ const SHELL_COPY_BY_LOCALE = {
       reviewSaveFallback: 'The Daily Review could not be saved. Try again later.',
       pasteFailedTitle: 'Paste failed',
       reviewUnavailable: "Today's review is temporarily unavailable. Try again later.",
-      environmentCopiedTitle: 'Environment information copied',
+      diagnosticsCopiedTitle: 'Diagnostics copied',
+      diagnosticsCopiedDescription: 'Review the contents, then paste them into the issue report',
       clipboardDenied: 'The clipboard is unavailable or was denied',
       networkPassedTitle: 'Network proxy test passed',
       networkFailedTitle: 'Network proxy test failed',
@@ -1408,7 +1476,6 @@ const SHELL_COPY_BY_LOCALE = {
       permissionDescriptions: {
         explore: 'Read only: reads and searches only; writing files and network access ask you first.',
         ask: "Auto: runs inside Maka's protection layer and asks before anything goes beyond the current permissions.",
-        execute: 'Compatibility mode: same as Auto.',
         bypass: "Local tools reach your files and your network directly, outside Maka's protection layer.",
       },
       bypassConfirmTitle: 'Switch to full access?',
@@ -1436,6 +1503,22 @@ const SHELL_COPY_BY_LOCALE = {
       },
       thinkingFailedTitle: 'Could not change thinking level',
       thinkingFallback: 'The thinking level could not be changed. Try again later.',
+    },
+    goalDialog: {
+      title: 'Set a goal',
+      description: 'Maka continues on its own after each turn until the goal is met, judged impossible, or a budget below is reached. You can stop it any time from above the composer.',
+      conditionLabel: 'Completion condition',
+      conditionDescription: 'One sentence for what counts as done; Maka checks it after every turn.',
+      conditionPlaceholder: 'e.g. all tests pass and lint reports no warnings',
+      maxIterationsLabel: 'Maximum turns',
+      maxIterationsDescription: 'Leave empty to use the default.',
+      maxIterationsInvalid: (max) => `Enter a whole number from 1 to ${max}, or leave it empty.`,
+      tokenBudgetLabel: 'Token budget',
+      tokenBudgetDescription: 'Leave empty for no token ceiling.',
+      tokenBudgetInvalid: (min) => `Enter a whole number of at least ${min}, or leave it empty.`,
+      cancel: 'Cancel',
+      submit: 'Start',
+      failedFallback: 'The goal could not be set. Try again.',
     },
     errorBoundary: {
       copyPending: 'Copying…',
@@ -1482,10 +1565,6 @@ const SHELL_COPY_BY_LOCALE = {
           label: 'Permissions · Auto',
           hint: "Run inside Maka's protection layer; ask before going beyond the current permissions",
         },
-        execute: {
-          label: 'Permissions · Auto execute',
-          hint: 'Run common tools; confirm destructive actions',
-        },
         bypass: {
           label: 'Permissions · Full access',
           hint: "Reach your files and your network directly, outside Maka's protection layer",
@@ -1520,6 +1599,10 @@ const SHELL_COPY_BY_LOCALE = {
             { keys: ['?'], description: 'Open or close this shortcuts panel' },
             { keys: ['⌘', 'N'], description: 'Create a new task' },
             { keys: ['⌘', ','], description: 'Open Settings' },
+            {
+              keys: ['⌘', 'Shift', 'D'],
+              description: 'Copy diagnostics for the current context',
+            },
             { keys: ['Esc'], description: 'Close the current dialog' },
           ],
         },
@@ -1670,6 +1753,8 @@ const SHELL_COPY_BY_LOCALE = {
       modeChangeStreaming: 'This task is streaming. Wait for it to finish before changing the mode.',
       modeChangeRunning: 'This task is running. Wait for it to finish before changing the mode.',
       modeChangeWaiting: 'A tool call is waiting for confirmation. Respond before changing the mode.',
+      goalTurnActive:
+        'A goal takes hold on the next turn. Wait for this one to finish before setting one.',
       planModeFailedTitle: 'Could not change Plan mode',
       planModeFallback: 'Plan mode could not be changed. Try again later.',
       orchestrationModeFailedTitle: 'Could not change the orchestration mode',

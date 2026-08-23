@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -13,6 +32,7 @@ import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
+import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
@@ -187,54 +207,65 @@ test('backend creation admits the enabled bootstrap DeepSeek model before discov
   await backend.dispose();
 });
 
-test('backend creation does not bypass a non-empty DeepSeek inventory', async () => {
+test('backend creation admits an enabled model a live list omits', async () => {
+  // A live list is the strongest observation Maka has and still cannot refuse
+  // on the account's behalf: it answers for the moment it was fetched, and a
+  // model added since then, or filtered out on the way in, is one the account
+  // may well serve. The request goes out and DeepSeek answers for itself
+  // (#1584).
   const modelId = 'deepseek-v4-flash';
-  await assert.rejects(
-    createHostAiSdkBackend(
-      backendCreationFixture({
-        abortSignal: new AbortController().signal,
-        modelId,
-        resolveExecutionConnection: async () => ({
-          kind: 'ready',
-          connection: {
-            slug: 'backend-creation-connection',
-            providerType: 'deepseek',
-            enabledModelIds: [modelId],
-            models: [{ id: 'deepseek-chat' }],
-          },
-          networkProxy: { enabled: false },
-          secretMaterial: { connection: { secret: API_KEY } },
-        }),
-        readPricing: async () => ({ revision: 0, overrides: [] }),
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      modelId,
+      resolveExecutionConnection: async () => ({
+        kind: 'ready',
+        connection: {
+          slug: 'backend-creation-connection',
+          providerType: 'deepseek',
+          enabledModelIds: [modelId],
+          models: [{ id: 'deepseek-chat' }],
+          modelSource: 'fetched' as const,
+        },
+        networkProxy: { enabled: false },
+        secretMaterial: { connection: { secret: API_KEY } },
       }),
-    ),
-    /Session model is not enabled/,
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    }),
   );
+
+  await backend.dispose();
 });
 
-test('backend creation does not treat aliased provider metadata as inventory', async () => {
+test('backend creation admits an enabled model a snapshot never listed', async () => {
+  // `opencode-free` has no model-list endpoint, so its discovery run replays
+  // the array this build shipped and records `modelSource: 'fallback'`. The
+  // user enabled this id; a release snapshot cannot rule on what an account
+  // serves (#1584). Until now the only id that could get through an absent
+  // inventory was a hardcoded `deepseek` / `deepseek-v4-flash` pair (#2896) —
+  // the same situation, conceded for one provider.
   const modelId = 'claude-opus-5';
-  await assert.rejects(
-    createHostAiSdkBackend(
-      backendCreationFixture({
-        abortSignal: new AbortController().signal,
-        modelId,
-        resolveExecutionConnection: async () => ({
-          kind: 'ready',
-          connection: {
-            slug: 'backend-creation-connection',
-            providerType: 'opencode-free',
-            enabledModelIds: [modelId],
-            models: [],
-          },
-          networkProxy: { enabled: false },
-          secretMaterial: {},
-        }),
-        readPricing: async () => ({ revision: 0, overrides: [] }),
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      modelId,
+      resolveExecutionConnection: async () => ({
+        kind: 'ready',
+        connection: {
+          slug: 'backend-creation-connection',
+          providerType: 'opencode-free',
+          enabledModelIds: [modelId],
+          models: [{ id: 'grok-code' }],
+          modelSource: 'fetched' as const,
+        },
+        networkProxy: { enabled: false },
+        secretMaterial: {},
       }),
-    ),
-    /Session model is not enabled/,
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    }),
   );
+
+  await backend.dispose();
 });
 
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {
@@ -409,16 +440,14 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
   let transports: ReturnType<typeof controlledOAuthTransports> | undefined;
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-    // claude-subscription discovery is fallback-only (session-scoped OAuth
-    // tokens cannot call GET /v1/models). Create seeds the curated inventory;
-    // pick an id from that inventory rather than opening a fetch ticket.
-    const subscriptionModelId = 'claude-sonnet-5';
+    const subscriptionModelId = PROVIDER_DEFAULTS['openai-codex'].fallbackModels[0] ?? '';
+    assert.ok(subscriptionModelId);
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,
       connection: {
         slug: 'backend-creation-connection',
         name: 'OAuth backend creation',
-        providerType: 'claude-subscription',
+        providerType: 'openai-codex',
         enabled: true,
         enabledModelIds: [subscriptionModelId],
       },
@@ -428,40 +457,37 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     const connection = created.snapshot.connections[0];
     assert.ok(connection);
     if (!connection) return;
-    assert.ok(
-      connection.models.some((model) => model.id === subscriptionModelId),
-      'create must seed the curated claude-subscription inventory',
-    );
     const tokens: OAuthSubscriptionTokens = {
       access_token: 'expired-oauth-access',
       refresh_token: 'rotating-oauth-refresh',
       expires_at: 0,
-      account_uuid: 'oauth-account-v1',
+      account_id: 'oauth-account-v1',
     };
-    await writeFile(
-      join(capability.canonicalPath, 'credential-vault.json'),
-      `${JSON.stringify(
-        {
-          schemaVersion: 1,
-          revision: 1,
-          entries: [
-            {
-              locator: {
-                scope: 'connection',
-                connectionId: connection.connectionId,
-                kind: 'oauth_token',
-              },
-              credentialId: randomUUID(),
-              revision: 1,
-              secret: serializeOAuthSubscriptionTokens(tokens),
-              updatedAt: Date.now(),
-            },
-          ],
-        },
-        null,
-        2,
-      )}\n`,
-      { encoding: 'utf8', mode: 0o600 },
+    const login = await policy.operations.beginInteractiveOAuthLogin(connection.connectionId);
+    assert.equal(login.kind, 'ready');
+    if (login.kind !== 'ready') return;
+    const storedToken = await policy.operations.completeInteractiveOAuthLogin(
+      login.ticket,
+      serializeOAuthSubscriptionTokens(tokens),
+    );
+    assert.equal(storedToken.kind, 'committed');
+    // Codex model discovery is a live call, so seed the inventory through the
+    // fetch operations instead. This used to lean on create seeding a curated
+    // catalog, which only the retired subscription provider had. The fetch
+    // needs the credential above, so it has to come after the login.
+    const fetchTicket = await policy.operations.beginModelFetch(connection.connectionId);
+    assert.equal(fetchTicket.kind, 'ready');
+    if (fetchTicket.kind !== 'ready') return;
+    const seeded = await policy.operations.completeModelFetch(fetchTicket.ticket, {
+      models: [{ id: subscriptionModelId }],
+      source: 'fetched',
+      fetchedAt: 1_800_000_000_000,
+    });
+    assert.equal(seeded.kind, 'committed');
+    if (seeded.kind !== 'committed') return;
+    assert.ok(
+      seeded.snapshot.connections[0]?.models.some((model) => model.id === subscriptionModelId),
+      'the fetch must seed the inventory the backend resolves against',
     );
     transports = controlledOAuthTransports();
     const authority = new HostOAuthExecutionAuthority(policy);
@@ -474,7 +500,6 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
           policy.operations.resolveExecutionConnection('backend-creation-connection'),
         runtimePolicy: policy,
         oauthCredentials: authority,
-        claudeDeviceId: capability.rootId,
         readPricing: async () => ({ revision: 0, overrides: [] }),
         createFetchTransport: transports.create,
       }),
@@ -499,7 +524,6 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
           policy.operations.resolveExecutionConnection('backend-creation-connection'),
         runtimePolicy: policy,
         oauthCredentials: authority,
-        claudeDeviceId: capability.rootId,
         readPricing: async () => ({ revision: 0, overrides: [] }),
         createFetchTransport: transports.create,
       }),
@@ -516,7 +540,10 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
       ) as OAuthSubscriptionTokens;
       assert.equal(persisted.access_token, 'refreshed-oauth-access');
       assert.equal(persisted.refresh_token, 'rotated-oauth-refresh');
-      assert.equal(persisted.account_uuid, 'oauth-account-v2');
+      assert.equal(persisted.id_token, 'rotated-id-token');
+      // The token endpoint does not re-state the account, so the refresh has to
+      // carry the identity forward rather than drop it.
+      assert.equal(persisted.account_id, 'oauth-account-v1');
       assert.ok((persisted.expires_at ?? 0) > Date.now());
     }
   } finally {
@@ -1626,6 +1653,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     // agent-permission tools cannot be the thing that decides whether the child
     // can read back a result the runtime itself pruned.
     assert.deepEqual(toolNames(requests[2]?.body), ['ArchiveRead', 'Glob', 'Grep', 'Read']);
+    assert.doesNotMatch(JSON.stringify(requests[2]?.body), /## Response format/u);
     assert.ok(toolNames(requests[3]?.body).includes('agent_spawn'));
 
     const sessions = await execution.sessionStore.listForRecovery();
@@ -2015,7 +2043,6 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
     const effects = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Auxiliary telemetry must not drain the Host'),
       newId: () => 'deepseek-title-call',
@@ -2092,7 +2119,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const evaluatorInput = {
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Goal evaluator telemetry must not drain the Host'),
       readSessionHeader: (sessionId: string) =>
@@ -2118,7 +2144,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const sessionEffects = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Session effect telemetry must not drain the Host'),
       newId: () => 'effect-call-1',
@@ -2163,7 +2188,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const dailyReview = createHostDailyReviewModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Daily Review telemetry must not drain the Host'),
       newId: () => 'daily-review-call-1',
@@ -2189,7 +2213,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const memoryModel = createHostMemoryExtractionModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('Memory extraction telemetry must not drain the Host'),
       newId: () => 'memory-call-1',
@@ -2264,7 +2287,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const failingPreflightEffects = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage: {
         pricing: {
           snapshot: async () => {
@@ -2338,7 +2360,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
           },
         }),
       } as unknown as HostOAuthExecutionAuthority,
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => {
         oauthDrainRequests += 1;
@@ -2371,7 +2392,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const accountingFailure = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage: {
         pricing: usage.pricing,
         telemetry: {
@@ -2408,7 +2428,6 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const stalledEffect = createHostSessionEffectModel({
       runtimePolicy: policy,
       oauthCredentials: new HostOAuthExecutionAuthority(policy),
-      claudeDeviceId: capability.rootId,
       usage,
       requestDrain: () => assert.fail('A provider timeout must not drain the Host'),
       createFetchTransport: () => ({
@@ -2585,6 +2604,18 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   assert.match(nextPrompt ?? '', /NEW_DESCRIPTION/);
   assert.doesNotMatch(nextPrompt ?? '', /OLD_DESCRIPTION/);
   assert.equal(inventoryReads, 2);
+
+  for (const prompt of [firstPrompt, nextPrompt]) {
+    assert.match(prompt ?? '', /^## Response format$/mu);
+    assert.equal(prompt?.match(/Use GitHub-Flavored Markdown for responses\./gmu)?.length, 1);
+    assert.match(
+      prompt ?? '',
+      /Keep simple answers simple; do not add headings or lists to simple answers\./u,
+    );
+    assert.match(prompt ?? '', /Use short headings and flat lists to organize longer answers\./u);
+    assert.match(prompt ?? '', /inline commands/u);
+    assert.match(prompt ?? '', /descriptive link text/u);
+  }
 });
 
 test('one composer freezes Runtime Policy while each Run freezes its remaining prompt sources', async () => {
@@ -3154,7 +3185,6 @@ function backendCreationFixture(input: {
   readPricing: () => Promise<unknown>;
   runtimePolicy?: RuntimePolicyStoresWriter;
   oauthCredentials?: HostOAuthExecutionAuthority;
-  claudeDeviceId?: string;
   tools?: readonly MakaTool[];
   modelId?: string;
   snapshotClientCapabilities?: () => unknown;
@@ -3237,7 +3267,6 @@ function backendCreationFixture(input: {
     } as unknown as BackendFactoryContext,
     runtimePolicy,
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
-    ...(input.claudeDeviceId ? { claudeDeviceId: input.claudeDeviceId } : {}),
     createRunComposer,
     artifacts: {},
     executionArtifacts: {
@@ -3257,9 +3286,11 @@ function backendCreationFixture(input: {
         recordToolInvocation: async () => undefined,
       },
       modelCalls: {
-        markRunPendingReprojection: async () => undefined,
-        recordModelCallAttempt: async () => undefined,
-        clearPendingReprojection: async () => undefined,
+        catchUpModelCallProjection: async () => ({
+          changedSessionIds: [],
+          pendingRuns: 0,
+          unreadableEvents: 0,
+        }),
       },
     },
     requestDrain: () => undefined,
@@ -3385,7 +3416,7 @@ function controlledOAuthTransports(): {
     let closed = false;
     return {
       fetch: async (url) => {
-        assert.equal(String(url), 'https://platform.claude.com/v1/oauth/token');
+        assert.equal(String(url), 'https://auth.openai.com/oauth/token');
         usedForRefresh = true;
         refreshCalls += 1;
         markRefreshStarted();
@@ -3429,7 +3460,7 @@ function controlledOAuthTransports(): {
           access_token: 'refreshed-oauth-access',
           refresh_token: 'rotated-oauth-refresh',
           expires_in: 3_600,
-          account: { uuid: 'oauth-account-v2' },
+          id_token: 'rotated-id-token',
         }),
       );
     },

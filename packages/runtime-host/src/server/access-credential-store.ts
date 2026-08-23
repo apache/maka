@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { chmod, open, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -20,6 +39,15 @@ const TURN_QUERY_REPLACEMENT_GRANTS = [
   TURN_QUERY_GRANT,
   'session.turn_landmarks.query',
 ] as const satisfies readonly OperationKey[];
+// Operations that left the protocol entirely. A previously issued access file
+// may still grant them; the grant is released on decode — there is nothing to
+// migrate it to — because failing the whole file would keep the Host from
+// starting over a capability it could not serve anyway.
+const RETIRED_OPERATION_GRANTS = new Set([
+  // Retired with the Claude subscription provider, whose client identity the
+  // usage report required.
+  'oauth.account.usage.fetch',
+]);
 
 export const ACCESS_FILE_NAME = 'runtime-host-access.json';
 
@@ -28,11 +56,12 @@ export interface StoredAccessCredential {
   readonly credentialHash: string;
   readonly principalId: string;
   readonly principalKind: AccessCredentialPrincipalKind;
-  readonly status: 'active' | 'revoked';
+  readonly status: 'pending' | 'active' | 'revoked';
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
   readonly createdAt: string;
+  readonly expiresAt?: string;
   readonly revokedAt?: string;
 }
 
@@ -52,6 +81,13 @@ export class RuntimeHostAccessCapacityError extends Error {
   constructor() {
     super('Runtime Host access credential storage is full');
     this.name = 'RuntimeHostAccessCapacityError';
+  }
+}
+
+export class RuntimeHostAccessCommitOutcomeUnknownError extends Error {
+  constructor(cause: unknown) {
+    super('Runtime Host access credential commit outcome is unknown', { cause });
+    this.name = 'RuntimeHostAccessCommitOutcomeUnknownError';
   }
 }
 
@@ -108,6 +144,7 @@ export async function writeAccessCredentialFile(
 ): Promise<void> {
   const contents = serializeAccessCredentialFile(file);
   const tempPath = `${path}.${randomUUID()}.tmp`;
+  let published = false;
   try {
     const handle = await open(tempPath, 'wx', 0o600);
     try {
@@ -118,9 +155,11 @@ export async function writeAccessCredentialFile(
     }
     if (process.platform !== 'win32') await chmod(tempPath, 0o600);
     await rename(tempPath, path);
+    published = true;
     await syncDirectory(dirname(path));
   } catch (error) {
     await rm(tempPath, { force: true });
+    if (published) throw new RuntimeHostAccessCommitOutcomeUnknownError(error);
     throw error;
   }
 }
@@ -144,6 +183,12 @@ function decodeAccessFile(value: unknown): AccessCredentialFile {
   ) {
     throw new Error('Duplicate Runtime Host access credential identity');
   }
+  const pendingPrincipals = credentials
+    .filter((credential) => credential.status === 'pending')
+    .map((credential) => `${credential.principalKind}:${credential.principalId}`);
+  if (new Set(pendingPrincipals).size !== pendingPrincipals.length) {
+    throw new Error('Duplicate Runtime Host pending credential principal');
+  }
   return createAccessCredentialFile(credentials);
 }
 
@@ -158,7 +203,9 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
   if (principalKind !== 'remote_owner' && principalKind !== 'capability_provider') {
     throw new Error('Invalid principalKind');
   }
-  if (value.status !== 'active' && value.status !== 'revoked') throw new Error('Invalid status');
+  if (value.status !== 'pending' && value.status !== 'active' && value.status !== 'revoked') {
+    throw new Error('Invalid status');
+  }
   if (!Array.isArray(value.operationGrants)) throw new Error('Invalid operationGrants');
   const storedOperationGrants = value.operationGrants.map((grant) =>
     requireStoredString(grant, 'operationGrant'),
@@ -181,6 +228,14 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     throw new Error('Invalid access credential authority');
   }
   const createdAt = requireStoredString(value.createdAt, 'createdAt');
+  const expiresAt = value.expiresAt;
+  if (value.status === 'pending') {
+    if (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt))) {
+      throw new Error('Invalid expiresAt');
+    }
+  } else if (expiresAt !== undefined) {
+    throw new Error('Invalid expiresAt');
+  }
   const revokedAt = value.revokedAt;
   if (revokedAt !== undefined && typeof revokedAt !== 'string') {
     throw new Error('Invalid revokedAt');
@@ -195,6 +250,7 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     canPublishClientCapabilities: value.canPublishClientCapabilities,
     canUseHostPaths: value.canUseHostPaths,
     createdAt,
+    ...(typeof expiresAt === 'string' ? { expiresAt } : {}),
     ...(revokedAt === undefined ? {} : { revokedAt }),
   };
 }
@@ -203,8 +259,9 @@ function migrateStoredOperationGrants(grants: readonly string[]): readonly strin
   const migrated: string[] = [];
   const seen = new Set<string>();
   for (const stored of grants) {
-    const replacements =
-      stored === LEGACY_TRANSCRIPT_QUERY_GRANT
+    const replacements = RETIRED_OPERATION_GRANTS.has(stored)
+      ? []
+      : stored === LEGACY_TRANSCRIPT_QUERY_GRANT
         ? TRANSCRIPT_QUERY_REPLACEMENT_GRANTS
         : stored === TURN_QUERY_GRANT
           ? TURN_QUERY_REPLACEMENT_GRANTS

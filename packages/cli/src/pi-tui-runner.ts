@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import {
@@ -86,6 +105,7 @@ import {
 import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
+import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
 import {
@@ -331,6 +351,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
+  // Mirrors the editor's bracketed-paste buffering at the input seam: between a
+  // paste start marker and its end marker the editor holds incoming bytes in an
+  // internal buffer and getText() stays empty, so "editor is empty" must not
+  // treat that in-flight paste as absent user input (#3475 review). The marker
+  // matching deliberately mirrors the editor's own per-chunk includes() checks,
+  // so this flag agrees with what the editor will buffer.
+  let editorPastePending = false;
   type AttachedTurnContext =
     | { readonly kind: 'adopted'; readonly turn: MakaPreparedSessionTurn }
     | { readonly kind: 'external'; readonly turn: MakaAttachedSessionTurn };
@@ -421,7 +448,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Show the whole slash-command set at once — discoverability is the point of
   // the menu. Keep a little headroom above the current command count.
   const editor = new MakaSkillHighlightEditor(tui, editorTheme(), {
-    paddingX: 1,
+    paddingX: 0,
     autocompleteMaxVisible: EDITOR_AUTOCOMPLETE_MAX_VISIBLE,
   });
   let refreshEditorCwd: ((cwd: string) => void) | undefined;
@@ -1054,6 +1081,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         beginGracefulClose();
         return;
       }
+      if (prompt.trim().split(/\s+/, 1)[0] === '/transcript') {
+        editor.addToHistory(prompt);
+        handleSlashCommand(prompt, 0);
+        return;
+      }
       const swarmCommand = parseSwarmCommand(prompt);
       if (swarmCommand) {
         editor.addToHistory(prompt);
@@ -1084,16 +1116,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         }
         return;
       }
-      // Known slash commands typed mid-turn must not steer into the model as
-      // prompt text (review finding on turnRunning routing). `/goal` and
-      // `/recap` answer locally: both are independent of the running turn —
-      // `/goal` is read-only status, and `/recap` uses the separate
-      // session.recap.generate call behind its own in-flight lock. Every other
-      // known command either mutates session state behind the turn's back or
-      // opens a picker the turn would race (and would silently no-op on the
-      // runControl busy gate even if it ran), so refuse it with a clear
-      // message. Unknown slash-prefixed text still steers: it may be intended
-      // prompt text (a skill invocation such as `/skill:<name>`, or a path).
+      // Known slash commands typed mid-turn follow the disposition declared on
+      // the command itself (`midTurn`, review finding on turnRunning routing):
+      // 'local' commands answer immediately because their handler is
+      // independent of the running turn; every other known command is refused
+      // with a clear message, since it would either mutate session state
+      // behind the turn's back, open a picker the turn would race, or silently
+      // no-op on the runControl busy gate. ('intercepted' commands — /exit,
+      // /swarm, /graph — were claimed by their dedicated checks above and
+      // reaching the refusal here only means an unrecognized form.) Unknown
+      // slash-prefixed text still steers: it may be intended prompt text (a
+      // skill invocation such as `/skill:<name>`, or a path).
       const commandToken = prompt.trim().split(/\s+/, 1)[0] ?? '';
       const knownCommand = slashCommands.find(
         (candidate) =>
@@ -1102,7 +1135,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       );
       if (knownCommand) {
         editor.addToHistory(prompt);
-        if (knownCommand.name === 'goal' || knownCommand.name === 'recap') {
+        if (knownCommand.midTurn === 'local') {
           handleSlashCommand(prompt, 0);
         } else {
           state.entries.push({
@@ -1504,18 +1537,48 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // non-destructive and inherits the branch's resume guarantees.
   const rewindToTurn = async (turnId: string) => {
     resolvedInteractionIds.clear();
-    const result = await input.driver.rewindToTurn(turnId);
-    await applySwitchResult(result);
-    // Refill the editor with the discarded turn's prompt so the user can edit
-    // and resend it. The picker only arms when the editor is neutral (empty
-    // draft, no autocomplete), so overwriting the text loses no in-progress work.
-    editor.setText(result.prompt);
-    state.entries.push({
+    // Synchronous feedback before the first await: branching + switching takes
+    // several serialized runtime-host round trips, and control-busy renders
+    // nothing in the TUI body, so without this notice the picker's Enter looks
+    // dead until the branch lands (#3383). replaceTranscript wipes it on
+    // success; the catch removes it on failure so only the error stays.
+    const pendingNotice: (typeof state.entries)[number] = {
       kind: 'notice',
       level: 'info',
-      text: '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。',
-    });
+      text: '正在回退到该轮之前…',
+    };
+    state.entries.push(pendingNotice);
     requestRender();
+    try {
+      const result = await input.driver.rewindToTurn(turnId);
+      await applySwitchResult(result);
+      // Record the discarded turn's prompt in the editor history before
+      // deciding on the refill: prompts submitted in this TUI process are
+      // already there (addToHistory dedupes consecutive duplicates), but a
+      // session entered via startup resume or /resume has no entry yet, and
+      // the notice below promises ↑ recovery (#3475 review).
+      editor.addToHistory(result.prompt);
+      // Refill the editor with that prompt so the user can edit and resend it
+      // — unless newer user input arrived while the switch was in flight. The
+      // picker's neutral-editor guarantee only holds at open time, so this
+      // covers both a typed draft and a bracketed paste still being buffered
+      // (getText() stays empty until its end marker); either wins over the
+      // refill.
+      const refill = editor.getText().trim().length === 0 && !editorPastePending;
+      if (refill) editor.setText(result.prompt);
+      state.entries.push({
+        kind: 'notice',
+        level: 'info',
+        text: refill
+          ? '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。'
+          : '已回退到该轮之前（分支为新任务，原任务保留）。输入框已有未发送内容，未覆盖；该轮 prompt 已存入输入历史，可按 ↑ 找回。',
+      });
+      requestRender();
+    } catch (error) {
+      const index = state.entries.indexOf(pendingNotice);
+      if (index >= 0) state.entries.splice(index, 1);
+      throw error;
+    }
   };
 
   const showBottomPicker = (picker: Component): OverlayHandle =>
@@ -2088,6 +2151,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       'Rewind',
       items,
       (item) => {
+        // runControl drops the action silently when busy is already held (e.g.
+        // a Goal auto-continuation started while the picker was open). The
+        // overlay is already closed at this point, so say so instead of
+        // leaving a dead Enter — same contract as /goal's busy guard.
+        if (busy) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: '无法回退：当前有正在进行的操作 — 请等待其完成，或中断（Esc）后重试。',
+          });
+          requestRender();
+          return;
+        }
         void runControl(() => rewindToTurn(item.value));
       },
       {
@@ -2100,9 +2176,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const newSession = () => {
     input.driver.startNewSession();
-    // A fresh session is not bound by the previous one's boundary; re-read the
-    // mode the next session will actually be created with.
-    permissionMode = input.driver.getPermissionMode?.() ?? permissionMode;
+    // A fresh session is not bound by the previous one's boundary. Falling back
+    // to the *current* label would keep the previous Session's mode, including
+    // Auto while a changed Host default creates with full access; the launch
+    // reading is the Host's value, so it is the safe floor when the driver has
+    // nothing newer.
+    permissionMode = input.driver.getPermissionMode?.() ?? input.permissionMode;
     attention.setBaseTitle(input.title);
     shellRunHydration.reset();
     // Fresh transcript for the fresh session; the next prompt creates it on disk.
@@ -2172,6 +2251,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       text: `${primaryGuidance.help.commandsHeading}\n${commands}\n\n${primaryGuidance.help.keybindingsHeading}\n${keybindings}`,
     });
     requestRender();
+  };
+
+  const showTranscriptViewer = (): void => {
+    let overlay: OverlayHandle | undefined;
+    const renderTranscript = transcript.createDocumentRenderer();
+    const viewer = new TranscriptViewerOverlay({
+      renderTranscript,
+      viewportRows: () => terminal.rows,
+      onClose: () => overlay?.hide(),
+      onChange: () => tui.requestRender(),
+    });
+    overlay = tui.showOverlay(viewer, {
+      anchor: 'top-left',
+      width: '100%',
+      maxHeight: '100%',
+    });
   };
 
   const showModelList = () => {
@@ -2641,6 +2736,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const slashCommandHandlers = {
     context: {
       description: primaryGuidance.commands.context,
+      // Read-only diagnostics, but runControl-gated: mid-turn it would
+      // silently no-op on the busy gate, so refuse loudly instead.
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2666,6 +2764,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     compact: {
       description: primaryGuidance.commands.compact,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2681,12 +2780,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     exit: {
       description: primaryGuidance.commands.exit,
+      // isExitPrompt (which also matches bare "quit"/"exit" without a slash)
+      // closes the TUI ahead of generic slash routing.
+      midTurn: 'intercepted',
       run: () => {
         beginGracefulClose();
       },
     },
     goal: {
       description: primaryGuidance.commands.goal,
+      // Read-only status answers locally; control actions carry their own
+      // busy notice inside the handler, so neither path no-ops silently.
+      midTurn: 'local',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           // Read-only, so no runControl busy gate: an autonomous loop keeps
@@ -2725,18 +2830,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     help: {
       description: primaryGuidance.commands.help,
+      midTurn: 'refuse',
       run: () => {
         void runControl(async () => showHelp());
       },
     },
     new: {
       description: primaryGuidance.commands.new,
+      midTurn: 'refuse',
       run: () => {
         void runControl(async () => newSession());
       },
     },
     skill: {
       description: primaryGuidance.commands.skill,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2752,6 +2860,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     setup: {
       description: primaryGuidance.commands.setup,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2767,6 +2876,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     model: {
       description: primaryGuidance.commands.model,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           showModelList();
@@ -2787,6 +2897,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     move: {
       description: primaryGuidance.commands.move,
+      midTurn: 'refuse',
       run: (parts: string[], rawTail?: string) => {
         const targetCwd = (rawTail ?? parts.slice(1).join(' ')).trim();
         if (targetCwd) {
@@ -2798,6 +2909,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     thinking: {
       description: primaryGuidance.commands.thinking,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           if (thinkingLevels.length === 0) {
@@ -2834,8 +2946,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(() => setThinkingLevel(level));
       },
     },
+    transcript: {
+      description: primaryGuidance.commands.transcript,
+      midTurn: 'local',
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /transcript',
+          });
+          requestRender();
+          return;
+        }
+        showTranscriptViewer();
+      },
+    },
     permissions: {
       description: primaryGuidance.commands.permissions,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           showPermissionModeList();
@@ -2856,12 +2985,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     recap: {
       description: primaryGuidance.commands.recap,
+      // Independent of the running turn: runRecap goes straight to the
+      // separate session.recap.generate call behind its own in-flight lock
+      // and never enters runControl.
+      midTurn: 'local',
       run: () => {
         void runRecap('manual');
       },
     },
     rename: {
       description: primaryGuidance.commands.rename,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         const name = parts.slice(1).join(' ').trim();
         if (!name) {
@@ -2887,6 +3021,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     resume: {
       description: primaryGuidance.commands.resume,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length !== 1) {
           state.entries.push({
@@ -2902,12 +3037,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     rewind: {
       description: primaryGuidance.commands.rewind,
+      midTurn: 'refuse',
       run: () => {
         void runControl(showRewindPicker);
       },
     },
     session: {
       description: primaryGuidance.commands.session,
+      midTurn: 'refuse',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           void runControl(showSessionList);
@@ -2928,6 +3065,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     graph: {
       description: primaryGuidance.commands.graph,
+      // parseGraphCommand answers status and refuses changes ahead of generic
+      // slash routing.
+      midTurn: 'intercepted',
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseGraphCommand(`/graph${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runGraphCommand(parsed, context.idleMs);
@@ -2935,6 +3075,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     swarm: {
       description: primaryGuidance.commands.swarm,
+      // parseSwarmCommand answers status and refuses changes ahead of generic
+      // slash routing.
+      midTurn: 'intercepted',
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
         const parsed = parseSwarmCommand(`/swarm${rawTail ? ` ${rawTail}` : ''}`);
         if (parsed) runSwarmCommand(parsed, context.idleMs);
@@ -2974,6 +3117,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   refreshEditorCwd(cwd);
 
   tui.addInputListener((data) => {
+    // Track bracketed pastes before any consuming branch: this must observe
+    // every chunk the editor could buffer, regardless of what the rest of the
+    // listener decides (#3475 review).
+    if (data.includes('\x1b[200~')) {
+      // A paste begins; it is only complete when the end marker follows, here
+      // or in a later chunk.
+      editorPastePending = !data.slice(data.indexOf('\x1b[200~') + 6).includes('\x1b[201~');
+    } else if (editorPastePending && data.includes('\x1b[201~')) {
+      // The paste ends; bytes after the end marker may start another paste.
+      const remainder = data.slice(data.indexOf('\x1b[201~') + 6);
+      editorPastePending = remainder.includes('\x1b[200~');
+    }
     // Once closing has begun, swallow any buffered input that reaches the
     // listener while the terminal is being torn down.
     if (closed) return { consume: true };

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Resolving the `.app` bundle to drag into System Settings.
  *
@@ -32,25 +51,6 @@ export interface ResolveAppBundleDeps {
   executablePath: string;
   platform: NodeJS.Platform;
   exists(path: string): boolean;
-}
-
-/**
- * Reading a bundle icon is presentation-only. The original unpackaged npm
- * Electron runtime could terminate natively while macOS resolved its bundle
- * icon, before the returned promise settled. Keep native icon loading for
- * packaged Maka.app builds and let the signed Maka Dev workflow use an empty
- * drag image instead.
- */
-export async function loadNativeBundleIcon<T>(
-  isPackaged: boolean,
-  load: () => Promise<T>,
-): Promise<T | null> {
-  if (!isPackaged) return null;
-  try {
-    return await load();
-  } catch {
-    return null;
-  }
 }
 
 export function resolveAppBundle(deps: ResolveAppBundleDeps): AppBundleResult {

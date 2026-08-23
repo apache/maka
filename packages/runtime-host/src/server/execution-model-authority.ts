@@ -1,5 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
-import { PROVIDER_DEFAULTS, type RuntimeExecutionConnection } from '@maka/core/llm-connections';
+import {
+  authorizeConnectionModel,
+  PROVIDER_DEFAULTS,
+  type RuntimeExecutionConnection,
+} from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { parseRequestHeaders, type RuntimePolicy } from '@maka/core/runtime-policy';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -45,12 +68,10 @@ import {
   type HostOAuthExecutionBinding,
 } from './oauth-execution-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
-import { resolveAdmittedConnectionModel } from './connection-model-admission.js';
 
 export interface HostGoalEvaluatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
-  readonly claudeDeviceId: string;
   readonly usage: InteractiveUsageStoresWriter;
   readonly requestDrain: () => void;
   readonly readSessionHeader: (sessionId: string) => Promise<SessionHeader>;
@@ -338,7 +359,6 @@ type AuxiliaryModelCallAuthorityInput = Pick<
   HostGoalEvaluatorInput,
   | 'runtimePolicy'
   | 'oauthCredentials'
-  | 'claudeDeviceId'
   | 'usage'
   | 'requestDrain'
   | 'createFetchTransport'
@@ -349,7 +369,6 @@ type AuxiliaryModelCallAuthorityInput = Pick<
 interface AuxiliaryModelCallAuthority {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
-  readonly claudeDeviceId: string;
   readonly usage: InteractiveUsageStoresWriter;
   readonly createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
   readonly telemetry: {
@@ -401,7 +420,6 @@ function createAuxiliaryModelCallAuthority(
   return {
     runtimePolicy: input.runtimePolicy,
     oauthCredentials: input.oauthCredentials,
-    claudeDeviceId: input.claudeDeviceId,
     usage: input.usage,
     createFetchTransport: input.createFetchTransport ?? createProxiedFetchTransport,
     telemetry: {
@@ -466,7 +484,6 @@ async function runHostAuxiliaryModelCall(
         connection: target.connection,
         sessionId: input.transportContextId,
         modelId: target.model,
-        claudeDeviceId: authority.claudeDeviceId,
         fetchFn: transport.fetch,
       });
     }
@@ -788,7 +805,7 @@ export async function resolveExecutionTarget(
   }
   const model = header.model.trim();
   const discovered = resolved.connection.models.some((candidate) => candidate.id === model);
-  const modelInfo = resolveAdmittedConnectionModel(resolved.connection, model);
+  const modelInfo = authorizeConnectionModel(resolved.connection, model);
   if (!model || !modelInfo) {
     throw new AuxiliaryModelCallConfigurationError(
       'Runtime Host Session model is not enabled by its canonical connection',

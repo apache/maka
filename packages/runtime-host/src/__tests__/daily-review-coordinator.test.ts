@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -5,6 +24,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { localDayBoundsAt, type DailyReviewArchive } from '@maka/core/daily-review';
 import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
+import { acquireOperationalStateDatabase } from '@maka/storage';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
@@ -18,8 +38,8 @@ const CONTEXT: ConnectionContext = {
 };
 
 test('Daily Review refuses to archive an incomplete canonical Usage projection', async () => {
-  await withCoordinator(async ({ coordinator, store, usage, readRunEventsCount, drainCount }) => {
-    await usage.modelCalls.markRunPendingReprojection('session-missing', 'run-missing');
+  await withCoordinator(async ({ coordinator, store, root, drainCount }) => {
+    appendCorruptAuthorityEvent(root, 'session-missing', 'run-missing');
     const outcome = await coordinator.handlers['daily-review.mutate'](
       {
         kind: 'run',
@@ -38,7 +58,6 @@ test('Daily Review refuses to archive an incomplete canonical Usage projection',
         message: 'Daily Review is waiting for canonical Usage repair',
       },
     });
-    assert.equal(readRunEventsCount(), 1);
     assert.equal(drainCount(), 0);
     assert.deepEqual(await store.listArchivePage(null, 1), {
       archives: [],
@@ -249,7 +268,7 @@ async function withCoordinator(
     coordinator: HostDailyReviewCoordinator;
     store: Awaited<ReturnType<typeof openInteractiveDailyReviewAuthorityForWrite>>;
     usage: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>;
-    readRunEventsCount: () => number;
+    root: string;
     drainCount: () => number;
   }) => Promise<void>,
   model: ConstructorParameters<typeof HostDailyReviewCoordinator>[0]['model'] = {
@@ -258,8 +277,9 @@ async function withCoordinator(
   recoverBeforeRun = true,
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-daily-review-coordinator-'));
+  const root = join(base, 'interactive');
   const capability = await resolveStorageRoot({
-    path: join(base, 'interactive'),
+    path: root,
     kind: 'interactive',
   });
   const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -267,16 +287,11 @@ async function withCoordinator(
   if (!owner) return;
   const store = await openInteractiveDailyReviewAuthorityForWrite(owner.lease);
   const usage = await openInteractiveUsageStoresForWrite(owner.lease);
-  let runEventReads = 0;
   let drains = 0;
   const coordinator = new HostDailyReviewCoordinator({
     store,
     usage,
     sessions: { list: async () => [] },
-    readRunEvents: async () => {
-      runEventReads += 1;
-      throw new Error('Run authority is temporarily unavailable');
-    },
     model,
     acquireResidency: () => ({ release: () => undefined }),
     requestDrain: () => {
@@ -289,7 +304,7 @@ async function withCoordinator(
       coordinator,
       store,
       usage,
-      readRunEventsCount: () => runEventReads,
+      root,
       drainCount: () => drains,
     });
   } finally {
@@ -297,6 +312,35 @@ async function withCoordinator(
     await usage.close();
     if (!owner.closed) await owner.close();
     await rm(base, { recursive: true, force: true });
+  }
+}
+
+function appendCorruptAuthorityEvent(root: string, sessionId: string, runId: string): void {
+  const lease = acquireOperationalStateDatabase(root);
+  try {
+    lease.transaction('write', () => {
+      lease.database
+        .prepare(`
+          INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
+          VALUES (?, ?, 0, '{}')
+        `)
+        .run(sessionId, runId);
+      lease.database
+        .prepare(`
+          UPDATE core_agent_runs SET latest_model_call_sequence = 0
+          WHERE session_id = ? AND run_id = ?
+        `)
+        .run(sessionId, runId);
+      lease.database
+        .prepare(`
+          INSERT INTO core_agent_run_events(
+            session_id, run_id, sequence, event_id, event_type, event_ts, record_json
+          ) VALUES (?, ?, 0, 'corrupt-model-call', 'model_call_attempt_recorded', 0, '{}')
+        `)
+        .run(sessionId, runId);
+    });
+  } finally {
+    lease.close();
   }
 }
 
