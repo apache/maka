@@ -82,11 +82,27 @@ fn run() -> Result<ExitCode, &'static str> {
         return Err("unsupported_operation");
     }
 
-    let repository = gix::open::Options::isolated()
+    let repository = match gix::open::Options::isolated()
         .strict_config(true)
         .open(request.repository_path)
-        .map_err(|_| "repository_open_failed")?
-        .to_thread_local();
+    {
+        Ok(repository) => repository.to_thread_local(),
+        Err(gix::open::Error::Config(gix::config::Error::ConfigTypedString(error)))
+            if error.key.as_slice() == b"extensions.objectFormat" =>
+        {
+            let object_format = error
+                .value
+                .as_ref()
+                .map(|value| String::from_utf8_lossy(value.as_slice()).into_owned())
+                .unwrap_or_else(|| "unknown".to_owned());
+            return Ok(reject_unsupported_object_format(object_format));
+        }
+        Err(gix::open::Error::Config(gix::config::Error::UnsupportedObjectFormat { name })) => {
+            let object_format = String::from_utf8_lossy(name.as_slice()).into_owned();
+            return Ok(reject_unsupported_object_format(object_format));
+        }
+        Err(_) => return Err("repository_open_failed"),
+    };
 
     match repository.object_hash() {
         gix::hash::Kind::Sha1 => {
@@ -107,25 +123,19 @@ fn run() -> Result<ExitCode, &'static str> {
             });
             Ok(ExitCode::SUCCESS)
         }
-        gix::hash::Kind::Sha256 => {
-            write_response(&Response::RepositoryRejected {
-                protocol_version: PROTOCOL_VERSION,
-                reason: "unsupported_object_format",
-                object_format: "sha256".to_owned(),
-                supported_object_formats: ["sha1"],
-            });
-            Ok(ExitCode::from(2))
-        }
-        _ => {
-            write_response(&Response::RepositoryRejected {
-                protocol_version: PROTOCOL_VERSION,
-                reason: "unsupported_object_format",
-                object_format: "unknown".to_owned(),
-                supported_object_formats: ["sha1"],
-            });
-            Ok(ExitCode::from(2))
-        }
+        gix::hash::Kind::Sha256 => Ok(reject_unsupported_object_format("sha256".to_owned())),
+        _ => Ok(reject_unsupported_object_format("unknown".to_owned())),
     }
+}
+
+fn reject_unsupported_object_format(object_format: String) -> ExitCode {
+    write_response(&Response::RepositoryRejected {
+        protocol_version: PROTOCOL_VERSION,
+        reason: "unsupported_object_format",
+        object_format,
+        supported_object_formats: ["sha1"],
+    });
+    ExitCode::from(2)
 }
 
 fn read_request() -> Result<InspectRepositoryRequest, &'static str> {

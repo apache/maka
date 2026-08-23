@@ -73,6 +73,38 @@ fn rejects_sha256_before_returning_repository_identity() {
     );
 }
 
+#[test]
+fn rejects_an_unknown_object_format_during_repository_open() {
+    let fixture = RepositoryFixture::unknown_object_format();
+
+    let output = invoke_helper(&fixture.root);
+
+    assert_eq!(output.status.code(), Some(2));
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        response,
+        serde_json::json!({
+            "protocolVersion": 1,
+            "kind": "repository_rejected",
+            "reason": "unsupported_object_format",
+            "objectFormat": "sha512",
+            "supportedObjectFormats": ["sha1"],
+        })
+    );
+}
+
+#[test]
+fn observes_raw_head_identity_instead_of_replacement_ref_semantics() {
+    let (fixture, expected_commit, expected_tree) = RepositoryFixture::sha1_with_replacement_ref();
+
+    let output = invoke_helper(&fixture.root);
+
+    assert!(output.status.success());
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["headCommitOid"], expected_commit);
+    assert_eq!(response["headTreeOid"], expected_tree);
+}
+
 fn invoke_helper(repository_path: &Path) -> Output {
     let mut child = Command::new(HELPER)
         .env("PATH", "")
@@ -121,6 +153,36 @@ impl RepositoryFixture {
 
     fn sha256_unborn() -> Self {
         Self::init("sha256")
+    }
+
+    fn unknown_object_format() -> Self {
+        let fixture = Self::init("sha1");
+        fixture.git(["config", "core.repositoryFormatVersion", "1"]);
+        fixture.git(["config", "extensions.objectFormat", "sha512"]);
+        fixture
+    }
+
+    fn sha1_with_replacement_ref() -> (Self, String, String) {
+        let fixture = Self::sha1_with_commit();
+        let raw_commit = fixture.git_output(["rev-parse", "HEAD"]);
+        let raw_tree = fixture.git_output(["rev-parse", "HEAD^{tree}"]);
+
+        fs::write(fixture.root.join("hello.txt"), b"replacement content\n").unwrap();
+        fixture.git(["add", "hello.txt"]);
+        fixture.git([
+            "-c",
+            "user.name=Maka Test",
+            "-c",
+            "user.email=maka@example.invalid",
+            "commit",
+            "-m",
+            "replacement",
+        ]);
+        let replacement_commit = fixture.git_output(["rev-parse", "HEAD"]);
+        fixture.git(["replace", &raw_commit, &replacement_commit]);
+        fixture.git(["checkout", "--detach", &raw_commit]);
+
+        (fixture, raw_commit, raw_tree)
     }
 
     fn init(object_format: &str) -> Self {
