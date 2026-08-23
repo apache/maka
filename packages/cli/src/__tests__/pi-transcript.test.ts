@@ -354,7 +354,6 @@ describe('Maka Pi TUI transcript', () => {
     );
     state.entries.push({ kind: 'notice', level: 'error', text: 'Turn failed: provider_error' });
     state.steering = ['Keep going'];
-    state.pendingFallback = [{ text: 'Try again', enqueue: 'steer' }];
 
     assert.equal(
       hydrateToolsWithStoredMessages(state, 'turn-1', [
@@ -386,7 +385,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.deepEqual(tool?.input, { path: 'README.md' });
     assert.deepEqual(tool?.result, { kind: 'text', text: 'README contents' });
     assert.deepEqual(state.steering, ['Keep going']);
-    assert.deepEqual(state.pendingFallback, [{ text: 'Try again', enqueue: 'steer' }]);
     assert.equal(state.entries.at(-1)?.kind, 'notice');
   });
 

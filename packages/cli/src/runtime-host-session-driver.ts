@@ -354,12 +354,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return this.#enqueue(text, 'next_turn');
   }
 
-  async takePendingFollowup(): Promise<string | null> {
-    // Runtime Host owns the terminal transition and starts the queued follow-up
-    // atomically. Returning its text here would make the TUI submit it twice.
-    return null;
-  }
-
   async retractQueued(): Promise<string> {
     if (!this.#sessionId) return '';
     const result = await this.#request('queue.retract', {

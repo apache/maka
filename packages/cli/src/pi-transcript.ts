@@ -104,14 +104,6 @@ export interface MakaPiTranscriptState {
    */
   steering: string[];
   followup: string[];
-  /**
-   * Messages whose enqueue hit the no-live-owner fallback while a turn was
-   * running (the begin window). CLI-owned, NOT a runtime mirror: the runner
-   * retries the original enqueue until it lands and flushes any remainder
-   * into the next turn at the turn boundary, so the text is never dropped.
-   * Rendered in the pending bar alongside the mirror.
-   */
-  pendingFallback: Array<{ text: string; enqueue: 'steer' | 'queue' }>;
   /** Current non-durable provider retry progress for the activity strip. */
   providerRetry?: ProviderRetryEvent;
 }
@@ -216,7 +208,6 @@ export function createMakaPiTranscriptState(): MakaPiTranscriptState {
     usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0 },
     steering: [],
     followup: [],
-    pendingFallback: [],
   };
 }
 
@@ -343,7 +334,6 @@ export function replaceTranscriptWithStoredMessages(
   // Queues are per-active-run; a switched/reset session has none pending.
   state.steering = [];
   state.followup = [];
-  state.pendingFallback = [];
   for (const msg of messages) {
     if (msg.type === 'token_usage') accumulateUsage(state.usage, msg);
   }
@@ -1448,26 +1438,12 @@ function formatElapsedDuration(elapsedMs: number): string {
  * Renders nothing when both queues are empty.
  */
 export function renderMakaPiPendingQueue(state: MakaPiTranscriptState, width: number): string[] {
-  if (
-    state.steering.length === 0 &&
-    state.followup.length === 0 &&
-    state.pendingFallback.length === 0
-  ) {
+  if (state.steering.length === 0 && state.followup.length === 0) {
     return [];
   }
   const safeWidth = Math.max(1, width);
-  const steering = [
-    ...state.steering,
-    ...state.pendingFallback
-      .filter((entry) => entry.enqueue === 'steer')
-      .map((entry) => entry.text),
-  ];
-  const followup = [
-    ...state.followup,
-    ...state.pendingFallback
-      .filter((entry) => entry.enqueue === 'queue')
-      .map((entry) => entry.text),
-  ];
+  const steering = state.steering;
+  const followup = state.followup;
   const lines: string[] = [];
   for (const text of steering) {
     lines.push(

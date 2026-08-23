@@ -99,7 +99,6 @@ export interface MakaSessionDriver {
   resumeLatest?(): AsyncIterable<SessionEvent>;
   steer?(text: string): Promise<QueueEnqueueOutcome>;
   queueMessage?(text: string): Promise<QueueEnqueueOutcome>;
-  takePendingFollowup?(): Promise<string | null>;
   retractQueued?(): Promise<string>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
