@@ -152,6 +152,21 @@ function createWriterFacade(
       const acceptedInput: ConversationArtifactCopyInput = Object.freeze({
         ...input,
         turnIds: Object.freeze([...input.turnIds]),
+        ...(input.excludeArtifactIds
+          ? { excludeArtifactIds: Object.freeze([...input.excludeArtifactIds]) }
+          : {}),
+        ...(input.linkedArtifacts
+          ? {
+              linkedArtifacts: Object.freeze(
+                input.linkedArtifacts.map((linked) =>
+                  Object.freeze({
+                    sessionId: linked.sessionId,
+                    artifactIds: Object.freeze([...linked.artifactIds]),
+                  }),
+                ),
+              ),
+            }
+          : {}),
       });
       return run(() => store.copyConversationArtifacts(acceptedInput));
     },

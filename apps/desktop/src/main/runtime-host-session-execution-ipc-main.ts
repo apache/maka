@@ -26,7 +26,6 @@ import {
   type SessionChangedEvent,
   type SessionChangedReason,
 } from '@maka/core/session';
-import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import { type ActiveInteractionRequestEvent, type AttachmentRef } from '@maka/core/events';
 import { type PermissionMode } from '@maka/core/permission';
 import { type SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -59,6 +58,10 @@ import {
 import type { DesktopTranscriptRangeRequest } from '../preload/transcript-contract.js';
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import { mergeWorkspaceFileInlineReferences } from "./session-workspace-inline-references.js";
+
+type SideConversationBranchResult =
+  | { readonly ok: true; readonly session: ReturnType<typeof toDesktopHostSessionSummary> }
+  | { readonly ok: false; readonly reason: 'session_busy' | 'operation_unavailable' };
 
 type RuntimeHostSessionExecutionClient = Pick<
   DesktopRuntimeHostClient,
@@ -624,36 +627,47 @@ export function registerRuntimeHostSessionExecutionIpc(
           sourceSessionId: sessionId,
           targetSessionId: normalized.copyId,
           sourceTurnId: normalized.sourceTurnId,
+          ...(normalized.sideConversation ? { intent: 'side_conversation' as const } : {}),
         });
-      let branch = normalized.sideConversation
-        ? await deps.sessionCopyCleanup.ownCreation(
-            {
-              sessionId: normalized.copyId,
-              kind: 'branch',
-              sourceSessionId: sessionId,
-              sourceTurnId: normalized.sourceTurnId,
-              ownerId: bindCopyOwner(event),
-            },
-            createBranch,
-          )
-        : await createBranch();
-      if (normalized.name || normalized.sideConversation) {
+      let branch;
+      try {
+        branch = normalized.sideConversation
+          ? await deps.sessionCopyCleanup.ownCreation(
+              {
+                sessionId: normalized.copyId,
+                kind: 'branch',
+                sourceSessionId: sessionId,
+                sourceTurnId: normalized.sourceTurnId,
+                intent: 'side_conversation',
+                ownerId: bindCopyOwner(event),
+              },
+              createBranch,
+            )
+          : await createBranch();
+      } catch (error) {
+        if (
+          normalized.sideConversation &&
+          error instanceof RuntimeHostOperationError &&
+          (error.code === 'session_busy' || error.code === 'operation_unavailable')
+        ) {
+          await deps.sessionCopyCleanup.rejectCreation(normalized.copyId);
+          return {
+            ok: false,
+            reason: error.code,
+          } satisfies SideConversationBranchResult;
+        }
+        throw error;
+      }
+      if (normalized.name) {
         branch = await deps.client.updateSessionMetadata(branch.id, {
-          ...(normalized.name ? { name: normalized.name } : {}),
-          ...(normalized.sideConversation
-            ? {
-                labels: [
-                  ...new Set([
-                    ...branch.labels,
-                    SIDE_CONVERSATION_SESSION_LABEL,
-                  ]),
-                ],
-              }
-            : {}),
+          name: normalized.name,
         });
       }
       deps.emitSessionsChanged("created", branch.id);
-      return toDesktopHostSessionSummary(branch);
+      const summary = toDesktopHostSessionSummary(branch);
+      return normalized.sideConversation
+        ? ({ ok: true, session: summary } satisfies SideConversationBranchResult)
+        : summary;
     },
   );
   ipcMain.handle(

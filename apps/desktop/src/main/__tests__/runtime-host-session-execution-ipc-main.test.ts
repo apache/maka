@@ -201,13 +201,15 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
   assert.equal(committed.size, 3);
 });
 
-test("marks Runtime Host Branch copies as side conversations", async () => {
+test("sends Side Conversation intent and metadata atomically to Runtime Host", async () => {
+  const copyInputs: unknown[] = [];
   const metadataUpdates: unknown[] = [];
   const abandonedOwners: string[] = [];
   const backgroundErrors: unknown[] = [];
   const ipc = ipcHarness();
   const sessionCopyCleanup = {
     ownCreation: <T>(_creation: unknown, operation: () => Promise<T>) => operation(),
+    async rejectCreation() {},
     async cleanup() {},
     async schedule() {},
     async abandonOwner(ownerId: string) {
@@ -221,17 +223,20 @@ test("marks Runtime Host Branch copies as side conversations", async () => {
   registerExecutionIpc(
     {
       client: executionClient({
-        copySession: async (_kind, input) => ({
-          ...session(),
-          id: input.targetSessionId,
-          labels: ["source-label"],
-        }),
+        copySession: async (_kind, input) => {
+          copyInputs.push(input);
+          return {
+            ...session(),
+            id: input.targetSessionId,
+            labels: ["source-label", SIDE_CONVERSATION_SESSION_LABEL],
+          };
+        },
         updateSessionMetadata: async (sessionId, patch) => {
           metadataUpdates.push({ sessionId, patch });
           return {
             ...session(),
             id: sessionId,
-            labels: patch.labels ?? [],
+            labels: patch.labels ?? ['source-label', SIDE_CONVERSATION_SESSION_LABEL],
           };
         },
       }),
@@ -247,23 +252,26 @@ test("marks Runtime Host Branch copies as side conversations", async () => {
     ipc,
   );
 
-  const branch = (await ipc.invoke("sessions:branchFromTurn", "source-session", {
+  const branchResult = (await ipc.invoke("sessions:branchFromTurn", "source-session", {
     sourceTurnId: "source-turn",
     copyId: "side-copy",
     name: "Side chat",
     sideConversation: true,
-  })) as { labels: string[] };
+  })) as { ok: true; session: { labels: string[] } };
 
-  assert.deepEqual(metadataUpdates, [
+  assert.deepEqual(copyInputs, [
     {
-      sessionId: "side-copy",
-      patch: {
-        name: "Side chat",
-        labels: ["source-label", SIDE_CONVERSATION_SESSION_LABEL],
-      },
+      sourceSessionId: 'source-session',
+      targetSessionId: 'side-copy',
+      sourceTurnId: 'source-turn',
+      intent: 'side_conversation',
     },
   ]);
-  assert.deepEqual(branch.labels, [
+  assert.deepEqual(metadataUpdates, [
+    { sessionId: 'side-copy', patch: { name: 'Side chat' } },
+  ]);
+  assert.equal(branchResult.ok, true);
+  assert.deepEqual(branchResult.session.labels, [
     "source-label",
     SIDE_CONVERSATION_SESSION_LABEL,
   ]);
@@ -274,6 +282,50 @@ test("marks Runtime Host Branch copies as side conversations", async () => {
   assert.deepEqual(backgroundErrors.map((error) => (error as Error).message), [
     'cleanup unavailable',
   ]);
+});
+
+test('returns structured Side Conversation setup failures across IPC', async () => {
+  for (const reason of ['session_busy', 'operation_unavailable'] as const) {
+    const ipc = ipcHarness();
+    const rejectedCreations: string[] = [];
+    registerExecutionIpc(
+      {
+        client: executionClient({
+          copySession: async () => {
+            throw new RuntimeHostOperationError(
+              'session.branch.create',
+              reason,
+              'Side Conversation setup failed',
+            );
+          },
+        }),
+        observer: unusedObserver(),
+        attachmentApprovals: createAttachmentApprovalRegistry(),
+        emitSessionsChanged() {},
+        stat: async () => ({ size: 0 }),
+        resizeImage: async (bytes) => bytes,
+        beforeStop() {},
+        newId: () => 'id-1',
+        sessionCopyCleanup: {
+          ...unusedSessionCopyCleanup(),
+          async rejectCreation(sessionId) {
+            rejectedCreations.push(sessionId);
+          },
+        },
+      },
+      ipc,
+    );
+
+    assert.deepEqual(
+      await ipc.invoke('sessions:branchFromTurn', 'source-session', {
+        sourceTurnId: 'source-turn',
+        copyId: `side-copy-${reason}`,
+        sideConversation: true,
+      }),
+      { ok: false, reason },
+    );
+    assert.deepEqual(rejectedCreations, [`side-copy-${reason}`]);
+  }
 });
 
 test("sends canonical content and uploads owned Attachment bytes through the Host", async () => {
@@ -1089,6 +1141,7 @@ function registerExecutionIpc(
 function unusedSessionCopyCleanup(): RuntimeHostSessionExecutionIpcDeps['sessionCopyCleanup'] {
   return {
     ownCreation: async (_creation, operation) => operation(),
+    async rejectCreation() {},
     async cleanup() {},
     async schedule() {},
     async abandonOwner() {},

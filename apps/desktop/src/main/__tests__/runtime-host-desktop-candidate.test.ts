@@ -524,6 +524,7 @@ test('does not release or report a Revision the Host retained during cleanup', a
       removeSessionCopy = removeSession;
       return {
         ownCreation: (_creation, operation) => operation(),
+        rejectCreation: async () => undefined,
         cleanup: async () => undefined,
         schedule: async () => undefined,
         abandonOwner: async () => undefined,
@@ -864,6 +865,7 @@ function deps(
     completeComputerUseTurn() {},
     createSessionCopyCleanup: () => ({
       ownCreation: (_creation, operation) => operation(),
+      rejectCreation: async () => undefined,
       cleanup: async () => undefined,
       schedule: async () => undefined,
       abandonOwner: async () => undefined,

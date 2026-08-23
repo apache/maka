@@ -706,7 +706,7 @@ function bridge(options: {
         },
       ],
       readSettledMessages: async () => ({ messages: [], settled: true }),
-      branchFromTurn: async () => SIDE_CHAT_SESSION,
+      branchFromTurn: async () => ({ ok: true, session: SIDE_CHAT_SESSION }),
       cleanupSessionCopy: async () => undefined,
       abandonSessionCopy: async () => undefined,
       send: async () => ({ ok: true }),
@@ -720,6 +720,7 @@ function bridge(options: {
       respondToSandboxBoundary: async () => undefined,
       respondToUserQuestion: async () => undefined,
       subscribeEvents: unsubscribe,
+      subscribeSessionChanges: unsubscribe,
     },
   });
   return (Story) => (

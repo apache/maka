@@ -65,6 +65,7 @@ export interface ConversationTaskLedgerCopyInput {
     readonly sourceRunId: string;
     readonly targetRunId: string;
   }[];
+  readonly linkedChildren?: 'preserve' | 'snapshot';
 }
 
 export interface TaskLedgerAuthorityStore extends TaskLedgerStore {
@@ -174,7 +175,13 @@ class SqliteTaskLedgerStoreImpl implements SqliteTaskLedgerStore {
         throw new Error('Task Ledger events cross the conversation-copy boundary');
       }
       selected.push(
-        rewriteConversationTaskEvent(event, input.sourceSessionId, input.targetSessionId, runIds),
+        rewriteConversationTaskEvent(
+          event,
+          input.sourceSessionId,
+          input.targetSessionId,
+          runIds,
+          input.linkedChildren ?? 'preserve',
+        ),
       );
     }
     if (selected.length === 0) return;
@@ -787,29 +794,37 @@ function rewriteConversationTaskEvent(
   sourceSessionId: string,
   targetSessionId: string,
   runIds: ReadonlyMap<string, string>,
+  linkedChildren: 'preserve' | 'snapshot',
 ): TaskLedgerEvent {
-  const owner = event.task.owner;
+  const { owner, ...task } = event.task;
+  const snapshotChildOwner = linkedChildren === 'snapshot' && owner?.actor === 'child_agent';
+  const snapshotChildRun = linkedChildren === 'snapshot' && event.actor === 'child_agent';
   const rewrittenOwner =
     owner === undefined
       ? undefined
-      : {
-          ...owner,
-          ...(owner.sessionId === sourceSessionId ? { sessionId: targetSessionId } : {}),
-          ...(owner.runId
-            ? {
-                runId: requiredConversationCopyRunId(runIds, owner.runId),
-              }
-            : {}),
-        };
+      : snapshotChildOwner
+        ? undefined
+        : {
+            ...owner,
+            ...(owner.sessionId === sourceSessionId ? { sessionId: targetSessionId } : {}),
+            ...(owner.runId
+              ? {
+                  runId: requiredConversationCopyRunId(runIds, owner.runId),
+                }
+              : {}),
+          };
   const refs =
     event.refs === undefined
       ? undefined
-      : {
-          ...event.refs,
-          ...(event.refs.runId
-            ? { runId: requiredConversationCopyRunId(runIds, event.refs.runId) }
-            : {}),
-        };
+      : (() => {
+          const { runId: sourceRunId, ...preserved } = event.refs;
+          return {
+            ...preserved,
+            ...(sourceRunId && !snapshotChildRun
+              ? { runId: requiredConversationCopyRunId(runIds, sourceRunId) }
+              : {}),
+          };
+        })();
   return {
     ...event,
     eventId: `task-copy-${createHash('sha256')
@@ -817,7 +832,7 @@ function rewriteConversationTaskEvent(
       .digest('hex')}`,
     sessionId: targetSessionId,
     task: {
-      ...event.task,
+      ...task,
       ...(rewrittenOwner ? { owner: rewrittenOwner } : {}),
     },
     ...(refs ? { refs } : {}),

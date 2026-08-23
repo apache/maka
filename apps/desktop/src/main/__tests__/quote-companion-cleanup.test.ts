@@ -38,6 +38,44 @@ afterEach(async () => {
 });
 
 describe('quote companion cleanup authority', () => {
+  it('forgets a known rejected creation without trying to resume or remove it', async () => {
+    const workspaceRoot = await createWorkspace();
+    let resumes = 0;
+    let removals = 0;
+    const authority = createSessionCopyCleanupAuthority({
+      workspaceRoot,
+      resumeSessionCopy: async () => {
+        resumes += 1;
+      },
+      removeSession: async () => {
+        removals += 1;
+      },
+    });
+    const creation = {
+      sessionId: 'fork-rejected',
+      kind: 'branch' as const,
+      sourceSessionId: 'source-session',
+      sourceTurnId: 'source-turn',
+      intent: 'side_conversation' as const,
+      ownerId: 'web-contents:1',
+    };
+
+    await assert.rejects(
+      authority.ownCreation(creation, async () => {
+        throw new Error('session busy');
+      }),
+      /session busy/,
+    );
+    assert.deepEqual(await readPendingIds(workspaceRoot), ['fork-rejected']);
+
+    await authority.rejectCreation('fork-rejected');
+
+    assert.deepEqual(await readPendingIds(workspaceRoot), []);
+    assert.equal(resumes, 0);
+    assert.equal(removals, 0);
+    assert.equal(await authority.ownCreation(creation, async () => 'retried'), 'retried');
+  });
+
   it('releases a rejected creation lease so the same identity can retry', async () => {
     const workspaceRoot = await createWorkspace();
     let removalFails = true;
@@ -124,6 +162,7 @@ describe('quote companion cleanup authority', () => {
           kind: 'branch',
           sourceSessionId: 'source-session',
           sourceTurnId: 'source-turn',
+          intent: 'side_conversation',
           ownerId: 'web-contents:2',
         },
         async () => {
@@ -138,7 +177,7 @@ describe('quote companion cleanup authority', () => {
       workspaceRoot,
       processId: 'process-after-crash',
       resumeSessionCopy: async (creation) => {
-        events.push(`resume:${creation.sessionId}:${creation.sourceTurnId}`);
+        events.push(`resume:${creation.sessionId}:${creation.sourceTurnId}:${creation.intent}`);
       },
       removeSession: async (sessionId) => {
         events.push(`remove:${sessionId}`);
@@ -150,7 +189,7 @@ describe('quote companion cleanup authority', () => {
       failed: [],
     });
     assert.deepEqual(events, [
-      'resume:fork-unknown-create:source-turn',
+      'resume:fork-unknown-create:source-turn:side_conversation',
       'remove:fork-unknown-create',
     ]);
     assert.deepEqual(await readPendingIds(workspaceRoot), []);

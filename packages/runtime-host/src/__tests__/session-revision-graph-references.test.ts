@@ -72,6 +72,76 @@ test('Agent Graph revision references preserve only exact terminal provenance', 
   assert.equal(archived.ok, true);
 });
 
+test('Side Conversation references accept terminal linked children as snapshots', async () => {
+  const accepted = await prepare({ kind: 'side_conversation' });
+  assert.equal(accepted.ok, true);
+  if (!accepted.ok) assert.fail('Expected accepted Side Conversation references');
+  assert.deepEqual([...accepted.references.keys()], [CHILD_SESSION_ID]);
+});
+
+test('Side Conversation references accept terminal non-Graph child Sessions as snapshots', async () => {
+  const accepted = await prepare({
+    kind: 'side_conversation',
+    messages: [linkedSubagentResult('completed')],
+    sessionHeaders: [sessionHeader(ROOT_SESSION_ID), childHeader({ graph: false })],
+  });
+  assert.equal(accepted.ok, true);
+  if (!accepted.ok) assert.fail('Expected accepted linked-child snapshot');
+  assert.deepEqual([...accepted.references.keys()], [CHILD_SESSION_ID]);
+});
+
+test('Side Conversation references wait for live Graph and child state', async () => {
+  for (const input of [
+    { graphState: 'live' as const },
+    { childActive: true },
+    { messages: [linkedSubagentResult('running')] },
+  ]) {
+    const outcome = await prepare({ kind: 'side_conversation', ...input });
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.equal(outcome.code, 'session_busy');
+  }
+});
+
+test('Side Conversation rejects a retained child without a terminal result snapshot', async () => {
+  const outcome = await prepare({
+    kind: 'side_conversation',
+    messages: [],
+    sessionHeaders: [sessionHeader(ROOT_SESSION_ID), childHeader({ graph: false })],
+  });
+  assert.deepEqual(outcome, {
+    ok: false,
+    code: 'operation_unavailable',
+    message: 'Side Conversation requires a terminal result for every retained linked child',
+  });
+});
+
+test('Side Conversation waits for a live retained child before its result is committed', async () => {
+  const outcome = await prepare({
+    kind: 'side_conversation',
+    messages: [],
+    childActive: true,
+    sessionHeaders: [sessionHeader(ROOT_SESSION_ID), childHeader({ graph: false })],
+  });
+  assert.deepEqual(outcome, {
+    ok: false,
+    code: 'session_busy',
+    message: 'A retained linked child is still active',
+  });
+});
+
+test('Side Conversation waits for a live retained Graph before its result is committed', async () => {
+  const outcome = await prepare({
+    kind: 'side_conversation',
+    messages: [],
+    graphState: 'live',
+  });
+  assert.deepEqual(outcome, {
+    ok: false,
+    code: 'session_busy',
+    message: 'A retained Agent Graph is not terminal',
+  });
+});
+
 test('Agent Graph revision references reject incomplete or mismatched provenance', async () => {
   const cases: ReadonlyArray<{
     name: string;
@@ -228,7 +298,7 @@ test('Agent Graph revision admission includes only retained direct and reference
 });
 
 interface PrepareOverrides {
-  readonly kind?: 'branch' | 'revision';
+  readonly kind?: 'branch' | 'revision' | 'side_conversation';
   readonly messages?: readonly StoredMessage[];
   readonly archivedResults?: readonly string[];
   readonly sessionHeaders?: readonly SessionHeader[];

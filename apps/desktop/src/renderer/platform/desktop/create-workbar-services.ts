@@ -132,6 +132,7 @@ export function createDesktopWorkbarServices(
         bridge.sessions.respondToUserQuestion(sessionId, response),
       subscribeEvents: (sessionId, handler) =>
         bridge.sessions.subscribeEvents(sessionId, handler),
+      subscribeSessionChanges: (handler) => bridge.sessions.subscribeChanges(handler),
     },
   };
 }

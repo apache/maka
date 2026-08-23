@@ -158,6 +158,11 @@ export interface ConversationArtifactCopyInput {
   readonly sourceSessionId: string;
   readonly targetSessionId: string;
   readonly turnIds: readonly string[];
+  readonly excludeArtifactIds?: readonly string[];
+  readonly linkedArtifacts?: readonly {
+    readonly sessionId: string;
+    readonly artifactIds: readonly string[];
+  }[];
 }
 
 export interface ConversationArtifactCopyResult {
@@ -383,21 +388,52 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       throw new Error('Artifact conversation copy requires distinct Sessions');
     }
     const turnIds = new Set(input.turnIds);
+    const excludedArtifactIds = new Set(input.excludeArtifactIds ?? []);
     for (const turnId of turnIds) assertArtifactTurnKey(turnId);
+    const linkedArtifacts = input.linkedArtifacts ?? [];
+    const requestedLinkedArtifactIds = new Map<string, Set<string>>();
+    for (const linked of linkedArtifacts) {
+      assertCanonicalArtifactEntityId(linked.sessionId, 'sessionId');
+      if (linked.sessionId === input.targetSessionId) {
+        throw new Error('Linked Artifact copy requires a distinct source Session');
+      }
+      const artifactIds = requestedLinkedArtifactIds.get(linked.sessionId) ?? new Set<string>();
+      for (const artifactId of linked.artifactIds) {
+        assertCanonicalArtifactEntityId(artifactId, 'id');
+        artifactIds.add(artifactId);
+      }
+      requestedLinkedArtifactIds.set(linked.sessionId, artifactIds);
+    }
     const records = await this.enqueue(async () => {
       await this.load();
-      return this.records
+      const selected = this.records
         .filter(
-          (record) => record.sessionId === input.sourceSessionId && turnIds.has(record.turnId),
+          (record) =>
+            record.sessionId === input.sourceSessionId &&
+            turnIds.has(record.turnId) &&
+            !excludedArtifactIds.has(record.id),
         )
         .map((record) => ({ ...record }));
+      for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
+        for (const artifactId of artifactIds) {
+          const record = this.records.find(
+            (candidate) =>
+              candidate.sessionId === sessionId &&
+              candidate.id === artifactId &&
+              candidate.status !== 'deleted',
+          );
+          if (!record) throw new Error(`Linked Artifact ${artifactId} could not be copied`);
+          selected.push({ ...record });
+        }
+      }
+      return selected;
     });
 
     const artifactIds = new Map<string, string>();
     const relativePaths = new Map<string, string>();
     for (const record of records) {
       const targetId = conversationCopyArtifactId(
-        input.sourceSessionId,
+        record.sessionId,
         input.targetSessionId,
         record.id,
       );

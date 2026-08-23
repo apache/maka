@@ -158,6 +158,7 @@ export interface SessionConversationCopy {
   sourceTurnId: string;
   requestFingerprint: `sha256:${string}`;
   state: 'preparing' | 'committed';
+  intent?: 'side_conversation';
 }
 
 export type SubagentSessionRuntimeSummary = Omit<
@@ -452,7 +453,7 @@ const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionS
 );
 const SESSION_CONVERSATION_COPY_SHAPE = defineObjectShape<SessionConversationCopy>()(
   ['kind', 'sourceSessionId', 'sourceTurnId', 'requestFingerprint', 'state'],
-  [],
+  ['intent'],
 );
 const SESSION_LINEAGE_ID_MAX_CHARS = 512;
 const SESSION_LINEAGE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
@@ -551,6 +552,8 @@ export function isSessionConversationCopy(value: unknown): value is SessionConve
     isRecord(value) &&
     hasExactShape(value, SESSION_CONVERSATION_COPY_SHAPE) &&
     (value.kind === 'branch' || value.kind === 'revision') &&
+    (value.intent === undefined ||
+      (value.kind === 'branch' && value.intent === 'side_conversation')) &&
     isSessionLineageId(value.sourceSessionId) &&
     isSessionLineageId(value.sourceTurnId) &&
     typeof value.requestFingerprint === 'string' &&

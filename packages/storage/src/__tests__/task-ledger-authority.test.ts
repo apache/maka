@@ -112,6 +112,98 @@ describe('interactive task ledger authority', () => {
       );
     });
   });
+
+  test('copies child-owned tasks into an ownership-free Side Conversation snapshot', async () => {
+    await withInteractiveOwner(async ({ writer }) => {
+      const sourceSessionId = 'source-session';
+      const targetSessionId = 'side-conversation';
+      const created = await writer.create(sourceSessionId, [{ subject: 'Delegated review' }], {
+        turnId: 'root-turn',
+        source: 'tool',
+        actor: 'main_agent',
+      });
+      const taskId = created.created[0]!.id;
+      await writer.claim(
+        sourceSessionId,
+        taskId,
+        {
+          actor: 'child_agent',
+          sessionId: 'child-session',
+          agentId: 'reviewer',
+          runId: 'child-run',
+          turnId: 'child-turn',
+        },
+        {
+          turnId: 'root-turn',
+          runId: 'child-run',
+          source: 'tool',
+          actor: 'child_agent',
+        },
+      );
+      const legacy = await writer.create(sourceSessionId, [{ subject: 'Legacy child note' }], {
+        turnId: 'root-turn',
+        runId: 'legacy-child-run',
+        source: 'tool',
+        actor: 'child_agent',
+      });
+
+      await writer.copyConversationTaskLedger({
+        sourceSessionId,
+        targetSessionId,
+        turnIds: ['root-turn'],
+        runIdMap: [],
+        linkedChildren: 'snapshot',
+      });
+
+      const copied = await writer.list(targetSessionId);
+      assert.deepEqual(
+        copied.map((task) => ({ id: task.id, subject: task.subject, status: task.status })),
+        [
+          { id: taskId, subject: 'Delegated review', status: 'in_progress' },
+          { id: legacy.created[0]!.id, subject: 'Legacy child note', status: 'pending' },
+        ],
+      );
+      assert.ok(copied.every((task) => task.owner === undefined));
+      assert.equal((await writer.get(sourceSessionId, taskId))?.owner?.sessionId, 'child-session');
+      assert.equal((await writer.get(sourceSessionId, taskId))?.owner?.runId, 'child-run');
+    });
+  });
+
+  test('preserves main-agent ownership on child-authored snapshot events', async () => {
+    await withInteractiveOwner(async ({ writer }) => {
+      const sourceSessionId = 'source-main-owned';
+      const targetSessionId = 'side-main-owned';
+      const created = await writer.create(sourceSessionId, [{ subject: 'Parent-owned work' }], {
+        turnId: 'root-turn',
+        runId: 'root-run',
+        source: 'tool',
+        actor: 'main_agent',
+      });
+      await writer.update(
+        sourceSessionId,
+        created.created[0]!.id,
+        { subject: 'Child reported progress' },
+        {
+          turnId: 'root-turn',
+          runId: 'child-run',
+          source: 'tool',
+          actor: 'child_agent',
+        },
+      );
+
+      await writer.copyConversationTaskLedger({
+        sourceSessionId,
+        targetSessionId,
+        turnIds: ['root-turn'],
+        runIdMap: [{ sourceRunId: 'root-run', targetRunId: 'copied-root-run' }],
+        linkedChildren: 'snapshot',
+      });
+
+      const [copied] = await writer.list(targetSessionId);
+      assert.equal(copied?.owner?.actor, 'main_agent');
+      assert.equal(copied?.owner?.runId, 'copied-root-run');
+    });
+  });
 });
 
 async function withInteractiveOwner(

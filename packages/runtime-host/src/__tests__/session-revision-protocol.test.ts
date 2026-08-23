@@ -28,6 +28,63 @@ import {
 } from '../protocol/index.js';
 
 describe('Session revision protocol', () => {
+  test('accepts only the Side Conversation branch intent', () => {
+    assert.deepEqual(
+      decodeClientFrame({
+        requestId: 'request-side-conversation',
+        operation: 'session.branch.create',
+        input: {
+          sourceSessionId: 'source-session',
+          targetSessionId: 'target-session',
+          sourceTurnId: 'turn-1',
+          expectedSourceRevision: 1,
+          intent: 'side_conversation',
+        },
+      }),
+      {
+        requestId: 'request-side-conversation',
+        operation: 'session.branch.create',
+        input: {
+          sourceSessionId: 'source-session',
+          targetSessionId: 'target-session',
+          sourceTurnId: 'turn-1',
+          expectedSourceRevision: 1,
+          intent: 'side_conversation',
+        },
+      },
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-invalid-purpose',
+          operation: 'session.branch.create',
+          input: {
+            sourceSessionId: 'source-session',
+            targetSessionId: 'target-session',
+            sourceTurnId: 'turn-1',
+            expectedSourceRevision: 1,
+            intent: 'ordinary',
+          },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          requestId: 'request-revision-purpose',
+          operation: 'session.revision.create',
+          input: {
+            sourceSessionId: 'source-session',
+            targetSessionId: 'target-session',
+            sourceTurnId: 'turn-1',
+            expectedSourceRevision: 1,
+            intent: 'side_conversation',
+          },
+        }),
+      isInvalidFrame,
+    );
+  });
+
   test('rejects aliasing, unknown fields, and mismatched response identities', () => {
     assert.throws(
       () =>

@@ -23,6 +23,7 @@ import type { SessionSummary, TurnRecord } from '@maka/core/session';
 import {
   abandonPendingCompanionCopy,
   createFakeWorkbarServices,
+  ensureCompanionFork,
   performCompanionTurn,
   type PerformCompanionTurnDeps,
   type WorkbarServices,
@@ -92,6 +93,26 @@ afterEach(async () => {
 });
 
 describe('quote companion disposal fencing', () => {
+  it('preserves a retryable busy reason from Side Conversation creation', async () => {
+    const defaults = createFakeWorkbarServices();
+    const sideChat = {
+      ...defaults.sideChat,
+      listTurns: async () => [settledTurn('source-turn')],
+      branchFromTurn: async () => ({ ok: false as const, reason: 'session_busy' as const }),
+    };
+
+    assert.deepEqual(
+      await ensureCompanionFork({
+        api: sideChat,
+        sourceSession,
+        panelId,
+        name: 'Side chat',
+        isDisposed: () => false,
+      }),
+      { status: 'error', code: 'fork_source_busy' },
+    );
+  });
+
   it('does not start a send when the panel was disposed after fork setup', async () => {
     let sends = 0;
     let armed = 0;
@@ -152,7 +173,7 @@ describe('quote companion disposal fencing', () => {
     const sideChat = {
       ...defaults.sideChat,
       listTurns: async () => [settledTurn('source-turn')],
-      branchFromTurn: () => pendingFork.promise,
+      branchFromTurn: async () => ({ ok: true as const, session: await pendingFork.promise }),
       cleanupSessionCopy: async (sessionId: string) => {
         cleaned.push(sessionId);
       },

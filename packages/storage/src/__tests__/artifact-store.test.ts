@@ -322,6 +322,63 @@ describe('SQLite Artifact store', () => {
     });
   });
 
+  test('excludes selected Artifacts from a conversation snapshot', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      await store.create({
+        ...artifactInput('retained-artifact', 'retained', 10),
+        turnId: 'turn-retained',
+      });
+      await store.create({
+        ...artifactInput('excluded-archive', 'archived child result', 11),
+        turnId: 'turn-retained',
+        source: 'tool_result_archive',
+      });
+
+      const copied = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-retained'],
+        excludeArtifactIds: ['excluded-archive'],
+      });
+
+      assert.equal(copied.artifactIds.has('excluded-archive'), false);
+      assert.deepEqual(
+        (await store.list('session-copy')).map((record) => record.name),
+        ['retained-artifact.txt'],
+      );
+      assert.equal((await store.get('excluded-archive'))?.sessionId, 'session-1');
+    });
+  });
+
+  test('copies explicit linked child Artifacts into a conversation snapshot', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      await store.create({
+        ...artifactInput('child-artifact', 'child result', 10),
+        sessionId: 'child-session',
+        turnId: 'child-turn',
+      });
+
+      const copied = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-retained'],
+        linkedArtifacts: [{ sessionId: 'child-session', artifactIds: ['child-artifact'] }],
+      });
+
+      const copiedId = copied.artifactIds.get('child-artifact');
+      assert.ok(copiedId);
+      assert.deepEqual(await store.readText(copiedId), { ok: true, text: 'child result' });
+      assert.equal((await store.get(copiedId))?.sessionId, 'session-copy');
+      assert.equal((await store.get('child-artifact'))?.sessionId, 'child-session');
+    });
+  });
+
   test('user delete evaluates current-generation policy before tombstone state', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
