@@ -354,8 +354,11 @@ function reconnectDelayMs(
   unstableMaxMs: number,
 ): number {
   if (attempt <= 0 || minMs === 0) return 0;
-  const ceiling = Math.max(maxMs, unstableMaxMs);
-  const exponential = Math.min(ceiling, minMs * 2 ** Math.min(attempt - 1, 30));
+  const exponential = minMs * 2 ** Math.min(attempt - 1, 30);
+  // maxMs keeps binding until the natural doubling leaves the ceiling band;
+  // only a streak that saturates the regular ladder escalates toward
+  // unstableMaxMs.
+  const ceiling = exponential >= 2 * maxMs ? unstableMaxMs : maxMs;
   const sample = random();
   const bounded = Number.isFinite(sample) ? Math.min(1, Math.max(0, sample)) : 0.5;
   return Math.min(ceiling, Math.max(1, Math.round(exponential * (0.8 + bounded * 0.4))));

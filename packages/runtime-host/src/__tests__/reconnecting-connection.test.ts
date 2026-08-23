@@ -388,8 +388,11 @@ test('a stabilized connection restarts the reconnect delay ladder', async () => 
     await reconnected.promise;
     clock += 60;
     second.disconnect();
-    await waitForCondition(() => delays.length >= 2);
-    assert.deepEqual(delays.slice(0, 2), [3, 6]);
+    await waitForCondition(() => delays.length >= 3);
+    // The regular ladder clamps at maxMs (5) before the never-stabilized
+    // escalation engages on the next doubling.
+    assert.deepEqual(delays.slice(0, 2), [3, 5]);
+    assert.ok(delays[2]! > 5);
   } finally {
     await lifecycle.close();
   }
