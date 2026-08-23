@@ -35,6 +35,8 @@ import {
 } from '@maka/ui';
 import { type ComponentProps, type ReactNode, useState } from 'react';
 import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
+import { ModuleHubHost } from '../src/renderer/features/module-hub/index';
+import { createFakeModuleHubHostModel } from '../src/renderer/features/module-hub/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { McpPage } from '../src/renderer/mcp-page';
 import { withScopedMakaBridge } from './maka-bridge';
@@ -719,6 +721,42 @@ function ScheduledDailyReviewSurface(
   );
 }
 
+function ModuleHubHostSurface(props: {
+  selection:
+    | { section: 'extensions'; module: 'skills' | 'mcp' }
+    | { section: 'automations'; module: 'scheduled-tasks' | 'daily-review' };
+}) {
+  const base = createFakeModuleHubHostModel(props.selection);
+  const model = {
+    ...base,
+    skills: {
+      ...base.skills,
+      skills: INSTALLED_SKILLS,
+      bundledSkillCatalog: BUNDLED_SKILLS,
+    },
+    scheduledTasks: {
+      ...base.scheduledTasks,
+      scheduledTasks: CONFIGURED_TASKS,
+    },
+    dailyReview: {
+      ...base.dailyReview,
+      bridge: {
+        fetchDay: async () => DAILY_REVIEW_SUMMARY,
+      },
+    },
+  };
+  const agentsView = props.selection.section === 'extensions'
+    ? props.selection.module
+    : props.selection.module === 'daily-review'
+      ? 'daily-review'
+      : 'cron';
+  return (
+    <ModuleSurface agentsView={agentsView}>
+      <ModuleHubHost model={model} />
+    </ModuleSurface>
+  );
+}
+
 async function waitForStoryButton(
   canvasElement: HTMLElement,
   predicate: (button: HTMLButtonElement) => boolean,
@@ -754,6 +792,40 @@ async function waitForStoryText(canvasElement: HTMLElement, text: string): Promi
 // Real path: sidebar → 扩展 → 技能, before any Skill or bundled catalog entry exists.
 export const ExtensionsSkillsEmpty: Story = {
   render: () => <ExtensionsSkillsSurface />,
+};
+
+// Feature-slice composition coverage: the production Host, not a direct leaf.
+export const HostExtensionsSkills: Story = {
+  render: () => (
+    <ModuleHubHostSurface
+      selection={{ section: 'extensions', module: 'skills' }}
+    />
+  ),
+};
+
+export const HostExtensionsMcp: Story = {
+  decorators: [withEmptyMcpBridge],
+  render: () => (
+    <ModuleHubHostSurface
+      selection={{ section: 'extensions', module: 'mcp' }}
+    />
+  ),
+};
+
+export const HostAutomationsScheduledTasks: Story = {
+  render: () => (
+    <ModuleHubHostSurface
+      selection={{ section: 'automations', module: 'scheduled-tasks' }}
+    />
+  ),
+};
+
+export const HostAutomationsDailyReview: Story = {
+  render: () => (
+    <ModuleHubHostSurface
+      selection={{ section: 'automations', module: 'daily-review' }}
+    />
+  ),
 };
 
 // Real path: sidebar → 扩展 → 技能, with several installed Skills.
