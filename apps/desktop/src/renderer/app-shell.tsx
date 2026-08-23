@@ -412,7 +412,6 @@ function AppShellContent({
   } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
   // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
-  const [followUpMode, setFollowUpMode] = useState<FollowUpMode>('queue');
   // What a new chat will start with, held the way the Session holds it: a
   // Plan toggle and one orchestration value, not one fused choice.
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
@@ -2010,7 +2009,9 @@ function AppShellContent({
     const followUpAtSubmit = !slashCommand
       ? resolveFollowUpModeAtSubmit({
           requestedMode: metadata?.followUpMode,
-          defaultMode: followUpMode,
+          // Mid-turn the composer only queues; Shift+Enter carries the one-shot
+          // steer as the requested mode.
+          defaultMode: 'queue',
           hasActiveTurn: hasActiveTurnAtSubmit({ liveTurn, runningTurnIds }),
         })
       : undefined;
@@ -2205,17 +2206,11 @@ function AppShellContent({
     return ok;
   }
 
-  async function retractQueuedMessages(): Promise<void> {
+  async function retractQueuedEntry(entryId: string): Promise<void> {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     try {
-      const content = await window.maka.sessions.retractQueue(sessionId);
-      setMessageQueueBySession((current) => {
-        if (!(sessionId in current)) return current;
-        const next = { ...current };
-        delete next[sessionId];
-        return next;
-      });
+      const content = await window.maka.sessions.retractQueueEntry(sessionId, entryId);
       if (activeIdRef.current !== sessionId) return;
       const displayText = content.displayText ?? content.text;
       const before = composerRef.current?.getText() ?? '';
@@ -2232,6 +2227,38 @@ function AppShellContent({
       restoreAttachments(content.attachments ?? []);
       restoreQuotes(content.quotes ?? []);
       window.requestAnimationFrame(() => composerRef.current?.focus());
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return;
+      const copy = getDesktopConversationCopy(uiLocale).actions;
+      showSessionError(
+        sessionId,
+        copy.operationFailedTitle,
+        localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+      );
+    }
+  }
+
+  async function promoteQueuedEntry(entryId: string): Promise<void> {
+    const sessionId = activeIdRef.current;
+    if (!sessionId) return;
+    try {
+      await window.maka.sessions.promoteQueueEntry(sessionId, entryId);
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return;
+      const copy = getDesktopConversationCopy(uiLocale).actions;
+      showSessionError(
+        sessionId,
+        copy.operationFailedTitle,
+        localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+      );
+    }
+  }
+
+  async function reorderQueuedEntries(entryIds: readonly string[]): Promise<void> {
+    const sessionId = activeIdRef.current;
+    if (!sessionId) return;
+    try {
+      await window.maka.sessions.reorderQueueEntries(sessionId, entryIds);
     } catch (error) {
       if (activeIdRef.current !== sessionId) return;
       const copy = getDesktopConversationCopy(uiLocale).actions;
@@ -3009,10 +3036,10 @@ function AppShellContent({
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendOwningItsTarget}
                   onStop={stop}
-                  followUpMode={followUpMode}
                   queuedMessages={activeMessageQueue}
-                  onFollowUpModeChange={setFollowUpMode}
-                  onRetractQueued={activeId ? retractQueuedMessages : undefined}
+                  onPromoteQueuedEntry={activeId ? promoteQueuedEntry : undefined}
+                  onRetractQueuedEntry={activeId ? retractQueuedEntry : undefined}
+                  onReorderQueuedEntries={activeId ? reorderQueuedEntries : undefined}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId
                       ? {

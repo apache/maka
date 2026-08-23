@@ -29,7 +29,13 @@ const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const RECEIPT_SCHEMA_VERSION = 1 as const;
 const RECEIPT_MAX_BYTES = 64 * 1024;
 
-export type MessageReceiptOperation = 'submit' | 'retract' | 'interrupt';
+export type MessageReceiptOperation =
+  | 'submit'
+  | 'retract'
+  | 'retract_entry'
+  | 'promote'
+  | 'reorder'
+  | 'interrupt';
 
 export interface MessageOperationReceipt {
   readonly payload: unknown;
@@ -237,7 +243,14 @@ function validateIdentity(
   operationId: string,
 ): void {
   assertSafeId(hostEpoch, 'Invalid Host Epoch');
-  if (operation !== 'submit' && operation !== 'retract' && operation !== 'interrupt') {
+  if (
+    operation !== 'submit' &&
+    operation !== 'retract' &&
+    operation !== 'retract_entry' &&
+    operation !== 'promote' &&
+    operation !== 'reorder' &&
+    operation !== 'interrupt'
+  ) {
     throw new Error('Invalid message receipt operation');
   }
   assertSafeId(sessionId, 'Invalid Session identity');

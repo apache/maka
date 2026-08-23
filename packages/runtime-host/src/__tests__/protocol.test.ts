@@ -921,6 +921,71 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(decodeClientFrame(submit), submit);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);
+    const entryRetract = {
+      requestId: 'entry-retract-request-1',
+      operation: 'queue.entry.retract' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        retractId: 'retract-2',
+      },
+    };
+    const entryPromote = {
+      requestId: 'entry-promote-request-1',
+      operation: 'queue.entry.promote' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        promoteId: 'promote-1',
+      },
+    };
+    const entriesReorder = {
+      requestId: 'entries-reorder-request-1',
+      operation: 'queue.entries.reorder' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        reorderId: 'reorder-1',
+        entryIds: ['entry-2', 'entry-1'],
+      },
+    };
+    assert.deepEqual(decodeClientFrame(entryRetract), entryRetract);
+    assert.deepEqual(decodeClientFrame(entryPromote), entryPromote);
+    assert.deepEqual(decodeClientFrame(entriesReorder), entriesReorder);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entriesReorder,
+          input: { ...entriesReorder.input, entryIds: ['entry-1', 'entry-1'] },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entriesReorder,
+          input: { ...entriesReorder.input, entryIds: ['not/a/semantic/id'] },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entryRetract,
+          input: { ...entryRetract.input, generation: 1 },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entryPromote,
+          input: { ...entryPromote.input, entryId: 'not/a/semantic/id' },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeClientFrame({ ...submit, input: { ...submit.input, originHostEpoch: undefined } }),
@@ -1231,6 +1296,47 @@ describe('Runtime Host bootstrap protocol', () => {
       isInvalidFrame,
     );
     const retracted = [retractedMessage()];
+    assert.doesNotThrow(() =>
+      decodeHostFrame({
+        requestId: 'entry-retract-response',
+        operation: 'queue.entry.retract',
+        ok: true,
+        result: { queueRevision: 7, retracted: retractedMessage() },
+      }),
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          requestId: 'entry-retract-response',
+          operation: 'queue.entry.retract',
+          ok: true,
+          result: { queueRevision: 7, retracted: { ...retractedMessage(), state: 'queued' } },
+        }),
+      isInvalidFrame,
+    );
+    for (const [operation, requestId] of [
+      ['queue.entry.promote', 'entry-promote-response'],
+      ['queue.entries.reorder', 'entries-reorder-response'],
+    ] as const) {
+      assert.doesNotThrow(() =>
+        decodeHostFrame({
+          requestId,
+          operation,
+          ok: true,
+          result: { queueRevision: 8 },
+        }),
+      );
+      assert.throws(
+        () =>
+          decodeHostFrame({
+            requestId,
+            operation,
+            ok: true,
+            result: { queueRevision: 8, retracted: [] },
+          }),
+        isInvalidFrame,
+      );
+    }
     assert.doesNotThrow(() =>
       decodeHostFrame({
         requestId: 'interrupt-response',

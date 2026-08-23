@@ -74,6 +74,9 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "readExecutionBoundary"
   | "regenerateTurn"
   | "retractQueue"
+  | "retractQueueEntry"
+  | "promoteQueueEntry"
+  | "reorderQueueEntries"
   | "setSessionReadMarker"
   | "startTurn"
   | "startTurnResume"
@@ -446,6 +449,49 @@ export function registerRuntimeHostSessionExecutionIpc(
     });
     return aggregateMessageContents(result.retracted.map((entry) => entry.content));
   });
+  ipcMain.handle(
+    "sessions:retractQueueEntry",
+    async (_event, sessionId: string, entryId: unknown) => {
+      if (typeof entryId !== "string") {
+        throw new TypeError("Invalid queue entry identity");
+      }
+      const result = await deps.client.retractQueueEntry({
+        sessionId,
+        entryId,
+        retractId: newId(),
+      });
+      return result.retracted.content;
+    },
+  );
+  ipcMain.handle(
+    "sessions:promoteQueueEntry",
+    async (_event, sessionId: string, entryId: unknown) => {
+      if (typeof entryId !== "string") {
+        throw new TypeError("Invalid queue entry identity");
+      }
+      await deps.client.promoteQueueEntry({
+        sessionId,
+        entryId,
+        promoteId: newId(),
+      });
+    },
+  );
+  ipcMain.handle(
+    "sessions:reorderQueueEntries",
+    async (_event, sessionId: string, entryIds: unknown) => {
+      if (
+        !Array.isArray(entryIds) ||
+        entryIds.some((entryId) => typeof entryId !== "string")
+      ) {
+        throw new TypeError("Invalid queue entry order");
+      }
+      await deps.client.reorderQueueEntries({
+        sessionId,
+        reorderId: newId(),
+        entryIds,
+      });
+    },
+  );
   ipcMain.handle("sessions:stop", async (_event, sessionId: string) =>
     stopSession(sessionId),
   );

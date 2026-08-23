@@ -17,82 +17,159 @@
  * under the License.
  */
 
-import { memo, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
 import { IconButton } from '@astryxdesign/core';
+import { List, ListItem } from '@astryxdesign/core/List';
 import type { ConversationCopy } from './conversation-copy.js';
-import { CornerDownRight, ListEnd, Undo2 } from './icons.js';
+import { CornerDownRight, GripVertical, ICON_SIZE, Undo2 } from './icons.js';
 import { useMountedRef } from './use-mounted-ref.js';
 
+/**
+ * The pending plate above the composer card: the follow-up queue in send
+ * order (first at the top). Steering entries never appear here — 立即发送 and
+ * Shift+Enter hand a message to the active Turn, and it leaves the plate at
+ * that moment (it surfaces in the transcript when the Turn consumes it).
+ * Every action round-trips through the Runtime Host — the plate mirrors the
+ * authoritative queue projection, never a local copy.
+ */
 export interface ComposerMessageQueueProps {
   queuedMessages: {
     steering: readonly MessageQueueEntryProjection[];
     followup: readonly MessageQueueEntryProjection[];
   };
   copy: ConversationCopy['composer'];
-  onRetractQueued?(): void | Promise<void>;
+  onPromoteEntry?(entryId: string): void | Promise<void>;
+  onRetractEntry?(entryId: string): void | Promise<void>;
+  onReorderEntries?(entryIds: readonly string[]): void | Promise<void>;
 }
+
+/** How long an unconfirmed drag order survives before snapping back to the
+ *  authoritative projection (i.e. the Host rejected the reorder). */
+const PENDING_ORDER_TIMEOUT_MS = 2000;
 
 export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   props: ComposerMessageQueueProps,
 ) {
-  const [retractPending, setRetractPending] = useState(false);
+  const [pendingEntryId, setPendingEntryId] = useState<string | null>(null);
+  const [pendingOrder, setPendingOrder] = useState<readonly string[] | null>(null);
+  const dragEntryId = useRef<string | null>(null);
   const mountedRef = useMountedRef();
-  const entries = [
-    ...props.queuedMessages.steering.map((entry) => ({
-      entry,
-      label: entry.state === 'in_flight'
-        ? props.copy.steerDeliveringLabel
-        : props.copy.steerQueuedLabel,
-    })),
-    ...props.queuedMessages.followup.map((entry) => ({
-      entry,
-      label: props.copy.followUpQueuedLabel,
-    })),
-  ];
-  const hasRetractableEntries = entries.some(({ entry }) => entry.state === 'queued');
+  const copy = props.copy;
 
-  async function retractQueued() {
-    if (!props.onRetractQueued || !hasRetractableEntries || retractPending) return;
-    setRetractPending(true);
+  const followup = props.queuedMessages.followup;
+  const followupIds = followup.map((entry) => entry.entryId).join(' ');
+  // Any projection change settles a pending drag: the accepted order arrives as
+  // the new projection, and any other mutation makes the drag base stale.
+  useEffect(() => {
+    setPendingOrder(null);
+  }, [followupIds]);
+  useEffect(() => {
+    if (!pendingOrder) return undefined;
+    const timer = window.setTimeout(() => setPendingOrder(null), PENDING_ORDER_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [pendingOrder]);
+
+  const orderedFollowup = pendingOrder
+    ? pendingOrder.flatMap((entryId) => followup.filter((entry) => entry.entryId === entryId))
+    : followup;
+
+  async function runEntryAction(
+    entryId: string,
+    action: ((entryId: string) => void | Promise<void>) | undefined,
+  ) {
+    if (!action || pendingEntryId) return;
+    setPendingEntryId(entryId);
     try {
-      await props.onRetractQueued();
+      await action(entryId);
     } finally {
-      if (mountedRef.current) setRetractPending(false);
+      if (mountedRef.current) setPendingEntryId(null);
     }
+  }
+
+  function dropOn(targetEntryId: string) {
+    const fromId = dragEntryId.current;
+    dragEntryId.current = null;
+    if (!fromId || fromId === targetEntryId || !props.onReorderEntries) return;
+    const ids = orderedFollowup.map((entry) => entry.entryId);
+    const from = ids.indexOf(fromId);
+    const to = ids.indexOf(targetEntryId);
+    if (from === -1 || to === -1) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, fromId);
+    setPendingOrder(ids);
+    void props.onReorderEntries(ids);
+  }
+
+  function retractButton(entry: MessageQueueEntryProjection) {
+    return (
+      <IconButton
+        variant="ghost"
+        size="sm"
+        type="button"
+        isDisabled={pendingEntryId !== null}
+        label={copy.retractQueuedEntry}
+        tooltip={copy.retractQueuedEntry}
+        onClick={() => void runEntryAction(entry.entryId, props.onRetractEntry)}
+        icon={<Undo2 size={ICON_SIZE.control} aria-hidden="true" />}
+      />
+    );
   }
 
   return (
     <div
       className="maka-composer-queue"
       role="region"
-      aria-label={props.copy.queuedMessagesAriaLabel(entries.length)}
+      aria-label={copy.queuedMessagesAriaLabel(followup.length)}
     >
-      <div className="maka-composer-queue-list">
-        {entries.map(({ entry, label }) => (
-          <div className="maka-composer-queue-row" key={entry.entryId}>
-            {entry.placement === 'current_turn'
-              ? <CornerDownRight size={14} aria-hidden="true" />
-              : <ListEnd size={14} aria-hidden="true" />}
-            <span className="maka-composer-queue-kind">{label}</span>
-            <span className="maka-composer-queue-text">
-              {entry.content.displayText ?? entry.content.text}
-            </span>
+      <List className="maka-composer-queue-list" density="compact">
+        {orderedFollowup.map((entry) => (
+          <div
+            key={entry.entryId}
+            onDragOver={(event) => {
+              if (dragEntryId.current) event.preventDefault();
+            }}
+            onDrop={() => dropOn(entry.entryId)}
+          >
+            <ListItem
+              label={entry.content.displayText ?? entry.content.text}
+              style={{ minHeight: 28, paddingBlock: 0 }}
+              startContent={(
+                <span
+                  className="maka-composer-queue-grip"
+                  draggable={Boolean(props.onReorderEntries) && pendingEntryId === null}
+                  aria-label={copy.reorderQueuedEntry}
+                  onDragStart={(event) => {
+                    dragEntryId.current = entry.entryId;
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', entry.entryId);
+                  }}
+                  onDragEnd={() => {
+                    dragEntryId.current = null;
+                  }}
+                >
+                  <GripVertical size={ICON_SIZE.control} aria-hidden="true" />
+                </span>
+              )}
+              endContent={(
+                <>
+                  <IconButton
+                    variant="ghost"
+                    size="sm"
+                    type="button"
+                    isDisabled={pendingEntryId !== null}
+                    label={copy.promoteQueuedEntry}
+                    tooltip={copy.promoteQueuedEntry}
+                    onClick={() => void runEntryAction(entry.entryId, props.onPromoteEntry)}
+                    icon={<CornerDownRight size={ICON_SIZE.control} aria-hidden="true" />}
+                  />
+                  {retractButton(entry)}
+                </>
+              )}
+            />
           </div>
         ))}
-      </div>
-      {props.onRetractQueued && hasRetractableEntries ? (
-        <IconButton
-          variant="ghost"
-          size="sm"
-          type="button"
-          isDisabled={retractPending}
-          label={props.copy.retractQueued}
-          tooltip={props.copy.retractQueued}
-          onClick={() => void retractQueued()}
-          icon={<Undo2 size={14} aria-hidden="true" />}
-        />
-      ) : null}
+      </List>
     </div>
   );
 });

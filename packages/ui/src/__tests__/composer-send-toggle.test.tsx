@@ -20,8 +20,10 @@
 /**
  * The composer's send slot holds ONE control (Astryx's send/stop toggle), and
  * mid-turn it reads Stop while the draft is empty. This is the shape the slot
- * drifted out of once already — a Stop button and a Steer button side by side —
- * so the count is asserted, not just the label.
+ * drifted out of more than once — a Stop button and a Steer button side by
+ * side, then a Queue/Steer mode switch beside Send — so the count is asserted,
+ * not just the label. Queue affordances live in the pending plate above the
+ * card, never in the send slot.
  */
 
 import assert from 'node:assert/strict';
@@ -38,47 +40,40 @@ function renderComposer(streaming: boolean): string {
   );
 }
 
-function sendSlotButtons(markup: string): string[] {
-  const slot = markup.split('class="maka-composer-right-controls"').pop() ?? '';
-  return slot.match(/aria-label="[^"]*"/g) ?? [];
+function sendSlotControls(markup: string): string[] {
+  return markup.match(/aria-label="(?:Send|Stop)"/g) ?? [];
 }
 
 test('an idle composer offers Send alone', () => {
-  const buttons = sendSlotButtons(renderComposer(false));
-  assert.deepEqual(buttons, ['aria-label="Send"']);
+  const controls = sendSlotControls(renderComposer(false));
+  assert.deepEqual(controls, ['aria-label="Send"']);
 });
 
 test('a turn in flight turns the same single control into Stop', () => {
-  const buttons = sendSlotButtons(renderComposer(true));
-  assert.deepEqual(buttons, ['aria-label="Stop"']);
+  const controls = sendSlotControls(renderComposer(true));
+  assert.deepEqual(controls, ['aria-label="Stop"']);
 });
 
-test('a running composer exposes Queue and Steer when the host supports follow-ups', () => {
+test('a running composer keeps Send alone — no mode switch in the send slot', () => {
+  const markup = renderComposer(true);
+  assert.deepEqual(sendSlotControls(markup), ['aria-label="Stop"']);
+  assert.doesNotMatch(markup, /Follow-up behavior/);
+  assert.doesNotMatch(markup, /SegmentedControl/);
+});
+
+test('renders the pending plate with per-entry promote, retract, and reorder', () => {
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
       <Composer
         streaming
-        followUpMode="queue"
-        onFollowUpModeChange={() => undefined}
-        onSend={() => undefined}
-        onStop={() => undefined}
-      />
-    </LocaleProvider>,
-  );
-
-  assert.match(markup, /aria-label="Follow-up behavior"/);
-  assert.match(markup, />Queue</);
-  assert.match(markup, />Steer</);
-});
-
-test('renders authoritative queued messages with one retract action', () => {
-  const markup = renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Composer
-        streaming
-        followUpMode="queue"
         queuedMessages={{
-          steering: [],
+          steering: [{
+            entryId: 'entry-steer',
+            messageId: 'message-steer',
+            content: { text: 'adjust this run' },
+            placement: 'current_turn',
+            state: 'queued',
+          }],
           followup: [{
             entryId: 'entry-1',
             messageId: 'message-1',
@@ -87,7 +82,9 @@ test('renders authoritative queued messages with one retract action', () => {
             state: 'queued',
           }],
         }}
-        onRetractQueued={() => undefined}
+        onPromoteQueuedEntry={() => undefined}
+        onRetractQueuedEntry={() => undefined}
+        onReorderQueuedEntries={() => undefined}
         onSend={() => undefined}
         onStop={() => undefined}
       />
@@ -96,15 +93,43 @@ test('renders authoritative queued messages with one retract action', () => {
 
   assert.match(markup, /1 queued message/);
   assert.match(markup, /do this next/);
-  assert.match(markup, /aria-label="Retract all"/);
+  assert.match(markup, /aria-label="Send now"/);
+  assert.match(markup, /aria-label="Restore to draft"/g);
+  assert.match(markup, /aria-label="Drag to reorder"/);
 });
 
-test('does not offer retract when only an in-flight steering message remains', () => {
+test('steering entries already handed to the Turn stay out of the plate', () => {
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
       <Composer
         streaming
-        followUpMode="steer"
+        queuedMessages={{
+          steering: [{
+            entryId: 'entry-1',
+            messageId: 'message-1',
+            content: { text: 'adjust this run' },
+            placement: 'current_turn',
+            state: 'queued',
+          }],
+          followup: [],
+        }}
+        onRetractQueuedEntry={() => undefined}
+        onSend={() => undefined}
+        onStop={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  assert.doesNotMatch(markup, /queued message/);
+  assert.doesNotMatch(markup, /adjust this run/);
+  assert.doesNotMatch(markup, /aria-label="Restore to draft"/);
+});
+
+test('in-flight steering is being delivered and stays out of the plate', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Composer
+        streaming
         queuedMessages={{
           steering: [{
             entryId: 'entry-1',
@@ -115,13 +140,13 @@ test('does not offer retract when only an in-flight steering message remains', (
           }],
           followup: [],
         }}
-        onRetractQueued={() => undefined}
+        onRetractQueuedEntry={() => undefined}
         onSend={() => undefined}
         onStop={() => undefined}
       />
     </LocaleProvider>,
   );
 
-  assert.match(markup, /adjust this run/);
-  assert.doesNotMatch(markup, /aria-label="Retract all"/);
+  assert.doesNotMatch(markup, /queued message/);
+  assert.doesNotMatch(markup, /aria-label="Restore to draft"/);
 });

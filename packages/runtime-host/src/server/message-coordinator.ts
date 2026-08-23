@@ -36,6 +36,7 @@ import {
 import {
   normalizeRootTurnAdmissionPayload,
   type ImmutableSteeringMessageProof,
+  type MessageReceiptOperation,
   type MessageReceiptStore,
   type RootTurnSourceMessage,
   type RootTurnSourceMessageReceipt,
@@ -46,6 +47,12 @@ import {
   MESSAGE_OPERATION_RESULT_MAX_BYTES,
   MESSAGE_OPERATION_SPECS,
   type MessagePlacement,
+  type QueueEntriesReorderInput,
+  type QueueEntriesReorderResult,
+  type QueueEntryPromoteInput,
+  type QueueEntryPromoteResult,
+  type QueueEntryRetractInput,
+  type QueueEntryRetractResult,
   type QueueRetractInput,
   type QueueRetractResult,
   type QueuedMessageSnapshot,
@@ -210,6 +217,27 @@ interface PendingRetract {
   readonly result: Promise<MessageOutcome<QueueRetractResult>>;
 }
 
+type QueuedMutationReceiptKind = 'retract_entry' | 'promote' | 'reorder';
+
+interface PendingQueuedMutation {
+  readonly payload: object;
+  readonly result: Promise<MessageOutcome<unknown>>;
+}
+
+interface QueuedMutationOptions<
+  I extends { readonly originHostEpoch: string; readonly sessionId: string },
+  R,
+> {
+  readonly receiptKind: QueuedMutationReceiptKind;
+  readonly operationId: string;
+  readonly input: I;
+  readonly decodeInput: (value: unknown) => I;
+  readonly decodeOutput: (value: unknown) => R;
+  readonly conflictMessage: string;
+  readonly crossEpochMessage: string;
+  readonly execute: () => Promise<MessageOutcome<R>>;
+}
+
 interface InterruptDeferred {
   readonly promise: Promise<MessageOutcome<TurnInterruptResult>>;
   resolve(result: MessageOutcome<TurnInterruptResult>): void;
@@ -273,6 +301,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly handlers: MessageOperationHandlerMap = {
     'turn.message.submit': (input, context) => this.submit(input, context),
     'queue.retract': (input) => this.retract(input),
+    'queue.entry.retract': (input) => this.retractQueuedEntry(input),
+    'queue.entry.promote': (input) => this.promoteQueuedEntry(input),
+    'queue.entries.reorder': (input) => this.reorderQueuedEntries(input),
     'turn.interrupt': (input) => this.interrupt(input),
   };
 
@@ -289,6 +320,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly #sessions = new Map<string, SessionState>();
   readonly #pendingSubmits = new Map<string, PendingSubmit>();
   readonly #pendingRetracts = new Map<string, PendingRetract>();
+  readonly #pendingQueuedMutations = new Map<string, PendingQueuedMutation>();
   #draining = false;
   #failStopped = false;
 
@@ -814,6 +846,266 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     });
   }
 
+  private retractQueuedEntry(
+    input: QueueEntryRetractInput,
+  ): Promise<MessageOutcome<QueueEntryRetractResult>> {
+    return this.#runQueuedMutation({
+      receiptKind: 'retract_entry',
+      operationId: input.retractId,
+      input,
+      decodeInput: MESSAGE_OPERATION_SPECS['queue.entry.retract'].decodeInput,
+      decodeOutput: MESSAGE_OPERATION_SPECS['queue.entry.retract'].decodeOutput,
+      conflictMessage: 'Retract identity has a different payload',
+      crossEpochMessage: 'Retract outcome is not durable across Host Epochs',
+      execute: () => this.#retractQueuedEntryAdmitted(input),
+    });
+  }
+
+  private promoteQueuedEntry(
+    input: QueueEntryPromoteInput,
+  ): Promise<MessageOutcome<QueueEntryPromoteResult>> {
+    return this.#runQueuedMutation({
+      receiptKind: 'promote',
+      operationId: input.promoteId,
+      input,
+      decodeInput: MESSAGE_OPERATION_SPECS['queue.entry.promote'].decodeInput,
+      decodeOutput: MESSAGE_OPERATION_SPECS['queue.entry.promote'].decodeOutput,
+      conflictMessage: 'Promote identity has a different payload',
+      crossEpochMessage: 'Promote outcome is not durable across Host Epochs',
+      execute: () => this.#promoteQueuedEntryAdmitted(input),
+    });
+  }
+
+  private reorderQueuedEntries(
+    input: QueueEntriesReorderInput,
+  ): Promise<MessageOutcome<QueueEntriesReorderResult>> {
+    return this.#runQueuedMutation({
+      receiptKind: 'reorder',
+      operationId: input.reorderId,
+      input,
+      decodeInput: MESSAGE_OPERATION_SPECS['queue.entries.reorder'].decodeInput,
+      decodeOutput: MESSAGE_OPERATION_SPECS['queue.entries.reorder'].decodeOutput,
+      conflictMessage: 'Reorder identity has a different payload',
+      crossEpochMessage: 'Reorder outcome is not durable across Host Epochs',
+      execute: () => this.#reorderQueuedEntriesAdmitted(input),
+    });
+  }
+
+  #runQueuedMutation<I extends { readonly originHostEpoch: string; readonly sessionId: string }, R>(
+    options: QueuedMutationOptions<I, R>,
+  ): Promise<MessageOutcome<R>> {
+    const { input } = options;
+    const isCurrentEpoch = input.originHostEpoch === this.#hostEpoch;
+    const key = queuedMutationKey(options.receiptKind, input.sessionId, options.operationId);
+    if (isCurrentEpoch) {
+      const pending = this.#pendingQueuedMutations.get(key);
+      if (pending) {
+        return samePayload(pending.payload, input)
+          ? (pending.result as Promise<MessageOutcome<R>>)
+          : Promise.resolve(failure('operation_conflict', options.conflictMessage));
+      }
+    }
+    if (this.#failStopped) {
+      return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
+    }
+    if (!isCurrentEpoch) {
+      return Promise.resolve(failure('outcome_unknown', options.crossEpochMessage));
+    }
+    const result = this.#admitQueuedMutation(options);
+    this.#pendingQueuedMutations.set(key, { payload: input, result });
+    void result.then(
+      () => this.#deletePendingQueuedMutation(key, result),
+      () => this.#deletePendingQueuedMutation(key, result),
+    );
+    return result;
+  }
+
+  #admitQueuedMutation<
+    I extends { readonly originHostEpoch: string; readonly sessionId: string },
+    R,
+  >(options: QueuedMutationOptions<I, R>): Promise<MessageOutcome<R>> {
+    return this.#sessionAdmission.run(options.input.sessionId, async () => {
+      if (this.#failStopped) {
+        return failure('host_draining', 'Runtime Host message authority has failed');
+      }
+      const receipt = await this.#readQueuedMutationReceipt(options);
+      if (this.#failStopped) {
+        return failure('host_draining', 'Runtime Host message authority has failed');
+      }
+      if (receipt) {
+        return samePayload(receipt.payload, options.input)
+          ? success(receipt.result)
+          : failure('operation_conflict', options.conflictMessage);
+      }
+      return options.execute();
+    });
+  }
+
+  async #readQueuedMutationReceipt<
+    I extends { readonly originHostEpoch: string; readonly sessionId: string },
+    R,
+  >(
+    options: QueuedMutationOptions<I, R>,
+  ): Promise<{ readonly payload: I; readonly result: R } | undefined> {
+    const receipt = await this.#receipts.read(
+      this.#hostEpoch,
+      options.receiptKind,
+      options.input.sessionId,
+      options.operationId,
+    );
+    if (!receipt) return undefined;
+    try {
+      return {
+        payload: options.decodeInput(receipt.payload),
+        result: options.decodeOutput(receipt.result),
+      };
+    } catch (error) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        `Invalid durable queued mutation receipt: ${
+          error instanceof Error ? error.message : 'malformed'
+        }`,
+      );
+    }
+  }
+
+  #deletePendingQueuedMutation(key: string, result: Promise<MessageOutcome<unknown>>): void {
+    if (this.#pendingQueuedMutations.get(key)?.result === result) {
+      this.#pendingQueuedMutations.delete(key);
+    }
+  }
+
+  async #retractQueuedEntryAdmitted(
+    input: QueueEntryRetractInput,
+  ): Promise<MessageOutcome<QueueEntryRetractResult>> {
+    const header = await this.#root.readSessionHeader(input.sessionId);
+    if (this.#failStopped) {
+      return failure('host_draining', 'Runtime Host message authority has failed');
+    }
+    if (!header) return failure('not_found', 'Session does not exist');
+    if (header.isArchived) return failure('session_archived', 'Session is archived');
+    const state = this.#state(input.sessionId);
+    if (state.transition) {
+      return failure('operation_conflict', 'Message queue is draining into the next Turn');
+    }
+    const queued = findQueuedEntry(state, input.entryId);
+    if (!queued) {
+      if ([...state.inFlight.values()].some((entry) => entry.entryId === input.entryId)) {
+        return failure('operation_conflict', 'Message entry is already being delivered');
+      }
+      return failure('not_found', 'Message queue entry does not exist');
+    }
+    const result = {
+      queueRevision: state.revision + 1,
+      retracted: retractedSnapshot(queued.entry),
+    };
+    if (!fitsEncodedByteLimit(result, MESSAGE_OPERATION_RESULT_MAX_BYTES)) {
+      return failure('session_busy', 'Retract result exceeds protocol capacity');
+    }
+    queued.remove();
+    this.#releaseEntry(queued.entry);
+    this.#mutated(state);
+    this.#maybeReclaim(input.sessionId, state);
+    try {
+      await this.#commitReceipt('retract_entry', input.sessionId, input.retractId, input, result);
+    } catch (error) {
+      this.#failStop();
+      throw error;
+    }
+    return success(result);
+  }
+
+  async #promoteQueuedEntryAdmitted(
+    input: QueueEntryPromoteInput,
+  ): Promise<MessageOutcome<QueueEntryPromoteResult>> {
+    const header = await this.#root.readSessionHeader(input.sessionId);
+    if (this.#failStopped) {
+      return failure('host_draining', 'Runtime Host message authority has failed');
+    }
+    if (!header) return failure('not_found', 'Session does not exist');
+    if (header.isArchived) return failure('session_archived', 'Session is archived');
+    const rootState = await this.#root.readRootState(input.sessionId);
+    if (this.#failStopped) {
+      return failure('host_draining', 'Runtime Host message authority has failed');
+    }
+    if (rootState.kind !== 'active') {
+      return failure('operation_conflict', 'No active Turn can accept steering');
+    }
+    const state = this.#state(input.sessionId);
+    if (state.phase !== 'open') {
+      return failure('session_busy', 'Message admission is closed for the active generation');
+    }
+    if (state.transition) {
+      return failure('operation_conflict', 'Message queue is draining into the next Turn');
+    }
+    if (!state.reservedRoot || !sameRun(state.reservedRoot, rootState)) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Root state does not match message reservation',
+      );
+    }
+    const index = state.followup.findIndex((entry) => entry.entryId === input.entryId);
+    const entry = index === -1 ? undefined : state.followup[index];
+    if (!entry) {
+      if (state.steering.some((queued) => queued.entryId === input.entryId)) {
+        return failure('operation_conflict', 'Message entry already steers the active Turn');
+      }
+      if ([...state.inFlight.values()].some((queued) => queued.entryId === input.entryId)) {
+        return failure('operation_conflict', 'Message entry is already being delivered');
+      }
+      return failure('not_found', 'Message queue entry does not exist');
+    }
+    state.followup.splice(index, 1);
+    state.steering.push({ ...entry, placement: 'current_turn', disposition: 'steering' });
+    this.#mutated(state);
+    const result = { queueRevision: state.revision };
+    try {
+      await this.#commitReceipt('promote', input.sessionId, input.promoteId, input, result);
+    } catch (error) {
+      this.#failStop();
+      throw error;
+    }
+    return success(result);
+  }
+
+  async #reorderQueuedEntriesAdmitted(
+    input: QueueEntriesReorderInput,
+  ): Promise<MessageOutcome<QueueEntriesReorderResult>> {
+    const header = await this.#root.readSessionHeader(input.sessionId);
+    if (this.#failStopped) {
+      return failure('host_draining', 'Runtime Host message authority has failed');
+    }
+    if (!header) return failure('not_found', 'Session does not exist');
+    if (header.isArchived) return failure('session_archived', 'Session is archived');
+    const state = this.#state(input.sessionId);
+    if (state.transition) {
+      return failure('operation_conflict', 'Message queue is draining into the next Turn');
+    }
+    const current = state.followup;
+    if (input.entryIds.length !== current.length) {
+      return failure('operation_conflict', 'Message queue changed since the reorder was issued');
+    }
+    const byId = new Map(current.map((entry) => [entry.entryId, entry]));
+    const reordered: LiveEntry[] = [];
+    for (const entryId of input.entryIds) {
+      const entry = byId.get(entryId);
+      if (!entry) {
+        return failure('operation_conflict', 'Message queue changed since the reorder was issued');
+      }
+      reordered.push(entry);
+    }
+    if (reordered.some((entry, index) => current[index] !== entry)) {
+      state.followup = reordered;
+      this.#mutated(state);
+    }
+    const result = { queueRevision: state.revision };
+    try {
+      await this.#commitReceipt('reorder', input.sessionId, input.reorderId, input, result);
+    } catch (error) {
+      this.#failStop();
+      throw error;
+    }
+    return success(result);
+  }
+
   private async interrupt(input: TurnInterruptInput): Promise<MessageOutcome<TurnInterruptResult>> {
     if (input.originHostEpoch !== this.#hostEpoch) {
       return failure('outcome_unknown', 'Interrupt outcome is not durable across Host Epochs');
@@ -1085,7 +1377,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   }
 
   async #commitReceipt(
-    operation: 'submit' | 'retract' | 'interrupt',
+    operation: MessageReceiptOperation,
     sessionId: string,
     operationId: string,
     payload: object,
@@ -1375,6 +1667,27 @@ function failure(
 
 function operationKey(sessionId: string, operationId: string): string {
   return `${sessionId}\0${operationId}`;
+}
+
+function queuedMutationKey(
+  kind: QueuedMutationReceiptKind,
+  sessionId: string,
+  operationId: string,
+): string {
+  return `${kind}\0${sessionId}\0${operationId}`;
+}
+
+function findQueuedEntry(
+  state: SessionState,
+  entryId: string,
+): { readonly entry: LiveEntry; remove(): void } | undefined {
+  for (const queue of [state.steering, state.followup]) {
+    const index = queue.findIndex((entry) => entry.entryId === entryId);
+    const entry = index === -1 ? undefined : queue[index];
+    if (!entry) continue;
+    return { entry, remove: () => queue.splice(index, 1) };
+  }
+  return undefined;
 }
 
 function decodeInterruptReceiptOutcome(value: unknown): MessageOutcome<TurnInterruptResult> {

@@ -100,6 +100,40 @@ export interface QueueRetractResult {
   readonly retracted: readonly RetractedMessageSnapshot[];
 }
 
+export interface QueueEntryRetractInput {
+  readonly originHostEpoch: string;
+  readonly sessionId: string;
+  readonly entryId: string;
+  readonly retractId: string;
+}
+
+export interface QueueEntryRetractResult {
+  readonly queueRevision: number;
+  readonly retracted: RetractedMessageSnapshot;
+}
+
+export interface QueueEntryPromoteInput {
+  readonly originHostEpoch: string;
+  readonly sessionId: string;
+  readonly entryId: string;
+  readonly promoteId: string;
+}
+
+export interface QueueEntryPromoteResult {
+  readonly queueRevision: number;
+}
+
+export interface QueueEntriesReorderInput {
+  readonly originHostEpoch: string;
+  readonly sessionId: string;
+  readonly reorderId: string;
+  readonly entryIds: readonly string[];
+}
+
+export interface QueueEntriesReorderResult {
+  readonly queueRevision: number;
+}
+
 export interface TurnInterruptInput {
   readonly originHostEpoch: string;
   readonly sessionId: string;
@@ -140,6 +174,27 @@ export const MESSAGE_OPERATION_SPECS = {
     errors: MESSAGE_OPERATION_ERRORS,
     decodeInput: decodeQueueRetractInput,
     decodeOutput: decodeQueueRetractResult,
+  }),
+  'queue.entry.retract': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeQueueEntryRetractInput,
+    decodeOutput: decodeQueueEntryRetractResult,
+  }),
+  'queue.entry.promote': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeQueueEntryPromoteInput,
+    decodeOutput: decodeQueueEntryPromoteResult,
+  }),
+  'queue.entries.reorder': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeQueueEntriesReorderInput,
+    decodeOutput: decodeQueueEntriesReorderResult,
   }),
   'turn.interrupt': defineOperation({
     mode: 'control',
@@ -231,6 +286,84 @@ function decodeQueueRetractResult(value: unknown): QueueRetractResult {
   };
   requireEncodedByteLimit(result, 'queue.retract result', MESSAGE_OPERATION_RESULT_MAX_BYTES);
   return result;
+}
+
+function decodeQueueEntryRetractInput(value: unknown): QueueEntryRetractInput {
+  const record = requireExactRecord(value, 'queue.entry.retract input', [
+    'originHostEpoch',
+    'sessionId',
+    'entryId',
+    'retractId',
+  ]);
+  return {
+    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    entryId: requireEntityId(record.entryId, 'entryId'),
+    retractId: requireEntityId(record.retractId, 'retractId'),
+  };
+}
+
+function decodeQueueEntryRetractResult(value: unknown): QueueEntryRetractResult {
+  const record = requireExactRecord(value, 'queue.entry.retract result', [
+    'queueRevision',
+    'retracted',
+  ]);
+  const retracted = decodeMessageQueueEntrySnapshot(record.retracted);
+  if (retracted.state !== 'retracted') {
+    throw invalidProtocolFrame('Invalid retracted message state');
+  }
+  const result = {
+    queueRevision: requireCount(record.queueRevision, 'queueRevision'),
+    retracted,
+  };
+  requireEncodedByteLimit(result, 'queue.entry.retract result', MESSAGE_OPERATION_RESULT_MAX_BYTES);
+  return result;
+}
+
+function decodeQueueEntryPromoteInput(value: unknown): QueueEntryPromoteInput {
+  const record = requireExactRecord(value, 'queue.entry.promote input', [
+    'originHostEpoch',
+    'sessionId',
+    'entryId',
+    'promoteId',
+  ]);
+  return {
+    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    entryId: requireEntityId(record.entryId, 'entryId'),
+    promoteId: requireEntityId(record.promoteId, 'promoteId'),
+  };
+}
+
+function decodeQueueEntryPromoteResult(value: unknown): QueueEntryPromoteResult {
+  const record = requireExactRecord(value, 'queue.entry.promote result', ['queueRevision']);
+  return { queueRevision: requireCount(record.queueRevision, 'queueRevision') };
+}
+
+function decodeQueueEntriesReorderInput(value: unknown): QueueEntriesReorderInput {
+  const record = requireExactRecord(value, 'queue.entries.reorder input', [
+    'originHostEpoch',
+    'sessionId',
+    'reorderId',
+    'entryIds',
+  ]);
+  const entryIds = requireBoundedArray(record.entryIds, 'reorder entry identities').map((entryId) =>
+    requireEntityId(entryId, 'entryId'),
+  );
+  if (new Set(entryIds).size !== entryIds.length) {
+    throw invalidProtocolFrame('Invalid reorder entry identities');
+  }
+  return {
+    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    reorderId: requireEntityId(record.reorderId, 'reorderId'),
+    entryIds,
+  };
+}
+
+function decodeQueueEntriesReorderResult(value: unknown): QueueEntriesReorderResult {
+  const record = requireExactRecord(value, 'queue.entries.reorder result', ['queueRevision']);
+  return { queueRevision: requireCount(record.queueRevision, 'queueRevision') };
 }
 
 function decodeTurnInterruptInput(value: unknown): TurnInterruptInput {

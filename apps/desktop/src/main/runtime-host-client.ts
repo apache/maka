@@ -91,6 +91,12 @@ import {
   type ProjectDirectoryRoot,
   type QueueRetractInput,
   type QueueRetractResult,
+  type QueueEntriesReorderInput,
+  type QueueEntriesReorderResult,
+  type QueueEntryPromoteInput,
+  type QueueEntryPromoteResult,
+  type QueueEntryRetractInput,
+  type QueueEntryRetractResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
@@ -1060,6 +1066,33 @@ export class DesktopRuntimeHostClient {
     input: Omit<QueueRetractInput, "originHostEpoch">,
   ): Promise<QueueRetractResult> {
     return this.request("queue.retract", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  retractQueueEntry(
+    input: Omit<QueueEntryRetractInput, "originHostEpoch">,
+  ): Promise<QueueEntryRetractResult> {
+    return this.request("queue.entry.retract", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  promoteQueueEntry(
+    input: Omit<QueueEntryPromoteInput, "originHostEpoch">,
+  ): Promise<QueueEntryPromoteResult> {
+    return this.request("queue.entry.promote", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  reorderQueueEntries(
+    input: Omit<QueueEntriesReorderInput, "originHostEpoch">,
+  ): Promise<QueueEntriesReorderResult> {
+    return this.request("queue.entries.reorder", {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
     });

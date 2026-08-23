@@ -109,16 +109,10 @@ export interface ConversationCopy {
     sending: string;
     importing: string;
     sendLabel: string;
-    steerLabel: string;
-    queueLabel: string;
-    followUpModeLabel: string;
-    queueTooltip: string;
-    steerTooltip: string;
     queuedMessagesAriaLabel(count: number): string;
-    steerQueuedLabel: string;
-    steerDeliveringLabel: string;
-    followUpQueuedLabel: string;
-    retractQueued: string;
+    promoteQueuedEntry: string;
+    retractQueuedEntry: string;
+    reorderQueuedEntry: string;
     stopLabel: string;
     stopping: string;
     streaming: string;
@@ -417,12 +411,9 @@ const CONVERSATION_COPY = {
     },
     composer: {
       placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
-      sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', steerLabel: '插入消息',
-      queueLabel: '排队', followUpModeLabel: '连续消息处理方式',
-      queueTooltip: '当前回复完成后发送', steerTooltip: '尽快插入当前回复',
-      queuedMessagesAriaLabel: (count) => `${count} 条待处理消息`,
-      steerQueuedLabel: '引导', steerDeliveringLabel: '正在引导', followUpQueuedLabel: '排队',
-      retractQueued: '撤回全部',
+      sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
+      queuedMessagesAriaLabel: (count) => `${count} 条待发送消息`,
+      promoteQueuedEntry: '立即发送', retractQueuedEntry: '收回草稿', reorderQueuedEntry: '拖动排序',
       stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
@@ -565,12 +556,9 @@ const CONVERSATION_COPY = {
     },
     composer: {
       placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
-      sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', steerLabel: 'Steer',
-      queueLabel: 'Queue', followUpModeLabel: 'Follow-up behavior',
-      queueTooltip: 'Send after the current response', steerTooltip: 'Guide the current response',
+      sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
       queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
-      steerQueuedLabel: 'Steer', steerDeliveringLabel: 'Steering', followUpQueuedLabel: 'Queued',
-      retractQueued: 'Retract all',
+      promoteQueuedEntry: 'Send now', retractQueuedEntry: 'Restore to draft', reorderQueuedEntry: 'Drag to reorder',
       stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',

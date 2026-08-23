@@ -85,7 +85,12 @@ export type ConnectionEffectOperationKey = Extract<
 >;
 export type MessageOperationKey = Extract<
   OperationKey,
-  'turn.message.submit' | 'queue.retract' | 'turn.interrupt'
+  | 'turn.message.submit'
+  | 'queue.retract'
+  | 'queue.entry.retract'
+  | 'queue.entry.promote'
+  | 'queue.entries.reorder'
+  | 'turn.interrupt'
 >;
 export type InteractionOperationKey = Extract<OperationKey, `interaction.${string}`>;
 export type GoalOperationKey = Extract<OperationKey, `goal.${string}`>;
