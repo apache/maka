@@ -24,6 +24,9 @@ docs/assets/
 apps/desktop/tests/real-window-smoke/
 deepseek.key
 
+# Built only by the dedicated Gitoxide helper lane; normal workspace tests do not use Cargo.
+/native/gitoxide-helper/target/
+
 # Generated Computer Use executor binary; provenance metadata stays tracked.
 apps/desktop/resources/bin/
 # Rebuilt from experiments/windows-sandbox by scripts/package-windows-x64.mjs.
