@@ -671,7 +671,11 @@ function ExtensionsMcpSurface() {
   );
 }
 
-function ScheduledTasksSurface(props: { tasks?: ScheduledTask[] }) {
+function ScheduledTasksSurface(props: {
+  tasks?: ScheduledTask[];
+  keepSystemAwake?: boolean;
+  onKeepSystemAwakeChange?: (next: boolean) => Promise<void>;
+}) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.automations;
   return (
     <ModuleSurface agentsView="cron">
@@ -682,8 +686,10 @@ function ScheduledTasksSurface(props: { tasks?: ScheduledTask[] }) {
           badge: <ModuleHubSelector hub="automations" value="scheduled-tasks" onChange={() => {}} />,
         }}
         tasks={props.tasks ?? []}
-        keepSystemAwake={false}
-        onKeepSystemAwakeChange={async () => {}}
+        keepSystemAwake={props.keepSystemAwake ?? false}
+        onKeepSystemAwakeChange={
+          props.onKeepSystemAwakeChange ?? (async () => {})
+        }
         onRefresh={noop}
         onCreate={noop}
         onUpdate={noop}
@@ -1015,6 +1021,54 @@ export const ScheduledTasks: Story = {
 // lives on the settings menu item rather than this page.
 export const ScheduledTasksConfigured: Story = {
   render: () => <ScheduledTasksSurface tasks={CONFIGURED_TASKS} />,
+};
+
+// A newer external settings read wins over a slow local write in the Module
+// Hub controller. The checkbox must return to the persisted prop when that
+// pending write settles, even when the Boolean prop itself never changed.
+export const ScheduledTasksKeepAwakeExternalWins: Story = {
+  render: () => (
+    <ScheduledTasksSurface
+      keepSystemAwake
+      onKeepSystemAwakeChange={async () => {
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 80));
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const settings = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.getAttribute('aria-label') === '定时任务页面设置',
+    );
+    settings.click();
+    const body = canvasElement.ownerDocument.body;
+    const checkbox = await waitForStorySelector<HTMLElement>(
+      body,
+      '[role="menuitemcheckbox"]',
+    );
+    if (checkbox.getAttribute('aria-checked') !== 'true') {
+      throw new Error('Keep-awake story did not start from persisted true');
+    }
+    checkbox.click();
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const current = body.querySelector<HTMLElement>('[role="menuitemcheckbox"]');
+      if (current?.getAttribute('aria-checked') === 'false') break;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
+      if (attempt === 49) throw new Error('Keep-awake optimistic value did not render');
+    }
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+    let persisted = body.querySelector<HTMLElement>('[role="menuitemcheckbox"]');
+    if (!persisted) {
+      settings.click();
+      persisted = await waitForStorySelector<HTMLElement>(
+        body,
+        '[role="menuitemcheckbox"]',
+      );
+    }
+    if (persisted.getAttribute('aria-checked') !== 'true') {
+      throw new Error('Keep-awake checkbox diverged from the persisted setting');
+    }
+  },
 };
 
 // Real path: sidebar → 定时任务 → 定时任务 → click a task row, which opens the
