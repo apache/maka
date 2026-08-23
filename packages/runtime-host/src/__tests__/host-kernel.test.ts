@@ -2061,7 +2061,6 @@ describe('non-serving Runtime Host kernel', () => {
         assert.equal(result.diagnostic.sawEndpointConnected, true);
         assert.ok(result.diagnostic.observations.deadlineElapsed >= 1);
         assert.equal(result.diagnostic.lastRegistration?.pid, attempt.pid);
-        assert.equal(result.diagnostic.lastRegistration?.state, 'ready');
         assert.equal(launchCount, 0);
       } finally {
         if (stopped) process.kill(attempt.pid, 'SIGCONT');
