@@ -17,14 +17,19 @@
  * under the License.
  */
 
-export type {
-  ModuleHubController,
-  ModuleHubHostModel,
-  UseModuleHubControllerInput,
-} from './controller/use-module-hub-controller.js';
-export { useModuleHubController } from './controller/use-module-hub-controller.js';
-export { ModuleHubServicesProvider } from './services-context.js';
-export type {
-  ModuleHubClipboardService,
-  ModuleHubServices,
-} from './ports.js';
+import type { NavSelection } from '@maka/ui';
+
+export type ModuleHubHostRoute =
+  | 'skills'
+  | 'mcp'
+  | 'scheduled-tasks'
+  | 'daily-review'
+  | null;
+
+export function resolveModuleHubHostRoute(
+  selection: NavSelection,
+): ModuleHubHostRoute {
+  if (selection.section === 'extensions') return selection.module;
+  if (selection.section === 'automations') return selection.module;
+  return null;
+}
