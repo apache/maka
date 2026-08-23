@@ -28,6 +28,7 @@
   height: 100%;
   min-height: 0;
   overflow-y: auto;
+  container: maka-inspector / inline-size;
 }
 
 /* The live region is a wrapper only; its children carry their own spacing. */
@@ -125,7 +126,7 @@
   font: var(--maka-text-label);
   color: var(--destructive-text);
   min-width: 0;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .maka-inspector-turn-meta {
@@ -139,6 +140,37 @@
 
 .maka-inspector-turn-cost {
   color: var(--foreground-secondary);
+}
+
+/* The default 480px workbar does not leave enough room for the timestamp,
+   failure and measurement to remain one useful line in every locale. Reflow
+   from the inspector's own width rather than the window's: the workbar can be
+   resized independently, and the same panel can also live in the bottom
+   placement. The identity gets the first row; status and measurement become
+   a compact comparison row below it. Keeping the failure phrase atomic avoids
+   the character-by-character column that `overflow-wrap: anywhere` produced. */
+@container maka-inspector (max-width: 32rem) {
+  .maka-inspector-turn-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: var(--space-1);
+  }
+
+  .maka-inspector-turn-label {
+    grid-column: 1 / -1;
+    min-width: 0;
+    white-space: normal;
+  }
+
+  .maka-inspector-turn-failure {
+    grid-column: 1;
+  }
+
+  .maka-inspector-turn-meta {
+    grid-column: 2;
+    justify-self: end;
+    margin-left: 0;
+  }
 }
 
 .maka-inspector-steps {
