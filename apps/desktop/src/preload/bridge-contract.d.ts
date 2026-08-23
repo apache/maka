@@ -483,8 +483,6 @@ export interface DesktopAppInfo {
   readonly workspacePath: string;
   /** The OS home directory, for collapsing displayed paths to `~`. */
   readonly homePath: string;
-  /** Exact operational-state database path resolved by main. */
-  readonly operationalStateDatabasePath: string;
   readonly projectId?: string | null;
   readonly projectPath: string;
   readonly projectGit: { readonly isGitRepo: boolean; readonly branch?: string };
