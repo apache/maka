@@ -132,7 +132,6 @@ import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from './memory-extraction-session-lane.js';
-import { createManagedWorkspaceInspectionTool } from './managed-workspace-inspection-tool.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
 import { HostNetworkProxyCoordinator } from './network-proxy-coordinator.js';
 import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
@@ -362,9 +361,6 @@ export async function createExecutionRuntimeHostComposition(
     const hostTools = [
       createHostWebSearchToolFromService(webSearchService),
       createHostWebFetchToolFromService(webFetchService),
-      ...(managedWorkspaceOwner && options.managedWorkspaceDependencyProducer
-        ? [createManagedWorkspaceInspectionTool(requireWorkspaceExecution(workspaceExecution))]
-        : []),
       ...runtimePolicy.modelTools,
     ];
     const childAgentTools = createHostChildAgentToolComposition({
