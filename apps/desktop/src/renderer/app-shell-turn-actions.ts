@@ -58,7 +58,6 @@ export function createAppShellTurnActions(deps: {
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   setMessages: MessageListUpdater;
   toastApi: ToastApi;
-  upsertSessionSummary: (session: DesktopSessionSummary) => void;
 }): AppShellTurnActions {
   const {
     uiLocale,
@@ -71,7 +70,6 @@ export function createAppShellTurnActions(deps: {
     refreshSessions,
     setMessages,
     toastApi,
-    upsertSessionSummary,
   } = deps;
   const copy = getDesktopConversationCopy(uiLocale).actions;
 
@@ -106,7 +104,6 @@ export function createAppShellTurnActions(deps: {
           copyId: copyAttempt.copyId,
         });
         copyAttempt.complete();
-        upsertSessionSummary(newSession);
         if (activeIdRef.current === sessionId) {
           openSessionInChat(newSession.id);
           setMessages([]);

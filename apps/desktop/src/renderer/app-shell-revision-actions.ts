@@ -99,7 +99,6 @@ export function createAppShellRevisionActions(deps: {
   commitRevisionDraft: (draft: TurnRevisionDraft | null) => void;
   revisionDraftRef: RefBox<TurnRevisionDraft | null>;
   toastApi: ToastApi;
-  upsertSessionSummary: (session: DesktopSessionSummary) => void;
 }): AppShellRevisionActions {
   const {
     uiLocale,
@@ -114,7 +113,6 @@ export function createAppShellRevisionActions(deps: {
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
-    upsertSessionSummary,
   } = deps;
   const copy = getDesktopConversationCopy(uiLocale).actions;
   let revisionPreparationAbort: AbortController | undefined;
@@ -338,7 +336,6 @@ export function createAppShellRevisionActions(deps: {
       const prepared = { ...startedDraft, draftSessionId: newSession.id };
       composerRef.current?.setDraft(newSession.id, text);
       commitRevisionDraft(prepared);
-      upsertSessionSummary(newSession);
       openSessionInChat(newSession.id);
       setMessages([]);
       const { messages: preparedMessages, settled } = await readSettledMessages(newSession.id, {

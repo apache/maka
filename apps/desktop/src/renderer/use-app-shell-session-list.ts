@@ -111,12 +111,7 @@ export function useAppShellSessionList(
     return next;
   }
 
-  function upsertSessionSummary(session: DesktopSessionSummary): void {
-    setSessions((current) => [
-      normalizeSessionSummaryForDisplay(session),
-      ...current.filter((entry) => entry.id !== session.id),
-    ]);
-  }
+
 
   return {
     sessions,
@@ -125,6 +120,5 @@ export function useAppShellSessionList(
     setSessions,
     refreshSessions,
     seedSessions,
-    upsertSessionSummary,
   };
 }

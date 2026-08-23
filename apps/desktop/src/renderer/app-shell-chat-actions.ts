@@ -159,7 +159,6 @@ export function createAppShellChatActions(deps: {
     diagnosticTarget?: { sessionId: string } | { profileId: string },
   ) => void;
   toastApi: ToastApi;
-  upsertSessionSummary: (session: DesktopSessionSummary) => void;
   newChatModel: PendingNewChatModel;
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   /**
@@ -201,7 +200,6 @@ export function createAppShellChatActions(deps: {
     onExecutionBoundaryChanged,
     showModelSetupToast,
     toastApi,
-    upsertSessionSummary,
     newChatModel,
     pendingNewChatThinkingLevel,
     newChatPermissionChoice,
@@ -400,7 +398,6 @@ export function createAppShellChatActions(deps: {
         // Consumed: the choice is now the created Session's, not the next
         // draft's. A failed create leaves it in place so a retry keeps it.
         if (newChatPermissionChoice) clearNewChatPermissionChoice();
-        upsertSessionSummary(session);
         optimisticSessionId = session.id;
         optimisticTurnId = turnId;
         armTurnActive(session.id, turnId);

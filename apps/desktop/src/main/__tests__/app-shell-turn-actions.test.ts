@@ -54,7 +54,6 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
     refreshSessions: async () => [],
     setMessages: () => undefined,
     toastApi: { info() {}, success() {}, error() {} },
-    upsertSessionSummary: () => undefined,
   });
 
   try {

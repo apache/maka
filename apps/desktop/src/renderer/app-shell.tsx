@@ -358,7 +358,6 @@ function AppShellContent({
     setSessions,
     refreshSessions,
     seedSessions,
-    upsertSessionSummary,
     activeId,
     activeIdRef,
     bootstrapSelectionLease,
@@ -1446,8 +1445,7 @@ function AppShellContent({
     }
     if (!snapshot) return;
     // Seed sessions. Display normalization MUST run here too — this is
-    // a third renderer state entry alongside commitSessions /
-    // upsertSessionSummary (#452): without it, legacy blocked/unknown
+    // Display normalization prevents legacy blocked/unknown
     // sessions flash an 已阻塞 group on first paint until the first
     // refreshSessions() overwrites the seed.
     const next = seedSessions(snapshot.sessions);
@@ -1899,7 +1897,6 @@ function AppShellContent({
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
     toastApi,
-    upsertSessionSummary,
     newChatModel: newChatModel ?? null,
     pendingNewChatThinkingLevel: newChatThinkingLevel ?? null,
     newChatPermissionChoice: newTaskPermissionChoice,
@@ -1920,7 +1917,6 @@ function AppShellContent({
     refreshSessions,
     setMessages,
     toastApi,
-    upsertSessionSummary,
   });
   const handleSwitchToBypassAndRetry = useCallback(
     async (turnId: string) => {
@@ -1950,7 +1946,6 @@ function AppShellContent({
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
-    upsertSessionSummary,
   });
 
   async function taskSubmissionReadyAtSend(): Promise<boolean> {
@@ -3475,13 +3470,7 @@ function AppShellContent({
         paletteOpen={paletteOpen}
         closePalette={closePalette}
         commandOptions={commandOptions}
-        /* Seeding is for the navigation, not for correctness: the import IPC
-           already emits `sessions:changed`, so the task reaches the rail on its
-           own even if the user closes Settings mid-import. Seeding it here just
-           means `openSessionInChat` has something to open without waiting for
-           the refresh to land. */
         onExternalSessionImported={(session) => {
-          upsertSessionSummary(session);
           closeSettings();
           openSessionInChat(session.id);
         }}
