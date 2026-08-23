@@ -21,6 +21,8 @@
 
 ## Unreleased
 
+## 0.2.0 - Unreleased
+
 ### Added
 
 - Added `/transcript` to browse long TUI sessions without depending on terminal
