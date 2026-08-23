@@ -95,6 +95,8 @@ v1 的 `supportedObjectFormats` 固定为 `["sha1"]`。未来支持必须显式�
 
 ## 7. 下一切片
 
-下一 PR 只建立一个 owner 边界：由 Host/Storage 验证 helper artifact identity，并将一次
-repository observation 转换成 T1 前可消费的 opaque admission capability。source import、fresh
-projection 与 candidate ref CAS 继续分别验证，不能在 admission PR 中顺手恢复旧 Git CLI adapter。
+后续 stacked Draft 先建立 helper artifact claim → opaque invocation capability 的内部边界，并明确
+正式 packaged-release trust root 尚未接入；详见
+`gitoxide-helper-artifact-authority-v1.zh-CN.md`。再后续才把一次 repository observation 转换成
+T1 前可消费的 opaque admission capability。source import、fresh projection 与 candidate ref CAS
+继续分别验证，不能在 admission PR 中顺手恢复旧 Git CLI adapter。
