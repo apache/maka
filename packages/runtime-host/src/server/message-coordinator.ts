@@ -49,11 +49,9 @@ import {
   MESSAGE_OPERATION_SPECS,
   type MessagePlacement,
   type QueueEntriesReorderInput,
-  type QueueEntriesReorderResult,
   type QueueEntryPromoteInput,
-  type QueueEntryPromoteResult,
   type QueueEntryRetractInput,
-  type QueueEntryRetractResult,
+  type QueueMutationResult,
   type QueueRetractInput,
   type QueueRetractResult,
   type QueuedMessageSnapshot,
@@ -808,7 +806,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   private retractQueuedEntry(
     input: QueueEntryRetractInput,
-  ): Promise<MessageOutcome<QueueEntryRetractResult>> {
+  ): Promise<MessageOutcome<QueueMutationResult>> {
     return this.#runQueuedMutation({
       spec: MESSAGE_OPERATION_SPECS['queue.entry.retract'],
       receiptKind: 'retract_entry',
@@ -821,7 +819,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   private promoteQueuedEntry(
     input: QueueEntryPromoteInput,
-  ): Promise<MessageOutcome<QueueEntryPromoteResult>> {
+  ): Promise<MessageOutcome<QueueMutationResult>> {
     return this.#runQueuedMutation({
       spec: MESSAGE_OPERATION_SPECS['queue.entry.promote'],
       receiptKind: 'promote',
@@ -834,7 +832,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   private reorderQueuedEntries(
     input: QueueEntriesReorderInput,
-  ): Promise<MessageOutcome<QueueEntriesReorderResult>> {
+  ): Promise<MessageOutcome<QueueMutationResult>> {
     return this.#runQueuedMutation({
       spec: MESSAGE_OPERATION_SPECS['queue.entries.reorder'],
       receiptKind: 'reorder',
@@ -934,7 +932,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   async #retractQueuedEntryAdmitted(
     input: QueueEntryRetractInput,
-  ): Promise<MessageOutcome<QueueEntryRetractResult>> {
+  ): Promise<MessageOutcome<QueueMutationResult>> {
     const header = await this.#root.readSessionHeader(input.sessionId);
     if (this.#failStopped) {
       return failure('host_draining', 'Runtime Host message authority has failed');
@@ -968,7 +966,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   async #promoteQueuedEntryAdmitted(
     input: QueueEntryPromoteInput,
-  ): Promise<MessageOutcome<QueueEntryPromoteResult>> {
+  ): Promise<MessageOutcome<QueueMutationResult>> {
     const header = await this.#root.readSessionHeader(input.sessionId);
     if (this.#failStopped) {
       return failure('host_draining', 'Runtime Host message authority has failed');
@@ -1020,7 +1018,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   async #reorderQueuedEntriesAdmitted(
     input: QueueEntriesReorderInput,
-  ): Promise<MessageOutcome<QueueEntriesReorderResult>> {
+  ): Promise<MessageOutcome<QueueMutationResult>> {
     const header = await this.#root.readSessionHeader(input.sessionId);
     if (this.#failStopped) {
       return failure('host_draining', 'Runtime Host message authority has failed');

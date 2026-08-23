@@ -107,7 +107,7 @@ export interface QueueEntryRetractInput {
   readonly retractId: string;
 }
 
-export interface QueueEntryRetractResult {
+export interface QueueMutationResult {
   readonly queueRevision: number;
 }
 
@@ -118,19 +118,11 @@ export interface QueueEntryPromoteInput {
   readonly promoteId: string;
 }
 
-export interface QueueEntryPromoteResult {
-  readonly queueRevision: number;
-}
-
 export interface QueueEntriesReorderInput {
   readonly originHostEpoch: string;
   readonly sessionId: string;
   readonly reorderId: string;
   readonly entryIds: readonly string[];
-}
-
-export interface QueueEntriesReorderResult {
-  readonly queueRevision: number;
 }
 
 export interface TurnInterruptInput {
@@ -179,21 +171,21 @@ export const MESSAGE_OPERATION_SPECS = {
     availability: 'ready',
     errors: MESSAGE_OPERATION_ERRORS,
     decodeInput: decodeQueueEntryRetractInput,
-    decodeOutput: decodeQueueEntryRetractResult,
+    decodeOutput: decodeQueueMutationResult,
   }),
   'queue.entry.promote': defineOperation({
     mode: 'command',
     availability: 'ready',
     errors: MESSAGE_OPERATION_ERRORS,
     decodeInput: decodeQueueEntryPromoteInput,
-    decodeOutput: decodeQueueEntryPromoteResult,
+    decodeOutput: decodeQueueMutationResult,
   }),
   'queue.entries.reorder': defineOperation({
     mode: 'command',
     availability: 'ready',
     errors: MESSAGE_OPERATION_ERRORS,
     decodeInput: decodeQueueEntriesReorderInput,
-    decodeOutput: decodeQueueEntriesReorderResult,
+    decodeOutput: decodeQueueMutationResult,
   }),
   'turn.interrupt': defineOperation({
     mode: 'control',
@@ -302,8 +294,8 @@ function decodeQueueEntryRetractInput(value: unknown): QueueEntryRetractInput {
   };
 }
 
-function decodeQueueEntryRetractResult(value: unknown): QueueEntryRetractResult {
-  const record = requireExactRecord(value, 'queue.entry.retract result', ['queueRevision']);
+function decodeQueueMutationResult(value: unknown): QueueMutationResult {
+  const record = requireExactRecord(value, 'queue mutation result', ['queueRevision']);
   return { queueRevision: requireCount(record.queueRevision, 'queueRevision') };
 }
 
@@ -320,11 +312,6 @@ function decodeQueueEntryPromoteInput(value: unknown): QueueEntryPromoteInput {
     entryId: requireEntityId(record.entryId, 'entryId'),
     promoteId: requireEntityId(record.promoteId, 'promoteId'),
   };
-}
-
-function decodeQueueEntryPromoteResult(value: unknown): QueueEntryPromoteResult {
-  const record = requireExactRecord(value, 'queue.entry.promote result', ['queueRevision']);
-  return { queueRevision: requireCount(record.queueRevision, 'queueRevision') };
 }
 
 function decodeQueueEntriesReorderInput(value: unknown): QueueEntriesReorderInput {
@@ -346,11 +333,6 @@ function decodeQueueEntriesReorderInput(value: unknown): QueueEntriesReorderInpu
     reorderId: requireEntityId(record.reorderId, 'reorderId'),
     entryIds,
   };
-}
-
-function decodeQueueEntriesReorderResult(value: unknown): QueueEntriesReorderResult {
-  const record = requireExactRecord(value, 'queue.entries.reorder result', ['queueRevision']);
-  return { queueRevision: requireCount(record.queueRevision, 'queueRevision') };
 }
 
 function decodeTurnInterruptInput(value: unknown): TurnInterruptInput {

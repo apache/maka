@@ -1295,25 +1295,8 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
-    assert.doesNotThrow(() =>
-      decodeHostFrame({
-        requestId: 'entry-retract-response',
-        operation: 'queue.entry.retract',
-        ok: true,
-        result: { queueRevision: 7 },
-      }),
-    );
-    assert.throws(
-      () =>
-        decodeHostFrame({
-          requestId: 'entry-retract-response',
-          operation: 'queue.entry.retract',
-          ok: true,
-          result: { queueRevision: 7, retracted: retractedMessage() },
-        }),
-      isInvalidFrame,
-    );
     for (const [operation, requestId] of [
+      ['queue.entry.retract', 'entry-retract-response'],
       ['queue.entry.promote', 'entry-promote-response'],
       ['queue.entries.reorder', 'entries-reorder-response'],
     ] as const) {
