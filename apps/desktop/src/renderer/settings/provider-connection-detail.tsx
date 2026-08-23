@@ -943,6 +943,17 @@ function GitHubCopilotReloginNotice(props: {
   hasSecret: CredentialPresenceStatus;
   onRelogin(): Promise<void>;
 }) {
+  return (
+    <RuntimeHostSettingsGenerationBoundary>
+      <GitHubCopilotReloginNoticeForCurrentGeneration {...props} />
+    </RuntimeHostSettingsGenerationBoundary>
+  );
+}
+
+function GitHubCopilotReloginNoticeForCurrentGeneration(props: {
+  hasSecret: CredentialPresenceStatus;
+  onRelogin(): Promise<void>;
+}) {
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
@@ -960,6 +971,10 @@ function GitHubCopilotReloginNotice(props: {
     if (!connectGuard.begin('connect')) return;
     try {
       const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
+      // A same-key Runtime Host replacement remounts this controller through
+      // the generation boundary above. The old import cannot report into, or
+      // refresh, the connection detail now owned by the replacement Host.
+      if (!mountedRef.current) return;
       if (!result.ok) {
         reportHostError(copy.copilotImportFailed, result.message);
         return;

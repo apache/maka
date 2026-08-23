@@ -121,6 +121,16 @@ const connections: LlmConnection[] = [
   makeConnection({ slug: 'ollama-local', name: 'Ollama Local', providerType: 'ollama' }),
 ];
 
+const generationStoryCopilotConnection = makeConnection({
+  slug: 'github-copilot-generation',
+  name: 'GitHub Copilot',
+  providerType: 'github-copilot',
+});
+const generationStoryConnections = [
+  ...connections,
+  generationStoryCopilotConnection,
+];
+
 const connectionsBridge: ConnectionsBridge = {
   async getSnapshot() {
     return {
@@ -671,6 +681,14 @@ function seedGeneralSnapshotCache(cache: SettingsSnapshotCache): void {
   });
 }
 
+function seedCopilotGenerationSnapshotCache(cache: SettingsSnapshotCache): void {
+  seedGeneralSnapshotCache(cache);
+  cache.commitRuntimeHostConnectionsRead(STORY_RUNTIME_HOST_KEY, {
+    connections: generationStoryConnections,
+    defaultSlug: 'zai-live',
+  });
+}
+
 function seedGeneralTwoHostSnapshotCache(cache: SettingsSnapshotCache): void {
   seedGeneralSnapshotCache(cache);
   cache.commitRuntimeHostCatalogRead(runtimeHostProfilesWithRemote);
@@ -688,6 +706,30 @@ const makaBridge = {
     setEnabled: async () => runtimeHostProfiles,
     setDefault: async () => runtimeHostProfiles,
     subscribeChanges: () => () => undefined,
+  },
+  // Projects always mounts the Runtime Host management dialog shell, even
+  // before a remote profile is selected. Keep the shared Settings fixture in
+  // sync with the full preload surface so mount-time subscriptions stay real.
+  runtimeHostManagement: {
+    run: async (
+      _profileId: string,
+      action: Parameters<typeof window.maka.runtimeHostManagement.run>[1],
+    ) => ({
+      schemaVersion: 1 as const,
+      kind: 'error' as const,
+      action,
+      error: { code: 'storybook_unavailable', message: 'Not configured in this story.' },
+    }),
+    update: async () => ({
+      schemaVersion: 1 as const,
+      kind: 'error' as const,
+      action: 'update' as const,
+      error: { code: 'storybook_unavailable', message: 'Not configured in this story.' },
+    }),
+    subscribeProgress: () => () => undefined,
+    listCredentials: async () => ({ canRotate: false, credentials: [] }),
+    rotateCredential: async () => ({ canRotate: false, credentials: [] }),
+    revokeCredential: async () => ({ canRotate: false, credentials: [] }),
   },
   settings: {
     getClient: async () => storyClientSettings,
@@ -895,6 +937,11 @@ let generationStoryCodexEmail = 'old-generation@example.com';
 let generationStoryCodexAccountReads = 0;
 let generationStoryOpenedAuthIds: string[] = [];
 let generationStoryCancelledAuthIds: string[] = [];
+let generationStoryCopilotImportAttempts = 0;
+let generationStoryCopilotSecretReads = 0;
+let generationStoryCopilotImportResolve:
+  | ((result: { ok: true }) => void)
+  | undefined;
 let generationStoryProfileListener:
   | ((event: DesktopRuntimeHostProfileChangedEvent) => void)
   | undefined;
@@ -908,6 +955,9 @@ function resetGenerationStoryBridge(
   generationStoryCodexAccountReads = 0;
   generationStoryOpenedAuthIds = [];
   generationStoryCancelledAuthIds = [];
+  generationStoryCopilotImportAttempts = 0;
+  generationStoryCopilotSecretReads = 0;
+  generationStoryCopilotImportResolve = undefined;
   generationStoryProfileListener = undefined;
 }
 
@@ -975,6 +1025,35 @@ const withModelsOAuthAuthorizationGenerationBridge = withScopedMakaBridge({
       return { ok: true as const };
     },
     logout: async () => ({ ok: true as const }),
+  },
+} satisfies Record<string, unknown>);
+
+const withModelsCopilotReimportGenerationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
+  connections: {
+    ...connectionsBridge,
+    getSnapshot: async () => ({
+      connections: generationStoryConnections,
+      defaultConnection: 'zai-live',
+      chatModelChoices: buildChatModelChoices(generationStoryConnections),
+    }),
+    hasSecret: async () => {
+      generationStoryCopilotSecretReads += 1;
+      return true;
+    },
+  },
+  githubCopilotSubscription: {
+    ...makaBridge.githubCopilotSubscription,
+    connectExistingLogin: () => {
+      generationStoryCopilotImportAttempts += 1;
+      if (generationStoryCopilotImportAttempts > 1) {
+        return Promise.resolve({ ok: true as const });
+      }
+      return new Promise<{ ok: true }>((resolve) => {
+        generationStoryCopilotImportResolve = resolve;
+      });
+    },
   },
 } satisfies Record<string, unknown>);
 
@@ -1430,6 +1509,7 @@ type SettingsStoryProps = {
   connections?: LlmConnection[];
   defaultSlug?: string | null;
   openProviderCatalog?: boolean;
+  initialConnectionSlug?: string;
   /** Seeds 已归档任务. Empty for every story that is not about that page. */
   archivedTaskSessions?: readonly SessionSummary[];
   seedSnapshotCache?(cache: SettingsSnapshotCache): void;
@@ -1491,6 +1571,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           onDefaultPermissionModeChange={noop}
           requestedSection={props.section}
           openProviderCatalog={props.openProviderCatalog}
+          initialConnectionSlug={props.initialConnectionSlug}
           initialFocusRef={initialFocusRef}
           onOpenDailyReview={noop}
           onOpenSession={noop}
@@ -2125,6 +2206,67 @@ export const ModelsOAuthAuthorizationHostGenerationRevalidation: Story = {
     await expect(generationStoryCancelledAuthIds).toEqual([
       'authorization-from-generation-1',
     ]);
+  },
+};
+
+// The connection-detail Copilot import owns an action guard and a late
+// success callback independently of the catalog login panel. A same-key Host
+// replacement retires that controller without throwing away the detail route
+// or its surrounding Settings state.
+export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
+  decorators: [withModelsCopilotReimportGenerationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return (
+      <SettingsStory
+        section="models"
+        initialConnectionSlug="github-copilot-generation"
+        seedSnapshotCache={seedCopilotGenerationSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const firstImport = await canvas.findByRole('button', { name: '重新导入' });
+    await userEvent.click(firstImport);
+    await waitForStoryCondition(
+      () => generationStoryCopilotImportAttempts === 1,
+      'GitHub Copilot reimport did not start',
+    );
+
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+    listener({
+      epoch: 'storybook-generation-2',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+      readiness: 'ready',
+      hostId: 'storybook-local-host',
+      isDefault: true,
+    });
+
+    await waitForStoryCondition(
+      () => canvas.queryByRole('button', { name: '重新导入' })?.hasAttribute('disabled') === false,
+      'Replacement Host kept the previous generation import guard',
+    );
+    const readsAfterReplacement = generationStoryCopilotSecretReads;
+    generationStoryCopilotImportResolve?.({ ok: true });
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+    await expect(generationStoryCopilotSecretReads).toBe(readsAfterReplacement);
+
+    await userEvent.click(canvas.getByRole('button', { name: '重新导入' }));
+    await waitForStoryCondition(
+      () => generationStoryCopilotImportAttempts === 2,
+      'Replacement Host could not start a fresh GitHub Copilot reimport',
+    );
+    await waitForStoryCondition(
+      () => generationStoryCopilotSecretReads > readsAfterReplacement,
+      'Replacement Host reimport did not refresh the current credential state',
+    );
+    await expect(
+      canvasElement.querySelector('[data-maka-contract="connection-detail"]'),
+    ).toBeInTheDocument();
   },
 };
 
