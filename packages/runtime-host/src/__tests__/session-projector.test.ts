@@ -510,6 +510,13 @@ function deltaFrame(
   };
 }
 
+function queue(
+  queueRevision: number,
+  steering: readonly SteeringMessageSnapshot[],
+): SessionContinuitySnapshot['queue'] {
+  return { hostEpoch: 'host-1', queueRevision, steering, followup: [] };
+}
+
 function snapshot(overrides: Partial<SessionContinuitySnapshot> = {}): SessionContinuitySnapshot {
   return {
     schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
