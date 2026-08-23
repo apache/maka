@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { PermissionMode } from '@maka/core/permission';
 import { CHAT_DEFAULT_PERMISSION_MODES } from '@maka/core/settings';
@@ -31,10 +50,10 @@ export interface PermissionModeMeta {
 }
 
 /**
- * Sessions may run under a read-only (`explore`) boundary and legacy records
- * may contain `execute`, so metadata remains complete for the persisted
- * PermissionMode union. User-facing pickers offer only Auto (`ask`) and full
- * access (`bypass`), but any mode can be the state being displayed.
+ * Sessions may run under a read-only (`explore`) boundary, so metadata stays
+ * complete for the whole PermissionMode union. User-facing pickers offer only
+ * Auto (`ask`) and full access (`bypass`), but any mode can be the state being
+ * displayed.
  *
  * This module is the one home for the mode table and shared picker: both the
  * composer and Settings render from it so labels, hints, and markup cannot
@@ -77,11 +96,9 @@ export function PermissionModeSelect(props: {
   const locale = useUiLocale();
   const permissionCopy = getConversationCopy(locale).permissions;
   const modeMeta = getPermissionModeMeta(locale);
-  // #1611: only legacy `execute` collapses to Auto. `explore` is a real
-  // read-only boundary the user is running under, so it shows its own label
-  // and hint instead of borrowing Auto's.
-  const displayMode: PermissionMode =
-    props.activeMode === 'execute' ? 'ask' : props.activeMode;
+  // #1611: `explore` is a real read-only boundary the user is running under,
+  // so it shows its own label and hint instead of borrowing Auto's.
+  const displayMode: PermissionMode = props.activeMode;
   const meta = modeMeta[displayMode];
   const selectedValue: ChatDefaultPermissionMode | undefined = PERMISSION_MODE_ORDER.includes(
     displayMode as ChatDefaultPermissionMode,

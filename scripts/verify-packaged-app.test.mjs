@@ -1,10 +1,83 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, test } from 'node:test';
 import { createPackage } from '@electron/asar';
-import { asarLookupPath, assertPackagedDependencyClosure } from './verify-packaged-app.mjs';
+import {
+  asarLookupPath,
+  assertPackagedDependencyClosure,
+  assertPackagedResources,
+} from './verify-packaged-app.mjs';
+
+test('packaged resources forbid the retired bundled Git distribution', async () => {
+  const required = [];
+  const forbidden = [];
+  await assertPackagedResources('resources', {
+    requirePath: async (path) => required.push(path),
+    forbidPath: async (path) => forbidden.push(path),
+    requireWindowsSandbox: false,
+  });
+
+  for (const path of [
+    join('resources', 'git'),
+    join('resources', 'bundled-git.json'),
+    join('resources', 'licenses', 'dugite'),
+    join('resources', 'licenses', 'git'),
+  ]) {
+    assert.equal(required.includes(path), false);
+    assert.equal(forbidden.includes(path), true);
+  }
+});
+
+test('legacy packaged resources require the historical bundled Git contract', async () => {
+  const required = [];
+  const forbidden = [];
+  await assertPackagedResources('resources', {
+    requirePath: async (path) => required.push(path),
+    forbidPath: async (path) => forbidden.push(path),
+    requireWindowsSandbox: false,
+    bundledGitContract: 'legacy-required',
+    requireCanonicalIcon: false,
+  });
+
+  for (const path of [
+    join('resources', 'bundled-git.json'),
+    join('resources', 'licenses', 'dugite', 'LICENSE'),
+    join('resources', 'licenses', 'git', 'LICENSE.txt'),
+    join('resources', 'licenses', 'git', 'NOTICE.txt'),
+    join('resources', 'licenses', 'git', 'SOURCE_OFFER.txt'),
+  ]) {
+    assert.equal(required.includes(path), true);
+  }
+  for (const path of [
+    join('resources', 'git'),
+    join('resources', 'bundled-git.json'),
+    join('resources', 'licenses', 'dugite'),
+    join('resources', 'licenses', 'git'),
+  ]) {
+    assert.equal(forbidden.includes(path), false);
+  }
+});
 
 describe('asarLookupPath', () => {
   // The archive stores `/`-joined paths, but `@electron/asar` resolves a lookup
@@ -249,5 +322,40 @@ describe('assertPackagedDependencyClosure', () => {
         assertPackagedDependencyClosure(withoutLicense, { ...options, collectClosure: closure }),
       /shipped license file for @fontsource-variable\/geist is missing/,
     );
+  });
+});
+
+// The resource list is contract, not implementation: the permission overlay
+// reads `assets/icon.png` at runtime, so a current build that drops it ships
+// a regression the app cannot report. The check is driven through the
+// injectable `requirePath`, so it needs no packaging and no platform.
+describe('assertPackagedResources', () => {
+  const resources = join('fake', 'resources');
+  const iconPath = join(resources, 'assets', 'icon.png');
+  const requirePathMissing = (absent) => async (path) => {
+    if (path === absent) throw new Error(`MISSING ${path}`);
+  };
+  const forbidPath = async () => {};
+
+  test('a current build must carry the canonical icon', async () => {
+    await assert.rejects(
+      () =>
+        assertPackagedResources(resources, {
+          requirePath: requirePathMissing(iconPath),
+          forbidPath,
+          requireWindowsSandbox: false,
+        }),
+      /MISSING .*icon\.png/,
+    );
+  });
+
+  test('a legacy baseline predating the packaged icon is not required to carry it', async () => {
+    await assertPackagedResources(resources, {
+      requirePath: requirePathMissing(iconPath),
+      forbidPath,
+      requireWindowsSandbox: false,
+      requireDisclaimer: false,
+      requireCanonicalIcon: false,
+    });
   });
 });

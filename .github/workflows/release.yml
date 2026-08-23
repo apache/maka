@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 name: Release
 
 on:
@@ -28,7 +45,6 @@ jobs:
       dmg: ${{ steps.identity.outputs.dmg }}
       exe: ${{ steps.identity.outputs.exe }}
       cli_archive: ${{ steps.identity.outputs.cli_archive }}
-      source_archive: ${{ steps.identity.outputs.source_archive }}
       node_version: ${{ steps.identity.outputs.node_version }}
       npm_version: ${{ steps.identity.outputs.npm_version }}
       node_archive: ${{ steps.identity.outputs.node_archive }}
@@ -321,66 +337,10 @@ jobs:
         if: always()
         run: rm -f "${{ runner.temp }}/AuthKey_Maka.p8"
 
-  source:
-    needs: release-identity
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - name: Check out the dispatched commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.release-identity.outputs.source_commit }}
-          persist-credentials: false
-
-      - name: Set up the pinned release Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ needs.release-identity.outputs.node_version }}
-          cache: npm
-
-      - name: Select and verify the pinned npm release toolchain
-        run: |
-          npm install --global --no-audit --no-fund "npm@${{ needs.release-identity.outputs.npm_version }}"
-          test "$(npm --version)" = "${{ needs.release-identity.outputs.npm_version }}"
-
-      - name: Install pinned dependency metadata
-        run: npm ci --ignore-scripts
-
-      - name: Materialize bundled Git source materials
-        run: npm run prepare:bundled-git-source
-
-      - name: Archive and hash source materials
-        env:
-          SOURCE_ARCHIVE: ${{ needs.release-identity.outputs.source_archive }}
-        run: |
-          archive_dir="apps/desktop/release-sources"
-          archive="${archive_dir}/${SOURCE_ARCHIVE}"
-          tar -C apps/desktop/release-sources/bundled-git -czf "$archive" .
-          (cd "$archive_dir" && sha256sum "$SOURCE_ARCHIVE" > "${SOURCE_ARCHIVE}.sha256")
-
-      - name: Stage the exact product artifact group
-        run: >-
-          node scripts/product-release-artifacts.mjs stage
-          "source"
-          apps/desktop/release-sources
-          "${{ runner.temp }}/release-assets"
-
-      - name: Upload verified source assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-source
-          path: ${{ runner.temp }}/release-assets
-          if-no-files-found: error
-          retention-days: 7
-
   publish:
     # One draft release carries both platforms, so it is created once, after
     # every platform has been packaged and verified.
-    needs: [release-identity, desktop, cli-macos-arm64, source]
+    needs: [release-identity, desktop, cli-macos-arm64]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -447,9 +407,7 @@ jobs:
 
           The Windows build is unsigned: SmartScreen warns on first launch, and the download has to be checked against its .sha256 file.
 
-          Bundled Git source materials and their checksum are attached to this draft. The packaged applications also carry the GPLv2 license and written source offer.
-
-          Known limitation: Computer Use is not included in this release."
+          Known limitations: Computer Use and managed-workspace execution are not included in this release. The ASF Desktop artifacts do not distribute a Git runtime."
 
           classification=(--prerelease=false --latest=false)
           if [[ "$IS_PRERELEASE" == "true" ]]; then

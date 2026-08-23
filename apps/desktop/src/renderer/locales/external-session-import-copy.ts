@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 /**
@@ -14,6 +33,10 @@ type ExternalSessionImportCopy = {
    *  itself, which is legible enough to ship and obvious enough to fix. */
   sourceNames: Readonly<Record<string, string>>;
   includeArchived: string;
+  searchLabel: string;
+  searchHelp: string;
+  searchPlaceholder: string;
+  searchEmpty: (term: string) => string;
   loading: string;
   listAria: string;
   emptyTitle: string;
@@ -63,6 +86,10 @@ const COPY = {
     sourceLabel: '来源',
     sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code' },
     includeArchived: '包含已归档的对话',
+    searchLabel: '搜索',
+    searchHelp: '匹配对话标题与项目路径。留空显示全部。',
+    searchPlaceholder: '标题或路径的一部分',
+    searchEmpty: (term) => `没有标题或路径包含「${term}」的对话。`,
     loading: '正在读取外部对话…',
     listAria: '可导入的对话',
     emptyTitle: '没有可导入的对话',
@@ -106,6 +133,10 @@ const COPY = {
     sourceLabel: 'Source',
     sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code' },
     includeArchived: 'Include archived conversations',
+    searchLabel: 'Search',
+    searchHelp: 'Matches the conversation title and the project path. Empty shows everything.',
+    searchPlaceholder: 'Part of a title or path',
+    searchEmpty: (term) => `No conversation has "${term}" in its title or path.`,
     loading: 'Reading external conversations…',
     listAria: 'Conversations available to import',
     emptyTitle: 'No conversations to import',

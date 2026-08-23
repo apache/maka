@@ -7,10 +7,28 @@ counterpart: ./runtime-core-architecture-draft.zh-CN.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-07-12
+last_verified: 2026-08-23
 owners:
   - maka-backend
 ---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
 
 # Chapter 1: Log Is the Runtime—Replaying an Agent's State Space
 
@@ -18,7 +36,7 @@ owners:
 
 This chapter is for engineers entering the Maka Runtime for the first time and maintainers changing its main execution path. The first half should give you a working map of the runtime boundaries. By the end, you should be able to locate the main implementation and understand the invariants that changes to termination, tools, or persistence must preserve.
 
-The chapter describes the implementation on the production path as verified on 2026-07-12. Phase plans in historical design documents are not treated as current behavior.
+The chapter describes the implementation on the production path as verified on 2026-08-23. Phase plans in historical design documents are not treated as current behavior.
 
 ## Start with a deceptively simple request
 
@@ -97,7 +115,7 @@ This preserves the original semantics of model interaction rather than a UI-form
 - thinking may carry a provider-required signature;
 - tool calls and results are paired by stable IDs;
 - a tool call can point to its assistant step;
-- permission requests and decisions are actions, not text pretending to be chat;
+- sandbox boundary requests and decisions are actions, not text pretending to be chat;
 - a terminal event closes an Invocation explicitly instead of relying on whether the last message looks like an answer.
 
 Model history therefore does not need to reverse-engineer the UI transcript. It can select non-partial, model-visible RuntimeEvents, preserve their order, and materialize text-only or provider-native messages according to provider capabilities. The UI is likewise a projection rather than the source of truth.
@@ -252,7 +270,7 @@ For the default `AiSdkBackend`, the core loop remains inside `send()`. It:
 7. returns the tool result to the next model step;
 8. repeats until the model finishes, reaches a limit, errors, or is aborted.
 
-The default step limit is 50. If the model still requests tools at the cap, the Runtime retains the completed tool results and, when no closing text exists, adds a deterministic notice that tells the user how to continue in a new Turn. The UI is not left with an unexplained final tool row.
+The step limit is optional: when `maxSteps` is `undefined` the loop is unbounded and the model decides when to stop. When a limit is set and the model still requests tools at the cap, the Runtime retains the completed tool results and, when no closing text exists, adds a deterministic notice that tells the user how to continue in a new Turn. The UI is not left with an unexplained final tool row.
 
 `ModelAdapter` isolates provider and AI SDK differences: model construction, stream startup, chunk normalization, usage normalization, and error classification. `ToolRuntime` isolates the high-risk side of execution: tool-availability enforcement, permissions, timeout and abort propagation, repeated-failure gating, output, telemetry, and artifact recording.
 
@@ -294,15 +312,13 @@ The provider is silent while a tool runs. `ToolRuntime` pauses the model stream'
 
 ## Permission is runtime control flow, not a dialog box
 
-When the model requests a tool that may cause side effects, `ToolRuntime` asks `PermissionEngine` to evaluate the call. The result is one of three kinds:
+When a tool call would cross the current sandbox boundary, the tool does not fail silently and the UI does not suspend execution on its own. The tool returns a failure carrying `sandbox_boundary_required` and a concrete `expansion`; the model then calls `request_sandbox_boundary` to raise a **boundary expansion request**, and execution stops at a position that has an identity while it waits for an answer.
 
-- **allow**: execute the tool immediately;
-- **block**: record the denial and a synthetic tool error without running the implementation;
-- **prompt**: emit a permission request, pause the watchdog, and wait for the user.
+While waiting, the Session projects `waiting_for_user`, but the Invocation retains its execution identity — it has not ended, it is parked. The decision is routed through `RuntimeKernel.respondToSandboxBoundary()` to the active Backend; the same path carries `respondToUserQuestion()` for the case where the model asks the user a question. While unanswered, `RuntimeKernel` registers both kinds as an active interaction, so a client that missed the live event can re-fetch what is pending instead of leaving the run stranded.
 
-While waiting, the Session projects `waiting_for_user`, but the Invocation retains its execution identity. The decision is routed through `RuntimeKernel.respondToPermission()` to the active Backend. `ToolRuntime` records the permission decision and either continues execution or returns a denied tool result.
+The important point is that permission is not a UI-only pause. Requests and decisions enter the runtime fact model as typed facts — they carry no `content`, only `actions.stateDelta`. Replay, diagnostics, and recovery can therefore explain why execution stopped and how control returned. On the decision fact, `role` is `system` while `author` is `user`: it belongs to the system lane in model history, but a human produced it, and these two orthogonal fields say so without disguising a user decision as a chat message.
 
-The important point is that permission is not a UI-only pause. Requests and decisions enter the runtime fact model, so replay, diagnostics, and recovery can explain why execution stopped and how control returned.
+`AiSdkFlow` rejects the legacy `permission_request` / `permission_answer_ack` / `permission_closure_ack` / `permission_decision_ack` events at the mapping boundary and throws: they belong to a vocabulary that sandbox boundaries replaced, and they can no longer become live runtime facts.
 
 ## One semantic truth, two supporting forms of state
 
@@ -311,22 +327,12 @@ Maka currently maintains three forms of durable data. They are not three equal s
 | Store | Main contents | Question it answers best |
 |---|---|---|
 | `SessionStore` | `StoredMessage`s for users, assistants, tools, and Turn state | What should the UI and compatibility APIs display? What is the current in-flight projection? |
-| `AgentRunStore` | `run.json` and operational `events.jsonl` | When did this Run start, what is its state, and at which model or tool stage did it fail? |
-| `RuntimeEventStore` | canonical `runtime-events.jsonl` plus bounded partial snapshots | Which semantic facts occurred, and how should other state be rebuilt from them? |
+| `AgentRunStore` | Run header and operational Run events | When did this Run start, what is its state, and at which model or tool stage did it fail? |
+| `RuntimeEventStore` | canonical RuntimeEvents plus bounded partial snapshots | Which semantic facts occurred, and how should other state be rebuilt from them? |
 
-The file-backed implementation organizes these around this layout:
+The current implementation is backed by SQLite rather than a directory per Run: `AgentRunStore` and `RuntimeEventStore` both sit on the same operational state database, and RuntimeEvents land in the `runtime_events` table. Order is carried by that table's `event_seq` under a `(invocation_id, event_seq)` uniqueness constraint, so sequence numbers never repeat within one Invocation — that constraint is what "ordered log" means at the storage layer. Each of the four identities occupies its own column, so "what happened in this Turn of this Run of this Session" is an indexed lookup.
 
-```text
-sessions/<sessionId>/
-  ... session projection ...
-  runs/<runId>/
-    run.json
-    events.jsonl
-    runtime-events.jsonl
-    runtime-partials/
-```
-
-`AgentRunStore` events act more like an operational index: model stream started, tool started, permission requested, usage recorded. They help diagnose and manage a Run but do not replace the model-interaction log. `RuntimeEventStore` contains the reconstructable semantic facts: user content, model content, function calls and responses, permission actions, and the terminal fact.
+`AgentRunStore` events act more like an operational index: model stream started, tool started, boundary requested, usage recorded. They help diagnose and manage a Run but do not replace the model-interaction log. `RuntimeEventStore` contains the reconstructable semantic facts: user content, model content, function calls and responses, boundary and question actions, and the terminal fact.
 
 For completed Runs with a healthy ledger, reads and the next model replay prefer RuntimeEvents. `SessionStore` remains necessary for compatibility and in-flight projection, but it is no longer the only authority for completed runtime semantics.
 
@@ -336,7 +342,7 @@ Streaming text and thinking deltas are not appended forever to immutable JSONL. 
 
 One of the hardest runtime failure classes is disagreement about whether an execution ended. For example:
 
-- `run.json` says completed, but the RuntimeEvent ledger has no terminal event;
+- The Run header says completed, but the RuntimeEvent ledger has no terminal event;
 - the user stopped the Run, but a late complete event rewrites the Session to active;
 - the Backend stream exhausts without saying whether it succeeded or failed;
 - the terminal event is durable, but the process crashes before updating the Run header.
@@ -355,7 +361,7 @@ This invariant means recovery does not need to guess what the model intended to 
 
 ### User stop
 
-`RuntimeKernel.stopSession()` first marks active `AgentRun`s as stopped, then calls Backend `stop()`. `AiSdkBackend` aborts the provider stream, ends permission waits, and emits abort/complete events. Even if a provider later produces a complete or error event, `AiSdkFlow` and `AgentRun` do not allow it to overwrite the established aborted semantics. The stop source, such as the renderer stop button, is retained in the terminal fact and Run header for diagnostics.
+`RuntimeKernel.stopSession()` first marks active `AgentRun`s as stopped, then calls Backend `stop()`. `AiSdkBackend` aborts the provider stream, ends any pending sandbox boundary or user question, and emits abort/complete events. Even if a provider later produces a complete or error event, `AiSdkFlow` and `AgentRun` do not allow it to overwrite the established aborted semantics. The stop source, such as the renderer stop button, is retained in the terminal fact and Run header for diagnostics.
 
 ### Provider or runtime error
 
@@ -363,9 +369,11 @@ An error is first normalized as non-terminal error content, followed by a failed
 
 ### Process crash and startup recovery
 
-Startup recovery does not re-execute model requests or tool side effects. It scans non-terminal Runs and RuntimeEvent ledgers, identifies stale model streams, tool tails, permission waits, and corrupt operational events, then conservatively commits failure or cancellation and repairs Session and Turn projections.
+Startup recovery does not re-execute model requests or tool side effects. It scans non-terminal Runs and RuntimeEvent ledgers, identifies stale model streams, tool tails, unanswered interactions, and corrupt operational events, then conservatively commits failure or cancellation and repairs Session and Turn projections.
 
-This is state repair, not checkpoint resume. The current Runtime can retain partial output, recover a consistent terminal state, and provide the facts needed for future mid-run recovery. It does not automatically continue from the line after an interrupted tool call when the process restarts.
+This is state repair, not checkpoint resume: it retains the partial output already produced and converges state to one explainable terminal outcome, but it does not automatically continue from the line after an interrupted tool call when the process restarts.
+
+Continuing execution is a separate path. `safe_boundary_continuation` resumes from a verified safe boundary — facts before the boundary are trusted, facts after it are not. It likewise does not start from the interrupted line; the difference is that it has a verifiable starting point, whereas crash convergence only reaches a verdict for one execution.
 
 ## What this design buys—and what it costs
 
@@ -384,8 +392,8 @@ This is state repair, not checkpoint resume. The current Runtime can retain part
 - `AiSdkBackend` remains large and coordinates history, context budgets, tool availability, the step loop, usage, and telemetry.
 - `AiSdkFlow` is still a legacy-to-canonical adapter rather than consuming native RuntimeEvents from the Backend.
 - `SessionStore` and RuntimeEvent projection must cooperate for active and in-flight reads.
-- Startup recovery currently performs deterministic termination and repair, not arbitrary warm resume.
-- The Runner's preflight seam exists, but the production Kernel does not yet connect a dedicated Runtime gate.
+- Startup recovery performs deterministic termination and repair, not arbitrary warm resume. Continuation is a separate path: `safe_boundary_continuation` resumes from a verified safe boundary, is marked by `continuationSource` on the Run header, and enters through `RuntimeRunner.runAdmittedRuntimeContinuation`; see [Chapter 8](./runtime-resume-architecture.md) for the difference.
+- The Runner's preflight seam exists, but the production Kernel does not pass a gate when it assembles `RuntimeRunner`, so there is still no dedicated Runtime admission stage.
 
 These are real architecture boundaries, not details to hide. Future Backend decomposition or checkpoint work must preserve request shape, tool visibility, event order, and the terminal invariant before optimizing for smaller files.
 
@@ -400,9 +408,9 @@ Read the current implementation in this order:
 5. `packages/runtime/src/ai-sdk-flow.ts`: `SessionEvent → RuntimeEvent` mapping and the single-terminal guarantee.
 6. `packages/runtime/src/ai-sdk-backend.ts`: the AI SDK model/tool step loop.
 7. `packages/runtime/src/model-adapter.ts`: provider stream adaptation.
-8. `packages/runtime/src/tool-runtime.ts`: permissions, tool execution, and side-effect boundaries.
+8. `packages/runtime/src/tool-runtime.ts`: sandbox boundaries, tool execution, and side-effect boundaries.
 9. `packages/core/src/runtime-event.ts`: the canonical RuntimeEvent contract.
-10. `packages/core/src/agent-run.ts` and `packages/storage/src/agent-run-store.ts`: file-backed Run and RuntimeEvent ledgers.
+10. `packages/core/src/agent-run.ts` and `packages/storage/src/agent-run-store.ts`: the Run and RuntimeEvent ledger contracts and their SQLite implementation.
 
 The most relevant tests are:
 
@@ -410,7 +418,7 @@ The most relevant tests are:
 - `packages/runtime/src/__tests__/ai-sdk-flow.test.ts`
 - `packages/runtime/src/__tests__/session-manager.test.ts`
 - `packages/runtime/src/__tests__/session-manager-terminal-ledger.test.ts`
-- `packages/storage/src/__tests__/agent-run-store.test.ts`
+- `packages/runtime/src/__tests__/runtime-ledger-repair.test.ts`
 
 ## Summary
 
@@ -425,7 +433,7 @@ model/tool stepping engine
 
 `SessionManager` stabilizes the entry point. `RuntimeKernel` controls active execution. `AgentRun` commits durable facts. `RuntimeRunner` defines Invocation semantics. `AiSdkFlow` translates Backend events into canonical facts. `AiSdkBackend`, `ModelAdapter`, and `ToolRuntime` advance the model/tool loop itself. They cooperate around the Runtime Event Log instead of each retaining a private local truth.
 
-Together, these boundaries protect a simple promise: regardless of how many model steps, tool side effects, permission waits, and failures an agent task encounters, Maka first records what actually happened. As long as that ordered fact history remains, the system can reconstruct the interaction state, materialize new views, and let the next turn continue from trustworthy history.
+Together, these boundaries protect a simple promise: regardless of how many model steps, tool side effects, waits for a user answer, and failures an agent task encounters, Maka first records what actually happened. As long as that ordered fact history remains, the system can reconstruct the interaction state, materialize new views, and let the next turn continue from trustworthy history.
 
 ## Further reading
 

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -76,7 +95,7 @@ test('one root version defines every product artifact from one source commit', (
   assert.equal(identity.dmg, 'Maka-1.2.3-mac-arm64.dmg');
   assert.equal(identity.exe, 'Maka-1.2.3-win-x64.exe');
   assert.equal(identity.cliArchive, 'Maka-1.2.3-cli-mac-arm64.zip');
-  assert.equal(identity.sourceArchive, 'Maka-1.2.3-bundled-git-source.tar.gz');
+  assert.equal(Object.hasOwn(identity, 'sourceArchive'), false);
   assert.deepEqual(identity.artifacts, {
     'desktop-macos': [
       'Maka-1.2.3-mac-arm64.dmg',
@@ -94,7 +113,6 @@ test('one root version defines every product artifact from one source commit', (
       'latest.yml',
     ],
     'cli-macos-arm64': ['Maka-1.2.3-cli-mac-arm64.zip', 'Maka-1.2.3-cli-mac-arm64.zip.sha256'],
-    source: ['Maka-1.2.3-bundled-git-source.tar.gz', 'Maka-1.2.3-bundled-git-source.tar.gz.sha256'],
   });
 });
 
@@ -154,6 +172,44 @@ test('Desktop packaging derives the Runtime Host setup package from product mani
   assert.deepEqual(desktopBuilderConfig.publish, [
     { provider: 'github', owner: 'apache', repo: 'maka' },
   ]);
+});
+
+test('Desktop packaging does not distribute the retired bundled Git runtime', () => {
+  const resources = desktopBuilderConfig.extraResources.map(({ from, to }) => ({ from, to }));
+  assert.equal(
+    resources.some(({ from }) => from.includes('dugite')),
+    false,
+  );
+  assert.equal(
+    resources.some(({ to }) => to === 'git' || to.startsWith('licenses/git')),
+    false,
+  );
+  assert.equal(
+    resources.some(({ to }) => to === 'bundled-git.json'),
+    false,
+  );
+  assert.equal(
+    resources.some(({ to }) => to.startsWith('licenses/dugite')),
+    false,
+  );
+});
+
+test('platform package verifiers keep Git checks out of current artifacts', async () => {
+  const windowsSource = await readFile(join(repoRoot, 'scripts', 'verify-windows-x64.mjs'), 'utf8');
+  assert.match(
+    windowsSource,
+    /bundledGitContract: requiresCurrentContract \? ['"]forbidden['"] : ['"]legacy-required['"]/u,
+  );
+  assert.match(
+    windowsSource,
+    /if \(requiresCurrentContract\) await assertPackagedDependencyClosure\(resources\);\s*else await requirePath\(join\(resources, ['"]git['"]/u,
+  );
+
+  const macosSource = await readFile(
+    join(repoRoot, 'scripts', 'verify-macos-arm64-dmg.mjs'),
+    'utf8',
+  );
+  assert.doesNotMatch(macosSource, /requirePath\(join\(resources, ['"]git['"]/u);
 });
 
 test('the packaged-app probe rejects a mismatched Runtime Host setup package', async () => {
@@ -534,12 +590,7 @@ test('one product workflow gates one draft release on every required artifact', 
 
   assert.equal(workflow.permissions.contents, 'read');
   assert.equal(jobs.publish.permissions.contents, 'write');
-  assert.deepEqual(jobs.publish.needs, [
-    'release-identity',
-    'desktop',
-    'cli-macos-arm64',
-    'source',
-  ]);
+  assert.deepEqual(jobs.publish.needs, ['release-identity', 'desktop', 'cli-macos-arm64']);
   assert.equal(jobs.publish.if, undefined);
   assert.equal(Object.hasOwn(jobs, 'npm'), false);
   assert.equal(workflow.on.workflow_dispatch.inputs.source_reference_tag.required, true);
@@ -558,7 +609,8 @@ test('one product workflow gates one draft release on every required artifact', 
   assert.match(liveSourceAuthority, /git fetch --force --no-tags origin/u);
   assert.match(liveSourceAuthority, /git rev-parse.*\^\{commit\}/u);
   assert.match(liveSourceAuthority, /git merge-base --is-ancestor/u);
-  for (const name of ['desktop', 'cli-macos-arm64', 'source', 'publish']) {
+  assert.equal(Object.hasOwn(jobs, 'source'), false);
+  for (const name of ['desktop', 'cli-macos-arm64', 'publish']) {
     const checkout = jobs[name].steps.find((step) =>
       String(step.uses).startsWith('actions/checkout@'),
     );
@@ -575,7 +627,6 @@ test('one product workflow gates one draft release on every required artifact', 
   for (const [jobName, group] of [
     ['desktop', 'desktop-${{ matrix.platform }}'],
     ['cli-macos-arm64', 'cli-macos-arm64'],
-    ['source', 'source'],
   ]) {
     const stage = jobs[jobName].steps.find(
       (step) => step.name === 'Stage the exact product artifact group',

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement } from 'react';
@@ -7,15 +26,16 @@ import {
 } from '@maka/core/session-trace';
 import type { SessionEvent } from '@maka/core/events';
 import type { Result } from '@maka/core/result';
-import type {
-  DesktopSessionTracePage,
-  DesktopSessionUsageSummary,
-} from '../../preload/bridge-contract.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
+  createFakeWorkbarServices,
   TRACE_REFRESH_DEBOUNCE_MS,
   useSessionTrace,
-} from '../../renderer/use-session-trace.js';
+  WorkbarServicesProvider,
+  type WorkbarSessionTracePage,
+  type WorkbarSessionUsageSummary,
+  type WorkbarServices,
+} from '../../renderer/features/workbar/testing.js';
 
 /**
  * The hook whose doc comment once described a subscription it did not have.
@@ -42,7 +62,7 @@ function trace(sessionId: string): SessionTrace {
 function usageSummary(
   totalRequests = 0,
   totalCostUsd = 0,
-): DesktopSessionUsageSummary {
+): WorkbarSessionUsageSummary {
   return {
     range: { from: 0, to: 1 },
     totalRequests,
@@ -76,6 +96,7 @@ function usageSummary(
 }
 
 interface TraceHarness {
+  services: WorkbarServices;
   reads: string[];
   traceRequests: Array<{ sessionId: string; cursor?: string }>;
   contextReads: string[];
@@ -84,24 +105,27 @@ interface TraceHarness {
   emitUsageChange: () => void;
   subscriptions: number;
   unsubscribes: number;
+  usageSubscriptions: number;
+  usageUnsubscribes: number;
 }
 
-function installMakaBridge(
+function createTraceHarness(
   options: {
-    tracePages?: DesktopSessionTracePage[];
+    tracePages?: WorkbarSessionTracePage[];
     trace?: (
       sessionId: string,
       cursor?: string,
-    ) => Promise<Result<DesktopSessionTracePage>>;
+    ) => Promise<Result<WorkbarSessionTracePage>>;
     summary?: (
       sessionId: string,
       readIndex: number,
-    ) => Promise<Result<DesktopSessionUsageSummary>>;
+    ) => Promise<Result<WorkbarSessionUsageSummary>>;
   } = {},
 ): TraceHarness {
   const handlers = new Set<(event: SessionEvent) => void>();
   const usageChangeHandlers = new Set<() => void>();
   const harness: TraceHarness = {
+    services: undefined as never,
     reads: [],
     traceRequests: [],
     contextReads: [],
@@ -114,51 +138,67 @@ function installMakaBridge(
     },
     subscriptions: 0,
     unsubscribes: 0,
+    usageSubscriptions: 0,
+    usageUnsubscribes: 0,
   };
-  // Attached to the fake window the renderer already installed: `installFakeDom`
-  // replaces `globalThis.window`, so building one here first would be clobbered.
-  (globalThis.window as unknown as { maka: unknown }).maka = {
-      inspector: {
-        trace: async (
-          sessionId: string,
-          cursor?: string,
-        ): Promise<Result<DesktopSessionTracePage>> => {
-          harness.reads.push(sessionId);
-          harness.traceRequests.push({ sessionId, ...(cursor ? { cursor } : {}) });
-          if (options.trace) return options.trace(sessionId, cursor);
-          return {
-            ok: true,
-            data: options.tracePages?.shift() ?? { trace: trace(sessionId), nextCursor: null },
-          };
-        },
-        summary: async (sessionId: string) => {
-          harness.summaryReads.push(sessionId);
-          if (options.summary) return options.summary(sessionId, harness.summaryReads.length);
-          return { ok: true as const, data: usageSummary() };
-        },
-        // The hook reads the context snapshot on the same signal (#2323). It
-        // is counted separately: the assertions below are about how often the
-        // TRACE is re-read, and an enrichment read must not move them.
-        context: async (sessionId: string) => {
-          harness.contextReads.push(sessionId);
-          return { ok: true as const, data: { status: 'unavailable' as const, reason: 'no_completed_request' as const } };
-        },
-        subscribeUsageChanges: (_sessionId: string, handler: () => void) => {
-          usageChangeHandlers.add(handler);
-          return () => usageChangeHandlers.delete(handler);
-        },
+  const services = createFakeWorkbarServices({
+    inspector: {
+      trace: async (
+        sessionId: string,
+        cursor?: string,
+      ): Promise<Result<WorkbarSessionTracePage>> => {
+        harness.reads.push(sessionId);
+        harness.traceRequests.push({ sessionId, ...(cursor ? { cursor } : {}) });
+        if (options.trace) return options.trace(sessionId, cursor);
+        return {
+          ok: true,
+          data: options.tracePages?.shift() ?? {
+            trace: trace(sessionId),
+            nextCursor: null,
+          },
+        };
       },
-      sessions: {
-        subscribeEvents: (_sessionId: string, handler: (event: SessionEvent) => void) => {
-          harness.subscriptions += 1;
-          handlers.add(handler);
-          return () => {
-            harness.unsubscribes += 1;
-            handlers.delete(handler);
-          };
-        },
+      summary: async (sessionId: string) => {
+        harness.summaryReads.push(sessionId);
+        if (options.summary) return options.summary(sessionId, harness.summaryReads.length);
+        return { ok: true as const, data: usageSummary() };
       },
-  };
+      // The hook reads the context snapshot on the same signal (#2323). It
+      // is counted separately: the assertions below are about how often the
+      // TRACE is re-read, and an enrichment read must not move them.
+      context: async (sessionId: string) => {
+        harness.contextReads.push(sessionId);
+        return {
+          ok: true as const,
+          data: {
+            status: 'unavailable' as const,
+            reason: 'no_completed_request' as const,
+          },
+        };
+      },
+      subscribeSessionEvents: (
+        _sessionId: string,
+        handler: (event: SessionEvent) => void,
+      ) => {
+        harness.subscriptions += 1;
+        handlers.add(handler);
+        return () => {
+          harness.unsubscribes += 1;
+          handlers.delete(handler);
+        };
+      },
+      subscribeUsageChanges: (_sessionId: string, handler: () => void) => {
+        harness.usageSubscriptions += 1;
+        usageChangeHandlers.add(handler);
+        return () => {
+          harness.usageUnsubscribes += 1;
+          usageChangeHandlers.delete(handler);
+        };
+      },
+      getRecordFile: async () => '',
+    },
+  });
+  harness.services = services;
   return harness;
 }
 
@@ -167,6 +207,20 @@ function event(type: SessionEvent['type']): SessionEvent {
 }
 
 function Probe(props: {
+  services: WorkbarServices;
+  sessionId?: string;
+  active: boolean;
+  onSnapshot?: (trace: SessionTrace | undefined) => void;
+  onHookSnapshot?: (snapshot: ReturnType<typeof useSessionTrace>) => void;
+}) {
+  return createElement(
+    WorkbarServicesProvider,
+    { services: props.services },
+    createElement(TraceProbe, props),
+  );
+}
+
+function TraceProbe(props: {
   sessionId?: string;
   active: boolean;
   onSnapshot?: (trace: SessionTrace | undefined) => void;
@@ -182,7 +236,7 @@ function tracePage(
   sessionId: string,
   runId: string,
   nextCursor: string | null,
-): DesktopSessionTracePage {
+): WorkbarSessionTracePage {
   const startedAt = Number(runId.replace(/\D/g, ''));
   return {
     trace: {
@@ -218,31 +272,34 @@ describe('useSessionTrace', () => {
 
   it('subscribes only while the panel is active, and unsubscribes when it hides', async () => {
     const { root } = installReactRenderer();
-    const harness = installMakaBridge();
+    const harness = createTraceHarness();
 
     await act(async () => {
-      root.render(createElement(Probe, { sessionId: 'session-1', active: false }));
+      root.render(createElement(Probe, { services: harness.services, sessionId: 'session-1', active: false }));
     });
     assert.equal(harness.subscriptions, 0, 'a hidden panel subscribes to nothing');
+    assert.equal(harness.usageSubscriptions, 0, 'a hidden panel subscribes to no usage');
     assert.deepEqual(harness.reads, [], 'and reads nothing');
 
     await act(async () => {
-      root.render(createElement(Probe, { sessionId: 'session-1', active: true }));
+      root.render(createElement(Probe, { services: harness.services, sessionId: 'session-1', active: true }));
     });
     assert.equal(harness.subscriptions, 1);
+    assert.equal(harness.usageSubscriptions, 1);
     assert.deepEqual(harness.reads, ['session-1']);
 
     await act(async () => {
-      root.render(createElement(Probe, { sessionId: 'session-1', active: false }));
+      root.render(createElement(Probe, { services: harness.services, sessionId: 'session-1', active: false }));
     });
     assert.equal(harness.unsubscribes, 1, 'hiding releases the subscription');
+    assert.equal(harness.usageUnsubscribes, 1, 'hiding releases the usage subscription');
   });
 
   it('re-reads once for a burst of ledger-changing events', async () => {
     const { root } = installReactRenderer();
-    const harness = installMakaBridge();
+    const harness = createTraceHarness();
     await act(async () => {
-      root.render(createElement(Probe, { sessionId: 'session-1', active: true }));
+      root.render(createElement(Probe, { services: harness.services, sessionId: 'session-1', active: true }));
     });
     assert.equal(harness.reads.length, 1, 'the activation read');
 
@@ -258,9 +315,15 @@ describe('useSessionTrace', () => {
 
   it('refreshes Session usage only from the Usage authority signal', async () => {
     const { root } = installReactRenderer();
-    const harness = installMakaBridge();
+    const harness = createTraceHarness();
     await act(async () => {
-      root.render(createElement(Probe, { sessionId: 'session-1', active: true }));
+      root.render(
+        createElement(Probe, {
+          services: harness.services,
+          sessionId: 'session-1',
+          active: true,
+        }),
+      );
     });
     assert.equal(harness.summaryReads.length, 1);
 
@@ -280,9 +343,9 @@ describe('useSessionTrace', () => {
 
   it('does not re-read for streaming deltas', async () => {
     const { root } = installReactRenderer();
-    const harness = installMakaBridge();
+    const harness = createTraceHarness();
     await act(async () => {
-      root.render(createElement(Probe, { sessionId: 'session-1', active: true }));
+      root.render(createElement(Probe, { services: harness.services, sessionId: 'session-1', active: true }));
     });
 
     await act(async () => {
@@ -295,16 +358,16 @@ describe('useSessionTrace', () => {
 
   it('never reads after the panel hides, even for an event already in flight', async () => {
     const { root } = installReactRenderer();
-    const harness = installMakaBridge();
+    const harness = createTraceHarness();
     await act(async () => {
-      root.render(createElement(Probe, { sessionId: 'session-1', active: true }));
+      root.render(createElement(Probe, { services: harness.services, sessionId: 'session-1', active: true }));
     });
 
     await act(async () => {
       harness.emit(event('complete'));
     });
     await act(async () => {
-      root.render(createElement(Probe, { sessionId: 'session-1', active: false }));
+      root.render(createElement(Probe, { services: harness.services, sessionId: 'session-1', active: false }));
     });
     await flushRefresh();
 
@@ -316,12 +379,13 @@ describe('useSessionTrace', () => {
     // blanking the timeline would read as the panel forgetting. Nothing pinned
     // this before, so reverting it passed the suite unchanged.
     const { root } = installReactRenderer();
-    const harness = installMakaBridge();
+    const harness = createTraceHarness();
     const seen: Array<SessionTrace | undefined> = [];
     const render = async (active: boolean) => {
       await act(async () => {
         root.render(
           createElement(Probe, {
+            services: harness.services,
             sessionId: 'session-1',
             active,
             onSnapshot: (snapshotTrace) => seen.push(snapshotTrace),
@@ -354,7 +418,7 @@ describe('useSessionTrace', () => {
 
   it('rebuilds the requested page depth from the newest runs after a refresh', async () => {
     const { root } = installReactRenderer();
-    const harness = installMakaBridge({
+    const harness = createTraceHarness({
       tracePages: [
         tracePage('session-1', 'run-3', 'cursor-3'),
         tracePage('session-1', 'run-2', 'cursor-2'),
@@ -366,6 +430,7 @@ describe('useSessionTrace', () => {
     await act(async () => {
       root.render(
         createElement(Probe, {
+          services: harness.services,
           sessionId: 'session-1',
           active: true,
           onHookSnapshot: (value) => {
@@ -396,7 +461,7 @@ describe('useSessionTrace', () => {
 
   it('rebuilds the loaded window when a run is inserted behind an unchanged head cursor', async () => {
     const { root } = installReactRenderer();
-    const harness = installMakaBridge({
+    const harness = createTraceHarness({
       tracePages: [
         tracePage('session-1', 'run-z', 'cursor-z'),
         tracePage('session-1', 'run-m', null),
@@ -410,6 +475,7 @@ describe('useSessionTrace', () => {
     await act(async () => {
       root.render(
         createElement(Probe, {
+          services: harness.services,
           sessionId: 'session-1',
           active: true,
           onHookSnapshot: (value) => {
@@ -438,12 +504,12 @@ describe('useSessionTrace', () => {
 
   it('keeps the requested page depth when a head refresh supersedes load-earlier', async () => {
     const { root } = installReactRenderer();
-    let resolveEarlierPage: ((result: Result<DesktopSessionTracePage>) => void) | undefined;
-    const earlierPage = new Promise<Result<DesktopSessionTracePage>>((resolve) => {
+    let resolveEarlierPage: ((result: Result<WorkbarSessionTracePage>) => void) | undefined;
+    const earlierPage = new Promise<Result<WorkbarSessionTracePage>>((resolve) => {
       resolveEarlierPage = resolve;
     });
     let startReads = 0;
-    const harness = installMakaBridge({
+    const harness = createTraceHarness({
       trace: async (sessionId, cursor) => {
         if (cursor === undefined) {
           startReads += 1;
@@ -463,6 +529,7 @@ describe('useSessionTrace', () => {
     await act(async () => {
       root.render(
         createElement(Probe, {
+          services: harness.services,
           sessionId: 'session-1',
           active: true,
           onHookSnapshot: (value) => {
@@ -493,12 +560,12 @@ describe('useSessionTrace', () => {
 
   it('settles loading when load-earlier supersedes an in-flight retry', async () => {
     const { root } = installReactRenderer();
-    let resolveRetry: ((result: Result<DesktopSessionTracePage>) => void) | undefined;
-    const retryPage = new Promise<Result<DesktopSessionTracePage>>((resolve) => {
+    let resolveRetry: ((result: Result<WorkbarSessionTracePage>) => void) | undefined;
+    const retryPage = new Promise<Result<WorkbarSessionTracePage>>((resolve) => {
       resolveRetry = resolve;
     });
     let headReads = 0;
-    installMakaBridge({
+    const harness = createTraceHarness({
       trace: async (sessionId, cursor) => {
         if (cursor === undefined) {
           headReads += 1;
@@ -516,6 +583,7 @@ describe('useSessionTrace', () => {
     await act(async () => {
       root.render(
         createElement(Probe, {
+          services: harness.services,
           sessionId: 'session-1',
           active: true,
           onHookSnapshot: (value) => {
@@ -549,7 +617,7 @@ describe('useSessionTrace', () => {
 
   it('stops presenting an old Session summary when its refresh fails', async () => {
     const { root } = installReactRenderer();
-    const harness = installMakaBridge({
+    const harness = createTraceHarness({
       summary: async (_sessionId, readIndex) =>
         readIndex === 1
           ? { ok: true, data: usageSummary(1, 1) }
@@ -559,6 +627,7 @@ describe('useSessionTrace', () => {
     await act(async () => {
       root.render(
         createElement(Probe, {
+          services: harness.services,
           sessionId: 'session-1',
           active: true,
           onHookSnapshot: (value) => {

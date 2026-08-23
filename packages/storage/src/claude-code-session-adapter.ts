@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Claude Code transcripts as Maka Sessions.
 //
 // Transcripts live at `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`, one
@@ -21,6 +40,7 @@ import {
   pickClaudeTitle,
   sanitizeForeignTitle,
 } from '@maka/core/foreign-session';
+import { externalSessionMatchesQuery } from '@maka/core/external-session';
 import type {
   ExternalMakaSession,
   ExternalSessionAdapter,
@@ -64,6 +84,23 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
   readonly id = CLAUDE_CODE_SESSION_ADAPTER_ID;
   readonly #home: string;
   readonly #maxBytes: number;
+  /**
+   * Summaries already derived from a transcript, keyed by path and invalidated
+   * by the file's own mtime and size.
+   *
+   * Listing reads and parses every transcript: 1128 of them take about a
+   * second here, and the catalog is listed once per search term. Without this,
+   * a pause in typing starts another full parse of files that have not changed
+   * since the last one — the cost is paid again for an answer already known.
+   *
+   * Keyed on what the filesystem reports rather than a timer: a transcript
+   * that Claude Code appended to must be re-read, and one that did not change
+   * cannot have a different summary.
+   */
+  readonly #summaries = new Map<
+    string,
+    { mtimeMs: number; size: number; summary?: ExternalSessionSummary }
+  >();
 
   constructor(options: ClaudeCodeSessionAdapterOptions = {}) {
     this.#home = options.claudeHome ?? join(homedir(), '.claude');
@@ -76,24 +113,62 @@ export class ClaudeCodeSessionAdapter implements ExternalSessionAdapter {
 
   async listSessions(query?: ExternalSessionQuery): Promise<readonly ExternalSessionSummary[]> {
     const summaries: ExternalSessionSummary[] = [];
+    const live = new Set<string>();
     for (const file of await this.#transcriptFiles()) {
-      const parsed = await this.#parse(file.path, file.sessionId);
-      if (!parsed) continue;
-      // Sub-agent transcripts are whole files, never records interleaved into
-      // a parent — so exclusion is per file. Importing one would present a
-      // fragment of a conversation as a conversation.
-      if (parsed.isSidechain) continue;
-      if (query?.cwd !== undefined && parsed.cwd !== query.cwd) continue;
-      summaries.push({
-        id: file.sessionId,
-        name: parsed.title || file.sessionId,
-        cwd: parsed.cwd,
-        ...(parsed.createdAt !== undefined ? { createdAt: parsed.createdAt } : {}),
-        ...(parsed.updatedAt !== undefined ? { updatedAt: parsed.updatedAt } : {}),
-      });
+      live.add(file.path);
+      const summary = await this.#summaryOf(file.path, file.sessionId);
+      if (!summary) continue;
+      // The shared matcher, not a local cwd comparison: filtering happens here
+      // rather than after paging, and every source has to answer a query the
+      // same way or the catalog lies about which one dropped the term.
+      if (!externalSessionMatchesQuery(summary, query)) continue;
+      summaries.push(summary);
+    }
+    // A transcript the source no longer lists must not keep its entry alive,
+    // or a long-lived Host grows one per deleted session.
+    for (const path of this.#summaries.keys()) {
+      if (!live.has(path)) this.#summaries.delete(path);
     }
     summaries.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
     return summaries;
+  }
+
+  /**
+   * The summary for one transcript, parsed only when the file has changed.
+   *
+   * `undefined` is cached too: a sidechain transcript or an unreadable one is
+   * a stable answer, and re-deriving it every list would defeat the point.
+   */
+  async #summaryOf(path: string, sessionId: string): Promise<ExternalSessionSummary | undefined> {
+    let mtimeMs: number;
+    let size: number;
+    try {
+      const info = await stat(path);
+      mtimeMs = info.mtimeMs;
+      size = info.size;
+    } catch {
+      this.#summaries.delete(path);
+      return undefined;
+    }
+    const cached = this.#summaries.get(path);
+    if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.summary;
+
+    const parsed = await this.#parse(path, sessionId);
+    // Sub-agent transcripts are whole files, never records interleaved into a
+    // parent — so exclusion is per file. Importing one would present a
+    // fragment of a conversation as a conversation.
+    const summary =
+      parsed && !parsed.isSidechain
+        ? {
+            id: sessionId,
+            name: parsed.title || sessionId,
+            cwd: parsed.cwd,
+            ...(parsed.createdAt !== undefined ? { createdAt: parsed.createdAt } : {}),
+            ...(parsed.updatedAt !== undefined ? { updatedAt: parsed.updatedAt } : {}),
+          }
+        : undefined;
+    this.#summaries.set(path, { mtimeMs, size, ...(summary ? { summary } : {}) });
+    return summary;
   }
 
   async readSession(sessionId: string): Promise<ExternalMakaSession> {

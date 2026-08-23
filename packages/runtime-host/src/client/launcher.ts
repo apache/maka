@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute } from 'node:path';
@@ -21,7 +40,13 @@ export interface DetachedCandidateInput {
 
 export interface DetachedCandidateAttempt {
   pid: number;
+  exited?: Promise<CandidateProcessExit>;
   startupFailure?: Promise<CandidateStartupFailureReport | undefined>;
+}
+
+export interface CandidateProcessExit {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
 }
 
 export interface OwnedCandidateAttempt extends DetachedCandidateAttempt {
@@ -40,10 +65,11 @@ export function launchDetachedRuntimeHostCandidate(
 ): DetachedCandidateLaunch {
   const startupAttemptId = randomUUID();
   const child = spawnCandidate(input, true, startupAttemptId);
-  const startupFailure = readStartupFailure(child, startupAttemptId);
+  const exited = candidateExit(child);
+  const startupFailure = readStartupFailure(child, exited, startupAttemptId);
   const spawned = spawnedPid(child).then(({ pid }) => {
     child.unref();
-    return { pid, startupFailure };
+    return { pid, exited, startupFailure };
   });
   return { spawned };
 }
@@ -53,13 +79,12 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
 } {
   const startupAttemptId = randomUUID();
   const child = spawnCandidate(input, false, startupAttemptId);
-  const startupFailure = readStartupFailure(child, startupAttemptId);
-  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.once('exit', (code, signal) => resolve({ code, signal }));
-  });
+  const exited = candidateExit(child);
+  const startupFailure = readStartupFailure(child, exited, startupAttemptId);
   return {
     spawned: spawnedPid(child).then(({ pid }) => ({
       pid,
+      exited,
       startupFailure,
       releaseToEnvironment(): void {
         child.unref();
@@ -132,14 +157,21 @@ function spawnedPid(child: ReturnType<typeof spawn>): Promise<{ pid: number }> {
 
 function readStartupFailure(
   child: ReturnType<typeof spawn>,
+  exited: Promise<CandidateProcessExit>,
   startupAttemptId: string,
 ): Promise<CandidateStartupFailureReport | undefined> {
   return new Promise((resolve) => {
-    child.once('exit', (code) => {
+    void exited.then(({ code }) => {
       const failure = candidateStartupFailureForExitCode(code);
       resolve(failure ? { ...failure, startupAttemptId } : undefined);
     });
     child.once('error', () => resolve(undefined));
+  });
+}
+
+function candidateExit(child: ReturnType<typeof spawn>): Promise<CandidateProcessExit> {
+  return new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
   });
 }
 

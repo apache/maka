@@ -1,8 +1,33 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Maka CLI npm release operations
 
 [简体中文](./cli-npm-release.zh-CN.md)
 
 This runbook is the operational authority for publishing the `maka-agent` npm installation channel. The root `package.json` remains the sole Maka product-version authority, and `packages/cli/package.json` must match it. Every public npm version must come from the exact tarball validated by the Stage workflow.
+
+The source-RC [npm preflight](../.github/ASF_NPM_RELEASE.md) is an earlier, credential-free
+compatibility check. Its tarball is not carried into publication. After source approval, Stage
+rebuilds from the final product tag at the same approved commit and becomes the byte authority for
+npm staging and registry verification. This matches Apache OpenDAL's incubating practice while
+retaining Maka's stronger protected-Environment, staged-publishing, 2FA, and Finalize controls.
 
 ## Release invariants
 
@@ -268,6 +293,9 @@ existing installations and does not restore the reviewed release chain.
 
 ## References
 
+- [ASF Incubator distribution guide: npm](https://incubator.apache.org/guides/distribution.html#npm)
+- [Apache OpenDAL incubating Node.js release workflow](https://github.com/apache/opendal/blob/v0.44.0/.github/workflows/bindings_nodejs.yml)
+- [Apache OpenDAL incubating release guide](https://github.com/apache/opendal/blob/v0.44.0/website/community/committers/release.md)
 - [npm staged publishing](https://docs.npmjs.com/staged-publishing/)
 - [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/)
 - [npm dist-tags](https://docs.npmjs.com/cli/dist-tag/)

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import {
   prepareStorageRootControlDirectory,
@@ -38,6 +57,7 @@ const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
 const DEFAULT_BACKOFF_MIN_MS = 20;
 const DEFAULT_BACKOFF_MAX_MS = 250;
 const MIN_CANDIDATE_INTERVAL_MS = 250;
+export const ELECTION_DEADLINE_MS_ENV_VAR = 'MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS';
 
 export interface ConnectOrSpawnRuntimeHostInput {
   rootPath: string;
@@ -56,12 +76,34 @@ export interface ConnectOrSpawnRuntimeHostInput {
 interface ConnectOrSpawnRuntimeHostDependencies {
   launchCandidate: CandidateLauncher;
   random(): number;
+  /** Defaults to `process.env`; injected so tests never mutate the real environment. */
+  env?: NodeJS.ProcessEnv;
 }
 
 const defaultDependencies: ConnectOrSpawnRuntimeHostDependencies = {
   launchCandidate: launchDetachedRuntimeHostCandidate,
   random: Math.random,
 };
+
+/**
+ * Resolves the operator override for the client election deadline. Large
+ * workspaces can legitimately take longer than the default window on their
+ * first start after an upgrade, so the deadline must be raisable without a
+ * code change. Invalid values fail closed: a silently ignored typo would leave
+ * the operator believing they widened the window when they did not.
+ */
+export function electionDeadlineMsFromEnvironment(
+  rawValue: string | undefined,
+): number | undefined {
+  if (rawValue === undefined || rawValue.trim() === '') return undefined;
+  const parsed = Number(rawValue);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > 120_000) {
+    throw new RangeError(
+      `${ELECTION_DEADLINE_MS_ENV_VAR} must be an integer between 1 and 120000 milliseconds`,
+    );
+  }
+  return parsed;
+}
 
 export type ConnectOrSpawnRuntimeHostResult =
   | {
@@ -173,7 +215,12 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   input: ConnectOrSpawnRuntimeHostInput,
   dependencies: ConnectOrSpawnRuntimeHostDependencies,
 ): Promise<ConnectOrSpawnRuntimeHostResult> {
-  const deadlineMs = input.electionDeadlineMs ?? DEFAULT_ELECTION_DEADLINE_MS;
+  const deadlineMs =
+    input.electionDeadlineMs ??
+    electionDeadlineMsFromEnvironment(
+      (dependencies.env ?? process.env)[ELECTION_DEADLINE_MS_ENV_VAR],
+    ) ??
+    DEFAULT_ELECTION_DEADLINE_MS;
   if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0 || deadlineMs > 120_000) {
     throw new RangeError('electionDeadlineMs must be an integer between 1 and 120000');
   }
@@ -202,6 +249,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   let startupFailure: CandidateStartupFailureReport | undefined;
   let pendingCandidateReports = 0;
   let electionSettled = false;
+  let candidateInFlight = false;
 
   try {
     while (performance.now() < deadline) {
@@ -266,6 +314,7 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
       if (
         shouldLaunchCandidate(result) &&
         !isPermanentCandidateStartupFailure(startupFailure) &&
+        !candidateInFlight &&
         now >= nextCandidateAt
       ) {
         try {
@@ -279,6 +328,15 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             ...(input.generation === undefined ? {} : { generation: input.generation }),
           });
           const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);
+          candidateInFlight = true;
+          if (attempt.exited) {
+            void attempt.exited.then(
+              () => {
+                candidateInFlight = false;
+              },
+              () => undefined,
+            );
+          }
           if (attempt.startupFailure) {
             pendingCandidateReports += 1;
             void attempt.startupFailure

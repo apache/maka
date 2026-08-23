@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Dispatch, SetStateAction } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -58,7 +77,7 @@ export function createAppShellProjectActions(deps: {
   projectPickerRequestRef: RefBox<number>;
   rendererMountedRef: RefBox<boolean>;
   setProjectPickerPending: Dispatch<SetStateAction<boolean>>;
-  refreshDefaultProjectState(host?: DesktopRuntimeHostRef): Promise<ProjectRecord[]>;
+  refreshDefaultProjectState(host: DesktopRuntimeHostRef): Promise<ProjectRecord[]>;
   selectedProjectId: string | null | undefined;
   projects: readonly ProjectRecord[];
   projectCapabilities: DesktopProjectCapabilities;
@@ -94,17 +113,6 @@ export function createAppShellProjectActions(deps: {
     toastApi.error(title, description, undefined, sessionDiagnosticTarget);
   };
 
-  async function refreshDefaultProjectPresentation(host: DesktopRuntimeHostRef): Promise<void> {
-    let currentHost: DesktopRuntimeHostRef;
-    try {
-      currentHost = await window.maka.runtimeHostProfiles.getDefaultHost();
-    } catch {
-      return;
-    }
-    if (currentHost.profileId !== host.profileId || currentHost.hostId !== host.hostId) return;
-    await refreshDefaultProjectState(host);
-  }
-
   async function refreshProjects(): Promise<ProjectRecord[]> {
     return (
       await runOnDefaultRuntimeHost((host) => refreshDefaultProjectState(host))
@@ -121,7 +129,7 @@ export function createAppShellProjectActions(deps: {
       const info = await window.maka.app.resolveProjectGitInfo(path, host);
       if (!info.ok) throw new Error(copy.selectedPathUnreadable);
     }
-    await refreshDefaultProjectPresentation(host);
+    await refreshDefaultProjectState(host);
     if (notify) {
       onProjectSelected(sessionId);
       toastApi.success(copy.directorySwitchedTitle, project.name);
@@ -194,7 +202,7 @@ export function createAppShellProjectActions(deps: {
     try {
       await runOnDefaultRuntimeHost(async (host) => {
         await window.maka.projects.select(null, host);
-        await refreshDefaultProjectPresentation(host);
+        await refreshDefaultProjectState(host);
         onProjectSelected(sessionId);
       });
     } catch (error) {
@@ -236,7 +244,7 @@ export function createAppShellProjectActions(deps: {
           if (project) return selectProjectRecord(project, false, host);
           if (!projectCapabilities.selectNoProject) return false;
           await window.maka.projects.select(null, host);
-          await refreshDefaultProjectPresentation(host);
+          await refreshDefaultProjectState(host);
           onProjectSelected(sessionId);
           return true;
         })
@@ -259,7 +267,7 @@ export function createAppShellProjectActions(deps: {
           const result = await window.maka.projects.relink(projectId, host);
           if (!result.ok) return null;
           if (selectAfter) await selectProjectRecord(result.project, true, host);
-          else await refreshDefaultProjectPresentation(host);
+          else await refreshDefaultProjectState(host);
           return result.project;
         })
       ).value;
@@ -273,7 +281,7 @@ export function createAppShellProjectActions(deps: {
     try {
       await runOnDefaultRuntimeHost(async (host) => {
         await window.maka.projects.rename(projectId, name, host);
-        await refreshDefaultProjectPresentation(host);
+        await refreshDefaultProjectState(host);
       });
     } catch (error) {
       showDefaultProjectError(
@@ -288,7 +296,7 @@ export function createAppShellProjectActions(deps: {
     try {
       await runOnDefaultRuntimeHost(async (host) => {
         await window.maka.projects.archive(projectId, host);
-        await refreshDefaultProjectPresentation(host);
+        await refreshDefaultProjectState(host);
       });
     } catch (error) {
       showDefaultProjectError(
@@ -303,7 +311,7 @@ export function createAppShellProjectActions(deps: {
     try {
       await runOnDefaultRuntimeHost(async (host) => {
         await window.maka.projects.restore(projectId, host);
-        await refreshDefaultProjectPresentation(host);
+        await refreshDefaultProjectState(host);
       });
     } catch (error) {
       showDefaultProjectError(

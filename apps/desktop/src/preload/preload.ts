@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { contextBridge, ipcRenderer } from 'electron';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
 import { collectThreadSearchResponses } from './multi-host-thread-search.js';
@@ -24,6 +43,8 @@ import type {
   DesktopRuntimeHostSshTerminalSnapshot,
   DesktopRuntimeHostOnboardingInput,
   DesktopRuntimeHostOnboardingSnapshot,
+  DesktopRuntimeHostManagementAction,
+  DesktopRuntimeHostManagementResponse,
   DesktopNewTaskCatalog,
   DesktopNewTaskHost,
   DesktopNewTaskHostRef,
@@ -78,6 +99,7 @@ import type { HealthSnapshot } from '@maka/core/health';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   ActiveInteractionRequestEvent,
+  MessageContent,
   SessionCommand,
   SessionEvent,
   ShellRunUpdate,
@@ -156,6 +178,7 @@ import {
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
+  McpConfigAddResult,
   McpConfigFile,
   McpServerConfig,
   McpServerStatus,
@@ -1180,6 +1203,14 @@ const makaBridge = {
       return () => ipcRenderer.off('runtime-host-onboarding:changed', listener);
     },
   },
+  runtimeHostManagement: {
+    run(
+      profileId: string,
+      action: DesktopRuntimeHostManagementAction,
+    ): Promise<DesktopRuntimeHostManagementResponse> {
+      return ipcRenderer.invoke('runtime-host-management:run', profileId, action);
+    },
+  },
   newTasks: {
     getCatalog(): Promise<DesktopNewTaskCatalog> {
       return loadNewTaskCatalog();
@@ -1412,6 +1443,7 @@ const makaBridge = {
             displayText?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
+            retainedAttachments?: AttachmentRef[];
             turnOrchestration?: TurnOrchestration;
             quotes?: QuoteRef[];
             workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
@@ -1468,6 +1500,50 @@ const makaBridge = {
     },
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {
       return invokeSessionRuntimeHost('sessions:steer', sessionId, text);
+    },
+    async enqueue(
+      sessionId: string,
+      placement: 'current_turn' | 'next_turn',
+      command: {
+        text: string;
+        displayText?: string;
+        attachmentItems?: RendererIngestInput[];
+        retainedAttachments?: AttachmentRef[];
+        quotes?: QuoteRef[];
+        workspaceFileReferences?: Array<Pick<InlineReference, 'value' | 'start'>>;
+      },
+    ): Promise<{
+      kind: 'queued' | 'started';
+      turnId?: string;
+      attachments: AttachmentRef[];
+      inlineReferences: InlineReference[];
+    }> {
+      const session = await runtimeHostSessionRef(sessionId);
+      const attachmentItems = command.attachmentItems
+        ? await encodeIngestItems(command.attachmentItems)
+        : undefined;
+      const result = await ipcRenderer.invoke(
+        'sessions:enqueue',
+        session.scope,
+        session.sessionId,
+        placement,
+        {
+          ...command,
+          ...(attachmentItems ? { attachmentItems } : {}),
+        },
+      ) as {
+        kind: 'queued' | 'started';
+        turnId?: string;
+        attachments: AttachmentRef[];
+        inlineReferences: InlineReference[];
+      };
+      return {
+        ...result,
+        attachments: projectDesktopAttachmentRefs(session.scope, result.attachments),
+      };
+    },
+    retractQueue(sessionId: string): Promise<MessageContent> {
+      return invokeSessionRuntimeHost('sessions:retractQueue', sessionId);
     },
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel> {
       return invokeSessionRuntimeHost('sessions:readExecutionBoundary', sessionId);
@@ -1807,6 +1883,7 @@ const makaBridge = {
       adapterId: string;
       includeArchived?: boolean;
       cursor?: string;
+      text?: string;
     }, host?: DesktopRuntimeHostRef): Promise<{
       sessions: DesktopExternalSessionCatalogItem[];
       nextCursor: string | null;
@@ -2096,6 +2173,9 @@ const makaBridge = {
     setConfig(config: McpConfigFile, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
       return invokeSelectedRuntimeHost(host, 'mcp:setConfig', config);
     },
+    add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult> {
+      return invokeSelectedRuntimeHost(host, 'mcp:add', serverId, config);
+    },
     upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile> {
       return invokeSelectedRuntimeHost(host, 'mcp:upsert', serverId, config);
     },
@@ -2110,6 +2190,19 @@ const makaBridge = {
     },
     test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult> {
       return invokeSelectedRuntimeHost(host, 'mcp:test', serverId);
+    },
+    // Same scoped seam as every other MCP method: the handlers live on the
+    // Runtime Host's ScopedIpcMain, whose first argument is the host ref —
+    // a raw invoke would put serverId in that slot and fail the scope check
+    // before the handler ever ran.
+    login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus> {
+      return invokeSelectedRuntimeHost(host, 'mcp:login', serverId);
+    },
+    cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<boolean> {
+      return invokeSelectedRuntimeHost(host, 'mcp:cancelLogin', serverId);
+    },
+    logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus> {
+      return invokeSelectedRuntimeHost(host, 'mcp:logout', serverId);
     },
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void {
       return subscribeActiveRuntimeHostEvent('mcp:changed', handler);
@@ -2959,5 +3052,53 @@ const makaBridge = {
     },
   },
 } satisfies MakaBridge;
+
+// E2E-only IPC latches. Real users never get these: the preload mirrors the
+// main process's isolated-E2E gate (startup-context.ts) — MAKA_E2E alone is
+// not enough without the throwaway profile dir. An armed latch holds the next
+// call (or every call) to one bridge method until the test releases it, so
+// Playwright gets a deterministic in-flight window instead of racing the fake
+// backend's near-instant replies. The wrappers must be installed BEFORE
+// exposeInMainWorld: the bridge is cloned into the main world at expose time,
+// and the exposed clone is sealed against later patching.
+if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
+  type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list';
+  const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
+  const releases = new Map<LatchKey, () => void>();
+  const wrapLatched = <Args extends unknown[], Result>(
+    call: (...args: Args) => Promise<Result>,
+    key: LatchKey,
+  ) => async (...args: Args): Promise<Result> => {
+    const gate = gates.get(key);
+    if (gate) {
+      if (gate.oneShot) gates.delete(key);
+      await gate.promise;
+    }
+    return call(...args);
+  };
+  makaBridge.newTasks.listInvocableSkills = wrapLatched(
+    makaBridge.newTasks.listInvocableSkills.bind(makaBridge.newTasks),
+    'newTasks.listInvocableSkills',
+  );
+  makaBridge.sessions.list = wrapLatched(
+    makaBridge.sessions.list.bind(makaBridge.sessions),
+    'sessions.list',
+  );
+  contextBridge.exposeInMainWorld('makaE2eLatch', {
+    arm(key: LatchKey, options?: { oneShot?: boolean }) {
+      let release: () => void = () => {};
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      gates.set(key, { promise, oneShot: options?.oneShot === true });
+      releases.set(key, release);
+    },
+    release(key: LatchKey) {
+      releases.get(key)?.();
+      releases.delete(key);
+      gates.delete(key);
+    },
+  });
+}
 
 contextBridge.exposeInMainWorld('maka', makaBridge);

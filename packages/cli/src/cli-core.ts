@@ -1,7 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveMakaDataRoots } from './workspace-root.js';
+import { deriveMakaDataRoots, resolveMakaDataRoots } from './workspace-root.js';
 import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
 import { resolveCliUiLocale } from './cli-ui-locale.js';
 
@@ -101,7 +120,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host serve [options]  Run a Runtime Host service`,
     `  ${cliCommand} runtime-host setup --principal <id> --preset <desktop-client|terminal-client> [options]`,
     `  ${cliCommand} runtime-host service install [options]`,
-    `  ${cliCommand} runtime-host service status|start|stop|restart|uninstall [--json]`,
+    `  ${cliCommand} runtime-host service status|start|stop|restart|logs|uninstall [--json]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
     `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
@@ -225,17 +244,22 @@ export async function runMakaCli(
           : {}),
         ...(command.websocketPort === undefined ? {} : { websocketPort: command.websocketPort }),
         ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
+        ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }
     case 'runtime-host-service-manage': {
       const { runManagedRuntimeHostServiceCli } = await import(
         './runtime-host-service-management-command.js'
       );
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
       return runManagedRuntimeHostServiceCli({
         action: command.action,
         json: command.json,
-        clientDataRoot: dataRoots.clientDataRoot,
-        defaultRootPath: dataRoots.workspaceRoot,
+        framed: command.framed ?? false,
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        defaultRootPath: serviceDataRoots.workspaceRoot,
         nodePath: process.execPath,
         cliPath: process.argv[1] ?? '',
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
@@ -244,6 +268,8 @@ export async function runMakaCli(
           : {}),
         ...(command.websocketPort === undefined ? {} : { websocketPort: command.websocketPort }),
         ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
+        ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+        ...(command.retainManagedDeployment ? { retainManagedDeployment: true } : {}),
       });
     }
     case 'runtime-host-access-issue': {

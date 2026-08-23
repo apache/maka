@@ -49,17 +49,20 @@
     "release:cli:pack": "node scripts/release-cli-package.mjs",
     "release:cli:smoke": "node scripts/smoke-release-cli-package.mjs",
     "release:cli:eval": "node scripts/release-cli-eval-package.mjs",
+    "check:asf-headers": "node scripts/asf-license-headers.mjs check",
+    "write:asf-headers": "node scripts/asf-license-headers.mjs write",
     "release:asf:source": "node scripts/asf-source-release.mjs create",
     "release:asf:verify": "node scripts/asf-source-release.mjs verify",
     "release:asf:sign": "node scripts/asf-source-release.mjs sign",
-    "check:asf-source": "node --test scripts/asf-source-release.test.mjs scripts/asf-source-workflow-policy.test.mjs",
+    "check:asf-source": "node --test scripts/asf-source-release.test.mjs scripts/asf-source-workflow-policy.test.mjs scripts/asf-license-headers.test.mjs",
+    "check:asf-npm": "node --test scripts/asf-npm-workflow-policy.test.mjs",
     "check:product-release-identity": "node scripts/product-release-identity.mjs",
     "package:cli:macos-arm64": "node scripts/package-macos-arm64-cli.mjs",
     "verify:cli:macos-arm64": "node scripts/verify-macos-arm64-cli.mjs",
     "test:product-release": "node --test scripts/product-release.test.mjs scripts/product-release-artifacts.test.mjs scripts/product-release-authority.test.mjs",
     "generate:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs",
     "check:windows-cargo-notices": "node scripts/generate-windows-cargo-notices.mjs --check",
-    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && npm run check:product-release-identity && node --test scripts/product-release.test.mjs scripts/product-release-artifacts.test.mjs scripts/product-release-authority.test.mjs scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/third-party-closure.test.mjs scripts/generate-third-party-notices.test.mjs",
+    "check:release": "npm run check:stale && npm run check:third-party-notices && npm run check:cli-third-party-notices && npm run check:product-release-identity && npm run check:asf-npm && node --test scripts/product-release.test.mjs scripts/product-release-artifacts.test.mjs scripts/product-release-authority.test.mjs scripts/release-cli-file-policy.test.mjs scripts/release-cli-artifact-policy.test.mjs scripts/release-cli-eval-support.test.mjs scripts/release-cli-publication.test.mjs scripts/release-cli-runtime-host-diagnostics.test.mjs scripts/release-cli-workflow-policy.test.mjs scripts/verify-packaged-app.test.mjs scripts/third-party-closure.test.mjs scripts/generate-third-party-notices.test.mjs",
     "package:macos-arm64": "node scripts/package-macos-arm64.mjs",
     "verify:macos-arm64": "node scripts/verify-macos-arm64-dmg.mjs",
     "package:windows-x64": "node scripts/package-windows-x64.mjs",
@@ -76,9 +79,7 @@
     "windows:inventory": "node --test scripts/windows-test-inventory.test.mjs && node scripts/windows-test-inventory.mjs --check",
     "windows:inventory:write": "node scripts/windows-test-inventory.mjs --write",
     "smoke:windows": "npm run build && npm run smoke:windows:dist",
-    "smoke:windows:dist": "node scripts/windows-smoke.mjs",
-    "prepare:bundled-git": "node scripts/prepare-bundled-git.mjs",
-    "prepare:bundled-git-source": "node scripts/prepare-bundled-git-source.mjs"
+    "smoke:windows:dist": "node scripts/windows-smoke.mjs"
   },
   "devDependencies": {
     "@ai-sdk/provider-utils": "5.0.27",
@@ -87,7 +88,6 @@
     "@astryxdesign/core": "0.4.0",
     "@biomejs/biome": "2.5.6",
     "@types/node": "^26.1.2",
-    "dugite": "3.2.2",
     "knip": "^6.26.0",
     "patch-package": "8.0.1",
     "typescript": "^7.0.2",
@@ -96,7 +96,6 @@
   "allowScripts": {
     "esbuild@0.27.7": true,
     "@jackwener/opencli@1.8.4": true,
-    "dugite@3.2.2": true,
     "node-pty@1.2.0-beta.15": true
   },
   "overrides": {

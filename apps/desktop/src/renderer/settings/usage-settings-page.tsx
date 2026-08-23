@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useMemo, useState, type ReactNode } from 'react';
 import {
   Card,
@@ -89,9 +108,10 @@ export function UsageSettingsPage(props: {
   };
 
   async function setRange(range: UsageRange) {
-    const saved = await updateUsage({ range });
-    if (!saved || !usagePageMountedRef.current) return;
-    await props.onReload(range);
+    // Persist only: the surface refetches when the persisted range lands
+    // (the same trigger that reloads a Settings window restored directly
+    // onto this page), so a second fetch here would just race it.
+    await updateUsage({ range });
   }
 
   function updateUsage(patch: Partial<AppSettings['usage']>): Promise<boolean> {

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -5,7 +24,9 @@ import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
+import { TextInput } from '@astryxdesign/core/TextInput';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
+import { normalizeExternalSessionQueryText } from '@maka/core/external-session';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import type {
   DesktopRuntimeHostRef,
@@ -34,6 +55,7 @@ type CatalogWindow = CatalogState & {
 async function readCatalogWindow(input: {
   adapterId: string;
   includeArchived: boolean;
+  text: string;
   minimumItemCount: number;
   targetSourceSessionId?: string;
   host?: DesktopRuntimeHostRef;
@@ -49,6 +71,7 @@ async function readCatalogWindow(input: {
       {
         adapterId: input.adapterId,
         includeArchived: input.includeArchived,
+        ...(input.text ? { text: input.text } : {}),
         ...(cursor === undefined ? {} : { cursor }),
       },
       input.host,
@@ -87,6 +110,7 @@ type ImportAttempt = {
   sourceSessionId: string;
   name: string;
   includeArchived: boolean;
+  text: string;
   importedCountBefore: number;
   latestImportedSessionIdBefore: string | undefined;
   loadedCatalogItemCountBefore: number;
@@ -140,6 +164,11 @@ export function ImportTasksSettingsPage(props: {
   const [adapterIds, setAdapterIds] = useState<string[]>([]);
   const [adapterId, setAdapterId] = useState<string | null>(null);
   const [includeArchived, setIncludeArchived] = useState(false);
+  // Two states, not one: `searchDraft` is what the box shows, `search` is what
+  // has been asked of the Host. Typing must not put a request on the wire per
+  // keystroke against a source with a thousand sessions.
+  const [searchDraft, setSearchDraft] = useState('');
+  const [search, setSearch] = useState('');
   const [catalog, setCatalog] = useState<CatalogState>(EMPTY_CATALOG);
   const [sourceLoading, setSourceLoading] = useState(false);
   const [sourceResolved, setSourceResolved] = useState(false);
@@ -170,17 +199,28 @@ export function ImportTasksSettingsPage(props: {
   // source's rows under the new source's label.
   const requestGeneration = useRef(0);
   const recoveryGeneration = useRef(0);
-  const catalogSelectionRef = useRef({ adapterId, includeArchived, generation: 0 });
+  const catalogSelectionRef = useRef({ adapterId, includeArchived, search, generation: 0 });
   if (
     catalogSelectionRef.current.adapterId !== adapterId ||
-    catalogSelectionRef.current.includeArchived !== includeArchived
+    catalogSelectionRef.current.includeArchived !== includeArchived ||
+    catalogSelectionRef.current.search !== search
   ) {
     catalogSelectionRef.current = {
       adapterId,
       includeArchived,
+      search,
       generation: catalogSelectionRef.current.generation + 1,
     };
   }
+
+  // 250ms after typing stops, not per keystroke. The term reaches the adapter,
+  // which walks every transcript on the source, so a request per character
+  // would queue a thousand-file scan behind each one.
+  useEffect(() => {
+    if (searchDraft === search) return;
+    const timer = setTimeout(() => setSearch(searchDraft), 250);
+    return () => clearTimeout(timer);
+  }, [searchDraft, search]);
 
   const loadSources = useCallback(async () => {
     const generation = ++requestGeneration.current;
@@ -224,6 +264,7 @@ export function ImportTasksSettingsPage(props: {
         const result = await window.maka.externalSessions.list({
           adapterId: sourceId,
           includeArchived,
+          ...(search ? { text: search } : {}),
           ...(cursor === undefined ? {} : { cursor }),
         }, host);
         if (generation !== requestGeneration.current) return;
@@ -241,7 +282,7 @@ export function ImportTasksSettingsPage(props: {
         }
       }
     },
-    [copy.loadFailedFallback, host, includeArchived, locale],
+    [copy.loadFailedFallback, host, includeArchived, locale, search],
   );
 
   const refreshLoadedCatalog = useCallback(
@@ -251,6 +292,7 @@ export function ImportTasksSettingsPage(props: {
         const result = await readCatalogWindow({
           adapterId: sourceId,
           includeArchived,
+          text: search,
           minimumItemCount: loadedItemCount,
           host,
           isCurrent: () => mountedRef.current && generation === requestGeneration.current,
@@ -261,7 +303,7 @@ export function ImportTasksSettingsPage(props: {
         // visible and retry rather than replacing it with a transient error.
       }
     },
-    [host, includeArchived, mountedRef],
+    [host, includeArchived, mountedRef, search],
   );
 
   useEffect(() => {
@@ -271,7 +313,7 @@ export function ImportTasksSettingsPage(props: {
   useEffect(() => {
     if (adapterId === null) return;
     void loadCatalog(adapterId);
-  }, [adapterId, includeArchived, loadCatalog]);
+  }, [adapterId, includeArchived, search, loadCatalog]);
 
   const hasCatalogImportInFlight = catalog.sessions.some(
     (session) => session.importState.isImporting,
@@ -321,6 +363,7 @@ export function ImportTasksSettingsPage(props: {
         const result = await readCatalogWindow({
           adapterId: attempt.adapterId,
           includeArchived: attempt.includeArchived,
+          text: attempt.text,
           minimumItemCount: attempt.loadedCatalogItemCountBefore,
           targetSourceSessionId: attempt.sourceSessionId,
           host,
@@ -391,6 +434,10 @@ export function ImportTasksSettingsPage(props: {
         sourceSessionId: session.id,
         name: session.name,
         includeArchived,
+        // The search term is part of the attempt for the same reason the
+        // archived filter is: recovery re-reads the catalog window this row
+        // came from, and a cleared box would look at a different list.
+        text: search,
         importedCountBefore: session.importState.importedCount,
         latestImportedSessionIdBefore: session.importState.importedSessionIds[0],
         loadedCatalogItemCountBefore: catalog.sessions.length,
@@ -432,12 +479,16 @@ export function ImportTasksSettingsPage(props: {
       props,
       recoverUnknownImport,
       includeArchived,
+      search,
     ],
   );
 
   const noSource = sourceResolved && !sourceLoading && !sourceError && adapterIds.length === 0;
   const catalogEmpty =
     adapterId !== null && !catalogLoading && !catalogError && catalog.sessions.length === 0;
+  // The shared normalizer decides what counts as a filter, so the empty-state
+  // copy and the matcher cannot disagree about a whitespace-only box.
+  const activeSearch = normalizeExternalSessionQueryText(search);
 
   if (sourceLoading) {
     return (
@@ -507,6 +558,14 @@ export function ImportTasksSettingsPage(props: {
               ))}
             </SegmentedControl>
           )}
+          <TextInput
+            label={copy.searchLabel}
+            description={copy.searchHelp}
+            placeholder={copy.searchPlaceholder}
+            value={searchDraft}
+            onChange={setSearchDraft}
+            hasClear
+          />
           <CheckboxInput
             label={copy.includeArchived}
             value={includeArchived}
@@ -609,7 +668,22 @@ export function ImportTasksSettingsPage(props: {
             </div>
           )}
 
-          {catalogEmpty && (
+          {/* A search that found nothing is not the same as a source with
+              nothing in it. Reusing the "no conversations" copy would tell a
+              user their transcripts are missing when the term is simply
+              wrong, and hide the one control that would fix it. */}
+          {/* Keyed on the normalized term, the same value the matcher uses.
+              Comparing the raw string would call a box holding only spaces an
+              active search and answer `No conversation has "   "` on a source
+              that is simply empty. */}
+          {catalogEmpty && activeSearch !== undefined && (
+            <EmptyState
+              isCompact
+              title={copy.searchLabel}
+              description={copy.searchEmpty(search.trim())}
+            />
+          )}
+          {catalogEmpty && activeSearch === undefined && (
             <EmptyState isCompact title={copy.emptyTitle} description={copy.emptyDescription} />
           )}
 

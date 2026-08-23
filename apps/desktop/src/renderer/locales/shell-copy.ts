@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 
 import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
@@ -955,7 +974,6 @@ const SHELL_COPY_BY_LOCALE = {
       permissionDescriptions: {
         explore: '只读：只读取和搜索，写入文件和访问网络会先来问你。',
         ask: '自动：在 Maka 的保护层内执行；需要超出当前权限范围时会先来问你。',
-        execute: '兼容模式：等同于自动。',
         bypass: '本地工具直接访问你的文件和网络，不经 Maka 的保护层。',
       },
       bypassConfirmTitle: '切换到完全权限？',
@@ -1039,10 +1057,6 @@ const SHELL_COPY_BY_LOCALE = {
       permissionModes: {
         explore: { label: '权限 · 只读', hint: '读取和搜索直通，写入和网络仍需确认' },
         ask: { label: '权限 · 自动', hint: '在 Maka 的保护层内运行；需要超出当前权限范围时再询问' },
-        execute: {
-          label: '权限 · 自动执行',
-          hint: '常见工具直通，破坏性操作仍确认',
-        },
         bypass: {
           label: '权限 · 完全权限',
           hint: '不经 Maka 的保护层，直接访问你的文件和网络',
@@ -1462,7 +1476,6 @@ const SHELL_COPY_BY_LOCALE = {
       permissionDescriptions: {
         explore: 'Read only: reads and searches only; writing files and network access ask you first.',
         ask: "Auto: runs inside Maka's protection layer and asks before anything goes beyond the current permissions.",
-        execute: 'Compatibility mode: same as Auto.',
         bypass: "Local tools reach your files and your network directly, outside Maka's protection layer.",
       },
       bypassConfirmTitle: 'Switch to full access?',
@@ -1551,10 +1564,6 @@ const SHELL_COPY_BY_LOCALE = {
         ask: {
           label: 'Permissions · Auto',
           hint: "Run inside Maka's protection layer; ask before going beyond the current permissions",
-        },
-        execute: {
-          label: 'Permissions · Auto execute',
-          hint: 'Run common tools; confirm destructive actions',
         },
         bypass: {
           label: 'Permissions · Full access',

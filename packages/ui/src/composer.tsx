@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   forwardRef,
   useEffect,
@@ -16,7 +35,9 @@ import { useMountedRef } from './use-mounted-ref.js';
 import {
   ICON_SIZE,
   ArrowUp,
+  CornerDownRight,
   FileText,
+  ListEnd,
   ListTodo,
   Network,
   Pencil,
@@ -54,7 +75,12 @@ import {
   type ComposerTextPort,
 } from './chat-input-behavior.js';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
-import type { AttachmentRef, QuoteRef } from '@maka/core/events';
+import type {
+  AttachmentRef,
+  FollowUpMode,
+  MessageQueueEntryProjection,
+  QuoteRef,
+} from '@maka/core/events';
 import type { PermissionMode } from '@maka/core/permission';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ProviderType } from '@maka/core/llm-connections';
@@ -66,6 +92,8 @@ import {
   ChatComposerInput,
   IconButton,
   Lightbox,
+  SegmentedControl,
+  SegmentedControlItem,
   Token,
   Tooltip,
   useChatPasteAsToken,
@@ -94,6 +122,7 @@ import {
   workspaceFileReferencePositions,
   type WorkspaceFileReferencePosition,
 } from './inline-reference.js';
+import { ComposerMessageQueue } from './composer-message-queue.js';
 
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
@@ -186,6 +215,7 @@ export interface ComposerHandle {
 
 export interface ComposerSendMetadata {
   workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
+  followUpMode?: FollowUpMode;
 }
 
 type ComposerImportActionId = 'pick' | 'attach';
@@ -220,6 +250,13 @@ export const Composer = forwardRef<
     continuing?: boolean;
     /** True while the current streaming session is processing a stop request. */
     stopPending?: boolean;
+    followUpMode?: FollowUpMode;
+    queuedMessages?: {
+      steering: readonly MessageQueueEntryProjection[];
+      followup: readonly MessageQueueEntryProjection[];
+    };
+    onFollowUpModeChange?(mode: FollowUpMode): void;
+    onRetractQueued?(): void | Promise<void>;
     /** Runtime-only key used to keep unsent drafts isolated per session. */
     draftKey?: string;
     /** Optional host persistence for reload-safe draft scopes. */
@@ -346,7 +383,6 @@ export const Composer = forwardRef<
      * as a resting mode the user must leave by hand.
      */
     planModeActive?: boolean;
-    planModePending?: boolean;
     planModeDisabledReason?: string;
     onPlanModeChange?(active: boolean): void | Promise<void>;
     /**
@@ -366,7 +402,6 @@ export const Composer = forwardRef<
      * neither control writes the other's field.
      */
     orchestrationMode?: OrchestrationMode;
-    orchestrationModePending?: boolean;
     orchestrationModeDisabledReason?: string;
     onOrchestrationModeChange?(mode: OrchestrationMode): void | Promise<void>;
     /**
@@ -398,6 +433,29 @@ export const Composer = forwardRef<
      *   - `onSearchMentionFiles` powers the `@` popup.
      */
     mentionSkills?: ReadonlyArray<ComposerSkillOption>;
+    /**
+     * The host's SETTLED verdict on whether the catalog has anything to offer,
+     * held steady across refreshes. The host clears `mentionSkills` while
+     * re-fetching it (the `/` popup must stay fail-closed), so the list being
+     * empty cannot tell "refreshing" from "no skills" — and reading the
+     * transient `[]` as the latter disables the ＋ menu's Skills row and grows
+     * it by a description line for the length of the round trip, blinking the
+     * open menu's geometry on every mode or model change. Hosts that never
+     * clear the list mid-flight can omit this; the row then falls back to
+     * `mentionSkills.length === 0`.
+     */
+    mentionSkillsUnavailable?: boolean;
+    /**
+     * True while the host is re-fetching `mentionSkills`. The row's LOOK is
+     * governed by `mentionSkillsUnavailable` and does not move during a
+     * refresh; this flag governs what a click DOES. Mid-refresh the enabled
+     * look is a held presentation of the previous catalog, not a promise the
+     * current one can honor — acting on it would write a stray `/` into the
+     * draft and pop an empty menu — so the row ignores clicks (and stops
+     * closing the menu, so the click can simply be retried) until the catalog
+     * settles.
+     */
+    mentionSkillsLoading?: boolean;
     slashCommands?: ReadonlyArray<ComposerSlashCommandOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
   }
@@ -1069,7 +1127,7 @@ export const Composer = forwardRef<
     [],
   );
 
-  async function sendCurrent() {
+  async function sendCurrent(followUpMode?: FollowUpMode) {
     if (
       props.disabled
       || props.sendBlocked
@@ -1088,10 +1146,11 @@ export const Composer = forwardRef<
     setSendPending(true);
     let sent: boolean | void;
     try {
-      sent = await props.onSend(
-        text,
-        workspaceFileReferences.length > 0 ? { workspaceFileReferences } : undefined,
-      );
+      const metadata: ComposerSendMetadata = {
+        ...(workspaceFileReferences.length > 0 ? { workspaceFileReferences } : {}),
+        ...(followUpMode ? { followUpMode } : {}),
+      };
+      sent = await props.onSend(text, Object.keys(metadata).length > 0 ? metadata : undefined);
     } finally {
       sendPendingRef.current = false;
       if (composerMountedRef.current) setSendPending(false);
@@ -1121,7 +1180,7 @@ export const Composer = forwardRef<
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    void sendCurrent();
+    void sendCurrent(props.streaming ? props.followUpMode : undefined);
   }
 
   async function runImportAction(actionId: ComposerImportActionId, action: (() => void | Promise<void>) | undefined) {
@@ -1178,18 +1237,22 @@ export const Composer = forwardRef<
       if (handleArrowKey(event)) return;
     }
     if (event.key !== 'Enter') return;
-    // Shift+Enter / Alt+Enter insert a line break instead of sending. We have
-    // to insert it ourselves rather than fall through: ChatComposerInput's own
-    // Enter branch only exempts Shift, so a bare `return` here would hand it
-    // Alt+Enter as a submit — and that path clears the editor even when it
-    // sends nothing, silently dropping the draft.
-    if (event.shiftKey || event.altKey) {
+    // Alt+Enter always inserts a line break. During a running turn, Shift+Enter
+    // sends once using the opposite Queue/Steer mode.
+    if (event.altKey || (event.shiftKey && !props.streaming)) {
       event.preventDefault();
       document.execCommand('insertLineBreak');
       return;
     }
     event.preventDefault();
-    void sendCurrent();
+    const selectedMode = props.followUpMode ?? 'queue';
+    const submitMode =
+      props.streaming && event.shiftKey
+        ? selectedMode === 'queue' ? 'steer' : 'queue'
+        : props.streaming
+          ? selectedMode
+          : undefined;
+    void sendCurrent(submitMode);
   }
 
   function onInputChange(next: string) {
@@ -1270,6 +1333,10 @@ export const Composer = forwardRef<
   // returns to Send (the host reads that as steering). Stop is not lost in that
   // window: Esc interrupts from the input, which is where the hands already are.
   const stopShown = props.streaming === true && !text.trim();
+  const queueCount =
+    (props.queuedMessages?.steering.length ?? 0) +
+    (props.queuedMessages?.followup.length ?? 0);
+  const selectedFollowUpMode = props.followUpMode ?? 'queue';
   const modelChipLabel = props.modelLabel?.trim() || copy.selectModel;
   // Mid-turn the model and thinking menus stay mounted but locked, each
   // carrying the reason in its own words (model vs thinking level) — the
@@ -1351,15 +1418,18 @@ export const Composer = forwardRef<
   ];
   /** A host that passes no handler cannot be in a mode this control can leave. */
   const planModeActive = props.onPlanModeChange !== undefined && props.planModeActive === true;
+  // Deliberately NOT disabled while the host commits a toggle. The host
+  // already drops re-entrant toggles itself, so a disable during its short
+  // IPC round trip carries no protection — it only dims the row (and the
+  // footer mark) to half opacity and back on every click, a visible blink
+  // in the very menu the user is looking at.
   const planModeDisabled =
     props.disabled === true
-    || props.planModePending === true
     || Boolean(props.planModeDisabledReason);
   const orchestrationMode: OrchestrationMode =
     props.onOrchestrationModeChange ? props.orchestrationMode ?? 'default' : 'default';
   const orchestrationModeDisabled =
     props.disabled === true
-    || props.orchestrationModePending === true
     || Boolean(props.orchestrationModeDisabledReason);
   /**
    * The marks at the tail of the footer's left controls are the resting
@@ -1470,6 +1540,13 @@ export const Composer = forwardRef<
           />
         </div>
       )}
+      {!props.hidden && queueCount > 0 ? (
+        <ComposerMessageQueue
+          queuedMessages={props.queuedMessages!}
+          copy={copy}
+          onRetractQueued={props.onRetractQueued}
+        />
+      ) : null}
       <form
         ref={formRef}
         className="maka-composer composer"
@@ -1682,11 +1759,51 @@ export const Composer = forwardRef<
                         // a stray slash and popping an empty menu. Say why it is
                         // unavailable: the panel this replaced showed "no skills
                         // available", and a silent grey row answers nothing.
-                        isDisabled={props.disabled || props.mentionSkills.length === 0}
-                        description={
-                          props.mentionSkills.length === 0 ? copy.noSkillsAvailable : undefined
+                        //
+                        // Only a SETTLED empty catalog counts. The host clears
+                        // the list while re-fetching it (a Plan toggle or model
+                        // change does that with this menu open), and rendering
+                        // that transient `[]` as "no skills" grows this row by
+                        // a description line and back — the menu visibly jumps.
+                        // So the verdict is the host's settled flag when it
+                        // supplies one, and the row repaints only when the
+                        // catalog's emptiness actually changed.
+                        isDisabled={
+                          props.disabled
+                          || (props.mentionSkillsUnavailable
+                            ?? props.mentionSkills.length === 0)
                         }
-                        onClick={openSkillMenu}
+                        description={
+                          (props.mentionSkillsUnavailable
+                            ?? props.mentionSkills.length === 0)
+                            ? copy.noSkillsAvailable
+                            : undefined
+                        }
+                        // Mid-refresh the row LOOKS like the previous catalog
+                        // but cannot act for the current one: opening the `/`
+                        // menu now would write a stray slash against a list
+                        // that is fail-closed empty. A loading click or Enter
+                        // is a complete no-op — nothing typed, menu left open —
+                        // so the same activation a beat later simply works.
+                        // `aria-busy` says so to assistive technology (the
+                        // geometry-stable row would otherwise announce
+                        // "available" and silently ignore the action); the
+                        // class is the same contract for tests and styling.
+                        // The gate lives INSIDE one always-present handler:
+                        // swapping the prop between undefined and a function
+                        // changes Item's internal structure, and the remount
+                        // would drop keyboard focus mid-refresh.
+                        aria-busy={props.mentionSkillsLoading === true ? true : undefined}
+                        className={
+                          props.mentionSkillsLoading === true
+                            ? 'maka-composer-skills-loading'
+                            : undefined
+                        }
+                        hasCloseOnSelect={props.mentionSkillsLoading !== true}
+                        onClick={() => {
+                          if (props.mentionSkillsLoading === true) return;
+                          openSkillMenu();
+                        }}
                       />
                     ) : null}
                     {props.onSetGoal ? (
@@ -1891,7 +2008,28 @@ export const Composer = forwardRef<
             </div>
           )}
           sendActions={(
-            <div className="maka-composer-right-controls" />
+            <div className="maka-composer-right-controls">
+              {props.streaming && props.onFollowUpModeChange ? (
+                <SegmentedControl
+                  value={selectedFollowUpMode}
+                  onChange={(value) => props.onFollowUpModeChange?.(value as FollowUpMode)}
+                  label={copy.followUpModeLabel}
+                  size="sm"
+                  className="maka-composer-follow-up-mode"
+                >
+                  <SegmentedControlItem
+                    value="queue"
+                    label={copy.queueLabel}
+                    icon={<ListEnd size={14} aria-hidden="true" />}
+                  />
+                  <SegmentedControlItem
+                    value="steer"
+                    label={copy.steerLabel}
+                    icon={<CornerDownRight size={14} aria-hidden="true" />}
+                  />
+                </SegmentedControl>
+              ) : null}
+            </div>
           )}
           sendButton={stopShown ? (
             <IconButton
@@ -1913,11 +2051,29 @@ export const Composer = forwardRef<
               variant="primary"
               type="submit"
               isDisabled={sendDisabled}
-              label={props.streaming ? copy.steerLabel : copy.sendLabel}
+              label={
+                props.streaming
+                  ? selectedFollowUpMode === 'queue'
+                    ? copy.queueLabel
+                    : copy.steerLabel
+                  : copy.sendLabel
+              }
               aria-busy={sendPending ? 'true' : undefined}
               data-pending={sendPending ? 'true' : undefined}
-              tooltip={props.streaming ? copy.steerLabel : sendTitle}
-              icon={<ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />}
+              tooltip={
+                props.streaming
+                  ? selectedFollowUpMode === 'queue'
+                    ? copy.queueTooltip
+                    : copy.steerTooltip
+                  : sendTitle
+              }
+              icon={
+                props.streaming
+                  ? selectedFollowUpMode === 'queue'
+                    ? <ListEnd size={ICON_SIZE.chrome} aria-hidden="true" />
+                    : <CornerDownRight size={ICON_SIZE.chrome} aria-hidden="true" />
+                  : <ArrowUp size={ICON_SIZE.chrome} aria-hidden="true" />
+              }
             />
           )}
         />

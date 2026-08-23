@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Drag-to-grant overlay lifecycle contract.
  *
@@ -20,11 +39,7 @@ import {
   type PermissionOverlayDeps,
   type PermissionOverlayWindowLike,
 } from '../permission-overlay/permission-overlay-controller.js';
-import {
-  BUNDLE_ICON_OPTIONS,
-  loadNativeBundleIcon,
-  resolveAppBundle,
-} from '../permission-overlay/app-bundle.js';
+import { resolveAppBundle } from '../permission-overlay/app-bundle.js';
 
 /** Deterministic timer wheel — no real time passes in these tests. */
 function createClock() {
@@ -307,23 +322,6 @@ describe('drag-to-grant permission overlay', () => {
 });
 
 describe('app bundle resolution for the drag', () => {
-  it('never calls the native icon loader for an unpackaged app', async () => {
-    let calls = 0;
-    const icon = await loadNativeBundleIcon(false, async () => {
-      calls += 1;
-      return 'icon';
-    });
-    assert.equal(icon, null);
-    assert.equal(calls, 0, 'unpackaged development must not call app.getFileIcon()');
-    assert.equal(await loadNativeBundleIcon(true, async () => 'icon'), 'icon');
-  });
-
-  it('never requests the large icon size that kills packaged macOS builds', () => {
-    // 'large' hits a fatal NOTREACHED inside Chromium's IconLoader on
-    // macOS (SIGTRAP, not a catchable error) — see issue #3352.
-    assert.notEqual(BUNDLE_ICON_OPTIONS.size as string, 'large');
-  });
-
   it('walks three levels up from the executable to the .app', () => {
     assert.deepEqual(
       resolveAppBundle({

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -1640,8 +1659,8 @@ describe('Maka Pi TUI runner', () => {
       'the head of a tall reply must still be written out',
     );
 
-    // No in-app pager: the removed scroll indicator and its PgUp/PgDn hint never
-    // appear. History is scrolled through the terminal's own scrollback instead.
+    // The live surface stays unpaged until the user explicitly opens the
+    // transcript viewer. Its navigation chrome must not consume normal rows.
     assert.doesNotMatch(cumulative, /PgUp|PgDn|\d+ more/);
 
     // The visible screen follows the tail: the last reply line and the status
@@ -1660,6 +1679,65 @@ describe('Maka Pi TUI runner', () => {
     assert.equal(
       screen[terminal.rows - 1]?.includes('Maka · Auto · deepseek-v4-flash · deepseek · /repo'),
       true,
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('browses a long transcript without depending on terminal scrollback', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new LongTranscriptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('fill');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('filler line 40'));
+
+    terminal.input('/transcript');
+    terminal.input('\r');
+    await waitFor(
+      () => plainTerminalOutput(terminal.screenOutput()).includes('TRANSCRIPT'),
+      'the transcript viewer to open',
+    );
+    let screen = plainTerminalOutput(terminal.screenOutput());
+    assert.match(screen, /PgUp\/PgDn page/);
+    assert.match(screen, /filler line 40/);
+    assert.doesNotMatch(screen, /filler line 1\s/);
+
+    terminal.input('\x1b[H');
+    await waitFor(
+      () =>
+        plainTerminalOutput(terminal.screenOutput())
+          .split(/\r?\n/)
+          .some((line) => line.trim() === 'filler line 1'),
+      'Home to reveal the transcript head',
+    );
+    screen = plainTerminalOutput(terminal.screenOutput());
+    assert.match(screen, /> fill/);
+    assert.doesNotMatch(screen, /filler line 40/);
+
+    terminal.input('q');
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('TRANSCRIPT'),
+      'q to close the transcript viewer',
+    );
+    assert.match(
+      plainTerminalOutput(terminal.screenOutput()),
+      /Maka · Auto · deepseek-v4-flash · deepseek · \/repo/,
     );
 
     exitMaka(terminal);
@@ -1813,6 +1891,37 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => terminal.progressStates.at(-1) === false);
     // Interrupt refills the editor with the cleared queue; clear it before /exit.
     terminal.input('\x03');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('opens /transcript during a running turn instead of steering it', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('start the work');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    terminal.input('/transcript');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('TRANSCRIPT'));
+    assert.deepEqual(driver.steered, []);
+
+    terminal.input('q');
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
     terminal.input('/exit');
     terminal.input('\r');
     await run;
@@ -3042,7 +3151,6 @@ describe('Maka Pi TUI runner', () => {
         agentName: 'Local Read',
         profile: 'local_read',
         toolNames: ['Read', 'Glob', 'Grep'],
-        permissionCeiling: 'ask' as const,
       },
     };
     const driver = new SlashCommandDriver([parent, child]);
@@ -3841,6 +3949,188 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('first answer'));
     // The rewound turn's prompt is refilled into the editor for an edit-and-resend.
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('refilled: turn-2'));
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('shows an in-progress notice while the rewind branch is being created', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new DeferredRewindDriver(
+      [{ turnId: 'turn-1', label: 'first question' }],
+      [
+        storedUserMessage('user-0', 'turn-0', 'earlier question'),
+        storedAssistantMessage('assistant-0', 'turn-0', 'earlier answer'),
+      ],
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+
+    terminal.input('\r');
+    // The branch switch is still in flight, but the selection must already be
+    // visibly accepted — control-busy otherwise renders nothing (#3383).
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+    assert.deepEqual(driver.rewound, []);
+
+    driver.gate.resolve();
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('已回退到该轮之前'));
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('refilled: turn-1'));
+    // The in-progress notice is wiped together with the transcript it announced.
+    await waitFor(
+      () => plainTerminalOutput(terminal.screenOutput()).includes('正在回退到该轮之前') === false,
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('keeps a draft typed while the rewind is in flight instead of overwriting it', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new DeferredRewindDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+
+    // Typed while the branch switch is in flight: this is newer user work and
+    // must win over the prompt refill (#3383). Enter stays swallowed by
+    // disableSubmit, so the draft never becomes a turn.
+    terminal.input('my draft');
+    await waitFor(() => editorInputText(terminal) === 'my draft');
+    terminal.input('\r');
+    assert.deepEqual(driver.prompts, []);
+
+    driver.gate.resolve();
+    // The notice wraps across screen lines at 80 columns, so match against a
+    // whitespace-collapsed copy instead of the raw output.
+    const collapsedOutput = () => plainTerminalOutput(terminal.output()).replace(/\s+/g, '');
+    await waitFor(() => collapsedOutput().includes('未覆盖'));
+    await waitFor(() => editorInputText(terminal) === 'my draft');
+    assert.equal(plainTerminalOutput(terminal.output()).includes('refilled: turn-1'), false);
+    // The ↑ recovery promise must hold even though nothing was submitted in
+    // this TUI process (a resumed session has no live-path history entry):
+    // the rewound prompt is recorded explicitly on completion (#3475 review).
+    // The first ↑ only jumps to line start while the cursor sits at col > 0;
+    // the second one then enters history recall.
+    terminal.input('\x1b[A');
+    terminal.input('\x1b[A');
+    await waitFor(() => editorInputText(terminal) === 'refilled: turn-1');
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('lets a bracketed paste still being buffered win over the prompt refill', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new DeferredRewindDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+
+    // A bracketed paste starts while the branch switch is in flight and its end
+    // marker has not arrived: getText() still reports empty, but the buffered
+    // bytes are newer user input and must win over the refill (#3475 review).
+    terminal.input('\x1b[200~pasted half');
+
+    driver.gate.resolve();
+    // The completion notice wraps across screen lines at 80 columns, so match a
+    // whitespace-collapsed copy.
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).replace(/\s+/g, '').includes('未覆盖'),
+    );
+
+    // Only now does the paste complete — after the refill decision was made.
+    terminal.input(' rest\x1b[201~');
+    await waitFor(() => editorInputText(terminal)?.includes('pasted half rest') ?? false);
+    assert.equal(editorInputText(terminal)?.includes('refilled'), false);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('refuses a rewind selection with a notice when another action claimed busy', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new BusyAfterPickerOpenDriver([{ turnId: 'turn-1', label: 'first question' }]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/rewind');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
+
+    // A Host-started turn claims busy while the picker is open (the same way a
+    // Goal auto-continuation would). Selecting a target must then surface a
+    // refusal instead of runControl's silent early return (#3383).
+    driver.startBlockingTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('无法回退'));
+    assert.deepEqual(driver.rewound, []);
+
+    driver.turnGate.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
 
     exitMaka(terminal);
     await Promise.race([
@@ -7317,6 +7607,55 @@ class RewindDriver extends SlashCommandDriver {
       ...switchResult(this.branchSummary, [...this.branchMessages]),
       prompt: `refilled: ${turnId}`,
     };
+  }
+}
+
+class DeferredRewindDriver extends RewindDriver {
+  readonly gate = deferred<void>();
+
+  override async rewindToTurn(turnId: string): Promise<MakaSessionRewindResult> {
+    await this.gate.promise;
+    return super.rewindToTurn(turnId);
+  }
+}
+
+/**
+ * Holds `busy` from underneath an open picker: publishSuccessor-style, a
+ * Host-started turn begins (and blocks on `turnGate`) while the rewind picker
+ * is already open, so a selection lands on runControl's busy early return.
+ */
+class BusyAfterPickerOpenDriver extends RewindDriver {
+  readonly turnGate = deferred<void>();
+  #startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
+
+  subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
+    this.#startedTurnListener = listener;
+    return () => {
+      if (this.#startedTurnListener === listener) this.#startedTurnListener = undefined;
+    };
+  }
+
+  startBlockingTurn(): void {
+    const gate = this.turnGate;
+    this.#startedTurnListener?.({
+      sessionId: this.getSessionId()!,
+      turnId: 'turn-host',
+      messages: [
+        storedUserMessage('user-host', 'turn-host', 'host question'),
+        storedAssistantMessage('assistant-host', 'turn-host', 'host answer'),
+      ],
+      summary: fakeSessionSummary(this.getSessionId()!),
+      events: (async function* () {
+        await gate.promise;
+        yield {
+          type: 'complete',
+          id: 'complete-host',
+          turnId: 'turn-host',
+          ts: 3,
+          stopReason: 'end_turn',
+        } satisfies SessionEvent;
+      })(),
+    });
   }
 }
 

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, readFile, realpath, stat } from 'node:fs/promises';
@@ -34,6 +53,7 @@ export interface SystemdUserServiceOptions {
   readonly uid?: number;
   readonly runSystemctl?: (args: readonly string[]) => Promise<CommandResult>;
   readonly runLoginctl?: (args: readonly string[]) => Promise<CommandResult>;
+  readonly runJournalctl?: (args: readonly string[]) => Promise<CommandResult>;
 }
 
 export function createSystemdUserRuntimeHostService(
@@ -49,6 +69,7 @@ export function createSystemdUserRuntimeHostService(
     runSystemctl,
   };
   const runLoginctl = options.runLoginctl ?? defaultRunLoginctl;
+  const runJournalctl = options.runJournalctl ?? defaultRunJournalctl;
   const uid = options.uid ?? process.getuid?.();
 
   const readStatus = async (): Promise<RuntimeHostServiceBackendStatus> => {
@@ -90,6 +111,25 @@ export function createSystemdUserRuntimeHostService(
     start: () => runLifecycleAction(context, 'start'),
     stop: () => runLifecycleAction(context, 'stop'),
     restart: () => runLifecycleAction(context, 'restart'),
+    logs: async () => {
+      const result = await runJournalctl([
+        '--user-unit',
+        context.unitName,
+        '--no-pager',
+        '--lines=200',
+        '--output=short-iso',
+      ]).catch((error) => {
+        throw new RuntimeHostServiceManagerError(
+          'service_manager_unavailable',
+          'Unable to read Runtime Host service logs',
+          { cause: error },
+        );
+      });
+      if (result.exitCode !== 0) {
+        throw managerError('Reading Runtime Host service logs failed', result);
+      }
+      return result.stdout;
+    },
     uninstall: async () => {
       const before = await readSystemdStatus(context);
       if (before.loadState !== 'not-found') {
@@ -441,6 +481,10 @@ async function defaultRunLoginctl(args: readonly string[]): Promise<CommandResul
   return runCommand('loginctl', args);
 }
 
+async function defaultRunJournalctl(args: readonly string[]): Promise<CommandResult> {
+  return runCommand('journalctl', args);
+}
+
 async function runCommand(command: string, args: readonly string[]): Promise<CommandResult> {
   return new Promise((resolveResult, reject) => {
     const child = spawn(command, args, {
@@ -505,7 +549,7 @@ function quoteSystemdArgument(value: string): string {
     .replaceAll('\\', '\\\\')
     .replaceAll('"', '\\"')
     .replaceAll('%', '%%')
-    .replaceAll('$', '$$$$')}"`;
+    .replaceAll('$', () => '$$')}"`;
 }
 
 function actionPresentParticiple(action: 'start' | 'stop' | 'restart'): string {

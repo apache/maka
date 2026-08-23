@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Dispatch, SetStateAction } from 'react';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type {
@@ -10,6 +29,7 @@ import { openSkillFailureCopy } from './app-shell-copy';
 import { createOpenSkillAction } from './app-shell-open-skill-action';
 import {
   defaultRuntimeHostDiagnosticTarget,
+  runIfDefaultRuntimeHostCurrent,
   runOnDefaultRuntimeHost,
 } from './default-runtime-host-operation.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -23,6 +43,8 @@ type ToastApi = {
     diagnosticTarget?: { profileId: string },
   ): void;
 };
+
+type RefBox<T> = { current: T };
 
 export interface AppShellSkillActions {
   refreshSkills(options?: { shouldShowError?: () => boolean }): Promise<void>;
@@ -49,6 +71,11 @@ export interface AppShellSkillActions {
 export function createAppShellSkillActions(deps: {
   uiLocale: UiLocale;
   isSkillsSurfaceActive: () => boolean;
+  refreshGenerationsRef: RefBox<{
+    skills: number;
+    managedSkillSources: number;
+    bundledSkillCatalog: number;
+  }>;
   setSkills: Dispatch<SetStateAction<SkillEntry[]>>;
   setManagedSkillSources: Dispatch<SetStateAction<ManagedSkillSourceEntry[]>>;
   setBundledSkillCatalog: Dispatch<SetStateAction<BundledSkillCatalogEntry[]>>;
@@ -57,6 +84,7 @@ export function createAppShellSkillActions(deps: {
   const {
     uiLocale,
     isSkillsSurfaceActive,
+    refreshGenerationsRef,
     setBundledSkillCatalog,
     setManagedSkillSources,
     setSkills,
@@ -82,10 +110,14 @@ export function createAppShellSkillActions(deps: {
   });
 
   async function refreshSkills(options: { shouldShowError?: () => boolean } = {}) {
+    const generation = ++refreshGenerationsRef.current.skills;
     try {
       const next = await runOnDefaultRuntimeHost((host) => window.maka.skills.list(host));
-      setSkills(next.value);
+      await runIfDefaultRuntimeHostCurrent(next.host, () => {
+        if (generation === refreshGenerationsRef.current.skills) setSkills(next.value);
+      });
     } catch (error) {
+      if (generation !== refreshGenerationsRef.current.skills) return;
       if (options.shouldShowError?.() ?? true) {
         reportRuntimeHostError(copy.refreshSkillsFailedTitle, copy.refreshSkillsFallback, error);
       }
@@ -93,10 +125,16 @@ export function createAppShellSkillActions(deps: {
   }
 
   async function refreshManagedSkillSources(options: { shouldShowError?: () => boolean } = {}) {
+    const generation = ++refreshGenerationsRef.current.managedSkillSources;
     try {
       const next = await runOnDefaultRuntimeHost((host) => window.maka.skills.sources.list(host));
-      setManagedSkillSources(next.value);
+      await runIfDefaultRuntimeHostCurrent(next.host, () => {
+        if (generation === refreshGenerationsRef.current.managedSkillSources) {
+          setManagedSkillSources(next.value);
+        }
+      });
     } catch (error) {
+      if (generation !== refreshGenerationsRef.current.managedSkillSources) return;
       if (options.shouldShowError?.() ?? true) {
         reportRuntimeHostError(copy.refreshSourcesFailedTitle, copy.refreshSourcesFallback, error);
       }
@@ -104,10 +142,16 @@ export function createAppShellSkillActions(deps: {
   }
 
   async function refreshBundledSkillCatalog(options: { shouldShowError?: () => boolean } = {}) {
+    const generation = ++refreshGenerationsRef.current.bundledSkillCatalog;
     try {
       const next = await runOnDefaultRuntimeHost((host) => window.maka.skills.catalog.list(host));
-      setBundledSkillCatalog(next.value);
+      await runIfDefaultRuntimeHostCurrent(next.host, () => {
+        if (generation === refreshGenerationsRef.current.bundledSkillCatalog) {
+          setBundledSkillCatalog(next.value);
+        }
+      });
     } catch (error) {
+      if (generation !== refreshGenerationsRef.current.bundledSkillCatalog) return;
       if (options.shouldShowError?.() ?? true) {
         reportRuntimeHostError(copy.refreshBundledFailedTitle, copy.refreshBundledFallback, error);
       }

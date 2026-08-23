@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
@@ -86,10 +105,16 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
     // grant covers only this file object and never its parent directory.
     const target = join(workspace, 'inside.txt');
     await writeFile(target, 'seeded');
+    // A write mutation on an existing target must carry the identity captured
+    // at lock acquisition (#2600): lstat the file and supply { dev, ino },
+    // exactly as the boundary executor does in production.
+    const { stat } = await import('node:fs/promises');
+    const meta = await stat(target, { bigint: true });
     await client.execute({
       operation: { kind: 'write', path: target, content: 'windows-relay-ok' },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: { dev: String(meta.dev), ino: String(meta.ino) },
     });
     assert.equal(await readFile(target, 'utf8'), 'windows-relay-ok');
 
@@ -97,6 +122,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
       operation: { kind: 'read', path: target },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(read.kind, 'read');
     if (read.kind === 'read') assert.match(read.content, /windows-relay-ok/);
@@ -112,6 +138,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
         operation: { kind: 'write', path: missing, content: 'blocked' },
         cwd: workspace,
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) =>
         error instanceof FilesystemWorkerClientError &&
@@ -131,6 +158,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
       operation: { kind: 'glob', path: sourceDirectory, pattern: '**/*.ts' },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(globResult.kind, 'glob');
     if (globResult.kind === 'glob') {
@@ -153,6 +181,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
         },
         cwd: workspace,
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) =>
         error instanceof FilesystemWorkerClientError && error.reason === 'grep_unavailable',
@@ -169,6 +198,7 @@ describe('Windows filesystem worker smoke', { skip: !enabled }, () => {
         },
         cwd: workspace,
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) =>
         error instanceof FilesystemWorkerClientError && error.reason === 'path_denied',

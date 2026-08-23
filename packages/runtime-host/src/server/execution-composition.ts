@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash, randomUUID } from 'node:crypto';
 import {
   describeChatConfigurationReason,
@@ -59,12 +78,7 @@ import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { openStorageWriterComposition } from '@maka/storage';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
-import {
-  openManagedWorkspaceOwner,
-  type ManagedWorkspaceFilesystemWorker,
-  type ManagedWorkspaceOwner,
-  type VerifiedGitRuntimeInput,
-} from '@maka/storage/managed-workspace-owner';
+import { type ManagedWorkspaceFilesystemWorker } from '@maka/storage/managed-workspace-owner';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import {
   bindHostChildAgentBackend,
@@ -168,7 +182,6 @@ export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition 
 }
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
-  readonly managedWorkspaceGitRuntime?: VerifiedGitRuntimeInput;
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
   readonly projectDirectoryRoots?: readonly PublishedProjectDirectoryRoot[];
@@ -215,7 +228,6 @@ export async function createExecutionRuntimeHostComposition(
   let unsubscribeTaskLedger: (() => void) | undefined;
   let unsubscribeTranscriptChanges: (() => void) | undefined;
   let unsubscribeUsageChanges: (() => void) | undefined;
-  let managedWorkspaceOwner: ManagedWorkspaceOwner | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
   try {
@@ -299,22 +311,8 @@ export async function createExecutionRuntimeHostComposition(
     const managedFilesystemWorker = filesystemWorker
       ? adaptManagedWorkspaceFilesystemWorker(filesystemWorker)
       : undefined;
-    if (options.managedWorkspaceGitRuntime) {
-      if (!managedFilesystemWorker) {
-        throw new RuntimeHostWorkspaceExecutionError(
-          'filesystem_worker_unavailable',
-          'Managed workspace execution requires the sandboxed filesystem worker',
-        );
-      }
-      managedWorkspaceOwner = await openManagedWorkspaceOwner({
-        rootOwner: context.owner,
-        gitRuntime: options.managedWorkspaceGitRuntime,
-        filesystemWorker: managedFilesystemWorker,
-      });
-    }
     workspaceExecution = createRuntimeHostWorkspaceExecutionComposition({
       ...(managedFilesystemWorker ? { filesystemWorker: managedFilesystemWorker } : {}),
-      ...(managedWorkspaceOwner ? { managedOwner: managedWorkspaceOwner } : {}),
     });
     const taskLedger = new HostTaskLedgerCoordinator(
       taskLedgerStore,
@@ -1595,7 +1593,6 @@ export async function createExecutionRuntimeHostComposition(
     goalExecutions?.beginDrain();
     try {
       await workspaceExecution?.close();
-      if (!workspaceExecution) await managedWorkspaceOwner?.close();
     } catch (closeError) {
       errors.push(closeError);
     }
@@ -1653,7 +1650,9 @@ function adaptManagedWorkspaceFilesystemWorker(
 ): ManagedWorkspaceFilesystemWorker {
   return {
     async execute(input) {
-      const result = await worker.execute(input);
+      // Read-only operations never participate in CAS; the adapter says so
+      // explicitly (#3484) instead of relying on an absent optional field.
+      const result = await worker.execute({ ...input, expectedIdentity: 'unchecked' });
       switch (result.kind) {
         case 'read':
         case 'read_image':

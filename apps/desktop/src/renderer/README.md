@@ -1,3 +1,22 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Renderer (`apps/desktop/src/renderer`)
 
 The Electron renderer process: the React UI body of the Maka desktop app. React + Vite, consuming Astryx through `@maka/ui` primitives.
@@ -12,7 +31,15 @@ For the main/preload/renderer split and the IPC contract, see `apps/desktop/READ
 
 ## AppShell + the action modules
 
-`app-shell.tsx` is the shell component: owns session state, wires the `@maka/ui` panels (SessionListPanel, ChatView, Composer — ChatView renders the tool stream via `ToolTrow`), and lazy-mounts SessionWorkbar, which owns the task ledger, browser, and generated files. It is supported by a set of `app-shell-*` modules, each a narrow slice of shell logic split by one concern (e.g. `app-shell-session-events.ts`, `app-shell-chat-actions.ts`, `app-shell-plan-actions.ts`, `app-shell-effects.ts`, `app-shell-stop-action.ts`, `app-shell-overlays.tsx`). Most follow `app-shell-<scope>-<action>.ts(x)`; a few single-word slices like `app-shell-effects.ts` or `app-shell-copy.ts` drop the action segment. Keep a slice to one concern; if it grows, split along the same seam.
+`app-shell.tsx` is the shell component: it owns session state and wires the
+`@maka/ui` conversation surfaces. The right/bottom Workbar is the vertical
+feature under `features/workbar`; its own README defines the state and lifecycle
+boundary for Review, Terminal, Tasks, Browser, Files, Inspector and Side Chat.
+The shell is supported by a set of `app-shell-*` modules, each a narrow slice of
+shell logic split by one concern (e.g. `app-shell-session-events.ts`,
+`app-shell-chat-actions.ts`, `app-shell-effects.ts`, and
+`app-shell-overlays.tsx`). Keep a slice to one concern; if it grows, split along
+the same seam.
 
 `settings/` holds the settings pages and the `SettingsModal` shell — one page per `SettingsSection` (defined in `@maka/core`); the models/providers page is `ProvidersPanel`. Plus the `provider-*` files and the shared `settings-rows` / `settings-skeleton` / `settings-surface` helpers.
 

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
@@ -144,14 +163,16 @@ describe('retired provider contract', () => {
   });
 });
 
-// Discovery keeps only the fallback set, and the catalog marks whatever it
-// returns available and default-capable, so a deprecated id in `fallbackModels`
-// is offered as a usable choice. Six providers still carry such ids on main —
-// `openai` writes its list by hand, the rest build it through
-// `toolCallingModelIds`, which does not filter lifecycle. Converging all of
-// them changes which models users are offered and is tracked in #3355; this
-// list is the recorded boundary, so a provider that regresses into it fails
-// here rather than passing unnoticed.
+// A deprecated id in `fallbackModels` is offered as a usable choice: the
+// catalog marks the list available and default-capable, and `fallbackModels[0]`
+// is the new-connection default and the connection-test probe. (For the eight
+// providers with a `CURATED_CATALOG_FALLBACK_MODELS` entry that curated list
+// replaces this one in the catalog, so theirs reaches CLI onboarding and the
+// probe candidates instead.) `toolCallingModelIds` filters on tool-calling
+// capability only, so a derivation that needs it drops deprecated ids at its
+// own call site, and `openai` writes its list by hand. Removal is from the
+// offer only — an id a user already chose still sends, and live discovery
+// still returns whatever the endpoint serves (#3355).
 // Not every catalog provider has a models.dev snapshot (custom and
 // compatible-endpoint types have none), so the lookup is widened rather than
 // keyed on the registry's own union.
@@ -163,15 +184,6 @@ const snapshotFor = (type: string) =>
     >
   )[type];
 
-const PROVIDERS_WITH_DEPRECATED_FALLBACKS = new Set([
-  'openai',
-  'xiaomi',
-  'mistral',
-  'togetherai',
-  'nvidia',
-  'deepinfra',
-]);
-
 describe('provider catalog contract — fallback lifecycle', () => {
   it('keeps deprecated snapshot models out of fallback lists', () => {
     const regressed = [];
@@ -181,25 +193,10 @@ describe('provider catalog contract — fallback lifecycle', () => {
       const deprecated = (PROVIDER_REGISTRY[type].fallbackModels ?? []).filter(
         (id) => snapshot[id]?.lifecycle === 'deprecated',
       );
-      if (deprecated.length > 0 && !PROVIDERS_WITH_DEPRECATED_FALLBACKS.has(type)) {
+      if (deprecated.length > 0) {
         regressed.push(`${type}: ${deprecated.join(', ')}`);
       }
     }
     assert.deepEqual(regressed, []);
-  });
-
-  it('holds the recorded boundary to exactly the providers that predate it', () => {
-    const offenders = CATALOG_PROVIDER_TYPES.filter((type) => {
-      const snapshot = snapshotFor(type);
-      return (
-        snapshot !== undefined &&
-        (PROVIDER_REGISTRY[type].fallbackModels ?? []).some(
-          (id) => snapshot[id]?.lifecycle === 'deprecated',
-        )
-      );
-    });
-    // Fails when a listed provider is cleaned up and the entry is left behind,
-    // so the boundary shrinks as the tracked work lands instead of going stale.
-    assert.deepEqual([...offenders].sort(), [...PROVIDERS_WITH_DEPRECATED_FALLBACKS].sort());
   });
 });

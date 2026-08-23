@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   BranchFromTurnInput,
   RegenerateTurnInput,
@@ -7,7 +26,8 @@ import type {
 import type { QuoteRef } from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import { isCanonicalStorageRef } from '@maka/core/events';
+import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import { isAttachmentRef, isCanonicalStorageRef, type AttachmentRef } from '@maka/core/events';
 
 import { isOrchestrationMode, isTurnOrchestrationSource } from '@maka/core/orchestration';
 
@@ -37,6 +57,7 @@ interface NormalizedSendSessionCommand {
   displayText?: string;
   skillIds?: string[];
   attachmentItems?: unknown;
+  retainedAttachments?: AttachmentRef[];
   turnOrchestration?: TurnOrchestration;
   quotes?: QuoteRef[];
   workspaceFileReferences?: WorkspaceFileReferencePosition[];
@@ -158,6 +179,7 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     ...(displayText !== undefined ? { displayText } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),
+    ...normalizeOptionalRetainedAttachments(value.retainedAttachments),
     ...(value.turnOrchestration !== undefined
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
@@ -167,6 +189,22 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
       displayText ?? text,
     ),
   };
+}
+
+function normalizeOptionalRetainedAttachments(
+  input: unknown,
+): { retainedAttachments?: AttachmentRef[] } {
+  if (input === undefined) return {};
+  if (
+    !Array.isArray(input) ||
+    input.length > MAX_ATTACHMENT_COUNT ||
+    !input.every(isAttachmentRef)
+  ) {
+    throw new Error('Invalid retained attachments');
+  }
+  return input.length > 0
+    ? { retainedAttachments: input.map((attachment) => structuredClone(attachment)) }
+    : {};
 }
 
 function normalizeOptionalWorkspaceFileReferences(

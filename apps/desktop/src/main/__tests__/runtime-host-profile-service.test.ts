@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -32,6 +51,21 @@ const PROFILE = {
   kind: "remote" as const,
   transport: { kind: "tls" as const, url: "wss://runtime.example.com" },
   rootId: ROOT_ID,
+};
+const MANAGED_PROFILE = {
+  ...PROFILE,
+  id: "managed-office",
+  transport: {
+    kind: "ssh" as const,
+    destination: "operator@example.com",
+    remotePort: 7443,
+    websocketPath: "/runtime-host",
+  },
+};
+const MANAGED_SERVICE = {
+  id: "c".repeat(64),
+  rootPath: "/srv/maka",
+  operatorPath: "/home/operator/.local/share/maka/operator",
 };
 const READY_PROFILE = {
   id: "backup",
@@ -450,7 +484,7 @@ test("finishes a persisted pairing after Desktop restarts before finalization", 
 test("preserves a staged pairing when finalization is interrupted", async () => {
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);
-  await catalog.create(PROFILE, "old-token");
+  await catalog.create(MANAGED_PROFILE, "old-token");
   const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
@@ -466,10 +500,15 @@ test("preserves a staged pairing when finalization is interrupted", async () => 
   });
 
   await assert.rejects(
-    () => service.addAndEnableVerified({ profile: PROFILE, credential: "new-token" }),
+    () =>
+      service.addAndEnableVerified({
+        profile: MANAGED_PROFILE,
+        credential: "new-token",
+        managedService: MANAGED_SERVICE,
+      }),
     RuntimeHostPairingFinalizationInterruptedError,
   );
-  assert.equal((await catalog.resolve(PROFILE.id)).credential, "new-token");
+  assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "new-token");
 
   const recoveredStartup = await resolveDesktopRuntimeHostStartup(root, { catalog });
   assert.equal(recoveredStartup.pairingIntents.length, 1);
@@ -485,6 +524,69 @@ test("preserves a staged pairing when finalization is interrupted", async () => 
   });
   await recovered.startEnabledProfiles();
 
+  assert.equal(
+    (await recovered.getSnapshot()).entries.find(
+      (entry) => entry.profile.id === MANAGED_PROFILE.id,
+    )?.managedService,
+    true,
+  );
+  assert.deepEqual(
+    (await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents,
+    [],
+  );
+});
+
+test("keeps managed service recovery when a failed pairing profile cannot be removed", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const removeIfCurrent = catalog.removeIfCurrent.bind(catalog);
+  catalog.removeIfCurrent = async () => {
+    throw new Error("profile catalog is temporarily unavailable");
+  };
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => {
+      throw new Error("finalization failed");
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      service.addAndEnableVerified({
+        profile: MANAGED_PROFILE,
+        credential: "new-token",
+        managedService: MANAGED_SERVICE,
+      }),
+    /previous profile could not be restored/u,
+  );
+
+  catalog.removeIfCurrent = removeIfCurrent;
+  const recoveredStartup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const recovered = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup: recoveredStartup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+  await recovered.startEnabledProfiles();
+
+  assert.equal(
+    (await recovered.getSnapshot()).entries.find(
+      (entry) => entry.profile.id === MANAGED_PROFILE.id,
+    )?.managedService,
+    true,
+  );
   assert.deepEqual(
     (await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents,
     [],

@@ -1,18 +1,39 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Product release checklist
 
-The `Release` workflow is Maka's convenience-artifact release entry point. Desktop, CLI/TUI, and
-bundled Git source materials are built from the exact IPMC-approved ASF source candidate commit.
-They share that source commit, the root product version, one convenience tag, one GitHub Release,
-one Draft decision, and one release gate. The workflow creates no Draft until every required
-artifact job succeeds.
+The `Release` workflow is Maka's convenience-artifact release entry point. Desktop and CLI/TUI are
+built from the exact IPMC-approved ASF source candidate commit. They share that source commit, the
+root product version, one convenience tag, one GitHub Release, one Draft decision, and one release
+gate. The workflow creates no Draft until every required artifact job succeeds.
 
 Phase 1 requires:
 
 - signed and notarized Apple Silicon macOS Desktop artifacts;
 - the unsigned Windows x64 Desktop installer and ZIP;
 - the signed, notarized, relocatable Apple Silicon CLI/TUI ZIP;
-- bundled Git source materials;
 - checksums generated after each artifact reaches its final form.
+
+The ASF Desktop artifacts must not contain a Git runtime, a bundled-Git manifest, or Git/Dugite
+redistribution notices. Managed-workspace execution remains unavailable until a separately reviewed,
+ASF-compatible verified runtime is connected before admission/T1.
 
 The first product release also requires the exact `maka-agent@<version>` npm package. The product
 tag and Draft must exist before npm staging, but the Draft must remain unpublished until npm is
@@ -55,13 +76,13 @@ These controls close the check-to-upload and check-to-stage windows. Keep the Re
    version, and the CLI manifest exposes only the `maka` command.
 4. Dispatch `Release` from the exact approved candidate tag and supply the same tag as
    `source_reference_tag`. A rerun must use that same tag; never select current `main` instead.
-5. Confirm `release-identity`, both Desktop matrix entries, `cli-macos-arm64`, `source`, and
+5. Confirm `release-identity`, both Desktop matrix entries, `cli-macos-arm64`, and
    `publish` pass. A skipped or failed required job must prevent Draft creation.
 6. Confirm one Draft named `v<version>` targets the approved source SHA, identifies the ASF source
    reference in its notes, is marked as a GitHub prerelease exactly when the product version is a
    prerelease, is not marked Latest while it remains a Draft, and contains exactly the manifest
    reported by `node scripts/product-release-artifacts.mjs list`. The manifest covers both Desktop
-   platforms and update metadata, the standalone CLI/TUI, bundled source, and their required checksums.
+   platforms and update metadata, the standalone CLI/TUI, and their required checksums.
 7. Inspect the CLI ZIP. It must contain `bin/maka`, `RELEASE.json`, `DISCLAIMER-WIP`, `LICENSE`, `NOTICE`,
    `THIRD_PARTY_NOTICES.txt`, the pinned Node license, and no `bin/maka-agent`.
 8. Confirm `RELEASE.json` records the Draft's product version and source SHA, Apple Team ID
@@ -71,8 +92,8 @@ These controls close the check-to-upload and check-to-stage windows. Keep the Re
    entitlements must retain the required hardened-runtime capabilities and omit
    `com.apple.security.get-task-allow`, as required by Apple's
    [notarization guidance](https://developer.apple.com/documentation/security/resolving-common-notarization-issues).
-9. Extract the bundled Git source-materials archive. Confirm `SOURCE_MANIFEST.json`, `README.txt`,
-   all manifest archives, and the expected Dugite native release are present.
+9. Inspect both Desktop resource trees and confirm `git/`, `bundled-git.json`, `licenses/git/`, and
+   `licenses/dugite/` are absent.
 
 If the publish job created the product tag or Draft but failed before every asset was uploaded,
 rerun `Release` from the same approved ASF source candidate tag with the same

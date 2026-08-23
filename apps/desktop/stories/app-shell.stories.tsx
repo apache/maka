@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
@@ -12,7 +31,8 @@ import {
   TitlebarSessionIdentity,
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
-import { AppShellTopbarActions, AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
+import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
+import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
 import { deriveBranchBanner } from '../src/renderer/branch-banner';
@@ -261,7 +281,6 @@ function ShellFrame(props: {
       data-sidebar-state={props.sidebarCollapsed ? 'collapsed' : 'expanded'}
       style={
         {
-          height: '100%',
           minHeight: 640,
           /* Same publication point as production, for the same reason as
              `data-sidebar-state` above: the titlebar's first grid track is a
@@ -381,10 +400,10 @@ function ComposedShell(props: {
             })()}
           />
         )}
-        <AppShellWorkspaceTopActions
-          workbarAvailable
-          workbarCollapsed={false}
-          onToggleWorkbar={noop}
+        <WorkbarTitlebarActions
+          available
+          collapsed={false}
+          onToggle={noop}
         />
       </header>
       <AstryxAppShell
@@ -545,6 +564,65 @@ export const RunningStatusDuringToolRun: Story = {
               status: 'running',
               args: { command: 'npm test' },
             }],
+          }],
+        },
+      }}
+    />
+  ),
+};
+
+// Real path: Desktop Computer Use is exposed through the Runtime Host Client
+// Capability bridge. The settled observation establishes the confirmed target;
+// the following sequence inherits it while live progress replaces the generic
+// working phrase at the bottom of the turn.
+export const ComputerUseObservability: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'running', streaming: true }}
+      chat={{
+        runningStatus: true,
+        messages: [
+          user('msg-cu-1', 'turn-cu', 2, '在计算器里完成这组输入，并确认结果。'),
+          {
+            type: 'turn_state',
+            id: 'state-cu',
+            turnId: 'turn-cu',
+            ts: NOW - 40_000,
+            status: 'running',
+            partialOutputRetained: false,
+          },
+        ],
+        liveTurn: {
+          turnId: 'turn-cu',
+          phase: 'streamed',
+          steps: [{
+            stepId: 'msg-assistant-cu',
+            tools: [
+              {
+                toolUseId: 'tool-cu-observe',
+                toolName: 'mcp__desktop_computer_use__maka_computer',
+                activityKind: 'computer',
+                displayName: 'Maka Computer',
+                status: 'completed',
+                args: { action: 'observe', app: '计算器', window_id: 7 },
+                durationMs: 728,
+              },
+              {
+                toolUseId: 'tool-cu-sequence',
+                toolName: 'mcp__desktop_computer_use__maka_computer',
+                activityKind: 'computer',
+                displayName: 'Maka Computer',
+                status: 'running',
+                args: {
+                  action: 'element_sequence',
+                  observation_id: '00000000-0000-0000-0000-000000000001',
+                  steps: Array.from({ length: 11 }, (_, index) => ({
+                    label: `<text:${String(index).length}>`,
+                  })),
+                },
+                progress: { current: 7, total: 11 },
+              },
+            ],
           }],
         },
       }}

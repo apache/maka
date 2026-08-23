@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { DeepResearchReportSectionKey } from '@maka/core/deep-research-run';
 import type { ProviderRetryReason } from '@maka/core/events';
 import type { PermissionMode } from '@maka/core/permission';
@@ -91,6 +110,15 @@ export interface ConversationCopy {
     importing: string;
     sendLabel: string;
     steerLabel: string;
+    queueLabel: string;
+    followUpModeLabel: string;
+    queueTooltip: string;
+    steerTooltip: string;
+    queuedMessagesAriaLabel(count: number): string;
+    steerQueuedLabel: string;
+    steerDeliveringLabel: string;
+    followUpQueuedLabel: string;
+    retractQueued: string;
     stopLabel: string;
     stopping: string;
     streaming: string;
@@ -389,7 +417,13 @@ const CONVERSATION_COPY = {
     },
     composer: {
       placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
-      sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', steerLabel: '插入消息', stopLabel: '停止', stopping: '停止中…',
+      sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', steerLabel: '插入消息',
+      queueLabel: '排队', followUpModeLabel: '连续消息处理方式',
+      queueTooltip: '当前回复完成后发送', steerTooltip: '尽快插入当前回复',
+      queuedMessagesAriaLabel: (count) => `${count} 条待处理消息`,
+      steerQueuedLabel: '引导', steerDeliveringLabel: '正在引导', followUpQueuedLabel: '排队',
+      retractQueued: '撤回全部',
+      stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',
@@ -418,7 +452,6 @@ const CONVERSATION_COPY = {
       mode: {
         explore: { label: '只读', hint: '只读搜索，不写文件、不上网；需要时先问你。' },
         ask: { label: '自动', hint: '保护层内自动执行，越权先问你。' },
-        execute: { label: '自动执行', hint: '常见工具直接执行；危险操作仍会确认。' },
         bypass: { label: '完全权限', hint: '直接访问文件和网络，仅限可信任务。' },
       },
       modeAriaLabel: (label) => `权限模式：${label}`,
@@ -532,7 +565,13 @@ const CONVERSATION_COPY = {
     },
     composer: {
       placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
-      sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', steerLabel: 'Steer', stopLabel: 'Stop', stopping: 'Stopping…',
+      sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', steerLabel: 'Steer',
+      queueLabel: 'Queue', followUpModeLabel: 'Follow-up behavior',
+      queueTooltip: 'Send after the current response', steerTooltip: 'Guide the current response',
+      queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
+      steerQueuedLabel: 'Steer', steerDeliveringLabel: 'Steering', followUpQueuedLabel: 'Queued',
+      retractQueued: 'Retract all',
+      stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add file or directory',
@@ -559,7 +598,6 @@ const CONVERSATION_COPY = {
       mode: {
         explore: { label: 'Read only', hint: 'Read and search only; asks before write or network.' },
         ask: { label: 'Auto', hint: "Runs inside Maka's protection; asks before going further." },
-        execute: { label: 'Auto execute', hint: 'Common tools run; risky actions still confirm.' },
         bypass: { label: 'Full access', hint: 'Direct file and network access. Trust-only tasks.' },
       },
       modeAriaLabel: (label) => `Permission mode: ${label}`,

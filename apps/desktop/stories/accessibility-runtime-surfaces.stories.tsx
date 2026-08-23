@@ -1,12 +1,40 @@
-import type { Meta, StoryObj } from '@storybook/react-vite';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { useRef, useState } from 'react';
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactDescriptor } from '@maka/core/artifacts';
 import { ToastProvider } from '@maka/ui';
-import { ArtifactPreview } from '../src/renderer/artifact-preview';
-import { BrowserPanel } from '../src/renderer/browser-panel';
+import {
+  WorkbarSurface,
+} from '../src/renderer/features/workbar';
+import {
+  createFakeWorkbarServices,
+  createSessionWorkbarPanelsState,
+  createSessionWorkbarTabsState,
+  openStaticSessionWorkbarTab,
+  terminalSessionWorkbarTabId,
+  WorkbarServicesProvider,
+  type WorkbarServices,
+} from '../src/renderer/features/workbar/testing';
 import { RemoteProjectDirectoryDialog } from '../src/renderer/remote-project-directory-dialog';
-import { SessionTerminalPanel } from '../src/renderer/session-terminal-panel';
 import { RuntimeHostSshTerminalDialog } from '../src/renderer/settings/runtime-host-ssh-terminal-dialog';
 import { withScopedMakaBridge } from './maka-bridge';
 
@@ -19,6 +47,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 const unsubscribe = () => () => undefined;
+const noop = () => undefined;
 const terminalWrite = fn(async () => null);
 const sshWrite = fn(async () => undefined);
 const browserNavigate = fn(async () => undefined);
@@ -29,10 +58,65 @@ const registerDirectory = fn(async () => ({
   available: true,
 }));
 
+function withWorkbarServices(overrides: Partial<WorkbarServices>): Decorator {
+  const services = createFakeWorkbarServices(overrides);
+  return (Story) => (
+    <WorkbarServicesProvider services={services}>
+      <Story />
+    </WorkbarServicesProvider>
+  );
+}
+
+function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files' }) {
+  const terminalRef = 'pty:storybook';
+  const right = props.kind === 'terminal'
+    ? createSessionWorkbarTabsState(
+        [{
+          id: terminalSessionWorkbarTabId(terminalRef),
+          kind: 'terminal',
+          resourceRef: terminalRef,
+          ownerSessionId: 'runtime-surface',
+        }],
+        terminalSessionWorkbarTabId(terminalRef),
+      )
+    : openStaticSessionWorkbarTab(createSessionWorkbarTabsState(), props.kind);
+  return (
+    <ToastProvider>
+      <div
+        className="maka-detail-with-artifacts"
+        style={{ height: 520, width: 720 }}
+      >
+        <div className="mainColumn" />
+        <WorkbarSurface
+          sessionId="runtime-surface"
+          hidden={false}
+          onDismissPanel={noop}
+          panelsState={createSessionWorkbarPanelsState(right)}
+          rightCollapsed={false}
+          bottomOpen={false}
+          onActivateTab={noop}
+          onCloseTab={noop}
+          onCloseTabs={noop}
+          onReorderTab={noop}
+          onMoveTab={noop}
+          onMoveTabToPanel={noop}
+          onPinTab={noop}
+          onOpenLauncher={noop}
+          onRequestOpenTab={noop}
+        />
+      </div>
+    </ToastProvider>
+  );
+}
+
 export const ActiveTerminal: Story = {
   decorators: [
-    withScopedMakaBridge({
-      shellRuns: {
+    withWorkbarServices({
+      terminal: {
+        start: async () => {
+          throw new Error('not used by this story');
+        },
+        stop: async () => null,
         attach: async () => ({
           sessionId: 'runtime-surface',
           ref: 'pty:storybook',
@@ -48,13 +132,7 @@ export const ActiveTerminal: Story = {
     }),
   ],
   render: () => (
-    <div style={{ height: 520, padding: 24 }}>
-      <SessionTerminalPanel
-        sessionId="runtime-surface"
-        terminalRef="pty:storybook"
-        active
-      />
-    </div>
+    <WorkbarToolSurface kind="terminal" />
   ),
   play: async ({ canvasElement }) => {
     await waitFor(
@@ -115,8 +193,9 @@ export const RuntimeHostSshTerminal: Story = {
 
 export const BrowserLoaded: Story = {
   decorators: [
-    withScopedMakaBridge({
+    withWorkbarServices({
       browser: {
+        setActiveSession: () => undefined,
         getState: async () => ({
           url: 'https://example.com/dashboard',
           title: 'Example Dashboard',
@@ -127,7 +206,8 @@ export const BrowserLoaded: Story = {
           secure: true,
           hasPage: true,
         }),
-        onState: unsubscribe,
+        subscribeState: unsubscribe,
+        subscribeLive: unsubscribe,
         setViewport: () => undefined,
         back: async () => undefined,
         forward: async () => undefined,
@@ -138,13 +218,7 @@ export const BrowserLoaded: Story = {
       },
     }),
   ],
-  render: () => (
-    <ToastProvider>
-      <div style={{ height: 520, padding: 24 }}>
-        <BrowserPanel sessionId="browser-storybook" hidden={false} />
-      </div>
-    </ToastProvider>
-  ),
+  render: () => <WorkbarToolSurface kind="browser" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const address = await canvas.findByRole('textbox', { name: '浏览器地址' });
@@ -160,7 +234,7 @@ export const BrowserLoaded: Story = {
     await userEvent.type(address, 'openai.com{enter}');
     await waitFor(() =>
       expect(browserNavigate).toHaveBeenCalledWith(
-        'browser-storybook',
+        'runtime-surface',
         'https://openai.com/',
       ));
   },
@@ -201,8 +275,9 @@ function RemoteProjectDirectoryStory() {
 
 export const HtmlArtifact: Story = {
   decorators: [
-    withScopedMakaBridge({
+    withWorkbarServices({
       artifacts: {
+        list: async () => [htmlArtifact],
         readText: async () => ({
           ok: true,
           text: [
@@ -213,16 +288,21 @@ export const HtmlArtifact: Story = {
             '</body></html>',
           ].join(''),
         }),
+        readBinary: async () => ({ ok: false, reason: 'unsupported_mime' }),
+        delete: async () => undefined,
+        subscribeChanges: unsubscribe,
+        openPath: async () => ({ ok: false, reason: 'missing' }),
+        saveAs: async () => ({ ok: false, reason: 'canceled' }),
       },
     }),
   ],
-  render: () => (
-    <div style={{ height: 520, padding: 24 }}>
-      <ArtifactPreview record={htmlArtifact} />
-    </div>
-  ),
+  render: () => <WorkbarToolSurface kind="files" />,
   play: async ({ canvasElement }) => {
-    const frame = await within(canvasElement).findByTitle('生成文件预览 · agent-report.html');
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole('option', { name: /agent-report\.html/ }),
+    );
+    const frame = await canvas.findByTitle('生成文件预览 · agent-report.html');
     await expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
     await expect(frame).toHaveAttribute('srcdoc', expect.stringContaining('Run report'));
   },

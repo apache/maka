@@ -1,0 +1,87 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
+import { createAppShellSessionUiStateController } from '../../renderer/app-shell-session-ui-state.js';
+
+test('queue_update events drive the independent desktop queue projection', () => {
+  const controller = createAppShellSessionUiStateController();
+  const handlers = createAppShellSessionEventHandlers({
+    uiLocale: 'zh',
+    activeIdRef: { current: 'session-1' },
+    liveTurnBySessionRef: controller.liveTurnBySessionRef,
+    refreshMessages: async () => true,
+    refreshSessions: async () => [],
+    setLiveTurnBySession: controller.setLiveTurnBySession,
+    setInteractionBySession: controller.setInteractionBySession,
+    setMessageQueueBySession: controller.setMessageQueueBySession,
+    showModelSetupToast() {},
+    toastApi: { error() {} },
+  });
+  const steeringEntry = {
+    entryId: 'entry-steer',
+    messageId: 'message-steer',
+    content: { text: 'adjust this run' },
+    placement: 'current_turn' as const,
+    state: 'queued' as const,
+  };
+
+  handlers.handleEvent('session-1', {
+    type: 'queue_update',
+    id: 'queue-1',
+    turnId: 'turn-1',
+    ts: 1,
+    queueRevision: 3,
+    steering: ['adjust this run'],
+    followup: ['do this next'],
+    steeringEntries: [steeringEntry],
+    followupEntries: [{
+      entryId: 'entry-next',
+      messageId: 'message-next',
+      content: { text: 'do this next' },
+      placement: 'next_turn',
+      state: 'queued',
+    }],
+  });
+
+  assert.deepEqual(controller.getState().messageQueueBySession['session-1'], {
+    queueRevision: 3,
+    steering: [steeringEntry],
+    followup: [{
+      entryId: 'entry-next',
+      messageId: 'message-next',
+      content: { text: 'do this next' },
+      placement: 'next_turn',
+      state: 'queued',
+    }],
+  });
+
+  handlers.handleEvent('session-1', {
+    type: 'queue_update',
+    id: 'queue-2',
+    turnId: 'turn-1',
+    ts: 2,
+    queueRevision: 4,
+    steering: [],
+    followup: [],
+  });
+  assert.equal(controller.getState().messageQueueBySession['session-1'], undefined);
+});

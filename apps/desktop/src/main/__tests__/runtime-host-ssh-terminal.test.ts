@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -5,10 +24,13 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { IPty } from 'node-pty';
 import {
-  encodeRuntimeHostSetupFrame,
-  RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostSshProcessFactory,
 } from '@maka/runtime-host/client';
+import {
+  encodeRuntimeHostServiceManagementFrame,
+  encodeRuntimeHostSetupFrame,
+  RUNTIME_HOST_SETUP_FRAME_PREFIX,
+} from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
 
 test('keeps a connecting SSH prompt observable across renderer presentation changes', async () => {
@@ -93,6 +115,9 @@ test('keeps setup credentials out of the interactive terminal projection', async
     sequence: 1,
     kind: 'complete',
     version: '0.1.0-beta.1',
+    serviceId: 'b'.repeat(64),
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    rootPath: '/home/operator/.config/Maka/workspaces/default',
     rootId: 'a'.repeat(64),
     endpoint: 'ws://127.0.0.1:7443/runtime-host',
     credentialId: 'credential-1',
@@ -155,6 +180,9 @@ test('keeps a completed setup process owned until it exits', async () => {
     sequence: 0,
     kind: 'complete',
     version: '1.2.3',
+    serviceId: 'b'.repeat(64),
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    rootPath: '/home/operator/.config/Maka/workspaces/default',
     rootId: 'a'.repeat(64),
     endpoint: 'ws://127.0.0.1:7443/runtime-host',
     credentialId: 'credential-1',
@@ -191,6 +219,133 @@ test('force-stops a cancelled setup when SSH ignores graceful termination', asyn
   assert.deepEqual(harness.eventKinds(), ['opened', 'data', 'dismissed']);
   assert.deepEqual(await harness.getSnapshot(), { kind: 'idle', revision: 3 });
   await harness.terminal.close();
+});
+
+test('reads a framed service result without projecting it into the SSH terminal', async () => {
+  const harness = createHarness('pending');
+  const management = harness.terminal.runServiceManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'status',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/home/operator/.config/Maka/workspaces/default',
+      rootId: 'a'.repeat(64),
+    },
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(remoteCommand, /\.local\/share\/maka\/operator/u);
+  assert.doesNotMatch(remoteCommand, /npx|maka-agent@/u);
+  harness.pty.emitData('Password: ');
+  harness.pty.emitData(
+    encodeRuntimeHostServiceManagementFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'status',
+      service: {
+        platform: 'linux',
+        arch: 'x64',
+        osRelease: '6.8.0',
+        state: 'running',
+        pid: 42,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        stateRoot: '/home/operator/.config/Maka/workspaces/default',
+        projectDirectoryRoots: [],
+      },
+    }),
+  );
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(result.kind, 'result');
+  if (result.kind !== 'result') assert.fail('expected service management result');
+  assert.equal(result.service.installedVersion, '1.2.3');
+  assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
+  assert.match(JSON.stringify(harness.events), /Password/u);
+  await harness.terminal.close();
+});
+
+test('rejects a framed service result for a different action', async () => {
+  const harness = createHarness('pending');
+  const management = harness.terminal.runServiceManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'uninstall',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+    },
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData(
+    encodeRuntimeHostServiceManagementFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'status',
+      service: {
+        platform: 'linux',
+        arch: 'x64',
+        osRelease: '6.8.0',
+        state: 'running',
+        pid: 42,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        projectDirectoryRoots: [],
+      },
+    }),
+  );
+  harness.pty.exit(0);
+
+  await assert.rejects(management, /returned status for uninstall/u);
+  await harness.terminal.close();
+});
+
+test('requires an absent operator deployment root to be absent or empty', async () => {
+  const harness = createHarness('pending');
+  const cleanup = harness.terminal.cleanupManagedDeployment({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(remoteCommand, /if \[ ! -e/u);
+  assert.match(remoteCommand, /rmdir --/u);
+  assert.match(remoteCommand, /home\/operator\/\.local\/share\/maka/u);
+  assert.match(remoteCommand, /__cleanup-managed-deployment/u);
+  harness.pty.exit(0);
+
+  await cleanup;
+  await harness.terminal.close();
+});
+
+test('does not launch a management process after the terminal owner closes', async () => {
+  const launches: unknown[] = [];
+  const terminal = createDesktopRuntimeHostSshTerminal({
+    ipcMain: { handle: () => undefined, removeHandler: () => undefined },
+    send: () => undefined,
+    spawnPty: ((...args: unknown[]) => {
+      launches.push(args);
+      return new FakePty() as unknown as IPty;
+    }) as typeof import('node-pty').spawn,
+  });
+  await terminal.close();
+  await assert.rejects(
+    terminal.runServiceManagement({
+      destination: 'operator@example.com',
+      operatorPath: '/home/operator/.local/share/maka/operator',
+      action: 'status',
+      expectedTarget: {
+        serviceId: 'b'.repeat(64),
+        rootPath: '/srv/maka',
+        rootId: 'a'.repeat(64),
+      },
+    }),
+    /terminal is closed/u,
+  );
+  assert.equal(launches.length, 0);
 });
 
 test('uploads a development release archive before running the same remote setup', async (t) => {
@@ -234,6 +389,9 @@ test('uploads a development release archive before running the same remote setup
   const remoteCommand = launches[1]?.args.at(-1) ?? '';
   assert.match(remoteCommand, /--package.*maka-runtime-host-setup-.+\.tgz/u);
   assert.match(remoteCommand, /--defer-pairing-commit/u);
+  assert.match(remoteCommand, /cd.*\$HOME/u);
+  assert.match(remoteCommand, /rm -f/u);
+  assert.match(remoteCommand, /exec \/bin\/sh -c/u);
   launches[1]?.pty.exit(255);
   await assert.rejects(setup, /exited with code 255/u);
 });

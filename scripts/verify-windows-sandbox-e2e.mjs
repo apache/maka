@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -88,13 +107,18 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
       platform: 'win32',
       getLaunchSpec,
     });
-    const execute = (operation) => client.execute({ operation, cwd: workspace, mode: 'ask' });
+    const execute = (operation, expectedIdentity) =>
+      client.execute({ operation, cwd: workspace, mode: 'ask', expectedIdentity });
 
     // Exact writes stay exact in the preview: the target is pre-seeded so the
     // grant covers only this file object, never its parent directory.
     const insidePath = join(workspace, 'inside.txt');
     await writeFile(insidePath, 'seeded');
-    await execute({ kind: 'write', path: insidePath, content: 'packaged-relay-ok' });
+    const insideMetadata = await stat(insidePath, { bigint: true });
+    await execute(
+      { kind: 'write', path: insidePath, content: 'packaged-relay-ok' },
+      { dev: String(insideMetadata.dev), ino: String(insideMetadata.ino) },
+    );
     assertCondition(
       (await readFile(insidePath, 'utf8')) === 'packaged-relay-ok',
       'Sandboxed write did not land in the workspace.',
@@ -105,7 +129,13 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
     // any launch.
     let parentEntryDenied = false;
     try {
-      await execute({ kind: 'write', path: join(workspace, 'missing.txt'), content: 'x' });
+      // The target is genuinely missing; 'missing' is the truthful T0 state
+      // so the client lets the request through and the sandbox's own
+      // fail-closed parent-entry check is what rejects it (#3487).
+      await execute(
+        { kind: 'write', path: join(workspace, 'missing.txt'), content: 'x' },
+        'missing',
+      );
     } catch (error) {
       parentEntryDenied =
         error instanceof FilesystemWorkerClientError &&
@@ -156,7 +186,12 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
 
     let denied = false;
     try {
-      await execute({ kind: 'write', path: join(outside, 'blocked.txt'), content: 'blocked' });
+      // Same contract as above: a truthful T0 state so the client's own
+      // permission gate (not the identity validation) is what denies.
+      await execute(
+        { kind: 'write', path: join(outside, 'blocked.txt'), content: 'blocked' },
+        'missing',
+      );
     } catch (error) {
       denied = error instanceof FilesystemWorkerClientError && error.reason === 'path_denied';
     }

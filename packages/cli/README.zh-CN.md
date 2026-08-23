@@ -1,9 +1,36 @@
-# Maka CLI
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
+# Apache Maka（孵化中）CLI
 
 [English](./README.md)
 
 Maka 是一个本地优先的 Agent 工作空间。`maka-agent` npm 包包含交互式终端界面、非交互
 CLI、Runtime Host 工具和 Eval 命令。
+
+## Apache 孵化免责声明
+
+Apache Maka 正在 Apache Software Foundation 孵化。发布到 npm 的英文 README 会直接从
+release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/DISCLAIMER-WIP)
+注入权威的完整 work-in-progress disclaimer；当前状态另见
+[Maka podling 状态页](https://incubator.apache.org/projects/maka.html)。本段仅为中文说明，
+英文免责声明以随包发布的 `DISCLAIMER-WIP` 为准。
 
 > **Beta：**CLI 仍在积极开发中，稳定版发布前，命令和本地数据格式可能发生变化。
 

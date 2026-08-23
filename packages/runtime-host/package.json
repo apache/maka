@@ -9,6 +9,7 @@
     "./adapter": "./dist/adapter/index.js",
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",
+    "./operator": "./dist/operator/index.js",
     "./execution-candidate-main": "./dist/execution-candidate-main.js",
     "./server": "./dist/server/index.js",
     "./test-only/execution-candidate-e2e-main": "./dist/test-only/execution-candidate-e2e-main.js"

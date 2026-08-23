@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import { connect } from 'node:net';
@@ -1388,11 +1407,11 @@ interface ExchangeRuntimeHostHandshakeInput {
 
 interface LegacySurfaceClientHello extends ClientHello {
   /**
-   * Hosts from compatibility epoch 27 may require this field while decoding
-   * the bootstrap hello. Keep the sentinel private until the minimum supported
-   * compatibility epoch is greater than 27; the removal change must bump the
-   * epoch so old Hosts take the structured incompatibility path. Tracked by
-   * #3297. This is not part of the Client identity seen by new Hosts.
+   * Released Hosts through v0.1.11 require this field while decoding the
+   * bootstrap hello, before compatibility negotiation can run. Keep the
+   * sentinel private until the minimum supported Host release has a tolerant
+   * decoder. Tracked by #3297. This is not part of the Client identity seen by
+   * current Hosts.
    */
   readonly surface: 'desktop';
 }

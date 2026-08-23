@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -253,6 +272,92 @@ describe('ClaudeCodeSessionAdapter', () => {
         () => adapter.readSession('aaaaaaaa-0000-4000-8000-000000000007'),
         /sidechain/u,
       );
+    });
+  });
+
+  test('a text query filters the source, before paging', async () => {
+    // The catalog pages 16 at a time over a source with 1128 sessions here, so
+    // the term has to reach the adapter. A filter applied to an assembled page
+    // would search the rows already fetched, which is worse than none.
+    await withClaudeHome(async (home) => {
+      await seed(
+        home,
+        'aaaaaaaa-0000-4000-8000-000000000030',
+        [userRecord('fix the parser'), assistantRecord({ text: 'ok', stopReason: 'end_turn' })],
+        '/Users/someone/compiler',
+      );
+      await seed(
+        home,
+        'aaaaaaaa-0000-4000-8000-000000000031',
+        [userRecord('write the docs'), assistantRecord({ text: 'ok', stopReason: 'end_turn' })],
+        '/Users/someone/handbook',
+      );
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+
+      const byTitle = await adapter.listSessions({ text: 'parser' });
+      assert.deepEqual(
+        byTitle.map((s) => s.id),
+        ['aaaaaaaa-0000-4000-8000-000000000030'],
+      );
+
+      // The path is the other half of what a user remembers.
+      const byPath = await adapter.listSessions({ text: 'handbook' });
+      assert.deepEqual(
+        byPath.map((s) => s.id),
+        ['aaaaaaaa-0000-4000-8000-000000000031'],
+      );
+
+      assert.equal((await adapter.listSessions({ text: 'kubernetes' })).length, 0);
+      // A blank box is not a filter.
+      assert.equal((await adapter.listSessions({ text: '  ' })).length, 2);
+      assert.equal((await adapter.listSessions()).length, 2);
+    });
+  });
+
+  test('a rewritten transcript is re-read, a deleted one drops out', async () => {
+    // Listing parses every transcript, and the catalog is listed once per
+    // search term — so summaries are cached against the file's own mtime and
+    // size. The risk a cache carries is serving a stale answer, so both
+    // directions are pinned: an appended transcript must be re-read, and a
+    // removed one must not survive in the map.
+    await withClaudeHome(async (home) => {
+      const id = 'aaaaaaaa-0000-4000-8000-000000000033';
+      await seed(home, id, [
+        userRecord('first title'),
+        assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+      ]);
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      assert.equal((await adapter.listSessions())[0]?.name, 'first title');
+
+      // Rewritten with a different title. Same path, new content.
+      await seed(home, id, [
+        userRecord('second title'),
+        assistantRecord({ text: 'ok', stopReason: 'end_turn' }),
+      ]);
+      assert.equal(
+        (await adapter.listSessions())[0]?.name,
+        'second title',
+        'a changed transcript must not keep its cached summary',
+      );
+
+      await rm(join(home, 'projects', CWD.replace(/\//gu, '-'), `${id}.jsonl`));
+      assert.deepEqual(await adapter.listSessions(), []);
+    });
+  });
+
+  test('a project query tolerates a trailing separator', async () => {
+    // The adapter compared raw strings, so the same project reached with a
+    // trailing slash answered "no such project". Both sources now share one
+    // path rule.
+    await withClaudeHome(async (home) => {
+      await seed(
+        home,
+        'aaaaaaaa-0000-4000-8000-000000000032',
+        [userRecord('one'), assistantRecord({ text: 'ok', stopReason: 'end_turn' })],
+        '/Users/someone/my-project',
+      );
+      const adapter = new ClaudeCodeSessionAdapter({ claudeHome: home });
+      assert.equal((await adapter.listSessions({ cwd: '/Users/someone/my-project/' })).length, 1);
     });
   });
 

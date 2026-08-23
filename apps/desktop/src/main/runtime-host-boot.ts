@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   app,
   clipboard,
@@ -34,12 +53,15 @@ import {
   loadOrCreateRuntimeHostClientInstanceId,
 } from "@maka/runtime-host/client";
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
-import { McpClientManager } from "@maka/mcp";
+import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
 import {
   createSettingsStore,
   createMcpConfigStore,
+  createFileCredentialStore,
 } from "@maka/storage";
 import { resolveStorageRoot } from "@maka/storage/root-authority";
+
+import { createMcpOAuthController } from "./mcp-oauth-controller.js";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import { createAppUpdateService } from "./app-update-service.js";
@@ -71,15 +93,19 @@ import { createMainWindowController } from "./main-window.js";
 import {
   captureDesktopDiagnosticEnvironment,
   copyDesktopDiagnosticReport,
+  createDesktopMainRendererDiagnosticInput,
   createDesktopStartupDiagnosticInput,
   mainProcessLogBuffer,
   type DesktopDiagnosticsDeps,
 } from "./main-process-diagnostics.js";
-import { showMessageBoxWithDiagnostics } from "./native-diagnostic-dialog.js";
+import {
+  showMainRendererProcessGoneDialog,
+  showMessageBoxWithDiagnostics,
+} from "./native-diagnostic-dialog.js";
 import {
   resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
-import { registerMcpIpcMain } from "./mcp-ipc-main.js";
+import { createMcpExclusiveLane, registerMcpIpcMain } from "./mcp-ipc-main.js";
 import { createOnboardingService } from "./onboarding-service.js";
 import { registerOnboardingIpc } from "./onboarding-ipc-main.js";
 import {
@@ -139,6 +165,7 @@ import {
   type DesktopRuntimeHostSetupPackage,
 } from "./runtime-host-ssh-terminal.js";
 import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
+import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js";
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -277,6 +304,23 @@ const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
   clientVersion: app.getVersion(),
+  oauthStorage: createCredentialMcpOAuthStorage(
+    createFileCredentialStore(workspaceRoot),
+  ),
+});
+// One lane shared by config transactions and login claims: "no login is
+// active" checked inside a transaction cannot be invalidated by a claim
+// landing between the check and the write.
+const mcpExclusiveLane = createMcpExclusiveLane();
+const mcpOAuthController = createMcpOAuthController({
+  manager: mcpManager,
+  claimLane: mcpExclusiveLane,
+  openExternal: (url) => shell.openExternal(url),
+  ensureReady: () => ensureMcpReady(),
+  callbackPort: async (serverId) => {
+    const server = (await mcpConfigStore.get()).mcpServers[serverId];
+    return server && "url" in server ? server.oauth?.callbackPort : undefined;
+  },
 });
 let mcpStartup: Promise<void> | undefined;
 function ensureMcpReady(): Promise<void> {
@@ -302,6 +346,21 @@ const mainWindowController = createMainWindowController({
   settingsStore,
   startHidden,
   onClose: () => onMainWindowClose(),
+  onRendererProcessGone: async (details) => {
+    const diagnosticInput = createDesktopMainRendererDiagnosticInput({
+      title: "Maka main Renderer process exited unexpectedly",
+      description: `Reason: ${details.reason}`,
+      details: `Exit code: ${details.exitCode}`,
+    });
+    const decision = await showMainRendererProcessGoneDialog({
+      locale: desktopLocale.current(),
+      copyDiagnostics: () =>
+        copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
+      showMessageBox: (options) => dialog.showMessageBox(options),
+    });
+    if (decision === "relaunch") app.relaunch();
+    app.quit();
+  },
 });
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,
@@ -375,6 +434,12 @@ const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
   resolveSetupPackage: runtimeHostSetupPackage,
   send: (snapshot) =>
     mainWindowController.send("runtime-host-onboarding:changed", snapshot),
+});
+const runtimeHostManagement = createDesktopRuntimeHostManagement({
+  ipcMain,
+  profiles: runtimeHostProfileService,
+  runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
+  cleanupManagedDeployment: runtimeHostSshTerminal.cleanupManagedDeployment,
 });
 
 function runtimeHostSetupPackage(): DesktopRuntimeHostSetupPackage {
@@ -815,6 +880,33 @@ updateService.start();
 void ensureMcpReady()
   .then(() => mcpCapabilityPublisher.refreshIfChanged())
   .catch((error) => console.error("[runtime-host] MCP startup failed:", error));
+// A login round persists its verifier and callback port; if the app
+// restarted mid-round, rebind the listener so the browser's redirect still
+// lands instead of hitting a dead port. Deliberately NOT chained behind the
+// connect/publish sequence above: a slow server or a publish failure must
+// not delay or block the rebind — it needs only the persisted state, and
+// the controller awaits readiness itself before the token exchange.
+void mcpConfigStore
+  .get()
+  .then((config) => {
+    for (const serverId of Object.keys(config.mcpServers)) {
+      void mcpOAuthController
+        .resumeLogin(serverId)
+        // No explicit mcp:changed here: a successful resume ends in
+        // finishAuthorization → reconnect, whose onChange handler already
+        // emits AND refreshes capabilities — a second identical emit here
+        // was strictly weaker.
+        .catch((error) =>
+          console.error(
+            `[runtime-host] MCP login resume failed for ${serverId}:`,
+            error,
+          ),
+        );
+    }
+  })
+  .catch((error) =>
+    console.error("[runtime-host] MCP login resume scan failed:", error),
+  );
 
 void clientSettingsEffects
   .refresh(false)
@@ -929,6 +1021,8 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     store: mcpConfigStore,
     manager: mcpManager,
+    oauth: mcpOAuthController,
+    exclusiveLane: mcpExclusiveLane,
     ensureReady: ensureMcpReady,
     publishCapabilities: mcpCapabilityPublisher.refreshIfChanged,
     onPublicationError: (error) =>
@@ -1365,10 +1459,12 @@ function wireLifecycle(): void {
     cleanup: closeRuntimeHostDesktop,
     focusOrCreateWindow: (signal) => {
       if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
-      else void mainWindowController.createWindow(signal);
+      else return mainWindowController.createWindow(signal);
     },
     onCleanupError: (error) =>
       console.error("[runtime-host] shutdown failed:", error),
+    onWindowCreationError: (error) =>
+      console.error("[window] creation failed:", error),
     resumeQuit: () => app.quit(),
   });
   installDesktopShellPresentation({
@@ -1389,8 +1485,7 @@ function wireLifecycle(): void {
     if (process.platform !== "darwin") app.quit();
   });
   app.on("before-quit", quitCoordinator.handleBeforeQuit);
-  const initialWindowSignal = quitCoordinator.getWindowCreationSignal();
-  if (initialWindowSignal) void mainWindowController.createWindow(initialWindowSignal);
+  quitCoordinator.focusOrCreateWindow();
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {
@@ -1399,6 +1494,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   settingsBotsIpc?.dispose();
   permissionOverlay.dismiss();
   const results = await Promise.allSettled([
+    Promise.resolve().then(() => runtimeHostManagement.close()),
     runtimeHostManager?.close(),
     runtimeHostOnboarding.close(),
     runtimeHostSshTerminal.close(),

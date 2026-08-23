@@ -1,10 +1,34 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DesktopRuntimeHostProfileAddInput } from '../../preload/bridge-contract.js';
+import type { DesktopRuntimeHostManagedService } from '../runtime-host-managed-services.js';
 import { createDesktopRuntimeHostOnboarding } from '../runtime-host-onboarding.js';
 
 test('persists a verified SSH profile without projecting its credential', async () => {
-  let saved: DesktopRuntimeHostProfileAddInput | undefined;
+  let saved:
+    | (DesktopRuntimeHostProfileAddInput & {
+        readonly managedService?: DesktopRuntimeHostManagedService;
+      })
+    | undefined;
   const harness = createHarness({
     profiles: {
       addAndEnableVerified: async (input) => {
@@ -15,6 +39,9 @@ test('persists a verified SSH profile without projecting its credential', async 
     runSetup: async (_input, onProgress) => {
       onProgress({ phase: 'installing_service' });
       return {
+        serviceId: 'b'.repeat(64),
+        rootPath: '/home/operator/.config/Maka/workspaces/default',
+        operatorPath: '/home/operator/.local/share/maka/operator',
         rootId: 'a'.repeat(64),
         endpoint: 'ws://127.0.0.1:7443/runtime-host',
         credential: 'secret-access-token',
@@ -34,6 +61,11 @@ test('persists a verified SSH profile without projecting its credential', async 
     destination: 'operator@example.com',
     remotePort: 7443,
     websocketPath: '/runtime-host',
+  });
+  assert.deepEqual(saved?.managedService, {
+    id: 'b'.repeat(64),
+    rootPath: '/home/operator/.config/Maka/workspaces/default',
+    operatorPath: '/home/operator/.local/share/maka/operator',
   });
   assert.equal(saved?.credential, 'secret-access-token');
   assert.doesNotMatch(JSON.stringify(harness.events), /secret-access-token/u);
@@ -68,11 +100,17 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   let pairingStarted = false;
   let completeReceived = false;
   let finishSetup!: (value: {
+    serviceId: string;
+    rootPath: string;
+    operatorPath: string;
     rootId: string;
     endpoint: string;
     credential: string;
   }) => void;
   const setupDrain = new Promise<{
+    serviceId: string;
+    rootPath: string;
+    operatorPath: string;
     rootId: string;
     endpoint: string;
     credential: string;
@@ -100,6 +138,9 @@ test('finishes Host pairing after the cancellable SSH phase has completed', asyn
   assert.equal(await harness.invoke('runtime-host-onboarding:cancel'), false);
 
   finishSetup({
+    serviceId: 'b'.repeat(64),
+    rootPath: '/home/operator/.config/Maka/workspaces/default',
+    operatorPath: '/home/operator/.local/share/maka/operator',
     rootId: 'a'.repeat(64),
     endpoint: 'ws://127.0.0.1:7443/runtime-host',
     credential: 'candidate-token',
@@ -140,18 +181,23 @@ test('resolves the setup package only when onboarding starts', async () => {
 });
 
 type OnboardingInput = Parameters<typeof createDesktopRuntimeHostOnboarding>[0];
+type HarnessOverrides = Partial<Omit<OnboardingInput, 'ipcMain' | 'send' | 'profiles'>> & {
+  readonly profiles?: Partial<OnboardingInput['profiles']>;
+};
 
-function createHarness(
-  overrides: Partial<Omit<OnboardingInput, 'ipcMain' | 'send'>> = {},
-) {
+function createHarness(overrides: HarnessOverrides = {}) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const events: unknown[] = [];
+  const { profiles, ...rest } = overrides;
   const onboarding = createDesktopRuntimeHostOnboarding({
     clientInstanceId: 'stable-client',
-    profiles: { addAndEnableVerified: async () => assert.fail('profile must not be saved') },
+    profiles: {
+      addAndEnableVerified: async () => assert.fail('profile must not be saved'),
+      ...profiles,
+    },
     resolveSetupPackage: () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
     runSetup: async () => assert.fail('SSH must not start'),
-    ...overrides,
+    ...rest,
     ipcMain: {
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),

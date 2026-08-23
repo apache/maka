@@ -1,4 +1,22 @@
 #!/usr/bin/env node
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -19,7 +37,6 @@ const FULL_SUITE_FILES = new Set([
 const RELEASE_CONTRACT_FILES = new Set([
   'apps/desktop/build/entitlements.mac.inherit.plist',
   'apps/desktop/build/entitlements.mac.plist',
-  'apps/desktop/bundled-git.json',
   'apps/desktop/bundled-tools.json',
   'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
   'apps/desktop/electron-builder.config.mjs',
@@ -32,8 +49,6 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/package-macos-arm64-cli.mjs',
   'scripts/package-windows-autoupdate-next.mjs',
   'scripts/package-windows-x64.mjs',
-  'scripts/prepare-bundled-git-source.mjs',
-  'scripts/prepare-bundled-git.mjs',
   'scripts/prepare-windows-upgrade-baseline.mjs',
   'scripts/generate-third-party-notices.test.mjs',
   'scripts/prepare-windows-upgrade-baseline.test.mjs',
@@ -58,6 +73,7 @@ const TYPECHECK_ONLY_FILES = new Set([
 ]);
 
 const CLI_PACKAGE_FILES = new Set([
+  '.github/workflows/cli-package-validation.yml',
   'LICENSE',
   'NOTICE',
   'scripts/apply-dependency-patches.mjs',
@@ -70,6 +86,8 @@ const CLI_PACKAGE_FILES = new Set([
 
 const ASF_SOURCE_FILES = new Set([
   '.github/workflows/asf-source-candidate.yml',
+  'scripts/asf-license-headers.mjs',
+  'scripts/asf-license-headers.test.mjs',
   'scripts/asf-source-release.mjs',
   'scripts/asf-source-release.test.mjs',
   'scripts/asf-source-workflow-policy.test.mjs',

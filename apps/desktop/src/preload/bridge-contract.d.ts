@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ConnectionEvent } from '@maka/core/connections';
 import type {
   ConnectionTestResult,
@@ -23,6 +42,7 @@ import type { HealthSnapshot } from '@maka/core/health';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   ActiveInteractionRequestEvent,
+  MessageContent,
   SessionCommand,
   SessionEvent,
   ShellRunUpdate,
@@ -83,7 +103,11 @@ import type {
   OperationInput,
   OperationOutput,
 } from '@maka/runtime-host/protocol';
-import type { AgentGraphEpochDirectory, RuntimeHostSetupPhase } from '@maka/runtime-host/client';
+import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
+import type {
+  RuntimeHostServiceManagementFrame,
+  RuntimeHostSetupPhase,
+} from '@maka/runtime-host/operator';
 import type {
   RendererRuntimeHostCommandOperation,
   RendererRuntimeHostQueryOperation,
@@ -102,6 +126,7 @@ import type { DesktopDiagnosticInput } from './diagnostics-contract.js';
 import type { Result } from '@maka/core/result';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type {
+  McpConfigAddResult,
   McpConfigFile,
   McpServerConfig,
   McpServerStatus,
@@ -219,6 +244,7 @@ export type AppUpdateInstallResult =
 
 export interface DesktopRuntimeHostProfileEntry {
   readonly profile: RuntimeHostProfile;
+  readonly managedService?: true;
   readonly enabled: boolean;
   readonly isDefault: boolean;
   readonly readiness: 'disabled' | 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
@@ -357,6 +383,26 @@ export type DesktopRuntimeHostOnboardingSnapshot =
       readonly profileId: string;
     };
 
+export type DesktopRuntimeHostManagementAction =
+  | 'status'
+  | 'start'
+  | 'restart'
+  | 'logs'
+  | 'install'
+  | 'uninstall';
+
+export type DesktopRuntimeHostManagementResult = Extract<
+  RuntimeHostServiceManagementFrame,
+  { kind: 'result' }
+>;
+
+export type DesktopRuntimeHostManagementResponse =
+  | RuntimeHostServiceManagementFrame
+  | {
+      readonly kind: 'uninstalled';
+      readonly retainedStateRoot: string;
+    };
+
 export interface DesktopProjectCapabilities {
   readonly chooseClientDirectory: boolean;
   readonly chooseHostDirectory: boolean;
@@ -462,6 +508,13 @@ export interface MakaBridge {
     cancel(): Promise<boolean>;
     reset(): Promise<void>;
     subscribe(handler: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void): () => void;
+  };
+
+  runtimeHostManagement: {
+    run(
+      profileId: string,
+      action: DesktopRuntimeHostManagementAction,
+    ): Promise<DesktopRuntimeHostManagementResponse>;
   };
 
   newTasks: {
@@ -578,6 +631,7 @@ export interface MakaBridge {
             displayText?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
+            retainedAttachments?: import('@maka/core/events').AttachmentRef[];
             turnOrchestration?: TurnOrchestration;
             quotes?: import('@maka/core/events').QuoteRef[];
             workspaceFileReferences?: Array<
@@ -605,6 +659,26 @@ export interface MakaBridge {
     >;
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
+    enqueue(
+      sessionId: string,
+      placement: 'current_turn' | 'next_turn',
+      command: {
+        text: string;
+        displayText?: string;
+        attachmentItems?: RendererIngestInput[];
+        retainedAttachments?: import('@maka/core/events').AttachmentRef[];
+        quotes?: import('@maka/core/events').QuoteRef[];
+        workspaceFileReferences?: Array<
+          Pick<import('@maka/core/events').InlineReference, 'value' | 'start'>
+        >;
+      },
+    ): Promise<{
+      kind: 'queued' | 'started';
+      turnId?: string;
+      attachments: import('@maka/core/events').AttachmentRef[];
+      inlineReferences: import('@maka/core/events').InlineReference[];
+    }>;
+    retractQueue(sessionId: string): Promise<MessageContent>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;
     subscribeActiveInteractions(
@@ -811,11 +885,18 @@ export interface MakaBridge {
     getConfig(host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     listStatuses(host?: DesktopRuntimeHostRef): Promise<McpServerStatus[]>;
     setConfig(config: McpConfigFile, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
+    /** Adds a new server; a taken id comes back as `{ status: 'exists' }`
+     * instead of an error, so the dialog can put it on the id field. */
+    add(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigAddResult>;
     upsert(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     install(serverId: string, config: McpServerConfig, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     remove(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     cancelInstall(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpConfigFile>;
     test(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpTestResult>;
+    login(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
+    /** Ends an in-flight login round; resolves false when none is active. */
+    cancelLogin(serverId: string, host?: DesktopRuntimeHostRef): Promise<boolean>;
+    logout(serverId: string, host?: DesktopRuntimeHostRef): Promise<McpServerStatus>;
     subscribeChanges(handler: (statuses: McpServerStatus[]) => void): () => void;
   };
   settings: {

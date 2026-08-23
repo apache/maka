@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -25,6 +44,8 @@ import {
   RuntimeHostCliConflictError,
   shouldRetryRuntimeHostConflict,
 } from '../runtime-host-cli-context.js';
+
+const V0_1_11_HOST_COMPATIBILITY_EPOCH = 25;
 
 test('CLI Runtime Host bootstrap launches the execution composition', async () => {
   let candidateEntrypoint: string | URL | undefined;
@@ -76,6 +97,7 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
 });
 
 test('non-interactive CLI reports how to retire an incompatible Runtime Host', async () => {
+  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > V0_1_11_HOST_COMPATIBILITY_EPOCH);
   await assert.rejects(
     connectRuntimeHostCli(
       { rootPath: '/runtime-host-root' },
@@ -83,14 +105,14 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
         connectOrSpawn: async () => ({
           kind: 'incompatible',
           registration: hostRegistration({
-            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+            compatibilityEpoch: V0_1_11_HOST_COMPATIBILITY_EPOCH,
           }),
           handshake: {
             kind: 'incompatible',
             hostEpoch: 'host-old',
             protocolMin: 0,
             protocolMax: 0,
-            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+            compatibilityEpoch: V0_1_11_HOST_COMPATIBILITY_EPOCH,
             compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
             compositionRevision: 'legacy',
             state: 'ready',
@@ -105,7 +127,7 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
       assert.match(
         error.message,
         new RegExp(
-          `PID 42; lifecycle ephemeral; compatibility epoch ${RUNTIME_HOST_COMPATIBILITY_EPOCH - 1}`,
+          `PID 42; lifecycle ephemeral; compatibility epoch ${V0_1_11_HOST_COMPATIBILITY_EPOCH}`,
         ),
       );
       assert.match(
