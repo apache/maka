@@ -74,9 +74,11 @@ type JsonRecord = Record<string, unknown>;
  *
  * Codex persists presentation history as `event_msg` records and provider
  * protocol facts as `response_item` records. User, assistant, and reasoning
- * messages come from `event_msg` to avoid importing their response-item
- * mirrors twice. Tool calls/results come from response items because they own
- * the stable call identity and raw arguments/output.
+ * messages come from the presentation events to avoid importing their
+ * response-item mirrors twice. Codex <=0.144 wrote one event per message;
+ * newer builds wrap the presentation item in `item_completed`. Tool
+ * calls/results come from response items because they own the stable call
+ * identity and raw arguments/output.
  */
 export class CodexSessionAdapter implements ExternalSessionAdapter {
   readonly id = CODEX_SESSION_ADAPTER_ID;
@@ -261,6 +263,18 @@ function convertCodexRollout(
   let lastTimestamp = normalizeEpochMs(sessionMeta?.timestamp) ?? 0;
   let firstUserText: string | undefined;
   const failedTurnIds = new Set<string>();
+  // The two presentation schemas are mirrors, not additive streams. Prefer
+  // the legacy events if a transitional rollout contains both so one visible
+  // message cannot be imported twice.
+  const usesCompletedPresentationItems = !records.some((record) => {
+    if (record.value.type !== 'event_msg') return false;
+    const payload = asRecord(record.value.payload);
+    return (
+      payload?.type === 'user_message' ||
+      payload?.type === 'agent_message' ||
+      payload?.type === 'agent_reasoning'
+    );
+  });
 
   const timestampFor = (record: ParsedRolloutRecord): number => {
     const parsed = normalizeEpochMs(record.value.timestamp);
@@ -293,6 +307,51 @@ function convertCodexRollout(
           activeTurnIsExplicit = true;
         }
         continue;
+      }
+
+      if (eventType === 'item_completed' && usesCompletedPresentationItems) {
+        const item = asRecord(payload.item);
+        if (!item) continue;
+        const itemType = stringField(item, 'type');
+        const eventTurnId = stringField(payload, 'turn_id');
+        if (eventTurnId) {
+          activeTurnId = eventTurnId;
+          activeTurnIsExplicit = true;
+        }
+
+        if (itemType === 'UserMessage') {
+          if (!activeTurnIsExplicit) {
+            activeTurnId = generatedCodexId(expectedSessionId, 'turn', record.line);
+          }
+          const text = completedUserMessageText(item);
+          if (text.length === 0) continue;
+          firstUserText ??= text;
+          messages.push({
+            type: 'user',
+            id: stringField(item, 'id') ?? generatedCodexId(expectedSessionId, 'user', record.line),
+            turnId: ensureTurnId(record.line),
+            ts: timestampFor(record),
+            text,
+          });
+          continue;
+        }
+
+        if (itemType === 'AgentMessage') {
+          const text = completedAgentMessageText(item);
+          if (text.length === 0) continue;
+          messages.push({
+            type: 'assistant',
+            id:
+              stringField(item, 'id') ??
+              generatedCodexId(expectedSessionId, 'assistant', record.line),
+            turnId: ensureTurnId(record.line),
+            ts: timestampFor(record),
+            text,
+            modelId: activeModel,
+            contentOrder: ['text'],
+          });
+          continue;
+        }
       }
 
       if (eventType === 'user_message') {
@@ -520,6 +579,16 @@ function catalogEntryFromRolloutHead(
       firstUserText === undefined
     ) {
       firstUserText = stringField(payload, 'message');
+    } else if (
+      record.type === 'event_msg' &&
+      payload.type === 'item_completed' &&
+      firstUserText === undefined
+    ) {
+      const item = asRecord(payload.item);
+      if (item?.type === 'UserMessage') {
+        const text = completedUserMessageText(item);
+        if (text.length > 0) firstUserText = text;
+      }
     }
     if (id && firstUserText !== undefined) break;
   }
@@ -821,6 +890,40 @@ function mediaOnlyUserText(payload: JsonRecord): string {
   const audio = Array.isArray(payload.audio) ? payload.audio : [];
   const localAudio = Array.isArray(payload.local_audio) ? payload.local_audio : [];
   return audio.length > 0 || localAudio.length > 0 ? '[Audio]' : '';
+}
+
+function completedUserMessageText(item: JsonRecord): string {
+  const content = Array.isArray(item.content) ? item.content : [];
+  const text = presentationItemText(content, 'text');
+  if (text.length > 0) return text;
+  if (
+    content.some((part) => {
+      const type = stringField(asRecord(part), 'type');
+      return type === 'image' || type === 'local_image';
+    })
+  ) {
+    return '[Image]';
+  }
+  return content.some((part) => {
+    const type = stringField(asRecord(part), 'type');
+    return type === 'audio' || type === 'local_audio';
+  })
+    ? '[Audio]'
+    : '';
+}
+
+function completedAgentMessageText(item: JsonRecord): string {
+  const content = Array.isArray(item.content) ? item.content : [];
+  return presentationItemText(content, 'Text');
+}
+
+function presentationItemText(content: unknown[], expectedType: string): string {
+  return content
+    .flatMap((part) => {
+      const record = asRecord(part);
+      return record?.type === expectedType && typeof record.text === 'string' ? [record.text] : [];
+    })
+    .join('\n');
 }
 
 async function isDirectory(path: string): Promise<boolean> {

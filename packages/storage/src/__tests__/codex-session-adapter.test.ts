@@ -241,6 +241,51 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('imports current item-completed presentation messages without provider mirrors', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-item-completed';
+      await seedRawRollout(codexHome, sessionId, itemCompletedRollout(sessionId));
+      const adapter = new CodexSessionAdapter({ codexHome });
+
+      assert.equal((await adapter.listSessions())[0]?.name, 'Review the current PR');
+      const session = await adapter.readSession(sessionId);
+      assert.deepEqual(
+        session.messages.map((message) =>
+          message.type === 'user' || message.type === 'assistant'
+            ? { type: message.type, id: message.id, turnId: message.turnId, text: message.text }
+            : { type: message.type },
+        ),
+        [
+          {
+            type: 'user',
+            id: 'current-user-item',
+            turnId: 'current-turn',
+            text: 'Review the current PR',
+          },
+          {
+            type: 'assistant',
+            id: 'current-commentary-item',
+            turnId: 'current-turn',
+            text: 'I am checking the changed paths.',
+          },
+          {
+            type: 'assistant',
+            id: 'current-final-item',
+            turnId: 'current-turn',
+            text: 'The PR is ready.',
+          },
+          { type: 'turn_state' },
+        ],
+      );
+      assert.equal(
+        session.messages.some(
+          (message) => message.type === 'user' && message.text.includes('environment_context'),
+        ),
+        false,
+      );
+    });
+  });
+
   test('imports terminal errors as failed without failing turns on non-terminal errors', async () => {
     await withCodexHome(async (codexHome) => {
       const sessionId = 'codex-error-semantics';
@@ -423,6 +468,81 @@ function minimalRollout(
       type: 'event_msg',
       payload: { type: 'user_message', message: userText },
     }),
+    '',
+  ].join('\n');
+}
+
+function itemCompletedRollout(sessionId: string): string {
+  const event = (second: number, payload: Record<string, unknown>): string =>
+    JSON.stringify({
+      timestamp: `2026-08-08T00:00:${String(second).padStart(2, '0')}.000Z`,
+      type: 'event_msg',
+      payload,
+    });
+  const response = (second: number, payload: Record<string, unknown>): string =>
+    JSON.stringify({
+      timestamp: `2026-08-08T00:00:${String(second).padStart(2, '0')}.100Z`,
+      type: 'response_item',
+      payload,
+    });
+  return [
+    JSON.stringify({
+      timestamp: '2026-08-08T00:00:00.000Z',
+      type: 'session_meta',
+      payload: {
+        session_id: sessionId,
+        id: sessionId,
+        cwd: '/workspace/project',
+        source: 'cli',
+      },
+    }),
+    event(1, { type: 'task_started', turn_id: 'current-turn' }),
+    response(1, {
+      type: 'message',
+      id: 'injected-context',
+      role: 'user',
+      content: [{ type: 'input_text', text: '<environment_context>private</environment_context>' }],
+    }),
+    event(2, {
+      type: 'item_completed',
+      thread_id: sessionId,
+      turn_id: 'current-turn',
+      item: {
+        type: 'UserMessage',
+        id: 'current-user-item',
+        content: [{ type: 'text', text: 'Review the current PR', text_elements: [] }],
+      },
+    }),
+    event(3, {
+      type: 'item_completed',
+      thread_id: sessionId,
+      turn_id: 'current-turn',
+      item: {
+        type: 'AgentMessage',
+        id: 'current-commentary-item',
+        content: [{ type: 'Text', text: 'I am checking the changed paths.' }],
+        phase: 'commentary',
+      },
+    }),
+    response(3, {
+      type: 'message',
+      id: 'provider-commentary-mirror',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'I am checking the changed paths.' }],
+      phase: 'commentary',
+    }),
+    event(4, {
+      type: 'item_completed',
+      thread_id: sessionId,
+      turn_id: 'current-turn',
+      item: {
+        type: 'AgentMessage',
+        id: 'current-final-item',
+        content: [{ type: 'Text', text: 'The PR is ready.' }],
+        phase: 'final_answer',
+      },
+    }),
+    event(5, { type: 'task_complete', turn_id: 'current-turn' }),
     '',
   ].join('\n');
 }
