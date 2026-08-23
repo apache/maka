@@ -670,6 +670,25 @@
      a rhythm no other row in the panel has. */
   --text-supporting-leading: var(--text-code-leading);
 }
+/* A headerless CodeBlock floats its copy button over the viewport's top-right
+   corner, and a long unbroken first line — a maka://archive URI, a long
+   command — runs straight under it (markdown avoids this by always giving the
+   block a header toolbar; tool wells stay quiet on purpose). Reserve the
+   button's footprint with a float on the first line so wrapped text flows
+   around the corner instead of colliding. On the line div, not <code>: 100+
+   line blocks wrap lines in content-visibility chunks whose layout containment
+   would keep an outer float from shortening their line boxes. The lengths are
+   the button's geometry, not tunables: the 28px button inset spacing-2 (8px)
+   ends 20px past the code's spacing-4 (16px) inline padding — plus an 8px gap
+   — and its bottom edge sits 36px − spacing-3 (12px) = 24px below the first
+   line's top. Tool wells never enable line numbers, so the numbered-gutter
+   ::before cannot collide here. */
+.maka-tool-call-detail .astryx-codeblock:not(:has(.astryx-codeblock-header)) [data-line="1"]::before {
+  content: '';
+  float: inline-end;
+  width: 28px;
+  height: 24px;
+}
 .maka-tool-output-chunk { display: contents; }
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
 .maka-tool-output-chunk-redacted { opacity: 0.65; }
