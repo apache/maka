@@ -81,6 +81,16 @@ describe('MCP host classification', () => {
     assert.equal(isPrivateRangeHost('[::ffff:0:808:808]'), false); // SIIT 8.8.8.8
   });
 
+  it('treats exactly 0.0.0.0 as machine-local in the plain IPv4 branch too', () => {
+    // `https://0/` canonicalizes to 0.0.0.0, and connecting to it reaches
+    // the local machine — the same rationale as the embedded checks, which
+    // this branch previously never consulted. Only the exact address:
+    // 0.0.0.1 does not reach a local listener.
+    assert.equal(isPrivateRangeHost('0.0.0.0'), true);
+    assert.equal(isPrivateRangeHost(new URL('https://0/').hostname), true);
+    assert.equal(isPrivateRangeHost('0.0.0.1'), false);
+  });
+
   it('rejects literals RFC 4291 does not permit instead of mis-parsing them', () => {
     // Dotted IPv4 belongs only in the low-order 32 bits; an empty zone id
     // is not a literal. Both fail closed as private.

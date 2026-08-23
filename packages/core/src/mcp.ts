@@ -97,7 +97,7 @@ export function isLoopbackHost(hostname: string): boolean {
 export function isPrivateRangeHost(hostname: string): boolean {
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u.exec(hostname);
   if (v4) {
-    return isPrivateIpv4(Number(v4[1]), Number(v4[2]));
+    return isPrivateIpv4(Number(v4[1]), Number(v4[2]), Number(v4[3]), Number(v4[4]));
   }
   if (hostname.startsWith('[') && hostname.endsWith(']')) {
     const bytes = parseIpv6(hostname.slice(1, -1));
@@ -107,12 +107,18 @@ export function isPrivateRangeHost(hostname: string): boolean {
   return false;
 }
 
-function isPrivateIpv4(a: number, b: number): boolean {
+function isPrivateIpv4(a: number, b: number, c: number, d: number): boolean {
   if (a === 10) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
   if (a === 169 && b === 254) return true;
   if (a === 100 && b >= 64 && b <= 127) return true;
+  // Exactly the unspecified address: connecting to 0.0.0.0 reaches the
+  // LOCAL machine on common stacks (`https://0/` canonicalizes to it), so
+  // it fails closed — but only the exact address: 0.0.0.1 does not reach a
+  // local listener, and widening to 0.0.0.0/8 would grow the private set
+  // without buying anything.
+  if (a === 0 && b === 0 && c === 0 && d === 0) return true;
   return false;
 }
 
@@ -142,7 +148,10 @@ function parseIpv6(literal: string): Uint8Array | undefined {
         if (!dotted) return undefined;
         const octets = dotted.slice(1).map(Number);
         if (octets.some((octet) => octet > 255)) return undefined;
-        out.push(((octets[0] ?? 0) << 8) | (octets[1] ?? 0), ((octets[2] ?? 0) << 8) | (octets[3] ?? 0));
+        out.push(
+          ((octets[0] ?? 0) << 8) | (octets[1] ?? 0),
+          ((octets[2] ?? 0) << 8) | (octets[3] ?? 0),
+        );
       } else {
         if (!/^[0-9a-f]{1,4}$/u.test(piece)) return undefined;
         out.push(Number.parseInt(piece, 16));
@@ -184,7 +193,14 @@ function classifyIpv6(bytes: Uint8Array): 'loopback' | 'private' | 'global' {
   // destination. Deployments carve arbitrary RFC 6052 prefix lengths out
   // of it, so the embedded IPv4's position is not recoverable here; the
   // whole /48 fails closed instead.
-  if (bytes[0] === 0 && bytes[1] === 0x64 && bytes[2] === 0xff && bytes[3] === 0x9b && bytes[4] === 0 && bytes[5] === 1) {
+  if (
+    bytes[0] === 0 &&
+    bytes[1] === 0x64 &&
+    bytes[2] === 0xff &&
+    bytes[3] === 0x9b &&
+    bytes[4] === 0 &&
+    bytes[5] === 1
+  ) {
     return 'private';
   }
   // The remaining byte-level IPv4 embeddings, classified by the embedded
@@ -201,16 +217,13 @@ function classifyIpv6(bytes: Uint8Array): 'loopback' | 'private' | 'global' {
     bytes[10] === 0 &&
     bytes[11] === 0;
   if (mapped || nat64 || compat || siit) {
-    const [a, b] = [bytes[12] ?? 0, bytes[13] ?? 0];
+    const [a, b, c, d] = [bytes[12] ?? 0, bytes[13] ?? 0, bytes[14] ?? 0, bytes[15] ?? 0];
     // Mapped loopback lands on the PRIVATE side of the gate: isLoopbackHost
     // stays strict-by-spelling, so this is the check that must catch it.
+    // The embedded unspecified address (0.0.0.0 — reaches the local
+    // machine on common stacks) is private via isPrivateIpv4.
     if (a === 127) return 'private';
-    // The unspecified embedded address (0.0.0.0) under ANY embedding:
-    // connecting to it reaches the LOCAL machine on common stacks
-    // (`::ffff:0:0` verifiably reaches a 127.0.0.1-bound listener) —
-    // private, fail closed.
-    if (a === 0 && b === 0 && bytes[14] === 0 && bytes[15] === 0) return 'private';
-    return isPrivateIpv4(a, b) ? 'private' : 'global';
+    return isPrivateIpv4(a, b, c, d) ? 'private' : 'global';
   }
   if (((bytes[0] ?? 0) & 0xfe) === 0xfc) return 'private'; // fc00::/7 (ULA)
   if (bytes[0] === 0xfe && ((bytes[1] ?? 0) & 0xc0) === 0x80) return 'private'; // fe80::/10

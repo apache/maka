@@ -90,6 +90,9 @@ describe('transport security provenance', () => {
       'https://[::ffff:0:0]:8443/mapped-unspecified',
       'https://[64:ff9b:1:c0a8:1:100::]/local-nat64',
       'https://[0::ffff:0:192.168.1.1]/siit',
+      // `https://0/` canonicalizes to 0.0.0.0 and reaches the local machine.
+      'https://0.0.0.0:8443/unspecified-v4',
+      'https://0/short-form',
     ]) {
       assert.throws(() => assertTransportSecurity(new URL(url), remoteRoot), /refused remotely/u);
     }
