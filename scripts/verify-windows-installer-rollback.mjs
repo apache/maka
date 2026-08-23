@@ -34,7 +34,6 @@ import {
 } from './verify-packaged-app.mjs';
 import {
   installerVersion,
-  readUninstallDisplayVersions,
   waitForInstalledProcessesToExit,
   waitForUninstallRegistrationToClear,
   waitUntilMissing,
@@ -108,20 +107,66 @@ async function readInstalledProductVersion(executablePath, { run = runCommand } 
   return stdout;
 }
 
+function scopedUninstallRegistrationScript(uninstallerPath) {
+  return String.raw`
+$expectedUninstaller = [IO.Path]::GetFullPath(${powerShellLiteral(uninstallerPath)})
+$entries = @(
+  Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' |
+    ForEach-Object {
+      $entry = $_
+      $properties = $entry | Get-ItemProperty
+      $command = [string]$properties.UninstallString
+      $match = [regex]::Match($command, '^"([^"]+)"(?:\s|$)')
+      if ($match.Success) {
+        try {
+          $actualUninstaller = [IO.Path]::GetFullPath($match.Groups[1].Value)
+          if ([String]::Equals(
+            $actualUninstaller,
+            $expectedUninstaller,
+            [StringComparison]::OrdinalIgnoreCase
+          )) {
+            [PSCustomObject]@{
+              Path = $entry.PSPath
+              DisplayVersion = [string]$properties.DisplayVersion
+            }
+          }
+        } catch {
+          # A malformed foreign registration is not this fixture's authority.
+        }
+      }
+    }
+)
+`;
+}
+
+export async function readUninstallDisplayVersionsForInstall(
+  uninstallerPath,
+  { run = runCommand } = {},
+) {
+  const script = `${scopedUninstallRegistrationScript(uninstallerPath)}
+@($entries | ForEach-Object { $_.DisplayVersion }) -join ','
+`;
+  const { stdout } = await run(
+    'powershell',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    { timeoutMs: 30_000 },
+  );
+  return stdout.trim();
+}
+
 /**
- * Deletes the Maka uninstall registration, emulating the state the
- * fail-closed branch exists for (a user- or tool-cleaned registry). The
- * installer's own pre-upgrade snapshot key is left alone on purpose: without
- * a complete backup the snapshot must not be sufficient to proceed.
+ * Deletes only this fixture installation's uninstall registration, emulating
+ * the state the fail-closed branch exists for (a user- or tool-cleaned
+ * registry). The installer's own pre-upgrade snapshot key is left alone on
+ * purpose: without a complete backup the snapshot must not be sufficient to
+ * proceed.
  */
-async function deleteUninstallRegistration({ run = runCommand } = {}) {
-  const script = String.raw`
-Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' |
-  Where-Object {
-    $name = ($_ | Get-ItemProperty).DisplayName
-    $name -eq 'Maka' -or $name -like 'Maka *'
-  } |
-  Remove-Item -Recurse -Force
+export async function deleteUninstallRegistrationForInstall(
+  uninstallerPath,
+  { run = runCommand } = {},
+) {
+  const script = `${scopedUninstallRegistrationScript(uninstallerPath)}
+$entries | ForEach-Object { Remove-Item -LiteralPath $_.Path -Recurse -Force }
 `;
   await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
     timeoutMs: 30_000,
@@ -251,7 +296,9 @@ export async function verifyWindowsInstallerRollback(
     await access(uninstaller);
 
     step('asserting the candidate registered its uninstall entry');
-    const preUpgradeRegistration = await readUninstallDisplayVersions({ run });
+    const preUpgradeRegistration = await readUninstallDisplayVersionsForInstall(uninstaller, {
+      run,
+    });
     if (!preUpgradeRegistration.split(',').includes(candidateVersion)) {
       throw new Error(
         `Precondition failed: candidate install registered DisplayVersion ` +
@@ -309,7 +356,7 @@ export async function verifyWindowsInstallerRollback(
     }
 
     step('asserting the uninstall registration was restored');
-    const displayVersion = await readUninstallDisplayVersions({ run });
+    const displayVersion = await readUninstallDisplayVersionsForInstall(uninstaller, { run });
     if (!displayVersion.split(',').includes(candidateVersion)) {
       throw new Error(
         `Uninstall registry DisplayVersion is ${JSON.stringify(displayVersion)}, expected to include ${candidateVersion}.`,
@@ -373,7 +420,9 @@ export async function verifyWindowsInstallerRollback(
       run,
     });
     assertWindowsProductVersion(recoveredFromRegistryMismatch, nextVersion);
-    const mismatchRecoveryRegistration = await readUninstallDisplayVersions({ run });
+    const mismatchRecoveryRegistration = await readUninstallDisplayVersionsForInstall(uninstaller, {
+      run,
+    });
     if (!mismatchRecoveryRegistration.split(',').includes(nextVersion)) {
       throw new Error(
         `Registry-mismatch recovery did not restore the uninstall registration: ` +
@@ -407,7 +456,9 @@ export async function verifyWindowsInstallerRollback(
       run,
     });
     assertWindowsProductVersion(unchangedAfterStaleBackup, nextVersion);
-    const registrationAfterStaleBackup = await readUninstallDisplayVersions({ run });
+    const registrationAfterStaleBackup = await readUninstallDisplayVersionsForInstall(uninstaller, {
+      run,
+    });
     if (!registrationAfterStaleBackup.split(',').includes(nextVersion)) {
       throw new Error(
         `Stale backup refusal changed the uninstall registration: ` +
@@ -433,7 +484,10 @@ export async function verifyWindowsInstallerRollback(
       run,
     });
     assertWindowsProductVersion(unchangedAfterIncompleteBackup, nextVersion);
-    const registrationAfterIncompleteBackup = await readUninstallDisplayVersions({ run });
+    const registrationAfterIncompleteBackup = await readUninstallDisplayVersionsForInstall(
+      uninstaller,
+      { run },
+    );
     if (!registrationAfterIncompleteBackup.split(',').includes(nextVersion)) {
       throw new Error(
         `Incomplete backup refusal changed the uninstall registration: ` +
@@ -463,7 +517,7 @@ export async function verifyWindowsInstallerRollback(
     await access(join(backupDirectory, 'RECOVERY-README.txt'));
     const orphanVersion = await readInstalledProductVersion(installedExecutable, { run });
     assertWindowsProductVersion(orphanVersion, nextVersion);
-    const orphanRegistration = await readUninstallDisplayVersions({ run });
+    const orphanRegistration = await readUninstallDisplayVersionsForInstall(uninstaller, { run });
     if (orphanRegistration !== '') {
       throw new Error(
         `After the Quit failpoint the uninstall registration should be gone (the old ` +
@@ -491,7 +545,9 @@ export async function verifyWindowsInstallerRollback(
     await access(uninstaller);
     const recoveredVersion = await readInstalledProductVersion(installedExecutable, { run });
     assertWindowsProductVersion(recoveredVersion, nextVersion);
-    const recoveredRegistration = await readUninstallDisplayVersions({ run });
+    const recoveredRegistration = await readUninstallDisplayVersionsForInstall(uninstaller, {
+      run,
+    });
     if (!recoveredRegistration.split(',').includes(nextVersion)) {
       throw new Error(
         `Recovery rerun did not restore the uninstall registration: ` +
@@ -507,7 +563,7 @@ export async function verifyWindowsInstallerRollback(
     await waitForInstalledProcessesToExit(installDirectory);
 
     step('fail closed: an upgrade with no registration and no backup is refused');
-    await deleteUninstallRegistration({ run });
+    await deleteUninstallRegistrationForInstall(uninstaller, { run });
     const refused = await runExpectingExit(nextInstaller, ['/S', `/D=${installDirectory}`], {
       env: controlEnv,
       timeoutMs: 300_000,
