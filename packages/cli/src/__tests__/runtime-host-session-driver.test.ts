@@ -43,7 +43,11 @@ import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,
 } from '../runtime-host-session-driver.js';
-import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../session-driver.js';
+import {
+  SkillInvocationBlockedError,
+  type MakaAttachedSessionTurn,
+  type MakaTranscriptReplacementReason,
+} from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
@@ -1355,6 +1359,106 @@ describe('Runtime Host Maka Session driver', () => {
     await waitFor(() => connection.openedSubscriptions === 3);
     await waitFor(() => replacements.length === 1);
     assert.deepEqual(replacements, [secondMessages]);
+  });
+
+  test('does not let an older live refresh overwrite the terminal transcript', async () => {
+    const attached = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const liveTranscript = deferred<StoredMessage[]>();
+    const staleLiveMessages = [userMessage('turn-1', 'Run it')];
+    const terminalMessages = [userMessage('turn-1', 'Run it'), assistantMessage('turn-1', 'Done')];
+    const liveRefresh = new FakeSubscription(
+      continuitySnapshot(),
+      liveTranscript.promise,
+      'subscription-2',
+    );
+    const terminalRefresh = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+      Promise.resolve(terminalMessages),
+      'subscription-3',
+    );
+    const connection = new FakeConnection([attached, liveRefresh, terminalRefresh]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+    const replacements: Array<{
+      messages: StoredMessage[];
+      reason: MakaTranscriptReplacementReason;
+    }> = [];
+    driver.subscribeTranscriptReplacements!((_sessionId, _turnId, messages, reason) => {
+      replacements.push({ messages, reason });
+    });
+
+    attached.push(toolResultFrame(1));
+    await waitFor(() => connection.openedSubscriptions === 2);
+    attached.push({
+      kind: 'subscription.session_projection',
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      sequence: 2,
+      snapshot: continuitySnapshot({
+        projectionRevision: 2,
+        rootTurn: completedTurn('turn-1', 'run-1'),
+      }),
+    });
+    await waitFor(() => replacements.length === 1);
+    assert.deepEqual(replacements, [{ messages: terminalMessages, reason: 'terminal' }]);
+
+    liveTranscript.resolve(staleLiveMessages);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(replacements, [{ messages: terminalMessages, reason: 'terminal' }]);
+  });
+
+  test('does not let a retired-channel live refresh overwrite a reconnect snapshot', async () => {
+    const initial = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const liveTranscript = deferred<StoredMessage[]>();
+    const staleLiveMessages = [userMessage('turn-1', 'Run it')];
+    const reconnectMessages = [
+      userMessage('turn-1', 'Run it'),
+      assistantMessage('turn-1', 'Still running'),
+    ];
+    const liveRefresh = new FakeSubscription(
+      continuitySnapshot(),
+      liveTranscript.promise,
+      'subscription-2',
+    );
+    const replacement = new FakeSubscription(
+      continuitySnapshot({ projectionRevision: 2 }),
+      Promise.resolve(reconnectMessages),
+      'subscription-3',
+    );
+    const connection = new FakeConnection([initial, liveRefresh, replacement], true);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+    const replacements: Array<{
+      messages: StoredMessage[];
+      reason: MakaTranscriptReplacementReason;
+    }> = [];
+    driver.subscribeTranscriptReplacements!((_sessionId, _turnId, messages, reason) => {
+      replacements.push({ messages, reason });
+    });
+
+    initial.push(toolResultFrame(1));
+    await waitFor(() => connection.openedSubscriptions === 2);
+    initial.fail(
+      new RuntimeHostSubscriptionError('connection_closed', 'connection lost during active Turn'),
+    );
+    await waitFor(() => replacements.length === 1);
+    assert.deepEqual(replacements, [{ messages: reconnectMessages, reason: 'reconnect' }]);
+
+    liveTranscript.resolve(staleLiveMessages);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(replacements, [{ messages: reconnectMessages, reason: 'reconnect' }]);
   });
 
   test('resnapshots an active Session after reconnect and continues its live stream', async () => {

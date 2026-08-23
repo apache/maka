@@ -176,7 +176,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #startedTurnReattachTails = new Map<number, Promise<void>>();
   #sessionGeneration = 0;
   #channelGeneration = 0;
-  #liveTranscriptRefreshSequence = 0;
+  #transcriptRefreshSequence = 0;
   readonly #startedTurnListeners = new Set<(turn: MakaAttachedSessionTurn) => void>();
   readonly #goalListeners = new Set<(goal: GoalProjection | null) => void>();
   readonly #pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
@@ -1028,10 +1028,18 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         for (const listener of this.#pendingInteractionListeners) listener(pending);
       },
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
-      onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn),
+      onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn, sessionGeneration),
       onToolResult: (turnId) => this.#refreshLiveTranscript(sessionId, sessionGeneration, turnId),
-      onTranscriptReplaced: (turnId, messages) =>
-        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect'),
+      onTranscriptReplaced: (turnId, messages) => {
+        if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) {
+          return;
+        }
+        // A reconnect snapshot is newer than every transcript read started by
+        // the retired channel. Invalidate those reads before publishing so a
+        // late tool-result snapshot cannot roll the transcript back.
+        this.#transcriptRefreshSequence += 1;
+        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect');
+      },
       onGoalChanged: (goal) => {
         // A closing channel from a previous session can still be draining a
         // frame when the swap happens; only the live session may publish.
@@ -1072,23 +1080,30 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .catch(() => undefined);
   }
 
-  #refreshTerminalTranscript(turn: TerminalTurnSnapshot): void {
+  #refreshTerminalTranscript(turn: TerminalTurnSnapshot, sessionGeneration: number): void {
+    const refreshSequence = ++this.#transcriptRefreshSequence;
     void loadCurrentMessages(this.#connection, turn.sessionId)
       .then((messages) => {
-        if (this.#sessionId !== turn.sessionId) return;
+        if (
+          this.#sessionId !== turn.sessionId ||
+          this.#sessionGeneration !== sessionGeneration ||
+          refreshSequence !== this.#transcriptRefreshSequence
+        ) {
+          return;
+        }
         this.#publishTranscriptReplacement(turn.sessionId, turn.turnId, messages, 'terminal');
       })
       .catch(() => undefined);
   }
 
   #refreshLiveTranscript(sessionId: string, sessionGeneration: number, turnId: string): void {
-    const refreshSequence = ++this.#liveTranscriptRefreshSequence;
+    const refreshSequence = ++this.#transcriptRefreshSequence;
     void loadCurrentMessages(this.#connection, sessionId)
       .then((messages) => {
         if (
           this.#sessionId !== sessionId ||
           this.#sessionGeneration !== sessionGeneration ||
-          refreshSequence !== this.#liveTranscriptRefreshSequence
+          refreshSequence !== this.#transcriptRefreshSequence
         ) {
           return;
         }
