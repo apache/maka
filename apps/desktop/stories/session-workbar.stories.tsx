@@ -114,15 +114,6 @@ const SIDE_CHAT_SESSION: SessionSummary = {
 const TERMINAL_REF = 'shell-run:storybook-terminal';
 const SIDE_CHAT_PANEL_ID = 'storybook-side-chat';
 
-// The record-file row reads `app:info`'s operationalStateDatabasePath (the
-// exact path main resolves). The short one is what a default workspace looks
-// like; the long one proves the row truncates the directory while the
-// filename stays (the path is hover/focus-copy reachable, the copy button is
-// not pushed out) even at the panel's 320px minimum width.
-const DEFAULT_RECORD_FILE_PATH = 'C:\\Users\\reviewer\\Maka\\workspaces\\default\\runtime.sqlite';
-const LONG_RECORD_FILE_PATH =
-  'C:\\Users\\reviewer\\Maka\\workspaces\\default\\projects\\trace-record-file-truncation-\\with-a-very-long-owner\\runtime.sqlite';
-
 // ---- ledgers -------------------------------------------------------------
 
 // Mirrors the `task-ledger` e2e fixture (apps/desktop/src/main/e2e-fixture/
@@ -605,7 +596,6 @@ function bridge(options: {
   traceFail?: boolean;
   /** The context snapshot the composition block reads (#2323). */
   context?: ContextDiagnosticsResult;
-  recordFilePath?: string;
   browserState?: BrowserState;
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
@@ -655,7 +645,6 @@ function bridge(options: {
         data: options.context ?? { status: 'unavailable', reason: 'no_completed_request' },
       }),
       subscribeSessionEvents: unsubscribe,
-      getRecordFile: async () => options.recordFilePath ?? DEFAULT_RECORD_FILE_PATH,
     },
     review: {
       read: async () => ({
@@ -986,14 +975,5 @@ export const TraceEmpty: Story = {
 // unreadable or partially written run ledger); retry lives on the banner.
 export const TraceReadFailed: Story = {
   decorators: [bridge({ traceFail: true })],
-  render: () => <Workbar tab="inspector" />,
-};
-
-// Real path: 任务工作栏 → 追踪 on a workspace whose path overflows the panel
-// — the record-file row keeps its label and copy button, and the path alone
-// truncates. (The default stories above already show the row with a short
-// path; this variant pins the truncation contract.)
-export const TraceRecordFile: Story = {
-  decorators: [bridge({ trace: populatedTrace, recordFilePath: LONG_RECORD_FILE_PATH })],
   render: () => <Workbar tab="inspector" />,
 };

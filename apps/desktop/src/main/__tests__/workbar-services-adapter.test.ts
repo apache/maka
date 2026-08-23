@@ -46,9 +46,6 @@ function createBridgeRecorder(): {
       get: (_target, property) => (...args: unknown[]) => {
         const callName = `${name}.${String(property)}`;
         calls.push({ name: callName, args });
-        if (callName === 'app.info') {
-          return Promise.resolve({ operationalStateDatabasePath: '/tmp/runtime.sqlite' });
-        }
         if (syncMethods.has(callName)) return () => undefined;
         return Promise.resolve(undefined);
       },
@@ -122,7 +119,6 @@ describe('createDesktopWorkbarServices', () => {
     await services.inspector.context('s');
     services.inspector.subscribeSessionEvents('s', eventHandler)();
     services.inspector.subscribeUsageChanges('s', eventHandler)();
-    assert.equal(await services.inspector.getRecordFile(), '/tmp/runtime.sqlite');
 
     await services.attachments.pickFiles();
     await services.attachments.previewApproval('approval');
@@ -192,7 +188,6 @@ describe('createDesktopWorkbarServices', () => {
         'inspector.context',
         'sessions.subscribeEvents',
         'inspector.subscribeUsageChanges',
-        'app.info',
         'attachments.pickFiles',
         'attachments.previewApproval',
         'sessions.list',

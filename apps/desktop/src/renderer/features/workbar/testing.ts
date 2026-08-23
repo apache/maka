@@ -109,7 +109,6 @@ export function createFakeWorkbarServices(
       },
       subscribeSessionEvents: noopSubscription,
       subscribeUsageChanges: noopSubscription,
-      getRecordFile: async () => '',
     },
     attachments: {
       pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
