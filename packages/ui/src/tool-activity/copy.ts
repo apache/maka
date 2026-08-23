@@ -24,6 +24,7 @@ type WebCredentialCopyKey = 'env' | 'settings' | 'missing' | 'unknown';
 type WebGuidanceKey = 'env' | 'settings' | 'rate_limited' | 'not_configured' | 'timed_out' | 'privacy_mode' | 'unknown';
 
 export interface ToolActivityCopy {
+  errorLabel: string;
   /** The two outcomes a tool row spells out next to its name. */
   status: {
     sandboxBlocked: string;
@@ -44,6 +45,12 @@ export interface ToolActivityCopy {
     title: string;
     description: string;
     copyAriaLabel: (label: string) => string;
+  };
+  requiresBypass: {
+    title: string;
+    description: string;
+    action: string;
+    pending: string;
   };
   /**
    * Row labels for one Computer Use call, derived from its arguments (see
@@ -138,6 +145,9 @@ export interface ToolActivityCopy {
     backgroundStatus: Record<BackgroundTerminalStatus, string>;
     backgroundUnknown: (status: string) => string;
     workflow: { action: string; status: string; error: string; nodes: string; diagnostics: string };
+    workflowCompleted: string;
+    workflowFailed: string;
+    fileWritten: (bytes: number, path: string) => string;
     webNoResults: string;
     webResults: (count: number) => string;
     credentialSource: Record<WebCredentialCopyKey, string>;
@@ -187,6 +197,7 @@ export interface ToolActivityCopy {
 
 const TOOL_ACTIVITY_COPY = {
   zh: {
+    errorLabel: '错误',
     status: { sandboxBlocked: '可能被沙箱阻止', interrupted: '已中断' },
     output: { redacted: '[已脱敏]', truncated: '输出已截断' },
     copy: {
@@ -197,6 +208,12 @@ const TOOL_ACTIVITY_COPY = {
       actionAriaLabel: (action, identity) => `${action}：${identity}`,
     },
     sandboxBlocked: { title: '操作可能被沙箱阻止', description: '沙箱可能阻止了该调用中的至少一项操作。失败前可能已经产生部分结果，请检查输出和工作区状态后再决定是否重试。', copyAriaLabel: (label) => `${label}沙箱诊断信息` },
+    requiresBypass: {
+      title: '需要“绕过”模式',
+      description: '此操作会直接控制本机应用，无法在沙箱模式下执行。',
+      action: '切换并重试',
+      pending: '正在切换…',
+    },
     computer: {
       fallback: '操作电脑',
       listApps: '列出打开的应用',
@@ -257,6 +274,9 @@ const TOOL_ACTIVITY_COPY = {
       hiddenLines: (n) => `… 已隐藏 ${n} 行`, ptyFailed: '后台终端交互失败', queued: '已输入', notQueued: '未输入', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}：${preview}` : `${action}：${preview}… · 共 ${bytes} 字节`, byteCount: (action, bytes) => `${action} ${bytes} 字节`, resizeNotApplied: (size) => `未调整为 ${size}`, resized: (size) => `已调整为 ${size}`, sizeUnchanged: (size) => `尺寸已是 ${size}`, ptyCompleted: '后台终端交互已完成', terminalUnavailable: '终端输出不可用', noTerminalFrame: '（无可用终端画面）', noOutputYet: '（尚无输出）', noOutput: '（无输出）', exitCode: (code) => `退出码 ${code}`, managedBySource: '由源任务管理', sourceUnavailable: '源任务不可用', running: '运行中', success: '成功', failed: '失败', timedOut: '已超时', cancelled: '已取消', disconnected: '已断开', terminalTruncated: '终端输出已截断', terminalRedacted: '终端输出已脱敏', streamHidden: (stream, n) => `… ${stream} 已隐藏 ${n} 行`, streamsTruncated: (limit) => `输出已截断 · 每路仅展示前 ${limit} 行`, outputTruncated: '输出已截断', outputRedacted: '输出已脱敏',
       backgroundStatus: { running: '后台运行中', completed: '后台已完成', failed: '后台失败', timed_out: '后台超时', cancelled: '后台已取消', orphaned: '后台任务已断开' }, backgroundUnknown: (status) => `后台 · ${status}`,
       workflow: { action: '动作', status: '状态', error: '错误', nodes: '节点摘要', diagnostics: '诊断片段' }, webNoResults: '没有结果', webResults: (n) => `${n} 条结果`, credentialSource: { env: '环境变量', settings: '本机已保存 key', missing: '未配置', unknown: '来源未知' }, webFailure: '搜索失败', webSearch: '联网搜索', webGuidance: { env: '请检查 TAVILY_API_KEY / MAKA_TAVILY_API_KEY 后重启。', settings: '请在 设置 · 联网搜索 中更新 Tavily key。', rate_limited: 'Tavily 当前限流，请稍后重试或更换可用凭据。', not_configured: '请先完成联网搜索配置后再重试。', timed_out: '请求超时，请稍后重试。', privacy_mode: '隐私模式下不会发起联网搜索。', unknown: '请检查网络或稍后重试。' },
+      workflowCompleted: 'Rive 工作流已完成',
+      workflowFailed: 'Rive 工作流执行失败',
+      fileWritten: (bytes, path) => `已向 ${path} 写入 ${bytes} 字节`,
     },
     agent: {
       subagentStatus: { completed: '已完成', failed: '失败', cancelled: '已取消', running: '运行中', waiting_for_user: '等待用户输入' }, readOnly: '只读', duration: (value) => `耗时 ${value}`,
@@ -270,6 +290,7 @@ const TOOL_ACTIVITY_COPY = {
     },
   },
   en: {
+    errorLabel: 'Error',
     status: { sandboxBlocked: 'Possibly blocked by sandbox', interrupted: 'Interrupted' },
     output: { redacted: '[Redacted]', truncated: 'Output truncated' },
     copy: {
@@ -280,6 +301,12 @@ const TOOL_ACTIVITY_COPY = {
       actionAriaLabel: (action, identity) => `${action}: ${identity}`,
     },
     sandboxBlocked: { title: 'Operation may have been blocked by sandbox', description: 'The sandbox may have blocked at least one action in this call. Some effects may have occurred before it failed; check the output and workspace state before retrying.', copyAriaLabel: (label) => `${label} sandbox diagnostics` },
+    requiresBypass: {
+      title: 'Bypass mode required',
+      description: 'This action controls a local app directly and cannot run inside the sandbox.',
+      action: 'Switch and retry',
+      pending: 'Switching…',
+    },
     computer: {
       fallback: 'Use the computer',
       listApps: 'List open apps',
@@ -337,6 +364,9 @@ const TOOL_ACTIVITY_COPY = {
       hiddenLines: (n) => `… ${n} ${n === 1 ? 'line' : 'lines'} hidden`, ptyFailed: 'Background terminal interaction failed', queued: 'Entered', notQueued: 'Not entered', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}: ${preview}` : `${action}: ${preview}… · ${bytes} bytes total`, byteCount: (action, bytes) => `${action} ${bytes} bytes`, resizeNotApplied: (size) => `Not resized to ${size}`, resized: (size) => `Resized to ${size}`, sizeUnchanged: (size) => `Size already ${size}`, ptyCompleted: 'Background terminal interaction completed', terminalUnavailable: 'Terminal output unavailable', noTerminalFrame: '(No terminal frame available)', noOutputYet: '(No output yet)', noOutput: '(No output)', exitCode: (code) => `exit code ${code}`, managedBySource: 'Managed by the source task', sourceUnavailable: 'Source task unavailable', running: 'Running', success: 'Succeeded', failed: 'Failed', timedOut: 'Timed out', cancelled: 'Cancelled', disconnected: 'Disconnected', terminalTruncated: 'Terminal output truncated', terminalRedacted: 'Terminal output redacted', streamHidden: (stream, n) => `… ${n} ${stream} ${n === 1 ? 'line' : 'lines'} hidden`, streamsTruncated: (limit) => `Output truncated · showing the first ${limit} lines of each stream`, outputTruncated: 'Output truncated', outputRedacted: 'Output redacted',
       backgroundStatus: { running: 'Running in background', completed: 'Background task completed', failed: 'Background task failed', timed_out: 'Background task timed out', cancelled: 'Background task cancelled', orphaned: 'Background task disconnected' }, backgroundUnknown: (status) => `Background · ${status}`,
       workflow: { action: 'Action', status: 'Status', error: 'Error', nodes: 'Node summary', diagnostics: 'Diagnostic excerpts' }, webNoResults: 'No results', webResults: (n) => `${n} ${n === 1 ? 'result' : 'results'}`, credentialSource: { env: 'Environment variable', settings: 'Locally saved key', missing: 'Not configured', unknown: 'Unknown source' }, webFailure: 'Search failed', webSearch: 'Web search', webGuidance: { env: 'Check TAVILY_API_KEY / MAKA_TAVILY_API_KEY and restart.', settings: 'Update the Tavily key in Settings · Web search.', rate_limited: 'Tavily is rate-limiting requests. Try again later or use another credential.', not_configured: 'Configure web search before retrying.', timed_out: 'The request timed out. Try again later.', privacy_mode: 'Web search is disabled in privacy mode.', unknown: 'Check the network connection or try again later.' },
+      workflowCompleted: 'Rive workflow completed',
+      workflowFailed: 'Rive workflow failed',
+      fileWritten: (bytes, path) => `Wrote ${bytes} bytes to ${path}`,
     },
     agent: {
       subagentStatus: { completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', running: 'Running', waiting_for_user: 'Waiting for user input' }, readOnly: 'Read only', duration: (value) => `Duration ${value}`,

@@ -347,6 +347,29 @@ for (const path of REFUSAL_PATHS) {
   });
 }
 
+test('client-capability refusal carries actionable bypass metadata', async () => {
+  const h = harness();
+  const tool: MakaTool = {
+    name: 'browser_click',
+    description: 'test',
+    categoryHint: 'client_capability',
+    parameters: z.object({}),
+    impl: async () => ({ ok: true }),
+  };
+
+  await settle(h, tool, {}, { toolCallId: 'call_boundary_metadata' });
+
+  const result = h.events.find(
+    (event) => event.type === 'tool_result' && event.toolUseId === 'call_boundary_metadata',
+  );
+  assert.deepEqual(
+    result?.type === 'tool_result' && result.content.kind === 'text'
+      ? result.content.sandboxFailure
+      : undefined,
+    { reason: 'requires_bypass', source: 'client_capability' },
+  );
+});
+
 test('arguments the schema rejects leave a matched call/response pair on the generic lane', async () => {
   const h = harness();
 

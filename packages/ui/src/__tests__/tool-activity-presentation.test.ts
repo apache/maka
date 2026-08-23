@@ -25,6 +25,7 @@ import { computerUseModelCallArgs } from '@maka/core/computer-use';
 import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
+import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
 import {
   computerActionLabel,
   computerRunningLabel,
@@ -39,6 +40,77 @@ function renderToStaticMarkup(node: ReactNode, locale: 'zh' | 'en' = 'zh'): stri
 }
 
 describe('tool activity presentation', () => {
+  it('localizes client capability boundary failures and offers recovery', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'client-capability-boundary',
+      toolName: 'maka_computer',
+      displayName: '列出打开的应用',
+      activityKind: 'computer',
+      status: 'errored',
+      args: { action: 'list_apps' },
+      result: {
+        kind: 'text',
+        text: 'Client Capability tools require the Bypass execution boundary.',
+        sandboxFailure: {
+          reason: 'requires_bypass',
+          source: 'client_capability',
+        },
+      },
+    };
+
+    const zh = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item,
+      onSwitchToBypassAndRetry: async () => undefined,
+    }));
+    const en = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item,
+      onSwitchToBypassAndRetry: async () => undefined,
+    }), 'en');
+
+    assert.match(zh, /需要“绕过”模式/);
+    assert.match(zh, /此操作会直接控制本机应用，无法在沙箱模式下执行。/);
+    assert.match(zh, /切换并重试/);
+    assert.doesNotMatch(zh, /Client Capability tools require/);
+    assert.match(en, /Bypass mode required/);
+    assert.match(en, /Switch and retry/);
+  });
+
+  it('keeps generic requires-bypass failures verbatim', () => {
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, {
+      item: {
+        toolUseId: 'filesystem-boundary',
+        toolName: 'Write',
+        status: 'errored',
+        args: { path: '/etc/hosts' },
+        result: {
+          kind: 'text',
+          text: 'This path requires the Bypass execution boundary.',
+          sandboxFailure: { reason: 'requires_bypass' },
+        },
+      } satisfies ToolActivityItem,
+      onSwitchToBypassAndRetry: async () => undefined,
+    }));
+
+    assert.match(markup, /This path requires the Bypass execution boundary./);
+    assert.doesNotMatch(markup, /控制本机应用|切换并重试/);
+  });
+
+  it('localizes file-write result summaries', () => {
+    const result = {
+      kind: 'file_write' as const,
+      path: '/tmp/output.txt',
+      bytes: 42,
+    };
+    assert.match(
+      renderToStaticMarkup(createElement(ToolResultPreview, { content: result })),
+      /已向 \/tmp\/output.txt 写入 42 字节/,
+    );
+    assert.match(
+      renderToStaticMarkup(createElement(ToolResultPreview, { content: result }), 'en'),
+      /Wrote 42 bytes to \/tmp\/output.txt/,
+    );
+  });
+
   it('describes Computer Use proxy calls by action instead of the generic tool name', () => {
     const item: ToolActivityItem = {
       toolUseId: 'computer-observe',

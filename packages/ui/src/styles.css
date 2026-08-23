@@ -674,7 +674,8 @@
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
 .maka-tool-output-chunk-redacted { opacity: 0.65; }
 .maka-tool-output-redacted { display: inline; margin-left: 2px; color: var(--warning-text, var(--info-text)); }
-.maka-sandbox-blocked-banner { margin-bottom: 10px; }
+.maka-sandbox-blocked-banner,
+.maka-requires-bypass-banner { margin-bottom: 10px; }
 .maka-sandbox-blocked-description {
   font: var(--maka-text-supporting);
  display: flex; flex-direction: column; gap: 4px; white-space: pre-wrap; word-break: break-word; }

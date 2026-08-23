@@ -248,10 +248,11 @@ export function ToolResultPreview(props: {
   // image / summary / unknown — show a compact descriptor so the user knows
   // what kind landed without dumping binary or storage refs.
   if (content.kind === 'file_write') {
+    const copy = getToolActivityCopy(locale).result;
     return (
       <div data-kind={content.kind}>
         <ToolCodeBlock
-          code={`Wrote ${content.bytes} bytes to ${content.path}`}
+          code={copy.fileWritten(content.bytes, content.path)}
           actionIdentity={props.actionIdentity}
         />
       </div>
@@ -729,7 +730,7 @@ function RiveWorkflowPreview(props: {
     result.stderrTail ? `stderr_tail:\n${result.stderrTail}` : '',
   ].filter(Boolean);
   const body = [
-    result.ok ? 'Rive workflow completed' : 'Rive workflow failed',
+    result.ok ? copy.workflowCompleted : copy.workflowFailed,
     result.summary,
     '',
     ...rows.map(([label, value]) => `${label}: ${value}`),

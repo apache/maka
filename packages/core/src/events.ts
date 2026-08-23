@@ -679,6 +679,7 @@ export interface SandboxDenialRecovery extends SandboxDenialSignal {
 export interface SandboxBoundaryFailureSignal {
   reason: 'sandbox_boundary_required' | 'requires_bypass';
   requiredExpansion?: SandboxBoundaryExpansion;
+  source?: 'client_capability';
 }
 
 export interface ToolUncertainOutcomeSignal {

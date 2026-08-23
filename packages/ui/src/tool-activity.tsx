@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { countDiffLineStats } from '@maka/core/unified-diff';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import { type ToolResultContent } from '@maka/core/events';
@@ -43,6 +43,7 @@ import {
   extractErrorText,
   isCancelledToolResult,
   isPermissionDeniedToolResult,
+  isRequiresBypassToolResult,
   resultOwnsOwnPanel,
   withLiveStreamFallback,
 } from './tool-activity/result-projection.js';
@@ -115,12 +116,15 @@ function LoadToolResultPreview(props: {
  */
 export function ToolCallDetail({
   item,
+  onSwitchToBypassAndRetry,
 }: {
   item: ToolActivityItem;
+  onSwitchToBypassAndRetry?(): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const cancelled = isCancelledToolResult(item.result);
   const sandboxBlocked = isSandboxDeniedTool(item);
+  const requiresBypass = isRequiresBypassToolResult(item.result);
   // Cancel is not a failure; stale errored+cancelled must not paint as failed.
   const failedOutcome = item.status === 'errored' && !cancelled;
   const permissionDenied = isPermissionDeniedToolResult(item.result);
@@ -132,7 +136,7 @@ export function ToolCallDetail({
     .filter((value): value is string => Boolean(value))
     .join(' · ');
   const ptyControlResult = item.toolName === 'WriteStdin' && item.result?.kind === 'shell_run';
-  const ownsPanel = resultOwnsOwnPanel(item);
+  const ownsPanel = resultOwnsOwnPanel(item) || requiresBypass;
   // Sandbox only — ordinary failures use ChatToolCalls status=error on the row.
   const showSandboxBanner = sandboxBlocked && failedOutcome && !ptyControlResult;
   // Skip invocation when the owned panel already prints the command.
@@ -144,7 +148,7 @@ export function ToolCallDetail({
     && item.outputChunks.length > 0
     && !ownsPanel
     && (running || !item.result);
-  const showResult = !!item.result && !permissionDenied;
+  const showResult = !!item.result && !permissionDenied && !requiresBypass;
   const displayResult = showResult && item.result
     ? withLiveStreamFallback(item.result, item.outputChunks, {
       truncated: item.outputTruncated === true,
@@ -175,6 +179,9 @@ export function ToolCallDetail({
     <div className="maka-tool-call-detail">
       {showSandboxBanner && (
         <SandboxBlockedBanner result={displayResult ?? item.result} />
+      )}
+      {requiresBypass && (
+        <RequiresBypassBanner onSwitchToBypassAndRetry={onSwitchToBypassAndRetry} />
       )}
       {showResult && ownsPanel && displayResult && (
         isConnectorTool(item.toolName) && displayResult.kind === 'json' ? (
@@ -262,13 +269,15 @@ export function ToolCallDetail({
 export function ToolTrow({
   items,
   onOpenLinkedSession,
+  onSwitchToBypassAndRetry,
 }: {
   items: ToolActivityItem[];
   onOpenLinkedSession?(sessionId: string): void;
+  onSwitchToBypassAndRetry?(): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   if (items.length === 0) return null;
-  const segments = toolTrowSegments(items, locale);
+  const segments = toolTrowSegments(items, locale, onSwitchToBypassAndRetry);
 
   // ChatToolCalls owns expandable tool evidence. Linked child sessions are
   // navigation targets instead, so they render through Astryx's compact List:
@@ -317,7 +326,11 @@ type ToolTrowSegment =
   | { kind: 'tools'; key: string; calls: ChatToolCallItem[] }
   | { kind: 'agents'; key: string; rows: LinkedAgentRow[] };
 
-function toolTrowSegments(items: ToolActivityItem[], locale: UiLocale): ToolTrowSegment[] {
+function toolTrowSegments(
+  items: ToolActivityItem[],
+  locale: UiLocale,
+  onSwitchToBypassAndRetry?: () => void | Promise<void>,
+): ToolTrowSegment[] {
   const segments: ToolTrowSegment[] = [];
   let computerTarget: string | undefined;
   for (const item of items) {
@@ -336,6 +349,7 @@ function toolTrowSegments(items: ToolActivityItem[], locale: UiLocale): ToolTrow
       isComputerTool(item) && !computerActionLabelIncludesTarget(item)
         ? computerTarget
         : undefined,
+      onSwitchToBypassAndRetry,
     );
     if (previous?.kind === 'tools') previous.calls.push(call);
     else segments.push({ kind: 'tools', key: item.toolUseId, calls: [call] });
@@ -348,7 +362,8 @@ function LinkedAgentList(props: {
   locale: UiLocale;
   onOpenLinkedSession?: (sessionId: string) => void;
 }) {
-  const copy = getToolActivityCopy(props.locale).agent;
+  const activityCopy = getToolActivityCopy(props.locale);
+  const copy = activityCopy.agent;
   return (
     <List density="compact">
       {props.rows.map((row) => {
@@ -378,7 +393,7 @@ function LinkedAgentList(props: {
                   </Text>
                 ) : null}
                 {row.failureClass ? (
-                  <VisuallyHidden>Error: {row.failureClass}</VisuallyHidden>
+                  <VisuallyHidden>{activityCopy.errorLabel}: {row.failureClass}</VisuallyHidden>
                 ) : null}
               </span>
             )}
@@ -404,6 +419,7 @@ function standardToolCall(
   item: ToolActivityItem,
   locale: UiLocale,
   inferredTarget?: string,
+  onSwitchToBypassAndRetry?: () => void | Promise<void>,
 ): ChatToolCallItem {
   return {
     key: item.toolUseId,
@@ -422,7 +438,10 @@ function standardToolCall(
     ...diffStats(itemDiffs(item)),
     resultDetail: (
       <ToolDetailReveal>
-        <ToolCallDetail item={item} />
+        <ToolCallDetail
+          item={item}
+          onSwitchToBypassAndRetry={onSwitchToBypassAndRetry}
+        />
       </ToolDetailReveal>
     ),
   };
@@ -545,10 +564,53 @@ function astryxToolStatus(item: ToolActivityItem): ChatToolCallItem['status'] {
  */
 function toolCallErrorMessage(item: ToolActivityItem, locale: UiLocale): string | undefined {
   if (item.status !== 'errored') return undefined;
+  if (isRequiresBypassToolResult(item.result)) {
+    const copy = getToolActivityCopy(locale).requiresBypass;
+    return locale === 'zh'
+      ? `${copy.title}。${copy.description}`
+      : `${copy.title}. ${copy.description}`;
+  }
   return summarizeErrorText(formatUserVisibleToolText(
     redactSecrets(extractErrorText(item.result, locale)),
     locale,
   )).replace(/^Error:\s*/i, '');
+}
+
+function RequiresBypassBanner(props: {
+  onSwitchToBypassAndRetry?(): void | Promise<void>;
+}) {
+  const copy = getToolActivityCopy(useUiLocale()).requiresBypass;
+  const [pending, setPending] = useState(false);
+
+  async function switchAndRetry() {
+    if (!props.onSwitchToBypassAndRetry || pending) return;
+    setPending(true);
+    try {
+      await props.onSwitchToBypassAndRetry();
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <Banner
+      status="warning"
+      className="maka-requires-bypass-banner"
+      icon={<ShieldAlert size={ICON_SIZE.chrome} aria-hidden="true" />}
+      title={copy.title}
+      description={copy.description}
+      endContent={props.onSwitchToBypassAndRetry ? (
+        <UiButton
+          variant="primary"
+          size="sm"
+          isDisabled={pending}
+          aria-busy={pending || undefined}
+          onClick={() => void switchAndRetry()}
+          label={pending ? copy.pending : copy.action}
+        />
+      ) : undefined}
+    />
+  );
 }
 
 /**

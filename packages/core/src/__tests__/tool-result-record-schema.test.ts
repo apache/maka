@@ -73,10 +73,26 @@ describe('sandbox boundary failure tool result metadata', () => {
     assert.deepEqual(toolResultContent(decodeStoredMessage(storedToolResult(result))), result);
   });
 
+  test('preserves the client capability source for actionable bypass recovery', () => {
+    const result = {
+      kind: 'text',
+      text: 'Client Capability tools require the Bypass execution boundary.',
+      sandboxFailure: {
+        reason: 'requires_bypass',
+        source: 'client_capability',
+      },
+    } as const;
+
+    assert.deepEqual(decodeCanonicalToolResultContent(result), result);
+    assert.deepEqual(toolResultContent(decodeStoredMessage(storedToolResult(result))), result);
+  });
+
   test('rejects malformed or widened boundary failure signals', () => {
     for (const sandboxFailure of [
       { reason: 'sandbox_denial' },
       { reason: 'requires_bypass', unexpected: true },
+      { reason: 'requires_bypass', source: 'filesystem' },
+      { reason: 'sandbox_boundary_required', source: 'client_capability' },
       { reason: 'sandbox_boundary_required', requiredExpansion: {} },
     ]) {
       assert.throws(

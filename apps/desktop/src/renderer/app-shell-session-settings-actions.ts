@@ -50,7 +50,7 @@ type ToastApi = {
 };
 
 export interface AppShellSessionSettingsActions {
-  setPermissionMode(mode: PermissionMode): Promise<void>;
+  setPermissionMode(mode: PermissionMode): Promise<boolean>;
   setSessionModel(input: { llmConnectionSlug: string; model: string }): Promise<void>;
   setSessionThinkingLevel(level: ThinkingLevel | undefined): Promise<void>;
 }
@@ -114,11 +114,15 @@ export function createAppShellSessionSettingsActions(deps: {
     return `${label} (${connection?.name ?? connectionSlug})`;
   }
 
-  async function setPermissionMode(mode: PermissionMode) {
-    if (mode !== 'ask' && mode !== 'bypass') return;
+  async function setPermissionMode(mode: PermissionMode): Promise<boolean> {
+    if (mode !== 'ask' && mode !== 'bypass') return false;
     const sessionId = activeIdRef.current;
+    const currentMode = sessionId
+      ? sessionsRef.current.find((session) => session.id === sessionId)?.permissionMode
+      : undefined;
+    if (currentMode === mode) return true;
     const pendingKey = sessionId ?? '__global_permission_mode__';
-    if (pendingPermissionModeChangesRef.current.has(pendingKey)) return;
+    if (pendingPermissionModeChangesRef.current.has(pendingKey)) return false;
     if (
       mode === 'bypass' &&
       !(await toastApi.confirm({
@@ -129,7 +133,7 @@ export function createAppShellSessionSettingsActions(deps: {
         destructive: true,
       }))
     ) {
-      return;
+      return false;
     }
 
     pendingPermissionModeChangesRef.current.add(pendingKey);
@@ -154,6 +158,7 @@ export function createAppShellSessionSettingsActions(deps: {
         copy.permissionDescriptions[nextMode],
       );
       if (sessionId) await refreshSessions();
+      return nextMode === mode;
     } catch (error) {
       toastApi.error(
         copy.permissionFailedTitle,
@@ -161,6 +166,7 @@ export function createAppShellSessionSettingsActions(deps: {
         undefined,
         sessionId ? { sessionId } : undefined,
       );
+      return false;
     } finally {
       pendingPermissionModeChangesRef.current.delete(pendingKey);
       if (sessionId) setPendingPermissionModeBySession((current) => omitSessionKey(current, sessionId));

@@ -193,6 +193,31 @@ describe("steering timeline", () => {
 });
 
 describe("materializeChat message metadata", () => {
+  test("localizes visible system notes", () => {
+    const messages: StoredMessage[] = [
+      {
+        type: "system_note",
+        id: "note-1",
+        turnId: "t1",
+        ts: 1,
+        kind: "context_compacted",
+      },
+    ];
+
+    assert.equal(
+      materializeChat(messages, "en")[0]?.text,
+      "Context compacted to keep this session within the model window.",
+    );
+    assert.equal(
+      materializeChat(messages, "zh")[0]?.text,
+      "已压缩较早的对话内容，以适应模型上下文窗口。",
+    );
+    assert.equal(
+      materializeTurns(messages, "zh")[0]?.notes[0]?.text,
+      "已压缩较早的对话内容，以适应模型上下文窗口。",
+    );
+  });
+
   test("preserves an explicit empty reference projection as the new-format marker", () => {
     const messages: StoredMessage[] = [
       {
