@@ -41,10 +41,7 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
-import {
-  isRuntimeHostTerminalTurn as isTerminalTurn,
-  type RuntimeHostTerminalTurn as TerminalTurnSnapshot,
-} from '@maka/runtime-host/adapter';
+import { isRuntimeHostTerminalTurn as isTerminalTurn } from '@maka/runtime-host/adapter';
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
   projectSessionCatalogSummary,
@@ -134,7 +131,7 @@ export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
     listener: (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void;
@@ -190,7 +187,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void
   >();
@@ -635,7 +632,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     listener: (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void {
@@ -1029,18 +1026,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         for (const listener of this.#pendingInteractionListeners) listener(pending);
       },
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
-      onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn, sessionGeneration),
-      onToolResult: (turnId) => this.#refreshLiveTranscript(sessionId, sessionGeneration, turnId),
-      onTranscriptReplaced: (turnId, messages) => {
-        if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) {
-          return;
-        }
-        // A reconnect snapshot is newer than every transcript read started by
-        // the retired channel. Invalidate those reads before publishing so a
-        // late tool-result snapshot cannot roll the transcript back.
-        this.#transcriptRefreshSequence += 1;
-        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect');
-      },
+      onTranscriptSettlement: (turnId) =>
+        this.#refreshTranscript(sessionId, sessionGeneration, turnId),
+      onTranscriptReplaced: (turnId, messages) =>
+        this.#publishTranscriptReplacement(
+          sessionId,
+          sessionGeneration,
+          turnId,
+          messages,
+          'reconnect',
+        ),
       onGoalChanged: (goal) => {
         // A closing channel from a previous session can still be draining a
         // frame when the swap happens; only the live session may publish.
@@ -1081,23 +1076,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .catch(() => undefined);
   }
 
-  #refreshTerminalTranscript(turn: TerminalTurnSnapshot, sessionGeneration: number): void {
-    const refreshSequence = ++this.#transcriptRefreshSequence;
-    void loadCurrentMessages(this.#connection, turn.sessionId)
-      .then((messages) => {
-        if (
-          this.#sessionId !== turn.sessionId ||
-          this.#sessionGeneration !== sessionGeneration ||
-          refreshSequence !== this.#transcriptRefreshSequence
-        ) {
-          return;
-        }
-        this.#publishTranscriptReplacement(turn.sessionId, turn.turnId, messages, 'terminal');
-      })
-      .catch(() => undefined);
-  }
-
-  #refreshLiveTranscript(sessionId: string, sessionGeneration: number, turnId: string): void {
+  #refreshTranscript(sessionId: string, sessionGeneration: number, turnId: string): void {
     const refreshSequence = ++this.#transcriptRefreshSequence;
     void loadCurrentMessages(this.#connection, sessionId)
       .then((messages) => {
@@ -1108,25 +1087,28 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         ) {
           return;
         }
-        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'tool_result');
+        this.#publishTranscriptReplacement(
+          sessionId,
+          sessionGeneration,
+          turnId,
+          messages,
+          'reconcile',
+        );
       })
       .catch(() => undefined);
   }
 
   #publishTranscriptReplacement(
     sessionId: string,
+    sessionGeneration: number,
     turnId: string,
     messages: readonly StoredMessage[],
     reason: MakaTranscriptReplacementReason,
   ): void {
-    if (this.#sessionId !== sessionId) return;
+    if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
+    this.#transcriptRefreshSequence += 1;
     for (const listener of this.#transcriptListeners) {
-      listener(
-        sessionId,
-        turnId,
-        messages.map((message) => structuredClone(message)),
-        reason,
-      );
+      listener(sessionId, turnId, messages, reason);
     }
   }
 

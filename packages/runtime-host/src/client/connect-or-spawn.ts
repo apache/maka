@@ -116,6 +116,7 @@ export type ConnectOrSpawnRuntimeHostResult =
       kind: 'connected';
       connection: RuntimeHostConnection;
       registration: Extract<ConnectRuntimeHostResult, { kind: 'connected' }>['registration'];
+      spawnedProcess?: RuntimeHostSpawnedProcess;
     }
   | Extract<ConnectRuntimeHostResult, { kind: 'upgrade_required' }>
   | Extract<ConnectRuntimeHostResult, { kind: 'incompatible' }>
@@ -175,6 +176,11 @@ interface MutableElectionObservations {
 interface ObservedCandidateAttempt {
   readonly attempt: DetachedCandidateAttempt;
   exit?: CandidateProcessExit;
+}
+
+export interface RuntimeHostSpawnedProcess {
+  readonly pid: number;
+  readonly exited: Promise<CandidateProcessExit>;
 }
 
 export async function connectOrSpawnRuntimeHost(
@@ -357,7 +363,12 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
           );
           electionSettled = true;
           await retireCandidateStartupDiagnostic(capability.rootId, startupFailure);
-          return result;
+          const selected = latestCandidate?.attempt;
+          const spawnedProcess =
+            selected?.pid === result.registration.pid && selected.exited
+              ? { pid: selected.pid, exited: selected.exited }
+              : undefined;
+          return spawnedProcess ? { ...result, spawnedProcess } : result;
         } catch {
           observations.readyWaitFailed += 1;
           await result.connection.close().catch(() => undefined);
@@ -410,7 +421,9 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
                 candidate.exit = exit;
                 candidateInFlight = false;
               },
-              () => undefined,
+              () => {
+                candidateInFlight = false;
+              },
             );
           }
           if (attempt.startupFailure) {

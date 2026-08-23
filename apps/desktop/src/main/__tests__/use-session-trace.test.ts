@@ -195,7 +195,6 @@ function createTraceHarness(
           usageChangeHandlers.delete(handler);
         };
       },
-      getRecordFile: async () => '',
     },
   });
   harness.services = services;

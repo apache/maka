@@ -18,45 +18,50 @@
  * under the License.
  */
 
-import { monitorDevelopmentApp, startDevelopmentApp } from './dev-app-runtime.mjs';
+import {
+  handleDevelopmentLaunchOutcome,
+  startDevelopmentApp,
+  waitForDevelopmentLaunchVerdict,
+} from './dev-app-runtime.mjs';
 
-let app = null;
 let stopping = false;
 async function stop(code = 0) {
   if (stopping) return;
   stopping = true;
-  await app?.stop();
+  await app.stop();
   process.exitCode = code;
 }
 
-// Registered before any await. Preparing the bundle and monitoring the app both
-// suspend this module for a long time, and a signal arriving while no handler
-// is installed takes the default action — killing this process mid-teardown and
-// orphaning the app it was supposed to stop.
+const app = await startDevelopmentApp({ argv: process.argv.slice(2) });
+
+// Preparing the bundle happens before the launcher owns any long-lived
+// resources. Once the handle exists, signals clean up only those resources;
+// the detached TCC app remains independently owned.
 process.on('SIGINT', () => void stop());
 process.on('SIGTERM', () => void stop());
 process.on('SIGHUP', () => void stop());
-
-app = await startDevelopmentApp({ argv: process.argv.slice(2) });
 
 app.child.on('error', (error) => {
   console.error(`[dev-app] failed to start: ${error.message}`);
   void stop(1);
 });
 if (app.isMacosBundle) {
-  // `open` exits 0 at the LaunchServices handoff, so this process would end
-  // immediately and leave nothing to stop the app on Ctrl-C. Monitoring the
-  // detached app is both what keeps it alive and what reports the app quitting.
+  // `open` exits at the LaunchServices handoff. The log follower keeps this
+  // command alive, but Ctrl-C stops only launcher-owned resources; the detached
+  // TCC app remains running until the user quits it.
   app.child.on('exit', (code) => {
     if (code) void stop(code);
   });
-  const outcome = await monitorDevelopmentApp({ stopped: () => stopping });
-  if (outcome === 'never-started') {
-    console.error('[dev-app] Maka Dev.app did not start (see the output above)');
-    void stop(1);
-  } else if (outcome === 'exited') {
-    void stop(0);
-  }
+  const outcome = await waitForDevelopmentLaunchVerdict({
+    stopped: () => stopping,
+    resultFile: app.resultFile,
+  });
+  // All decisions live in handleDevelopmentLaunchOutcome (see dev.mjs for the
+  // one-line coupling note); this is the only unobserved part.
+  handleDevelopmentLaunchOutcome(outcome, {
+    log: (m) => console.error('[dev-app]', m),
+    exit: (code) => stop(code),
+  });
 } else {
   app.child.on('exit', (code, signal) => {
     if (!stopping) process.exitCode = signal ? 1 : (code ?? 0);

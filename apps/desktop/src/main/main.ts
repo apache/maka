@@ -18,6 +18,11 @@
  */
 
 import { resolveSystemUiLocale } from '@maka/core/ui-locale';
+import {
+  DEV_LOSER_EXIT_CODE,
+  developmentLaunchResultFile,
+  shouldShowLoserDialog,
+} from '@maka/core/dev-single-instance';
 import { app, clipboard, dialog } from 'electron';
 import { join } from 'node:path';
 import { resolveBuildInfo } from './build-info.js';
@@ -39,6 +44,7 @@ import {
   showPreviousMainProcessInterruptionDialog,
 } from './native-diagnostic-dialog.js';
 import { isIsolatedE2e } from './startup-context.js';
+import { reportDevelopmentLaunchResult } from './dev-single-instance-result.js';
 
 let recoveryJournal: MainProcessRecoveryJournal | undefined;
 installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDirty());
@@ -67,8 +73,37 @@ if (isIsolatedE2e && process.env.MAKA_E2E_USER_DATA_DIR) {
 // before touching shared state. See the 'second-instance' listener in
 // runtime-host-boot.ts for what the surviving process does about it.
 if (!app.requestSingleInstanceLock()) {
-  app.exit(0);
+  if (!app.isPackaged) {
+    // Dev: losing the lock must NOT pretend to have started (exit 0 would be
+    // read as a clean launch while the app was absorbed). A direct launcher
+    // reads the child exit code; a detached TCC launcher reads its private,
+    // one-shot result file. A direct launcher explicitly promises to consume
+    // the exit code; a TCC launcher proves it has a consumer only when the
+    // result write succeeds. Any other entry (Dock, Spotlight, Quit & Reopen)
+    // gets a native box — fail toward the dialog. Linux pre-ready showErrorBox
+    // degrades to stderr (no GUI); documented in electron.d.ts. Packaged builds
+    // keep the existing UX (double-click focuses the first window) — the gate
+    // is a semantic boundary.
+    const resultReported = reportDevelopmentLaunchResult(process.argv, { status: 'loser' });
+    if (!resultReported && shouldShowLoserDialog(process.argv)) {
+      dialog.showErrorBox(
+        'Maka Dev',
+        `Another instance holds the Maka Dev profile (${app.getPath('userData')}). Quit it and retry.`,
+      );
+    }
+    app.exit(DEV_LOSER_EXIT_CODE);
+  } else {
+    app.exit(0);
+  }
 } else {
+  if (!app.isPackaged) {
+    const resultReported = reportDevelopmentLaunchResult(process.argv, {
+      status: 'winner',
+    });
+    if (developmentLaunchResultFile(process.argv) && !resultReported) {
+      console.error('[dev] could not publish the single-instance launch result');
+    }
+  }
   const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
   try {
     recoveryJournal = createMainProcessRecoveryJournal({
@@ -90,7 +125,6 @@ if (!app.requestSingleInstanceLock()) {
   } catch (error) {
     console.error('[diagnostics] main-process recovery unavailable:', error);
   }
-
   // The full boot must not run in the top-level module-evaluation chain:
   // Electron ESM emits `ready` only after the entry module finishes
   // evaluating, so a top-level `await app.whenReady()` (which the

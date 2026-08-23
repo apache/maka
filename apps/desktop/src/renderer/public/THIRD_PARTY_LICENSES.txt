@@ -194,7 +194,8 @@ SOFTWARE.
 - Source: `dingtalk-fill`
 - License: Apache-2.0
 - Covered source asset: `packages/ui/src/bot-brand-logo.tsx` `DingTalkLogo`
-- Full license text: packaged as `licenses/renderer/MINGCUTE_APACHE_LICENSE.txt`.
+- Full license text: the repository-root `LICENSE`; desktop packages copy that file to
+  `licenses/renderer/MINGCUTE_APACHE_LICENSE.txt`.
 - Trademark boundary: DingTalk and its logo remain trademarks of their owner.
 
 ## Allogo Feishu mark

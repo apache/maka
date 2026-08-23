@@ -883,7 +883,15 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       kind: "queued",
     },
   );
-  await ipc.invoke("sessions:stop", "session-1");
+  await ipc.invoke("sessions:stop", "session-1", {
+    source: "stop_button",
+    expectedTurnId: "turn-unrelated",
+  });
+  assert.deepEqual(stopLifecycle, []);
+  await ipc.invoke("sessions:stop", "session-1", {
+    source: "stop_button",
+    expectedTurnId: "turn-1",
+  });
   assert.deepEqual(stopLifecycle, ["teardown", "interrupt"]);
 
   assert.deepEqual(submits, [

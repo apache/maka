@@ -153,7 +153,6 @@ function buildOpenAiCodexFetch(
           ...parsedBody,
           instructions: codexInstructionsFromBody(parsedBody),
           store: false,
-          parallel_tool_calls: parsedBody.parallel_tool_calls ?? true,
           text: {
             ...(parsedBody.text !== null && typeof parsedBody.text === 'object'
               ? (parsedBody.text as Record<string, unknown>)

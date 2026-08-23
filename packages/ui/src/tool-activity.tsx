@@ -23,15 +23,27 @@ import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import { type ToolResultContent } from '@maka/core/events';
 import { type UiLocale } from '@maka/core/ui-locale';
 import {
+  Blocks,
   ICON_SIZE,
   Check,
   ChevronRight,
   Copy,
+  GitBranch,
+  Globe,
+  Monitor,
+  Plug,
+  Settings,
   ShieldAlert,
+  Workflow,
+  type LucideIcon,
 } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { useUiLocale } from './locale-context.js';
-import { type ToolActivityItem, type ToolOutputChunk } from './materialize.js';
+import {
+  toolActivityPresentationStatus,
+  type ToolActivityItem,
+  type ToolOutputChunk,
+} from './materialize.js';
 import { isConnectorTool, resolveToolDisplayName } from './tool-activity/display-name.js';
 import {
   computerActionLabel,
@@ -63,7 +75,11 @@ import {
 } from '@astryxdesign/core';
 import { ToolCodeBlock, ToolDetailReveal } from './tool-activity/tool-code-block.js';
 import { cn } from './ui.js';
-import { describeLoadToolResult, formatToolIntent } from './tool-format.js';
+import {
+  describeLoadToolResult,
+  formatToolIntent,
+  type LoadToolGroupKind,
+} from './tool-format.js';
 import {
   formatDuration,
   formatUserVisibleToolText,
@@ -98,14 +114,62 @@ function LoadToolResultPreview(props: {
       />
     );
   }
+  const Icon = loadToolGroupIcon(desc.kind);
+  const copy = getToolActivityCopy(locale).loadTools;
   return (
     <div className={previewVariants({ part: 'load-tool' })} data-kind="load_tool">
-      <p className={previewVariants({ part: 'load-tool-title' })}>{desc.title}</p>
-      <p className={previewVariants({ part: 'load-tool-count' })}>{desc.countLabel}</p>
-      <p className={previewVariants({ part: 'load-tool-tools' })}>{desc.toolsText}</p>
-      <p className={previewVariants({ part: 'load-tool-footer' })}>{desc.footer}</p>
+      <span className="maka-load-tool-icon" aria-hidden="true">
+        <Icon size={ICON_SIZE.chrome} />
+      </span>
+      <div className="maka-load-tool-summary">
+        <p className={previewVariants({ part: 'load-tool-title' })}>{desc.title}</p>
+        <p className="maka-load-tool-description">{desc.description}</p>
+        <p className={previewVariants({ part: 'load-tool-count' })}>
+          <span>{desc.label}</span>
+          <span className="maka-load-tool-separator" aria-hidden="true" />
+          <span>{desc.countLabel}</span>
+        </p>
+      </div>
+      {(desc.groupId || desc.toolIds.length > 0) && (
+        <details className="maka-load-tool-technical">
+          <summary>{copy.technicalDetails}</summary>
+          <dl>
+            {desc.groupId && (
+              <>
+                <dt>{copy.groupId}</dt>
+                <dd><code>{desc.groupId}</code></dd>
+              </>
+            )}
+            {desc.toolIds.length > 0 && (
+              <>
+                <dt>{copy.toolIds}</dt>
+                <dd><code>{desc.toolIds.join('\n')}</code></dd>
+              </>
+            )}
+          </dl>
+        </details>
+      )}
     </div>
   );
+}
+
+function loadToolGroupIcon(kind: LoadToolGroupKind): LucideIcon {
+  switch (kind) {
+    case 'browser':
+      return Globe;
+    case 'computer_use':
+      return Monitor;
+    case 'mcp':
+      return Plug;
+    case 'rive':
+      return Workflow;
+    case 'agent':
+      return GitBranch;
+    case 'settings':
+      return Settings;
+    default:
+      return Blocks;
+  }
 }
 
 /**
@@ -128,7 +192,7 @@ export function ToolCallDetail({
   // Cancel is not a failure; stale errored+cancelled must not paint as failed.
   const failedOutcome = item.status === 'errored' && !cancelled;
   const permissionDenied = isPermissionDeniedToolResult(item.result);
-  const running = isInFlightToolStatus(item.status);
+  const running = isInFlightToolStatus(toolActivityPresentationStatus(item));
   const outputActionIdentity = [
     computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     item.intent ? formatToolIntent(item.intent) : undefined,
@@ -306,7 +370,7 @@ export function ToolTrow({
 export function toolTrowHasVisibleSpinner(items: readonly ToolActivityItem[]): boolean {
   return items.some((item, index) =>
     !isLinkedAgentResult(item.result)
-    && isInFlightToolStatus(item.status)
+    && isInFlightToolStatus(toolActivityPresentationStatus(item))
     && (index === items.length - 1 || isLinkedAgentResult(items[index + 1]?.result)),
   );
 }
@@ -432,7 +496,7 @@ function standardToolCall(
     target: item.intent ? formatToolIntent(item.intent) : inferredTarget,
     duration: formatDuration(item.durationMs) ?? undefined,
     errorMessage: toolCallErrorMessage(item, locale),
-    stats: item.progress && isInFlightToolStatus(item.status)
+    stats: item.progress && isInFlightToolStatus(toolActivityPresentationStatus(item))
       ? `${item.progress.current}/${item.progress.total}`
       : outcomeWord(item, locale),
     ...diffStats(itemDiffs(item)),
@@ -546,12 +610,11 @@ function itemDiffs(item: ToolActivityItem): string[] {
 }
 
 function astryxToolStatus(item: ToolActivityItem): ChatToolCallItem['status'] {
-  switch (item.status) {
+  switch (toolActivityPresentationStatus(item)) {
     case 'completed': return 'complete';
     case 'errored':
     case 'interrupted': return 'error';
     case 'running': return 'running';
-    default: return 'pending';
   }
 }
 

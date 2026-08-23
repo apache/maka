@@ -23,6 +23,7 @@ import {
   createRuntimeHostSessionProjectionSeed,
   RuntimeHostSessionProjector,
   isRuntimeHostTerminalTurn as isTerminalTurn,
+  sameRuntimeHostTerminalTurn,
   type RuntimeHostTerminalTurn as TerminalTurnSnapshot,
 } from '@maka/runtime-host/adapter';
 import {
@@ -65,8 +66,7 @@ export interface RuntimeHostSessionChannelOptions {
   onRuntimeResourceChanged: (sourceSessionId: string, ref: string) => void;
   onInteractionPending: (pending: InteractionPendingSnapshot) => void;
   onInteractionResolved: (pending: InteractionPendingSnapshot) => void;
-  onTurnTerminal: (turn: TerminalTurnSnapshot) => void;
-  onToolResult?: (turnId: string) => void;
+  onTranscriptSettlement: (turnId: string) => void;
   onTranscriptReplaced: (turnId: string, messages: readonly StoredMessage[]) => void;
   /**
    * Fired when the folded session projection's goal changes (set / settle /
@@ -80,7 +80,6 @@ export interface RuntimeHostSessionChannelOptions {
 export class RuntimeHostSessionChannel {
   readonly sessionId: string;
   readonly messages: StoredMessage[];
-  snapshot: SessionContinuitySnapshot;
   readonly #connection: Pick<RuntimeHostConnection, 'openSessionSubscription'>;
   #subscription: RuntimeHostSessionSubscription;
   readonly #now: () => number;
@@ -88,8 +87,7 @@ export class RuntimeHostSessionChannel {
   readonly #onRuntimeResourceChanged: (sourceSessionId: string, ref: string) => void;
   readonly #onInteractionPending: (pending: InteractionPendingSnapshot) => void;
   readonly #onInteractionResolved: (pending: InteractionPendingSnapshot) => void;
-  readonly #onTurnTerminal: (turn: TerminalTurnSnapshot) => void;
-  readonly #onToolResult: ((turnId: string) => void) | undefined;
+  readonly #onTranscriptSettlement: (turnId: string) => void;
   readonly #onTranscriptReplaced: (turnId: string, messages: readonly StoredMessage[]) => void;
   readonly #onGoalChanged: (goal: GoalProjection | null) => void;
   readonly #onRecovered: () => void;
@@ -98,7 +96,7 @@ export class RuntimeHostSessionChannel {
   readonly #pendingStartedTurns = new Map<string, MakaPreparedSessionTurn>();
   readonly #pendingOpenedInteractions: InteractionPendingSnapshot[] = [];
   readonly #pendingResolvedInteractions: InteractionPendingSnapshot[] = [];
-  readonly #pendingTerminalTurns: TerminalTurnSnapshot[] = [];
+  readonly #pendingTranscriptSettlements: string[] = [];
   readonly #failedSubscriptions = new WeakSet<RuntimeHostSessionSubscription>();
   readonly #retiringSubscriptions = new WeakSet<RuntimeHostSessionSubscription>();
   #projector: RuntimeHostSessionProjector | undefined;
@@ -121,15 +119,13 @@ export class RuntimeHostSessionChannel {
     this.#connection = connection;
     this.#subscription = subscription;
     this.sessionId = subscription.snapshot.session.sessionId;
-    this.snapshot = structuredClone(subscription.snapshot);
     this.messages = messages;
     this.#now = options.now;
     this.#onTurnStarted = options.onTurnStarted;
     this.#onRuntimeResourceChanged = options.onRuntimeResourceChanged;
     this.#onInteractionPending = options.onInteractionPending;
     this.#onInteractionResolved = options.onInteractionResolved;
-    this.#onTurnTerminal = options.onTurnTerminal;
-    this.#onToolResult = options.onToolResult;
+    this.#onTranscriptSettlement = options.onTranscriptSettlement;
     this.#onTranscriptReplaced = options.onTranscriptReplaced;
     this.#onGoalChanged = options.onGoalChanged;
     this.#onRecovered = options.onRecovered;
@@ -178,14 +174,7 @@ export class RuntimeHostSessionChannel {
       }
       return true;
     }
-    this.messages.push(...(messages ?? []).map((message) => structuredClone(message)));
-    this.#projector = new RuntimeHostSessionProjector(
-      this.snapshot,
-      createRuntimeHostSessionProjectionSeed(this.messages, this.snapshot),
-      this.#now,
-      subscription.activeAssistantStreams,
-    );
-    for (const event of this.#projector.seedActive(false)) this.#emit(event);
+    this.#acceptCanonicalReplacement(messages ?? []);
     this.#ready = true;
     try {
       for (const frame of this.#pendingFrames.splice(0)) this.#accept(frame);
@@ -216,6 +205,10 @@ export class RuntimeHostSessionChannel {
     return this.#failure !== undefined;
   }
 
+  get snapshot(): SessionContinuitySnapshot {
+    return this.#projector?.snapshot ?? this.#subscription.snapshot;
+  }
+
   get firstObservedTurnId(): string | undefined {
     return this.#pendingStartedTurns.keys().next().value;
   }
@@ -238,7 +231,9 @@ export class RuntimeHostSessionChannel {
     for (const interaction of this.#pendingResolvedInteractions.splice(0)) {
       this.#onInteractionResolved(interaction);
     }
-    for (const turn of this.#pendingTerminalTurns.splice(0)) this.#onTurnTerminal(turn);
+    for (const turnId of this.#pendingTranscriptSettlements.splice(0)) {
+      this.#onTranscriptSettlement(turnId);
+    }
   }
 
   #flushStartedTurns(): void {
@@ -430,7 +425,6 @@ export class RuntimeHostSessionChannel {
       this.messages.length,
       ...messages.map((message) => structuredClone(message)),
     );
-    this.snapshot = nextSnapshot;
     if (!sameGoalProjection(previousSnapshot.goal, nextSnapshot.goal)) {
       this.#onGoalChanged(nextSnapshot.goal === null ? null : structuredClone(nextSnapshot.goal));
     }
@@ -506,11 +500,11 @@ export class RuntimeHostSessionChannel {
         if (this.#activated && !this.#startedTurnBarrier) this.#onTurnStarted(turn);
         else this.#pendingStartedTurns.set(turn.turnId, turn);
       }
-    } else if (root && isTerminalTurn(root) && !sameTerminalTurn(previousRoot, root)) {
+    } else if (root && isTerminalTurn(root) && !sameRuntimeHostTerminalTurn(previousRoot, root)) {
       for (const event of this.#projector.seedTerminal(root)) this.#emit(event);
       this.#queue(root.turnId).finish();
-      if (this.#activated) this.#onTurnTerminal(root);
-      else this.#pendingTerminalTurns.push(root);
+      if (this.#activated) this.#onTranscriptSettlement(root.turnId);
+      else this.#pendingTranscriptSettlements.push(root.turnId);
     }
     return true;
   }
@@ -589,20 +583,21 @@ export class RuntimeHostSessionChannel {
       this.#fail(new Error(`Runtime Host Session subscription closed: ${frame.reason}`));
       return;
     }
+    const previousSnapshot = this.snapshot;
     const previousPendingIds = new Set(
-      this.snapshot.interactions.pending.map((interaction) => interaction.interactionId),
+      previousSnapshot.interactions.pending.map((interaction) => interaction.interactionId),
     );
-    const previousGoal = this.snapshot.goal;
+    const previousGoal = previousSnapshot.goal;
     const update = this.#projector?.accept(frame);
     if (!update || !this.#projector) return;
-    this.snapshot = this.#projector.snapshot;
-    if (!sameGoalProjection(previousGoal, this.snapshot.goal)) {
+    const snapshot = this.#projector.snapshot;
+    if (!sameGoalProjection(previousGoal, snapshot.goal)) {
       // Clone like the canonical-replacement path above: listeners receive
       // their own copy, so a mutating listener cannot corrupt the live
       // snapshot regardless of which path delivered the change.
-      this.#onGoalChanged(this.snapshot.goal === null ? null : structuredClone(this.snapshot.goal));
+      this.#onGoalChanged(snapshot.goal === null ? null : structuredClone(snapshot.goal));
     }
-    for (const interaction of this.snapshot.interactions.pending) {
+    for (const interaction of snapshot.interactions.pending) {
       if (previousPendingIds.has(interaction.interactionId)) continue;
       const pending = structuredClone(interaction);
       if (this.#activated) this.#onInteractionPending(pending);
@@ -625,13 +620,13 @@ export class RuntimeHostSessionChannel {
     }
     if (update.terminalTurn) {
       this.#queue(update.terminalTurn.turnId).finish();
-      if (this.#activated) this.#onTurnTerminal(update.terminalTurn);
-      else this.#pendingTerminalTurns.push(update.terminalTurn);
+      if (this.#activated) this.#onTranscriptSettlement(update.terminalTurn.turnId);
+      else this.#pendingTranscriptSettlements.push(update.terminalTurn.turnId);
     }
   }
 
   #emit(event: SessionEvent): void {
-    if (event.type === 'tool_result') this.#onToolResult?.(event.turnId);
+    if (event.type === 'tool_result') this.#onTranscriptSettlement(event.turnId);
     this.#queue(event.turnId).push(event);
   }
 
@@ -818,18 +813,6 @@ function isGuaranteedOutcome(event: SessionEvent): boolean {
 
 function isTurnTerminalOutcome(event: SessionEvent): boolean {
   return event.type === 'complete' || event.type === 'abort' || event.type === 'error';
-}
-
-function sameTerminalTurn(
-  previous: SessionContinuitySnapshot['rootTurn'],
-  next: TerminalTurnSnapshot,
-): boolean {
-  return (
-    previous !== null &&
-    isTerminalTurn(previous) &&
-    previous.runId === next.runId &&
-    previous.terminalEventId === next.terminalEventId
-  );
 }
 
 /**

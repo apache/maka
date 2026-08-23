@@ -43,6 +43,7 @@ import { z } from 'zod';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import {
   createDesktopRuntimeHostCandidate as createCandidate,
+  formatLocalRuntimeHostProcessExitDiagnostic,
   startDesktopRuntimeHostCandidate,
   type DesktopRuntimeHostCandidateControls,
   type DesktopRuntimeHostCandidateDeps,
@@ -77,6 +78,60 @@ test('uses the manager-owned launch barrier for local candidate startup', async 
 
   assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
   assert.equal(connectedRoot, 'C:\\workspace');
+});
+
+test('formats bounded local Host exit evidence without leaking stderr secrets', () => {
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 23,
+    signal: null,
+    stderr: 'partial record\nstartup failed: token=fixture-secret',
+    stderrTruncated: true,
+  });
+
+  assert.match(diagnostic, /pid=42 code=23 signal=none/);
+  assert.match(diagnostic, /token=\[redacted\]/);
+  assert.match(diagnostic, /stderr truncated; showing final 4096 bytes/);
+  assert.doesNotMatch(diagnostic, /fixture-secret/);
+});
+
+test('drops a partial secret record retained across the stderr tail boundary', () => {
+  const secret = 'boundary-secret-value';
+  const fullStderr = `apiKey=${secret}\n${'x'.repeat(4_079)}`;
+  const stderrTail = Buffer.from(fullStderr).subarray(-4 * 1024).toString('utf8');
+  assert.match(stderrTail, /secret-value/);
+
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 1,
+    signal: null,
+    stderr: stderrTail,
+    stderrTruncated: true,
+  });
+
+  assert.doesNotMatch(diagnostic, /secret-value/);
+  assert.match(diagnostic, /stderr truncated; showing final 4096 bytes/);
+});
+
+test('redacts a compact JSON secret embedded in local Host stderr', () => {
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 1,
+    signal: null,
+    stderr: 'provider failed: {"apiKey":12345}',
+    stderrTruncated: false,
+  });
+
+  assert.match(diagnostic, /"apiKey":"\[redacted\]"/);
+  assert.doesNotMatch(diagnostic, /12345/);
+});
+
+test('does not claim a blank local Host stderr tail was truncated', () => {
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 1,
+    signal: null,
+    stderr: ' \r\n\t',
+    stderrTruncated: true,
+  });
+
+  assert.doesNotMatch(diagnostic, /stderr:|stderr truncated/);
 });
 
 function createDesktopRuntimeHostCandidate(

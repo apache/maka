@@ -25,7 +25,11 @@ import {
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { lookupModelProviderOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
+import {
+  lookupModelMetadata,
+  lookupModelProviderOverride,
+  openAiAdapterApiProtocol,
+} from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import { resolveApplyPatchProfile, type ApplyPatchProfile } from './apply-patch-profile.js';
 
@@ -51,6 +55,8 @@ export interface ResolvedModelRuntime {
   wire: ModelRuntimeWire;
   /** Durable reasoning replay semantics carried by that wire. */
   reasoningReplay: ReasoningReplayContract;
+  /** Effective parallel-tool-call support after model facts and wire defaults are resolved. */
+  parallelToolCalls?: boolean;
   /** Effective ApplyPatch contract after provider, model, and request wire are resolved. */
   applyPatchProfile: ApplyPatchProfile | null;
 }
@@ -111,6 +117,7 @@ export function resolveModelRuntime(
     ? effectiveBaseUrl(connection)
     : (override?.api ?? effectiveBaseUrl(connection));
   const wire = resolveModelRuntimeWire(connection.providerType, modelId, adapter, apiProtocol);
+  const parallelToolCalls = resolveParallelToolCalls(connection, modelId, adapter);
   return {
     adapter,
     baseUrl:
@@ -120,6 +127,7 @@ export function resolveModelRuntime(
     ...(apiProtocol ? { apiProtocol } : {}),
     wire,
     reasoningReplay: reasoningReplayContract(adapter, wire),
+    ...(parallelToolCalls === undefined ? {} : { parallelToolCalls }),
     applyPatchProfile: resolveApplyPatchProfile(
       {
         wire,
@@ -128,6 +136,24 @@ export function resolveModelRuntime(
       modelId,
     ),
   };
+}
+
+function resolveParallelToolCalls(
+  connection: ModelRuntimeConnection,
+  modelId: string,
+  adapter: ProviderRuntimeAdapter,
+): boolean | undefined {
+  const stored = connection.models?.find((model) => model.id === modelId)?.capabilities
+    ?.parallelToolCalls;
+  if (stored !== undefined) return stored;
+  const metadata = lookupModelMetadata(connection.providerType, modelId).capabilities
+    ?.parallelToolCalls;
+  if (metadata !== undefined) return metadata;
+
+  // The native OpenAI adapters expose the parallel_tool_calls request switch
+  // on both Chat Completions and Responses. Compatible providers vary, so
+  // they require an explicit model declaration instead of inheriting this.
+  return adapter.kind === 'openai' || adapter.kind === 'openai-codex' ? true : undefined;
 }
 
 export function modelUsesAnthropicMessages(

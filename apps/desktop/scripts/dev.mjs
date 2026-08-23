@@ -42,7 +42,11 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import { build as esbuildBuild } from 'esbuild';
 import { buildCursorOverlay } from '../../../scripts/build-cursor-overlay.mjs';
-import { monitorDevelopmentApp, startDevelopmentApp } from './dev-app-runtime.mjs';
+import {
+  createDevelopmentLaunchSession,
+  handleDevelopmentLaunchOutcome,
+  waitForDevelopmentLaunchVerdict,
+} from './dev-app-runtime.mjs';
 
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
@@ -151,47 +155,42 @@ if (!devUrl) {
 
 log('electron', `launching against ${devUrl} (renderer HMR live)`);
 
+// Created before launch so signals during codesign/preparation are durable.
+// Closing the terminal still stops only launcher resources, not the
+// independently owned TCC app.
+const launchSession = createDevelopmentLaunchSession({
+  close: () => server.close(),
+});
 let app = null;
-let shuttingDown = false;
-async function shutdown(code) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  await app?.stop();
-  await server.close().catch(() => {});
-  process.exit(code);
+try {
+  app = await launchSession.start({ argv: process.argv.slice(2), viteUrl: devUrl });
+} catch (error) {
+  console.error(`[dev] failed to start Electron: ${String(error)}`);
+  await launchSession.stop(1);
 }
 
-// Registered before the launch await: preparing the bundle can take a codesign
-// rebuild, and a signal arriving with no handler installed takes the default
-// action, leaving the dev server and any app behind.
-process.on('SIGINT', () => shutdown(0));
-process.on('SIGTERM', () => shutdown(0));
-// Closing the terminal window sends SIGHUP; without this the detached bundle
-// survives as an orphan holding the single-instance lock.
-process.on('SIGHUP', () => shutdown(0));
+if (app) {
+  if (app.isMacosBundle) log('electron', 'launched Maka Dev.app through LaunchServices');
 
-app = await startDevelopmentApp({ argv: process.argv.slice(2), viteUrl: devUrl });
-if (app.isMacosBundle) log('electron', 'launched Maka Dev.app through LaunchServices');
-
-app.child.on('error', (err) => {
-  console.error(`[dev] failed to start Electron: ${err.message}`);
-  shutdown(1);
-});
-if (app.isMacosBundle) {
-  // `open` exits 0 at the handoff, so only a failure to hand off is news here;
-  // the app's own lifetime is what the monitor reports.
-  app.child.on('exit', (code) => {
-    if (code) shutdown(code);
+  app.child.on('error', (err) => {
+    console.error(`[dev] failed to start Electron: ${err.message}`);
+    launchSession.stop(1);
   });
-  monitorDevelopmentApp({ stopped: () => shuttingDown }).then((outcome) => {
-    if (outcome === 'never-started') {
-      console.error('[dev] Maka Dev.app did not start (see the output above)');
-      shutdown(1);
-    } else if (outcome === 'exited') {
-      log('electron', 'Maka Dev.app quit');
-      shutdown(0);
-    }
-  });
-} else {
-  app.child.on('exit', (code) => shutdown(code ?? 0));
+  if (app.isMacosBundle) {
+    // `open` exits 0 at the handoff, so only a failure to hand off is news here.
+    // The app's later lifetime is deliberately independent from this dev server.
+    app.child.on('exit', (code) => {
+      if (code) launchSession.stop(code);
+    });
+    // All branching lives in handleDevelopmentLaunchOutcome; this line is the only
+    // un-automated surface here (launcher scripts are non-exported, darwin-only).
+    waitForDevelopmentLaunchVerdict({ stopped: launchSession.isStopping, resultFile: app.resultFile }).then((outcome) =>
+      handleDevelopmentLaunchOutcome(outcome, {
+        log: (m) => console.error('[dev]', m),
+        exit: (code) => launchSession.stop(code),
+      }),
+    );
+  } else {
+    app.child.on('exit', (code) => launchSession.stop(code ?? 0));
+  }
 }

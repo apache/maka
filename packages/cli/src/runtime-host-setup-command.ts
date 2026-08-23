@@ -47,6 +47,7 @@ import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
+  withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLifecycleLock,
   type RuntimeHostManagedServiceResult,
   type RuntimeHostManagedServiceTarget,
@@ -112,9 +113,14 @@ export async function runRuntimeHostSetupCli(
   };
   const emit = createEmitter(options.json, deps);
   try {
-    await withRuntimeHostManagedServiceLifecycleLock(
+    await withRuntimeHostManagedServiceDeploymentLock(
       options.clientDataRoot,
-      () => runRuntimeHostSetupLocked(options, deps, emit),
+      () =>
+        withRuntimeHostManagedServiceLifecycleLock(
+          options.clientDataRoot,
+          () => runRuntimeHostSetupLocked(options, deps, emit),
+          SETUP_LOCK_TIMEOUT_MS,
+        ),
       SETUP_LOCK_TIMEOUT_MS,
     );
     return 0;
@@ -179,7 +185,8 @@ async function runRuntimeHostSetupLocked(
       'Managed Runtime Host service did not become ready',
     );
   }
-  await deployment.commit();
+  await deployment.activate();
+  await deployment.cleanup();
 
   emit({ kind: 'progress', phase: 'pairing_client' });
   let paired: Awaited<ReturnType<typeof prepareRuntimeHostAccessCredential>>;

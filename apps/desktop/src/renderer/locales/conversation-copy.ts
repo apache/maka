@@ -162,12 +162,6 @@ export interface DesktopConversationCopy {
   };
   inspector: {
     ariaLabel: string;
-    /** Label of the record-file row at the top of the panel. */
-    recordFile: string;
-    /** Copy-button accessible label; copies the record file path. */
-    copyPath: string;
-    /** Toast after a successful path copy. */
-    pathCopied: string;
     /** Copy action and success copy for an unpriced model call's exact Pricing key. */
     copyPricingKey: string;
     pricingKeyCopied: string;
@@ -488,9 +482,6 @@ const COPY = {
     },
     inspector: {
       ariaLabel: '任务追踪',
-      recordFile: '记录文件',
-      copyPath: '复制文件路径',
-      pathCopied: '已复制文件路径',
       copyPricingKey: '复制定价键',
       pricingKeyCopied: '已复制定价键',
       unpricedPricingKey: '未计价的定价键',
@@ -691,9 +682,6 @@ const COPY = {
     },
     inspector: {
       ariaLabel: 'Task trace',
-      recordFile: 'Record file',
-      copyPath: 'Copy file path',
-      pathCopied: 'File path copied',
       copyPricingKey: 'Copy pricing key',
       pricingKeyCopied: 'Pricing key copied',
       unpricedPricingKey: 'Unpriced pricing key',

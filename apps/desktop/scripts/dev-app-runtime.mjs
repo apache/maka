@@ -30,10 +30,10 @@
  * a small bootstrap injected. Everything the bootstrap needs is a build-time
  * constant, so a launch with no arguments and no environment — the Dock,
  * Spotlight, or the system's Screen Recording "Quit & Reopen" — reproduces a
- * correct app. That is why there is no session protocol, pid file, or
- * supervisor here: the app instance and the dev session are separate
- * lifecycles, and nothing about the app's correctness depends on who started
- * it.
+ * correct app. The launcher's one-shot result file reports only the Electron
+ * lock verdict; it does not supervise the app or carry application state. The
+ * app instance and the dev session remain separate lifecycles: stopping the
+ * launcher never terminates the TCC app.
  *
  * `app.isPackaged` is native and computed as
  * `basename(process.execPath) !== 'electron'`, so the invariant that keeps
@@ -46,9 +46,16 @@
  * cannot shadow a real packaged app laid down at the standard location.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -64,13 +71,10 @@ const MARKER = join(DEV_RUNTIME_DIR, 'runtime.json');
 const ELECTRON_PACKAGE = join(REPO_ROOT, 'node_modules', 'electron', 'package.json');
 const SOURCE_APP = join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'Electron.app');
 const WORKTREE_ID = createHash('sha256').update(REPO_ROOT).digest('hex').slice(0, 12);
-const DEV_USER_DATA_DIR = join(
-  homedir(),
-  'Library',
-  'Application Support',
-  `Maka Dev-${WORKTREE_ID}`,
-);
-
+// Deliberately NOT worktree-scoped, unlike the bundle identifier above: plain
+// Electron and the TCC bundle must share the same single-instance authority.
+export const DEV_USER_DATA_DIR = join(homedir(), 'Library', 'Application Support', 'Maka Dev');
+const DEV_ENV_SCHEMA_VERSION = 1;
 /**
  * Per-worktree, and deliberately so. An ad-hoc signature designates a bare
  * `cdhash`, and TCC keys its rows on the bundle identifier — so a shared
@@ -90,17 +94,40 @@ const DEV_USER_DATA_DIR = join(
  */
 const DEV_BUNDLE_ID = `com.maka.dev.${WORKTREE_ID}`;
 const RUNTIME_SCHEMA_VERSION = 7;
-const DEV_ENV_SCHEMA_VERSION = 1;
 
 export const developmentAppPath = DEV_APP;
-const developmentExecutablePath = DEV_EXECUTABLE;
 
-export async function resolveMacosDevelopmentLaunch(env = process.env) {
+async function prepareMacosDevelopmentLaunch(env = process.env) {
   if (!shouldUseMacosDevelopmentApp(process.platform, env)) return null;
   const appPath = await prepareDevelopmentApp();
-  // A leftover app would absorb this launch through the single-instance lock.
-  await ensureNoRunningDevelopmentApp();
-  return createMacosDevelopmentLaunch(appPath, developmentLogFile);
+  const resultFileArgPrefix = (await devSingleInstanceConstants())
+    ?.DEV_LAUNCH_RESULT_FILE_ARG_PREFIX;
+  if (!resultFileArgPrefix) {
+    throw new Error('Maka Dev launch-result contract is unavailable; rebuild @maka/core and retry.');
+  }
+  return { appPath, resultFileArgPrefix };
+}
+
+/**
+ * The TCC bundle previously wrote per-worktree userData roots
+ * (`Maka Dev-<WORKTREE_ID>`); sharing the profile means this launch reads the
+ * common `Maka Dev` root, so sessions and settings that lived in the legacy
+ * directory are no longer read. They are NOT deleted — say where they are.
+ */
+export function warnAboutLegacyTccDataRoot(options = {}) {
+  if ((options.platform ?? process.platform) !== 'darwin') return;
+  const effectiveUserDataDir = options.effectiveUserDataDir ?? DEV_USER_DATA_DIR;
+  const legacy = options.legacyUserDataDir ??
+    join(homedir(), 'Library', 'Application Support', `Maka Dev-${WORKTREE_ID}`);
+  const exists = options.exists ?? existsSync;
+  const warn = options.warn ?? console.warn;
+  if (effectiveUserDataDir !== DEV_USER_DATA_DIR || legacy === DEV_USER_DATA_DIR || !exists(legacy)) {
+    return;
+  }
+  warn(
+    `[maka-dev] shared profile: your earlier TCC data (sessions, settings) lives in ${legacy} ` +
+      'and is no longer read. It is not deleted — copy it back if needed, or remove it.',
+  );
 }
 
 /**
@@ -116,17 +143,38 @@ export function shouldUseMacosDevelopmentApp(platform, env = process.env) {
   return optIn === '1' || optIn === 'true';
 }
 
-export function createMacosDevelopmentLaunch(appPath, logFile) {
+export function createMacosDevelopmentLaunch(
+  appPath,
+  logFile,
+  resultFile,
+  resultFileArgPrefix,
+) {
   // LaunchServices must own the launch so macOS TCC attributes the running
   // executable to Maka Dev rather than to its parent terminal.
   const args = ['-n', '-a', appPath];
   // Without this the detached app's output only reaches Console.app, which is
   // also where a bootstrap or boot failure would go silent.
   if (logFile) args.push('--stdout', logFile, '--stderr', logFile);
+  // The private result path must come LAST: everything after `open --args` is
+  // passed to the app, and the last launcher-owned value wins over any
+  // user-supplied lookalike argument.
+  if (resultFile && resultFileArgPrefix) {
+    args.push('--args', `${resultFileArgPrefix}${resultFile}`);
+  }
   return { command: 'open', args };
 }
 
-export const developmentLogFile = join(DEV_RUNTIME_DIR, 'app.log');
+export function createDevelopmentLaunchFiles(options = {}) {
+  const directory = options.directory ?? join(tmpdir(), 'maka-dev-launches');
+  const id = options.id ?? randomUUID();
+  const logFile = join(directory, `${id}.log`);
+  const resultFile = join(directory, `${id}.result.json`);
+  const mkdir = options.mkdir ?? mkdirSync;
+  const write = options.write ?? ((target) => writeFileSync(target, '', { mode: 0o600 }));
+  mkdir(directory, { recursive: true, mode: 0o700 });
+  write(logFile);
+  return { logFile, resultFile };
+}
 
 /**
  * `pkill -f` / `pgrep -f` match an EXTENDED REGEX against the whole command
@@ -139,41 +187,48 @@ export function toProcessMatchPattern(executable) {
 }
 
 /**
- * Terminates this worktree's development app. The bundle path is unique per
- * worktree, so matching on it is precise without tracking a pid: concurrent
- * worktrees own different bundles and are unaffected.
+ * Electron's lock is authoritative. The plain launcher owns its child directly
+ * and reads its exit code, while the detached TCC launcher consumes a private,
+ * one-shot winner/loser result without taking ownership of the app process.
+ * Constants are imported lazily so this module loads before libs are built.
  */
-export async function quitMacosDevelopmentApp(options = {}) {
-  const platform = options.platform ?? process.platform;
-  const executable = options.executable ?? DEV_EXECUTABLE;
-  const graceMs = options.graceMs ?? 3_000;
-  const signal = options.signal ?? sendSignalToExecutable;
-  const delay = options.delay ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
-  if (platform !== 'darwin') return false;
-  if (!signal('TERM', executable)) return false;
-  // Main-process cleanup runs on before-quit and can outlive a plain SIGTERM.
-  await delay(graceMs);
-  signal('KILL', executable);
-  return true;
+export async function devSingleInstanceConstants(loader = () => import('@maka/core/dev-single-instance')) {
+  // Explicit failure contract: the import can fail on a fresh clone before
+  // libs are built. Every consumer must handle undefined explicitly — a
+  // throw here would crash the plain launcher. One warning, then undefined.
+  try {
+    return await loader();
+  } catch (error) {
+    console.warn(`[maka-dev] dev single-instance constants unavailable: ${String(error)}`);
+    return undefined;
+  }
 }
 
-function sendSignalToExecutable(name, executable) {
-  const status = spawnSync('pkill', [`-${name}`, '-f', toProcessMatchPattern(executable)]).status;
-  // 0 = signalled, 1 = no match. Anything else is a usage or pattern error and
-  // must not be read as "nothing was running".
-  if (status !== 0 && status !== 1) {
-    throw new Error(`pkill -${name} failed for ${executable} (exit ${status})`);
+export async function readDevelopmentLaunchResult(resultFile, loader) {
+  const constants = await devSingleInstanceConstants(loader);
+  if (!constants) return undefined;
+  try {
+    return constants.parseDevelopmentLaunchResult(readFileSync(resultFile, 'utf8'));
+  } catch {
+    return undefined;
   }
-  return status === 0;
+}
+
+/** Exit-code check for the plain child (child is the app process). */
+export async function plainLoserExitCode(code, loader) {
+  const constants = await devSingleInstanceConstants(loader);
+  if (!constants) return false; // cannot attribute; do not invent a loser
+  return code === constants.DEV_LOSER_EXIT_CODE;
 }
 
 export function isDevelopmentAppRunning(options = {}) {
-  const executable = options.executable ?? DEV_EXECUTABLE;
+  const bundle = options.executable ?? DEV_EXECUTABLE;
   const probe = options.probe ?? defaultLivenessProbe;
-  return probe(executable);
+  return probe(bundle);
 }
 
 function defaultLivenessProbe(executable) {
+  if (process.platform === 'win32') return false;
   const status = spawnSync('pgrep', ['-f', toProcessMatchPattern(executable)]).status;
   if (status !== 0 && status !== 1) {
     throw new Error(`pgrep failed for ${executable} (exit ${status})`);
@@ -181,38 +236,10 @@ function defaultLivenessProbe(executable) {
   return status === 0;
 }
 
-/**
- * Takes ownership of this worktree's app instance before launching or
- * rebuilding. Electron's single-instance lock is keyed on userData, so an app
- * left over from a hard-killed session would absorb the new launch: the new
- * process exits 0, the OLD window is raised, and it stays pointed at a dead
- * Vite URL while a liveness probe still reports success.
- */
-export async function ensureNoRunningDevelopmentApp(options = {}) {
-  const running = options.isRunning ?? isDevelopmentAppRunning;
-  const quit = options.quit ?? quitMacosDevelopmentApp;
-  const delay = options.delay ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
-  const attempts = options.attempts ?? 10;
-  const pollMs = options.pollMs ?? 200;
-  // Forward each callee only what it accepts. Passing this whole object through
-  // would make `delay` double as the SIGTERM grace period, and would let a
-  // caller that stubs `probe` still fall through to a real `pkill`.
-  const liveness = { executable: options.executable, probe: options.probe };
-  const shutdown = {
-    platform: options.platform,
-    executable: options.executable,
-    graceMs: options.graceMs,
-    signal: options.signal,
-  };
-  if (!running(liveness)) return false;
-  await quit(shutdown);
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (!running(liveness)) return true;
-    await delay(pollMs);
-  }
-  throw new Error(
-    'A previous Maka Dev.app is still running and could not be stopped; quit it manually (Cmd-Q) and retry',
-  );
+export function assertDevelopmentAppNotRunning(options = {}) {
+  const isRunning = options.isRunning ?? isDevelopmentAppRunning;
+  if (!isRunning(options)) return;
+  throw new Error('Maka Dev.app is running. Quit it (Cmd-Q) and retry the rebuild.');
 }
 
 /**
@@ -301,8 +328,8 @@ export function writeDevelopmentEnvironment(content, options = {}) {
 /**
  * The Vite URL a previous launcher published, if any.
  *
- * `npm start` does not run a dev server, but it may be reclaiming an app from a
- * live `npm run dev`. Republishing without the URL would drop the app to the
+ * `npm start` does not run a dev server, but it may reuse the URL published by
+ * the previous `npm run dev`. Republishing without the URL would drop the app to the
  * prebuilt renderer on disk — stale, or absent entirely on a fresh checkout.
  */
 export function readPublishedViteUrl(file = DEV_ENV_FILE) {
@@ -336,33 +363,65 @@ function resolveElectronBinary() {
  * Returns a handle rather than a child process because the two paths are not
  * comparable: on the macOS bundle path `open` exits at the LaunchServices
  * handoff, so its exit code says nothing about the app.
+ *
+ * All asynchronous preparation finishes before launch artifacts or processes
+ * are created. Once `signal` is aborted, this attempt cannot publish either.
  */
 export async function startDevelopmentApp(options = {}) {
+  const prepareMacosLaunch = options.prepareMacosDevelopmentLaunch ?? prepareMacosDevelopmentLaunch;
+  const loadSingleInstanceConstants = options.devSingleInstanceConstants ?? devSingleInstanceConstants;
+  const createLaunchFiles = options.createDevelopmentLaunchFiles ?? createDevelopmentLaunchFiles;
+  const spawnProcess = options.spawn ?? spawn;
+  const signal = options.signal;
+  signal?.throwIfAborted();
   const argv = options.argv ?? [];
+  const { userDataDir } = splitDevelopmentCliArgs(argv);
+  warnAboutLegacyTccDataRoot({ effectiveUserDataDir: userDataDir ?? DEV_USER_DATA_DIR });
   // Read before preparing: a rebuild republishes the runtime directory and
   // takes the previous environment file with it.
   const viteUrl = options.viteUrl ?? readPublishedViteUrl();
-  const launch = await resolveMacosDevelopmentLaunch();
-  if (!launch) {
-    const child = spawn(resolveElectronBinary(), [DESKTOP_DIR, ...argv], {
+  const preparedLaunch = await prepareMacosLaunch();
+  signal?.throwIfAborted();
+  if (!preparedLaunch) {
+    const launcherFlag = (await loadSingleInstanceConstants())?.DEV_CONFLICT_HANDLED_BY_LAUNCHER_FLAG;
+    signal?.throwIfAborted();
+    const child = spawnProcess(resolveElectronBinary(), [DESKTOP_DIR, ...argv, ...(launcherFlag ? [launcherFlag] : [])], {
       cwd: DESKTOP_DIR,
       stdio: 'inherit',
       env: viteUrl ? { ...process.env, VITE_DEV_SERVER_URL: viteUrl } : process.env,
     });
+    child.once('exit', (code) => {
+      void plainLoserExitCode(code).then((loser) => {
+        if (!loser) return;
+        console.error(
+          'Maka Dev could not start: another instance holds the shared profile lock ' +
+            `(loser exit code ${code}). Quit it (Cmd-Q) and retry.`,
+        );
+      });
+    });
     return { child, isMacosBundle: false, stop: () => terminateProcessTree(child) };
   }
 
+  const files = createLaunchFiles();
+  const launch = {
+    ...createMacosDevelopmentLaunch(
+      preparedLaunch.appPath,
+      files.logFile,
+      files.resultFile,
+      preparedLaunch.resultFileArgPrefix,
+    ),
+    ...files,
+  };
   writeDevelopmentEnvironment(
     createDevelopmentEnvironmentFile({ argv, env: process.env, viteUrl }),
   );
   // LaunchServices detaches the app from this terminal's stdio, so `open`
-  // redirects its output here and we follow it. The log carries whatever the
-  // app prints, so it gets the same mode as the environment file beside it.
-  writeFileSync(developmentLogFile, '', { mode: 0o600 });
-  const logStream = spawn('tail', ['-n', '+1', '-F', developmentLogFile], {
+  // redirects its output here and we follow it. Logs are observation only;
+  // the lock verdict travels through launch.resultFile instead.
+  const logStream = spawnProcess('tail', ['-n', '+1', '-F', launch.logFile], {
     stdio: ['ignore', 'inherit', 'inherit'],
   });
-  const child = spawn(launch.command, launch.args, {
+  const child = spawnProcess(launch.command, launch.args, {
     cwd: DESKTOP_DIR,
     stdio: 'inherit',
     env: process.env,
@@ -370,11 +429,71 @@ export async function startDevelopmentApp(options = {}) {
   return {
     child,
     isMacosBundle: true,
-    stop: async () => {
-      logStream.kill();
-      await quitMacosDevelopmentApp();
-    },
+    logFile: launch.logFile,
+    resultFile: launch.resultFile,
+    stop: () => cleanupDevelopmentLaunch({
+      logStream,
+      logFile: launch.logFile,
+      resultFile: launch.resultFile,
+    }),
   };
+}
+
+/**
+ * Owns the dev launch from process signal through final resource cleanup.
+ * Keeping this coupling here makes the cancellation wire itself testable: a
+ * signal aborts the same attempt `start()` created, then joins and stops any
+ * handle that attempt was already publishing.
+ */
+export function createDevelopmentLaunchSession(options = {}) {
+  const startApp = options.startDevelopmentApp ?? startDevelopmentApp;
+  const signals = options.signals ?? process;
+  const close = options.close ?? (() => {});
+  const exit = options.exit ?? ((code) => process.exit(code));
+  const controller = new AbortController();
+  let launchPromise = null;
+  let stopPromise = null;
+
+  const stop = (code = 0) => {
+    if (stopPromise) return stopPromise;
+    controller.abort();
+    stopPromise = (async () => {
+      const app = await launchPromise?.catch(() => null);
+      await app?.stop();
+      try {
+        await close();
+      } catch {
+        // Shutdown is best-effort; the process must still reach its exit path.
+      }
+      exit(code);
+    })();
+    return stopPromise;
+  };
+
+  signals.on('SIGINT', () => stop(0));
+  signals.on('SIGTERM', () => stop(0));
+  signals.on('SIGHUP', () => stop(0));
+
+  return {
+    start(startOptions = {}) {
+      launchPromise = Promise.resolve(startApp({
+        ...startOptions,
+        signal: controller.signal,
+      }));
+      return launchPromise.catch((error) => {
+        if (controller.signal.aborted && error === controller.signal.reason) return null;
+        throw error;
+      });
+    },
+    stop,
+    isStopping: () => stopPromise !== null,
+  };
+}
+
+export function cleanupDevelopmentLaunch({ logStream, logFile, resultFile }) {
+  logStream.kill();
+  rmSync(logFile, { force: true });
+  rmSync(resultFile, { force: true });
 }
 
 function terminateProcessTree(child) {
@@ -393,33 +512,52 @@ function terminateProcessTree(child) {
 }
 
 /**
- * Watches the detached bundle for the whole session, because `open` exits 0 at
- * the handoff and reports nothing afterwards.
- *
- * Waiting a fixed interval and checking once cannot work in either direction: a
- * first launch of the freshly signed bundle can still be starting, and quitting
- * the app is a normal thing to do at any moment. So this waits for the app to
- * appear, then reports the eventual disappearance as an ordinary session end.
+ * Waits only for Electron's lock verdict. After a winner is known, the detached
+ * TCC app owns its own lifecycle; the launcher neither polls nor terminates it.
  */
-export async function monitorDevelopmentApp(options = {}) {
-  const isRunning = options.isRunning ?? isDevelopmentAppRunning;
+export async function waitForDevelopmentLaunchVerdict(options = {}) {
+  const readLaunchResult = options.readLaunchResult ??
+    (() => readDevelopmentLaunchResult(options.resultFile));
   const delay = options.delay ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
   const stopped = options.stopped ?? (() => false);
   const pollMs = options.pollMs ?? 250;
   const startupAttempts = options.startupAttempts ?? 120;
-  let appeared = false;
-  for (let attempt = 0; attempt < startupAttempts && !appeared; attempt += 1) {
+  for (let attempt = 0; attempt < startupAttempts; attempt += 1) {
+    const result = await readLaunchResult();
+    if (result?.status === 'loser') return 'absorbed';
+    if (result?.status === 'winner') return 'started';
     if (stopped()) return 'stopped';
-    if (isRunning()) appeared = true;
-    else await delay(pollMs);
-  }
-  if (!appeared) return 'never-started';
-  while (!stopped()) {
     await delay(pollMs);
-    if (stopped()) break;
-    if (!isRunning()) return 'exited';
   }
-  return 'stopped';
+  return 'never-started';
+}
+
+/**
+ * Launch-outcome decision, fully contained: absorbed/never-started are failures,
+ * stopped is a normal launcher exit, and started deliberately leaves the
+ * launcher's own dev resources running without supervising Electron.
+ */
+export function handleDevelopmentLaunchOutcome(outcome, effects = {}) {
+  const log = effects.log ?? console.error;
+  const exit = effects.exit ?? ((code) => { process.exitCode = code; });
+  switch (outcome) {
+    case 'started':
+      return;
+    case 'absorbed':
+      log('Maka Dev was absorbed by another instance holding the profile lock; quitting.');
+      exit(1);
+      return;
+    case 'never-started':
+      log('Maka Dev did not start within the startup window.');
+      exit(1);
+      return;
+    case 'stopped':
+      exit(0);
+      return;
+    default:
+      log(`Unknown Maka Dev monitor outcome: ${String(outcome)}`);
+      exit(1);
+  }
 }
 
 export async function prepareDevelopmentApp() {
@@ -433,9 +571,9 @@ export async function prepareDevelopmentApp() {
   const electronVersion = JSON.parse(readFileSync(ELECTRON_PACKAGE, 'utf8')).version;
   if (isCurrentRuntime(electronVersion)) return DEV_APP;
 
-  // Rebuilding unlinks the bundle an already-running app was launched from,
-  // and deletes the environment file it would read on relaunch.
-  await ensureNoRunningDevelopmentApp();
+  // Rebuilding unlinks the bundle an already-running app was launched from.
+  // Refuse rather than terminating a process the launcher did not create.
+  assertDevelopmentAppNotRunning();
 
   try {
     await rebuildDevelopmentRuntime({
@@ -503,6 +641,9 @@ export function createRuntimeMarker(electronVersion) {
     electronVersion,
     bundleId: DEV_BUNDLE_ID,
     desktopDir: DESKTOP_DIR,
+    // Burned into the generated bootstrap, so a change here must invalidate
+    // the cached bundle (isDevelopmentRuntimeCurrent compares every field).
+    userDataDir: DEV_USER_DATA_DIR,
   };
 }
 

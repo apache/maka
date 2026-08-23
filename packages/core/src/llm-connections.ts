@@ -102,6 +102,8 @@ export interface ModelInfo {
     vision?: boolean;
     reasoning?: boolean;
     functionCalling?: boolean;
+    /** Whether one response may contain multiple independent tool calls. */
+    parallelToolCalls?: boolean;
     imageGeneration?: boolean;
     /** Provider-hosted live web search, using this exact model and connection. */
     webSearch?: boolean;

@@ -1871,6 +1871,46 @@ test('publishes only the minimal sandbox failure reason from a tool result', asy
   coordinator.close();
 });
 
+test('publishes only the bounded shell-run correlation from poll args', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+  const ref = 'maka://runtime/background-tasks/bg-1';
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_start',
+    id: 'start-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    toolName: 'Read',
+    args: { ref, unrelated: 'not published' },
+  });
+  await waitFor(() => sink.frames.length === 1);
+
+  const [frame] = sink.frames;
+  assert.equal(frame?.kind, 'subscription.session_event');
+  if (frame?.kind !== 'subscription.session_event') return;
+  assert.deepEqual(frame.event, {
+    type: 'tool_start',
+    id: 'start-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    toolName: 'Read',
+    shellRunRef: ref,
+  });
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
 class RecordingSink implements SessionContinuityFrameSink {
   readonly frames: SubscriptionFrame[] = [];
 

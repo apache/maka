@@ -82,6 +82,24 @@ test('chat-default validation blocks image-only models but accepts merged partia
   assert.deepEqual(verdict(partial), { ok: true });
 });
 
+test('catalog entries preserve advertised parallel tool-call support', () => {
+  const [entry] = buildModelCatalogEntries({
+    providerType: 'openai-compatible',
+    defaultModel: 'relay-model',
+    models: [
+      {
+        id: 'relay-model',
+        capabilities: { functionCalling: true, parallelToolCalls: true },
+      },
+    ],
+    modelSource: 'fetched',
+  });
+  assert.deepEqual(entry?.capabilities, {
+    functionCalling: true,
+    parallelToolCalls: true,
+  });
+});
+
 test('stale provider inventory warns without blocking sends', () => {
   const input = {
     providerType: 'anthropic' as const,

@@ -10,6 +10,9 @@ apps/desktop/src/renderer/chat-message-surface.tsx
 apps/desktop/src/renderer/command-palette.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
+apps/desktop/src/renderer/features/goals/services-context.tsx
+apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
+apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
 apps/desktop/src/renderer/features/workbar/services-context.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx
@@ -23,7 +26,6 @@ apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx
-apps/desktop/src/renderer/goal-dialog.tsx
 apps/desktop/src/renderer/keyboard-help.tsx
 apps/desktop/src/renderer/live-turn-reconciler.tsx
 apps/desktop/src/renderer/maka-tokens.css
@@ -143,6 +145,8 @@ apps/desktop/src/renderer/styles/workbar/review.css
 apps/desktop/src/renderer/styles/workbar/shell.css
 apps/desktop/src/renderer/styles/workbar/side-chat.css
 apps/desktop/src/renderer/styles/workbar/terminal.css
+apps/desktop/src/renderer/styles/workhub.css
+apps/desktop/src/renderer/workhub-surface.tsx
 packages/ui/src/astryx-chat-reasoning.tsx
 packages/ui/src/astryx-i18n.tsx
 packages/ui/src/attachment-kinds.tsx

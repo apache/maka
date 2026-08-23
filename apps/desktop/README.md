@@ -44,14 +44,17 @@ or this repository's path changes; run
 This workflow is opt-in because it costs a codesign rebuild and puts an extra
 app in your Dock and in System Settings. Developers who are not touching OS
 permissions should not pay for it. Main-process logs are still streamed to the
-terminal — `open` redirects them to `.maka-dev/app.log`, which the launcher
-follows.
+terminal. Each TCC launch gets separate private log and result files: logs are
+observation only, while the one-shot result carries the single-instance verdict.
 
 Everything the bundle needs is fixed when it is built, so a launch with no
 arguments and no environment — the Dock, Spotlight, or Screen Recording's
-“Quit & Reopen” — produces a correct app. There is no session protocol or
-supervising process: the app instance and the dev session are separate
-lifecycles. Application-control variables (API keys, `MAKA_*`, the Vite URL)
+“Quit & Reopen” — produces a correct app. There is no long-lived session
+protocol or supervising process: the app instance and the dev session are
+separate lifecycles. Ctrl-C stops the launcher and, for `npm run dev`, its Vite
+server; it does not quit a TCC app launched through LaunchServices. Quit that
+app with Cmd-Q. Likewise, quitting the TCC app does not stop the dev server.
+Application-control variables (API keys, `MAKA_*`, the Vite URL)
 are published to an ignored `0600` file at `.maka-dev/dev-env.json` rather than
 a command line. That file, not the shell, is what makes a Dock or “Quit &
 Reopen” launch work, since those have no parent shell at all. `PATH` is not
@@ -79,13 +82,22 @@ signature seal. Write access to this repository is therefore a deliberate trust
 assumption of the development workflow — a separate matter from who may claim
 the bundle's identity.
 
-The default profile is `~/Library/Application Support/Maka Dev-<worktree-id>`,
-which keeps development isolated from the packaged Maka profile; an explicit
-`--user-data-dir` takes precedence. Shutdown matches this worktree's own bundle
-path, so a concurrent worktree's app is unaffected. Because that lock is keyed
-on the profile, a launch first reclaims any app left over from a hard-killed
-session — otherwise the stale app would absorb the new launch and keep showing
-its old, dead Vite URL.
+The default profile is `~/Library/Application Support/Maka Dev`, which keeps
+development isolated from the packaged Maka profile and is shared by the plain
+dev build and the TCC dev build; an explicit `--user-data-dir` takes
+precedence. (The README previously also claimed the repository CLI
+(`npm run cli:dev`) shares it — unverified; the CLI entry does not go through
+the desktop dev launcher, so this claim is dropped until verified.) Electron's
+single-instance lock is the only authority for the shared development profile.
+A second launch exits with an explicit conflict instead of scanning for or
+terminating an existing Electron process. Plain dev owns its direct child;
+the TCC launcher consumes only the one-shot lock verdict and never owns or
+signals the detached app process.
+
+Known limitation: Chromium may kill an unresponsive lock holder after its
+20-second acknowledgement timeout and let the new instance take the lock.
+Sharing the profile widens the launch pairs that can reach this existing
+behavior; investigation and evidence live in #3539.
 
 Known limitation: `dev-env.json` outlives the session, so launching from the
 Dock long after `npm run dev` has stopped points the app at a Vite URL that is

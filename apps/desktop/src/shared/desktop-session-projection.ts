@@ -144,8 +144,6 @@ export function projectDesktopSessionEvent(
           childSessionId: projectSessionId(host, event.content.childSessionId),
         },
       };
-    case 'tool_result':
-      return { ...event, content: projectDesktopToolResultContent(host, event.content) };
     case 'steering_message':
       return { ...event, content: projectMessageContent(host, event.content) };
     case 'queue_update':

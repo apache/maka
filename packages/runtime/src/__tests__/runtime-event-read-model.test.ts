@@ -33,7 +33,6 @@ import {
   projectRuntimeEventsToStoredMessagesWithArchiveStatuses,
 } from '../runtime-event-read-model.js';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
-import { materializeSession } from '../materializer.js';
 import { BackendRegistry, SessionManager, type SessionStore } from '../session-manager.js';
 
 const ts = 1_800_000_000_000;

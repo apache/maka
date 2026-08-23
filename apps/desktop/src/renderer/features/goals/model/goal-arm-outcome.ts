@@ -18,7 +18,7 @@
  */
 
 import type { GoalState } from '@maka/runtime/goal-state';
-import type { GoalArmOutcome } from '../shared/goal-arm.js';
+import type { GoalArmOutcome } from '../../../../shared/goal-arm.js';
 
 export type GoalArmReconciliationNotice =
   | { readonly kind: 'matching_goal'; readonly goal: GoalState }

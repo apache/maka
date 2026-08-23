@@ -61,6 +61,7 @@ export interface KnownModelCapabilities {
   vision?: true;
   reasoning?: true;
   functionCalling?: true;
+  parallelToolCalls?: true;
   imageGeneration?: true;
 }
 
@@ -399,6 +400,8 @@ function mergeCapabilities(
     vision: providerCapabilities.vision ?? metadataCapabilities.vision,
     reasoning: providerCapabilities.reasoning ?? metadataCapabilities.reasoning,
     functionCalling: providerCapabilities.functionCalling ?? metadataCapabilities.functionCalling,
+    parallelToolCalls:
+      providerCapabilities.parallelToolCalls ?? metadataCapabilities.parallelToolCalls,
     imageGeneration: providerCapabilities.imageGeneration ?? metadataCapabilities.imageGeneration,
   };
 }
@@ -637,6 +640,7 @@ function normalizeCapabilities(caps: ModelInfo['capabilities']): KnownModelCapab
     ...(caps.vision === true ? { vision: true as const } : {}),
     ...(caps.reasoning === true ? { reasoning: true as const } : {}),
     ...(caps.functionCalling === true ? { functionCalling: true as const } : {}),
+    ...(caps.parallelToolCalls === true ? { parallelToolCalls: true as const } : {}),
     ...(caps.imageGeneration === true ? { imageGeneration: true as const } : {}),
   };
 }

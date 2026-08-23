@@ -19,16 +19,22 @@
 
 import { launchDetachedRuntimeHostCandidate } from '../../client/launcher.js';
 
-const [rootPath, expectedRootId] = process.argv.slice(2);
+const [rootPath, expectedRootId, stderrMarkerPath] = process.argv.slice(2);
 if (!rootPath || !expectedRootId) {
   throw new Error('usage: detached-launcher <root> <expected-root-id>');
 }
-const candidateEntrypoint = new URL('./kernel-candidate.js', import.meta.url);
+const candidateEntrypoint = new URL(
+  stderrMarkerPath ? './stderr-after-launcher-exit.js' : './kernel-candidate.js',
+  import.meta.url,
+);
 
 const attempt = await launchDetachedRuntimeHostCandidate({
   rootPath,
   expectedRootId,
   entrypoint: candidateEntrypoint,
   idleGraceMs: 10_000,
+  ...(stderrMarkerPath
+    ? { env: { MAKA_TEST_STDERR_AFTER_PARENT_EXIT_MARKER: stderrMarkerPath } }
+    : {}),
 }).spawned;
 process.send?.({ type: 'launched', pid: attempt.pid });

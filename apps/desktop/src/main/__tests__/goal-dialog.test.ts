@@ -24,7 +24,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { AstryxLocaleProvider, LocaleProvider } from '@maka/ui';
 import type { GoalArmOutcome } from '../../shared/goal-arm.js';
-import { GoalDialog } from '../../renderer/goal-dialog.js';
+import { GoalDialog } from '../../renderer/features/goals/testing.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -171,9 +171,6 @@ function installGoalDialog(
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),
     IS_REACT_ACT_ENVIRONMENT: true,
   });
-  (window as unknown as { maka: unknown }).maka = {
-    goal: { arm },
-  };
   const container = document.querySelector('#root');
   assert.ok(container);
   const root = createRoot(container);
@@ -192,6 +189,7 @@ function installGoalDialog(
             children: createElement(AstryxLocaleProvider, {
               children: createElement(GoalDialog, {
                 sessionId,
+                onArm: arm,
                 onClose: () => {
                   closed += 1;
                 },

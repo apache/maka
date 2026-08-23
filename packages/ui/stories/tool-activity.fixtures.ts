@@ -132,14 +132,6 @@ function toolItem(item: ToolActivityItem): ToolActivityItem {
 
 export const statusOverviewItems = [
   toolItem({
-    toolUseId: 'status-pending',
-    toolName: 'read_file',
-    displayName: 'Read file',
-    intent: 'Open the target component before editing.',
-    status: 'pending',
-    args: { path: 'packages/ui/src/tool-activity.tsx' },
-  }),
-  toolItem({
     toolUseId: 'status-long-running',
     toolName: 'bash',
     displayName: 'Shell command',

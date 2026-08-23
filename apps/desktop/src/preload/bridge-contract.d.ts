@@ -435,6 +435,11 @@ export type DesktopRuntimeHostManagementResponse =
       readonly retainedStateRoot: string;
     };
 
+export interface DesktopRuntimeHostManagementProgress {
+  readonly profileId: string;
+  readonly phase: import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
+}
+
 export interface DesktopRuntimeHostAccessCredential {
   readonly credentialId: string;
   readonly principalKind: 'remote_owner' | 'capability_provider';
@@ -483,8 +488,6 @@ export interface DesktopAppInfo {
   readonly workspacePath: string;
   /** The OS home directory, for collapsing displayed paths to `~`. */
   readonly homePath: string;
-  /** Exact operational-state database path resolved by main. */
-  readonly operationalStateDatabasePath: string;
   readonly projectId?: string | null;
   readonly projectPath: string;
   readonly projectGit: { readonly isGitRepo: boolean; readonly branch?: string };
@@ -562,6 +565,13 @@ export interface MakaBridge {
       profileId: string,
       action: DesktopRuntimeHostManagementAction,
     ): Promise<DesktopRuntimeHostManagementResponse>;
+    update(
+      profileId: string,
+      allowInterruptActiveTasks: boolean,
+    ): Promise<DesktopRuntimeHostManagementResponse>;
+    subscribeProgress(
+      handler: (progress: DesktopRuntimeHostManagementProgress) => void,
+    ): () => void;
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     revokeCredential(
@@ -710,7 +720,10 @@ export interface MakaBridge {
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
     >;
-    stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
+    stop(
+      sessionId: string,
+      input?: { source?: 'stop_button'; expectedTurnId?: string },
+    ): Promise<void>;
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
     enqueue(
       sessionId: string,
