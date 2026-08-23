@@ -138,19 +138,19 @@ export function applyRuntimeEventContextBudget(
   if (!policy) return undefined;
   const charsPerToken = policy?.charsPerToken ?? 4;
   const estimatedTokensBefore = estimateRuntimeEventsTokens(events, charsPerToken);
-  const pruned = pruneStaleToolResultsBeforeCompact(
-    events,
-    policy?.staleToolResultPrune,
-    charsPerToken,
-  );
   const compacted = applyRuntimeEventHistoryCompactNarrow(
-    pruned.events,
+    events,
     policy?.historyCompact,
     policy?.charsPerToken,
     policy?.maxHistoryEstimatedTokens,
     { charsPerToken },
   );
-  const keptEvents = compacted.events;
+  const pruned = pruneStaleToolResultsBeforeCompact(
+    compacted.events,
+    policy?.staleToolResultPrune,
+    charsPerToken,
+  );
+  const keptEvents = pruned.events;
   const keptTurnIds = new Set(keptEvents.map((event) => runtimeEventTurnKey(event)));
   const originalTurnIds = new Set(events.map((event) => runtimeEventTurnKey(event)));
 
@@ -165,7 +165,7 @@ export function applyRuntimeEventContextBudget(
     keptTurns: keptTurnIds.size,
     droppedTurns: Math.max(0, originalTurnIds.size - keptTurnIds.size),
     keptEvents: keptEvents.length,
-    droppedEvents: Math.max(0, pruned.events.length - keptEvents.length),
+    droppedEvents: Math.max(0, events.length - keptEvents.length),
     ...compacted.diagnosticPatch,
     ...(pruned.prunedToolResults > 0
       ? {
