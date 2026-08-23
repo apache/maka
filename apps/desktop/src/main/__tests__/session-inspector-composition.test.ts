@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InspectorCompositionSection } from '../../renderer/features/workbar/tools/inspector/session-inspector-panel.js';
+import { InspectorCompositionSection } from '../../renderer/features/workbar/testing.js';
 import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
 
 test('maps each request-composition category to the same colour in the chart and legend', () => {
