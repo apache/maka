@@ -109,7 +109,8 @@ admission 与每次 invocation resolve 都执行这套校验。它可以识别�
 后续只能按下面顺序推进：
 
 1. 发布/安装 owner 把受信 helper identity 绑定到 signed product artifact；
-2. 短生命周期 invocation owner 消费 opaque capability 并运行 strict helper protocol；
+2. 短生命周期 invocation owner 消费 opaque capability 并运行 strict helper protocol；该 stacked
+   Draft 的合同见 `gitoxide-helper-invocation-owner-v1.zh-CN.md`；
 3. repository observation 再转换为 T1 前的 opaque admission capability。
 
 在第 1 项完成以前，不接 Desktop/CLI，也不恢复旧 Git CLI adapter。

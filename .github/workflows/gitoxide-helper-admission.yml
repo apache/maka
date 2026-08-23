@@ -22,12 +22,18 @@ on:
     paths:
       - '.github/workflows/gitoxide-helper-admission.yml'
       - 'native/gitoxide-helper/**'
+      - 'packages/runtime-host/src/server/gitoxide-helper-*.ts'
+      - 'packages/runtime-host/src/__tests__/gitoxide-helper-*.test.ts'
+      - 'docs/architecture/gitoxide-*.md'
   push:
     branches:
       - main
     paths:
       - '.github/workflows/gitoxide-helper-admission.yml'
       - 'native/gitoxide-helper/**'
+      - 'packages/runtime-host/src/server/gitoxide-helper-*.ts'
+      - 'packages/runtime-host/src/__tests__/gitoxide-helper-*.test.ts'
+      - 'docs/architecture/gitoxide-*.md'
 
 permissions:
   contents: read
@@ -49,9 +55,25 @@ jobs:
           - windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
       - name: Check Rust formatting
         working-directory: native/gitoxide-helper
         run: cargo fmt --check
       - name: Test the short-lived Gitoxide helper
         working-directory: native/gitoxide-helper
         run: cargo test --locked
+      - name: Install JavaScript dependencies without packaging hooks
+        run: npm ci --ignore-scripts
+      - name: Build the helper invocation owner
+        run: >-
+          npm --workspace @maka/core run build &&
+          npm --workspace @maka/storage run build &&
+          npm --workspace @maka/runtime run build &&
+          npm --workspace @maka/runtime-host run build
+      - name: Test the real helper invocation contract
+        env:
+          MAKA_GITOXIDE_HELPER_PATH: ${{ github.workspace }}/native/gitoxide-helper/target/debug/maka-gitoxide-helper${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: node --test packages/runtime-host/dist/__tests__/gitoxide-helper-invocation-internal.test.js
