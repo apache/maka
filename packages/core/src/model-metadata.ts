@@ -435,6 +435,10 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
       lastUpdated: '2026-08-24',
       thinkingOptions: { efforts: ['low', 'high', 'max'], toggle: true },
     },
+    'deepseek-v4-flash-vision-exp': {
+      capabilities: { vision: true, ...REASONING_FUNCTION_CALLING, webSearch: true },
+      thinkingOptions: { efforts: ['high', 'max'], toggle: true },
+    },
     'deepseek-v4-pro': {
       capabilities: { ...REASONING_FUNCTION_CALLING, webSearch: true },
       lastUpdated: '2026-08-13',
@@ -580,7 +584,7 @@ const CURATED_CATALOG_FALLBACK_MODELS: Partial<Record<ProviderType, readonly str
     'claude-sonnet-4-5-20250929',
   ],
   openai: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5'],
-  deepseek: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-reasoner', 'deepseek-chat'],
+  deepseek: ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-v4-pro', 'deepseek-reasoner', 'deepseek-chat'],
   google: ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'],
   'zai-coding-plan': ['glm-5.2', 'glm-5.1', 'glm-5-turbo', 'glm-4.7', 'glm-4.5-air'],
   MiniMax: ['MiniMax-M3'],
