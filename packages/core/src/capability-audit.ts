@@ -229,8 +229,9 @@ function summarizeCapabilityAudit(
     declaredToolKindCount: distinctDeclaredToolKinds(skills).length,
     scheduledTaskCount: scheduledTasks.length,
     enabledScheduledTaskCount: scheduledTasks.filter((task) => task.enabled).length,
-    executableScheduledTaskCount: scheduledTasks.filter((task) => task.enabled && task.permissionMode !== 'explore')
-      .length,
+    executableScheduledTaskCount: scheduledTasks.filter(
+      (task) => task.enabled && task.permissionMode !== 'explore',
+    ).length,
     failedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'error')
       .length,
     skippedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'skipped')
