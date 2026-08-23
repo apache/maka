@@ -954,6 +954,9 @@ export function SettingsSurface(props: {
                           ? `${selectedRuntimeHost.profileId}:${selectedRuntimeHost.hostId}`
                           : 'client'}
                         host={selectedRuntimeHost}
+                        generation={selectedProfileId
+                          ? runtimeHostLifecycleByProfile.get(selectedProfileId)?.epoch
+                          : undefined}
                       >
                         <RuntimeHostInteractionBoundary
                           isInteractive={!requiresRuntimeHost || runtimeHostContentVerified}

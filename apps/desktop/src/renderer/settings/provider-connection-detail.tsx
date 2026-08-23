@@ -57,6 +57,7 @@ import { AddModelDialog } from './provider-add-model-dialog';
 import { EnabledModelManager } from './provider-enabled-model-manager';
 import { useActionGuard } from './use-action-guard';
 import {
+  RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
@@ -994,6 +995,18 @@ function GitHubCopilotReloginNotice(props: {
 // token still reads hasSecret===true, so it must not hide behind
 // hasSecret===false.
 function OAuthReloginNotice(props: {
+  service: OAuthLoginService;
+  hasSecret: CredentialPresenceStatus;
+  onRelogin(): Promise<void>;
+}) {
+  return (
+    <RuntimeHostSettingsGenerationBoundary>
+      <OAuthReloginNoticeForCurrentGeneration {...props} />
+    </RuntimeHostSettingsGenerationBoundary>
+  );
+}
+
+function OAuthReloginNoticeForCurrentGeneration(props: {
   service: OAuthLoginService;
   hasSecret: CredentialPresenceStatus;
   onRelogin(): Promise<void>;

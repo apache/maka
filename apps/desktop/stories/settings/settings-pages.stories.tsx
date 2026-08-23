@@ -891,6 +891,10 @@ const withGeneralCachedRevalidationBridge = withScopedMakaBridge({
 
 let generationStoryCatalogPending = false;
 let generationStoryRuntimeHostProfiles = runtimeHostProfiles;
+let generationStoryCodexEmail = 'old-generation@example.com';
+let generationStoryCodexAccountReads = 0;
+let generationStoryOpenedAuthIds: string[] = [];
+let generationStoryCancelledAuthIds: string[] = [];
 let generationStoryProfileListener:
   | ((event: DesktopRuntimeHostProfileChangedEvent) => void)
   | undefined;
@@ -900,32 +904,77 @@ function resetGenerationStoryBridge(
 ): void {
   generationStoryCatalogPending = false;
   generationStoryRuntimeHostProfiles = snapshot;
+  generationStoryCodexEmail = 'old-generation@example.com';
+  generationStoryCodexAccountReads = 0;
+  generationStoryOpenedAuthIds = [];
+  generationStoryCancelledAuthIds = [];
   generationStoryProfileListener = undefined;
 }
 
+const generationStoryRuntimeHostProfilesBridge = {
+  ...makaBridge.runtimeHostProfiles,
+  getSnapshot: () => {
+    return generationStoryCatalogPending
+      ? pendingForever()
+      : Promise.resolve({
+          ...generationStoryRuntimeHostProfiles,
+          // IPC returns a fresh structured clone. Reusing the cache's exact
+          // object identity would suppress the selected-Host effect after
+          // catalog hydration and make this fake less faithful than Desktop.
+          entries: [...generationStoryRuntimeHostProfiles.entries],
+        });
+  },
+  subscribeChanges: (handler: (event: DesktopRuntimeHostProfileChangedEvent) => void) => {
+    generationStoryProfileListener = handler;
+    return () => {
+      if (generationStoryProfileListener === handler) {
+        generationStoryProfileListener = undefined;
+      }
+    };
+  },
+};
+
 const withGeneralHostGenerationRevalidationBridge = withScopedMakaBridge({
   ...makaBridge,
-  runtimeHostProfiles: {
-    ...makaBridge.runtimeHostProfiles,
-    getSnapshot: () => {
-      return generationStoryCatalogPending
-        ? pendingForever()
-        : Promise.resolve({
-            ...generationStoryRuntimeHostProfiles,
-            // IPC returns a fresh structured clone. Reusing the cache's exact
-            // object identity would suppress the selected-Host effect after
-            // catalog hydration and make this fake less faithful than Desktop.
-            entries: [...generationStoryRuntimeHostProfiles.entries],
-          });
-    },
-    subscribeChanges: (handler: (event: DesktopRuntimeHostProfileChangedEvent) => void) => {
-      generationStoryProfileListener = handler;
-      return () => {
-        if (generationStoryProfileListener === handler) {
-          generationStoryProfileListener = undefined;
-        }
+  runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
+} satisfies Record<string, unknown>);
+
+const withModelsOAuthGenerationRevalidationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
+  openAiCodex: {
+    ...makaBridge.openAiCodex,
+    getAccountState: async () => {
+      generationStoryCodexAccountReads += 1;
+      return {
+        runtimeState: 'authenticated' as const,
+        email: generationStoryCodexEmail,
+        plan: 'Plus',
       };
     },
+  },
+} satisfies Record<string, unknown>);
+
+const withModelsOAuthAuthorizationGenerationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
+  openAiCodex: {
+    ...makaBridge.openAiCodex,
+    getAccountState: async () => ({ runtimeState: 'not_logged_in' as const }),
+    getAuthUrl: async () => ({
+      authRequestId: 'authorization-from-generation-1',
+      stateHint: 'GEN1-CODE',
+    }),
+    openAuthUrl: async (authRequestId: string) => {
+      generationStoryOpenedAuthIds.push(authRequestId);
+      return pendingForever<{ ok: true }>();
+    },
+    completeAuthorization: () => pendingForever<{ ok: true }>(),
+    cancelAuthorization: async (authRequestId?: string) => {
+      if (authRequestId) generationStoryCancelledAuthIds.push(authRequestId);
+      return { ok: true as const };
+    },
+    logout: async () => ({ ok: true as const }),
   },
 } satisfies Record<string, unknown>);
 
@@ -1981,6 +2030,101 @@ export const ModelsCachedHostRevalidation: Story = {
     }
     await expect(Number.parseFloat(getComputedStyle(mutedPage).opacity)).toBeLessThan(1);
     await expect(within(canvasElement).queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+
+// A ready event can replace the Runtime Host without changing
+// profileId:hostId. The catalog route stays mounted, but its OAuth account
+// snapshot belongs to the Host generation and must be read again before the
+// previous account can be presented as current.
+export const ModelsOAuthHostGenerationRevalidation: Story = {
+  decorators: [withModelsOAuthGenerationRevalidationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return (
+      <SettingsStory
+        section="models"
+        openProviderCatalog
+        seedSnapshotCache={seedGeneralSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('old-generation@example.com');
+    const readsBeforeReplacement = generationStoryCodexAccountReads;
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+
+    generationStoryCodexEmail = 'new-generation@example.com';
+    listener({
+      epoch: 'storybook-generation-2',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+      readiness: 'ready',
+      hostId: 'storybook-local-host',
+      isDefault: true,
+    });
+
+    await canvas.findByText('new-generation@example.com');
+    await expect(canvas.queryByText('old-generation@example.com')).not.toBeInTheDocument();
+    await expect(generationStoryCodexAccountReads).toBeGreaterThan(readsBeforeReplacement);
+    await expect(
+      canvasElement.querySelector('[data-maka-contract="provider-catalog"]'),
+    ).toBeInTheDocument();
+  },
+};
+
+// Browser authorization is an active Host-owned controller, not durable
+// Settings route state. Replacing a same-key Host cancels the old generation's
+// request while leaving the user on the same provider setup route.
+export const ModelsOAuthAuthorizationHostGenerationRevalidation: Story = {
+  decorators: [withModelsOAuthAuthorizationGenerationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return (
+      <SettingsStory
+        section="models"
+        openProviderCatalog
+        seedSnapshotCache={seedGeneralSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', {
+      name: /打开 OAuth 登录：OpenAI Codex/,
+    }));
+    await userEvent.click(await canvas.findByRole('button', { name: '登录 Codex' }));
+    await waitForStoryCondition(
+      () => generationStoryOpenedAuthIds.includes('authorization-from-generation-1'),
+      'OAuth authorization did not reach the browser handoff',
+    );
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+
+    listener({
+      epoch: 'storybook-generation-2',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+      readiness: 'ready',
+      hostId: 'storybook-local-host',
+      isDefault: true,
+    });
+
+    await waitForStoryCondition(
+      () => generationStoryCancelledAuthIds.includes('authorization-from-generation-1'),
+      'Previous Runtime Host generation authorization was not cancelled',
+    );
+    await expect(
+      canvasElement.querySelector('[data-maka-contract="provider-setup"]'),
+    ).toBeInTheDocument();
+    await expect(await canvas.findByRole('button', { name: '登录 Codex' })).toBeEnabled();
+    await expect(generationStoryCancelledAuthIds).toEqual([
+      'authorization-from-generation-1',
+    ]);
   },
 };
 
