@@ -18,7 +18,7 @@
 -->
 
 <h1 align="center">
-  <img src="apps/desktop/assets/icon.png" alt="Maka" width="72" valign="middle" /> Apache Maka (Incubating)
+  <img src="apps/desktop/assets/app-icons/sky.png" alt="Maka" width="72" valign="middle" /> Apache Maka (Incubating)
 </h1>
 
 <p align="center"><sub>Incubating at The Apache Software Foundation</sub></p>
