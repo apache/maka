@@ -91,13 +91,12 @@ export function createSystemdUserRuntimeHostService(
       await assertUserSystemd(runSystemctl);
       await assertUserLinger(uid, runLoginctl);
     },
-    install: async (config, installOptions) => {
+    install: async (config) => {
       await validateLaunchFiles(config);
       const previous = await captureSystemdDeployment(context.unitPath, readStatus);
       try {
         await applySystemdDeployment(context, config);
       } catch (error) {
-        if (installOptions?.restoreOnFailure === false) throw error;
         await restoreFailedSystemdDeployment(previous, context, error);
       }
       let rolledBack = false;
@@ -108,6 +107,10 @@ export function createSystemdUserRuntimeHostService(
           await restoreSystemdDeployment(previous, context);
         },
       } satisfies RuntimeHostServiceDeployment;
+    },
+    replace: async (config) => {
+      await validateLaunchFiles(config);
+      await applySystemdDeployment(context, config);
     },
     verifyDeployment: async (config) => {
       await validateLaunchFiles(config);
@@ -122,6 +125,7 @@ export function createSystemdUserRuntimeHostService(
         status.loadState !== 'loaded' ||
         status.fragmentPath !== context.unitPath ||
         status.needDaemonReload !== 'no' ||
+        Boolean(status.dropInPaths?.trim()) ||
         unit !== renderSystemdUnit(config)
       ) {
         throw new RuntimeHostServiceManagerError(
@@ -257,6 +261,7 @@ interface SystemdStatus {
   readonly unitFileState: string;
   readonly fragmentPath?: string;
   readonly needDaemonReload?: string;
+  readonly dropInPaths?: string;
   readonly mainPid?: string;
   readonly execMainStatus?: string;
 }
@@ -369,7 +374,7 @@ async function readSystemdStatus(context: SystemdUnitContext): Promise<SystemdSt
     result = await context.runSystemctl([
       'show',
       context.unitName,
-      '--property=LoadState,ActiveState,SubState,UnitFileState,FragmentPath,NeedDaemonReload,MainPID,ExecMainStatus',
+      '--property=LoadState,ActiveState,SubState,UnitFileState,FragmentPath,NeedDaemonReload,DropInPaths,MainPID,ExecMainStatus',
       '--no-pager',
     ]);
   } catch (error) {
@@ -390,6 +395,7 @@ async function readSystemdStatus(context: SystemdUnitContext): Promise<SystemdSt
     unitFileState: properties.get('UnitFileState') ?? 'disabled',
     fragmentPath: properties.get('FragmentPath'),
     needDaemonReload: properties.get('NeedDaemonReload'),
+    dropInPaths: properties.get('DropInPaths'),
     mainPid: properties.get('MainPID'),
     execMainStatus: properties.get('ExecMainStatus'),
   };

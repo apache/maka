@@ -22,15 +22,26 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { withProcessLifetimeFileUpdateLock } from '../process-lifetime-file-update-lock.js';
 
 test('releases a file update lock when its process is killed', async (t) => {
+  await assertKilledHolderCanBeRecovered(t, []);
+});
+
+test('recovers a supervised legacy directory lock when its process is killed', async (t) => {
+  await assertKilledHolderCanBeRecovered(t, ['legacy']);
+});
+
+async function assertKilledHolderCanBeRecovered(
+  t: TestContext,
+  args: readonly string[],
+): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-file-update-lock-'));
   const targetPath = join(root, 'state');
   const child = fork(
     new URL('./fixtures/file-update-lock-holder.js', import.meta.url),
-    [targetPath],
+    [targetPath, ...args],
     { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
   );
   t.after(async () => {
@@ -60,4 +71,4 @@ test('releases a file update lock when its process is killed', async (t) => {
     2_000,
   );
   assert.equal(entered, true);
-});
+}

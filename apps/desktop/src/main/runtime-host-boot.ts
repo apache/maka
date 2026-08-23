@@ -455,19 +455,11 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
     replacementExpected,
   ) => {
     if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
+    const manager = runtimeHostManager;
     const expectedPrevious = replacementExpected ? previousHostEpoch : undefined;
-    try {
-      await runtimeHostManager.waitUntilReady(
-        profileId,
-        expectedPrevious,
-        AbortSignal.timeout(MANAGED_UPDATE_RECONNECT_TIMEOUT_MS),
-      );
-      if (runtimeHostManager.current(profileId)?.hostId !== expectedHostId) {
-        throw new Error('Runtime Host profile changed while its service was updating');
-      }
-    } catch {
+    const reconnectExactTarget = async () => {
       await runtimeHostProfileService.reconnect(profileId, expectedHostId);
-      const current = runtimeHostManager.current(profileId);
+      const current = manager.current(profileId);
       if (
         current?.hostId !== expectedHostId ||
         !current.candidate ||
@@ -475,6 +467,22 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
       ) {
         throw new Error('Desktop reconnected to an unexpected Runtime Host generation');
       }
+    };
+    if (replacementExpected && previousHostEpoch === undefined) {
+      await reconnectExactTarget();
+      return;
+    }
+    try {
+      await manager.waitUntilReady(
+        profileId,
+        expectedPrevious,
+        AbortSignal.timeout(MANAGED_UPDATE_RECONNECT_TIMEOUT_MS),
+      );
+      if (manager.current(profileId)?.hostId !== expectedHostId) {
+        throw new Error('Runtime Host profile changed while its service was updating');
+      }
+    } catch {
+      await reconnectExactTarget();
     }
   },
   sendProgress: (progress) =>

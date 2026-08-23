@@ -31,6 +31,7 @@ import type {
   DesktopRuntimeHostManagementProgress,
 } from '../preload/bridge-contract.js';
 import type { DesktopRuntimeHostProfileService } from './runtime-host-profile-service.js';
+import { sameDesktopRuntimeHostManagedServiceBinding } from './runtime-host-managed-services.js';
 import type {
   DesktopRuntimeHostSshCleanupInput,
   DesktopRuntimeHostSshAccessInput,
@@ -249,6 +250,10 @@ export function createDesktopRuntimeHostManagement(input: {
       response.update.kind !== 'active_tasks'
     ) {
       try {
+        const current = await input.profiles.resolveManagedService(profileId);
+        if (!current || !sameDesktopRuntimeHostManagedServiceBinding(current, managed)) {
+          throw new Error('Runtime Host profile changed while its service was updating');
+        }
         await input.awaitUpdatedConnection(
           profileId,
           managed.profile.rootId,

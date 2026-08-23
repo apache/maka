@@ -17,12 +17,26 @@
  * under the License.
  */
 
-import { withProcessLifetimeFileUpdateLock } from '../../process-lifetime-file-update-lock.js';
+import { mkdir } from 'node:fs/promises';
+import {
+  withLegacyFileUpdateLockLease,
+  withProcessLifetimeFileUpdateLock,
+} from '../../process-lifetime-file-update-lock.js';
 
 const targetPath = process.argv[2];
 if (!targetPath) throw new Error('Missing file update lock target');
 
-await withProcessLifetimeFileUpdateLock(targetPath, async () => {
+const hold = async () => {
   process.send?.('locked');
   await new Promise<never>(() => setInterval(() => undefined, 1_000));
-});
+};
+
+if (process.argv[3] === 'legacy') {
+  await withLegacyFileUpdateLockLease(targetPath, async (inheritedFd) => {
+    if (inheritedFd <= 2) throw new Error('Legacy lock lease is not inheritable');
+    await mkdir(`${targetPath}.lock`);
+    await hold();
+  });
+} else {
+  await withProcessLifetimeFileUpdateLock(targetPath, hold);
+}

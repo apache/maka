@@ -334,6 +334,8 @@ test('publishes update progress and waits for the managed profile to reconnect',
   const progress: unknown[] = [];
   const connectionCompletions: unknown[] = [];
   let failConnection = false;
+  let bindingPresent = true;
+  let removeBindingAfterUpdate = false;
   const profile = {
     id: 'office',
     name: 'Office',
@@ -357,7 +359,8 @@ test('publishes update progress and waits for the managed profile to reconnect',
       removeHandler: (channel) => handlers.delete(channel),
     },
     profiles: {
-      resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
+      resolveManagedService: async () =>
+        bindingPresent ? { profile, service, state: 'active' as const } : undefined,
       resolveManagedAccess: async () => undefined,
       rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
       markManagedServiceUninstalling: async (binding) => binding,
@@ -368,6 +371,7 @@ test('publishes update progress and waits for the managed profile to reconnect',
     runUpdate: async (input, onProgress) => {
       updates.push(input);
       onProgress('staging');
+      if (removeBindingAfterUpdate) bindingPresent = false;
       return {
         schemaVersion: 1,
         kind: 'result',
@@ -415,6 +419,16 @@ test('publishes update progress and waits for the managed profile to reconnect',
     [profile.id, profile.rootId, 'host-before-update', true],
   ]);
 
+  removeBindingAfterUpdate = true;
+  const changedProfile = await update({}, profile.id, false);
+  assert.equal(
+    (changedProfile as { kind: string; error?: { message: string } }).error?.message,
+    'The Runtime Host update completed, but Desktop could not reconnect: ' +
+      'Runtime Host profile changed while its service was updating',
+  );
+
+  bindingPresent = true;
+  removeBindingAfterUpdate = false;
   failConnection = true;
   const reconnectFailure = await update({}, profile.id, false);
   assert.deepEqual(reconnectFailure, {

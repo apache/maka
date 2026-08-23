@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
@@ -37,10 +37,12 @@ import {
 } from './runtime-host-managed-deployment.js';
 import {
   manageRuntimeHostService,
+  replaceRuntimeHostManagedService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
   verifyRuntimeHostManagedServiceReady,
   withRuntimeHostManagedServiceDeploymentLock,
+  withRuntimeHostManagedServiceLegacyOperatorLeases,
   withRuntimeHostManagedServiceLifecycleLock,
   type RuntimeHostManagedServiceResult,
   type RuntimeHostManagedServiceTarget,
@@ -67,14 +69,17 @@ export interface RuntimeHostUpdateCliOptions {
 
 interface RuntimeHostUpdateCliDeps {
   readonly manage: typeof manageRuntimeHostService;
+  readonly replace: typeof replaceRuntimeHostManagedService;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
   readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
+  readonly withLegacyOperatorLeases: typeof withRuntimeHostManagedServiceLegacyOperatorLeases;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly verifyReady: typeof verifyRuntimeHostManagedServiceReady;
   readonly runOperator: (
     operatorPath: string,
     args: readonly string[],
+    inheritedFds?: readonly number[],
   ) => Promise<RuntimeHostServiceManagementFrame>;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
@@ -86,9 +91,11 @@ export async function runManagedRuntimeHostUpdateCli(
 ): Promise<number> {
   const deps: RuntimeHostUpdateCliDeps = {
     manage: manageRuntimeHostService,
+    replace: replaceRuntimeHostManagedService,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
     withLifecycleLock: withRuntimeHostManagedServiceLifecycleLock,
     withDeploymentLock: withRuntimeHostManagedServiceDeploymentLock,
+    withLegacyOperatorLeases: withRuntimeHostManagedServiceLegacyOperatorLeases,
     createBackend: createPlatformRuntimeHostServiceBackend,
     verifyReady: verifyRuntimeHostManagedServiceReady,
     runOperator: runManagedRuntimeHostOperator,
@@ -145,17 +152,22 @@ export async function runManagedRuntimeHostUpdateCli(
           );
         }
         emit(progress('checking', currentVersion, options.version));
+        let activeTargetNeedsRepair = false;
         if (currentVersion === options.version && status.service.active) {
-          await deps.verifyReady(serviceConfig, backend);
-          emit({
-            schemaVersion: 1,
-            kind: 'result',
-            action: 'update',
-            service: runtimeHostServiceSummary(status),
-            ...operatorCapabilities(),
-            update: { kind: 'already_current', version: options.version },
-          });
-          return 0;
+          try {
+            await deps.verifyReady(serviceConfig, backend);
+            emit({
+              schemaVersion: 1,
+              kind: 'result',
+              action: 'update',
+              service: runtimeHostServiceSummary(status),
+              ...operatorCapabilities(),
+              update: { kind: 'already_current', version: options.version },
+            });
+            return 0;
+          } catch {
+            activeTargetNeedsRepair = true;
+          }
         }
 
         emit(progress('staging', currentVersion, options.version));
@@ -174,14 +186,54 @@ export async function runManagedRuntimeHostUpdateCli(
           );
         }
 
-        if (currentVersion !== options.version) {
+        if (status.service.active) {
           emit(progress('retiring', currentVersion, options.version));
-          const retirement = await deps.runOperator(deployment.operatorPath, [
+          const currentOperatorPath = deployment.operatorPath;
+          const runCurrentOperator = (args: readonly string[]) =>
+            deps.withLegacyOperatorLeases(options.clientDataRoot, (inheritedFds) =>
+              deps.runOperator(currentOperatorPath, args, inheritedFds),
+            );
+          let retirement = await runCurrentOperator([
             'retire',
             '--framed',
             ...expectedTargetArgs(options.expectedTarget),
             ...(options.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
           ]);
+          if (
+            activeTargetNeedsRepair &&
+            retirement.kind === 'error' &&
+            retirement.action === 'retire' &&
+            retirement.error.code === 'retirement_failed'
+          ) {
+            if (!options.allowInterruptActiveTasks) {
+              retirement = activeTasksRetirementFrame(status);
+            } else {
+              const forced = await runCurrentOperator([
+                'stop',
+                '--framed',
+                ...expectedTargetArgs(options.expectedTarget),
+              ]);
+              if (forced.kind === 'error') {
+                emit({ ...forced, action: 'update' });
+                return 1;
+              }
+              if (forced.kind !== 'result' || forced.action !== 'stop') {
+                throw new Error(
+                  'The current Runtime Host operator returned an invalid stop result',
+                );
+              }
+              retirement = {
+                schemaVersion: 1,
+                kind: 'result',
+                action: 'retire',
+                service: forced.service,
+                ...(forced.operatorCapabilities
+                  ? { operatorCapabilities: forced.operatorCapabilities }
+                  : {}),
+                retirement: { kind: 'stopped' },
+              };
+            }
+          }
           if (retirement.kind === 'error') {
             if (retirement.action !== 'retire') {
               throw new Error(
@@ -231,22 +283,22 @@ export async function runManagedRuntimeHostUpdateCli(
           cutoverStarted = true;
           await targetDeployment.activate();
           emit(progress('replacing', currentVersion, options.version));
-          const updated = await deps.manage(
+          const updatedService = await deps.replace(
             {
               ...common,
-              action: 'update',
               cliPath: targetDeployment.cliPath,
+              expectedTarget: options.expectedTarget,
             },
             backend,
           );
-          if (updated.service.installedVersion !== options.version || !updated.service.active) {
+          if (updatedService.installedVersion !== options.version || !updatedService.active) {
             throw new RuntimeHostServiceManagerError(
               'update_incomplete',
               'The replacement Runtime Host did not report the selected package version as ready',
             );
           }
           await targetDeployment.cleanup().catch(() => undefined);
-          return updated;
+          return { schemaVersion: 1, action: 'status', service: updatedService } as const;
         });
         emit({
           schemaVersion: 1,
@@ -344,6 +396,19 @@ function expectedTargetArgs(target: RuntimeHostManagedServiceTarget): string[] {
   ];
 }
 
+function activeTasksRetirementFrame(
+  status: RuntimeHostManagedServiceResult,
+): RuntimeHostServiceManagementFrame {
+  return {
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'retire',
+    service: runtimeHostServiceSummary(status),
+    ...operatorCapabilities(),
+    retirement: { kind: 'active_tasks' },
+  };
+}
+
 function operatorCapabilities(): {
   readonly operatorCapabilities?: (typeof RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)[];
 } {
@@ -356,31 +421,60 @@ function operatorCapabilities(): {
 async function runManagedRuntimeHostOperator(
   operatorPath: string,
   args: readonly string[],
+  inheritedFds: readonly number[] = [],
 ): Promise<RuntimeHostServiceManagementFrame> {
   return new Promise((resolve, reject) => {
-    execFile(
-      operatorPath,
-      [...args],
-      {
-        encoding: 'utf8',
-        timeout: OPERATOR_TIMEOUT_MS,
-        maxBuffer: OPERATOR_OUTPUT_MAX_BYTES,
-      },
-      (error, stdout, stderr) => {
-        let frame: RuntimeHostServiceManagementFrame | undefined;
-        for (const line of stdout.split(/\r?\n/u)) {
-          frame = decodeRuntimeHostServiceManagementFrame(line) ?? frame;
-        }
-        if (frame) {
-          resolve(frame);
-          return;
-        }
-        const message = stderr.trim();
+    const child = spawn(operatorPath, [...args], {
+      // A detached legacy operator keeps the inherited advisory leases alive if
+      // this updater is interrupted, so an exact retry never steals active work.
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'pipe', ...inheritedFds],
+      windowsHide: true,
+    });
+    if (!child.stdout || !child.stderr) {
+      child.kill('SIGKILL');
+      reject(new Error('The current Runtime Host operator did not expose its output streams'));
+      return;
+    }
+    const stdoutStream = child.stdout;
+    const stderrStream = child.stderr;
+    let stdout = '';
+    let stderr = '';
+    let failure: Error | undefined;
+    const append = (current: string, chunk: Buffer): string => {
+      const next = current + chunk.toString('utf8');
+      if (Buffer.byteLength(next) > OPERATOR_OUTPUT_MAX_BYTES) {
+        failure = new Error('The current Runtime Host operator returned too much output');
+        child.kill('SIGKILL');
+      }
+      return next;
+    };
+    stdoutStream.on('data', (chunk: Buffer) => {
+      stdout = append(stdout, chunk);
+    });
+    stderrStream.on('data', (chunk: Buffer) => {
+      stderr = append(stderr, chunk);
+    });
+    child.once('error', (error) => {
+      failure = error;
+    });
+    const timeout = setTimeout(() => {
+      failure = new Error('The current Runtime Host operator timed out');
+      child.kill('SIGKILL');
+    }, OPERATOR_TIMEOUT_MS);
+    child.once('close', () => {
+      clearTimeout(timeout);
+      let frame: RuntimeHostServiceManagementFrame | undefined;
+      for (const line of stdout.split(/\r?\n/u)) {
+        frame = decodeRuntimeHostServiceManagementFrame(line) ?? frame;
+      }
+      if (frame) resolve(frame);
+      else
         reject(
-          error ?? new Error(message || 'The current Runtime Host operator returned no result'),
+          failure ??
+            new Error(stderr.trim() || 'The current Runtime Host operator returned no result'),
         );
-      },
-    );
+    });
   });
 }
 

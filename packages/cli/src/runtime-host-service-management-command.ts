@@ -44,7 +44,7 @@ import { createSystemdUserRuntimeHostService } from './runtime-host-systemd-serv
 
 export interface RuntimeHostServiceManagementCliOptions
   extends Omit<RuntimeHostManagedServiceInput, 'action'> {
-  readonly action: Exclude<RuntimeHostManagedServiceInput['action'], 'update'>;
+  readonly action: RuntimeHostManagedServiceInput['action'];
   readonly json: boolean;
   readonly framed?: boolean;
 }
@@ -169,9 +169,6 @@ function formatHumanResult(result: RuntimeHostManagedServiceResult): string {
 }
 
 function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServiceManagementFrame {
-  if (result.action === 'update') {
-    throw new TypeError('Managed Runtime Host updates use the update transaction');
-  }
   const service = runtimeHostServiceSummary(result);
   const common = {
     schemaVersion: 1,

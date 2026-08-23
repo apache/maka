@@ -20,12 +20,48 @@
 /// <reference path="./fs-native-extensions.d.ts" />
 
 import { constants as fsConstants } from 'node:fs';
-import { lstat, open, unlink, type FileHandle } from 'node:fs/promises';
+import { lstat, open, rmdir, unlink, type FileHandle } from 'node:fs/promises';
 import { tryLock, unlock } from 'fs-native-extensions';
 
 const LOCK_POLL_MS = 25;
 const LOCK_TIMEOUT_MS = 10_000;
 const lockGates = new Map<string, Promise<void>>();
+
+export async function withLegacyFileUpdateLockLease<T>(
+  targetPath: string,
+  operation: (inheritedFd: number) => Promise<T>,
+  timeoutMs: number = LOCK_TIMEOUT_MS,
+): Promise<T> {
+  const lockPath = `${targetPath}.lock`;
+  const leasePath = `${targetPath}.lease`;
+  const supervisionPath = `${targetPath}.supervised`;
+  const deadline = Date.now() + timeoutMs;
+  return runWithLockGate(leasePath, deadline, async () => {
+    const lease = await openStableLockFile(leasePath);
+    let leased = false;
+    let supervised = false;
+    let completed = false;
+    try {
+      while (!(leased = tryLock(lease.fd))) await waitForLockTurn(lockPath, deadline);
+      // The inherited advisory lease follows the legacy child process. A surviving
+      // supervision marker therefore proves that its directory lock is ownerless
+      // once a later process can acquire this lease.
+      await recoverSupervisedLegacyLock(lockPath, supervisionPath);
+      await createSupervisionMarker(supervisionPath);
+      supervised = true;
+      const result = await operation(lease.fd);
+      completed = true;
+      return result;
+    } finally {
+      try {
+        if (supervised && completed) await unlink(supervisionPath).catch(ignoreMissing);
+      } finally {
+        if (leased) releaseLock(lease);
+        await lease.close();
+      }
+    }
+  });
+}
 
 export async function withProcessLifetimeFileUpdateLock<T>(
   targetPath: string,
@@ -41,6 +77,7 @@ export async function withProcessLifetimeFileUpdateLock<T>(
     let markerCreated = false;
     try {
       while (!(leased = tryLock(lease.fd))) await waitForLockTurn(lockPath, deadline);
+      await recoverSupervisedLegacyLock(lockPath, `${targetPath}.supervised`);
       await acquireLegacyMarker(lockPath, deadline);
       markerCreated = true;
       return await operation();
@@ -53,6 +90,35 @@ export async function withProcessLifetimeFileUpdateLock<T>(
       }
     }
   });
+}
+
+async function createSupervisionMarker(path: string): Promise<void> {
+  const marker = await open(
+    path,
+    fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
+    0o600,
+  );
+  await marker.close();
+}
+
+async function recoverSupervisedLegacyLock(
+  lockPath: string,
+  supervisionPath: string,
+): Promise<void> {
+  const supervision = await lstat(supervisionPath).catch((error: unknown) => {
+    if (isNodeError(error, 'ENOENT')) return undefined;
+    throw error;
+  });
+  if (!supervision) return;
+  if (!supervision.isFile() || supervision.isSymbolicLink()) {
+    throw new Error(`File update supervision marker is not a regular file: ${supervisionPath}`);
+  }
+  const lock = await lstat(lockPath).catch((error: unknown) => {
+    if (isNodeError(error, 'ENOENT')) return undefined;
+    throw error;
+  });
+  if (lock?.isDirectory() && !lock.isSymbolicLink()) await rmdir(lockPath);
+  await unlink(supervisionPath);
 }
 
 async function runWithLockGate<T>(
