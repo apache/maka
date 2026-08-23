@@ -354,6 +354,7 @@ function AppShellContent({
   const notifiedInstallErrorRef = useRef<string | null>(null);
   const {
     sessions,
+    catalogRevision,
     authoritativeSessionIds,
     sessionsRef,
     refreshSessions,
@@ -970,13 +971,10 @@ function AppShellContent({
 
   // Mode writes and catalog reads run on different clocks. These controllers
   // own that gap: latest intent wins, and a Host-committed value remains the
-  // presentation overlay until a later catalog snapshot confirms it.
+  // presentation overlay until a causally later successful catalog snapshot
+  // takes over — whether it confirms that value or shows a newer Host change.
   const planModeIntent = useSessionSettingIntent<boolean>({
-    catalogRevision: sessions,
-    readCatalogValue: (sessionId) => {
-      const mode = sessionsRef.current.find((session) => session.id === sessionId)?.collaborationMode;
-      return mode === undefined ? undefined : mode === 'plan';
-    },
+    catalogRevision,
     write: commitPlanMode,
     refreshCatalog: refreshSessions,
     onWriteError: (sessionId, error) => {
@@ -989,10 +987,7 @@ function AppShellContent({
     },
   });
   const orchestrationModeIntent = useSessionSettingIntent<OrchestrationMode>({
-    catalogRevision: sessions,
-    readCatalogValue: (sessionId) => sessionsRef.current.find(
-      (session) => session.id === sessionId,
-    )?.orchestrationMode,
+    catalogRevision,
     write: async (sessionId, mode) => {
       await window.maka.sessions.setOrchestrationMode(sessionId, mode);
       return true;

@@ -51,7 +51,14 @@ export function useAppShellSessionList(
   const uiLocale = useUiLocale();
   const uiLocaleRef = useRef(uiLocale);
   uiLocaleRef.current = uiLocale;
-  const [sessions, setSessionsState] = useState<DesktopSessionSummary[]>([]);
+  // The list and its observation revision are one committed snapshot. A
+  // failed refresh changes neither, so consumers can fence transient writes
+  // against successful catalog observations without a parallel error flag.
+  const [catalog, setCatalog] = useState<{
+    sessions: DesktopSessionSummary[];
+    revision: number;
+  }>({ sessions: [], revision: 0 });
+  const { sessions, revision: catalogRevision } = catalog;
   const authoritativeSessionIds = useMemo(
     () => new Set(sessions.map(({ id }) => id)),
     [sessions],
@@ -61,7 +68,7 @@ export function useAppShellSessionList(
 
   function commitSessions(next: DesktopSessionSummary[]): void {
     sessionsRef.current = next;
-    setSessionsState(next);
+    setCatalog((current) => ({ sessions: next, revision: current.revision + 1 }));
   }
 
   if (!refresherRef.current) {
@@ -106,6 +113,7 @@ export function useAppShellSessionList(
 
   return {
     sessions,
+    catalogRevision,
     authoritativeSessionIds,
     sessionsRef,
     refreshSessions,

@@ -22,12 +22,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 interface SettingIntent<Value> {
   desired: Value;
   committed?: Value;
+  committedAtCatalogRevision?: number;
   inFlight: boolean;
 }
 
 interface SessionSettingIntentOptions<Value> {
-  catalogRevision: unknown;
-  readCatalogValue(sessionId: string): Value | undefined;
+  catalogRevision: number;
   write(sessionId: string, value: Value): Promise<boolean>;
   refreshCatalog(): Promise<unknown>;
   onWriteError(sessionId: string, error: unknown): void;
@@ -41,8 +41,10 @@ interface SessionSettingIntentController<Value> {
 
 /**
  * Owns the gap between a renderer setting intent, its Host commit, and the
- * later catalog snapshot that observes that commit. Only the latest desired
- * value is written; a committed overlay remains until the catalog confirms it.
+ * next successful catalog observation. Only the latest desired value is
+ * written. A failed read retains the committed overlay; any causally newer
+ * successful snapshot retires it, because the Host may legitimately move on
+ * again (for example, Runtime leaves Plan after approval).
  */
 export function useSessionSettingIntent<Value>(
   options: SessionSettingIntentOptions<Value>,
@@ -67,8 +69,8 @@ export function useSessionSettingIntent<Value>(
 
   const reconcile = useCallback((sessionId: string): void => {
     const intent = intentsRef.current.get(sessionId);
-    if (!intent || intent.inFlight || intent.committed === undefined) return;
-    if (!Object.is(optionsRef.current.readCatalogValue(sessionId), intent.committed)) return;
+    if (!intent || intent.inFlight || intent.committedAtCatalogRevision === undefined) return;
+    if (optionsRef.current.catalogRevision <= intent.committedAtCatalogRevision) return;
     intentsRef.current.delete(sessionId);
     setOverlay(sessionId, undefined);
   }, [setOverlay]);
@@ -104,6 +106,7 @@ export function useSessionSettingIntent<Value>(
       if (intentsRef.current.get(sessionId) !== intent) return false;
       if (committed) {
         intent.committed = attempted;
+        intent.committedAtCatalogRevision = optionsRef.current.catalogRevision;
         setOverlay(sessionId, attempted);
         // Refresh is only a convergence nudge. A read failure cannot undo a
         // Host commit or strand the latest-intent worker.
@@ -122,7 +125,12 @@ export function useSessionSettingIntent<Value>(
 
     if (intentsRef.current.get(sessionId) === intent) {
       intent.inFlight = false;
-      reconcile(sessionId);
+      if (intent.committedAtCatalogRevision === undefined) {
+        intentsRef.current.delete(sessionId);
+        setOverlay(sessionId, undefined);
+      } else {
+        reconcile(sessionId);
+      }
     }
     return succeeded;
   }, [reconcile, setOverlay]);
