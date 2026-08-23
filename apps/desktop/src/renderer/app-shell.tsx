@@ -989,7 +989,6 @@ function AppShellContent({
     setNewTaskPermissionMode,
     setPendingPermissionModeBySession,
     setPendingSessionModelBySession,
-    setSessions,
     toastApi,
   });
 
