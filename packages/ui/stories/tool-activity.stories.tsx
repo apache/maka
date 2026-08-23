@@ -266,11 +266,15 @@ export const LongIntentGroupNarrow: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole('button', { name: /2 次工具调用|2 tool calls/i }));
     const turn = canvas.getByTestId('narrow-turn');
     const group = turn.querySelector<HTMLElement>('.maka-tool-activity-card');
     expect(group).not.toBeNull();
-    const rows = Array.from(group?.querySelectorAll<HTMLElement>('[role="button"]') ?? []);
+    const disclosure = group!.querySelector<HTMLElement>(
+      ':scope > [role="button"][aria-controls]',
+    );
+    expect(disclosure).not.toBeNull();
+    await userEvent.click(disclosure!);
+    const rows = Array.from(group!.querySelectorAll<HTMLElement>('[role="button"]'));
     expect(Math.max(...rows.map((row) => row.getBoundingClientRect().width))).toBeLessThanOrEqual(
       turn.clientWidth + 8,
     );
