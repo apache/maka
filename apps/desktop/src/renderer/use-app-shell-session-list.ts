@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { type LiveTurnProjection, useUiLocale } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -52,24 +52,16 @@ export function useAppShellSessionList(
   const uiLocaleRef = useRef(uiLocale);
   uiLocaleRef.current = uiLocale;
   const [sessions, setSessionsState] = useState<DesktopSessionSummary[]>([]);
-  const [authoritativeSessionIds, setAuthoritativeSessionIds] =
-    useState<ReadonlySet<string> | null>(null);
+  const authoritativeSessionIds = useMemo(
+    () => new Set(sessions.map(({ id }) => id)),
+    [sessions],
+  );
   const sessionsRef = useRef<DesktopSessionSummary[]>([]);
   const refresherRef = useRef<SessionListRefresher<DesktopSessionSummary> | null>(null);
 
   function commitSessions(next: DesktopSessionSummary[]): void {
     sessionsRef.current = next;
     setSessionsState(next);
-  }
-
-  function setSessions(
-    updater: (current: DesktopSessionSummary[]) => DesktopSessionSummary[],
-  ): void {
-    setSessionsState((current) => {
-      const next = updater(current);
-      sessionsRef.current = next;
-      return next;
-    });
   }
 
   if (!refresherRef.current) {
@@ -86,7 +78,6 @@ export function useAppShellSessionList(
           clearTurnTransientStateIfCurrent: options.clearTurnTransientStateIfCurrent,
         });
         commitSessions(normalized);
-        setAuthoritativeSessionIds(new Set(normalized.map(({ id }) => id)));
       },
       onError: (error) => {
         const locale = uiLocaleRef.current;
@@ -117,7 +108,6 @@ export function useAppShellSessionList(
     sessions,
     authoritativeSessionIds,
     sessionsRef,
-    setSessions,
     refreshSessions,
     seedSessions,
   };

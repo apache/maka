@@ -355,7 +355,6 @@ function AppShellContent({
     sessions,
     authoritativeSessionIds,
     sessionsRef,
-    setSessions,
     refreshSessions,
     seedSessions,
     activeId,
@@ -1048,15 +1047,11 @@ function AppShellContent({
         // Abandoning the proposal is what leaves Plan: Runtime writes the
         // Session back to `agent` itself as part of it.
         await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
-        setSessions((current) => current.map((session) => (
-          session.id === sessionId ? { ...session, collaborationMode: 'agent' } : session
-        )));
       } else {
-        const next = await window.maka.sessions.setCollaborationMode(
+        await window.maka.sessions.setCollaborationMode(
           sessionId,
           active ? 'plan' : 'agent',
         );
-        setSessions((current) => current.map((session) => session.id === next.id ? next : session));
       }
       await refreshSessions();
       return true;
@@ -1113,8 +1108,7 @@ function AppShellContent({
     }
 
     try {
-      const next = await window.maka.sessions.setOrchestrationMode(sessionId, mode);
-      setSessions((current) => current.map((session) => session.id === next.id ? next : session));
+      await window.maka.sessions.setOrchestrationMode(sessionId, mode);
       await refreshSessions();
       return true;
     } catch (error) {
