@@ -373,7 +373,7 @@ export function AppearanceSettingsPage(props: {
                   onChange={() => void setPalette(palette)}
                   padding={2}
                 >
-                  <HStack gap={2} align="center">
+                  <HStack gap={2} align="center" height="100%">
                     <span
                       className={`settingsPaletteSwatch settingsPaletteSwatch-${palette}`}
                       aria-hidden="true"
@@ -429,7 +429,7 @@ export function AppearanceSettingsPage(props: {
                       onChange={() => void setAppIcon(option.id)}
                       padding={2}
                     >
-                      <HStack gap={2} align="center">
+                      <HStack gap={2} align="center" height="100%">
                         {/* Decorative: the tile's own label already names the icon. */}
                         <img className="settingsAppIconPreview" src={option.dataUrl} alt="" width={48} height={48} />
                         <VStack gap={0.5}>
