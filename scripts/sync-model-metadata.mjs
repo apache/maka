@@ -309,7 +309,18 @@ function collectProjectionRemovals(previous, next, path, removals) {
     return;
   }
 
-  if (!previous || typeof previous !== 'object') return;
+  if (!previous || typeof previous !== 'object') {
+    if (
+      previous === true &&
+      next === false &&
+      path.length === 5 &&
+      path[0] === 'metadata' &&
+      path[3] === 'capabilities'
+    ) {
+      removals.push(projectionPath(path));
+    }
+    return;
+  }
   if (!next || typeof next !== 'object' || Array.isArray(next)) {
     removals.push(projectionPath(path));
     return;

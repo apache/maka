@@ -90,9 +90,38 @@ test('a refresh persists the exact selected input and check fails on stale outpu
       '--pricing-output',
       pricing,
     ]);
+
+    const corrected = fixtureCatalog();
+    corrected.anthropic.models.model.name = 'Corrected Model';
+    corrected.anthropic.models.model.cost.input = 1.5;
+    await writeFile(input, JSON.stringify(corrected));
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ]);
+    const correctedProjection = JSON.parse(await readFile(snapshot, 'utf8')).projection;
+    assert.equal(correctedProjection.metadata.anthropic.model.displayName, 'Corrected Model');
+    assert.equal(
+      correctedProjection.pricing.find((entry) => entry.modelKey === 'anthropic:model')
+        .inputUsdPer1M,
+      1.5,
+    );
+
     await writeFile(
       metadata,
-      (await readFile(metadata, 'utf8')).replace("displayName: 'Model'", "displayName: 'Stale'"),
+      (await readFile(metadata, 'utf8')).replace(
+        "displayName: 'Corrected Model'",
+        "displayName: 'Stale'",
+      ),
     );
     await assert.rejects(
       main([
@@ -331,6 +360,7 @@ test('refresh rejects nested capability and pricing shrinkage', async () => {
       input: ['text', 'image'],
       output: ['text'],
     };
+    initial.anthropic.models.model.reasoning = true;
     initial.anthropic.models.model.cost.cache_read = 0.25;
     await writeFile(input, JSON.stringify(initial));
     await main(refreshArgs);
@@ -357,6 +387,37 @@ test('refresh rejects nested capability and pricing shrinkage', async () => {
         pricing: await readFile(pricing, 'utf8'),
       },
       before,
+    );
+
+    for (const [sourceField, projectionField] of [
+      ['reasoning', 'reasoning'],
+      ['tool_call', 'functionCalling'],
+    ]) {
+      const capabilityLoss = structuredClone(initial);
+      capabilityLoss.anthropic.models.model[sourceField] = false;
+      await writeFile(input, JSON.stringify(capabilityLoss));
+      await assert.rejects(
+        main(refreshArgs),
+        new RegExp(`/metadata/anthropic/model/capabilities/${projectionField}`),
+      );
+      assert.deepEqual(
+        {
+          snapshot: await readFile(snapshot, 'utf8'),
+          metadata: await readFile(metadata, 'utf8'),
+          pricing: await readFile(pricing, 'utf8'),
+        },
+        before,
+      );
+    }
+
+    const accepted = structuredClone(initial);
+    accepted.anthropic.models.model.tool_call = false;
+    await writeFile(input, JSON.stringify(accepted));
+    await main([...refreshArgs, '--accept-upstream-removals']);
+    assert.equal(
+      JSON.parse(await readFile(snapshot, 'utf8')).projection.metadata.anthropic.model.capabilities
+        .functionCalling,
+      false,
     );
   } finally {
     await rm(root, { recursive: true, force: true });
