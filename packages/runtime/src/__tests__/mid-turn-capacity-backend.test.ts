@@ -860,6 +860,26 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     );
   });
 
+  test('preserves no_safe_completed_span when no summary input can fit', async () => {
+    const fixture = buildFixture({
+      contextWindow: 150,
+      reserveTokens: 100,
+      useRuntimeDefaultPolicy: true,
+      summarize: () => {
+        throw new HistoryCompactSummarizerError('input_too_large');
+      },
+    });
+
+    await runFixtureTurn(fixture, consumer);
+
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type, 'complete');
+    if (complete?.type !== 'complete') return;
+    assert.equal(complete.stopReason, 'context_budget_exhausted');
+    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
+    assert.equal(fixture.summarizerCalls > 0, true);
+  });
+
   test('ends the turn with summarizer_failed detail when over the window and the summary fails', async () => {
     // Estimate at the first boundary ≈ 120 real usage + result chars/4 ≈ 200;
     // window 150 puts it over the hard cap while priors leave a safe span.

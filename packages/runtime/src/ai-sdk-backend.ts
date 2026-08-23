@@ -3481,7 +3481,10 @@ export class AiSdkBackend implements AgentBackend {
         }
       }
       if (compactResult.outcome.kind === 'failed') {
-        compactionFailure = 'summarizer_failed';
+        compactionFailure =
+          compactResult.outcome.reason === 'no_safe_completed_span'
+            ? 'no_safe_completed_span'
+            : 'summarizer_failed';
       }
       contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
         contextBudgetDiagnostic ??
