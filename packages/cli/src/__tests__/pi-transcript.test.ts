@@ -2681,7 +2681,12 @@ describe('Maka Pi TUI transcript', () => {
     const ref = 'maka://runtime/background-tasks/bg-1';
     applyMakaSessionEventToTranscript(
       state,
-      event({ type: 'tool_start', toolUseId: 'bash-bg', toolName: 'Bash', args: { command: 'build' } }),
+      event({
+        type: 'tool_start',
+        toolUseId: 'bash-bg',
+        toolName: 'Bash',
+        args: { command: 'build' },
+      }),
     );
     applyShellRunViewUpdateToTranscript(state, {
       sessionId: 'session-1',
@@ -2702,7 +2707,9 @@ describe('Maka Pi TUI transcript', () => {
       result: shellRun({ ref, status: 'running', revision: 4, updatedAt: 4 }),
     });
 
-    const bash = state.entries.find((entry) => entry.kind === 'tool' && entry.toolUseId === 'bash-bg');
+    const bash = state.entries.find(
+      (entry) => entry.kind === 'tool' && entry.toolUseId === 'bash-bg',
+    );
     assert.equal(
       bash?.kind === 'tool' && bash.result?.kind === 'shell_run' ? bash.result.revision : undefined,
       5,
