@@ -941,7 +941,7 @@ function registerHostClientIpc(
   const emitTargetSessionsChanged = (
     reason: SessionChangedReason,
     sessionId?: string,
-    extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
+    extra?: Pick<SessionChangedEvent, "modelId" | "turnId">,
   ): void => {
     if (isTargetActive()) emitSessionsChanged(scope, reason, sessionId, extra);
   };
@@ -1461,14 +1461,12 @@ function emitSessionsChanged(
   scope: DesktopTargetScope,
   reason: SessionChangedReason,
   sessionId?: string,
-  extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
+  extra?: Pick<SessionChangedEvent, "modelId" | "turnId">,
 ): void {
   const event: SessionChangedEvent = {
-    type: "sessions_changed",
     reason,
     ts: Date.now(),
     ...(sessionId ? { sessionId } : {}),
-    ...(extra?.connectionSlug ? { connectionSlug: extra.connectionSlug } : {}),
     ...(extra?.modelId ? { modelId: extra.modelId } : {}),
     ...(extra?.turnId ? { turnId: extra.turnId } : {}),
   };

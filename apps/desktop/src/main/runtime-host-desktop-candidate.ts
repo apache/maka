@@ -103,7 +103,7 @@ export interface DesktopRuntimeHostCandidateDeps {
     scope: DesktopTargetScope,
     reason: SessionChangedReason,
     sessionId?: string,
-    extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
+    extra?: Pick<SessionChangedEvent, "modelId" | "turnId">,
   ) => void;
   readonly completeComputerUseTurn: (
     sessionId: string,
@@ -366,7 +366,7 @@ export async function createDesktopRuntimeHostCandidate(
   const emitSessionsChanged = (
     reason: SessionChangedReason,
     sessionId?: string,
-    extra?: Pick<SessionChangedEvent, "connectionSlug" | "modelId" | "turnId">,
+    extra?: Pick<SessionChangedEvent, "modelId" | "turnId">,
   ): void => {
     if (isTargetActive()) deps.emitSessionsChanged(scope, reason, sessionId, extra);
   };

@@ -685,10 +685,8 @@ export type SessionChangedReason =
   | 'rebound';
 
 export interface SessionChangedEvent {
-  type: 'sessions_changed';
   reason: SessionChangedReason;
   sessionId?: string;
-  connectionSlug?: string;
   modelId?: string;
   /**
    * The turn this change is ABOUT, when the change has a turn to name.
