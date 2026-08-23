@@ -175,30 +175,26 @@ V2 中模型主要看到 `summary`；V3 中 provider 看到自己的 opaque comp
 
 第二，checkpoint 也不是 canonical RuntimeEvent。coverage 与 tail selection 会把选中的 checkpoint 和投影后的 RuntimeEvents 一起显式返回。V2 checkpoint 还会物化为熟悉的 system-authored 文本块，供普通 replay planning 使用；兼容的 V3 checkpoint 不创建任何 synthetic 文本，由 provider materializer 直接在请求头部加入 assistant `openai.compaction` custom part。两种表示都不会伪装成原始交互事件写回 RuntimeEvent ledger。
 
-## 什么时候触发：High water 决定是否投影
+## Trigger 在 compaction 开始前结束
 
-自动 history compaction 由 `ContextBudgetPolicy` 驱动。当前默认策略会：
+Runtime 从所选模型的 metadata 推导唯一 capacity。已知 context window 时，reserve 取 window 的四分之一且上限为 16,384 tokens；无法得到 window 时，多数 provider 使用 32,000-token history budget 加经典的 16,384-token reserve。
 
-- 根据所选模型 context window 计算 prior-history budget，并默认预留 16,384 tokens；
-- 无法得到 context window 时，多数 provider 使用 32,000 tokens 的默认 history budget；
-- 当可 compact 的历史估算超过 `maxHistoryEstimatedTokens × highWaterRatio` 时进入 compaction；
-- 默认 `highWaterRatio = 1`；
-- 默认希望保留不超过 16,384 estimated tokens 的 raw tail；
-- 请求至少保留 3 个最近 Turn，但 tail selection 以 token cap 为先，极大 Turn 可能使实际保留更少；
-- 单个 checkpoint 默认最多 1,024 estimated tokens，compact projection 总预算默认最多 2,048。
+Trigger owner 使用这个 capacity，但不参与 compaction：
 
-这些数字是当前默认 policy，不是协议常量。环境变量和模型 metadata 可以改变它们。真正稳定的是触发语义：
+- pre-turn 与 active-turn evaluator 在 projected request 越过推导出的 capacity 时发出 Compact command；
+- provider-overflow recovery 在真实 overflow 后发出同一 command；
+- 手动 `context.compact` 直接发出 command，不伪造 high-water crossing。
+
+Command 一旦发出就进入同一个 transaction。Planner 不再接收 force flag、context window、reserve、next-request estimate、high-water ratio 或 minimum-recent-Turn policy：
 
 ```text
-source log grows past high water
-  → select an older prefix to fold
-  → preserve a recent raw tail
-  → accept projection only if checkpoint + tail fits current limits
+trigger owner emits Compact command
+  → select the largest safe completed prefix
+  → generate and validate one rolling replacement
+  → append one checkpoint or leave durable state unchanged
 ```
 
-Tail selection 按完整 Turn 从新到旧选择，避免把普通 tool call/result pair 从中间劈开。如果单个最新 Turn 本身已经超过 tail budget，当前实现会退而保留该 Turn 中最新的完整 function call/response pair；找不到 pair 时至少保留最后一条事件。
-
-这是一条重要边界：`minRecentTurns` 是期望，不是允许突破上下文上限的承诺。
+Safe-prefix selection 不会跨越 partial event、pinned live event 或 Tool Call/Result pair。Trigger-specific caller 可以保留一小段 verbatim successor tail，但一个 completed Turn 无论包含多少 Agent Loop steps 都可以 compact。Context management 不再提供环境变量 policy surface；模型事实与这些 Runtime invariant 是唯一输入。
 
 ## LLM 在这里做什么，也不做什么
 
@@ -416,7 +412,7 @@ Compaction 跨越 token estimation、LLM call、schema construction、durable ap
 - Run 最终以正常 terminal event 与 completed/cancelled 状态收尾；
 - 新 checkpoint 仍通过同一 `history_compact_checkpoint_recorded` durable path 提交。
 
-Manual policy 把 high-water 降到接近零并把 retained tail 目标降到最小，使小历史也能主动产生 projection。它改变触发条件，不改变 source、coverage、durability 和 replay invariants。
+Manual compaction 直接发出同一个 Compact command。它不创建特殊 policy，也不修改 high-water threshold；与 automatic 和 overflow recovery 的差别只在 trigger。
 
 ## V2 与 V3：一种 bounded checkpoint、两种 projection value
 
@@ -445,6 +441,8 @@ Maka 只有一套 LLM compaction 机制，以及一个相邻的 current-request 
 两者都保留 canonical source，但不会形成并行的 compaction authority。History compaction 始终选择安全 RuntimeEvent prefix，生成并校验一个 replacement，再先持久化一个 checkpoint、后进入 replay。trigger-specific 代码可以固定 live head 或保留 verbatim tail，但不再拥有另一套 planner、summary format、controller 或 durable block。
 
 Active Tool Result Prune 仍是 deterministic、非 LLM 的 rewrite。它先归档 eligible raw Tool Result，再替换 current provider request 中的该结果。它既不总结 span，也不创建 checkpoint；后续 history-compaction planner 读取 canonical RuntimeEvents，不会把 prune placeholder 当成 source authority。
+
+Placeholder 携带 bounded `maka://archive/...` 地址和 `ArchiveRead` 指令；model replay 会为 legacy placeholder 确定性补回这个地址。Runtime 不再把 archived body eager-expand 回每次请求。只有模型确实需要细节时才调用 `ArchiveRead`，Host 在返回 bounded inspect/query 结果前校验 Session、hash 与 byte size。后续 checkpoint 会用 summary 替换已覆盖的 placeholder，并且有意不携带 archive roots。完整 Tool Result 仍在 canonical RuntimeEvent ledger 中，但 model reachability 不会变成永久的 cross-checkpoint authority。
 
 ## Compaction 不是什么
 
@@ -511,7 +509,7 @@ LLM 在 summary 中写“测试已通过”仍然只是对 source events 的概�
 6. `packages/runtime/src/history-compact-ledger.ts`：bounded projection lookup、ledger recovery 与 checkpoint selection；
 7. `packages/runtime/src/runtime-kernel.ts`：checkpoint write serialization 与 manual compaction lifecycle；
 8. `packages/storage/src/agent-run-store.ts`：canonical append 与 bounded event projection 的提交顺序；
-9. `packages/runtime/src/context-budget-policy.ts`：默认预算、环境开关与 manual lookup overlay；
+9. `packages/runtime/src/context-budget-policy.ts`：model-capacity derivation 与固定 Runtime policy；
 10. `packages/runtime/src/openai-codex-history-compactor.ts`：Codex compact output 校验与 rolling provider-state input；
 11. `packages/runtime-host/src/server/execution-model-composition.ts`：默认 provider-specific compactor 选择。
 

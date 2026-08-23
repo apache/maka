@@ -109,8 +109,6 @@ interface MidTurnFixtureOptions {
    * instead of the hand-built one, so a test can exercise the shipped default.
    */
   useRuntimeDefaultPolicy?: boolean;
-  /** Exercise the supported explicit history-compaction escape hatch. */
-  historyCompactOff?: boolean;
   reserveTokens?: number;
   summarize?: (
     input: HistoryCompactSummaryInput,
@@ -488,18 +486,6 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
           {
             name: 'runtime-default-mid-turn',
             modelId: 'mock-model-id',
-            // Every value is the shipped runtime default (including the
-            // default-on midTurn derivation and the window-bounded reserve
-            // under test); a test may still size the reserve to its toy window
-            // through the first-class env knob by passing reserveTokens.
-            env: {
-              ...(options.reserveTokens !== undefined
-                ? {
-                    MAKA_CONTEXT_HISTORY_COMPACT_RESERVE_TOKENS: String(options.reserveTokens),
-                  }
-                : {}),
-              ...(options.historyCompactOff ? { MAKA_CONTEXT_HISTORY_COMPACT: 'off' } : {}),
-            },
           },
         )
       : {
@@ -1587,52 +1573,10 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(promptJson(fixture, 0).includes('OVERSIZED_TOOL_RESULT_'), false);
   });
 
-  test('rejects an oversized prior turn when history compaction is disabled', async () => {
-    const fixture = buildFixture({
-      useRuntimeDefaultPolicy: true,
-      withoutContextWindow: true,
-      historyCompactOff: true,
-      priorChars: 180_000,
-      priorShape: 'tool_heavy',
-    });
-    await runFixtureTurn(fixture);
-
-    assert.equal(fixture.summarizerCalls, 0);
-    assert.equal(fixture.model.doStreamCalls.length, 0);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
-  });
-
-  test('rejects an oversized penultimate turn when history compaction is disabled', async () => {
-    const fixture = buildFixture({
-      useRuntimeDefaultPolicy: true,
-      withoutContextWindow: true,
-      historyCompactOff: true,
-      priorChars: 180_000,
-      priorShape: 'tool_heavy',
-    });
-    fixture.priorEvents.push(
-      runtimeTextEvent('latest-user', 'turn-latest', 'user', 'small latest question'),
-      runtimeTextEvent('latest-model', 'turn-latest', 'model', 'small latest answer'),
-    );
-    await runFixtureTurn(fixture);
-
-    assert.equal(fixture.model.doStreamCalls.length, 0);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
-  });
-
   test('keeps multiple bounded recent turns below the model capacity', async () => {
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
       contextWindow: 100_000,
-      historyCompactOff: true,
       priorChars: 40_000,
     });
     fixture.priorEvents.push(
