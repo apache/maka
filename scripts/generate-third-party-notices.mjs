@@ -157,12 +157,6 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   // Published from TooTallNate/proxy-agents, which keeps its LICENSE at the
   // repo root; the per-package tarball ships no license file.
   ['proxy-agent-negotiate@1.1.0', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
-  // The published tarball and upstream repository omit a LICENSE file;
-  // package.json declares MIT and the distributed source names both authors.
-  ['fastdom@1.0.12', 'Copyright (c) Wilson Page and Kornel Lesinski'],
-  // The published tarball and upstream repository omit a LICENSE file;
-  // package.json declares MIT and identifies Wilson Page as the author.
-  ['strictdom@1.0.1', 'Copyright (c) Wilson Page'],
   ['lazy-val@1.0.5', 'Copyright (c) Vladimir Krivosheev'],
 ]);
 
@@ -187,6 +181,24 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.`;
+
+// These exact tarballs omit a LICENSE file but include the same complete MIT
+// block in README.md. Keep the upstream wording and version-specific notice;
+// neither the package author nor its contributor list is a license authority.
+const README_MIT_TEXT = (copyrightNotice) => `(The MIT License)
+
+${copyrightNotice}
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the 'Software'), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.`;
+
+const MIT_TEXT_OVERRIDES = new Map([
+  ['fastdom@1.0.12', README_MIT_TEXT('Copyright (c) 2016 Wilson Page <wilsonpage@me.com>')],
+  ['strictdom@1.0.1', README_MIT_TEXT('Copyright (c) 2013 Wilson Page <wilsonpage@me.com>')],
+]);
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -266,6 +278,8 @@ function overrideLicenseText(packageKey, selectedLicense) {
     }
     return normalizeText(apacheText);
   }
+  const exactMitText = MIT_TEXT_OVERRIDES.get(packageKey);
+  if (selectedLicense === 'MIT' && exactMitText) return exactMitText;
   const copyrightNotice = MIT_COPYRIGHT_OVERRIDES.get(packageKey);
   if (selectedLicense === 'MIT' && copyrightNotice) return MIT_TEXT(copyrightNotice);
   return undefined;
