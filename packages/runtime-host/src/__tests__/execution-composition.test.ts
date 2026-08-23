@@ -215,7 +215,6 @@ test('production recovery preserves a crash-window conversation claim for Sessio
         {
           hostEpoch: 'crash-window-recovery',
           connectionId: 'bot-client',
-          surface: 'desktop',
           principal: 'local_os_user',
           acquireResidency: () => ({ release() {} }),
         },
