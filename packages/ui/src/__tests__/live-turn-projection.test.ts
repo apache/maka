@@ -28,7 +28,7 @@ import {
   settleLiveTurnStep,
   type LiveTurnProjection,
 } from '../live-turn-projection.js';
-import { overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
+import { materializeTurns, overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
 import { redactSecrets } from '../redact.js';
 import { getConversationCopy } from '../conversation-copy.js';
 
@@ -959,6 +959,37 @@ describe('tool_result_preview live projection', () => {
 
     assert.equal(settled.steps[0]?.tools[0]?.status, 'completed');
     assert.deepEqual(settled.steps[0]?.tools[0]?.result, { kind: 'text', text: 'full durable output' });
+  });
+
+  it('lets a meaningful live empty result replace older durable content', () => {
+    const turns = materializeTurns([
+      {
+        type: 'tool_call', id: 'tool-1', turnId: 'turn-1', stepId: 'step-1', ts: 1,
+        toolName: 'Read', args: { path: 'README.md' },
+      },
+      {
+        type: 'tool_result', id: 'result-1', turnId: 'turn-1', ts: 2,
+        toolUseId: 'tool-1', isError: false,
+        content: { kind: 'text', text: 'older durable output' },
+      },
+      {
+        type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 3,
+        status: 'running', partialOutputRetained: true,
+      },
+    ]);
+    const started = applyLiveTurnEvent(undefined, {
+      type: 'tool_start', id: 'start-1', turnId: 'turn-1', stepId: 'step-1',
+      toolUseId: 'tool-1', toolName: 'Read', args: { path: 'README.md' }, ts: 4,
+    });
+    const settled = applyLiveTurnEvent(started, {
+      type: 'tool_result', id: 'live-result-1', turnId: 'turn-1', toolUseId: 'tool-1',
+      isError: false, content: { kind: 'text', text: '' }, ts: 5,
+    });
+
+    assert.deepEqual(overlayLiveTurn(turns, settled)[0]?.tools[0]?.result, {
+      kind: 'text',
+      text: '',
+    });
   });
 });
 

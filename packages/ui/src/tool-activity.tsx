@@ -31,7 +31,11 @@ import {
 } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { useUiLocale } from './locale-context.js';
-import { type ToolActivityItem, type ToolOutputChunk } from './materialize.js';
+import {
+  toolActivityPresentationStatus,
+  type ToolActivityItem,
+  type ToolOutputChunk,
+} from './materialize.js';
 import { isConnectorTool, resolveToolDisplayName } from './tool-activity/display-name.js';
 import {
   computerActionLabel,
@@ -128,7 +132,7 @@ export function ToolCallDetail({
   // Cancel is not a failure; stale errored+cancelled must not paint as failed.
   const failedOutcome = item.status === 'errored' && !cancelled;
   const permissionDenied = isPermissionDeniedToolResult(item.result);
-  const running = isInFlightToolStatus(item.status);
+  const running = isInFlightToolStatus(toolActivityPresentationStatus(item));
   const outputActionIdentity = [
     computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     item.intent ? formatToolIntent(item.intent) : undefined,
@@ -306,7 +310,7 @@ export function ToolTrow({
 export function toolTrowHasVisibleSpinner(items: readonly ToolActivityItem[]): boolean {
   return items.some((item, index) =>
     !isLinkedAgentResult(item.result)
-    && isInFlightToolStatus(item.status)
+    && isInFlightToolStatus(toolActivityPresentationStatus(item))
     && (index === items.length - 1 || isLinkedAgentResult(items[index + 1]?.result)),
   );
 }
@@ -432,7 +436,7 @@ function standardToolCall(
     target: item.intent ? formatToolIntent(item.intent) : inferredTarget,
     duration: formatDuration(item.durationMs) ?? undefined,
     errorMessage: toolCallErrorMessage(item, locale),
-    stats: item.progress && isInFlightToolStatus(item.status)
+    stats: item.progress && isInFlightToolStatus(toolActivityPresentationStatus(item))
       ? `${item.progress.current}/${item.progress.total}`
       : outcomeWord(item, locale),
     ...diffStats(itemDiffs(item)),
@@ -546,7 +550,7 @@ function itemDiffs(item: ToolActivityItem): string[] {
 }
 
 function astryxToolStatus(item: ToolActivityItem): ChatToolCallItem['status'] {
-  switch (item.status) {
+  switch (toolActivityPresentationStatus(item)) {
     case 'completed': return 'complete';
     case 'errored':
     case 'interrupted': return 'error';

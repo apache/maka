@@ -168,7 +168,10 @@ export type MakaPiTranscriptEntry =
       progress: BoundedChunkBuffer<string>;
       outputDeltas: BoundedChunkBuffer<MakaPiToolOutputDelta>;
       durationMs?: number;
-      status: 'running' | 'done' | 'error' | 'failed' | 'aborted' | 'detached' | 'unavailable';
+      /** Invocation lifecycle. Resource liveness remains authoritative in `result`. */
+      callStatus: ToolActivityStatus;
+      /** Ownership of an active ShellRun; absent means locally owned. */
+      shellRunSource?: 'source_owned' | 'unavailable';
       /** Expanded card view; stamped from expandAllTools, retargeted by Ctrl+O. */
       expanded: boolean;
       /** An internal shell-run poll retained for correlation but not displayed. */
@@ -257,7 +260,11 @@ export function refreshRunningShellRunElapsed(
 ): boolean {
   let found = false;
   for (const entry of state.entries) {
-    if (entry.kind !== 'tool' || entry.status !== 'running' || entry.result?.kind !== 'shell_run')
+    if (
+      entry.kind !== 'tool' ||
+      entry.result?.kind !== 'shell_run' ||
+      makaPiToolPresentationStatus(entry) !== 'running'
+    )
       continue;
     entry.durationMs = Math.max(0, now - entry.result.startedAt);
     found = true;
@@ -290,17 +297,18 @@ export function applyShellRunViewUpdateToTranscript(
     tool.toolName !== 'Bash' ||
     tool.result?.kind !== 'shell_run' ||
     tool.result.ref !== update.result.ref ||
+    tool.result.revision !== update.result.revision ||
     !isActiveShellRunStatus(tool.result.status)
   )
     return applied;
-  const status =
+  const shellRunSource =
     update.ownership.kind === 'local'
-      ? 'running'
+      ? undefined
       : update.ownership.kind === 'source_owned'
-        ? 'detached'
+        ? 'source_owned'
         : 'unavailable';
-  if (tool.status === status) return applied;
-  tool.status = status;
+  if (tool.shellRunSource === shellRunSource) return applied;
+  tool.shellRunSource = shellRunSource;
   return true;
 }
 
@@ -366,13 +374,30 @@ export function hydrateToolsWithStoredMessages(
     entry.toolName = durable.toolName;
     entry.title = durable.title;
     entry.input = structuredClone(durable.input);
-    entry.result = durable.result ? structuredClone(durable.result) : undefined;
-    entry.durationMs = durable.durationMs;
-    entry.status = durable.status;
-    entry.resultVersion += 1;
+    entry.callStatus = mergeToolCallStatus(entry.callStatus, durable.callStatus);
+    if (
+      durable.result?.kind === 'shell_run' &&
+      durable.callStatus !== 'errored' &&
+      entry.toolName === 'Bash'
+    ) {
+      applyShellRunResult(entry, structuredClone(durable.result));
+    } else if (durable.result !== undefined && entry.result === undefined) {
+      entry.result = structuredClone(durable.result);
+      entry.resultVersion += 1;
+      if (durable.durationMs !== undefined) entry.durationMs = durable.durationMs;
+    } else if (durable.durationMs !== undefined && entry.durationMs === undefined) {
+      entry.durationMs = durable.durationMs;
+    }
     changed = true;
   }
   return changed;
+}
+
+function mergeToolCallStatus(
+  current: ToolActivityStatus,
+  durable: ToolActivityStatus,
+): ToolActivityStatus {
+  return current === 'running' ? durable : current;
 }
 
 /**
@@ -555,7 +580,7 @@ export function applyMakaSessionEventToTranscript(
         resultVersion: 0,
         progress: createProgressBuffer(),
         outputDeltas: createOutputBuffer(),
-        status: 'running',
+        callStatus: 'running',
         expanded: state.expandAllTools,
         ...(suppressed ? { suppressed: true } : {}),
       });
@@ -583,18 +608,17 @@ export function applyMakaSessionEventToTranscript(
       }
       if (tool) {
         if (tool.suppressed) unsuppressToolAtTail(state, tool);
+        tool.callStatus = toolResultActivityStatus(event.isError, event.content);
         if (shellRun) {
           if (tool.toolName === 'Bash') {
             applyShellRunResult(tool, shellRun);
           } else {
             applyOwnShellRunResult(tool, shellRun, event.durationMs);
           }
-          // isError is the call-level authoritative status: a failed call shows
-          // error even when its payload is a well-formed (still running) run.
-          if (event.isError) tool.status = 'error';
         } else {
-          tool.status = toolResultTranscriptStatus(event.content, event.isError);
-          tool.durationMs = event.durationMs;
+          if (!(event.contentOmitted && tool.result?.kind === 'shell_run')) {
+            tool.durationMs = event.durationMs;
+          }
           if (!event.contentOmitted) {
             tool.result = event.content;
             tool.resultVersion += 1;
@@ -609,10 +633,10 @@ export function applyMakaSessionEventToTranscript(
           input: undefined,
           progress: createProgressBuffer(),
           outputDeltas: createOutputBuffer(),
-          result: event.content,
-          resultVersion: 1,
+          ...(!event.contentOmitted ? { result: event.content } : {}),
+          resultVersion: event.contentOmitted ? 0 : 1,
           durationMs: event.durationMs,
-          status: toolResultTranscriptStatus(event.content, event.isError),
+          callStatus: toolResultActivityStatus(event.isError, event.content),
           expanded: state.expandAllTools,
         });
       }
@@ -832,16 +856,11 @@ function storedToolToTranscriptEntry(
     ...(result ? { result: result.content } : {}),
     resultVersion: result ? 1 : 0,
     ...(result?.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
-    status: transcriptToolStatus(
-      result
-        ? toolResultActivityStatus(result.isError, result.content)
-        : unfinishedToolActivityStatus(turnStatus),
-    ),
+    callStatus: result
+      ? toolResultActivityStatus(result.isError, result.content)
+      : unfinishedToolActivityStatus(turnStatus),
     expanded: false,
   };
-  if (result?.content.kind === 'subagent') {
-    entry.status = subagentTranscriptStatus(result.content.status);
-  }
   // A failed call keeps its error status and raw payload: applying the shell_run
   // as the card's own result would let a still-running or settled payload
   // overwrite the error and swallow the failure on replay. This mirrors the live
@@ -858,7 +877,11 @@ function foldStoredShellRunChildren(entries: MakaPiTranscriptEntry[]): MakaPiTra
     // An errored poll never folds: its failed payload must not mutate the parent
     // and its error card must survive replay, mirroring the live path's "failure
     // is never swallowed" invariant.
-    if (entry.kind === 'tool' && entry.result?.kind === 'shell_run' && entry.status !== 'error') {
+    if (
+      entry.kind === 'tool' &&
+      entry.result?.kind === 'shell_run' &&
+      entry.callStatus !== 'errored'
+    ) {
       const shellRun = entry.result;
       const parent = [...folded]
         .reverse()
@@ -879,63 +902,66 @@ function foldStoredShellRunChildren(entries: MakaPiTranscriptEntry[]): MakaPiTra
   return folded;
 }
 
-function transcriptToolStatus(status: ToolActivityStatus): MakaPiToolEntry['status'] {
-  switch (status) {
-    case 'completed':
-      return 'done';
-    case 'errored':
-      return 'error';
-    case 'interrupted':
-      return 'aborted';
-    case 'running':
-      return 'running';
+export type MakaPiToolPresentationStatus =
+  | 'running'
+  | 'done'
+  | 'error'
+  | 'failed'
+  | 'aborted'
+  | 'detached'
+  | 'unavailable';
+
+export function makaPiToolPresentationStatus(entry: MakaPiToolEntry): MakaPiToolPresentationStatus {
+  if (entry.result?.kind === 'subagent') return SUBAGENT_PRESENTATION_STATUS[entry.result.status];
+  if (entry.result?.kind === 'shell_run') {
+    if (entry.callStatus === 'errored') return 'error';
+    if (entry.toolName === 'WriteStdin') {
+      return entry.result.operation?.kind === 'pty_control' && entry.result.operation.failed
+        ? 'error'
+        : 'done';
+    }
+    if (isActiveShellRunStatus(entry.result.status)) {
+      return entry.shellRunSource === 'source_owned'
+        ? 'detached'
+        : entry.shellRunSource === 'unavailable'
+          ? 'unavailable'
+          : 'running';
+    }
+    return SHELL_RUN_PRESENTATION_STATUS[entry.result.status];
   }
+  return CALL_PRESENTATION_STATUS[entry.callStatus];
 }
 
-function toolResultTranscriptStatus(
-  result: ToolResultContent,
-  isError: boolean,
-): MakaPiToolEntry['status'] {
-  return result.kind === 'subagent'
-    ? subagentTranscriptStatus(result.status)
-    : isError
-      ? 'error'
-      : 'done';
-}
+const CALL_PRESENTATION_STATUS = {
+  running: 'running',
+  completed: 'done',
+  errored: 'error',
+  interrupted: 'aborted',
+} as const satisfies Record<ToolActivityStatus, MakaPiToolPresentationStatus>;
 
-function subagentTranscriptStatus(
-  status: Extract<ToolResultContent, { kind: 'subagent' }>['status'],
-): MakaPiToolEntry['status'] {
-  switch (status) {
-    case 'completed':
-      return 'done';
-    case 'failed':
-      return 'failed';
-    case 'cancelled':
-      return 'aborted';
-    case 'running':
-    case 'waiting_for_user':
-      return 'running';
-  }
-}
+const SUBAGENT_PRESENTATION_STATUS = {
+  completed: 'done',
+  failed: 'failed',
+  cancelled: 'aborted',
+  running: 'running',
+  waiting_for_user: 'running',
+} as const satisfies Record<
+  Extract<ToolResultContent, { kind: 'subagent' }>['status'],
+  MakaPiToolPresentationStatus
+>;
 
-function shellRunTranscriptStatus(
-  status: Extract<ToolResultContent, { kind: 'shell_run' }>['status'],
-): MakaPiToolEntry['status'] {
-  switch (status) {
-    case 'starting':
-    case 'running':
-      return 'running';
-    case 'completed':
-      return 'done';
-    case 'cancelled':
-      return 'aborted';
-    case 'failed':
-    case 'timed_out':
-    case 'orphaned':
-      return 'failed';
-  }
-}
+const SHELL_RUN_PRESENTATION_STATUS = {
+  starting: 'running',
+  running: 'running',
+  completed: 'done',
+  cancelled: 'aborted',
+  failed: 'failed',
+  timed_out: 'failed',
+  orphaned: 'failed',
+} as const satisfies Record<
+  Extract<ToolResultContent, { kind: 'shell_run' }>['status'],
+  MakaPiToolPresentationStatus
+>;
 
 function applyShellRunResult(
   entry: MakaPiToolEntry,
@@ -944,7 +970,6 @@ function applyShellRunResult(
   const current = entry.result?.kind === 'shell_run' ? entry.result : undefined;
   const merged = mergeShellRunStateWithDiagnostics(current, result, 'cli.transcript');
   if (!merged.changed) return false;
-  entry.status = shellRunTranscriptStatus(merged.result.status);
   entry.result = merged.result;
   entry.durationMs = Math.max(
     0,
@@ -959,12 +984,6 @@ function applyOwnShellRunResult(
   result: Extract<ToolResultContent, { kind: 'shell_run' }>,
   operationDurationMs = entry.durationMs,
 ): void {
-  entry.status =
-    entry.toolName === 'WriteStdin'
-      ? result.operation?.kind === 'pty_control' && result.operation.failed
-        ? 'error'
-        : 'done'
-      : shellRunTranscriptStatus(result.status);
   entry.result = result;
   if (entry.toolName === 'WriteStdin') {
     entry.durationMs = operationDurationMs;
@@ -1275,17 +1294,15 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
     case 'notice':
       return `notice|${width}|${entry.level}|${entry.text.length}`;
     case 'tool':
-      // A tool entry mutates in place as it runs: status/duration flip,
-      // progress/output deltas append, and resultVersion advances whenever a
-      // result is accepted. Count those revisions instead of duplicating the
-      // result's rendering contract in this cache key. `input` and
-      // `toolName` are omitted deliberately: both are set once at `tool_start`,
-      // before the first render, and never change, so they can't go stale.
+      // A tool entry mutates in place as it runs: its derived presentation and
+      // duration change, progress/output deltas append, and resultVersion
+      // advances whenever durable detail or a resource revision is accepted.
+      // Count those facts instead of duplicating the result rendering contract.
       return [
         'tool',
         width,
         entry.expanded ? 1 : 0,
-        entry.status,
+        makaPiToolPresentationStatus(entry),
         entry.durationMs ?? '',
         entry.title ?? entry.toolName,
         entry.progress.version,
