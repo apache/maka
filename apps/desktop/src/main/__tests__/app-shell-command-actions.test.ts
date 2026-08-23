@@ -83,7 +83,7 @@ test('presents every successful-frame context compaction outcome', () => {
   assert.deepEqual(contextCompactionNotice({ kind: 'failed', reason: 'write_failed' }), {
     level: 'error',
     title: 'Compaction failed',
-    description: 'write_failed',
+    description: 'The task could not be compacted. Try again later.',
   });
 });
 

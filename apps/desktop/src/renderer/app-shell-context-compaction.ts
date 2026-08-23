@@ -49,7 +49,11 @@ export function contextCompactionNotice(
       description: copy.compactUnchangedDescription,
     };
   }
-  return { level: 'error', title: copy.compactErrorTitle, description: outcome.reason };
+  return {
+    level: 'error',
+    title: copy.compactErrorTitle,
+    description: copy.compactErrorFallback,
+  };
 }
 
 export function createContextCompactionPresentation(options: {
