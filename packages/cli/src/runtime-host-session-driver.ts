@@ -47,6 +47,7 @@ import {
 } from '@maka/runtime-host/adapter';
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
+  projectSessionCatalogSummary,
   readRuntimeHostResources,
   readRuntimeHostSessions,
   RuntimeHostOperationError,
@@ -235,13 +236,13 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     // over the starting boundary and silently override that default.
     this.#permissionMode = input.permissionMode;
     const session = await this.#createSession(input.name ?? DEFAULT_SESSION_NAME);
-    return runtimeHostSessionSummary(session);
+    return projectSessionCatalogSummary(session);
   }
 
   async listSessions(): Promise<SessionSummary[]> {
     const sessions = (await readRuntimeHostSessions(this.#connection))
       .flatMap(representableSession)
-      .map(runtimeHostSessionSummary);
+      .map(projectSessionCatalogSummary);
     if (this.#executionLocation.kind === 'host') return sessions;
     return sessions
       .map((session, index) => ({ session, index }))
@@ -298,7 +299,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         turnId,
         runId: started.runId,
         events,
-        summary: runtimeHostSessionSummary(configuration.session),
+        summary: projectSessionCatalogSummary(configuration.session),
         ...(skillInvocation ? { skillInvocation } : {}),
       };
     } catch (error) {
@@ -477,7 +478,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     }
     let session = await getRuntimeHostSession(this.#connection, sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
-    let summary = runtimeHostSessionSummary(session);
+    let summary = projectSessionCatalogSummary(session);
     if (options.relocateCwd === undefined) {
       await assertSessionResumeAvailable(summary, this.#executionLocation);
     }
@@ -503,7 +504,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           oldCwdDirty,
         };
       }
-      summary = runtimeHostSessionSummary(session);
+      summary = projectSessionCatalogSummary(session);
       await assertSessionResumeAvailable(summary, this.#executionLocation);
     }
     const expectedChannelGeneration = this.#channelGeneration;
@@ -1007,7 +1008,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         : {}),
       events: opened.channel.eventsForTurn(turnId),
       messages: opened.messages,
-      summary: runtimeHostSessionSummary(configuration.session),
+      summary: projectSessionCatalogSummary(configuration.session),
     } satisfies MakaAttachedSessionTurn;
     for (const listener of this.#startedTurnListeners) listener(turn);
     opened.channel.activate(turnId);
@@ -1247,51 +1248,4 @@ async function loadCurrentMessages(
     await subscription.close().catch(() => undefined);
     await draining.catch(() => undefined);
   }
-}
-
-export function runtimeHostSessionSummary(session: SessionCatalogProjection): SessionSummary {
-  return {
-    id: session.id,
-    cwd: session.workspace.hostCwd,
-    ...(session.workspace.target.kind === 'project'
-      ? { projectId: session.workspace.target.projectId }
-      : {}),
-    name: session.name,
-    isFlagged: session.isFlagged,
-    isArchived: session.isArchived,
-    labels: [...session.labels],
-    hasUnread: session.hasUnread,
-    ...(session.lastMessageAt === undefined ? {} : { lastMessageAt: session.lastMessageAt }),
-    ...(session.lastMessagePreview === undefined
-      ? {}
-      : { lastMessagePreview: session.lastMessagePreview }),
-    status: session.status,
-    ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
-    ...(session.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: session.statusUpdatedAt }),
-    ...(session.liveRunState === undefined
-      ? {}
-      : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),
-    ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
-    ...(session.branchOfTurnId === undefined ? {} : { branchOfTurnId: session.branchOfTurnId }),
-    ...(session.subagent === undefined ? {} : { subagent: session.subagent }),
-    ...(session.revisionRootSessionId === undefined
-      ? {}
-      : { revisionRootSessionId: session.revisionRootSessionId }),
-    ...(session.revisionParentSessionId === undefined
-      ? {}
-      : { revisionParentSessionId: session.revisionParentSessionId }),
-    ...(session.revisionOfTurnId === undefined
-      ? {}
-      : { revisionOfTurnId: session.revisionOfTurnId }),
-    ...(session.revisionIndex === undefined ? {} : { revisionIndex: session.revisionIndex }),
-    ...(session.revisionState === undefined ? {} : { revisionState: session.revisionState }),
-    backend: session.backend,
-    llmConnectionSlug: session.llmConnectionSlug,
-    connectionLocked: session.connectionLocked,
-    model: session.model,
-    ...(session.thinkingLevel === undefined ? {} : { thinkingLevel: session.thinkingLevel }),
-    permissionMode: session.permissionMode,
-    collaborationMode: session.collaborationMode,
-    orchestrationMode: session.orchestrationMode,
-  };
 }

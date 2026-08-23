@@ -24,6 +24,7 @@ import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { ExecutionBoundaryReadModel } from '@maka/core/sandbox-boundary';
 import type { SessionSummary } from '@maka/core/session';
 import {
+  projectSessionCatalogSummary,
   readRuntimeHostSessions,
   readRuntimeHostProjects,
   RuntimeHostOperationError,
@@ -47,7 +48,6 @@ import {
 } from './runtime-host-cli-context.js';
 import {
   createRuntimeHostMakaSessionDriver,
-  runtimeHostSessionSummary,
   type RuntimeHostMakaSessionDriver,
 } from './runtime-host-session-driver.js';
 import type { CreateSessionRequest, MakaPreparedSessionTurn } from './session-driver.js';
@@ -543,7 +543,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
 }
 
 function runtimeHostSessionSummaries(items: readonly SessionCatalogItem[]): SessionSummary[] {
-  return items.flatMap((item) => ('kind' in item ? [] : [runtimeHostSessionSummary(item)]));
+  return items.flatMap((item) => ('kind' in item ? [] : [projectSessionCatalogSummary(item)]));
 }
 
 type TurnOutcomeObservation =

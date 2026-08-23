@@ -372,6 +372,11 @@ export interface SessionSummary {
   orchestrationMode?: OrchestrationMode;
 }
 
+/** A complete Session catalog row. Its order key is authoritative and never synthesized by clients. */
+export interface SessionCatalogSummary extends SessionSummary {
+  activityAt: number;
+}
+
 export function sessionRevisionFamilyId(
   session: Pick<SessionSummary, 'id' | 'revisionRootSessionId'>,
 ): string {

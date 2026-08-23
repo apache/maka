@@ -39,9 +39,9 @@ import {
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
+import { projectSessionCatalogSummary } from '@maka/runtime-host/client';
 import {
   createRuntimeHostMakaSessionDriver,
-  runtimeHostSessionSummary,
   type RuntimeHostMakaSessionDriverInput,
 } from '../runtime-host-session-driver.js';
 import {
@@ -52,9 +52,16 @@ import {
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
+  test('maps authoritative Catalog activity into Session summaries', () => {
+    assert.equal(
+      projectSessionCatalogSummary(sessionProjection({ activityAt: 42 })).activityAt,
+      42,
+    );
+  });
+
   test('maps authoritative live Turn ids into Session summaries', () => {
     assert.deepEqual(
-      runtimeHostSessionSummary(
+      projectSessionCatalogSummary(
         sessionProjection({
           status: 'running',
           liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1', 'turn-2'] },
@@ -62,13 +69,13 @@ describe('Runtime Host Maka Session driver', () => {
       ).runningTurnIds,
       ['turn-1', 'turn-2'],
     );
-    const knownEmpty = runtimeHostSessionSummary(
+    const knownEmpty = projectSessionCatalogSummary(
       sessionProjection({ liveRunState: { schemaVersion: 1, runningTurnIds: [] } }),
     );
     assert.equal(Object.hasOwn(knownEmpty, 'runningTurnIds'), true);
     assert.deepEqual(knownEmpty.runningTurnIds, []);
     assert.equal(
-      Object.hasOwn(runtimeHostSessionSummary(sessionProjection()), 'runningTurnIds'),
+      Object.hasOwn(projectSessionCatalogSummary(sessionProjection()), 'runningTurnIds'),
       false,
     );
   });
@@ -1892,7 +1899,7 @@ function sessionProjection(
       hostCwd: '/tmp',
     },
     createdAt: 1,
-    lastUsedAt: 2,
+    activityAt: 2,
     name: 'Session',
     isFlagged: false,
     isArchived: false,
