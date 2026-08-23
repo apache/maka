@@ -136,10 +136,9 @@ export function createMainProcessRecoveryJournal(
   const now = input.now ?? (() => new Date());
   ensurePrivateDirectory(input.root);
   const activePath = join(input.root, 'active.json');
-  const cleanPath = join(input.root, 'active.clean');
   const pendingPath = join(input.root, 'pending.json');
   const temporaryPath = join(input.root, '.active.json.tmp');
-  rotatePriorRun({ activePath, cleanPath, pendingPath, temporaryPath });
+  rotatePriorRun({ activePath, pendingPath, temporaryPath });
   const pending = readPendingEvidence(pendingPath, now(), input.onError);
 
   const run: MainProcessRecoveryRun = {
@@ -223,13 +222,9 @@ export function createMainProcessRecoveryJournal(
       disabled = true;
       cancelTimer();
       try {
-        writeFileSync(cleanPath, '', {
-          encoding: 'utf8',
-          flag: 'wx',
-          mode: 0o600,
-        });
+        removeFileEntry(activePath);
       } catch (error) {
-        if (!isAlreadyExists(error)) input.onError(error);
+        input.onError(error);
       }
     },
     discardPending(): void {
@@ -260,26 +255,17 @@ export function appendUncaughtMainProcessError(
 
 function rotatePriorRun(paths: {
   readonly activePath: string;
-  readonly cleanPath: string;
   readonly pendingPath: string;
   readonly temporaryPath: string;
 }): void {
   removeFileEntry(paths.temporaryPath);
   const active = lstatOrUndefined(paths.activePath);
-  if (!active) {
-    removeFileEntry(paths.cleanPath);
-    return;
-  }
+  if (!active) return;
   if (!active.isFile() || active.isSymbolicLink()) {
     throw new Error('Main-process recovery active record is invalid');
   }
-  if (isRegularFile(paths.cleanPath)) {
-    removeFileEntry(paths.activePath);
-  } else {
-    removeFileEntry(paths.pendingPath);
-    renameSync(paths.activePath, paths.pendingPath);
-  }
-  removeFileEntry(paths.cleanPath);
+  removeFileEntry(paths.pendingPath);
+  renameSync(paths.activePath, paths.pendingPath);
 }
 
 function readPendingEvidence(
@@ -394,11 +380,6 @@ function removeFileEntry(path: string): void {
   rmSync(path, { force: true });
 }
 
-function isRegularFile(path: string): boolean {
-  const metadata = lstatOrUndefined(path);
-  return Boolean(metadata?.isFile() && !metadata.isSymbolicLink());
-}
-
 function lstatOrUndefined(path: string): ReturnType<typeof lstatSync> | undefined {
   try {
     return lstatSync(path);
@@ -410,8 +391,4 @@ function lstatOrUndefined(path: string): ReturnType<typeof lstatSync> | undefine
 
 function isMissing(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
-}
-
-function isAlreadyExists(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && error.code === 'EEXIST';
 }

@@ -103,8 +103,10 @@ if (!app.requestSingleInstanceLock()) {
       console.log('[startup] app ready');
       const pending = recoveryJournal?.pending;
       if (pending) {
-        try {
-          if (!isIsolatedE2e) {
+        if (isIsolatedE2e) {
+          recoveryJournal?.discardPending();
+        } else {
+          try {
             await showPreviousMainProcessInterruptionDialog({
               locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
               copyDiagnostics: () =>
@@ -131,11 +133,10 @@ if (!app.requestSingleInstanceLock()) {
                 ),
               showMessageBox: (options) => dialog.showMessageBox(options),
             });
+            recoveryJournal?.discardPending();
+          } catch (error) {
+            console.error('[diagnostics] previous-session recovery dialog failed:', error);
           }
-        } catch (error) {
-          console.error('[diagnostics] previous-session recovery dialog failed:', error);
-        } finally {
-          recoveryJournal?.discardPending();
         }
       }
       return import('./runtime-host-boot.js');

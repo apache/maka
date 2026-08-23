@@ -19,7 +19,7 @@
 
 import { DiagnosticLogBuffer } from '@maka/core/diagnostic-log';
 import assert from 'node:assert/strict';
-import { readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -64,7 +64,13 @@ test('recovers one bounded redacted snapshot after an unclean exit', async () =>
 
     second.discardPending();
     second.markClean();
-    const third = createJournal(directory, new DiagnosticLogBuffer(), new Date('2026-08-20T02:00:00Z'));
+    second.markClean();
+    assert.equal(existsSync(join(directory, 'active.json')), false);
+    const third = createJournal(
+      directory,
+      new DiagnosticLogBuffer(),
+      new Date('2026-08-20T02:00:00Z'),
+    );
     assert.equal(third.pending, undefined);
     third.markClean();
   } finally {
