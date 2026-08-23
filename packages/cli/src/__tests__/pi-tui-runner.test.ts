@@ -5200,6 +5200,120 @@ describe('Maka Pi TUI runner', () => {
       await run;
     });
 
+    test('a second mid-turn /session while a detach is in flight is ignored', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new DetachingSwitchDriver([
+        storedUserMessage('user-s2', 'turn-old-2', 'history from session two'),
+        storedAssistantMessage('assistant-s2', 'turn-old-2', 'prior answer'),
+      ]);
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('start the long task');
+      terminal.input('\r');
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+
+      // Park the first switch inside driver.switchSession, then fire a second
+      // /session while `detaching` is still held: re-entry would clear the
+      // flag early, reopen the interrupt window, and double-apply adoption.
+      let releaseSwitch!: () => void;
+      driver.holdSwitch = new Promise<void>((resolve) => {
+        releaseSwitch = resolve;
+      });
+      terminal.input('/session session-2');
+      terminal.input('\r');
+      await waitFor(() => driver.switchEntries >= 1);
+      terminal.input('/session session-2');
+      terminal.input('\r');
+      releaseSwitch();
+
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes('Detached from the running Turn'),
+      );
+      assert.equal(driver.stopCalls, 0);
+      assert.deepEqual(driver.sessionIds, ['session-2']);
+      // Exactly one detach notice: the second switch never ran.
+      const notices = plainTerminalOutput(terminal.output()).match(
+        /Detached from the running Turn/g,
+      );
+      assert.equal(notices?.length, 1);
+
+      driver.releaseOldTurn();
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('a turn prepared after a mid-turn detach does not adopt abandoned metadata', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new DetachingSwitchDriver([
+        storedUserMessage('user-s2', 'turn-old-2', 'history from session two'),
+        storedAssistantMessage('assistant-s2', 'turn-old-2', 'prior answer'),
+      ]);
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      // Park preparePrompt itself: while it is unresolved, /session can
+      // already detach — onPrepared/onSkillInvocation then fire for the
+      // abandoned Turn after the epoch fence moved.
+      let releasePrepare!: () => void;
+      const parkedPrepare = new Promise<void>((resolve) => {
+        releasePrepare = resolve;
+      });
+      const basePrepare = driver.preparePrompt.bind(driver);
+      driver.preparePrompt = async (prompt, options) => {
+        const turn = await basePrepare(prompt, options);
+        await parkedPrepare;
+        return {
+          ...turn,
+          summary: fakeSessionSummary('abandoned-session', '/abandoned-cwd', 'ABANDONED TITLE'),
+        };
+      };
+
+      terminal.input('start the long task');
+      terminal.input('\r');
+      await waitFor(() => terminal.progressStates.at(-1) === true);
+
+      terminal.input('/session session-2');
+      terminal.input('\r');
+      // Nothing else drives the frame loop while preparePrompt stays parked,
+      // so force a repaint for the detach notices.
+      terminal.resize(80, 24);
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes('Detached from the running Turn'),
+      );
+      assert.match(plainTerminalOutput(terminal.screenOutput()), /history from session two/);
+
+      // The abandoned Turn's prepare resolves only now — its summary must
+      // not steal the adopted Session's metadata.
+      releasePrepare();
+      driver.releaseOldTurn();
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('attached replay done'));
+      assert.equal(terminal.titles.includes('ABANDONED TITLE (Maka)'), false);
+      assert.equal(terminal.titles.at(-1), 'Existing chat (Maka)');
+      assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /\/abandoned-cwd/);
+
+      await waitFor(() => terminal.progressStates.at(-1) === false);
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
     test('unknown slash-prefixed text still steers into the running turn', async () => {
       const terminal = new FakeTerminal();
       const driver = new SteeringTurnDriver();
@@ -7051,6 +7165,10 @@ class DetachingSwitchDriver extends SlashCommandDriver {
   /** When set, the next switchSession rejects — a failed detach must leave
    *  the running drain fully live. */
   failNextSwitch = false;
+  /** When set, the next switchSession parks until released — a second
+   *  mid-turn /session arriving while the first is still in flight. */
+  holdSwitch: Promise<void> | undefined;
+  switchEntries = 0;
   private pendingEvents: SessionEvent[] = [];
   private wakeTurn: (() => void) | null = null;
   private turnEnded = false;
@@ -7101,9 +7219,15 @@ class DetachingSwitchDriver extends SlashCommandDriver {
   // session-2 carries a live Turn, so adopting it hands back an activeTurn —
   // the reattach path the runner must start once the orphaned drain unwinds.
   override async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    this.switchEntries += 1;
     if (this.failNextSwitch) {
       this.failNextSwitch = false;
       throw new Error('session not found');
+    }
+    if (this.holdSwitch) {
+      const gate = this.holdSwitch;
+      this.holdSwitch = undefined;
+      await gate;
     }
     const switched = await super.switchSession(sessionId);
     if (sessionId !== 'session-2') return switched;

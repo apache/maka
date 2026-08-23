@@ -1195,6 +1195,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
       },
       onPrepared: async (turn) => {
+        // Orphaned by a mid-turn detach: this can still fire after the
+        // switch resolved (preparePrompt was in flight), and the abandoned
+        // Turn's metadata must not overwrite the adopted Session's view.
+        if (superseded()) return;
         if (authoritativeAttachedTurn) {
           adoptSessionMetadata(authoritativeAttachedTurn.summary);
           replaceTranscript(authoritativeAttachedTurn.messages);
@@ -1209,6 +1213,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (turn.summary) adoptSessionMetadata(turn.summary);
       },
       onSkillInvocation: (skillInvocation) => {
+        // Same mid-turn detach fence as onPrepared/onEvent: a skill card
+        // belonging to the abandoned Session must not land on the adopted
+        // viewport (covers the blocked-invocation path too).
+        if (superseded()) return;
         if (
           skillInvocation.loaded.length === 0 &&
           skillInvocation.failed.length > 0 &&
@@ -1611,6 +1619,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       await runControl(() => switchSession(sessionId));
       return;
     }
+    // One detach at a time (#3380): a second mid-turn switch while the first
+    // is still handing the view over would clear `detaching` early, reopen
+    // the interrupt window, and double-apply the adoption.
+    if (detaching) return;
     await switchAwayMidTurn(sessionId).catch(reportError);
   };
   const openSessionPicker = (): Promise<void> => {
