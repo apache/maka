@@ -3372,6 +3372,16 @@ describe('runtime policy stores', () => {
       } finally {
         await successor.close();
       }
+
+      const reopened = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(reopened);
+      if (!reopened) return;
+      try {
+        await openInteractiveRuntimePolicyStoresForWrite(reopened.lease);
+        assert.equal(existsSync(join(root, 'runtime-policy-onboarding.json')), false);
+      } finally {
+        await reopened.close();
+      }
     });
   });
 
