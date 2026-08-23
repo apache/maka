@@ -3069,7 +3069,7 @@ const makaBridge = {
 if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list';
   const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
-  const releases = new Map<LatchKey, () => void>();
+  const releases = new Map<LatchKey, { resolve: () => void; reject: (error: Error) => void }>();
   const wrapLatched = <Args extends unknown[], Result>(
     call: (...args: Args) => Promise<Result>,
     key: LatchKey,
@@ -3091,15 +3091,22 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   );
   contextBridge.exposeInMainWorld('makaE2eLatch', {
     arm(key: LatchKey, options?: { oneShot?: boolean }) {
-      let release: () => void = () => {};
-      const promise = new Promise<void>((resolve) => {
-        release = resolve;
+      let resolve: () => void = () => {};
+      let reject: (error: Error) => void = () => {};
+      const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
       });
       gates.set(key, { promise, oneShot: options?.oneShot === true });
-      releases.set(key, release);
+      releases.set(key, { resolve, reject });
     },
     release(key: LatchKey) {
-      releases.get(key)?.();
+      releases.get(key)?.resolve();
+      releases.delete(key);
+      gates.delete(key);
+    },
+    reject(key: LatchKey, message: string) {
+      releases.get(key)?.reject(new Error(message));
       releases.delete(key);
       gates.delete(key);
     },

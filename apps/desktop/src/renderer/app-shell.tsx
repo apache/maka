@@ -134,6 +134,7 @@ import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
 import { useShellSearch } from './use-shell-search';
 import { useSessionGoal } from './use-session-goal';
+import { useSessionSettingIntent } from './use-session-setting-intent';
 import { deriveStaleSessionIds } from './stale-sessions';
 import { pendingSessionView } from './pending-session-view';
 import { deriveProjectGroups, deriveWorktreeSessionIds } from './session-project-grouping';
@@ -424,18 +425,6 @@ function AppShellContent({
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
   const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
   const [scheduledTaskCreateRequestNonce, setScheduledTaskCreateRequestNonce] = useState(0);
-  // The rows stay interactive while a commit runs, so a click landing in that
-  // window is the user updating their mind — not noise to drop. Each map holds
-  // only the LATEST ask per session; the in-flight commit's finally block
-  // applies it if the settled state does not already satisfy it. The Plan
-  // control separately keeps the last committed value visible while the
-  // catalog refresh is pending; that transient view never inserts, removes,
-  // or reorders a catalog row.
-  const queuedCollaborationModeBySession = useRef(new Map<string, boolean>());
-  const [transientPlanModeBySession, setTransientPlanModeBySession] = useState<
-    Record<string, boolean>
-  >({});
-  const queuedOrchestrationModeBySession = useRef(new Map<string, OrchestrationMode>());
   const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
@@ -897,10 +886,6 @@ function AppShellContent({
   const pendingTurnActions = turnActionRegistry.keys;
   const sessionRowActionRegistry = useKeyedPendingRegistry();
   const permissionModeChangeRegistry = useKeyedPendingRegistry();
-  // One registry per persisted field. The two controls are independent, so a
-  // Plan transition in flight is no reason to hold the orchestration choice.
-  const collaborationModeChangeRegistry = useKeyedPendingRegistry();
-  const orchestrationModeChangeRegistry = useKeyedPendingRegistry();
   const sessionModelChangeRegistry = useKeyedPendingRegistry();
   const pendingKeyOf = (sessionId: string, turnId: string, actionId: string) =>
     `${sessionId}:${turnId}:${actionId}`;
@@ -911,10 +896,6 @@ function AppShellContent({
     return next;
   }
 
-  // The registry ref is the re-entrancy authority; the setter is only for
-  // actions whose pending state something actually renders (permission, model,
-  // message retry). Mode toggles pass none: Plan paints the Host's committed
-  // value through its separate transient view, not this registry's busy state.
   function addPendingSessionAction(
     sessionId: string,
     pendingRef: { current: Set<string> },
@@ -940,14 +921,8 @@ function AppShellContent({
     clearOwnedSessionState(sessionId);
     turnActionRegistry.clearForSession(sessionId);
     permissionModeChangeRegistry.keysRef.current.delete(sessionId);
-    collaborationModeChangeRegistry.keysRef.current.delete(sessionId);
-    orchestrationModeChangeRegistry.keysRef.current.delete(sessionId);
-    // Queued mode intents die with the Session's renderer lifecycle: an
-    // in-flight commit's finally would otherwise replay an old ask against a
-    // Session this cleanup has already let go of.
-    queuedCollaborationModeBySession.current.delete(sessionId);
-    setTransientPlanModeBySession((current) => omitSessionKey(current, sessionId));
-    queuedOrchestrationModeBySession.current.delete(sessionId);
+    planModeIntent.clear(sessionId);
+    orchestrationModeIntent.clear(sessionId);
     sessionModelChangeRegistry.keysRef.current.delete(sessionId);
   }
 
@@ -993,6 +968,46 @@ function AppShellContent({
     toastApi,
   });
 
+  // Mode writes and catalog reads run on different clocks. These controllers
+  // own that gap: latest intent wins, and a Host-committed value remains the
+  // presentation overlay until a later catalog snapshot confirms it.
+  const planModeIntent = useSessionSettingIntent<boolean>({
+    catalogRevision: sessions,
+    readCatalogValue: (sessionId) => {
+      const mode = sessionsRef.current.find((session) => session.id === sessionId)?.collaborationMode;
+      return mode === undefined ? undefined : mode === 'plan';
+    },
+    write: commitPlanMode,
+    refreshCatalog: refreshSessions,
+    onWriteError: (sessionId, error) => {
+      if (activeIdRef.current !== sessionId) return;
+      showSessionError(
+        sessionId,
+        shellCopy.planModeFailedTitle,
+        localizedShellErrorMessage(error, shellCopy.planModeFallback, uiLocale),
+      );
+    },
+  });
+  const orchestrationModeIntent = useSessionSettingIntent<OrchestrationMode>({
+    catalogRevision: sessions,
+    readCatalogValue: (sessionId) => sessionsRef.current.find(
+      (session) => session.id === sessionId,
+    )?.orchestrationMode,
+    write: async (sessionId, mode) => {
+      await window.maka.sessions.setOrchestrationMode(sessionId, mode);
+      return true;
+    },
+    refreshCatalog: refreshSessions,
+    onWriteError: (sessionId, error) => {
+      if (activeIdRef.current !== sessionId) return;
+      showSessionError(
+        sessionId,
+        shellCopy.orchestrationModeFailedTitle,
+        localizedShellErrorMessage(error, shellCopy.orchestrationModeFallback, uiLocale),
+      );
+    },
+  });
+
   /**
    * Enter or leave Plan for one Session — the only path that writes
    * `collaborationMode`, and it writes nothing else.
@@ -1011,137 +1026,38 @@ function AppShellContent({
    * approved or abandoned, so clearing the default on the way in would lose
    * it for the execution the plan was written for.
    */
-  async function applyPlanMode(active: boolean, sessionId: string): Promise<boolean> {
-    if (!addPendingSessionAction(
-      sessionId,
-      collaborationModeChangeRegistry.keysRef,
-    )) {
-      // A commit is in flight and the rows stay interactive (no pending
-      // repaint), so this click is the user updating their mind, not noise.
-      // Latest intent wins: remember only the newest value and let the
-      // in-flight commit's finally block apply it, so a quick "on, then off"
-      // finishes as "off".
-      queuedCollaborationModeBySession.current.set(sessionId, active);
-      return true;
-    }
-
-    try {
-      const planState = await window.maka.sessions.getPlanState(sessionId);
-      if (active && planState.activeExecutionId) {
-        showSessionError(
-          sessionId,
-          shellCopy.planModeExecutionActiveTitle,
-          shellCopy.planModeExecutionActiveDescription,
-        );
-        return false;
-      }
-      const latestProposal = planState.proposals.find(
-        (proposal) => proposal.proposalId === planState.latestProposalId,
-      );
-      if (!active && latestProposal?.status === 'pending_approval') {
-        const confirmed = await toastApi.confirm({
-          title: shellCopy.planModeExitPendingTitle,
-          description: shellCopy.planModeExitPendingDescription(latestProposal.title),
-          confirmLabel: shellCopy.planModeExitConfirm,
-          cancelLabel: shellCopy.planModeExitCancel,
-          destructive: true,
-        });
-        if (!confirmed) return false;
-        // Abandoning the proposal is what leaves Plan: Runtime writes the
-        // Session back to `agent` itself as part of it.
-        await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
-      } else {
-        await window.maka.sessions.setCollaborationMode(
-          sessionId,
-          active ? 'plan' : 'agent',
-        );
-      }
-      // The Host has committed this value. Keep that fact visible while the
-      // catalog refresh reconciles the full row; do not write it into the
-      // catalog snapshot itself.
-      setTransientPlanModeBySession((current) => ({ ...current, [sessionId]: active }));
-      await refreshSessions();
-      return true;
-    } catch (error) {
-      if (activeIdRef.current === sessionId) {
-        showSessionError(
-          sessionId,
-          shellCopy.planModeFailedTitle,
-          localizedShellErrorMessage(error, shellCopy.planModeFallback, uiLocale),
-        );
-      }
-      return false;
-    } finally {
-      setTransientPlanModeBySession((current) => omitSessionKey(current, sessionId));
-      clearPendingSessionAction(
+  async function commitPlanMode(sessionId: string, active: boolean): Promise<boolean> {
+    const planState = await window.maka.sessions.getPlanState(sessionId);
+    if (active && planState.activeExecutionId) {
+      showSessionError(
         sessionId,
-        collaborationModeChangeRegistry.keysRef,
+        shellCopy.planModeExecutionActiveTitle,
+        shellCopy.planModeExecutionActiveDescription,
       );
-      // Whatever the user last asked for while this commit ran is the state
-      // they expect to land on. Read the settled mode through the ref — the
-      // closure's projection predates this commit — and only re-apply when
-      // the intent is not already satisfied.
-      const queued = queuedCollaborationModeBySession.current.get(sessionId);
-      queuedCollaborationModeBySession.current.delete(sessionId);
-      if (queued !== undefined) {
-        const settledActive = (
-          sessionsRef.current.find((session) => session.id === sessionId)?.collaborationMode
-          ?? 'agent'
-        ) === 'plan';
-        if (queued !== settledActive) void applyPlanMode(queued, sessionId);
-      }
-    }
-  }
-
-  /**
-   * Set the Session's standing orchestration default — the only path that
-   * writes `orchestrationMode`, and it writes nothing else.
-   *
-   * One field with three values, so there is nothing to sequence and nothing
-   * to leave half-applied: Swarm, Graph and off are one write each.
-   */
-  async function applyOrchestrationMode(
-    mode: OrchestrationMode,
-    sessionId: string,
-  ): Promise<boolean> {
-    if (!addPendingSessionAction(
-      sessionId,
-      orchestrationModeChangeRegistry.keysRef,
-    )) {
-      // Same latest-intent contract as applyPlanMode: the rows stay
-      // interactive while a commit runs, so keep the newest ask and apply it
-      // from the in-flight commit's finally block.
-      queuedOrchestrationModeBySession.current.set(sessionId, mode);
-      return true;
-    }
-
-    try {
-      await window.maka.sessions.setOrchestrationMode(sessionId, mode);
-      await refreshSessions();
-      return true;
-    } catch (error) {
-      if (activeIdRef.current === sessionId) {
-        showSessionError(
-          sessionId,
-          shellCopy.orchestrationModeFailedTitle,
-          localizedShellErrorMessage(error, shellCopy.orchestrationModeFallback, uiLocale),
-        );
-      }
       return false;
-    } finally {
-      clearPendingSessionAction(
-        sessionId,
-        orchestrationModeChangeRegistry.keysRef,
-      );
-      const queued = queuedOrchestrationModeBySession.current.get(sessionId);
-      queuedOrchestrationModeBySession.current.delete(sessionId);
-      if (queued !== undefined) {
-        const settled = sessionsRef.current.find(
-          (session) => session.id === sessionId,
-        )?.orchestrationMode ?? 'default';
-        if (queued !== settled) void applyOrchestrationMode(queued, sessionId);
-      }
     }
+    const latestProposal = planState.proposals.find(
+      (proposal) => proposal.proposalId === planState.latestProposalId,
+    );
+    if (!active && latestProposal?.status === 'pending_approval') {
+      const confirmed = await toastApi.confirm({
+        title: shellCopy.planModeExitPendingTitle,
+        description: shellCopy.planModeExitPendingDescription(latestProposal.title),
+        confirmLabel: shellCopy.planModeExitConfirm,
+        cancelLabel: shellCopy.planModeExitCancel,
+        destructive: true,
+      });
+      if (!confirmed) return false;
+      // Abandoning the proposal is what leaves Plan: Runtime writes the
+      // Session back to `agent` itself as part of it.
+      await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
+    } else {
+      await window.maka.sessions.setCollaborationMode(
+        sessionId,
+        active ? 'plan' : 'agent',
+      );
+    }
+    return true;
   }
 
   function setPlanMode(active: boolean): Promise<boolean> {
@@ -1151,7 +1067,7 @@ function AppShellContent({
       return Promise.resolve(true);
     }
     if (active === activePlanMode) return Promise.resolve(true);
-    return applyPlanMode(active, sessionId);
+    return planModeIntent.request(sessionId, active);
   }
 
   /**
@@ -1168,7 +1084,7 @@ function AppShellContent({
       return Promise.resolve(true);
     }
     if (mode === activeOrchestrationMode) return Promise.resolve(true);
-    return applyOrchestrationMode(mode, sessionId);
+    return orchestrationModeIntent.request(sessionId, mode);
   }
 
   function setOrchestrationModeActive(
@@ -1311,11 +1227,13 @@ function AppShellContent({
   // to keep in sync: a Session in Plan with Swarm as its orchestration default
   // says both, because it is both.
   const activePlanMode = activeId
-    ? transientPlanModeBySession[activeId]
+    ? planModeIntent.overlayBySession[activeId]
       ?? ((activeSessionForView?.collaborationMode ?? 'agent') === 'plan')
     : newChatPlanModeActive;
   const activeOrchestrationMode: OrchestrationMode = activeId
-    ? activeSessionForView?.orchestrationMode ?? 'default'
+    ? orchestrationModeIntent.overlayBySession[activeId]
+      ?? activeSessionForView?.orchestrationMode
+      ?? 'default'
     : newChatOrchestrationMode;
   /**
    * Why neither mode can be changed right now, if either cannot. Both controls
