@@ -133,14 +133,26 @@ export function useSkillsController(
 
   const isOperationHostCurrent = useCallback(
     async (error: unknown): Promise<boolean> => {
+      if (!mountedRef.current) return false;
       const host = defaultRuntimeHostOperationHost(error);
-      return (
-        mountedRef.current &&
-        (!host ||
-          (await isDefaultRuntimeHostCurrent(services.runtimeHosts, host)))
+      if (!host) return mountedRef.current;
+      const current = await isDefaultRuntimeHostCurrent(
+        services.runtimeHosts,
+        host,
       );
+      return mountedRef.current && current;
     },
     [services.runtimeHosts],
+  );
+
+  const shouldReportRefreshError = useCallback(
+    async (options: RefreshOptions, error: unknown): Promise<boolean> => {
+      const shouldShowError = options.shouldShowError;
+      if (shouldShowError && !shouldShowError()) return false;
+      if (!(await isOperationHostCurrent(error))) return false;
+      return shouldShowError?.() ?? true;
+    },
+    [isOperationHostCurrent],
   );
 
   const reportRuntimeHostError = useCallback(
@@ -181,10 +193,7 @@ export function useSkillsController(
       } catch (error) {
         if (!mountedRef.current || generation !== generationsRef.current.skills)
           return;
-        if (
-          (options.shouldShowError?.() ?? true) &&
-          (await isOperationHostCurrent(error))
-        ) {
+        if (await shouldReportRefreshError(options, error)) {
           reportRuntimeHostError(
             copy.refreshSkillsFailedTitle,
             copy.refreshSkillsFallback,
@@ -198,6 +207,7 @@ export function useSkillsController(
       reportRuntimeHostError,
       services.runtimeHosts,
       services.skills,
+      shouldReportRefreshError,
     ],
   );
 
@@ -229,10 +239,7 @@ export function useSkillsController(
         ) {
           return;
         }
-        if (
-          (options.shouldShowError?.() ?? true) &&
-          (await isOperationHostCurrent(error))
-        ) {
+        if (await shouldReportRefreshError(options, error)) {
           reportRuntimeHostError(
             copy.refreshSourcesFailedTitle,
             copy.refreshSourcesFallback,
@@ -246,6 +253,7 @@ export function useSkillsController(
       reportRuntimeHostError,
       services.runtimeHosts,
       services.skills,
+      shouldReportRefreshError,
     ],
   );
 
@@ -277,10 +285,7 @@ export function useSkillsController(
         ) {
           return;
         }
-        if (
-          (options.shouldShowError?.() ?? true) &&
-          (await isOperationHostCurrent(error))
-        ) {
+        if (await shouldReportRefreshError(options, error)) {
           reportRuntimeHostError(
             copy.refreshBundledFailedTitle,
             copy.refreshBundledFallback,
@@ -294,6 +299,7 @@ export function useSkillsController(
       reportRuntimeHostError,
       services.runtimeHosts,
       services.skills,
+      shouldReportRefreshError,
     ],
   );
 
@@ -314,8 +320,11 @@ export function useSkillsController(
   );
 
   const shouldReportOperationError = useCallback(
-    async (error: unknown): Promise<boolean> =>
-      isSkillsSurfaceActive() && (await isOperationHostCurrent(error)),
+    async (error: unknown): Promise<boolean> => {
+      if (!isSkillsSurfaceActive()) return false;
+      if (!(await isOperationHostCurrent(error))) return false;
+      return isSkillsSurfaceActive();
+    },
     [isOperationHostCurrent, isSkillsSurfaceActive],
   );
 

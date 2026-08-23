@@ -371,3 +371,49 @@ test("Skills capabilities and stale mutation diagnostics are fenced", async () =
   assert.equal(records[0]?.kind, "error");
   assert.equal(records[0]?.profileId, "profile-b");
 });
+
+test("Skills errors recheck the active surface after an async Host fence", async () => {
+  const { root } = installReactRenderer();
+  const records: ToastRecord[] = [];
+  const host = { profileId: "profile-a", hostId: "host-a" };
+  const hostRecheck = deferred<typeof host>();
+  let hostReads = 0;
+  const defaults = createFakeModuleHubServices();
+  const services = createFakeModuleHubServices({
+    runtimeHosts: {
+      ...defaults.runtimeHosts,
+      getDefault: async () => {
+        hostReads += 1;
+        return hostReads === 1 ? host : hostRecheck.promise;
+      },
+    },
+    skills: {
+      ...defaults.skills,
+      open: async () => {
+        throw new Error("open failed");
+      },
+    },
+  });
+
+  const capability = { openSkillsFolder: () => undefined };
+  await act(async () =>
+    renderController(root, services, input(records, capability)),
+  );
+  const pendingOpen = controller().host.onOpenSkill?.("skill-a");
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  assert.equal(hostReads, 2);
+
+  await act(async () =>
+    renderController(
+      root,
+      services,
+      input(records, { ...capability, active: false }),
+    ),
+  );
+  hostRecheck.resolve(host);
+  await act(async () => pendingOpen);
+  assert.deepEqual(records, []);
+});
