@@ -102,6 +102,7 @@ import type {
 import type { BotProvider } from '@maka/core/bot-chat-settings';
 import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/bot-onboarding';
 import type { HealthSnapshot } from '@maka/core/health';
+import { collectRuntimeHostSessionCatalogs } from './runtime-host-session-catalog.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   ActiveInteractionRequestEvent,
@@ -775,7 +776,7 @@ async function listDesktopSessions(
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
   const scopes = await runtimeHostScopeList();
-  const groups = await Promise.all(
+  return collectRuntimeHostSessionCatalogs(
     scopes.map(async (scope) => {
       const sessions = await ipcRenderer.invoke(
         'sessions:list',
@@ -785,12 +786,6 @@ async function listDesktopSessions(
       return sessions.map((session) => projectSessionSummary(scope, session));
     }),
   );
-  return groups.flat().sort((left, right) => {
-    if (left.activityAt === undefined || right.activityAt === undefined) {
-      throw new Error('Runtime Host Session Catalog activity is unavailable');
-    }
-    return right.activityAt - left.activityAt || left.id.localeCompare(right.id);
-  });
 }
 
 function sendActiveRuntimeHost(channel: string, ...args: unknown[]): void {
