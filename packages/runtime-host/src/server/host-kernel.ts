@@ -199,6 +199,7 @@ export class RuntimeHostKernel {
   #initialConnectionDeadline: NodeJS.Timeout | undefined;
   #initialConnectionDeadlineDeferrals = 0;
   #shutdownRequested = false;
+  #shutdownReason: 'retirement' | undefined;
   #shutdownTask: Promise<void> | undefined;
   #shutdownDeadlineTimer: NodeJS.Timeout | undefined;
   #terminationRequired: RuntimeHostProcessTerminationRequiredError | undefined;
@@ -263,6 +264,10 @@ export class RuntimeHostKernel {
 
   get state(): HostLifecycleState {
     return this.#state;
+  }
+
+  get shutdownReason(): 'retirement' | undefined {
+    return this.#shutdownReason;
   }
 
   get endpoint(): string {
@@ -635,6 +640,7 @@ export class RuntimeHostKernel {
           if (!input.allowInterruptActiveTasks && this.#hasUpgradeBlockingActivity()) {
             return { ok: true, result: { kind: 'active_tasks' } };
           }
+          this.#shutdownReason = 'retirement';
           this.#requestDrain();
           return { ok: true, result: { kind: 'prepared', pid: process.pid } };
         },

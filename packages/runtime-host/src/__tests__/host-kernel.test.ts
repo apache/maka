@@ -1039,6 +1039,7 @@ describe('non-serving Runtime Host kernel', () => {
         { kind: 'prepared', pid: process.pid },
       );
       await host.closed;
+      assert.equal(host.shutdownReason, 'retirement');
       const successor = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(successor);
       await successor?.close();

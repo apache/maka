@@ -23,6 +23,7 @@ import { access, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveXdgConfigHome } from '@maka/storage';
+import { RUNTIME_HOST_RETIREMENT_EXIT_CODE } from '@maka/runtime-host/server';
 import {
   removeRuntimeHostServiceFile,
   RuntimeHostServiceManagerError,
@@ -213,6 +214,8 @@ export function renderSystemdUnit(config: RuntimeHostManagedServiceConfig): stri
     '[Service]',
     'Type=simple',
     `ExecStart=${args.map(quoteSystemdArgument).join(' ')}`,
+    `SuccessExitStatus=${String(RUNTIME_HOST_RETIREMENT_EXIT_CODE)}`,
+    `RestartPreventExitStatus=${String(RUNTIME_HOST_RETIREMENT_EXIT_CODE)}`,
     // A clean idle exit must not silently remove a configured remote Host.
     'Restart=always',
     'RestartSec=2s',

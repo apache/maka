@@ -74,14 +74,17 @@ export async function runManagedRuntimeHostServiceCli(
       options.action === 'status' || options.action === 'logs'
         ? await manage()
         : await deps.withLifecycleLock(options.clientDataRoot, manage);
+    const blocked = result.action === 'retire' && result.retirement.kind === 'active_tasks';
     if (options.framed) {
       deps.writeOutput(encodeRuntimeHostServiceManagementFrame(successFrame(result)));
+    } else if (options.json) {
+      deps.writeOutput(`${JSON.stringify({ ...result, ok: !blocked })}\n`);
+    } else if (blocked) {
+      deps.writeError(formatHumanResult(result));
     } else {
-      deps.writeOutput(
-        options.json ? `${JSON.stringify({ ...result, ok: true })}\n` : formatHumanResult(result),
-      );
+      deps.writeOutput(formatHumanResult(result));
     }
-    return 0;
+    return blocked ? 1 : 0;
   } catch (error) {
     const code =
       error instanceof RuntimeHostServiceManagerError ? error.code : 'internal_service_error';

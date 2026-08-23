@@ -375,13 +375,7 @@ async function manageRuntimeHostServiceLocked(
       );
     }
     let prepared: { readonly hostEpoch: string; readonly pid: number } | undefined;
-    if (service.active) {
-      if (service.pid === null) {
-        throw new RuntimeHostServiceManagerError(
-          'retirement_failed',
-          'Managed Runtime Host service did not report its process identity',
-        );
-      }
+    if (service.pid !== null) {
       const retirement = await deps.prepareRetirement(
         service.config,
         service.pid,
@@ -391,6 +385,11 @@ async function manageRuntimeHostServiceLocked(
         return { schemaVersion: 1, action: input.action, service, retirement };
       }
       prepared = retirement;
+    } else if (service.active) {
+      throw new RuntimeHostServiceManagerError(
+        'retirement_failed',
+        'Managed Runtime Host service did not report its process identity',
+      );
     }
     await backend.stop();
     const stopped = await readServiceStatus(configPath, backend);
