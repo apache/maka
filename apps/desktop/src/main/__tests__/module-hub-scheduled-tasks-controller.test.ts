@@ -252,6 +252,62 @@ test('stale Scheduled Task refresh errors do not outlive a newer generation', as
   assert.deepEqual(records, []);
 });
 
+test('Scheduled Task mutations recheck their Host after the refresh', async () => {
+  const { root } = installReactRenderer();
+  const records: ToastRecord[] = [];
+  const hostA = { profileId: 'profile-a', hostId: 'host-a' };
+  const hostB = { profileId: 'profile-b', hostId: 'host-b' };
+  let currentHost = hostA;
+  let reads = 0;
+  const pendingRefresh = deferred<ScheduledTask[]>();
+  const defaults = createFakeModuleHubServices();
+  const services = createFakeModuleHubServices({
+    runtimeHosts: {
+      ...defaults.runtimeHosts,
+      getDefault: async () => currentHost,
+    },
+    scheduledTasks: {
+      ...defaults.scheduledTasks,
+      create: async () => task('created-on-host-a'),
+      list: async () => {
+        reads += 1;
+        return pendingRefresh.promise;
+      },
+    },
+  });
+  await act(async () =>
+    renderController(root, services, {
+      selection: activeSelection,
+      selectModule: () => undefined,
+      toastApi: toastRecorder(records),
+    }),
+  );
+
+  const mutation = controller().create({
+    title: 'Created on Host A',
+    intentBody: 'run',
+    schedule: { kind: 'once', runAt: 1 },
+    effect: { kind: 'notify', channel: 'local' },
+  });
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  assert.equal(reads, 1);
+
+  currentHost = hostB;
+  pendingRefresh.resolve([task('old-host-task')]);
+  let result = true;
+  await act(async () => {
+    result = await mutation;
+  });
+
+  assert.equal(result, false);
+  assert.deepEqual(controller().scheduledTasks, []);
+  assert.deepEqual(records, []);
+});
+
 test('mutations keep titles current, preserve refreshes, and fence confirm continuation', async () => {
   const { root } = installReactRenderer();
   const records: ToastRecord[] = [];

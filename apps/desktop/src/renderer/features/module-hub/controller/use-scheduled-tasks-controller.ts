@@ -160,6 +160,11 @@ export function useScheduledTasksController(options: {
       );
       if (!mountedRef.current || !hostIsCurrent) return false;
       await refreshRef.current({ shouldShowError: isSurfaceActive });
+      const hostIsStillCurrent = await isDefaultRuntimeHostCurrent(
+        services.runtimeHosts,
+        result.host,
+      );
+      if (!mountedRef.current || !hostIsStillCurrent) return false;
       if (mountedRef.current && mutation.successTitle && isSurfaceActive()) {
         toastApi.success(mutation.successTitle, mutation.successDetail);
       }
