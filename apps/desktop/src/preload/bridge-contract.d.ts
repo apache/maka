@@ -27,6 +27,8 @@ import type {
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import type {
+  AppIcon,
+  AppIconChoice,
   AppSettings,
   ChatDefaultsSettings,
   SettingsTestResult,
@@ -119,6 +121,33 @@ import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
+/**
+ * Outcome of importing artwork. `cancelled` is the user closing the dialog and
+ * is not an error; the rest name why the file could not become an icon, so the
+ * picker can say which rather than showing one generic failure.
+ */
+export type AppIconSelectResult =
+  | { readonly ok: true; readonly selection: AppIconChoice }
+  | { readonly ok: false; readonly reason: 'invalid_id' | 'missing_artwork' | 'write_failed' };
+
+export type AppIconRemoveResult =
+  | { readonly ok: true; readonly selection: AppIconChoice }
+  | { readonly ok: false; readonly reason: 'invalid_id' | 'reset_failed' | 'remove_failed' };
+
+export type AppIconImportResult =
+  | { readonly ok: true; readonly icon: AppIconChoice }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | 'cancelled'
+        | 'too_large'
+        | 'too_many_pixels'
+        | 'unsupported_format'
+        | 'unreadable'
+        | 'too_small'
+        | 'write_failed';
+    };
+
 export type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
 import type { DesktopExternalSessionCatalogItem } from './external-session-catalog.js';
@@ -879,7 +908,7 @@ export interface MakaBridge {
     arm(
       sessionId: string,
       goal: import('../shared/goal-arm').GoalArmRequest,
-    ): Promise<import('@maka/runtime/goal-state').GoalState>;
+    ): Promise<import('../shared/goal-arm').GoalArmOutcome>;
     /** Clear the active goal, stopping autonomous continuation. */
     clear(sessionId: string): Promise<void>;
     /** Pause the active goal without spending a model turn. */
@@ -1179,6 +1208,28 @@ export interface MakaBridge {
   };
   app: {
     info(host?: DesktopRuntimeHostRef): Promise<DesktopAppInfo>;
+    /**
+     * Every selectable icon — the shipped set plus whatever the user imported
+     * — each with a thumbnail for the Settings picker. `removable` marks the
+     * imported ones; the shipped set is not the user's to delete.
+     */
+    iconPreviews(): Promise<
+      ReadonlyArray<{ id: AppIconChoice; dataUrl: string; removable?: boolean }>
+    >;
+    /**
+     * Persists the icon choice. Selection goes through here rather than the
+     * generic settings channel so it queues behind import and removal in the
+     * main process, and so a choice whose artwork is gone can be refused.
+     */
+    selectIcon(icon: AppIconChoice): Promise<AppIconSelectResult>;
+    /** Opens a file picker in the main process and stores a normalized copy. */
+    importIcon(): Promise<AppIconImportResult>;
+    /**
+     * Deletes imported artwork. Shipped ids are refused. The main process
+     * resets the selection first when the artwork is the current choice, and
+     * reports the selection it settled on.
+     */
+    removeIcon(icon: AppIconChoice): Promise<AppIconRemoveResult>;
     subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void;
     updateStatus(): Promise<AppUpdateStatus>;
     checkForUpdates(): Promise<AppUpdateStatus>;

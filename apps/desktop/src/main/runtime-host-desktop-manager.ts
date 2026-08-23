@@ -635,7 +635,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         await this.waitForHostRetirement(result.registration, signal);
         continue;
       }
-      throw runtimeHostStartupError(result.reason);
+      throw runtimeHostStartupError(result.reason, result.diagnostic);
     }
   }
 

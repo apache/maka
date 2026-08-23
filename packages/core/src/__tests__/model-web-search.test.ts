@@ -45,6 +45,10 @@ describe('hosted web search capability', () => {
       adapter: 'openai-responses',
       implemented: false,
     });
+    assert.deepEqual(resolveHostedWebSearchCapability('alibaba-cn', undefined, 'qwen3.5-plus'), {
+      adapter: 'openai-responses',
+      implemented: false,
+    });
     assert.equal(resolveHostedWebSearchCapability('openai', undefined, 'gpt-4.1'), null);
   });
 

@@ -161,7 +161,7 @@ export async function connectRuntimeHostCli(
       );
     }
     if (connected.kind === 'failed') {
-      throw runtimeHostStartupError(connected.reason);
+      throw runtimeHostStartupError(connected.reason, connected.diagnostic);
     }
     return connected.connection;
   };

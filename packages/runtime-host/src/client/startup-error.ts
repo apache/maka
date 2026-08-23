@@ -18,6 +18,7 @@
  */
 
 import type { CandidateStartupFailureReason } from '../candidate-startup-failure.js';
+import type { RuntimeHostElectionDiagnostic } from './connect-or-spawn.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 
 export type RuntimeHostStartupFailureReason =
@@ -40,7 +41,10 @@ export class RuntimeHostStartupError extends RuntimeHostPermanentReconnectError 
   }
 }
 
-export function runtimeHostStartupError(reason: RuntimeHostStartupFailureReason): Error {
+export function runtimeHostStartupError(
+  reason: RuntimeHostStartupFailureReason,
+  diagnostic?: RuntimeHostElectionDiagnostic,
+): Error {
   switch (reason) {
     case 'stored_data_incompatible':
       return new RuntimeHostStartupError(
@@ -67,11 +71,15 @@ export function runtimeHostStartupError(reason: RuntimeHostStartupFailureReason)
       );
     case 'startup_timeout':
       return new Error(
-        'No Runtime Host became ready before the startup deadline elapsed. Retry; if this workspace needs longer to open (large workspaces can after an upgrade), set MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS to allow more time.',
+        `No Runtime Host became ready before the startup deadline elapsed${electionDiagnosticSuffix(diagnostic)}. Retry; if this workspace needs longer to open (large workspaces can after an upgrade), set MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS to allow more time.`,
       );
     case 'host_unresponsive':
       return new Error(
-        'A Runtime Host was found but did not become ready before the startup deadline elapsed. It may still be opening this workspace (large workspaces can need longer right after an upgrade); retrying once it settles usually succeeds, or set MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS to allow more time.',
+        `A Runtime Host was found but did not become ready before the startup deadline elapsed${electionDiagnosticSuffix(diagnostic)}. It may still be opening this workspace (large workspaces can need longer right after an upgrade); retrying once it settles usually succeeds, or set MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS to allow more time.`,
       );
   }
+}
+
+function electionDiagnosticSuffix(diagnostic: RuntimeHostElectionDiagnostic | undefined): string {
+  return diagnostic ? `; election diagnostic: ${JSON.stringify(diagnostic)}` : '';
 }

@@ -18,7 +18,7 @@
  */
 
 import type { CapabilityId, CapabilityReadinessState, CapabilitySnapshot } from './capabilities.js';
-import type { LlmConnection } from './llm-connections.js';
+import { connectionEnabledModelIds, type LlmConnection } from './llm-connections.js';
 import type { UsageLogRow } from './usage-stats/types.js';
 
 export const HEALTH_SIGNAL_STATUSES = ['ok', 'info', 'warning', 'error', 'unknown'] as const;
@@ -111,9 +111,35 @@ export function healthSignalFromCapability(capability: CapabilitySnapshot): Heal
   };
 }
 
+/** Whether some ENABLED connection holds the workspace's default model
+ * target. The catalog projects `defaultModel` purely from the default
+ * target's connection id — a DISABLED holder keeps its projected value,
+ * but cannot serve a new chat: counting it would show an all-clear health
+ * page in exactly the state where sends fail with connection_disabled.
+ * The one derivation, exported so the caller and the tests cannot drift. */
+export function workspaceHasDefaultModelTarget(
+  connections: readonly Pick<LlmConnection, 'defaultModel' | 'enabled'>[],
+): boolean {
+  return connections.some((connection) => Boolean(connection.defaultModel) && connection.enabled);
+}
+
 export function healthSignalFromConnection(
   connection: LlmConnection,
   checkedAt: number,
+  options: {
+    /** Whether SOME connection in the workspace carries the default model
+     * target. The catalog projects `defaultModel` onto exactly one
+     * connection — the default target — so with a default configured,
+     * every OTHER enabled connection has an empty `defaultModel` BY
+     * CONSTRUCTION. That is the connection model's documented normal state
+     * (设置 · 通用 is the one control for which model a new chat starts
+     * on; see reconcileConnectionAfterEnabledModelsChange), not a
+     * configuration gap — warning on it sent users hunting for a
+     * per-connection setting that deliberately does not exist. Only when
+     * NO default exists anywhere is a missing model an actionable,
+     * send-blocking problem. */
+    workspaceHasDefaultTarget?: boolean;
+  } = {},
 ): HealthSignal {
   const configured = Boolean(connection.defaultModel);
   if (!connection.enabled) {
@@ -130,7 +156,7 @@ export function healthSignalFromConnection(
     };
   }
 
-  if (!configured) {
+  if (!configured && !options.workspaceHasDefaultTarget) {
     return {
       id: `connection:${connection.slug}`,
       label: connection.name,
@@ -186,6 +212,40 @@ export function healthSignalFromConnection(
       message: '上次连接验证失败。',
       detail: connection.lastTestMessage,
       blocksSend: true,
+    };
+  }
+
+  if (!configured) {
+    // A non-default connection reaches here only with nothing above firing:
+    // enabled, workspace default lives elsewhere, no failing validation.
+    // Ordered AFTER the validation branches on purpose — a needs_reauth or
+    // failed test on a non-default connection is a real blocker and must
+    // not be papered over by the "not the default source" note.
+    if (connectionEnabledModelIds(connection).length === 0) {
+      return {
+        id: `connection:${connection.slug}`,
+        label: connection.name,
+        scope: 'llm_connection',
+        layer: 'configuration',
+        status: 'warning',
+        source: 'settings',
+        checkedAt,
+        message: '没有启用任何模型。',
+        detail: '在 设置 · 模型 的连接详情里启用至少一个模型后才能使用该连接。',
+        blocksSend: false,
+      };
+    }
+    return {
+      id: `connection:${connection.slug}`,
+      label: connection.name,
+      scope: 'llm_connection',
+      layer: 'configuration',
+      status: 'info',
+      source: 'settings',
+      checkedAt,
+      message: '不是工作区的默认模型来源。',
+      detail: '在任务中显式选择该连接的模型即可正常使用;新对话的默认模型在 设置 · 通用 配置。',
+      blocksSend: false,
     };
   }
 

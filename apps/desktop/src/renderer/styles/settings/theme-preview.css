@@ -158,3 +158,12 @@
 .settingsPaletteSwatch-dusk             { background: oklch(0.55 0.18 305); }
 .settingsPaletteSwatch-sand             { background: oklch(0.62 0.14 55); }
 .settingsPaletteSwatch-mono             { background: oklch(0.30 0 0); }
+
+/* App-icon picker thumbnail. The artwork already carries its own rounded
+   plate, so this only keeps the image from being squeezed by the label column
+   beside it — the same failure the theme mock hit when it was a fixed-width
+   thumbnail in a row. */
+.settingsAppIconPreview {
+  flex: none;
+  display: block;
+}

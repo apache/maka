@@ -52,6 +52,7 @@ export const PRICING_EXCLUDED_PROVIDER_TYPES = new Set([
 export const PROVIDERS = {
   anthropic: 'anthropic',
   alibaba: 'alibaba',
+  'alibaba-cn': 'alibaba-cn',
   'alibaba-coding-plan-cn': 'alibaba-coding-plan-cn',
   'alibaba-coding-plan': 'alibaba-coding-plan',
   'alibaba-token-plan-cn': 'alibaba-token-plan-cn',

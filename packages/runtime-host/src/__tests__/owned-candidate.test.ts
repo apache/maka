@@ -324,7 +324,14 @@ test('owned candidate settlement requires a clean process exit', async () => {
   });
 
   const candidate = await launch.spawned;
+  assert.match(
+    candidate.startupAttemptId ?? '',
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+  );
+  assert.ok(candidate.exited);
+  const exited = candidate.exited;
   assert.equal(await candidate.settle(2_000), false);
+  assert.deepEqual(await exited, { code: 1, signal: null });
 });
 
 test('reports unexpected candidate exit through the caller-provided onExit sink', async () => {

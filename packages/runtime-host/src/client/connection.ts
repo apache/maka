@@ -217,10 +217,14 @@ export type ConnectRemoteRuntimeHostResult =
     };
 
 type ConnectResolvedRuntimeHostResult =
-  | ConnectRuntimeHostResult
+  | Exclude<ConnectRuntimeHostResult, { kind: 'unavailable' }>
+  | (Extract<ConnectRuntimeHostResult, { kind: 'unavailable' }> & {
+      endpointConnected: boolean;
+    })
   | {
       kind: 'election_deadline_elapsed';
       endpointConnected: boolean;
+      registration?: HostRegistration;
     };
 
 class ElectionDeadlineElapsedError extends Error {
@@ -1215,6 +1219,13 @@ function finalizeConnectRuntimeHostResult(
       reason: result.endpointConnected ? 'handshake_failed' : 'connect_failed',
     };
   }
+  if (result.kind === 'unavailable') {
+    return {
+      kind: 'unavailable',
+      reason: result.reason,
+      ...(result.registration ? { registration: result.registration } : {}),
+    };
+  }
   return result;
 }
 
@@ -1254,24 +1265,36 @@ export async function connectResolvedRuntimeHost(
     );
   } catch (error) {
     if (error instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
     if (error instanceof RuntimeHostRegistrationError && error.code === 'invalid_registration') {
-      return { kind: 'unavailable', reason: 'invalid_registration' };
+      return { kind: 'unavailable', reason: 'invalid_registration', endpointConnected: false };
     }
-    return { kind: 'unavailable', reason: 'connect_failed' };
+    return { kind: 'unavailable', reason: 'connect_failed', endpointConnected: false };
   }
-  if (!registration) return { kind: 'unavailable', reason: 'not_registered' };
+  if (!registration) {
+    return { kind: 'unavailable', reason: 'not_registered', endpointConnected: false };
+  }
   if (registration.rootId !== input.capability.rootId) {
-    return { kind: 'unavailable', reason: 'root_mismatch', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'root_mismatch',
+      endpointConnected: false,
+      registration,
+    };
   }
   const connectDeadline = phaseDeadline(connectTimeoutMs, input.electionDeadline);
   const connectBudget = remainingTimeout(connectDeadline.at);
   if (connectBudget === undefined) {
     if (connectDeadline.exhaustsElection) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
-    return { kind: 'unavailable', reason: 'connect_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'connect_failed',
+      endpointConnected: false,
+      registration,
+    };
   }
   let transport: FramedTransport;
   try {
@@ -1282,18 +1305,28 @@ export async function connectResolvedRuntimeHost(
     );
   } catch (error) {
     if (error instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
-    return { kind: 'unavailable', reason: 'connect_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'connect_failed',
+      endpointConnected: false,
+      registration,
+    };
   }
   const handshakeDeadline = phaseDeadline(handshakeTimeoutMs, input.electionDeadline);
   const handshakeBudget = remainingTimeout(handshakeDeadline.at);
   if (handshakeBudget === undefined) {
     transport.abort();
     if (handshakeDeadline.exhaustsElection) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: true };
+      return { kind: 'election_deadline_elapsed', endpointConnected: true, registration };
     }
-    return { kind: 'unavailable', reason: 'handshake_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'handshake_failed',
+      endpointConnected: true,
+      registration,
+    };
   }
   let handshakeTimeoutError: Error | undefined;
   const handshakeTimer = setTimeout(() => {
@@ -1371,18 +1404,38 @@ export async function connectResolvedRuntimeHost(
     transport.abort();
     const failure = handshakeTimeoutError ?? error;
     if (failure instanceof RuntimeHostEpochMismatchError) {
-      return { kind: 'unavailable', reason: 'epoch_mismatch', registration };
+      return {
+        kind: 'unavailable',
+        reason: 'epoch_mismatch',
+        endpointConnected: true,
+        registration,
+      };
     }
     if (failure instanceof RuntimeHostRootMismatchError) {
-      return { kind: 'unavailable', reason: 'root_mismatch', registration };
+      return {
+        kind: 'unavailable',
+        reason: 'root_mismatch',
+        endpointConnected: true,
+        registration,
+      };
     }
     if (failure instanceof RuntimeHostCompositionMismatchError) {
-      return { kind: 'unavailable', reason: 'composition_mismatch', registration };
+      return {
+        kind: 'unavailable',
+        reason: 'composition_mismatch',
+        endpointConnected: true,
+        registration,
+      };
     }
     if (failure instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: true };
+      return { kind: 'election_deadline_elapsed', endpointConnected: true, registration };
     }
-    return { kind: 'unavailable', reason: 'handshake_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'handshake_failed',
+      endpointConnected: true,
+      registration,
+    };
   } finally {
     clearTimeout(handshakeTimer);
   }

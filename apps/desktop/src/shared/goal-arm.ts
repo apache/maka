@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { GoalState } from '@maka/runtime/goal-state';
+
 /**
  * What the renderer sends to arm a Goal.
  *
@@ -30,6 +32,15 @@ export interface GoalArmRequest {
   readonly maxIterations?: number | null;
   readonly tokenBudget?: number | null;
 }
+
+export type GoalArmOutcome =
+  | { readonly kind: 'armed'; readonly goal: GoalState }
+  | {
+      readonly kind: 'reconciled';
+      readonly currentGoal: GoalState | null;
+      readonly matchesRequestedState: boolean;
+    }
+  | { readonly kind: 'reconciliation_unavailable' };
 
 export const GOAL_ARM_REQUEST_KEYS: readonly (keyof GoalArmRequest)[] = Object.freeze([
   'condition',

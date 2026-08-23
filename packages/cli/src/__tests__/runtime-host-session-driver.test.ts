@@ -1323,6 +1323,40 @@ describe('Runtime Host Maka Session driver', () => {
     assert.deepEqual(await replacement.promise, durableMessages);
   });
 
+  test('publishes only the newest live tool-result transcript refresh', async () => {
+    const attached = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const firstRefresh = new FakeSubscription(
+      continuitySnapshot(),
+      new Promise<StoredMessage[]>(() => undefined),
+      'subscription-2',
+    );
+    const secondMessages = [userMessage('turn-1', 'Run it'), assistantMessage('turn-1', 'Done')];
+    const secondRefresh = new FakeSubscription(
+      continuitySnapshot(),
+      Promise.resolve(secondMessages),
+      'subscription-3',
+    );
+    const connection = new FakeConnection([attached, firstRefresh, secondRefresh]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+    const replacements: StoredMessage[][] = [];
+    driver.subscribeTranscriptReplacements!((_sessionId, _turnId, messages, reason) => {
+      assert.equal(reason, 'tool_result');
+      replacements.push(messages);
+    });
+
+    attached.push(toolResultFrame(1));
+    attached.push(toolResultFrame(2));
+    await waitFor(() => connection.openedSubscriptions === 3);
+    await waitFor(() => replacements.length === 1);
+    assert.deepEqual(replacements, [secondMessages]);
+  });
+
   test('resnapshots an active Session after reconnect and continues its live stream', async () => {
     const initial = new FakeSubscription(
       continuitySnapshot(),

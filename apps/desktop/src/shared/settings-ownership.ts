@@ -38,10 +38,21 @@ export function clientOwnedSettingsPatch(
             ? {}
             : { selectedPetId: patch.personalization.selectedPetId }),
         };
+  // `appIcon` is filtered out the way `personalization` is filtered field by
+  // field above, rather than forwarding the section wholesale: the app icon is
+  // owned by the main process's icon seam, which serializes selection against
+  // import and removal and refuses a choice whose artwork is gone. A write
+  // arriving through this generic channel would queue behind none of that and
+  // could land between a removal's settings apply and its file deletion.
+  const appearance =
+    patch.appearance === undefined
+      ? undefined
+      : (({ appIcon: _ignored, ...rest }) =>
+          Object.keys(rest).length === 0 ? undefined : rest)(patch.appearance);
   return {
     ...(patch.botChat ? { botChat: patch.botChat } : {}),
     ...(patch.usage ? { usage: patch.usage } : {}),
-    ...(patch.appearance ? { appearance: patch.appearance } : {}),
+    ...(appearance ? { appearance } : {}),
     ...(personalization ? { personalization } : {}),
     ...(patch.notifications ? { notifications: patch.notifications } : {}),
     ...(patch.projects ? { projects: patch.projects } : {}),
