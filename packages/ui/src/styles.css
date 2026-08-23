@@ -689,6 +689,21 @@
   width: 28px;
   height: 24px;
 }
+/* The headered variant has the same collision inside its header row: the
+   title (often a long unbroken maka://archive URI headline) is a flex span
+   with white-space: pre and visible overflow, so it runs straight under the
+   header's copy button — and headerCompact draws no divider, so the title
+   reads as the well's first content line while colliding like an overlay.
+   Ellipsize it inside the title slot the header already sizes (flex: 1,
+   min-width: 0). display: block because a flex container will not ellipsize
+   its anonymous text; tool wells never render the collapsible chevron that
+   the flex display exists for. */
+.maka-tool-call-detail .astryx-codeblock-header .astryx-codeblock-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .maka-tool-output-chunk { display: contents; }
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
 .maka-tool-output-chunk-redacted { opacity: 0.65; }
