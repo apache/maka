@@ -1067,10 +1067,6 @@ function decodeCursor(cursor: string): DecodedSessionCatalogCursor | undefined {
   }
 }
 
-function catalogActivityAt(header: SessionHeader): number {
-  return header.lastMessageAt ?? header.lastUsedAt ?? header.createdAt;
-}
-
 function normalizedSessionName(name: string): string {
   const normalized = normalizeUserSessionName(name);
   if (!normalized.ok) throw new SessionOperationFailure('invalid_request', normalized.error);

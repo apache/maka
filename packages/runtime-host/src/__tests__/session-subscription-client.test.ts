@@ -1237,7 +1237,6 @@ function openResult(
         metadataRevision: 1,
         status: 'running' as const,
         createdAt: 1,
-        lastUsedAt: 2,
         isArchived: false,
       },
       projectionRevision: 1,

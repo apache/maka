@@ -1265,9 +1265,11 @@ export class SqliteSessionMetadataStore {
         SELECT session_id, payload_json, metadata_version, committed_at
         FROM session_metadata metadata
         ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
-        ORDER BY
-          COALESCE(last_message_at, last_used_at, created_at) DESC,
-          session_id ASC
+        ORDER BY (
+          SELECT activity_at
+          FROM session_catalog_projection projection
+          WHERE projection.session_id = metadata.session_id
+        ) DESC, session_id ASC
       `,
       )
       .all(...parameters) as unknown as SessionMetadataRow[];
@@ -3677,7 +3679,7 @@ export class SqliteSessionMetadataStore {
         header.id,
         JSON.stringify(header),
         header.createdAt,
-        header.lastUsedAt,
+        header.lastMessageAt ?? header.createdAt,
         header.lastMessageAt ?? null,
         header.name,
         booleanInteger(header.isFlagged),
@@ -3941,7 +3943,7 @@ export class SqliteSessionMetadataStore {
         SET
           payload_json = ?,
           created_at = ?,
-          last_used_at = ?,
+          last_used_at = last_used_at,
           last_message_at = ?,
           name = ?,
           is_flagged = ?,
@@ -3962,7 +3964,6 @@ export class SqliteSessionMetadataStore {
       .run(
         JSON.stringify(next),
         next.createdAt,
-        next.lastUsedAt,
         next.lastMessageAt ?? null,
         next.name,
         booleanInteger(next.isFlagged),

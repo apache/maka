@@ -457,7 +457,6 @@ function header(): SessionHeader {
     workspaceRoot: '/workspace',
     cwd: '/workspace',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,

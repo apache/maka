@@ -126,7 +126,6 @@ export async function inspectSessionDocument(
       name: resolvedHeader.name,
       status: resolvedHeader.status,
       createdAt: resolvedHeader.createdAt,
-      lastUsedAt: resolvedHeader.lastUsedAt,
       ...(resolvedHeader.lastMessageAt !== undefined
         ? { lastMessageAt: resolvedHeader.lastMessageAt }
         : {}),

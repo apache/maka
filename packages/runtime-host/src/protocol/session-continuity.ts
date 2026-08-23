@@ -76,7 +76,6 @@ export interface SessionContinuityIdentity {
   metadataRevision: number;
   status: SessionLifecycleStatus;
   createdAt: number;
-  lastUsedAt: number;
   isArchived: boolean;
 }
 
@@ -903,7 +902,6 @@ function decodeSessionContinuityIdentity(value: unknown): SessionContinuityIdent
     'metadataRevision',
     'status',
     'createdAt',
-    'lastUsedAt',
     'isArchived',
   ]);
   assertRequiredKeys(record, 'Session continuity identity', [
@@ -911,7 +909,6 @@ function decodeSessionContinuityIdentity(value: unknown): SessionContinuityIdent
     'metadataRevision',
     'status',
     'createdAt',
-    'lastUsedAt',
     'isArchived',
   ]);
   if (typeof record.isArchived !== 'boolean') {
@@ -922,7 +919,6 @@ function decodeSessionContinuityIdentity(value: unknown): SessionContinuityIdent
     metadataRevision: requirePositiveCount(record.metadataRevision, 'metadataRevision'),
     status: decodeSessionStatus(record.status),
     createdAt: requireCount(record.createdAt, 'createdAt'),
-    lastUsedAt: requireCount(record.lastUsedAt, 'lastUsedAt'),
     isArchived: record.isArchived,
   };
 }

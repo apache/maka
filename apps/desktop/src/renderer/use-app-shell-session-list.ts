@@ -18,20 +18,15 @@
  */
 
 import { useRef, useState } from 'react';
-import type { StoredMessage } from '@maka/core/session';
 import { type LiveTurnProjection, useUiLocale } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
-  mergeSessionSummaryListForDisplay,
   normalizeSessionSummaryForDisplay,
 } from './session-status-presentation';
 import {
-  applyLocalSessionRead,
-  applySessionReadOverrides,
   createSessionListRefresher,
   type SessionListRefresher,
-  type SessionReadBoundaries,
 } from './session-read-state';
 import { reconcileSettledSessionTransients } from './settled-session-transients.js';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
@@ -60,7 +55,6 @@ export function useAppShellSessionList(
   const [authoritativeSessionIds, setAuthoritativeSessionIds] =
     useState<ReadonlySet<string> | null>(null);
   const sessionsRef = useRef<DesktopSessionSummary[]>([]);
-  const sessionReadBoundariesRef = useRef<SessionReadBoundaries>({});
   const refresherRef = useRef<SessionListRefresher<DesktopSessionSummary> | null>(null);
 
   function commitSessions(next: DesktopSessionSummary[]): void {
@@ -72,7 +66,7 @@ export function useAppShellSessionList(
     updater: (current: DesktopSessionSummary[]) => DesktopSessionSummary[],
   ): void {
     setSessionsState((current) => {
-      const next = mergeSessionSummaryListForDisplay(current, updater(current));
+      const next = updater(current);
       sessionsRef.current = next;
       return next;
     });
@@ -82,7 +76,6 @@ export function useAppShellSessionList(
     refresherRef.current = createSessionListRefresher({
       captureRequestContext: () => options.liveTurnBySessionRef.current,
       listSessions: () => window.maka.sessions.list(),
-      readBoundaries: () => sessionReadBoundariesRef.current,
       currentSessions: () => sessionsRef.current,
       commitSessions: (next, observedLiveTurnBySession) => {
         const normalized = next.map(normalizeSessionSummaryForDisplay);
@@ -113,8 +106,7 @@ export function useAppShellSessionList(
   function seedSessions(
     snapshotSessions: readonly DesktopSessionSummary[],
   ): DesktopSessionSummary[] {
-    const next = applySessionReadOverrides([...snapshotSessions], sessionReadBoundariesRef.current)
-      .map(normalizeSessionSummaryForDisplay);
+    const next = snapshotSessions.map(normalizeSessionSummaryForDisplay);
     commitSessions(next);
     return next;
   }
@@ -126,15 +118,6 @@ export function useAppShellSessionList(
     ]);
   }
 
-  function markSessionReadLocally(sessionId: string, readMessages: readonly StoredMessage[]): void {
-    setSessions((current) => applyLocalSessionRead(
-      sessionReadBoundariesRef.current,
-      current,
-      sessionId,
-      readMessages,
-    ));
-  }
-
   return {
     sessions,
     authoritativeSessionIds,
@@ -143,6 +126,5 @@ export function useAppShellSessionList(
     refreshSessions,
     seedSessions,
     upsertSessionSummary,
-    markSessionReadLocally,
   };
 }

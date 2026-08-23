@@ -620,7 +620,6 @@ function memoryStore(): SessionStore {
     workspaceRoot: '/tmp/maka-runtime-kernel-interaction',
     cwd: '/tmp/maka-runtime-kernel-interaction',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Interaction cleanup',
     titleIsManual: true,
     isFlagged: false,

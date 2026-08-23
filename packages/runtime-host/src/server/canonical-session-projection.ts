@@ -122,7 +122,6 @@ export class CanonicalSessionProjectionReader {
       metadataRevision,
       status: header.status,
       createdAt: header.createdAt,
-      lastUsedAt: header.lastUsedAt,
       isArchived: header.isArchived,
     };
     return { session, rootTurn, goal, queue, interactions };

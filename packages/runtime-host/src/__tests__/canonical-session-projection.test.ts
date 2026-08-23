@@ -68,7 +68,6 @@ test('projects the canonical root lifecycle and the attachment queue from real S
         metadataRevision: 1,
         status: session.status,
         createdAt: session.createdAt,
-        lastUsedAt: session.lastUsedAt,
         isArchived: false,
       },
       rootTurn: null,

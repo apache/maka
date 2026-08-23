@@ -617,7 +617,6 @@ function header(): SessionHeader {
     workspaceRoot: '/workspace/repo',
     cwd: '/workspace/repo',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'test',
     titleIsManual: false,
     isFlagged: false,

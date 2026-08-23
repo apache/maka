@@ -452,7 +452,6 @@ function header(): SessionHeader {
     workspaceRoot: '/tmp/maka',
     cwd: '/tmp/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Computer model loop',
     titleIsManual: true,
     isFlagged: false,

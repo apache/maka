@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 28;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 29;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1053,6 +1053,71 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       )
       WHERE external_adapter_id IS NOT NULL
         AND external_source_session_id IS NOT NULL;
+  `,
+  ],
+  [
+    29,
+    `
+    DROP TRIGGER session_catalog_after_insert;
+    DROP TRIGGER session_catalog_after_update;
+    DROP INDEX IF EXISTS session_metadata_by_recency;
+
+    UPDATE session_metadata
+    SET
+      payload_json = json_remove(payload_json, '$.lastUsedAt'),
+      metadata_version = metadata_version + 1,
+      committed_at = MAX(
+        committed_at,
+        CAST(unixepoch('now', 'subsec') * 1000 AS INTEGER)
+      )
+    WHERE json_type(payload_json, '$.lastUsedAt') IS NOT NULL;
+
+    CREATE TRIGGER session_catalog_after_insert
+    AFTER INSERT ON session_metadata
+    BEGIN
+      INSERT INTO session_catalog_projection(
+        session_id,
+        activity_at,
+        last_message_at,
+        last_message_preview,
+        is_archived,
+        is_flagged,
+        subagent_parent_session_id
+      ) VALUES (
+        NEW.session_id,
+        COALESCE(NEW.last_message_at, NEW.created_at),
+        NEW.last_message_at,
+        NULL,
+        NEW.is_archived,
+        NEW.is_flagged,
+        NEW.subagent_parent_session_id
+      );
+
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
+
+    CREATE TRIGGER session_catalog_after_update
+    AFTER UPDATE ON session_metadata
+    BEGIN
+      UPDATE session_catalog_projection
+      SET
+        activity_at = CASE
+          WHEN NEW.last_message_at IS NOT OLD.last_message_at
+            THEN COALESCE(NEW.last_message_at, OLD.created_at)
+          ELSE activity_at
+        END,
+        last_message_at = NEW.last_message_at,
+        is_archived = NEW.is_archived,
+        is_flagged = NEW.is_flagged,
+        subagent_parent_session_id = NEW.subagent_parent_session_id
+      WHERE session_id = NEW.session_id;
+
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
   `,
   ],
 ]);

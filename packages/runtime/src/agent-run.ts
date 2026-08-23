@@ -1057,7 +1057,6 @@ export class AgentRun {
         : (this.finalStatus ?? { status: 'active' as const });
     try {
       await this.input.hooks.updateHeader(this.sessionId, {
-        lastUsedAt: lastTs,
         lastMessageAt: lastTs,
         hasUnread: true,
         ...buildStatusPatch(nextStatus.status, lastTs, nextStatus.blockedReason),

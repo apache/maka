@@ -1255,7 +1255,6 @@ function childHeader(cwd: string): SessionHeader {
     workspaceRoot: cwd,
     cwd,
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,

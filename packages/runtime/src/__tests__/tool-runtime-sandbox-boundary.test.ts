@@ -960,7 +960,6 @@ function header(cwd = process.cwd()): SessionHeader {
     workspaceRoot: cwd,
     cwd,
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'test',
     titleIsManual: false,
     isFlagged: false,

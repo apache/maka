@@ -117,7 +117,6 @@ test('Goal projection is part of the exact Session continuity schema', () => {
       metadataRevision: 1,
       status: 'running',
       createdAt: 1,
-      lastUsedAt: 2,
       isArchived: false,
     },
     projectionRevision: 1,

@@ -1186,7 +1186,6 @@ function header(providerType: LlmConnection['providerType'], model: string): Ses
     workspaceRoot: '/tmp/maka',
     cwd: '/tmp/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: providerType,
     titleIsManual: true,
     isFlagged: false,

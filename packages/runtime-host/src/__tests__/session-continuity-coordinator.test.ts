@@ -404,7 +404,7 @@ test('detached canonical refreshes coalesce before Store I/O', async () => {
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
-  projection = canonical({ lastUsedAt: 2 });
+  projection = canonical({ metadataRevision: 2 });
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
   await refreshEntered.promise;
@@ -433,18 +433,17 @@ test('in-flight canonical refresh observes an invalidation after its first read'
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
-  const stale = canonical({ lastUsedAt: 2 });
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
   await waitFor(() => reads === 2);
-  firstRefreshRead.resolve(stale);
-  projection = canonical({ lastUsedAt: 3 });
+  firstRefreshRead.resolve(canonical({ metadataRevision: 2 }));
+  projection = canonical({ metadataRevision: 3 });
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
 
   await waitFor(() => reads === 3 && sink.frames.length === 2);
   assert.deepEqual(
     sink.frames.map((frame) =>
       frame.kind === 'subscription.session_projection'
-        ? frame.snapshot.session.lastUsedAt
+        ? frame.snapshot.session.metadataRevision
         : undefined,
     ),
     [2, 3],
@@ -2013,7 +2012,7 @@ function connectionContext(connectionId: string): ConnectionContext {
 
 function canonical(
   overrides: {
-    lastUsedAt?: number;
+    metadataRevision?: number;
     rootTurn?: CanonicalSessionProjection['rootTurn'];
     interactions?: CanonicalSessionProjection['interactions'];
     queue?: CanonicalSessionProjection['queue'];
@@ -2022,10 +2021,9 @@ function canonical(
   return {
     session: {
       sessionId: SESSION_ID,
-      metadataRevision: 1,
+      metadataRevision: overrides.metadataRevision ?? 1,
       status: 'active',
       createdAt: 1,
-      lastUsedAt: overrides.lastUsedAt ?? 1,
       isArchived: false,
     },
     rootTurn:

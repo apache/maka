@@ -198,7 +198,6 @@ function testHeader(): SessionHeader {
     workspaceRoot: '/workspace/maka',
     cwd: '/workspace/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,

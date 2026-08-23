@@ -56,7 +56,6 @@ export function header(input: {
     workspaceRoot: 'e2e-fixture',
     cwd: '/workspace/maka',
     createdAt: input.now - 3_600_000,
-    lastUsedAt: input.lastMessageAt,
     lastMessageAt: input.lastMessageAt,
     name: input.name,
     titleIsManual: true,

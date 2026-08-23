@@ -1970,7 +1970,6 @@ function makeHeader(id: string): SessionHeader {
     workspaceRoot: '/tmp/work',
     cwd: '/tmp/work',
     createdAt: ts,
-    lastUsedAt: ts,
     name: 'Session',
     titleIsManual: true,
     isFlagged: false,

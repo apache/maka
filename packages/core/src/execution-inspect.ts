@@ -103,7 +103,6 @@ export interface SessionInspectSummary {
   name: string;
   status: SessionHeader['status'];
   createdAt: number;
-  lastUsedAt: number;
   lastMessageAt?: number;
   isArchived: boolean;
   parentSessionId?: string;
@@ -326,7 +325,7 @@ function isSessionSummary(value: unknown): value is SessionInspectSummary {
   return (
     hasShape(
       value,
-      ['sessionId', 'name', 'status', 'createdAt', 'lastUsedAt', 'isArchived'],
+      ['sessionId', 'name', 'status', 'createdAt', 'isArchived'],
       [
         'lastMessageAt',
         'parentSessionId',
@@ -342,7 +341,6 @@ function isSessionSummary(value: unknown): value is SessionInspectSummary {
     typeof value.name === 'string' &&
     SESSION_STATUSES.includes(value.status as (typeof SESSION_STATUSES)[number]) &&
     isCount(value.createdAt) &&
-    isCount(value.lastUsedAt) &&
     isOptionalCount(value.lastMessageAt) &&
     typeof value.isArchived === 'boolean' &&
     [

@@ -212,7 +212,6 @@ export interface SessionHeader {
 
   // Lifecycle timestamps
   createdAt: number;
-  lastUsedAt: number;
   lastMessageAt?: number;
 
   // User metadata

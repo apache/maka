@@ -138,7 +138,6 @@ export function createAppShellChatActions(deps: {
    *  looking at". Both halves matter — the section AND the session id — which
    *  is why the send path asks it instead of comparing the id itself. */
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
-  markSessionReadLocally: (sessionId: string, readMessages: readonly StoredMessage[]) => void;
   messageRetryPendingRef: RefBox<Set<string>>;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   setActiveId: (sessionId: string | undefined) => void;
@@ -188,7 +187,6 @@ export function createAppShellChatActions(deps: {
     clearPendingSessionAction,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
-    markSessionReadLocally,
     messageRetryPendingRef,
     refreshSessions,
     setActiveId,
@@ -688,7 +686,6 @@ export function createAppShellChatActions(deps: {
       const snapshot = range.snapshot();
       if (snapshot.sessionId !== sessionId) return false;
       const next = [...snapshot.messages];
-      markSessionReadLocally(sessionId, next);
       setMessages(next);
       setMessageLoadErrorBySession((current) => {
         if (!current[sessionId]) return current;

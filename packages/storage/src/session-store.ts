@@ -1034,7 +1034,6 @@ function buildSessionHeader(
     cwd: input.cwd,
     ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
     createdAt: now,
-    lastUsedAt: now,
     name,
     titleIsManual: false,
     isFlagged: false,
@@ -1096,7 +1095,6 @@ export function normalizeSessionHeader(
       header.projectId === null ||
       (typeof header.projectId === 'string' && header.projectId.length > 0)) &&
     isFiniteNumber(header.createdAt) &&
-    isFiniteNumber(header.lastUsedAt) &&
     (header.lastMessageAt === undefined || isFiniteNumber(header.lastMessageAt)) &&
     typeof header.name === 'string' &&
     typeof header.titleIsManual === 'boolean' &&

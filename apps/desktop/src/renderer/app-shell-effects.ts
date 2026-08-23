@@ -411,7 +411,6 @@ export function useActiveSessionEvents(options: {
   activeId: string | undefined;
   activeIdRef: RefBox<string | undefined>;
   handleEvent: (sessionId: string, event: SessionEvent) => void;
-  markSessionReadLocally: (sessionId: string, readMessages: readonly StoredMessage[]) => void;
   beginObservationSeed?: (sessionId: string) => number;
   completeObservationSeed?: (sessionId: string, generation?: number) => void;
   setMessageLoadErrorBySession: (updater: (current: Record<string, string>) => Record<string, string>) => void;
@@ -430,7 +429,6 @@ export function useActiveSessionEvents(options: {
     if (!isDisposed() && options.activeIdRef.current === sessionId) {
       const snapshot = store.snapshot();
       const next = [...snapshot.messages];
-      options.markSessionReadLocally(sessionId, next);
       options.setMessages(next);
       if (snapshot.ready) options.setMessageLoadPending(false);
     }
