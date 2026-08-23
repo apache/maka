@@ -25,6 +25,7 @@ export const RUNTIME_HOST_SERVICE_LOG_MAX_BYTES = 48 * 1024;
 export const RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES = 128;
 export const RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES = 2 * 1024;
 export const RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY = 'access-management-v1';
+export const RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY = 'process-lifetime-lock-v1';
 export const RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV =
   'MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST';
 
@@ -53,7 +54,10 @@ const NON_RETIRE_SERVICE_ACTIONS = [
 ] as const;
 const UPDATE_PHASES = ['checking', 'staging', 'retiring', 'replacing'] as const;
 const SERVICE_STATES = ['not_installed', 'stopped', 'starting', 'running', 'failed'] as const;
-const OPERATOR_CAPABILITIES = [RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY] as const;
+const OPERATOR_CAPABILITIES = [
+  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
+] as const;
 
 const boundedString = (maxBytes: number) =>
   z.string().refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);

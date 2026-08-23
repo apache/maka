@@ -36,6 +36,8 @@ import {
   decodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
+  type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import { RUNTIME_HOST_RETIREMENT_EXIT_CODE } from '@maka/runtime-host/server';
@@ -835,6 +837,13 @@ describe('managed Runtime Host service', () => {
     assert.deepEqual(frame.operatorCapabilities, ['access-management-v1']);
     assert.equal(frame.service.stateRoot, '/srv/maka');
     assert.doesNotMatch(JSON.stringify(frame), /secret/u);
+
+    process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] =
+      RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY;
+    const lockFrame = decodeRuntimeHostServiceManagementFrame(await run());
+    assert.deepEqual(lockFrame?.kind === 'result' ? lockFrame.operatorCapabilities : undefined, [
+      'process-lifetime-lock-v1',
+    ]);
   });
 
   it('reads service logs when an interrupted install left no config', async (t) => {
@@ -1284,7 +1293,6 @@ describe('managed Runtime Host service', () => {
       await readFile(resolveRuntimeHostManagedServiceConfigPath(clientDataRoot), 'utf8'),
     ) as RuntimeHostManagedServiceConfig;
     assert.equal(config.launch.cliPath, await realpath(targetCli));
-    assert.equal(config.operatorLockProtocol, 'process-lifetime-v1');
   });
 
   it('updates through the current operator and preserves exact update outcomes', async () => {
@@ -1313,7 +1321,6 @@ describe('managed Runtime Host service', () => {
           config: {
             schemaVersion: 1,
             managedDeploymentRoot: deploymentRoot,
-            ...(operatorLockProtocol ? { operatorLockProtocol } : {}),
             rootPath: expectedTarget.rootPath,
             projectDirectoryRoots: [],
             websocket: { host: '127.0.0.1', port: 7400, path: '/runtime-host' },
@@ -1329,7 +1336,7 @@ describe('managed Runtime Host service', () => {
     let observedState: 'running' | 'stopped' = 'running';
     let readyChecks = 0;
     let readyFailure = false;
-    let operatorLockProtocol: RuntimeHostManagedServiceConfig['operatorLockProtocol'];
+    let operatorSupportsProcessLifetimeLock = false;
     let legacyLeaseCalls = 0;
     let operatorFailure: Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> | undefined;
     let insideLifecycle = false;
@@ -1371,6 +1378,7 @@ describe('managed Runtime Host service', () => {
         activate: async () => {
           assert.equal(insideLifecycle, true);
           order.push('activate');
+          operatorSupportsProcessLifetimeLock = true;
         },
         cleanup: async () => {
           order.push('cleanup');
@@ -1379,9 +1387,45 @@ describe('managed Runtime Host service', () => {
           order.push('rollback');
         },
       }),
-      runOperator: async (_operatorPath: string, args: readonly string[]) => {
+      runOperator: async (
+        _operatorPath: string,
+        args: readonly string[],
+        invocation?: {
+          readonly inheritedFds?: readonly number[];
+          readonly capabilityRequest?: RuntimeHostOperatorCapability;
+        },
+      ) => {
         const action = args[0];
-        assert.ok(action === 'retire' || action === 'stop');
+        assert.ok(action === 'status' || action === 'retire' || action === 'stop');
+        if (action === 'status') {
+          assert.equal(
+            invocation?.capabilityRequest,
+            RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
+          );
+          return {
+            schemaVersion: 1 as const,
+            kind: 'result' as const,
+            action: 'status' as const,
+            service: {
+              platform: 'linux',
+              arch: 'x64',
+              osRelease: 'test',
+              state: 'running' as const,
+              pid: 42,
+              lastExitCode: 0,
+              installedVersion: observedVersion,
+              stateRoot: expectedTarget.rootPath,
+              projectDirectoryRoots: [],
+            },
+            ...(operatorSupportsProcessLifetimeLock
+              ? {
+                  operatorCapabilities: [
+                    RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
+                  ] as RuntimeHostOperatorCapability[],
+                }
+              : {}),
+          };
+        }
         order.push(action);
         if (action === 'retire') assert.ok(args.includes('--allow-interrupt-active-tasks'));
         if (action === 'stop') {
@@ -1434,7 +1478,6 @@ describe('managed Runtime Host service', () => {
       replace: async () => {
         assert.equal(insideLifecycle, true);
         order.push('replace');
-        operatorLockProtocol = 'process-lifetime-v1';
         return service('2.0.0', 'running').service;
       },
       writeOutput: (value: string) => {

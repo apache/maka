@@ -27,6 +27,8 @@ import {
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
+  type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
 } from '@maka/runtime-host/operator';
@@ -79,10 +81,15 @@ interface RuntimeHostUpdateCliDeps {
   readonly runOperator: (
     operatorPath: string,
     args: readonly string[],
-    inheritedFds?: readonly number[],
+    invocation?: RuntimeHostOperatorInvocation,
   ) => Promise<RuntimeHostServiceManagementFrame>;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
+}
+
+interface RuntimeHostOperatorInvocation {
+  readonly inheritedFds?: readonly number[];
+  readonly capabilityRequest?: RuntimeHostOperatorCapability;
 }
 
 export async function runManagedRuntimeHostUpdateCli(
@@ -170,6 +177,17 @@ export async function runManagedRuntimeHostUpdateCli(
           }
         }
 
+        const currentOperatorPath = join(serviceConfig.managedDeploymentRoot, 'operator');
+        const currentOperatorUsesProcessLifetimeLock = status.service.active
+          ? operatorUsesProcessLifetimeLock(
+              await deps.runOperator(
+                currentOperatorPath,
+                ['status', '--framed', ...expectedTargetArgs(options.expectedTarget)],
+                { capabilityRequest: RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY },
+              ),
+            )
+          : false;
+
         emit(progress('staging', currentVersion, options.version));
         deployment = await deps.withLifecycleLock(options.clientDataRoot, () =>
           deps.prepareDeployment({
@@ -188,12 +206,11 @@ export async function runManagedRuntimeHostUpdateCli(
 
         if (status.service.active) {
           emit(progress('retiring', currentVersion, options.version));
-          const currentOperatorPath = deployment.operatorPath;
           const runCurrentOperator = (args: readonly string[]) =>
-            serviceConfig.operatorLockProtocol === 'process-lifetime-v1'
+            currentOperatorUsesProcessLifetimeLock
               ? deps.runOperator(currentOperatorPath, args)
               : deps.withLegacyOperatorLeases(options.clientDataRoot, (inheritedFds) =>
-                  deps.runOperator(currentOperatorPath, args, inheritedFds),
+                  deps.runOperator(currentOperatorPath, args, { inheritedFds }),
                 );
           let retirement = await runCurrentOperator([
             'retire',
@@ -411,6 +428,22 @@ function activeTasksRetirementFrame(
   };
 }
 
+function operatorUsesProcessLifetimeLock(frame: RuntimeHostServiceManagementFrame): boolean {
+  if (frame.kind === 'error') {
+    throw new RuntimeHostServiceManagerError(
+      'service_manager_operation_failed',
+      `The current Runtime Host operator could not report its lock protocol: ${frame.error.message}`,
+    );
+  }
+  if (frame.action !== 'status') {
+    throw new Error('The current Runtime Host operator returned an invalid capability result');
+  }
+  return (
+    frame.operatorCapabilities?.includes(RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY) ===
+    true
+  );
+}
+
 function operatorCapabilities(): {
   readonly operatorCapabilities?: (typeof RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)[];
 } {
@@ -423,13 +456,20 @@ function operatorCapabilities(): {
 async function runManagedRuntimeHostOperator(
   operatorPath: string,
   args: readonly string[],
-  inheritedFds: readonly number[] = [],
+  invocation: RuntimeHostOperatorInvocation = {},
 ): Promise<RuntimeHostServiceManagementFrame> {
   return new Promise((resolve, reject) => {
+    const inheritedFds = invocation.inheritedFds ?? [];
     const child = spawn(operatorPath, [...args], {
       // A detached legacy operator keeps the inherited advisory leases alive if
       // this updater is interrupted, so an exact retry never steals active work.
       detached: process.platform !== 'win32',
+      env: invocation.capabilityRequest
+        ? {
+            ...process.env,
+            [RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV]: invocation.capabilityRequest,
+          }
+        : process.env,
       stdio: ['ignore', 'pipe', 'pipe', ...inheritedFds],
       windowsHide: true,
     });

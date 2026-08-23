@@ -23,8 +23,10 @@ import {
   encodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
+  type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceSummary,
 } from '@maka/runtime-host/operator';
@@ -174,20 +176,23 @@ function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServi
     schemaVersion: 1,
     kind: 'result',
     service,
-    ...(process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] ===
-    RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY
-      ? {
-          operatorCapabilities: [
-            RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
-          ] as (typeof RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)[],
-        }
-      : {}),
+    ...requestedOperatorCapabilities(),
     ...(result.retainedStateRoot ? { retainedStateRoot: result.retainedStateRoot } : {}),
     ...(result.logs !== undefined ? { logs: result.logs } : {}),
   } as const;
   return result.action === 'retire'
     ? { ...common, action: result.action, retirement: { ...result.retirement } }
     : { ...common, action: result.action };
+}
+
+function requestedOperatorCapabilities(): {
+  readonly operatorCapabilities?: RuntimeHostOperatorCapability[];
+} {
+  const requested = process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV];
+  return requested === RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY ||
+    requested === RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY
+    ? { operatorCapabilities: [requested] }
+    : {};
 }
 
 export function runtimeHostServiceSummary(
