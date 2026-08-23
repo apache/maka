@@ -940,8 +940,10 @@
      composer, and onboarding hero share so prose + controls line up at one
      measure. Previously a local token on .mainColumn with a 680px fallback
      at every call site; promoted to :root so the token is canonical and the
-     fallbacks are redundant. */
-  --maka-chat-measure: 680px;
+     fallbacks are redundant. The wider desktop measure keeps source code and
+     other horizontal evidence readable without making narrow windows overflow;
+     every consumer already caps itself at the available inline size. */
+  --maka-chat-measure: 880px;
 
   /* === settings ==========================================================
      One right-edge cap for a settings row's end slot — the read-only value
