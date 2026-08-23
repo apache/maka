@@ -443,15 +443,32 @@ export interface ToolCallSafetyProof {
 }
 
 /**
+ * One tool call's positive proof of an atomic, genuinely zero-argument
+ * delivery: its own `tool-input-start`/`tool-input-end` lifecycle matched
+ * (same id, no contradictory evidence), it received zero raw
+ * `tool-input-delta` chunks, and the request terminated safely — see
+ * `tool-call-execution-guard.ts`. There is no `value` here (unlike
+ * `ToolCallSafetyProof`): zero raw bytes streamed for this id means there is
+ * nothing for the guard to have parsed, so a caller trusts the AI SDK's own
+ * resolved `tool-call` input for this specific id once the name matches —
+ * never a sibling's or the whole request's.
+ */
+export interface ToolCallAtomicProof {
+  readonly name: string;
+}
+
+/**
  * The full per-physical-request result of `tool-call-execution-guard.ts`'s
- * raw-byte verification. See that file's header for the complete contract
- * (`proofs` coverage, the `hadRawArgumentEvidence` atomic-fallback rule, and
- * why a missing proof for a call with sibling raw evidence must fail closed
- * rather than fall back).
+ * raw-byte verification. See that file's header for the complete contract:
+ * `proofs` (non-empty raw-byte proofs), `atomicProofs` (per-id zero-delta
+ * proofs), and why a call with neither — falling back to
+ * `hadRawArgumentEvidence` being false for the whole request plus a safe
+ * step outcome — is the only remaining, narrowly-scoped fallback.
  */
 export interface ToolCallExecutionSafety {
   readonly hadRawArgumentEvidence: boolean;
   readonly proofs: ReadonlyMap<string, ToolCallSafetyProof>;
+  readonly atomicProofs: ReadonlyMap<string, ToolCallAtomicProof>;
 }
 
 /** One physical provider request: live output plus one authoritative settlement. */

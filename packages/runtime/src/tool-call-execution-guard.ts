@@ -44,33 +44,70 @@
  * and parses only the captured raw JSON. The resulting raw-stream tool name
  * and parsed value are the execution authority for that call.
  *
- * Some provider-facing chunk sequences may contain `tool-input-start`
- * immediately followed by `tool-input-end` with zero `tool-input-delta`
- * chunks, with the actual arguments present only in the trailing `tool-call`
- * projection. The focused guard and production-path regression suites exercise
- * that zero-delta/atomic shape directly (`tool-call-execution-guard.test.ts`,
- * `length-cutoff-tool-execution-repro.test.ts`, and `ai-sdk-backend.test.ts`).
- * For this tracker, zero raw deltas therefore means there is no raw-byte
- * completeness proof for that id, not that a partial byte stream was observed.
+ * Some provider-facing chunk sequences (the installed Google adapter's among
+ * them) may contain `tool-input-start` immediately followed by
+ * `tool-input-end` with zero `tool-input-delta` chunks, for a tool that
+ * genuinely takes no arguments — with the (empty) arguments present only in
+ * the trailing `tool-call` projection. That shape is legitimate on its own
+ * and, per call, indistinguishable from a truncated/mismatched stream only
+ * in the absence of its own start/end lifecycle — which this tracker does
+ * observe. The focused guard and production-path regression suites exercise
+ * it directly (`tool-call-execution-guard.test.ts`,
+ * `length-cutoff-tool-execution-repro.test.ts`, and `ai-sdk-backend.test.ts`),
+ * including the case where an argument-bearing sibling call shares the same
+ * physical request.
  *
- * `resolveToolCallSafety` represents only positive proof: `proofs` holds an
- * entry for an id if and only if every condition below held — matching
- * start, non-empty raw bytes, matching end, unpoisoned ordering, a raw-stream
- * tool name, JSON that parses from exactly those bytes, and an
- * execution-safe terminal classification. There is no separate
- * rejected/retry state to distinguish from "never had raw evidence" — a call
- * whose raw bytes streamed but failed any condition and a call with no raw
- * bytes at all both simply have no entry, because a caller can never treat
- * them differently anyway (see the next paragraph).
+ * `resolveToolCallSafety` represents only positive proof, in two disjoint
+ * maps:
  *
- * A caller (see `ai-sdk-backend.ts`) may only interpret a missing proof as
- * "genuinely atomic; use the step-level fallback" when
- * `hadRawArgumentEvidence` is false for the WHOLE physical request. The
- * moment any sibling call streamed real bytes, another call's missing proof
- * is indistinguishable from an id mismatch between this tracker's raw-chunk
- * view and the SDK's resolved `tool-call`; that case must fail closed. A
- * call with a present proof gets the raw-stream name/value as execution
- * authority — never the SDK's post-hoc projection of the same call.
+ * - `proofs` holds an entry for an id if and only if every condition below
+ *   held — matching start, non-empty raw bytes, matching end, unpoisoned
+ *   ordering, a raw-stream tool name, JSON that parses from exactly those
+ *   bytes, and an execution-safe terminal classification. Its `value` is the
+ *   guard's own parsed argument value.
+ * - `atomicProofs` holds an entry for an id whose OWN lifecycle positively
+ *   proved an atomic, genuinely zero-argument delivery: matching start,
+ *   matching end, unpoisoned ordering, a raw-stream tool name, zero raw
+ *   `tool-input-delta` chunks for that id specifically, and an
+ *   execution-safe terminal classification. It carries no `value` — there
+ *   were no raw bytes to parse — only the name the tracker itself observed,
+ *   for the caller's identity check.
+ *
+ * An id can appear in at most one of the two maps (an id that received any
+ * raw delta bytes is only ever eligible for `proofs`, never `atomicProofs`,
+ * even if those bytes failed to produce a proof). An id in neither map had
+ * no positive per-id evidence at all — a mismatched, out-of-order, or wholly
+ * unobserved lifecycle — and a caller must treat that the same as a call
+ * that never streamed anything: there is no separate rejected/retry state to
+ * distinguish "evidence existed but failed a condition" from "no evidence at
+ * all", because a caller can never act on that difference anyway.
+ *
+ * A caller (see `ai-sdk-backend.ts`) resolves a call with neither a `proofs`
+ * nor an `atomicProofs` entry by falling back to "genuinely atomic; use the
+ * step-level fallback" ONLY when `hadRawArgumentEvidence` is false for the
+ * WHOLE physical request — i.e. this tracker observed no `tool-input-delta`
+ * bytes anywhere in the request, meaning either every call in it is
+ * legitimately atomic or the provider's protocol never emits granular
+ * per-call lifecycle chunks at all. The moment any call anywhere in the
+ * request streamed real bytes, a THIRD call's absence from both maps is
+ * indistinguishable from an id mismatch between this tracker's raw-chunk
+ * view and the SDK's resolved `tool-call`; that case must still fail closed.
+ * This whole-request fallback is deliberately the last resort: a call with a
+ * `proofs` or `atomicProofs` entry of its own never needs it, which is
+ * exactly what fixed the case a purely request-global rule got wrong — an
+ * argument-bearing call and a legitimate zero-argument sibling in the same
+ * request, each proved from its own lifecycle, neither one's fate decided by
+ * the other's.
+ *
+ * A call with a present `proofs` entry gets the raw-stream name/value as
+ * execution authority. A call with a present `atomicProofs` entry gets the
+ * raw-stream name as an identity check only — its value comes from the
+ * SDK's own resolved `tool-call` input, since zero bytes streamed for it
+ * leaves nothing else to derive a value from; that AI SDK projection is
+ * trustworthy specifically because this id's own raw lifecycle proves
+ * nothing was ever truncated or substituted for it. Neither case ever
+ * defers to the SDK's post-hoc projection for a DIFFERENT id, and neither
+ * lets one call's raw evidence stand in for another's.
  *
  * Concurrency note: nothing here is shared across requests or stored beyond
  * one `ModelAdapter.startStream` result. `createToolCallSafetyTracker()` owns
@@ -79,15 +116,17 @@
  * observe or resolve each other's evidence.
  *
  * `isSafeToolExecutionStepOutcome` below is the fallback used for a call with
- * no raw-byte evidence either way. It is deliberately narrower than
- * `settleModelStepOutcome`'s own `kind === 'completed'` — that classification
- * also covers `"length"`, which is correct for that function's bookkeeping
- * purpose but is not an execution-safe outcome. This helper exists only for
- * the tool-execution gate; it does not change `settleModelStepOutcome` itself
- * or anything else that reads `ModelStepOutcome`.
+ * no per-id evidence at all (see the whole-request fallback above). It is
+ * deliberately narrower than `settleModelStepOutcome`'s own
+ * `kind === 'completed'` — that classification also covers `"length"`,
+ * which is correct for that function's bookkeeping purpose but is not an
+ * execution-safe outcome. This helper exists only for the tool-execution
+ * gate; it does not change `settleModelStepOutcome` itself or anything else
+ * that reads `ModelStepOutcome`.
  */
 import type {
   ModelStepOutcome,
+  ToolCallAtomicProof,
   ToolCallExecutionSafety,
   ToolCallSafetyProof,
 } from './model-protocol.js';
@@ -264,15 +303,13 @@ function isTerminalSafe(terminal: TerminalState, providerReason: string | undefi
 }
 
 /**
- * Resolves every call that actually streamed raw bytes into a positive proof
- * or no entry at all. A proof requires start + non-empty raw bytes + end + a
- * raw-stream tool name + valid JSON decoded from exactly those bytes + an
- * execution-safe terminal classification (see `isTerminalSafe`); missing,
- * contradictory, or out-of-order evidence simply gets no proof. `meta.providerReason`
- * is the same finish reason `ModelAdapter.startStream` resolves for step
- * settlement (`chunkFinishReason`, model-adapter.ts) — passing it lets an
- * ambiguous local classification agree with the stronger, already-computed
- * answer instead of the two diverging for the same physical request.
+ * Resolves every call this tracker has per-id evidence for into a positive
+ * proof (raw-byte or atomic) or no entry at all — see the module doc comment
+ * for the full `proofs`/`atomicProofs` contract. `meta.providerReason` is the
+ * same finish reason `ModelAdapter.startStream` resolves for step settlement
+ * (`chunkFinishReason`, model-adapter.ts) — passing it lets an ambiguous
+ * local classification agree with the stronger, already-computed answer
+ * instead of the two diverging for the same physical request.
  */
 export function resolveToolCallSafety(
   tracker: ToolCallSafetyTracker,
@@ -303,9 +340,32 @@ export function resolveToolCallSafety(
     }
   }
 
+  // A call with its own matching start + end, zero raw delta bytes, and no
+  // contradictory evidence has a complete, unambiguous lifecycle even though
+  // it never carries argument bytes to parse — this is the shape the
+  // installed Google adapter legitimately produces for a zero-argument tool
+  // call. `idsWithRawDelta` and this loop are disjoint by construction: an id
+  // that received any delta bytes is only ever eligible for `proofs` above,
+  // even when those bytes failed to produce one.
+  const atomicProofs = new Map<string, ToolCallAtomicProof>();
+  for (const [id, state] of tracker.calls) {
+    if (tracker.idsWithRawDelta.has(id)) continue;
+    if (
+      !terminalSafe ||
+      !state.started ||
+      !state.ended ||
+      state.invalid ||
+      state.name === undefined
+    ) {
+      continue;
+    }
+    atomicProofs.set(id, { name: state.name });
+  }
+
   tracker.resolved = {
     hadRawArgumentEvidence: tracker.idsWithRawDelta.size > 0,
     proofs,
+    atomicProofs,
   };
   return tracker.resolved;
 }

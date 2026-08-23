@@ -278,6 +278,132 @@ describe('tool-call-execution-guard', () => {
   });
 });
 
+// The installed Google adapter can legitimately deliver a zero-argument tool
+// call as start -> end -> final-call with ZERO tool-input-delta chunks. These
+// cases prove that shape gets its own per-id positive proof, and that the
+// proof requires the same completeness/identity discipline `proofs` does —
+// never "no deltas" alone, and never contamination from a sibling's evidence.
+describe('atomicProofs (per-call zero-argument evidence)', () => {
+  function pushAtomicCall(
+    tracker: ReturnType<typeof createToolCallSafetyTracker>,
+    id = 'call-1',
+    toolName = 'ListTodos',
+  ): void {
+    observeRawChunk(tracker, { type: 'tool-input-start', id, toolName });
+    observeRawChunk(tracker, { type: 'tool-input-end', id });
+  }
+
+  test('a genuinely atomic zero-argument call gets its own positive proof', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushAtomicCall(tracker);
+    observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
+
+    const safety = resolveToolCallSafety(tracker);
+    assert.deepEqual(safety.atomicProofs.get('call-1'), { name: 'ListTodos' });
+    assert.equal(safety.proofs.has('call-1'), false);
+  });
+
+  test('an argument-bearing sibling no longer poisons a legitimate zero-argument call', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushCompleteCall(tracker, 'call-args', { path: 'a.md' });
+    pushAtomicCall(tracker, 'call-zero', 'ListTodos');
+    observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
+
+    const safety = resolveToolCallSafety(tracker);
+    // Sibling state is exactly as before: request-global evidence is true,
+    // and the zero-arg call still has no entry in `proofs` (it never
+    // streamed argument bytes) — but it now has its own atomic proof, which
+    // is what a caller must consult before falling back to
+    // `hadRawArgumentEvidence`.
+    assert.equal(safety.hadRawArgumentEvidence, true);
+    assert.deepEqual(safety.proofs.get('call-args'), {
+      name: 'Write',
+      value: { path: 'a.md' },
+    });
+    assert.equal(safety.proofs.has('call-zero'), false);
+    assert.deepEqual(safety.atomicProofs.get('call-zero'), { name: 'ListTodos' });
+  });
+
+  test('an id with any raw delta is never atomic-eligible, even if the bytes never proved', () => {
+    const tracker = createToolCallSafetyTracker();
+    observeRawChunk(tracker, { type: 'tool-input-start', id: 'call-1', toolName: 'Write' });
+    observeRawChunk(tracker, { type: 'tool-input-delta', id: 'call-1', delta: '{"path":' });
+    observeRawChunk(tracker, { type: 'tool-input-end', id: 'call-1' });
+    observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
+
+    const safety = resolveToolCallSafety(tracker);
+    assert.equal(safety.proofs.has('call-1'), false); // malformed JSON: no raw-byte proof either.
+    assert.equal(safety.atomicProofs.has('call-1'), false);
+  });
+
+  test('zero deltas but missing start fails closed', () => {
+    const tracker = createToolCallSafetyTracker();
+    observeRawChunk(tracker, { type: 'tool-input-end', id: 'call-1' });
+    observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
+    assert.equal(resolveToolCallSafety(tracker).atomicProofs.has('call-1'), false);
+  });
+
+  test('zero deltas but missing end fails closed', () => {
+    const tracker = createToolCallSafetyTracker();
+    observeRawChunk(tracker, { type: 'tool-input-start', id: 'call-1', toolName: 'ListTodos' });
+    observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
+    assert.equal(resolveToolCallSafety(tracker).atomicProofs.has('call-1'), false);
+  });
+
+  test('duplicate start with zero deltas fails closed', () => {
+    const tracker = createToolCallSafetyTracker();
+    observeRawChunk(tracker, { type: 'tool-input-start', id: 'call-1', toolName: 'ListTodos' });
+    observeRawChunk(tracker, { type: 'tool-input-start', id: 'call-1', toolName: 'ListTodos' });
+    observeRawChunk(tracker, { type: 'tool-input-end', id: 'call-1' });
+    observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
+    assert.equal(resolveToolCallSafety(tracker).atomicProofs.has('call-1'), false);
+  });
+
+  test('end observed for a different id than start leaves neither id atomic-proved', () => {
+    const tracker = createToolCallSafetyTracker();
+    observeRawChunk(tracker, { type: 'tool-input-start', id: 'call-a', toolName: 'ListTodos' });
+    observeRawChunk(tracker, { type: 'tool-input-end', id: 'call-b' });
+    observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
+
+    const safety = resolveToolCallSafety(tracker);
+    assert.equal(safety.atomicProofs.has('call-a'), false); // started, never ended.
+    assert.equal(safety.atomicProofs.has('call-b'), false); // ended without starting: invalid.
+  });
+
+  test('tool evidence after a terminal event poisons an otherwise-atomic call too', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushAtomicCall(tracker);
+    observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
+    observeRawChunk(tracker, { type: 'tool-input-start', id: 'call-2', toolName: 'ListTodos' });
+    observeRawChunk(tracker, { type: 'tool-input-end', id: 'call-2' });
+
+    const safety = resolveToolCallSafety(tracker);
+    assert.equal(safety.atomicProofs.has('call-1'), false);
+    assert.equal(safety.atomicProofs.has('call-2'), false);
+  });
+
+  for (const finishReason of ['length', 'content-filter', 'error', 'other', 'unknown']) {
+    test(`${finishReason} never authorizes an atomic call either`, () => {
+      const tracker = createToolCallSafetyTracker();
+      pushAtomicCall(tracker);
+      observeRawChunk(tracker, { type: 'finish', finishReason });
+      assert.equal(resolveToolCallSafety(tracker).atomicProofs.has('call-1'), false);
+    });
+  }
+
+  test('an ambiguous finish reason is rescued by providerReason for an atomic call too', () => {
+    const tracker = createToolCallSafetyTracker();
+    pushAtomicCall(tracker);
+    observeRawChunk(tracker, { type: 'finish', finishReason: { unified: 'other', raw: 'stop' } });
+    assert.deepEqual(
+      resolveToolCallSafety(tracker, { providerReason: 'stop' }).atomicProofs.get('call-1'),
+      {
+        name: 'ListTodos',
+      },
+    );
+  });
+});
+
 describe('isSafeToolExecutionStepOutcome', () => {
   const request = {};
   const failure: ModelFailure = {

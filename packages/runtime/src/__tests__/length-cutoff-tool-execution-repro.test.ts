@@ -500,9 +500,18 @@ describe('tool execution safety (real production path)', () => {
     assert.equal(executions, 0);
   });
 
-  test('an atomic sibling is blocked once the same request contains any raw argument evidence', async () => {
+  // This is the installed Google adapter's real mixed-delivery shape: an
+  // argument-bearing tool call streams start/delta.../end/final-call, while a
+  // genuinely zero-argument sibling in the SAME physical request legitimately
+  // streams start/end/final-call with ZERO tool-input-delta chunks. Each
+  // call's eligibility must come only from its own lifecycle — the
+  // argument-bearing sibling having raw evidence must not poison the
+  // zero-argument sibling's own, independently-proved atomic completion.
+  test('a legitimate zero-argument sibling executes from its own atomic proof, isolated from an argument-bearing sibling', async () => {
     let writeExecutions = 0;
     let notifyExecutions = 0;
+    let writeReceived: unknown;
+    let notifyReceived: unknown;
     const writeInput = { path: 'notes.md', content: 'hello' };
     const notifyInput = { message: 'done' };
     const model = twoStepModel([
@@ -527,6 +536,102 @@ describe('tool execution safety (real production path)', () => {
         toolCallId: 'call-atomic',
         toolName: 'Notify',
         input: JSON.stringify(notifyInput),
+      },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+    await runModel(model, [
+      writeTool((input) => {
+        writeExecutions += 1;
+        writeReceived = input;
+      }),
+      notifyTool((input) => {
+        notifyExecutions += 1;
+        notifyReceived = input;
+      }),
+    ]);
+    assert.equal(writeExecutions, 1);
+    assert.equal(notifyExecutions, 1);
+    assert.deepEqual(writeReceived, writeInput);
+    assert.deepEqual(notifyReceived, notifyInput);
+  });
+
+  test('a zero-delta sibling whose final name disagrees with its own observed start is still rejected', async () => {
+    let writeExecutions = 0;
+    let notifyExecutions = 0;
+    let shellExecutions = 0;
+    const writeInput = { path: 'notes.md', content: 'hello' };
+    const model = twoStepModel([
+      { type: 'stream-start', warnings: [] },
+      { type: 'tool-input-start', id: 'call-incremental', toolName: 'Write' },
+      { type: 'tool-input-delta', id: 'call-incremental', delta: JSON.stringify(writeInput) },
+      { type: 'tool-input-end', id: 'call-incremental' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-incremental',
+        toolName: 'Write',
+        input: JSON.stringify(writeInput),
+      },
+      // Observed as "Notify" with zero deltas, but the AI SDK resolves the
+      // same id under a DIFFERENT tool name. The guard's own observed name
+      // for this id must still win — exactly like the raw-byte proof case
+      // below — never the SDK's post-hoc projection under either name.
+      { type: 'tool-input-start', id: 'call-atomic', toolName: 'Notify' },
+      { type: 'tool-input-end', id: 'call-atomic' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-atomic',
+        toolName: 'Shell',
+        input: JSON.stringify({ command: 'rm -rf /' }),
+      },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+    await runModel(model, [
+      writeTool(() => {
+        writeExecutions += 1;
+      }),
+      notifyTool(() => {
+        notifyExecutions += 1;
+      }),
+      shellTool(() => {
+        shellExecutions += 1;
+      }),
+    ]).catch(() => []);
+    assert.equal(writeExecutions, 1);
+    assert.equal(notifyExecutions, 0);
+    assert.equal(shellExecutions, 0);
+  });
+
+  test('a zero-delta sibling missing its own tool-input-end is still rejected, even next to a proved sibling', async () => {
+    let writeExecutions = 0;
+    let notifyExecutions = 0;
+    const writeInput = { path: 'notes.md', content: 'hello' };
+    const model = twoStepModel([
+      { type: 'stream-start', warnings: [] },
+      { type: 'tool-input-start', id: 'call-incremental', toolName: 'Write' },
+      { type: 'tool-input-delta', id: 'call-incremental', delta: JSON.stringify(writeInput) },
+      { type: 'tool-input-end', id: 'call-incremental' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-incremental',
+        toolName: 'Write',
+        input: JSON.stringify(writeInput),
+      },
+      // No tool-input-end for call-atomic at all: an incomplete lifecycle,
+      // not a proof of atomicity.
+      { type: 'tool-input-start', id: 'call-atomic', toolName: 'Notify' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-atomic',
+        toolName: 'Notify',
+        input: JSON.stringify({ message: 'done' }),
       },
       {
         type: 'finish',
@@ -594,6 +699,60 @@ describe('tool execution safety (real production path)', () => {
     ]);
     assert.equal(executions, 1);
     assert.deepEqual(receivedInput, { path: 'safe.md', content: 'hello' });
+  });
+
+  // P1: the schema's own output (defaults filled in) must reach `impl`, and
+  // it must be derived from the guard's raw-proved value, never the SDK's
+  // divergent projected input — the two security properties compose.
+  test('a schema default is applied on top of the raw-proved value, never the divergent SDK projection', async () => {
+    let receivedInput: unknown;
+    let executions = 0;
+    const model = twoStepModel(
+      toolCallChunks(
+        'incremental',
+        { unified: 'stop', raw: 'stop' },
+        {
+          rawInput: { path: 'safe.md' },
+          projectedInput: { path: 'evil.md', content: 'untrusted' },
+        },
+      ),
+    );
+    const tool: MakaTool = {
+      name: 'Write',
+      description: 'Write file contents',
+      parameters: z.object({
+        path: z.string(),
+        content: z.string().default('placeholder'),
+      }),
+      impl: async (input) => {
+        executions += 1;
+        receivedInput = input;
+        return { ok: true };
+      },
+    };
+    await runModel(model, [tool]);
+    assert.equal(executions, 1);
+    assert.deepEqual(receivedInput, { path: 'safe.md', content: 'placeholder' });
+  });
+
+  // P1 CASE E: structurally valid JSON that the tool's own schema rejects
+  // (a required field is missing) must never reach `impl`, through the full
+  // production dispatch chain — not just at the ToolRuntime unit level.
+  test('raw-proved arguments that fail the declared schema execute zero times', async () => {
+    let executions = 0;
+    const model = twoStepModel(
+      toolCallChunks(
+        'incremental',
+        { unified: 'stop', raw: 'stop' },
+        { rawInput: { path: 'notes.md' } },
+      ),
+    );
+    await runModel(model, [
+      writeTool(() => {
+        executions += 1;
+      }),
+    ]).catch(() => []);
+    assert.equal(executions, 0);
   });
 
   test('matching id/name/value executes exactly once with the proved object', async () => {
