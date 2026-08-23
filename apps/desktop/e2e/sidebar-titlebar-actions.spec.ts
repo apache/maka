@@ -19,10 +19,13 @@
 
 import { expect, test } from './fixtures';
 
-test('search and sidebar controls align to the sidebar right edge', async ({ window }) => {
+test('expanded sidebar chrome follows Astryx toolbar geometry', async ({ window }) => {
   const sidebar = window.getByRole('navigation', { name: '任务列表' });
   const actions = window.locator('[data-maka-contract="shell-topbar-rail"]');
+  const expandSidebar = window.getByRole('button', { name: '展开侧边栏' });
 
+  if (await expandSidebar.isVisible()) await expandSidebar.click();
+  await expect(window.getByRole('button', { name: '收起侧边栏' })).toBeVisible();
   await expect(sidebar).toBeVisible();
   await expect(actions).toBeVisible();
 
@@ -34,4 +37,5 @@ test('search and sidebar controls align to the sidebar right edge', async ({ win
   const trailingInset = sidebarBox!.x + sidebarBox!.width - (actionsBox!.x + actionsBox!.width);
   expect(trailingInset).toBeGreaterThanOrEqual(0);
   expect(trailingInset).toBeLessThanOrEqual(16);
+  await expect(actions).toHaveCSS('column-gap', '4px');
 });
