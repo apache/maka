@@ -23,6 +23,7 @@ import {
   buildHealthSnapshot,
   healthSignalFromCapability,
   healthSignalFromConnection,
+  workspaceHasDefaultModelTarget,
   healthSignalFromConnectionRuntime,
 } from '../health.js';
 import type { CapabilitySnapshot } from '../capabilities.js';
@@ -96,6 +97,25 @@ describe('HealthSignal contract', () => {
       { workspaceHasDefaultTarget: true },
     );
     expect(configured.status).toBe('ok');
+  });
+
+  test('a disabled default holder does not count as a workspace default', () => {
+    // Disabling the connection that holds the default target (ordinary UI,
+    // nothing clears defaultTarget) leaves its projected defaultModel in
+    // place. Counting it would show an all-clear health page in exactly
+    // the state where sends fail with connection_disabled.
+    const disabledHolder = connection({ enabled: false }); // defaultModel: 'glm-4.7'
+    const other = connection({ slug: 'other', defaultModel: '', enabledModelIds: ['m'] });
+    expect(workspaceHasDefaultModelTarget([disabledHolder, other])).toBe(false);
+    expect(workspaceHasDefaultModelTarget([connection({}), other])).toBe(true);
+
+    // With the holder disabled, the OTHER enabled connections escalate back
+    // to the send-blocking warning — the workspace genuinely has no default.
+    const signal = healthSignalFromConnection(other, 20, {
+      workspaceHasDefaultTarget: workspaceHasDefaultModelTarget([disabledHolder, other]),
+    });
+    expect(signal.status).toBe('warning');
+    expect(signal.blocksSend).toBe(true);
   });
 
   test('LLM runtime probe is separate from credential validation', () => {

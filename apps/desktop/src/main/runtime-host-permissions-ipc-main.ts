@@ -22,6 +22,7 @@ import {
   healthSignalFromCapability,
   healthSignalFromConnection,
   healthSignalFromConnectionRuntime,
+  workspaceHasDefaultModelTarget,
 } from '@maka/core/health';
 import { type AppSettings } from '@maka/core/settings';
 import { type LlmConnection } from '@maka/core/llm-connections';
@@ -94,10 +95,10 @@ export function registerRuntimeHostPermissionsIpc(
     // The catalog projects `defaultModel` onto exactly one connection (the
     // default target): with a default configured somewhere, other enabled
     // connections carry an empty `defaultModel` by construction, and their
-    // signal must say "not the default source", not "misconfigured".
-    const workspaceHasDefaultTarget = connections.some((connection) =>
-      Boolean(connection.defaultModel),
-    );
+    // signal must say "not the default source", not "misconfigured". The
+    // derivation (which requires the holder to be ENABLED — a disabled
+    // holder cannot serve a new chat) lives in core beside the signal.
+    const workspaceHasDefaultTarget = workspaceHasDefaultModelTarget(connections);
     const connectionSignals = (
       await Promise.all(
         connections.map(async (connection) => [

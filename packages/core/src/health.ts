@@ -111,6 +111,18 @@ export function healthSignalFromCapability(capability: CapabilitySnapshot): Heal
   };
 }
 
+/** Whether some ENABLED connection holds the workspace's default model
+ * target. The catalog projects `defaultModel` purely from the default
+ * target's connection id — a DISABLED holder keeps its projected value,
+ * but cannot serve a new chat: counting it would show an all-clear health
+ * page in exactly the state where sends fail with connection_disabled.
+ * The one derivation, exported so the caller and the tests cannot drift. */
+export function workspaceHasDefaultModelTarget(
+  connections: readonly Pick<LlmConnection, 'defaultModel' | 'enabled'>[],
+): boolean {
+  return connections.some((connection) => Boolean(connection.defaultModel) && connection.enabled);
+}
+
 export function healthSignalFromConnection(
   connection: LlmConnection,
   checkedAt: number,
