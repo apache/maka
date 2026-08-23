@@ -22,6 +22,7 @@ import test from 'node:test';
 import {
   WorkHubSurfaceRouteGate,
   submitWorkHubSurfaceInput,
+  workHubSubmissionCanCorrect,
   workHubSubmissionClearsDraft,
 } from '../../renderer/workhub-surface.js';
 import {
@@ -67,6 +68,20 @@ test('surface keeps the Composer draft when routing fails or the target is waiti
     requestId: 'discussion',
     text: '先讨论方向',
   }), true);
+});
+
+test('surface disables correction after a request was steered into existing work', () => {
+  const submission = {
+    kind: 'submitted' as const,
+    strategyId: 'wh-r2.3-session-core-evidence' as const,
+    requestId: 'steered',
+    target: { sessionId: 'payment' },
+    turnId: 'turn-existing',
+    evidence: 'explicit_target' as const,
+  };
+
+  assert.equal(workHubSubmissionCanCorrect(submission), true);
+  assert.equal(workHubSubmissionCanCorrect({ ...submission, steered: true }), false);
 });
 
 test('surface keeps clarification and successful routing in WorkHub', async () => {

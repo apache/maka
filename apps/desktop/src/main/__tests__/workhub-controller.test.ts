@@ -218,6 +218,32 @@ test('a unique longer Session name outranks a generic contained Session name', a
   assert.deepEqual(submitted, ['layout']);
 });
 
+test('a short Latin Session name does not match inside another word', async () => {
+  const submitted: string[] = [];
+  const created: string[] = [];
+  const sessions = port([
+    session('ai', { sessionName: 'AI' }),
+  ]);
+  sessions.create = async ({ name }) => {
+    created.push(name);
+    return session('parser-new', { sessionName: name });
+  };
+  sessions.submit = async (target) => {
+    submitted.push(target.sessionId);
+    return { turnId: 'turn-parser' };
+  };
+
+  const result = await createWorkHubController({ sessions }).submit({
+    requestId: 'request-parser',
+    text: '修复 repair parser 的错误',
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.equal(result.kind === 'submitted' ? result.evidence : undefined, 'new_session');
+  assert.deepEqual(created, ['修复 repair parser 的错误']);
+  assert.deepEqual(submitted, ['parser-new']);
+});
+
 test('submit asks the user when weak relevance matches more than one Session', async () => {
   const submitted: string[] = [];
   const sessions = port([
@@ -645,7 +671,7 @@ test('route correction stops the wrong Session and teaches a similar request', a
     requestId: 'request-alias',
     text: '继续白鹭点，列出验收项。',
     explicitTarget: { sessionId: 'login' },
-    correction: { from: { sessionId: 'payment' } },
+    correction: { from: { sessionId: 'payment' }, turnId: 'turn-2' },
   });
   assert.equal(corrected.kind, 'submitted');
   assert.equal(corrected.kind === 'submitted' ? corrected.evidence : undefined, 'route_correction');
@@ -665,6 +691,47 @@ test('route correction stops the wrong Session and teaches a similar request', a
   assert.deepEqual(submitted, ['payment', 'payment', 'login', 'login']);
 });
 
+test('route correction never stops a root Turn that WorkHub only steered into', async () => {
+  const stopped: string[] = [];
+  let submissionCount = 0;
+  const sessions = port([
+    session('login', { sessionName: '登录稳定性' }),
+    session('payment', { sessionName: '支付稳定性', state: 'running' }),
+  ]);
+  sessions.submit = async () => {
+    submissionCount += 1;
+    return submissionCount === 1
+      ? { turnId: 'turn-existing', steered: true }
+      : { turnId: 'turn-login' };
+  };
+  sessions.stop = async (target) => {
+    stopped.push(target.sessionId);
+  };
+  const controller = createWorkHubController({ sessions });
+
+  const wrong = await controller.submit({
+    requestId: 'request-steered',
+    text: '继续补充支付验收项',
+    explicitTarget: { sessionId: 'payment' },
+  });
+  assert.equal(wrong.kind === 'submitted' ? wrong.steered : undefined, true);
+
+  const correction = {
+    from: { sessionId: 'payment' },
+    turnId: 'turn-existing',
+    steered: true as const,
+  };
+  const corrected = await controller.submit({
+    requestId: 'request-steered',
+    text: '不是支付，应该补充登录验收项',
+    explicitTarget: { sessionId: 'login' },
+    correction,
+  });
+
+  assert.equal(corrected.kind, 'submitted');
+  assert.deepEqual(stopped, []);
+});
+
 test('latest route correction wins for the same expression family', async () => {
   const sessions = port([
     session('login', { sessionName: '登录稳定性' }),
@@ -677,13 +744,13 @@ test('latest route correction wins for the same expression family', async () => 
     requestId: 'correction-login',
     text: '继续白鹭点，列出验收项。',
     explicitTarget: { sessionId: 'login' },
-    correction: { from: { sessionId: 'payment' } },
+    correction: { from: { sessionId: 'payment' }, turnId: 'turn' },
   });
   await controller.submit({
     requestId: 'correction-payment',
     text: '继续白鹭点，列出异常项。',
     explicitTarget: { sessionId: 'payment' },
-    correction: { from: { sessionId: 'login' } },
+    correction: { from: { sessionId: 'login' }, turnId: 'turn' },
   });
 
   const result = await controller.submit({

@@ -61,6 +61,12 @@ export function workHubSubmissionClearsDraft(
   return Boolean(result && result.kind !== 'waiting');
 }
 
+export function workHubSubmissionCanCorrect(
+  result: WorkHubSubmission,
+): result is Extract<WorkHubSubmission, { kind: 'submitted' }> {
+  return result.kind === 'submitted' && !result.steered;
+}
+
 export async function submitWorkHubSurfaceInput(input: {
   controller: WorkHubController;
   input: WorkHubSubmitInput;
@@ -204,7 +210,11 @@ export function WorkHubSurface(props: {
                       requestId: turn.requestId,
                       text: turn.text,
                       explicitTarget: target,
-                      correction: { from },
+                      correction: {
+                        from: from.target,
+                        turnId: from.turnId,
+                        ...(from.steered ? { steered: true } : {}),
+                      },
                     })}
                     onOpenSession={props.onOpenSession}
                   />
@@ -224,7 +234,10 @@ function WorkHubTurnView(props: {
   copy: ReturnType<typeof workHubCopy>;
   pending: boolean;
   onChoose(target: { sessionId: string }): void;
-  onCorrect(from: { sessionId: string }, target: { sessionId: string }): void;
+  onCorrect(
+    from: Extract<WorkHubSubmission, { kind: 'submitted' }>,
+    target: { sessionId: string },
+  ): void;
   onOpenSession(sessionId: string): void;
 }) {
   const { turn, copy } = props;
@@ -287,13 +300,15 @@ function WorkHubTurnView(props: {
                 : undefined}
               targetSessionId={submitted.target.sessionId}
               copy={copy}
-              correctionOptions={props.projection.sessions.filter(
-                (session) =>
-                  !session.archived &&
-                  session.target.sessionId !== submitted.target.sessionId,
-              )}
+              correctionOptions={workHubSubmissionCanCorrect(submitted)
+                ? props.projection.sessions.filter(
+                    (session) =>
+                      !session.archived &&
+                      session.target.sessionId !== submitted.target.sessionId,
+                  )
+                : []}
               pending={props.pending}
-              onCorrect={(target) => props.onCorrect(submitted.target, target)}
+              onCorrect={(target) => props.onCorrect(submitted, target)}
               onOpenSession={props.onOpenSession}
             />
           ) : null}
@@ -335,25 +350,27 @@ function SubmittedWorkView(props: {
         </small>
       ) : null}
       {session?.latestResult ? <p className="workhub-result">{session.latestResult}</p> : null}
-      <details className="workhub-correction">
-        <summary>{copy.correctTarget}</summary>
-        <div>
-          {props.correctionOptions.map((option) => (
-            <Button
-              key={option.target.sessionId}
-              label={`${option.sessionName}, ${option.projectName}`}
-              variant="ghost"
-              width="100%"
-              isDisabled={props.pending}
-              onClick={() => props.onCorrect(option.target)}
-              endContent={
-                <small className="workhub-option-project">{option.projectName}</small>
-              }>
-              <strong>{option.sessionName}</strong>
-            </Button>
-          ))}
-        </div>
-      </details>
+      {props.correctionOptions.length > 0 ? (
+        <details className="workhub-correction">
+          <summary>{copy.correctTarget}</summary>
+          <div>
+            {props.correctionOptions.map((option) => (
+              <Button
+                key={option.target.sessionId}
+                label={`${option.sessionName}, ${option.projectName}`}
+                variant="ghost"
+                width="100%"
+                isDisabled={props.pending}
+                onClick={() => props.onCorrect(option.target)}
+                endContent={
+                  <small className="workhub-option-project">{option.projectName}</small>
+                }>
+                <strong>{option.sessionName}</strong>
+              </Button>
+            ))}
+          </div>
+        </details>
+      ) : null}
     </div>
   );
 }

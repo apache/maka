@@ -1500,7 +1500,10 @@ const makaBridge = {
     > {
       return invokeSessionRuntimeHost('sessions:resumeLatest', sessionId);
     },
-    stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {
+    stop(
+      sessionId: string,
+      input?: { source?: 'stop_button'; expectedTurnId?: string },
+    ): Promise<void> {
       return invokeSessionRuntimeHost('sessions:stop', sessionId, input);
     },
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {

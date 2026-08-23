@@ -46,8 +46,13 @@ export interface WorkHubDesktopSessionBridge {
   send(
     sessionId: string,
     command: { type: 'send'; turnId: string; text: string },
-  ): Promise<{ ok: true; turnId: string } | { ok: false; reason: string }>;
-  stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
+  ): Promise<
+    { ok: true; turnId: string; steered?: true } | { ok: false; reason: string }
+  >;
+  stop(
+    sessionId: string,
+    input?: { source?: 'stop_button'; expectedTurnId?: string },
+  ): Promise<void>;
   subscribeChanges(handler: () => void): () => void;
 }
 
@@ -117,10 +122,16 @@ export function createDesktopWorkHubSessionPort(deps: {
         text,
       });
       if (!result.ok) throw new Error(`WorkHub Session send failed: ${result.reason}`);
-      return { turnId: result.turnId };
+      return {
+        turnId: result.turnId,
+        ...(result.steered ? { steered: true as const } : {}),
+      };
     },
-    async stop(target) {
-      await deps.sessions.stop(target.sessionId, { source: 'stop_button' });
+    async stop(target, expectedTurnId) {
+      await deps.sessions.stop(target.sessionId, {
+        source: 'stop_button',
+        expectedTurnId,
+      });
     },
     subscribe(handler) {
       return deps.sessions.subscribeChanges(handler);

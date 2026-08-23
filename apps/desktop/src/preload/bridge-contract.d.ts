@@ -710,7 +710,10 @@ export interface MakaBridge {
           skillInvocation: import('@maka/runtime/skill-invocation').SkillInvocationResult;
         }
     >;
-    stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
+    stop(
+      sessionId: string,
+      input?: { source?: 'stop_button'; expectedTurnId?: string },
+    ): Promise<void>;
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
     enqueue(
       sessionId: string,

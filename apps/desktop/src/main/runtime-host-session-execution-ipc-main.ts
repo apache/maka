@@ -41,6 +41,7 @@ import {
   normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
   normalizeSessionSendCommand,
+  normalizeStopSessionInput,
   normalizeUserQuestionResponse,
 } from "./permission-response-guard.js";
 import {
@@ -72,6 +73,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "queryTurnResume"
   | "readExecutionBoundary"
   | "regenerateTurn"
+  | "retractQueue"
   | "retractQueueEntry"
   | "promoteQueueEntry"
   | "reorderQueueEntries"
@@ -482,8 +484,19 @@ export function registerRuntimeHostSessionExecutionIpc(
       });
     },
   );
-  ipcMain.handle("sessions:stop", async (_event, sessionId: string) =>
-    stopSession(sessionId),
+  ipcMain.handle("sessions:retractQueue", async (_event, sessionId: string) => {
+    const result = await deps.client.retractQueue({
+      sessionId,
+      retractId: newId(),
+    });
+    return aggregateMessageContents(result.retracted.map((entry) => entry.content));
+  });
+  ipcMain.handle(
+    "sessions:stop",
+    async (_event, sessionId: string, input: unknown) => {
+      const normalized = normalizeStopSessionInput(input);
+      return stopSession(sessionId, normalized.expectedTurnId);
+    },
   );
 
   ipcMain.handle(
@@ -694,11 +707,25 @@ function createRuntimeHostSessionStop(
     "beforeStop" | "client" | "observer" | "emitSessionsChanged"
   >,
   newId: () => string = randomUUID,
-): (sessionId: string) => Promise<void> {
-  return async (sessionId) => {
+): (sessionId: string, expectedTurnId?: string) => Promise<void> {
+  return async (sessionId, expectedTurnId) => {
+    if (expectedTurnId) {
+      const observed = (await deps.observer.snapshot(sessionId)).rootTurn;
+      if (
+        !observed ||
+        isTerminalStatus(observed.status) ||
+        observed.turnId !== expectedTurnId
+      ) {
+        return;
+      }
+    }
     await deps.beforeStop(sessionId);
     const turn = (await deps.observer.snapshot(sessionId)).rootTurn;
-    if (!turn || isTerminalStatus(turn.status)) return;
+    if (
+      !turn ||
+      isTerminalStatus(turn.status) ||
+      (expectedTurnId && turn.turnId !== expectedTurnId)
+    ) return;
     await deps.client.interruptTurn({
       sessionId,
       interruptId: newId(),

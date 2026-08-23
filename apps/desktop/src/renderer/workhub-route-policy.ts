@@ -109,19 +109,14 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
         return { kind: 'new_session' };
       }
 
-      const normalizedInput = normalizeIdentityText(text);
       const exact = sessions.map((session) => {
-        const sessionName = normalizeIdentityText(session.sessionName);
-        const qualifiedName = normalizeIdentityText(
-          `${session.projectName}/${session.sessionName}`,
-        );
+        const qualifiedName = `${session.projectName}/${session.sessionName}`;
         return {
           session,
-          matchLength: normalizedInput.includes(qualifiedName)
-            ? qualifiedName.length
-            : normalizedInput.includes(sessionName)
-              ? sessionName.length
-              : 0,
+          matchLength: Math.max(
+            exactIdentityMatchLength(text, qualifiedName),
+            exactIdentityMatchLength(text, session.sessionName),
+          ),
         };
       }).filter(({ matchLength }) => matchLength >= MIN_EXACT_SESSION_NAME_LENGTH)
         .sort((left, right) => right.matchLength - left.matchLength);
@@ -233,6 +228,31 @@ function correctedTarget(
 
 function normalizeIdentityText(value: string): string {
   return value.toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function exactIdentityMatchLength(input: string, identity: string): number {
+  const normalizedIdentity = normalizeIdentityText(identity);
+  if (normalizedIdentity.length < MIN_EXACT_SESSION_NAME_LENGTH) return 0;
+
+  // Latin Session names are matched as complete token sequences. Compacting
+  // punctuation is useful for Han names, but it must never make a short name
+  // such as "AI" match inside an unrelated word such as "repair".
+  if (/^[a-z0-9\s\p{P}\p{S}]+$/iu.test(identity)) {
+    const inputTokens = latinTokens(input);
+    const identityTokens = latinTokens(identity);
+    if (
+      identityTokens.length === 0 ||
+      identityTokens.length > inputTokens.length
+    ) return 0;
+    const matches = inputTokens.some((_, start) =>
+      identityTokens.every((token, offset) => inputTokens[start + offset] === token)
+    );
+    return matches ? normalizedIdentity.length : 0;
+  }
+
+  return normalizeIdentityText(input).includes(normalizedIdentity)
+    ? normalizedIdentity.length
+    : 0;
 }
 
 function looksLikeRecentFocus(value: string): boolean {

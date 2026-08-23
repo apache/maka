@@ -127,7 +127,10 @@ test('desktop adapter delegates create, send, and invalidation to Session APIs',
   let onChanged: (() => void) | undefined;
   const adapter = createDesktopWorkHubSessionPort({
     sessions: {
-      list: async () => [],
+      list: async () => [desktopSession('created', {
+        status: 'running',
+        runningTurnIds: ['turn-new'],
+      })],
       listTurns: async () => [],
       create: async (input) => {
         calls.push(['create', input]);
@@ -151,7 +154,7 @@ test('desktop adapter delegates create, send, and invalidation to Session APIs',
 
   const created = await adapter.create({ name: '实现导出发票 PDF 功能' });
   const turn = await adapter.submit(created.target, '实现导出发票 PDF 功能');
-  await adapter.stop(created.target);
+  await adapter.stop(created.target, 'turn-new');
   let invalidations = 0;
   const unsubscribe = adapter.subscribe(() => {
     invalidations += 1;
@@ -165,9 +168,64 @@ test('desktop adapter delegates create, send, and invalidation to Session APIs',
   assert.deepEqual(calls, [
     ['create', { name: '实现导出发票 PDF 功能' }],
     ['send', 'created', { type: 'send', turnId: 'turn-new', text: '实现导出发票 PDF 功能' }],
-    ['stop', 'created', { source: 'stop_button' }],
+    ['stop', 'created', { source: 'stop_button', expectedTurnId: 'turn-new' }],
     ['unsubscribe'],
   ]);
+});
+
+test('desktop adapter preserves when Session delivery steered an existing root Turn', async () => {
+  const adapter = createDesktopWorkHubSessionPort({
+    sessions: {
+      list: async () => [],
+      listTurns: async () => [],
+      create: async () => {
+        throw new Error('not used');
+      },
+      send: async (_sessionId, command) => ({
+        ok: true,
+        turnId: command.turnId,
+        steered: true,
+      }),
+      stop: async () => {},
+      subscribeChanges: () => () => {},
+    },
+    projectName: () => 'Maka',
+    newTurnId: () => 'turn-steered',
+  });
+
+  assert.deepEqual(
+    await adapter.submit({ sessionId: 'busy' }, '补充已有执行流'),
+    { turnId: 'turn-steered', steered: true },
+  );
+});
+
+test('desktop adapter binds stop to the root Turn owned by the WorkHub submission', async () => {
+  const stopped: unknown[] = [];
+  const adapter = createDesktopWorkHubSessionPort({
+    sessions: {
+      list: async () => [],
+      listTurns: async () => [],
+      create: async () => {
+        throw new Error('not used');
+      },
+      send: async () => {
+        throw new Error('not used');
+      },
+      stop: async (sessionId, input) => {
+        stopped.push([sessionId, input]);
+      },
+      subscribeChanges: () => () => {},
+    },
+    projectName: () => 'Maka',
+    newTurnId: () => 'unused',
+  });
+
+  await adapter.stop({ sessionId: 'payment' }, 'turn-workhub');
+
+  assert.deepEqual(stopped, [[
+    'payment',
+    { source: 'stop_button', expectedTurnId: 'turn-workhub' },
+  ]]);
 });
 
 test('desktop adapter derives stable origin evidence from the existing Session log', async () => {

@@ -61,7 +61,11 @@ export interface WorkHubSubmitInput {
   requestId: string;
   text: string;
   explicitTarget?: WorkHubSessionTarget;
-  correction?: { from: WorkHubSessionTarget };
+  correction?: {
+    from: WorkHubSessionTarget;
+    turnId: string;
+    steered?: true;
+  };
 }
 
 export const WORKHUB_ROUTING_STRATEGY_ID = 'wh-r2.3-session-core-evidence' as const;
@@ -73,6 +77,7 @@ export type WorkHubSubmission = (
       requestId: string;
       target: WorkHubSessionTarget;
       turnId: string;
+      steered?: true;
       evidence: WorkHubRouteEvidence | 'new_session';
       correctedFrom?: WorkHubSessionTarget;
     }
@@ -109,8 +114,11 @@ export interface WorkHubSessionPort {
     targets: readonly WorkHubSessionTarget[],
   ): Promise<Array<{ target: WorkHubSessionTarget; originPrompt?: string }>>;
   create(input: { name: string }): Promise<WorkHubSessionFacts>;
-  submit(target: WorkHubSessionTarget, text: string): Promise<{ turnId: string }>;
-  stop(target: WorkHubSessionTarget): Promise<void>;
+  submit(
+    target: WorkHubSessionTarget,
+    text: string,
+  ): Promise<{ turnId: string; steered?: true }>;
+  stop(target: WorkHubSessionTarget, expectedTurnId: string): Promise<void>;
   subscribe(handler: () => void): () => void;
 }
 
@@ -203,8 +211,8 @@ export function createWorkHubController(deps: {
           target,
         };
       }
-      if (input.correction) {
-        await deps.sessions.stop(input.correction.from);
+      if (input.correction && !input.correction.steered) {
+        await deps.sessions.stop(input.correction.from, input.correction.turnId);
       }
       const turn = await deps.sessions.submit(target, input.text);
       routePolicy.rememberTarget(target);
@@ -215,6 +223,7 @@ export function createWorkHubController(deps: {
         requestId: input.requestId,
         target,
         turnId: turn.turnId,
+        ...(turn.steered ? { steered: true as const } : {}),
         evidence,
         ...(input.correction ? { correctedFrom: input.correction.from } : {}),
       };
