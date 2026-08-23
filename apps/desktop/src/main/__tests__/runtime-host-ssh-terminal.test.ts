@@ -271,6 +271,43 @@ test('reads a framed service result without projecting it into the SSH terminal'
   await harness.terminal.close();
 });
 
+test('keeps a received management result when SSH teardown times out', async () => {
+  const harness = createHarness('pending', { managementTimeoutMs: 1 });
+  harness.pty.deferKill = true;
+  harness.pty.exitOnForceKill = true;
+  const management = harness.terminal.runServiceManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'status',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+    },
+  });
+  harness.pty.emitData(
+    encodeRuntimeHostServiceManagementFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'status',
+      service: {
+        platform: 'linux',
+        arch: 'x64',
+        osRelease: '6.8.0',
+        state: 'running',
+        pid: 42,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        projectDirectoryRoots: [],
+      },
+    }),
+  );
+
+  assert.equal((await management).kind, 'result');
+  assert.deepEqual(harness.pty.killSignals, ['SIGTERM', 'SIGKILL']);
+  await harness.terminal.close();
+});
+
 test('keeps a prepared access credential out of the SSH terminal projection', async () => {
   const harness = createHarness('pending');
   const credential = 'maka_rh_secret-replacement';
@@ -455,7 +492,10 @@ test('uploads a development release archive before running the same remote setup
   await assert.rejects(setup, /exited with code 255/u);
 });
 
-function createHarness(mode: 'pending' | 'exit') {
+function createHarness(
+  mode: 'pending' | 'exit',
+  options: { readonly managementTimeoutMs?: number } = {},
+) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const events: Array<{ kind: string }> = [];
   const pty = new FakePty();
@@ -476,6 +516,7 @@ function createHarness(mode: 'pending' | 'exit') {
       return pty as unknown as IPty;
     }) as typeof import('node-pty').spawn,
     revealDelayMs: 0,
+    ...options,
     processStopGraceMs: 1,
     openSshTunnel: async (input, overrides) => {
       const spawnProcess = overrides?.spawnProcess as RuntimeHostSshProcessFactory;
