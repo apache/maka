@@ -357,7 +357,8 @@ test('managed operator binds its Client Data Root and routes deployment cleanup'
       platform: 'linux',
     },
   );
-  await deployment.commit();
+  await deployment.activate();
+  await deployment.cleanup();
 
   const invocationPath = join(base, 'operator-argv.json');
   await writeFile(

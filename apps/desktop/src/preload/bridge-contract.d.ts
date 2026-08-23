@@ -435,6 +435,11 @@ export type DesktopRuntimeHostManagementResponse =
       readonly retainedStateRoot: string;
     };
 
+export interface DesktopRuntimeHostManagementProgress {
+  readonly profileId: string;
+  readonly phase: import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase;
+}
+
 export interface DesktopRuntimeHostAccessCredential {
   readonly credentialId: string;
   readonly principalKind: 'remote_owner' | 'capability_provider';
@@ -562,6 +567,13 @@ export interface MakaBridge {
       profileId: string,
       action: DesktopRuntimeHostManagementAction,
     ): Promise<DesktopRuntimeHostManagementResponse>;
+    update(
+      profileId: string,
+      allowInterruptActiveTasks: boolean,
+    ): Promise<DesktopRuntimeHostManagementResponse>;
+    subscribeProgress(
+      handler: (progress: DesktopRuntimeHostManagementProgress) => void,
+    ): () => void;
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     revokeCredential(

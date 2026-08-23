@@ -39,6 +39,7 @@ export {
   encodeRuntimeHostServiceManagementFrame,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
+  type RuntimeHostServiceUpdatePhase,
   type RuntimeHostOperatorCapability,
   type RuntimeHostServiceSummary,
 } from './service-management-frame.js';

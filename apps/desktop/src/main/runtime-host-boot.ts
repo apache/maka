@@ -443,6 +443,10 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   ipcMain,
   profiles: runtimeHostProfileService,
   runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
+  runUpdate: runtimeHostSshTerminal.runUpdate,
+  resolveUpdatePackage: runtimeHostSetupPackage,
+  sendProgress: (progress) =>
+    mainWindowController.send("runtime-host-management:progress", progress),
   runAccessManagement: runtimeHostSshTerminal.runAccessManagement,
   cleanupManagedDeployment: runtimeHostSshTerminal.cleanupManagedDeployment,
 });

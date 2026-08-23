@@ -38,6 +38,7 @@ const SERVICE_ACTIONS = [
   'stop',
   'restart',
   'retire',
+  'update',
   'logs',
   'uninstall',
 ] as const;
@@ -50,6 +51,7 @@ const NON_RETIRE_SERVICE_ACTIONS = [
   'logs',
   'uninstall',
 ] as const;
+const UPDATE_PHASES = ['checking', 'staging', 'retiring', 'replacing'] as const;
 const SERVICE_STATES = ['not_installed', 'stopped', 'starting', 'running', 'failed'] as const;
 const OPERATOR_CAPABILITIES = [RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY] as const;
 
@@ -108,6 +110,50 @@ const SERVICE_RESULT_COMMON = {
 const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
   z
     .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('progress'),
+      action: z.literal('update'),
+      phase: z.enum(UPDATE_PHASES),
+      currentVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+      targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+    })
+    .strict(),
+  z
+    .object({
+      ...SERVICE_RESULT_COMMON,
+      action: z.literal('update'),
+      update: z.discriminatedUnion('kind', [
+        z
+          .object({
+            kind: z.literal('already_current'),
+            version: boundedNonEmptyString(FIELD_MAX_BYTES),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal('active_tasks'),
+            currentVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+            targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal('updated'),
+            previousVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+            targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal('repaired'),
+            version: boundedNonEmptyString(FIELD_MAX_BYTES),
+          })
+          .strict(),
+      ]),
+    })
+    .strict(),
+  z
+    .object({
       ...SERVICE_RESULT_COMMON,
       action: z.literal('retire'),
       retirement: RETIREMENT_RESULT_SCHEMA,
@@ -136,6 +182,7 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
 
 export type RuntimeHostServiceManagementAction = (typeof SERVICE_ACTIONS)[number];
 export type RuntimeHostServiceManagementFrame = z.infer<typeof SERVICE_MANAGEMENT_FRAME_SCHEMA>;
+export type RuntimeHostServiceUpdatePhase = (typeof UPDATE_PHASES)[number];
 export type RuntimeHostOperatorCapability = (typeof OPERATOR_CAPABILITIES)[number];
 export type RuntimeHostServiceSummary = z.infer<typeof SERVICE_SUMMARY_SCHEMA>;
 

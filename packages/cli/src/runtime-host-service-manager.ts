@@ -46,6 +46,7 @@ import {
 
 const SERVICE_CONFIG_FILE = 'runtime-host-service.json';
 const SERVICE_LIFECYCLE_LOCK_FILE = 'runtime-host-setup';
+const SERVICE_DEPLOYMENT_LOCK_FILE = 'runtime-host-deployment';
 const DEFAULT_WEBSOCKET_PATH = '/runtime-host';
 const SERVICE_OPERATION_LOCK_TIMEOUT_MS = 60_000;
 const SERVICE_READY_TIMEOUT_MS = 45_000;
@@ -89,7 +90,10 @@ export interface RuntimeHostServiceBackendStatus {
 
 export interface RuntimeHostServiceBackend {
   preflightInstall(): Promise<void>;
-  install(config: RuntimeHostManagedServiceConfig): Promise<RuntimeHostServiceDeployment>;
+  install(
+    config: RuntimeHostManagedServiceConfig,
+    options?: { readonly restoreOnFailure?: boolean },
+  ): Promise<RuntimeHostServiceDeployment>;
   status(): Promise<RuntimeHostServiceBackendStatus>;
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -114,6 +118,7 @@ export type RuntimeHostManagedServiceAction =
   | 'stop'
   | 'restart'
   | 'retire'
+  | 'update'
   | 'logs'
   | 'uninstall';
 
@@ -199,6 +204,8 @@ export class RuntimeHostServiceManagerError extends Error {
       | 'invalid_launch'
       | 'target_mismatch'
       | 'retirement_failed'
+      | 'update_requires_retirement'
+      | 'update_incomplete'
       | 'service_manager_operation_failed'
       | 'uninstall_incomplete',
     message: string,
@@ -244,6 +251,19 @@ export async function withRuntimeHostManagedServiceLifecycleLock<T>(
   await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });
   return withFileUpdateLock(
     join(clientDataRoot, SERVICE_LIFECYCLE_LOCK_FILE),
+    operation,
+    timeoutMs,
+  );
+}
+
+export async function withRuntimeHostManagedServiceDeploymentLock<T>(
+  clientDataRoot: string,
+  operation: () => Promise<T>,
+  timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
+): Promise<T> {
+  await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });
+  return withFileUpdateLock(
+    join(clientDataRoot, SERVICE_DEPLOYMENT_LOCK_FILE),
     operation,
     timeoutMs,
   );
@@ -422,6 +442,55 @@ async function manageRuntimeHostServiceLocked(
     } finally {
       await rootFence?.close().catch(() => undefined);
     }
+  }
+  if (input.action === 'update') {
+    if (!input.expectedTarget) {
+      throw new RuntimeHostServiceManagerError(
+        'target_mismatch',
+        'Runtime Host update requires the expected managed service identity',
+      );
+    }
+    const service = await readServiceStatus(configPath, backend);
+    const root = await resolveExpectedServiceRoot(service.config, input);
+    if (!service.installed || !service.config || !root) {
+      throw new RuntimeHostServiceManagerError(
+        'not_installed',
+        'Runtime Host service is not installed',
+      );
+    }
+    if (
+      service.active ||
+      service.pid !== null ||
+      (service.state !== 'stopped' && service.state !== 'failed')
+    ) {
+      throw new RuntimeHostServiceManagerError(
+        'update_requires_retirement',
+        'Retire the managed Runtime Host service before replacing its package',
+      );
+    }
+    await backend.preflightInstall();
+    const config = await prepareServiceConfig(input, service.config, deps);
+    let rootFence: InteractiveRootOwner | undefined =
+      await acquireRuntimeHostRootRetirementFence(root);
+    try {
+      await writeRuntimeHostServiceFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
+      await releaseRuntimeHostRootRetirementFence(rootFence);
+      rootFence = undefined;
+    } finally {
+      await rootFence?.close().catch(() => undefined);
+    }
+    try {
+      await backend.install(config, { restoreOnFailure: false });
+      await deps.waitForReady(config, backend);
+    } catch (error) {
+      await backend.stop().catch(() => undefined);
+      throw new RuntimeHostServiceManagerError(
+        'update_incomplete',
+        'The replacement Runtime Host did not become ready; the previous deployment was retained but was not restarted because its storage compatibility is unknown',
+        { cause: error },
+      );
+    }
+    return result(input.action, await readServiceStatus(configPath, backend));
   }
   const config = await readServiceConfig(configPath);
   if (!config) {

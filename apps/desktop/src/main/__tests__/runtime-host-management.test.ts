@@ -28,6 +28,7 @@ import type {
   DesktopRuntimeHostSshAccessInput,
   DesktopRuntimeHostSshCleanupInput,
   DesktopRuntimeHostSshManagementInput,
+  DesktopRuntimeHostSshUpdateInput,
 } from '../runtime-host-ssh-terminal.js';
 
 test('identifies, rotates, and revokes managed credentials without exposing secrets', async () => {
@@ -64,6 +65,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
   ];
 
   createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
     ipcMain: {
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
@@ -185,6 +187,8 @@ test('manages only the service identity bound by Desktop onboarding', async () =
   const uninstallOrder: string[] = [];
   let operatorAccess = false;
   let cleared = 0;
+  let statusGate: Promise<void> | undefined;
+  let releaseStatus: (() => void) | undefined;
   const managedProfile = {
     id: 'office',
     name: 'Office',
@@ -203,6 +207,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
     operatorPath: '/home/operator/.local/share/maka/operator',
   };
   const management = createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
     ipcMain: {
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
@@ -229,6 +234,7 @@ test('manages only the service identity bound by Desktop onboarding', async () =
     },
     runServiceManagement: async (input) => {
       managementInputs.push(input);
+      if (input.action === 'status') await statusGate;
       if (input.action === 'uninstall') {
         uninstallOrder.push('uninstall-service');
       }
@@ -242,6 +248,19 @@ test('manages only the service identity bound by Desktop onboarding', async () =
   });
   const run = handlers.get('runtime-host-management:run');
   assert.ok(run);
+
+  statusGate = new Promise((resolve) => {
+    releaseStatus = resolve;
+  });
+  const firstStatus = run({}, 'office', 'status');
+  const secondStatus = run({}, 'office', 'status');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(managementInputs.length, 1);
+  releaseStatus?.();
+  await Promise.all([firstStatus, secondStatus]);
+  statusGate = undefined;
+  managementInputs.length = 0;
 
   await assert.rejects(
     run({}, 'manual', 'uninstall') as Promise<unknown>,
@@ -309,6 +328,84 @@ test('manages only the service identity bound by Desktop onboarding', async () =
   assert.equal(handlers.size, 0);
 });
 
+test('updates the managed profile through its exact package and publishes progress', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const updates: DesktopRuntimeHostSshUpdateInput[] = [];
+  const progress: unknown[] = [];
+  const profile = {
+    id: 'office',
+    name: 'Office',
+    kind: 'remote' as const,
+    rootId: 'a'.repeat(64),
+    transport: {
+      kind: 'ssh' as const,
+      destination: 'operator@example.com',
+      remotePort: 7443,
+      websocketPath: '/runtime-host',
+    },
+  };
+  const service = {
+    id: 'b'.repeat(64),
+    rootPath: '/srv/maka',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+  };
+  createDesktopRuntimeHostManagement({
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    profiles: {
+      resolveManagedService: async () => ({ profile, service, state: 'active' as const }),
+      resolveManagedAccess: async () => undefined,
+      rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
+      markManagedServiceUninstalling: async (binding) => binding,
+      markManagedServiceCleanupPending: async (binding) => binding,
+      clearManagedServiceBinding: async () => undefined,
+    },
+    runServiceManagement: async () => assert.fail('ordinary management is not expected'),
+    runUpdate: async (input, onProgress) => {
+      updates.push(input);
+      onProgress('staging');
+      return {
+        schemaVersion: 1,
+        kind: 'result',
+        action: 'update',
+        service: {
+          platform: 'linux',
+          arch: 'x64',
+          osRelease: '6.8.0',
+          state: 'running',
+          pid: 43,
+          lastExitCode: 0,
+          installedVersion: '1.3.0',
+          projectDirectoryRoots: [],
+        },
+        operatorCapabilities: ['access-management-v1'],
+        update: { kind: 'updated', previousVersion: '1.2.3', targetVersion: '1.3.0' },
+      };
+    },
+    resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@1.3.0' }),
+    sendProgress: (event) => progress.push(event),
+    runAccessManagement: async () => assert.fail('access management is not expected'),
+    cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
+  });
+
+  const update = handlers.get('runtime-host-management:update');
+  assert.ok(update);
+  const response = await update({}, profile.id, false);
+  assert.equal((response as { accessManagementAvailable: boolean }).accessManagementAvailable, true);
+  assert.deepEqual(updates, [{
+    destination: profile.transport.destination,
+    setupPackage: { kind: 'npm', specifier: 'maka-agent@1.3.0' },
+    expectedTarget: {
+      serviceId: service.id,
+      rootPath: service.rootPath,
+      rootId: profile.rootId,
+    },
+  }]);
+  assert.deepEqual(progress, [{ profileId: profile.id, phase: 'staging' }]);
+});
+
 test('resumes deployment cleanup without invoking the removed operator', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const profile = {
@@ -333,6 +430,7 @@ test('resumes deployment cleanup without invoking the removed operator', async (
   let state: 'active' | 'uninstalling' | 'cleanup_pending' = 'active';
   let clearAttempts = 0;
   createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
     ipcMain: {
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
@@ -384,6 +482,7 @@ test('rechecks uninstall intent before retrying the remote service', async () =>
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let marked = false;
   createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
     ipcMain: {
       handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
       removeHandler: (channel) => handlers.delete(channel),
@@ -462,6 +561,14 @@ function serviceResult(
   return action === 'retire'
     ? { ...result, action, retirement: { kind: 'stopped' } }
     : { ...result, action };
+}
+
+function unusedUpdateDependencies() {
+  return {
+    runUpdate: async (): Promise<never> => assert.fail('update is not expected'),
+    resolveUpdatePackage: () => ({ kind: 'npm', specifier: 'maka-agent@1.2.3' } as const),
+    sendProgress: () => undefined,
+  };
 }
 
 function accessCredential(

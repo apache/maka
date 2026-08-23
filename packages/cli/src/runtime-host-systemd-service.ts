@@ -91,12 +91,13 @@ export function createSystemdUserRuntimeHostService(
       await assertUserSystemd(runSystemctl);
       await assertUserLinger(uid, runLoginctl);
     },
-    install: async (config) => {
+    install: async (config, installOptions) => {
       await validateLaunchFiles(config);
       const previous = await captureSystemdDeployment(context.unitPath, readStatus);
       try {
         await applySystemdDeployment(context, config);
       } catch (error) {
+        if (installOptions?.restoreOnFailure === false) throw error;
         await restoreFailedSystemdDeployment(previous, context, error);
       }
       let rolledBack = false;

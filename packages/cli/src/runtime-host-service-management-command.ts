@@ -33,6 +33,7 @@ import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
+  withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLifecycleLock,
   type RuntimeHostManagedServiceInput,
   type RuntimeHostManagedServiceResult,
@@ -41,13 +42,16 @@ import {
 } from './runtime-host-service-manager.js';
 import { createSystemdUserRuntimeHostService } from './runtime-host-systemd-service.js';
 
-export interface RuntimeHostServiceManagementCliOptions extends RuntimeHostManagedServiceInput {
+export interface RuntimeHostServiceManagementCliOptions
+  extends Omit<RuntimeHostManagedServiceInput, 'action'> {
+  readonly action: Exclude<RuntimeHostManagedServiceInput['action'], 'update'>;
   readonly json: boolean;
   readonly framed?: boolean;
 }
 
 export interface RuntimeHostServiceManagementCliDeps {
   readonly manage: typeof manageRuntimeHostService;
+  readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly writeOutput: (value: string) => unknown;
@@ -60,6 +64,7 @@ export async function runManagedRuntimeHostServiceCli(
 ): Promise<number> {
   const deps: RuntimeHostServiceManagementCliDeps = {
     manage: manageRuntimeHostService,
+    withDeploymentLock: withRuntimeHostManagedServiceDeploymentLock,
     withLifecycleLock: withRuntimeHostManagedServiceLifecycleLock,
     createBackend: createPlatformRuntimeHostServiceBackend,
     writeOutput: (value) => process.stdout.write(value),
@@ -73,7 +78,11 @@ export async function runManagedRuntimeHostServiceCli(
     const result =
       options.action === 'status' || options.action === 'logs'
         ? await manage()
-        : await deps.withLifecycleLock(options.clientDataRoot, manage);
+        : options.action === 'retire'
+          ? await deps.withLifecycleLock(options.clientDataRoot, manage)
+          : await deps.withDeploymentLock(options.clientDataRoot, () =>
+              deps.withLifecycleLock(options.clientDataRoot, manage),
+            );
     const blocked = result.action === 'retire' && result.retirement.kind === 'active_tasks';
     if (options.framed) {
       deps.writeOutput(encodeRuntimeHostServiceManagementFrame(successFrame(result)));
@@ -160,18 +169,10 @@ function formatHumanResult(result: RuntimeHostManagedServiceResult): string {
 }
 
 function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServiceManagementFrame {
-  const config = result.service.config;
-  const service: RuntimeHostServiceSummary = {
-    platform: process.platform,
-    arch: process.arch,
-    osRelease: release(),
-    state: result.service.state,
-    pid: result.service.pid,
-    lastExitCode: result.service.lastExitCode,
-    installedVersion: result.service.installedVersion,
-    ...(config ? { stateRoot: config.rootPath } : {}),
-    projectDirectoryRoots: [...(config?.projectDirectoryRoots ?? [])],
-  };
+  if (result.action === 'update') {
+    throw new TypeError('Managed Runtime Host updates use the update transaction');
+  }
+  const service = runtimeHostServiceSummary(result);
   const common = {
     schemaVersion: 1,
     kind: 'result',
@@ -190,6 +191,23 @@ function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServi
   return result.action === 'retire'
     ? { ...common, action: result.action, retirement: { ...result.retirement } }
     : { ...common, action: result.action };
+}
+
+export function runtimeHostServiceSummary(
+  result: RuntimeHostManagedServiceResult,
+): RuntimeHostServiceSummary {
+  const config = result.service.config;
+  return {
+    platform: process.platform,
+    arch: process.arch,
+    osRelease: release(),
+    state: result.service.state,
+    pid: result.service.pid,
+    lastExitCode: result.service.lastExitCode,
+    installedVersion: result.service.installedVersion,
+    ...(config ? { stateRoot: config.rootPath } : {}),
+    projectDirectoryRoots: [...(config?.projectDirectoryRoots ?? [])],
+  };
 }
 
 export function createPlatformRuntimeHostServiceBackend(

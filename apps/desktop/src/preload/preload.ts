@@ -45,6 +45,7 @@ import type {
   DesktopRuntimeHostOnboardingSnapshot,
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostManagementResponse,
+  DesktopRuntimeHostManagementProgress,
   DesktopRuntimeHostAccessSnapshot,
   DesktopNewTaskCatalog,
   DesktopNewTaskHost,
@@ -1198,6 +1199,24 @@ const makaBridge = {
       action: DesktopRuntimeHostManagementAction,
     ): Promise<DesktopRuntimeHostManagementResponse> {
       return ipcRenderer.invoke('runtime-host-management:run', profileId, action);
+    },
+    update(
+      profileId: string,
+      allowInterruptActiveTasks: boolean,
+    ): Promise<DesktopRuntimeHostManagementResponse> {
+      return ipcRenderer.invoke(
+        'runtime-host-management:update',
+        profileId,
+        allowInterruptActiveTasks,
+      );
+    },
+    subscribeProgress(handler: (progress: DesktopRuntimeHostManagementProgress) => void) {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        progress: DesktopRuntimeHostManagementProgress,
+      ) => handler(progress);
+      ipcRenderer.on('runtime-host-management:progress', listener);
+      return () => ipcRenderer.off('runtime-host-management:progress', listener);
     },
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot> {
       return ipcRenderer.invoke('runtime-host-management:list-credentials', profileId);

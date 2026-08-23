@@ -91,6 +91,14 @@ export type SettingsProjectsCopy = {
     startService: string;
     restartService: string;
     repairService: string;
+    updateService: string;
+    updatePhase: Record<import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase, string>;
+    updateBlockedTitle: string;
+    updateBlockedBody: string;
+    updateInterrupt: string;
+    updateComplete(from: string, to: string): string;
+    updateRepaired(version: string): string;
+    updateAlreadyCurrent(version: string): string;
     showLogs: string;
     noLogs: string;
     uninstallService: string;
@@ -255,6 +263,19 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       startService: '启动',
       restartService: '重启',
       repairService: '修复',
+      updateService: '安装 Desktop 版本',
+      updatePhase: {
+        checking: '正在检查版本…',
+        staging: '正在准备新版本…',
+        retiring: '正在安全停止当前 Runtime Host…',
+        replacing: '正在启动并验证新版本…',
+      },
+      updateBlockedTitle: 'Runtime Host 仍有活跃任务',
+      updateBlockedBody: '继续更新会中断当前执行，但会保留可恢复的任务状态和无法确认的外部效果。',
+      updateInterrupt: '中断任务并更新',
+      updateComplete: (from: string, to: string) => `Runtime Host 已从 ${from} 更新到 ${to}`,
+      updateRepaired: (version: string) => `Runtime Host ${version} 已恢复运行`,
+      updateAlreadyCurrent: (version: string) => `Runtime Host 已是 ${version}`,
       showLogs: '查看日志',
       noLogs: '没有服务日志',
       uninstallService: '卸载服务',
@@ -417,6 +438,19 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       startService: 'Start',
       restartService: 'Restart',
       repairService: 'Repair',
+      updateService: 'Install Desktop version',
+      updatePhase: {
+        checking: 'Checking versions…',
+        staging: 'Staging the new version…',
+        retiring: 'Safely stopping the current Runtime Host…',
+        replacing: 'Starting and verifying the new version…',
+      },
+      updateBlockedTitle: 'Runtime Host still owns active work',
+      updateBlockedBody: 'Continuing will interrupt current execution while preserving recoverable task state and unresolved external effects.',
+      updateInterrupt: 'Interrupt and update',
+      updateComplete: (from: string, to: string) => `Runtime Host was updated from ${from} to ${to}`,
+      updateRepaired: (version: string) => `Runtime Host ${version} is running again`,
+      updateAlreadyCurrent: (version: string) => `Runtime Host is already on ${version}`,
       showLogs: 'View logs',
       noLogs: 'No service logs were found',
       uninstallService: 'Uninstall service',
