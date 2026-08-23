@@ -2225,8 +2225,8 @@ function AppShellContent({
     );
   }
 
-  // Surfaces the failure, then rethrows so the caller (the pending plate) can
-  // settle its own optimistic state instead of guessing with a timer.
+  // Surfaces the failure, then rethrows so the pending plate can settle its
+  // in-flight action state without guessing with a timer.
   async function runQueueEntryAction(action: (sessionId: string) => Promise<void>): Promise<void> {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;

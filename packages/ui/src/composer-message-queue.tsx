@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useRef, useState } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
 import { IconButton } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
@@ -45,22 +45,11 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
   props: ComposerMessageQueueProps,
 ) {
   const [pendingEntryId, setPendingEntryId] = useState<string | null>(null);
-  const [pendingOrder, setPendingOrder] = useState<readonly string[] | null>(null);
   const dragEntryId = useRef<string | null>(null);
   const mountedRef = useMountedRef();
   const copy = props.copy;
 
   const followup = props.queuedMessages;
-  const followupIds = followup.map((entry) => entry.entryId).join(' ');
-  // Any projection change settles a pending drag: the accepted order arrives as
-  // the new projection, and any other mutation makes the drag base stale.
-  useEffect(() => {
-    setPendingOrder(null);
-  }, [followupIds]);
-
-  const orderedFollowup = pendingOrder
-    ? pendingOrder.flatMap((entryId) => followup.filter((entry) => entry.entryId === entryId))
-    : followup;
 
   async function runEntryAction(
     entryId: string,
@@ -83,19 +72,15 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
     const fromId = dragEntryId.current;
     dragEntryId.current = null;
     if (!fromId || fromId === targetEntryId || !props.onReorderEntries) return;
-    const ids = orderedFollowup.map((entry) => entry.entryId);
+    const ids = followup.map((entry) => entry.entryId);
     const from = ids.indexOf(fromId);
     const to = ids.indexOf(targetEntryId);
     if (from === -1 || to === -1) return;
     ids.splice(from, 1);
     ids.splice(to, 0, fromId);
-    setPendingOrder(ids);
-    // A rejected reorder (e.g. the queue changed underneath the drag) snaps
-    // back to the authoritative projection; an accepted one is settled by the
-    // projection change above.
-    void Promise.resolve(props.onReorderEntries(ids)).catch(() => {
-      if (mountedRef.current) setPendingOrder(null);
-    });
+    // The Host projection is the only rendered order. Keep other queue actions
+    // pending until this request settles instead of maintaining a local overlay.
+    void runEntryAction(fromId, () => props.onReorderEntries?.(ids));
   }
 
   function retractButton(entry: MessageQueueEntryProjection) {
@@ -123,7 +108,7 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
       aria-label={copy.queuedMessagesAriaLabel(followup.length)}
     >
       <List className="maka-composer-queue-list" density="compact">
-        {orderedFollowup.map((entry) => (
+        {followup.map((entry) => (
           <div
             key={entry.entryId}
             onDragOver={(event) => {

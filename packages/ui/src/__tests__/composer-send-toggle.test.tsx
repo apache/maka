@@ -28,7 +28,10 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { parseHTML } from 'linkedom';
 import { Composer } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
 
@@ -61,30 +64,66 @@ test('a running composer keeps Send alone — no mode switch in the send slot', 
   assert.doesNotMatch(markup, /SegmentedControl/);
 });
 
-test('renders the pending plate with per-entry promote, retract, and reorder', () => {
-  const markup = renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Composer
-        streaming
-        queuedMessages={[{
-          entryId: 'entry-1',
-          messageId: 'message-1',
-          content: { text: 'do this next' },
-          placement: 'next_turn',
-          state: 'queued',
-        }]}
-        onPromoteQueuedEntry={() => undefined}
-        onRetractQueuedEntry={() => undefined}
-        onReorderQueuedEntries={() => undefined}
-        onSend={() => undefined}
-        onStop={() => undefined}
-      />
-    </LocaleProvider>,
-  );
+test('keeps Host order visible until the reordered projection arrives', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  let requestedOrder: readonly string[] | undefined;
 
-  assert.match(markup, /1 queued message/);
-  assert.match(markup, /do this next/);
-  assert.match(markup, /aria-label="Send now"/);
-  assert.match(markup, /aria-label="Restore to draft"/g);
-  assert.match(markup, /aria-label="Drag to reorder"/);
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <Composer
+          streaming
+          queuedMessages={['first', 'second'].map((entryId) => ({
+            entryId,
+            messageId: `message-${entryId}`,
+            content: { text: entryId },
+            placement: 'next_turn',
+            state: 'queued',
+          }))}
+          onPromoteQueuedEntry={() => undefined}
+          onRetractQueuedEntry={() => undefined}
+          onReorderQueuedEntries={(entryIds) => {
+            requestedOrder = entryIds;
+            return new Promise<void>(() => undefined);
+          }}
+          onSend={() => undefined}
+          onStop={() => undefined}
+        />
+      </LocaleProvider>,
+    ));
+    assert.equal(container.querySelectorAll('[aria-label="Send now"]').length, 2);
+    assert.equal(container.querySelectorAll('[aria-label="Restore to draft"]').length, 2);
+    const grips = [...container.querySelectorAll<HTMLElement>('.maka-composer-queue-grip')];
+    assert.equal(grips.length, 2);
+    const dragStart = new window.Event('dragstart', { bubbles: true });
+    Object.defineProperty(dragStart, 'dataTransfer', {
+      value: { effectAllowed: '', setData() {} },
+    });
+    await act(() => grips[1]?.dispatchEvent(dragStart));
+    const firstRow = grips[0]?.closest('li')?.parentElement;
+    assert.ok(firstRow);
+    await act(() => firstRow.dispatchEvent(new window.Event('drop', { bubbles: true })));
+
+    assert.deepEqual(requestedOrder, ['second', 'first']);
+    assert.deepEqual(
+      [...container.querySelectorAll('li')].map((row) =>
+        row.textContent?.includes('first') ? 'first' : 'second'
+      ),
+      ['first', 'second'],
+    );
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
 });
