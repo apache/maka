@@ -2112,7 +2112,7 @@ export class AiSdkBackend implements AgentBackend {
         // (settled once per iteration, never carried across steps).
         let toolCallSafety: ToolCallExecutionSafety = {
           hadRawArgumentEvidence: false,
-          decisions: new Map(),
+          proofs: new Map(),
         };
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
@@ -2609,47 +2609,27 @@ export class AiSdkBackend implements AgentBackend {
                   );
                 }
                 // A structurally complete tool call is not proof the raw
-                // stream that produced it was ever confirmed safe — see
-                // tool-call-execution-guard.ts. `settleModelStepOutcome`
-                // treats `finishReason: "length"` as `{ kind: 'completed' }`
-                // (the same branch `"stop"`/`"tool-calls"` take, for that
-                // function's own continuation/retry bookkeeping purpose), so
-                // without this check a call whose own JSON streamed
-                // incrementally (`tool-input-start`/`-delta`/`-end`) to
-                // genuine completion right before a token-limit cutoff would
-                // still reach ToolRuntime and its real side effect.
+                // stream that produced it was ever confirmed safe:
+                // `settleModelStepOutcome` treats `finishReason: "length"` as
+                // `{ kind: 'completed' }` (the same branch `"stop"`/
+                // `"tool-calls"` take, for that function's own
+                // continuation/retry bookkeeping purpose), so without this
+                // gate a call cut off by a token limit could still reach
+                // ToolRuntime. See tool-call-execution-guard.ts for the full
+                // raw-evidence/proof/atomic-fallback contract this reads,
+                // including why a missing proof and a failed-verification
+                // proof are the same "no entry" case.
                 //
-                // The guard has no raw bytes — and so no opinion — for a
-                // call that arrives as a single atomic `tool-call` chunk
-                // with no incremental precursor: some providers (and this
-                // suite's own simpler mock streams) emit tool calls that
-                // way, and an atomic chunk was never truncated mid-stream in
-                // the first place, so there is nothing for raw-byte tracking
-                // to have caught. For those, "no raw-byte evidence" must not
-                // become "safe to execute" on its own — fall back to
-                // isSafeToolExecutionStepOutcome, which only allows a step
-                // that positively finished with "stop" or "tool-calls".
-                // `providerOutcome.kind === 'completed'` alone is NOT
-                // sufficient here, because it is also true for "length".
-                //
-                // That atomic fallback is sound only when NO call anywhere
-                // in this physical request ever streamed real raw bytes
-                // (`!toolCallSafety.hadRawArgumentEvidence`): the moment one
-                // call did, a different call missing its own decision here
-                // is no longer distinguishable from an id mismatch between
-                // the guard's raw-chunk view and this resolved `tool-call` —
-                // that must fail closed instead of borrowing the step's
-                // own outcome. A decision the guard did record is only
-                // trusted when its own proved tool name agrees with this
-                // call's — case-insensitively, since `repairMakaToolCall`
-                // legitimately corrects a mis-cased name (streamed as
-                // "WRITE", dispatched as "Write") between what the guard
-                // observed at `tool-input-start` and the final resolved
-                // `tool-call`. A positively-proved id whose name disagrees
-                // even case-insensitively is the identity-substitution this
-                // gate exists to catch (e.g. "Write" proved, "Shell"
-                // dispatched), not something to execute under either name.
-                // The one exception is `INVALID_TOOL_NAME`: repair routes an
+                // A proof is only trusted when its own proved tool name
+                // agrees with this call's — case-insensitively, since
+                // `repairMakaToolCall` legitimately corrects a mis-cased name
+                // (streamed as "WRITE", dispatched as "Write") between what
+                // the guard observed at `tool-input-start` and the final
+                // resolved `tool-call`. A proved id whose name disagrees even
+                // case-insensitively is the identity-substitution this gate
+                // exists to catch (e.g. "Write" proved, "Shell" dispatched),
+                // not something to execute under either name. The one
+                // exception is `INVALID_TOOL_NAME`: repair routes an
                 // unrepairable call there deliberately, and that handler
                 // never does more than format an error — so it is exempt
                 // from the identity check but, per the value rule below,
@@ -2657,24 +2637,24 @@ export class AiSdkBackend implements AgentBackend {
                 // that value describes the ORIGINAL (now-irrelevant) tool
                 // call, not the repair-synthesized `{tool, error}` payload
                 // `buildInvalidMakaTool` expects.
-                const toolCallDecision = toolCallSafety.decisions.get(toolCall.toolCallId);
+                const proof = toolCallSafety.proofs.get(toolCall.toolCallId);
                 const provedNameMatches =
-                  toolCallDecision?.action === 'execute' &&
-                  toolCallDecision.name?.toLowerCase() === toolCall.toolName.toLowerCase();
-                const confirmedSafe = toolCallDecision
-                  ? toolCallDecision.action === 'execute' &&
-                    (toolCall.toolName === INVALID_TOOL_NAME || provedNameMatches)
-                  : !toolCallSafety.hadRawArgumentEvidence &&
-                    isSafeToolExecutionStepOutcome(providerOutcome);
+                  proof !== undefined &&
+                  proof.name.toLowerCase() === toolCall.toolName.toLowerCase();
+                const confirmedSafe =
+                  proof !== undefined
+                    ? toolCall.toolName === INVALID_TOOL_NAME || provedNameMatches
+                    : !toolCallSafety.hadRawArgumentEvidence &&
+                      isSafeToolExecutionStepOutcome(providerOutcome);
                 // The guard's own proved value — decoded from this call's
                 // raw bytes, never the SDK-projected `toolCall.input` a
                 // later repair/coercion could have substituted — is the
                 // sole payload authority whenever the proved identity
                 // genuinely matches the tool about to run. The atomic
-                // fallback (no decision at all) and the invalid-tool bypass
+                // fallback (no proof at all) and the invalid-tool bypass
                 // above both have no such value and fall back to
                 // `toolCall.input`.
-                const provedValue = provedNameMatches ? toolCallDecision.value : undefined;
+                const provedValue = provedNameMatches ? proof.value : undefined;
                 const requestedTool = confirmedSafe
                   ? toolsByName.get(toolCall.toolName)
                   : undefined;

@@ -45,11 +45,12 @@ function pushCompleteCall(
   for (const part of completeToolCallParts(id, input)) observeRawChunk(tracker, part);
 }
 
-function actionFor(
+function hasProof(
   tracker: ReturnType<typeof createToolCallSafetyTracker>,
   id = 'call-1',
-): string | undefined {
-  return resolveToolCallSafety(tracker).decisions.get(id)?.action;
+  meta?: { providerReason?: string },
+): boolean {
+  return resolveToolCallSafety(tracker, meta).proofs.has(id);
 }
 
 describe('tool-call-execution-guard', () => {
@@ -60,8 +61,7 @@ describe('tool-call-execution-guard', () => {
 
     const safety = resolveToolCallSafety(tracker);
     assert.equal(safety.hadRawArgumentEvidence, true);
-    assert.deepEqual(safety.decisions.get('call-1'), {
-      action: 'execute',
+    assert.deepEqual(safety.proofs.get('call-1'), {
       name: 'Write',
       value: { path: 'a.md', content: 'hello' },
     });
@@ -71,7 +71,7 @@ describe('tool-call-execution-guard', () => {
     const tracker = createToolCallSafetyTracker();
     pushCompleteCall(tracker);
     observeRawChunk(tracker, { type: 'finish', finishReason: 'tool-calls' });
-    assert.equal(actionFor(tracker), 'execute');
+    assert.equal(hasProof(tracker), true);
   });
 
   for (const finishReason of ['length', 'content-filter', 'error', 'other', 'unknown']) {
@@ -79,7 +79,7 @@ describe('tool-call-execution-guard', () => {
       const tracker = createToolCallSafetyTracker();
       pushCompleteCall(tracker);
       observeRawChunk(tracker, { type: 'finish', finishReason });
-      assert.notEqual(actionFor(tracker), 'execute');
+      assert.equal(hasProof(tracker), false);
     });
   }
 
@@ -87,21 +87,20 @@ describe('tool-call-execution-guard', () => {
     const tracker = createToolCallSafetyTracker();
     pushCompleteCall(tracker);
     observeRawChunk(tracker, { type: 'error', error: new Error('upstream 500') });
-    assert.notEqual(actionFor(tracker), 'execute');
+    assert.equal(hasProof(tracker), false);
   });
 
   test('abort part fails closed', () => {
     const tracker = createToolCallSafetyTracker();
     pushCompleteCall(tracker);
     observeRawChunk(tracker, { type: 'abort' });
-    assert.notEqual(actionFor(tracker), 'execute');
+    assert.equal(hasProof(tracker), false);
   });
 
   test('missing terminal event fails closed even when fallback metadata says stop', () => {
     const tracker = createToolCallSafetyTracker();
     pushCompleteCall(tracker);
-    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
-    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+    assert.equal(hasProof(tracker, 'call-1', { providerReason: 'stop' }), false);
   });
 
   // Finish-reason authority: model-adapter.ts already resolves a stronger
@@ -114,8 +113,7 @@ describe('tool-call-execution-guard', () => {
     const tracker = createToolCallSafetyTracker();
     pushCompleteCall(tracker);
     observeRawChunk(tracker, { type: 'finish', finishReason: { unified: 'other', raw: 'stop' } });
-    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
-    assert.equal(safety.decisions.get('call-1')?.action, 'execute');
+    assert.equal(hasProof(tracker, 'call-1', { providerReason: 'stop' }), true);
   });
 
   test('unknown is also rescuable when providerReason resolves to tool-calls', () => {
@@ -125,48 +123,42 @@ describe('tool-call-execution-guard', () => {
       type: 'finish',
       finishReason: { unified: 'unknown', raw: 'tool-calls' },
     });
-    const safety = resolveToolCallSafety(tracker, { providerReason: 'tool-calls' });
-    assert.equal(safety.decisions.get('call-1')?.action, 'execute');
+    assert.equal(hasProof(tracker, 'call-1', { providerReason: 'tool-calls' }), true);
   });
 
   test('an ambiguous reason with no rescuing providerReason still fails closed', () => {
     const tracker = createToolCallSafetyTracker();
     pushCompleteCall(tracker);
     observeRawChunk(tracker, { type: 'finish', finishReason: { unified: 'other', raw: 'other' } });
-    const safety = resolveToolCallSafety(tracker, { providerReason: 'other' });
-    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+    assert.equal(hasProof(tracker, 'call-1', { providerReason: 'other' }), false);
   });
 
   test('an abort terminal event is never rescued by providerReason', () => {
     const tracker = createToolCallSafetyTracker();
     pushCompleteCall(tracker);
     observeRawChunk(tracker, { type: 'abort' });
-    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
-    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+    assert.equal(hasProof(tracker, 'call-1', { providerReason: 'stop' }), false);
   });
 
   test('a provider error terminal event is never rescued by providerReason', () => {
     const tracker = createToolCallSafetyTracker();
     pushCompleteCall(tracker);
     observeRawChunk(tracker, { type: 'error', error: new Error('upstream 500') });
-    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
-    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+    assert.equal(hasProof(tracker, 'call-1', { providerReason: 'stop' }), false);
   });
 
   test('a directly observed length finish reason is never rescued by providerReason', () => {
     const tracker = createToolCallSafetyTracker();
     pushCompleteCall(tracker);
     observeRawChunk(tracker, { type: 'finish', finishReason: 'length' });
-    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
-    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+    assert.equal(hasProof(tracker, 'call-1', { providerReason: 'stop' }), false);
   });
 
   test('a directly observed content-filter finish reason is never rescued by providerReason', () => {
     const tracker = createToolCallSafetyTracker();
     pushCompleteCall(tracker);
     observeRawChunk(tracker, { type: 'finish', finishReason: 'content-filter' });
-    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
-    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+    assert.equal(hasProof(tracker, 'call-1', { providerReason: 'stop' }), false);
   });
 
   test('a second finish-shaped event is treated as poisoning, not a softer verdict', () => {
@@ -174,8 +166,7 @@ describe('tool-call-execution-guard', () => {
     pushCompleteCall(tracker);
     observeRawChunk(tracker, { type: 'finish', finishReason: { unified: 'other', raw: 'stop' } });
     observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
-    const safety = resolveToolCallSafety(tracker, { providerReason: 'stop' });
-    assert.notEqual(safety.decisions.get('call-1')?.action, 'execute');
+    assert.equal(hasProof(tracker, 'call-1', { providerReason: 'stop' }), false);
   });
 
   test('missing tool-input-end fails closed', () => {
@@ -187,7 +178,7 @@ describe('tool-call-execution-guard', () => {
       delta: '{"path":"a.md"}',
     });
     observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
-    assert.notEqual(actionFor(tracker), 'execute');
+    assert.equal(hasProof(tracker), false);
   });
 
   test('malformed JSON fails closed despite start/end and a safe finish', () => {
@@ -196,7 +187,7 @@ describe('tool-call-execution-guard', () => {
     observeRawChunk(tracker, { type: 'tool-input-delta', id: 'call-1', delta: '{"path":' });
     observeRawChunk(tracker, { type: 'tool-input-end', id: 'call-1' });
     observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
-    assert.notEqual(actionFor(tracker), 'execute');
+    assert.equal(hasProof(tracker), false);
   });
 
   test('delta before start is contradictory evidence and fails closed', () => {
@@ -205,7 +196,7 @@ describe('tool-call-execution-guard', () => {
     observeRawChunk(tracker, { type: 'tool-input-start', id: 'call-1', toolName: 'Write' });
     observeRawChunk(tracker, { type: 'tool-input-end', id: 'call-1' });
     observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
-    assert.notEqual(actionFor(tracker), 'execute');
+    assert.equal(hasProof(tracker), false);
   });
 
   test('duplicate start fails closed', () => {
@@ -215,7 +206,7 @@ describe('tool-call-execution-guard', () => {
     observeRawChunk(tracker, { type: 'tool-input-delta', id: 'call-1', delta: '{"path":"a.md"}' });
     observeRawChunk(tracker, { type: 'tool-input-end', id: 'call-1' });
     observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
-    assert.notEqual(actionFor(tracker), 'execute');
+    assert.equal(hasProof(tracker), false);
   });
 
   test('tool evidence after a terminal event poisons the request', () => {
@@ -223,10 +214,10 @@ describe('tool-call-execution-guard', () => {
     pushCompleteCall(tracker);
     observeRawChunk(tracker, { type: 'finish', finishReason: 'stop' });
     observeRawChunk(tracker, { type: 'tool-input-delta', id: 'call-1', delta: ' ' });
-    assert.notEqual(actionFor(tracker), 'execute');
+    assert.equal(hasProof(tracker), false);
   });
 
-  test('pure atomic delivery has no raw decision and keeps request-level evidence false', () => {
+  test('pure atomic delivery has no proof and keeps request-level evidence false', () => {
     const tracker = createToolCallSafetyTracker();
     observeRawChunk(tracker, { type: 'tool-input-start', id: 'call-1', toolName: 'Write' });
     observeRawChunk(tracker, { type: 'tool-input-end', id: 'call-1' });
@@ -240,10 +231,10 @@ describe('tool-call-execution-guard', () => {
 
     const safety = resolveToolCallSafety(tracker);
     assert.equal(safety.hadRawArgumentEvidence, false);
-    assert.equal(safety.decisions.has('call-1'), false);
+    assert.equal(safety.proofs.has('call-1'), false);
   });
 
-  test('a mixed request records raw evidence globally while leaving the atomic sibling undecided', () => {
+  test('a mixed request records raw evidence globally while leaving the atomic sibling unproved', () => {
     const tracker = createToolCallSafetyTracker();
     pushCompleteCall(tracker, 'call-incremental', { path: 'a.md' });
     observeRawChunk(tracker, { type: 'tool-input-start', id: 'call-atomic', toolName: 'Write' });
@@ -258,8 +249,8 @@ describe('tool-call-execution-guard', () => {
 
     const safety = resolveToolCallSafety(tracker);
     assert.equal(safety.hadRawArgumentEvidence, true);
-    assert.equal(safety.decisions.get('call-incremental')?.action, 'execute');
-    assert.equal(safety.decisions.has('call-atomic'), false);
+    assert.equal(safety.proofs.has('call-incremental'), true);
+    assert.equal(safety.proofs.has('call-atomic'), false);
   });
 
   test('concurrent request trackers can reuse call_1 without cross-resolution', () => {
@@ -270,9 +261,9 @@ describe('tool-call-execution-guard', () => {
     observeRawChunk(unsafe, { type: 'finish', finishReason: 'length' });
     observeRawChunk(safe, { type: 'finish', finishReason: 'stop' });
 
-    assert.equal(actionFor(safe, 'call_1'), 'execute');
-    assert.notEqual(actionFor(unsafe, 'call_1'), 'execute');
-    assert.deepEqual(resolveToolCallSafety(safe).decisions.get('call_1')?.value, {
+    assert.equal(hasProof(safe, 'call_1'), true);
+    assert.equal(hasProof(unsafe, 'call_1'), false);
+    assert.deepEqual(resolveToolCallSafety(safe).proofs.get('call_1')?.value, {
       path: 'safe.md',
     });
   });

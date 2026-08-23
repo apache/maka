@@ -52,18 +52,25 @@
  * `length-cutoff-tool-execution-repro.test.ts`, and `ai-sdk-backend.test.ts`).
  * For this tracker, zero raw deltas therefore means there is no raw-byte
  * completeness proof for that id, not that a partial byte stream was observed.
- * `resolveToolCallSafety` therefore omits an id that received no real
- * non-empty delta from `decisions` entirely.
  *
- * A caller (see `ai-sdk-backend.ts`) may only interpret that absence as
+ * `resolveToolCallSafety` represents only positive proof: `proofs` holds an
+ * entry for an id if and only if every condition below held — matching
+ * start, non-empty raw bytes, matching end, unpoisoned ordering, a raw-stream
+ * tool name, JSON that parses from exactly those bytes, and an
+ * execution-safe terminal classification. There is no separate
+ * rejected/retry state to distinguish from "never had raw evidence" — a call
+ * whose raw bytes streamed but failed any condition and a call with no raw
+ * bytes at all both simply have no entry, because a caller can never treat
+ * them differently anyway (see the next paragraph).
+ *
+ * A caller (see `ai-sdk-backend.ts`) may only interpret a missing proof as
  * "genuinely atomic; use the step-level fallback" when
  * `hadRawArgumentEvidence` is false for the WHOLE physical request. The
- * moment any sibling call streamed real bytes, another call's missing
- * decision is indistinguishable from an id mismatch between this tracker's
- * raw-chunk view and the SDK's resolved `tool-call`; that case must fail
- * closed. A call that did stream real delta bytes gets the strict raw-byte
- * verdict, including the raw-stream name/value as execution authority — never
- * the SDK's post-hoc projection of the same call.
+ * moment any sibling call streamed real bytes, another call's missing proof
+ * is indistinguishable from an id mismatch between this tracker's raw-chunk
+ * view and the SDK's resolved `tool-call`; that case must fail closed. A
+ * call with a present proof gets the raw-stream name/value as execution
+ * authority — never the SDK's post-hoc projection of the same call.
  *
  * Concurrency note: nothing here is shared across requests or stored beyond
  * one `ModelAdapter.startStream` result. `createToolCallSafetyTracker()` owns
@@ -82,7 +89,7 @@
 import type {
   ModelStepOutcome,
   ToolCallExecutionSafety,
-  ToolCallSafetyDecision,
+  ToolCallSafetyProof,
 } from './model-protocol.js';
 
 interface RawToolCallState {
@@ -228,10 +235,6 @@ export function observeRawChunk(tracker: ToolCallSafetyTracker, chunk: unknown):
   }
 }
 
-function rejectedDecision(): ToolCallSafetyDecision {
-  return { action: 'reject' };
-}
-
 /**
  * Whether this request's terminal state is execution-safe, given the
  * stronger provider reason `resolveToolCallSafety`'s caller already resolved
@@ -261,15 +264,15 @@ function isTerminalSafe(terminal: TerminalState, providerReason: string | undefi
 }
 
 /**
- * Resolves every call that actually streamed raw bytes. Positive execution
- * requires start + non-empty raw bytes + end + a raw-stream tool name + valid
- * JSON decoded from exactly those bytes + an execution-safe terminal
- * classification (see `isTerminalSafe`). Missing, contradictory, or
- * out-of-order evidence fails closed. `meta.providerReason` is the same
- * finish reason `ModelAdapter.startStream` resolves for step settlement
- * (`chunkFinishReason`, model-adapter.ts) — passing it lets an ambiguous
- * local classification agree with the stronger, already-computed answer
- * instead of the two diverging for the same physical request.
+ * Resolves every call that actually streamed raw bytes into a positive proof
+ * or no entry at all. A proof requires start + non-empty raw bytes + end + a
+ * raw-stream tool name + valid JSON decoded from exactly those bytes + an
+ * execution-safe terminal classification (see `isTerminalSafe`); missing,
+ * contradictory, or out-of-order evidence simply gets no proof. `meta.providerReason`
+ * is the same finish reason `ModelAdapter.startStream` resolves for step
+ * settlement (`chunkFinishReason`, model-adapter.ts) — passing it lets an
+ * ambiguous local classification agree with the stronger, already-computed
+ * answer instead of the two diverging for the same physical request.
  */
 export function resolveToolCallSafety(
   tracker: ToolCallSafetyTracker,
@@ -278,7 +281,7 @@ export function resolveToolCallSafety(
   if (tracker.resolved !== undefined) return tracker.resolved;
 
   const terminalSafe = isTerminalSafe(tracker.terminal, meta?.providerReason);
-  const decisions = new Map<string, ToolCallSafetyDecision>();
+  const proofs = new Map<string, ToolCallSafetyProof>();
   for (const id of tracker.idsWithRawDelta) {
     const state = tracker.calls.get(id);
     if (
@@ -289,21 +292,20 @@ export function resolveToolCallSafety(
       state.invalid ||
       state.name === undefined
     ) {
-      decisions.set(id, rejectedDecision());
       continue;
     }
 
     try {
       const value: unknown = JSON.parse(state.raw);
-      decisions.set(id, { action: 'execute', name: state.name, value });
+      proofs.set(id, { name: state.name, value });
     } catch {
-      decisions.set(id, rejectedDecision());
+      // No proof: the captured bytes did not parse as JSON.
     }
   }
 
   tracker.resolved = {
     hadRawArgumentEvidence: tracker.idsWithRawDelta.size > 0,
-    decisions,
+    proofs,
   };
   return tracker.resolved;
 }
