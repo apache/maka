@@ -378,6 +378,10 @@ export class ConnectionCatalogDocumentOwner {
       ? [...input.enabledModelIds]
       : previous.enabledModelIds.filter((id) => !retired.has(id));
     const connections = [...current.connections];
+    const relayModelProfiles = pruneRelayModelProfiles(
+      previous.relayModelProfiles,
+      migratedEnabledModelIds,
+    );
     connections[index] = {
       ...retained,
       revision: nextRevision(previous.revision),
@@ -387,7 +391,8 @@ export class ConnectionCatalogDocumentOwner {
         ? { modelSource: 'fallback' as const, modelsFetchedAt: 0 }
         : previous.modelSource === undefined
           ? {}
-          : { modelSource: previous.modelSource }),
+          : { modelSource: previous.modelSource, modelsFetchedAt: previous.modelsFetchedAt }),
+      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
     };
     const target = current.defaultTarget;
     const defaultTarget =

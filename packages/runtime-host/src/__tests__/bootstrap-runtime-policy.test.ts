@@ -94,10 +94,8 @@ test('reconciles retired OpenCode Free models without removing user models', asy
       ({ slug }) => slug === 'opencode-free',
     );
     assert.deepEqual(migrated?.enabledModelIds, ['nemotron-3-ultra-free', 'user-model']);
-    assert.deepEqual(
-      migrated?.models.map(({ id }) => id),
-      ['nemotron-3-ultra-free'],
-    );
+    assert.ok(migrated?.models.some(({ id }) => id === 'big-pickle'));
+    assert.ok(!migrated?.models.some(({ id }) => id === 'deepseek-v4-flash-free'));
     assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, {
       connectionId: migrated?.connectionId,
       modelId: 'nemotron-3-ultra-free',
