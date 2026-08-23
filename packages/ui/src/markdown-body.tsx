@@ -221,6 +221,10 @@ function MarkdownCode(props: {
       <CodeBlock
         code={props.code}
         language={props.language}
+        // Markdown fences are block content. Astryx defaults to fit-content
+        // with a 400px floor, which leaves short-code fences visibly narrow
+        // even when the surrounding transcript has room to stay readable.
+        width="100%"
         // Astryx otherwise overlays the copy button on headerless plaintext.
         // An empty title enables its structural header; once that header becomes
         // a collapse button, give plaintext the same localized code label that
