@@ -288,14 +288,17 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   }
 
   async getSessionResumeAvailability(session: SessionSummary): Promise<SessionResumeAvailability> {
-    if (this.#executionLocation.kind === 'host') {
-      if (!session.cwd) return { available: false, reason: 'Missing working directory' };
-      const plan = await this.#request('turn.resume.query', { sessionId: session.id });
-      return plan.disposition === 'ready'
-        ? { available: true }
-        : { available: false, reason: plan.reason };
-    }
     return inspectRuntimeHostSessionResumeAvailability(session, this.#executionLocation);
+  }
+
+  async getSessionResumeCandidateAvailability(
+    session: SessionSummary,
+  ): Promise<SessionResumeAvailability> {
+    if (!session.cwd) return { available: false, reason: 'Missing working directory' };
+    const plan = await this.#request('turn.resume.query', { sessionId: session.id });
+    return plan.disposition === 'ready'
+      ? { available: true }
+      : { available: false, reason: plan.reason };
   }
 
   async preparePrompt(

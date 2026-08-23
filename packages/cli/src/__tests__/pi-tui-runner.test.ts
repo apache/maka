@@ -3495,6 +3495,36 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('/session keeps attachable rows when resume discovery fails for another session', async () => {
+    const terminal = new FakeTerminal();
+    const attachable = fakeSessionSummary('attachable', '/repo');
+    const archived = fakeSessionSummary('archived', '/repo');
+    const driver = new SlashCommandDriver([attachable, archived]);
+    driver.getSessionResumeAvailability = async (session) => {
+      if (session.id === archived.id) throw new Error('session archived');
+      return { available: true };
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    assert.match(plainTerminalOutput(terminal.output()), /attachable/);
+
+    terminal.input('\x1b');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
   test('surfaces a notice when the foreign-session scan fails', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);

@@ -2261,6 +2261,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   };
 
+  let sessionListPromise: Promise<SessionSummary[]> | undefined;
+  const listSessions = (): Promise<SessionSummary[]> => {
+    if (!sessionListPromise) {
+      sessionListPromise = input.driver.listSessions().finally(() => {
+        sessionListPromise = undefined;
+      });
+    }
+    return sessionListPromise;
+  };
+
   const resumeSession = async () => {
     if (!input.driver.getSessionId()) {
       await showSessionList({ onlyResumable: true });
@@ -2284,7 +2294,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showSessionList = async (options: { onlyResumable?: boolean } = {}) => {
-    const sessions = await input.driver.listSessions();
+    const sessions = await listSessions();
     const sessionTree = projectRevisionLinkedSessionTree(
       sessions,
       input.driver.getSessionId() ?? undefined,
@@ -2299,11 +2309,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const [availabilityEntries, foreignScan] = await Promise.all([
       Promise.all(
         sessions.map(async (session) => {
-          return [
-            session.id,
-            (await input.driver.getSessionResumeAvailability?.(session)) ??
-              (await inspectSessionResumeAvailability(session)),
-          ] as const;
+          try {
+            const availability = options.onlyResumable
+              ? (await input.driver.getSessionResumeCandidateAvailability?.(session)) ??
+                (await input.driver.getSessionResumeAvailability?.(session)) ??
+                (await inspectSessionResumeAvailability(session))
+              : (await input.driver.getSessionResumeAvailability?.(session)) ??
+                (await inspectSessionResumeAvailability(session));
+            return [session.id, availability] as const;
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            return [session.id, { available: false, reason: detail }] as const;
+          }
         }),
       ),
       // Foreign (Claude Code / Codex) rows are an import flow: it starts a NEW
@@ -2417,14 +2434,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const announceResumeAvailability = async (): Promise<void> => {
     const sessionId = input.driver.getSessionId();
     try {
-      const sessions = await input.driver.listSessions();
+      if (!input.driver.getSessionResumeCandidateAvailability) return;
+      const sessions = await listSessions();
       const session =
         sessions.find((candidate) => candidate.id === sessionId) ??
         sessions.find((candidate) => candidate.cwd === cwd);
       if (!session) return;
       const availability =
-        (await input.driver.getSessionResumeAvailability?.(session)) ??
-        (await inspectSessionResumeAvailability(session));
+        await input.driver.getSessionResumeCandidateAvailability(session);
       if (availability.available) {
         state.entries.push({
           kind: 'notice',

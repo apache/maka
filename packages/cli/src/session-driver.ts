@@ -100,6 +100,7 @@ export class SkillInvocationBlockedError extends Error {
 export interface MakaSessionDriver {
   listSessions(): Promise<SessionSummary[]>;
   getSessionResumeAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;
+  getSessionResumeCandidateAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;
   preparePrompt(
     prompt: string,
     options?: MakaPreparePromptOptions,
