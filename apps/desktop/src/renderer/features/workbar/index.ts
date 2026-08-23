@@ -21,11 +21,6 @@ export { WorkbarHost } from './ui/workbar-host';
 export { WorkbarSurface } from './ui/workbar-surface';
 export { WorkbarTitlebarActions } from './ui/workbar-toggle';
 export { WorkbarServicesProvider } from './services-context';
-export {
-  useWorkbarController,
-  type WorkbarController,
-  type WorkbarControllerCommands,
-  type WorkbarControllerSelectors,
-} from './controller/use-workbar-controller';
+export { useWorkbarController } from './controller/use-workbar-controller';
 export type { SessionWorkbarTabKind } from './model/workbar-tabs';
 export type { WorkbarServices } from './ports';
