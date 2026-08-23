@@ -19,6 +19,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, userEvent, within } from 'storybook/test';
 import { ToolCallDetail, ToolTrow } from '../src/tool-activity.js';
 import type { ToolActivityItem } from '../src/materialize.js';
 import {
@@ -230,4 +231,48 @@ export const ContiguousDiffGroup: Story = {
       <ToolTrow items={args.items} />
     </Board>
   ),
+};
+
+const longIntentItems: ToolActivityItem[] = [
+  {
+    toolUseId: 'explore-agent-long-intent',
+    toolName: 'ExploreAgent',
+    displayName: '只读探索',
+    activityKind: 'tool',
+    status: 'completed',
+    intent: '审计模型选择、切换、持久化、event log、replay/resume 路径：当前模型事实由谁持有，何时切换，是否已有事件或消息可表达',
+    args: {},
+  },
+  {
+    toolUseId: 'explore-agent-long-intent-2',
+    toolName: 'ExploreAgent',
+    displayName: '只读探索',
+    activityKind: 'tool',
+    status: 'completed',
+    intent: '审计提示词构筑与缓存路径：追踪 durable system prompt、turnTailPrompt、provider-visible messages 与 request shape',
+    args: {},
+  },
+];
+
+// Regression path: a narrow conversation contains a grouped ExploreAgent run
+// whose intent summaries are much wider than the reading column. Expanding the
+// group must truncate those rows without widening the turn itself.
+export const LongIntentGroupNarrow: Story = {
+  args: { items: longIntentItems },
+  render: (args) => (
+    <div className="maka-turn" data-testid="narrow-turn" style={{ margin: '0 auto', width: 320 }}>
+      <ToolTrow items={args.items} />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole('button', { name: /2 次工具调用|2 tool calls/i }));
+    const turn = canvas.getByTestId('narrow-turn');
+    const group = turn.querySelector<HTMLElement>('.maka-tool-activity-card');
+    expect(group).not.toBeNull();
+    const rows = Array.from(group?.querySelectorAll<HTMLElement>('[role="button"]') ?? []);
+    expect(Math.max(...rows.map((row) => row.getBoundingClientRect().width))).toBeLessThanOrEqual(
+      turn.clientWidth + 8,
+    );
+  },
 };

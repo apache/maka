@@ -147,8 +147,11 @@
 
 /* Astryx clips the animated group body with overflow:hidden. `clip` preserves
    that visual boundary without becoming a scroll ancestor that captures the
-   nested sticky row. */
+   nested sticky row. The inner wrapper is also a grid item: without an explicit
+   zero minimum its long, nowrap call preview becomes the track's minimum size
+   and stretches every expanded row past the turn instead of ellipsizing it. */
 .maka-turn .maka-tool-activity-card > [role="button"] + div > div {
+  min-width: 0;
   overflow: clip;
 }
 
