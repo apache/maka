@@ -1559,12 +1559,7 @@ describe('Maka Pi TUI transcript', () => {
       }),
     );
 
-    // The poll is in flight, but no Read row ever appears — the parent card is
-    // the only tool entry throughout.
-    assert.deepEqual(
-      state.entries.filter((entry) => entry.kind === 'tool').map((tool) => tool.toolUseId),
-      ['bash-bg'],
-    );
+    // The poll is in flight, but no Read row ever appears.
     const inFlight = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.doesNotMatch(inFlight, /● Read/);
 
@@ -1777,6 +1772,69 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(rendered, /background task no longer exists/);
   });
 
+  test('surfaces a failed poll at the tail without rewriting scrollback', () => {
+    const state = createMakaPiTranscriptState();
+    const ref = 'maka://runtime/background-tasks/bg-1';
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'bash-bg',
+        toolName: 'Bash',
+        args: { command: 'npm test' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-bg',
+        isError: false,
+        content: shellRun({ ref, status: 'running' }),
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'read-bg',
+        toolName: 'Read',
+        args: { ref },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'text_delta',
+        messageId: 'assistant-late',
+        text: 'Still working\nwith more output',
+      }),
+    );
+
+    const before = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi);
+    const assistant = state.entries.find(
+      (entry) => entry.kind === 'assistant' && entry.messageId === 'assistant-late',
+    );
+    assert.ok(assistant);
+    const viewportTop = state.renderGeometry.entryFirstLine?.get(assistant);
+    assert.ok(viewportTop !== undefined && viewportTop > 0);
+    state.renderGeometry.viewportTop = viewportTop;
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'read-bg',
+        isError: true,
+        content: { kind: 'text', text: 'background task no longer exists' },
+      }),
+    );
+
+    const after = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi);
+    assert.deepEqual(after.slice(0, viewportTop), before.slice(0, viewportTop));
+    assert.match(after.slice(viewportTop).join('\n'), /● Read/);
+  });
+
   test('never renders a StopBackgroundTask card while the stop is in flight', () => {
     const state = createMakaPiTranscriptState();
     const ref = 'maka://runtime/background-tasks/bg-1';
@@ -1809,10 +1867,8 @@ describe('Maka Pi TUI transcript', () => {
     );
 
     // No transient stop row while the stop call is in flight.
-    assert.deepEqual(
-      state.entries.filter((entry) => entry.kind === 'tool').map((tool) => tool.toolUseId),
-      ['bash-bg'],
-    );
+    const inFlight = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    assert.doesNotMatch(inFlight, /● StopBackgroundTask/);
 
     applyMakaSessionEventToTranscript(
       state,
@@ -2346,11 +2402,13 @@ describe('Maka Pi TUI transcript', () => {
         args: { ref },
       }),
     );
-    assert.equal(state.pendingShellRunPolls.size, 1);
+    const beforeAbort = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    assert.doesNotMatch(beforeAbort, /● Read/);
 
     applyMakaSessionEventToTranscript(state, event({ type: 'abort', reason: 'user_stop' }));
 
-    assert.equal(state.pendingShellRunPolls.size, 0);
+    const afterAbort = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    assert.doesNotMatch(afterAbort, /● Read/);
   });
 
   test('folds a background-task Read result into its parent Bash card', () => {

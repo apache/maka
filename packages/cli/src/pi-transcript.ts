@@ -94,14 +94,6 @@ export interface MakaPiTranscriptState {
    * entryInLiveViewport.
    */
   renderGeometry: MakaPiRenderGeometry;
-  /**
-   * Ref polls folded at `tool_start`, childToolUseId → card facts. A Read /
-   * StopBackgroundTask aimed at a ref a visible Bash card owns is internal
-   * polling: it never renders a row, and its result folds straight into the
-   * parent. The facts survive only so an errored poll can surface as a normal
-   * card instead of being swallowed.
-   */
-  pendingShellRunPolls: Map<string, MakaPiPendingShellRunPoll>;
   /** Aggregated token usage for statusline display; reset on session switch. */
   usage: MakaPiUsageSummary;
   /**
@@ -143,13 +135,6 @@ export interface MakaPiRenderGeometry {
   viewportTop: number;
 }
 
-/** Facts kept from a folded poll's `tool_start` so an errored result can still materialize a proper card. */
-export interface MakaPiPendingShellRunPoll {
-  toolName: string;
-  title?: string;
-  input: unknown;
-}
-
 /** A single live output chunk from a `tool_output_delta` event. */
 export interface MakaPiToolOutputDelta {
   seq: number;
@@ -186,10 +171,9 @@ export type MakaPiTranscriptEntry =
       /** Expanded card view; stamped from expandAllTools, retargeted by Ctrl+O. */
       expanded: boolean;
       /**
-       * Set when a successful shell-run poll is folded into its parent while
-       * off-screen: the entry cannot be spliced (that would shift line numbers
-       * and clear scrollback), but it must not render as an independent card
-       * on a future full redraw. A hidden entry contributes zero lines.
+       * Set while an internal shell-run poll is in flight, or after one is
+       * folded into an off-screen parent. A hidden entry contributes zero
+       * lines, preserving terminal scrollback while retaining one tool state.
        */
       hidden?: boolean;
     }
@@ -229,7 +213,6 @@ export function createMakaPiTranscriptState(): MakaPiTranscriptState {
     expandAllTools: false,
     expandAllThinking: false,
     renderGeometry: { entryFirstLine: undefined, viewportTop: 0 },
-    pendingShellRunPolls: new Map(),
     usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0 },
     steering: [],
     followup: [],
@@ -342,7 +325,6 @@ export function replaceTranscriptWithStoredMessages(
   const view = materializeSession(messages);
   state.entries = foldStoredShellRunChildren(view.items.flatMap(chatItemToTranscriptEntries));
   clearPendingInteractions(state);
-  state.pendingShellRunPolls.clear();
   state.expandAllTools = false;
   state.expandAllThinking = false;
   // The old entries are gone; no position is known until the next render, and
@@ -578,17 +560,11 @@ export function applyMakaSessionEventToTranscript(
       // folds into the parent at tool_result. A poll is folded only when its
       // parent card already carries the run's shell_run result — otherwise it
       // renders normally and the tool_result fold below still applies.
-      if (event.toolName === 'Read' || event.toolName === 'StopBackgroundTask') {
-        const ref = readArgsRef(event.args);
-        if (ref && findShellRunParent(state, ref, event.toolUseId)) {
-          state.pendingShellRunPolls.set(event.toolUseId, {
-            toolName: event.toolName,
-            ...(event.displayName ? { title: event.displayName } : {}),
-            input: projectToolActivityArgs(event.toolName, event.args),
-          });
-          break;
-        }
-      }
+      const ref = readArgsRef(event.args);
+      const hidden =
+        (event.toolName === 'Read' || event.toolName === 'StopBackgroundTask') &&
+        !!ref &&
+        !!findShellRunParent(state, ref, event.toolUseId);
       state.entries.push({
         kind: 'tool',
         turnId: event.turnId,
@@ -601,45 +577,12 @@ export function applyMakaSessionEventToTranscript(
         outputDeltas: createOutputBuffer(),
         status: 'running',
         expanded: state.expandAllTools,
+        ...(hidden ? { hidden: true } : {}),
       });
       break;
     }
 
     case 'tool_result': {
-      const foldedPoll = state.pendingShellRunPolls.get(event.toolUseId);
-      if (foldedPoll) {
-        state.pendingShellRunPolls.delete(event.toolUseId);
-        const shellRun = event.content.kind === 'shell_run' ? event.content : undefined;
-        const parent = shellRun
-          ? findShellRunParent(state, shellRun.ref, event.toolUseId)
-          : undefined;
-        // isError is the call-level authoritative status: a failed call never
-        // folds, even when it carries a well-formed shell_run payload.
-        if (parent && shellRun && !event.isError) {
-          applyLiveShellRunResultToParent(state, parent, shellRun);
-          break;
-        }
-        // The poll failed (or lost its parent): surface a normal card so the
-        // failure is never swallowed by the fold.
-        const entry: MakaPiToolEntry = {
-          kind: 'tool',
-          turnId: event.turnId,
-          toolUseId: event.toolUseId,
-          toolName: foldedPoll.toolName,
-          ...(foldedPoll.title ? { title: foldedPoll.title } : {}),
-          input: foldedPoll.input,
-          progress: createProgressBuffer(),
-          outputDeltas: createOutputBuffer(),
-          result: event.content,
-          resultVersion: 1,
-          durationMs: event.durationMs,
-          status: event.isError ? 'error' : 'done',
-          expanded: state.expandAllTools,
-        };
-        if (shellRun && !event.isError) applyOwnShellRunResult(entry, shellRun, event.durationMs);
-        state.entries.push(entry);
-        break;
-      }
       const tool = findToolEntry(state, event.toolUseId);
       const shellRun = event.content.kind === 'shell_run' ? event.content : undefined;
       const parent = shellRun
@@ -666,6 +609,7 @@ export function applyMakaSessionEventToTranscript(
         break;
       }
       if (tool) {
+        if (tool.hidden) revealToolAtTail(state, tool);
         if (shellRun) {
           if (tool.toolName === 'Bash') {
             applyShellRunResult(tool, shellRun);
@@ -794,7 +738,6 @@ export function applyMakaSessionEventToTranscript(
 
     case 'error':
       clearPendingInteractions(state);
-      state.pendingShellRunPolls.clear();
       state.entries.push({
         kind: 'notice',
         level: 'error',
@@ -804,7 +747,6 @@ export function applyMakaSessionEventToTranscript(
 
     case 'abort':
       clearPendingInteractions(state);
-      state.pendingShellRunPolls.clear();
       state.entries.push({
         kind: 'notice',
         level: 'info',
@@ -1603,6 +1545,14 @@ function findToolEntry(
     .find(
       (entry): entry is MakaPiToolEntry => entry.kind === 'tool' && entry.toolUseId === toolUseId,
     );
+}
+
+function revealToolAtTail(state: MakaPiTranscriptState, tool: MakaPiToolEntry): void {
+  tool.hidden = undefined;
+  const index = state.entries.indexOf(tool);
+  if (index < 0 || index === state.entries.length - 1) return;
+  state.entries.splice(index, 1);
+  state.entries.push(tool);
 }
 
 function createProgressBuffer(): BoundedChunkBuffer<string> {
