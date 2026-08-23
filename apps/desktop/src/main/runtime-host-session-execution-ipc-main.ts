@@ -73,7 +73,6 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "queryTurnResume"
   | "readExecutionBoundary"
   | "regenerateTurn"
-  | "retractQueue"
   | "retractQueueEntry"
   | "promoteQueueEntry"
   | "reorderQueueEntries"
@@ -484,13 +483,6 @@ export function registerRuntimeHostSessionExecutionIpc(
       });
     },
   );
-  ipcMain.handle("sessions:retractQueue", async (_event, sessionId: string) => {
-    const result = await deps.client.retractQueue({
-      sessionId,
-      retractId: newId(),
-    });
-    return aggregateMessageContents(result.retracted.map((entry) => entry.content));
-  });
   ipcMain.handle(
     "sessions:stop",
     async (_event, sessionId: string, input: unknown) => {
