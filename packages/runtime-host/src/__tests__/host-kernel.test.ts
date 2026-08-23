@@ -162,7 +162,6 @@ describe('non-serving Runtime Host kernel', () => {
       connectOrSpawnRuntimeHostWithDependencies(
         {
           rootPath: '/not-resolved',
-          surface: 'tui',
           protocol: CURRENT_PROTOCOL,
           compositionId: KERNEL_COMPOSITION.descriptor.id,
           candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
@@ -194,7 +193,6 @@ describe('non-serving Runtime Host kernel', () => {
       const connected = await connectOrSpawnRuntimeHostWithDependencies(
         {
           rootPath: paths.root,
-          surface: 'tui',
           protocol: CURRENT_PROTOCOL,
           compositionId: KERNEL_COMPOSITION.descriptor.id,
           candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
@@ -224,7 +222,6 @@ describe('non-serving Runtime Host kernel', () => {
       const connected = await connectOrSpawnRuntimeHostWithDependencies(
         {
           rootPath: paths.root,
-          surface: 'tui',
           protocol: CURRENT_PROTOCOL,
           compositionId: KERNEL_COMPOSITION.descriptor.id,
           candidateEntrypoint: KERNEL_CANDIDATE_ENTRYPOINT,
