@@ -19,7 +19,7 @@
 
 # Gitoxide repository admission capability v1
 
-状态：Gitoxide 验证栈的最后一个 API-only Draft；尚未接 T1、source import 或 managed workspace。
+状态：Gitoxide control-plane admission Draft；source import data plane 作为下一独立切片消费该 capability。
 
 ## 1. 主要不变量
 
@@ -86,7 +86,7 @@ capability 表示一次明确线性化点上的 immutable Git commit/tree snapsh
 
 - signed packaged-release trust root 与受保护安装路径；
 - Desktop/CLI 消费者；
-- T1 durable admission、source import、projection、candidate 与 ref CAS。
+- T1 durable admission、projection、candidate 与 ref CAS；source import 由后续独立 Draft 实现。
 
 因此这些 PR 可以作为 Gitoxide backend 的验证栈审查，但在正式 release owner 和生产消费者接入前
 继续保持 Draft。

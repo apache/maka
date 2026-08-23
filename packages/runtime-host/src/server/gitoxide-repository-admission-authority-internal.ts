@@ -20,7 +20,9 @@
 import { realpath } from 'node:fs/promises';
 import type { GitoxideHelperInvocationCapability } from './gitoxide-helper-artifact-authority-internal.js';
 import {
+  importSourceHeadWithGitoxideHelperInternal,
   inspectRepositoryWithGitoxideHelperInternal,
+  type GitoxideSourceImportObservationV1,
   type GitoxideRepositoryRejectionV1,
 } from './gitoxide-helper-invocation-internal.js';
 
@@ -103,4 +105,37 @@ export function requireGitoxideRepositoryAdmissionInternal(
     );
   }
   return state.state;
+}
+
+export async function importAdmittedGitoxideRepositoryInternal(input: {
+  readonly invocationOwnerToken: object;
+  readonly helperCapability: GitoxideHelperInvocationCapability;
+  readonly admissionOwnerToken: object;
+  readonly repositoryCapability: GitoxideRepositoryAdmissionCapability;
+  readonly destinationRepositoryPath: string;
+  readonly baselineRef: string;
+  readonly abortSignal?: AbortSignal;
+}): Promise<GitoxideSourceImportObservationV1> {
+  const source = requireGitoxideRepositoryAdmissionInternal(
+    input.admissionOwnerToken,
+    input.repositoryCapability,
+  );
+  const result = await importSourceHeadWithGitoxideHelperInternal({
+    invocationOwnerToken: input.invocationOwnerToken,
+    capability: input.helperCapability,
+    sourceRepositoryPath: source.repositoryPath,
+    expectedSourceHeadCommitOid: source.headCommitOid,
+    destinationRepositoryPath: input.destinationRepositoryPath,
+    baselineRef: input.baselineRef,
+    abortSignal: input.abortSignal,
+  });
+  if (
+    result.sourceHeadCommitOid !== source.headCommitOid ||
+    result.sourceTreeOid !== source.headTreeOid
+  ) {
+    throw new GitoxideRepositoryAdmissionAuthorityError(
+      'gitoxide_repository_admission_capability_invalid',
+    );
+  }
+  return result;
 }

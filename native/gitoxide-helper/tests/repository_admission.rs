@@ -107,7 +107,76 @@ fn observes_raw_head_identity_instead_of_replacement_ref_semantics() {
     assert_eq!(response["headTreeOid"], expected_tree);
 }
 
+#[test]
+fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    fs::create_dir_all(fixture.root.join("docs")).unwrap();
+    fs::write(fixture.root.join("docs/guide.txt"), b"nested guide\n").unwrap();
+    fixture.git(["add", "docs/guide.txt"]);
+    fixture.git([
+        "-c",
+        "user.name=Maka Test",
+        "-c",
+        "user.email=maka@example.invalid",
+        "commit",
+        "-m",
+        "source import fixture",
+    ]);
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let source_tree = fixture.git_output(["rev-parse", "HEAD^{tree}"]);
+    let destination = fixture.root.join("managed.git");
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline",
+    }));
+
+    assert!(
+        output.status.success(),
+        "helper failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["kind"], "source_imported");
+    assert_eq!(response["sourceHeadCommitOid"], source_head);
+    assert_eq!(response["sourceTreeOid"], source_tree);
+    assert_eq!(response["baselineTreeOid"], source_tree);
+    assert_eq!(response["filesImported"], 2);
+    assert_eq!(response["bytesImported"], 29);
+    let baseline_commit = response["baselineCommitOid"].as_str().unwrap();
+    assert_ne!(baseline_commit, source_head);
+    assert_eq!(
+        git_bare_output(&destination, ["rev-parse", "refs/maka/baseline"]),
+        baseline_commit
+    );
+    assert_eq!(
+        git_bare_output(
+            &destination,
+            ["rev-parse", &format!("{baseline_commit}^{{tree}}")]
+        ),
+        source_tree
+    );
+    assert!(!git_bare_succeeds(
+        &destination,
+        ["cat-file", "-e", source_head.as_str()]
+    ));
+    assert!(!destination.join("objects/info/alternates").exists());
+}
+
 fn invoke_helper(repository_path: &Path) -> Output {
+    invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "inspect_repository",
+        "repositoryPath": repository_path,
+    }))
+}
+
+fn invoke_request(request: serde_json::Value) -> Output {
     let mut child = Command::new(HELPER)
         .env("PATH", "")
         .env("GIT_CONFIG_COUNT", "1")
@@ -118,11 +187,6 @@ fn invoke_helper(repository_path: &Path) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let request = serde_json::json!({
-        "protocolVersion": 1,
-        "operation": "inspect_repository",
-        "repositoryPath": repository_path,
-    });
     child
         .stdin
         .take()
@@ -130,6 +194,27 @@ fn invoke_helper(repository_path: &Path) -> Output {
         .write_all(serde_json::to_string(&request).unwrap().as_bytes())
         .unwrap();
     child.wait_with_output().unwrap()
+}
+
+fn git_bare_output<const N: usize>(repository: &Path, args: [&str; N]) -> String {
+    let output = Command::new("git")
+        .arg("--git-dir")
+        .arg(repository)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn git_bare_succeeds<const N: usize>(repository: &Path, args: [&str; N]) -> bool {
+    Command::new("git")
+        .arg("--git-dir")
+        .arg(repository)
+        .args(args)
+        .status()
+        .unwrap()
+        .success()
 }
 
 struct RepositoryFixture {

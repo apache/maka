@@ -32,6 +32,7 @@ const MAX_STDERR_BYTES = 16 * 1024;
 const INVOCATION_TIMEOUT_MS = 5_000;
 const SHA1_OID_PATTERN = /^[0-9a-f]{40}$/;
 const OBJECT_FORMAT_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const MAKA_REF_PATTERN = /^refs\/maka\/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/;
 const HELPER_ERROR_REASONS = new Set([
   'request_read_failed',
   'request_too_large',
@@ -41,6 +42,31 @@ const HELPER_ERROR_REASONS = new Set([
   'repository_open_failed',
   'head_commit_unavailable',
   'head_tree_unavailable',
+  'baseline_commit_write_failed',
+  'baseline_publish_failed',
+  'baseline_ref_outside_maka_namespace',
+  'import_destination_create_failed',
+  'import_destination_not_fresh',
+  'import_destination_object_format_mismatch',
+  'import_destination_unreadable',
+  'import_hooks_cleanup_failed',
+  'invalid_source_head_commit_oid',
+  'source_blob_copy_failed',
+  'source_blob_identity_mismatch',
+  'source_blob_invalid',
+  'source_blob_unavailable',
+  'source_byte_limit_exceeded',
+  'source_file_limit_exceeded',
+  'source_head_commit_mismatch',
+  'source_head_commit_unavailable',
+  'source_head_tree_unavailable',
+  'source_path_collision',
+  'source_tree_copy_failed',
+  'source_tree_identity_mismatch',
+  'source_tree_invalid',
+  'source_tree_unavailable',
+  'unsupported_source_entry_kind',
+  'unsupported_source_path',
 ]);
 
 export interface GitoxideRepositoryObservationV1 {
@@ -62,6 +88,19 @@ export interface GitoxideRepositoryRejectionV1 {
 export type GitoxideRepositoryInspectionResultV1 =
   | GitoxideRepositoryObservationV1
   | GitoxideRepositoryRejectionV1;
+
+export interface GitoxideSourceImportObservationV1 {
+  readonly kind: 'source_imported';
+  readonly protocolVersion: 1;
+  readonly objectFormat: 'sha1';
+  readonly sourceHeadCommitOid: string;
+  readonly sourceTreeOid: string;
+  readonly baselineCommitOid: string;
+  readonly baselineTreeOid: string;
+  readonly baselineRef: string;
+  readonly filesImported: number;
+  readonly bytesImported: number;
+}
 
 export type GitoxideHelperInvocationErrorCode =
   | 'gitoxide_helper_invocation_invalid'
@@ -127,6 +166,61 @@ export async function inspectRepositoryWithGitoxideHelperInternal(input: {
     abortSignal: input.abortSignal,
   });
   return decodeOutcome(outcome);
+}
+
+export async function importSourceHeadWithGitoxideHelperInternal(input: {
+  readonly invocationOwnerToken: object;
+  readonly capability: GitoxideHelperInvocationCapability;
+  readonly sourceRepositoryPath: string;
+  readonly expectedSourceHeadCommitOid: string;
+  readonly destinationRepositoryPath: string;
+  readonly baselineRef: string;
+  readonly abortSignal?: AbortSignal;
+}): Promise<GitoxideSourceImportObservationV1> {
+  throwIfAborted(input.abortSignal);
+  if (
+    !isAbsolute(input.sourceRepositoryPath) ||
+    !isAbsolute(input.destinationRepositoryPath) ||
+    !SHA1_OID_PATTERN.test(input.expectedSourceHeadCommitOid) ||
+    !MAKA_REF_PATTERN.test(input.baselineRef)
+  ) {
+    throw new GitoxideHelperInvocationError(
+      'gitoxide_helper_invocation_invalid',
+      'Gitoxide source import request is invalid',
+    );
+  }
+  const [artifact, sourceRepositoryPath] = await Promise.all([
+    verifyGitoxideHelperArtifactForInvocationInternal(input.invocationOwnerToken, input.capability),
+    realpath(input.sourceRepositoryPath).catch((error) => {
+      throw new GitoxideHelperInvocationError(
+        'gitoxide_helper_invocation_invalid',
+        `Gitoxide source repository path could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }),
+  ]);
+  throwIfAborted(input.abortSignal);
+  const request = Buffer.from(
+    JSON.stringify({
+      protocolVersion: artifact.protocolVersion,
+      operation: 'import_source_head',
+      sourceRepositoryPath,
+      expectedSourceHeadCommitOid: input.expectedSourceHeadCommitOid,
+      destinationRepositoryPath: input.destinationRepositoryPath,
+      baselineRef: input.baselineRef,
+    }),
+  );
+  if (request.length > MAX_REQUEST_BYTES) {
+    throw new GitoxideHelperInvocationError(
+      'gitoxide_helper_invocation_invalid',
+      'Gitoxide helper request exceeds its byte limit',
+    );
+  }
+  const outcome = await invokeHelper({
+    executablePath: artifact.executablePath,
+    request,
+    abortSignal: input.abortSignal,
+  });
+  return decodeSourceImportOutcome(outcome);
 }
 
 interface HelperProcessOutcome {
@@ -290,6 +384,70 @@ function decodeOutcome(outcome: HelperProcessOutcome): GitoxideRepositoryInspect
   const stderr = outcome.stderr.toString('utf8').trim();
   throw protocolInvalid(
     `Gitoxide helper exit code and response disagree${stderr ? `: ${stderr}` : ''}`,
+  );
+}
+
+function decodeSourceImportOutcome(
+  outcome: HelperProcessOutcome,
+): GitoxideSourceImportObservationV1 {
+  if (outcome.signal !== null) {
+    throw new GitoxideHelperInvocationError(
+      'gitoxide_helper_invocation_protocol_invalid',
+      `Gitoxide helper exited from signal ${outcome.signal}`,
+    );
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(outcome.stdout.toString('utf8'));
+  } catch {
+    throw protocolInvalid('Gitoxide helper stdout is not one JSON response');
+  }
+  if (outcome.exitCode === 0 && isSourceImportObservation(value)) return Object.freeze(value);
+  if (outcome.exitCode === 1 && isHelperError(value)) {
+    throw new GitoxideHelperInvocationError(
+      'gitoxide_helper_operation_failed',
+      `Gitoxide helper could not import the source repository: ${value.reason}`,
+      value.reason,
+    );
+  }
+  const stderr = outcome.stderr.toString('utf8').trim();
+  throw protocolInvalid(
+    `Gitoxide helper exit code and response disagree${stderr ? `: ${stderr}` : ''}`,
+  );
+}
+
+function isSourceImportObservation(value: unknown): value is GitoxideSourceImportObservationV1 {
+  return (
+    hasExactKeys(value, [
+      'protocolVersion',
+      'kind',
+      'objectFormat',
+      'sourceHeadCommitOid',
+      'sourceTreeOid',
+      'baselineCommitOid',
+      'baselineTreeOid',
+      'baselineRef',
+      'filesImported',
+      'bytesImported',
+    ]) &&
+    value.protocolVersion === 1 &&
+    value.kind === 'source_imported' &&
+    value.objectFormat === 'sha1' &&
+    typeof value.sourceHeadCommitOid === 'string' &&
+    SHA1_OID_PATTERN.test(value.sourceHeadCommitOid) &&
+    typeof value.sourceTreeOid === 'string' &&
+    SHA1_OID_PATTERN.test(value.sourceTreeOid) &&
+    typeof value.baselineCommitOid === 'string' &&
+    SHA1_OID_PATTERN.test(value.baselineCommitOid) &&
+    typeof value.baselineTreeOid === 'string' &&
+    SHA1_OID_PATTERN.test(value.baselineTreeOid) &&
+    value.baselineTreeOid === value.sourceTreeOid &&
+    typeof value.baselineRef === 'string' &&
+    MAKA_REF_PATTERN.test(value.baselineRef) &&
+    Number.isSafeInteger(value.filesImported) &&
+    (value.filesImported as number) >= 0 &&
+    Number.isSafeInteger(value.bytesImported) &&
+    (value.bytesImported as number) >= 0
   );
 }
 

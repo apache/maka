@@ -32,6 +32,7 @@ import {
 import {
   admitGitoxideRepositoryInternal,
   GitoxideRepositoryAdmissionAuthorityError,
+  importAdmittedGitoxideRepositoryInternal,
   requireGitoxideRepositoryAdmissionInternal,
 } from '../server/gitoxide-repository-admission-authority-internal.js';
 
@@ -116,6 +117,66 @@ test('returns a policy rejection without issuing an admission capability', async
   );
 });
 
+test('imports only the exact repository identity bound to the admission capability', async (t) => {
+  const helper = await admittedHelper();
+  if (!helper) {
+    t.skip('MAKA_GITOXIDE_HELPER_PATH is required for the real helper contract test');
+    return;
+  }
+  const repositoryPath = await createRepository(t, 'sha1');
+  await writeFile(join(repositoryPath, 'hello.txt'), 'hello from source import authority\n');
+  git(repositoryPath, ['add', 'hello.txt']);
+  git(repositoryPath, [
+    '-c',
+    'user.name=Maka Test',
+    '-c',
+    'user.email=maka@example.invalid',
+    'commit',
+    '--quiet',
+    '-m',
+    'fixture',
+  ]);
+  const expectedCommit = git(repositoryPath, ['rev-parse', 'HEAD']);
+  const expectedTree = git(repositoryPath, ['rev-parse', 'HEAD^{tree}']);
+  const admissionOwnerToken = {};
+  const admitted = await admitGitoxideRepositoryInternal({
+    ...helper,
+    admissionOwnerToken,
+    repositoryPath,
+  });
+  assert.equal(admitted.kind, 'accepted');
+  if (admitted.kind !== 'accepted') return;
+  const destinationRepositoryPath = join(repositoryPath, 'managed.git');
+
+  const imported = await importAdmittedGitoxideRepositoryInternal({
+    ...helper,
+    admissionOwnerToken,
+    repositoryCapability: admitted.capability,
+    destinationRepositoryPath,
+    baselineRef: 'refs/maka/baseline',
+  });
+
+  assert.equal(imported.sourceHeadCommitOid, expectedCommit);
+  assert.equal(imported.sourceTreeOid, expectedTree);
+  assert.equal(imported.baselineTreeOid, expectedTree);
+  assert.equal(
+    gitBare(destinationRepositoryPath, ['rev-parse', 'refs/maka/baseline']),
+    imported.baselineCommitOid,
+  );
+  await assert.rejects(
+    importAdmittedGitoxideRepositoryInternal({
+      ...helper,
+      admissionOwnerToken: {},
+      repositoryCapability: admitted.capability,
+      destinationRepositoryPath: join(repositoryPath, 'forged.git'),
+      baselineRef: 'refs/maka/forged',
+    }),
+    (error) =>
+      error instanceof GitoxideRepositoryAdmissionAuthorityError &&
+      error.code === 'gitoxide_repository_admission_capability_invalid',
+  );
+});
+
 async function admittedHelper(): Promise<AdmittedHelper | undefined> {
   if (admittedHelperPromise) return admittedHelperPromise;
   admittedHelperPromise = (async () => {
@@ -153,4 +214,10 @@ async function createRepository(t: TestContext, objectFormat: 'sha1' | 'sha256')
 
 function git(cwd: string, args: readonly string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+}
+
+function gitBare(repositoryPath: string, args: readonly string[]): string {
+  return execFileSync('git', [`--git-dir=${repositoryPath}`, ...args], {
+    encoding: 'utf8',
+  }).trim();
 }
