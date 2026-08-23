@@ -29,7 +29,7 @@ import type { AttachmentByteReader } from '@maka/core/attachments';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionHeader } from '@maka/core/session';
-import type { StorageRef } from '@maka/core/events';
+import type { AttachmentRef, StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -2216,6 +2216,389 @@ describe('AiSdkBackend model history', () => {
     assert.ok(
       text.includes('does not support image input'),
       `expected non-vision fallback note in: ${text}`,
+    );
+  });
+
+  test('materializes PDF attachments consistently for current, RuntimeEvent, and stored replay', async () => {
+    const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 1, 2, 3]);
+    const pdf = {
+      kind: 'pdf' as const,
+      name: 'brief.pdf',
+      mimeType: 'application/pdf',
+      bytes: pdfBytes.length,
+      ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: 'brief' },
+    };
+    const cases: Array<{ name: string; input: BackendSendInput }> = [
+      {
+        name: 'current turn',
+        input: {
+          turnId: 'turn-current',
+          text: 'read the current PDF',
+          attachments: [pdf],
+          context: [],
+          runtimeContext: [],
+        },
+      },
+      {
+        name: 'RuntimeEvent replay',
+        input: {
+          turnId: 'turn-current',
+          text: 'continue',
+          context: [],
+          runtimeContext: [
+            runtimeEvent({
+              id: 'rt-pdf',
+              turnId: 'turn-prev',
+              role: 'user',
+              author: 'user',
+              content: { kind: 'text', text: 'read the replayed PDF', attachments: [pdf] },
+            }),
+            runtimeTextEvent({
+              id: 'rt-answer',
+              turnId: 'turn-prev',
+              role: 'model',
+              author: 'agent',
+              text: 'noted',
+            }),
+          ],
+        },
+      },
+      {
+        name: 'stored-message fallback',
+        input: {
+          turnId: 'turn-current',
+          text: 'continue',
+          context: [
+            {
+              type: 'user',
+              id: 'stored-user',
+              turnId: 'turn-prev',
+              ts: 1,
+              text: 'read the stored PDF',
+              attachments: [pdf],
+            },
+            {
+              type: 'assistant',
+              id: 'stored-assistant',
+              turnId: 'turn-prev',
+              ts: 2,
+              text: 'noted',
+              modelId: 'm',
+            },
+          ],
+          runtimeContext: [
+            {
+              id: 'rt-terminal',
+              invocationId: 'inv-prev',
+              runId: 'run-prev',
+              sessionId: 'session-1',
+              turnId: 'turn-prev',
+              ts: 1,
+              partial: false,
+              role: 'model',
+              author: 'agent',
+              status: 'completed',
+              actions: { endInvocation: true },
+            },
+          ],
+        },
+      },
+    ];
+
+    for (const scenario of cases) {
+      const model = completionModel();
+      const backend = createTestAiSdkBackend({
+        sessionId: 'session-1',
+        header: header(),
+        appendMessage: async () => {},
+        connection: connection(),
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [],
+        newId: idGenerator(),
+        now: monotonicClock(),
+        supportsNativePdfInput: true,
+        readAttachmentBytes: async () => ({ ok: true, bytes: pdfBytes }),
+      });
+
+      await drain(backend.send(scenario.input));
+
+      const prompt = compactPrompt(model) as Array<{ content: unknown }>;
+      const pdfParts = prompt
+        .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+        .filter(
+          (part: any) =>
+            part.type === 'file' &&
+            part.mediaType === 'application/pdf' &&
+            part.filename === 'brief.pdf',
+        );
+      assert.equal(pdfParts.length, 1, `${scenario.name}: ${JSON.stringify(prompt)}`);
+      assert.deepEqual(pdfParts[0]?.data, { type: 'data', data: pdfBytes });
+    }
+  });
+
+  test('never reads or sends PDF bytes without a verified input contract', async () => {
+    let reads = 0;
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      readAttachmentBytes: async () => {
+        reads += 1;
+        return { ok: true, bytes: new Uint8Array([0xde, 0xad, 0xbe, 0xef]) };
+      },
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'inspect this report',
+        attachments: [pdfAttachment('report', 4)],
+        context: [],
+        runtimeContext: [],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ content: unknown }>;
+    const parts = prompt.flatMap((message) =>
+      Array.isArray(message.content) ? message.content : [],
+    );
+    assert.equal(reads, 0);
+    assert.equal(
+      parts.some((part: any) => part.type === 'file' && part.mediaType === 'application/pdf'),
+      false,
+    );
+    assert.match(JSON.stringify(prompt), /report\.pdf.*application\/pdf/);
+  });
+
+  test('locally omits a declared PDF when its loaded bytes are another MIME type', async () => {
+    let reads = 0;
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      supportsNativePdfInput: true,
+      readAttachmentBytes: async () => {
+        reads += 1;
+        return {
+          ok: true,
+          bytes: new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
+          mimeType: 'image/png',
+        };
+      },
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'inspect this report',
+        attachments: [pdfAttachment('mislabeled', 4)],
+        context: [],
+        runtimeContext: [],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ content: unknown }>;
+    assert.equal(reads, 1);
+    assert.equal(JSON.stringify(prompt).includes('3q2+7w=='), false);
+    assert.match(
+      JSON.stringify(prompt),
+      /mislabeled\.pdf.*loaded bytes are image\/png, not application\/pdf/,
+    );
+  });
+
+  test('does not charge an unavailable PDF against the PDF subtype budget', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      supportsNativePdfInput: true,
+      maxProviderPdfRequestBytes: 10,
+      maxProviderBinaryRequestBytes: 10,
+      readAttachmentBytes: async (ref: StorageRef) =>
+        ref.kind === 'session_file' && ref.relativePath === 'missing'
+          ? { ok: false, reason: 'not_found' }
+          : { ok: true, bytes: new Uint8Array(10) },
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'inspect both reports',
+        attachments: [pdfAttachment('missing', 10), pdfAttachment('available', 10)],
+        context: [],
+        runtimeContext: [],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ content: unknown }>;
+    const parts = prompt.flatMap((message) =>
+      Array.isArray(message.content) ? message.content : [],
+    );
+    assert.equal(
+      parts.filter((part: any) => part.type === 'file' && part.mediaType === 'application/pdf')
+        .length,
+      1,
+    );
+    assert.match(parts.map((part: any) => part.text ?? '').join('\n'), /missing\.pdf.*not_found/);
+  });
+
+  test('enforces the PDF subtype budget from bytes read, not attachment metadata', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      supportsNativePdfInput: true,
+      maxProviderPdfRequestBytes: 15,
+      maxProviderBinaryRequestBytes: 30,
+      readAttachmentBytes: async () => ({ ok: true, bytes: new Uint8Array(10) }),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'inspect these reports',
+        attachments: [pdfAttachment('first', 1), pdfAttachment('second', 1)],
+        context: [],
+        runtimeContext: [],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ content: unknown }>;
+    const parts = prompt.flatMap((message) =>
+      Array.isArray(message.content) ? message.content : [],
+    );
+    assert.equal(
+      parts.filter((part: any) => part.type === 'file' && part.mediaType === 'application/pdf')
+        .length,
+      1,
+    );
+    assert.match(
+      parts.map((part: any) => part.text ?? '').join('\n'),
+      /1 PDF attachment.*PDF budget/,
+    );
+  });
+
+  test('does not re-read a budget-omitted durable PDF on later provider steps', async () => {
+    const bytes = new Uint8Array(10);
+    const attachment = pdfAttachment('too-large', bytes.length);
+    const durable = durableTurnHarness('turn-pdf-read-cache', 'inspect the attached PDF');
+    durable.anchor.content = {
+      kind: 'text',
+      text: 'inspect the attached PDF',
+      attachments: [attachment],
+    };
+    const loop = countingToolLoopModel(1);
+    let reads = 0;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => loop.model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      supportsNativePdfInput: true,
+      maxProviderPdfRequestBytes: 5,
+      maxProviderBinaryRequestBytes: 5,
+      readAttachmentBytes: async () => {
+        reads += 1;
+        return { ok: true, bytes, mimeType: 'application/pdf' };
+      },
+    });
+
+    await drainDurably(backend.send(durable.input({ attachments: [attachment] })), durable);
+
+    assert.equal(loop.callCount(), 2);
+    assert.equal(reads, 1, 'the cached omission must prevent a repeated durable byte read');
+  });
+
+  test('enforces one combined budget across image and PDF inputs', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      supportsVision: true,
+      supportsNativePdfInput: true,
+      maxProviderImageRequestBytes: 20,
+      maxProviderPdfRequestBytes: 20,
+      maxProviderBinaryRequestBytes: 15,
+      readAttachmentBytes: async () => ({ ok: true, bytes: new Uint8Array(10) }),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'inspect both inputs',
+        attachments: [
+          {
+            kind: 'image',
+            name: 'chart.png',
+            mimeType: 'image/png',
+            bytes: 10,
+            ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'chart' },
+          },
+          pdfAttachment('report', 10),
+        ],
+        context: [],
+        runtimeContext: [],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ content: unknown }>;
+    const parts = prompt.flatMap((message) =>
+      Array.isArray(message.content) ? message.content : [],
+    );
+    assert.equal(parts.filter((part: any) => part.type === 'file').length, 1);
+    assert.equal((parts.find((part: any) => part.type === 'file') as any)?.mediaType, 'image/png');
+    assert.match(
+      parts.map((part: any) => part.text ?? '').join('\n'),
+      /1 binary attachment.*combined image\/PDF request budget/,
     );
   });
 
@@ -12293,7 +12676,13 @@ describe('AiSdkBackend steering durability and identity', () => {
   const steeringBackend = (
     model: MockLanguageModelV4,
     options: Partial<
-      Pick<AiSdkBackendInput, 'supportsVision' | 'readAttachmentBytes' | 'loadTurnRuntimeEvents'>
+      Pick<
+        AiSdkBackendInput,
+        | 'supportsVision'
+        | 'supportsNativePdfInput'
+        | 'readAttachmentBytes'
+        | 'loadTurnRuntimeEvents'
+      >
     > = {},
   ): AiSdkBackend =>
     createTestAiSdkBackend({
@@ -12493,6 +12882,7 @@ describe('AiSdkBackend steering durability and identity', () => {
   test('persists canonical steering content and materializes attachments for the model', async () => {
     const model = textCompletionModel('done');
     const pngBytes = new Uint8Array([137, 80, 78, 71]);
+    const pdfBytes = new Uint8Array([37, 80, 68, 70, 45]);
     const image = {
       kind: 'image' as const,
       name: 'first.png',
@@ -12504,14 +12894,18 @@ describe('AiSdkBackend steering durability and identity', () => {
       kind: 'pdf' as const,
       name: 'second.pdf',
       mimeType: 'application/pdf',
-      bytes: 12,
+      bytes: pdfBytes.length,
       ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: 'second.pdf' },
     };
     const backend = steeringBackend(model, {
       supportsVision: true,
+      supportsNativePdfInput: true,
       readAttachmentBytes: async (ref) => {
-        assert.deepEqual(ref, image.ref);
-        return { ok: true, bytes: pngBytes };
+        if (ref.kind === 'session_file' && ref.relativePath === image.ref.relativePath) {
+          return { ok: true, bytes: pngBytes };
+        }
+        assert.deepEqual(ref, document.ref);
+        return { ok: true, bytes: pdfBytes };
       },
     });
     const content = {
@@ -12553,7 +12947,7 @@ describe('AiSdkBackend steering durability and identity', () => {
     }>;
     assert.deepEqual(
       parts.map((part) => part.type),
-      ['text', 'file'],
+      ['text', 'file', 'file'],
     );
     assert.equal(
       parts[0]?.text,
@@ -12563,6 +12957,9 @@ describe('AiSdkBackend steering durability and identity', () => {
     );
     assert.equal(parts[1]?.mediaType, 'image/png');
     assert.notEqual(parts[1]?.data, undefined);
+    assert.equal(parts[2]?.mediaType, 'application/pdf');
+    assert.equal((parts[2] as { filename?: string } | undefined)?.filename, 'second.pdf');
+    assert.notEqual(parts[2]?.data, undefined);
     assert.equal(JSON.stringify(prompt).includes('human-only command'), false);
   });
 
@@ -12870,7 +13267,16 @@ describe('AiSdkBackend steering durability and identity', () => {
     // projection wraps it. A future turn's history must show the model the
     // same form the original request used — one canonical provider projection.
     const model = textCompletionModel('done');
-    const backend = steeringBackend(model);
+    const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
+    const attachment = pdfAttachment('steered', pdfBytes.length);
+    const backend = steeringBackend(model, {
+      supportsNativePdfInput: true,
+      readAttachmentBytes: async () => ({
+        ok: true,
+        bytes: pdfBytes,
+        mimeType: 'application/pdf',
+      }),
+    });
     const steeredEvent = runtimeTextEvent({
       id: 'rt-steer',
       turnId: 'turn-prev',
@@ -12878,7 +13284,10 @@ describe('AiSdkBackend steering durability and identity', () => {
       author: 'user',
       text: 'steered earlier',
     });
-    (steeredEvent.content as { steering?: true }).steering = true;
+    (steeredEvent.content as { steering?: true; attachments?: AttachmentRef[] }).steering = true;
+    (steeredEvent.content as { steering?: true; attachments?: AttachmentRef[] }).attachments = [
+      attachment,
+    ];
     await drain(
       backend.send({
         turnId: 'turn-current',
@@ -12904,9 +13313,33 @@ describe('AiSdkBackend steering durability and identity', () => {
       }),
     );
 
-    assert.deepEqual(compactPrompt(model), [
-      { role: 'user', content: [{ type: 'text', text: 'original ask' }] },
-      { role: 'user', content: [{ type: 'text', text: buildSteeringEnvelope('steered earlier') }] },
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    assert.deepEqual(prompt[0], {
+      role: 'user',
+      content: [{ type: 'text', text: 'original ask' }],
+    });
+    assert.equal(prompt[1]?.role, 'user');
+    const steeringParts = prompt[1]?.content as Array<{
+      type: string;
+      text?: string;
+      data?: unknown;
+      mediaType?: string;
+      filename?: string;
+    }>;
+    assert.equal(
+      steeringParts[0]?.text,
+      buildSteeringEnvelope(
+        'steered earlier\n\n<attachment>\nRead argument: {"ref":"maka://runtime/attachments/steered"}\nThis is a Session resource, not a workspace file. Use the ref above; never use the display name as a path.\nname: "steered.pdf"\nmime_type: "application/pdf"\n</attachment>',
+      ),
+    );
+    assert.equal(steeringParts[1]?.type, 'file');
+    assert.deepEqual(steeringParts[1]?.data, { type: 'data', data: pdfBytes });
+    assert.equal(steeringParts[1]?.mediaType, 'application/pdf');
+    assert.equal(steeringParts[1]?.filename, 'steered.pdf');
+    assert.deepEqual(model.doStreamCalls[0]?.prompt[1]?.providerOptions, {
+      maka: { steeringEventId: 'rt-steer' },
+    });
+    assert.deepEqual(prompt.slice(2), [
       { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
       { role: 'user', content: [{ type: 'text', text: 'continue' }] },
     ]);
@@ -13953,6 +14386,16 @@ function sandboxSnapshot(): SandboxDiagnosticsSnapshot {
         selectionReason: 'platform_sandbox_selected',
       },
     },
+  };
+}
+
+function pdfAttachment(relativePath: string, bytes: number): AttachmentRef {
+  return {
+    kind: 'pdf',
+    name: `${relativePath}.pdf`,
+    mimeType: 'application/pdf',
+    bytes,
+    ref: { kind: 'session_file', sessionId: 'session-1', relativePath },
   };
 }
 

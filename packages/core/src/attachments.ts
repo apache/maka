@@ -21,9 +21,14 @@ import type { AttachmentRef, StorageRef } from './events.js';
 import { isCanonicalArtifactEntityId } from './artifacts.js';
 
 /** Lives in core so @maka/runtime and @maka/storage share one type without a package cycle. */
-export type AttachmentByteReader = (
-  ref: StorageRef,
-) => Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: string }>;
+export type AttachmentByteReader = (ref: StorageRef) => Promise<
+  | {
+      ok: true;
+      bytes: Uint8Array;
+      mimeType?: string; // MIME sniffed from the loaded bytes when available.
+    }
+  | { ok: false; reason: string }
+>;
 
 export const ATTACHMENT_RESOURCE_PREFIX = 'maka://runtime/attachments';
 
@@ -77,6 +82,20 @@ export const READ_IMAGE_TOO_LARGE_MESSAGE = `Image exceeds the ${MAX_READ_IMAGE_
 export const MAX_PROVIDER_IMAGE_REQUEST_BYTES = 12 * 1024 * 1024;
 export const PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE = `Image was read, but the per-request image budget (${MAX_PROVIDER_IMAGE_REQUEST_BYTES / 1024 / 1024}MB across all images this turn) was exceeded; earlier images were sent and this one was omitted. Read fewer or smaller images.`;
 
+/**
+ * Native PDF requests are Base64 encoded. Sixteen raw MiB expands to roughly
+ * 21.4 MiB, leaving headroom under Anthropic's 32 MiB whole-request limit for
+ * text, tool schemas, JSON framing, and other content.
+ */
+export const MAX_PROVIDER_PDF_REQUEST_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Shared raw-byte ceiling across image and PDF inputs. Eighteen raw MiB
+ * expands to 24 MiB in Base64, preserving 8 MiB of whole-request headroom on
+ * the strictest verified native PDF route.
+ */
+export const MAX_PROVIDER_BINARY_REQUEST_BYTES = 18 * 1024 * 1024;
+
 const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
   png: 'image/png',
   jpg: 'image/jpeg',
@@ -107,10 +126,9 @@ export function guessMimeFromName(fileName: string): string {
 
 /**
  * Route a MIME type to an {@link AttachmentRef} kind. The runtime
- * consumption split is image vs. everything-else (images become provider
- * image parts; other kinds are read on demand by the model via Read), so this
- * only needs to single out the kinds that change
- * consumption or display. Unknown / unmapped MIME falls back to `other`.
+ * consumption split singles out images and PDFs (authorized routes can send
+ * them as provider file parts); text-like kinds are read on demand by the
+ * model via Read. Unknown / unmapped MIME falls back to `other`.
  *
  * `fileName` is consulted for kinds whose MIME is unreliable across OSes
  * (Office documents arrive as `application/octet-stream` or a long

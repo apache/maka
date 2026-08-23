@@ -25,7 +25,11 @@ import {
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { lookupModelProviderOverride, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
+import {
+  lookupModelProviderOverride,
+  openAiAdapterApiProtocol,
+  resolveModelPdfSupport,
+} from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import { resolveApplyPatchProfile, type ApplyPatchProfile } from './apply-patch-profile.js';
 
@@ -128,6 +132,31 @@ export function resolveModelRuntime(
       modelId,
     ),
   };
+}
+
+/**
+ * Allow native PDF materialization only when both model metadata and the
+ * provider identity plus resolved wire authorize it. This intentionally does
+ * not verify a configured endpoint: relays and subscriptions fail closed even
+ * when they use an SDK-compatible wire.
+ */
+export function resolveModelNativePdfInputSupport(
+  connection: ModelRuntimeConnection,
+  modelId: string,
+): boolean {
+  // Do not even resolve a relay/subscription runtime. Those providers may use
+  // an SDK-compatible adapter, but they are not an explicit first-party PDF
+  // integration and must fail closed (including retired provider records).
+  if (connection.providerType !== 'anthropic' && connection.providerType !== 'openai') {
+    return false;
+  }
+  if (!resolveModelPdfSupport(connection.providerType, connection.models, modelId)) return false;
+  const { wire } = resolveModelRuntime(connection, modelId);
+  return (
+    (connection.providerType === 'anthropic' && wire === 'anthropic-messages') ||
+    (connection.providerType === 'openai' &&
+      (wire === 'openai-chat' || wire === 'openai-responses'))
+  );
 }
 
 export function modelUsesAnthropicMessages(

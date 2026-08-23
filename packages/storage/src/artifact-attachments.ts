@@ -98,7 +98,7 @@ export function createAttachmentByteReader(input: {
       maxBytes,
     });
     return result.ok
-      ? { ok: true, bytes: Buffer.from(result.base64, 'base64') }
+      ? { ok: true, bytes: Buffer.from(result.base64, 'base64'), mimeType: result.mimeType }
       : { ok: false, reason: result.reason };
   };
 }
