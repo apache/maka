@@ -111,7 +111,10 @@ export interface ConversationCopy {
     sendLabel: string;
     queuedMessagesAriaLabel(count: number): string;
     promoteQueuedEntry: string;
-    retractQueuedEntry: string;
+    editQueuedEntry: string;
+    saveQueuedEntry: string;
+    cancelQueuedEntryEdit: string;
+    deleteQueuedEntry: string;
     reorderQueuedEntry: string;
     stopLabel: string;
     stopping: string;
@@ -418,7 +421,7 @@ const CONVERSATION_COPY = {
       placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
       queuedMessagesAriaLabel: (count) => `${count} 条待发送消息`,
-      promoteQueuedEntry: '立即发送', retractQueuedEntry: '收回草稿', reorderQueuedEntry: '拖动排序',
+      promoteQueuedEntry: '调整方向', editQueuedEntry: '编辑', saveQueuedEntry: '保存', cancelQueuedEntryEdit: '取消编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
       stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
@@ -569,7 +572,7 @@ const CONVERSATION_COPY = {
       placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
       queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
-      promoteQueuedEntry: 'Send now', retractQueuedEntry: 'Restore to draft', reorderQueuedEntry: 'Drag to reorder',
+      promoteQueuedEntry: 'Steer', editQueuedEntry: 'Edit', saveQueuedEntry: 'Save', cancelQueuedEntryEdit: 'Cancel editing', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
       stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',

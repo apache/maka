@@ -25,12 +25,14 @@ import {
   requireExactRecord,
   requireId,
   requireRecord,
+  requireUtf8String,
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
 import {
   decodeMessageContent,
   decodeTurnSnapshot,
   type MessageContent,
+  TURN_MESSAGE_TEXT_MAX_BYTES,
   type TurnSnapshot,
 } from './turn.js';
 
@@ -118,6 +120,15 @@ export interface QueueEntryPromoteInput {
   readonly promoteId: string;
 }
 
+export interface QueueEntryUpdateInput {
+  readonly originHostEpoch: string;
+  readonly sessionId: string;
+  readonly entryId: string;
+  readonly updateId: string;
+  readonly expectedQueueRevision: number;
+  readonly text: string;
+}
+
 export interface QueueEntriesReorderInput {
   readonly originHostEpoch: string;
   readonly sessionId: string;
@@ -178,6 +189,13 @@ export const MESSAGE_OPERATION_SPECS = {
     availability: 'ready',
     errors: MESSAGE_OPERATION_ERRORS,
     decodeInput: decodeQueueEntryPromoteInput,
+    decodeOutput: decodeQueueMutationResult,
+  }),
+  'queue.entry.update': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeQueueEntryUpdateInput,
     decodeOutput: decodeQueueMutationResult,
   }),
   'queue.entries.reorder': defineOperation({
@@ -311,6 +329,27 @@ function decodeQueueEntryPromoteInput(value: unknown): QueueEntryPromoteInput {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     entryId: requireEntityId(record.entryId, 'entryId'),
     promoteId: requireEntityId(record.promoteId, 'promoteId'),
+  };
+}
+
+function decodeQueueEntryUpdateInput(value: unknown): QueueEntryUpdateInput {
+  const record = requireExactRecord(value, 'queue.entry.update input', [
+    'originHostEpoch',
+    'sessionId',
+    'entryId',
+    'updateId',
+    'expectedQueueRevision',
+    'text',
+  ]);
+  const text = requireUtf8String(record.text, 'Message text', TURN_MESSAGE_TEXT_MAX_BYTES);
+  if (text.trim().length === 0) throw invalidProtocolFrame('Invalid Message text');
+  return {
+    originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
+    sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    entryId: requireEntityId(record.entryId, 'entryId'),
+    updateId: requireEntityId(record.updateId, 'updateId'),
+    expectedQueueRevision: requireCount(record.expectedQueueRevision, 'expectedQueueRevision'),
+    text,
   };
 }
 

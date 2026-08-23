@@ -749,6 +749,12 @@ export interface MakaBridge {
     }>;
     retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
+    updateQueueEntry(
+      sessionId: string,
+      entryId: string,
+      expectedQueueRevision: number,
+      text: string,
+    ): Promise<void>;
     reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;

@@ -34,6 +34,7 @@ export type MessageReceiptOperation =
   | 'retract'
   | 'retract_entry'
   | 'promote'
+  | 'update_entry'
   | 'reorder'
   | 'interrupt';
 
@@ -248,6 +249,7 @@ function validateIdentity(
     operation !== 'retract' &&
     operation !== 'retract_entry' &&
     operation !== 'promote' &&
+    operation !== 'update_entry' &&
     operation !== 'reorder' &&
     operation !== 'interrupt'
   ) {

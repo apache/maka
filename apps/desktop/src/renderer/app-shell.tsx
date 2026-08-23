@@ -33,7 +33,6 @@ import type { ProjectRecord } from '@maka/core/project';
 import type {
   FollowUpMode,
   InlineReference,
-  MessageQueueEntryProjection,
   QuoteRef,
 } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
@@ -109,7 +108,6 @@ import {
   mergeWorkspaceReferences,
   resolveFollowUpModeAtSubmit,
 } from './follow-up-submit-routing';
-import { retractQueueEntryToDraft } from './app-shell-queue-entry-actions';
 import {
   PlanExecutionPanel,
   PlanProposalCard,
@@ -724,16 +722,6 @@ function AppShellContent({
   const [viewMode, setViewMode] = useState<SessionViewMode>(() => readSessionListViewMode());
   const composerRef = useRef<ComposerHandle>(null);
   const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
-  const queueEntryDraftDeps = {
-    activeIdRef,
-    composerRef,
-    restoreAttachments,
-    restoreQuotes,
-    setRestoredWorkspaceReferences: (sessionId, references) => {
-      retractedWorkspaceReferencesRef.current[sessionId] = [...references];
-    },
-    requestFocus: (callback) => window.requestAnimationFrame(callback),
-  } satisfies Parameters<typeof retractQueueEntryToDraft>[0];
   // The rail's toggle has to reach Astryx's resizable state, not just this
   // boolean — see the prop's note on SessionListPanel. The sidenav is mounted
   // for the whole shell, so the handle is always live by the time it is called.
@@ -2184,9 +2172,19 @@ function AppShellContent({
     return ok;
   }
 
-  async function retractQueuedEntry(entry: MessageQueueEntryProjection): Promise<void> {
+  async function updateQueuedEntry(
+    entryId: string,
+    expectedQueueRevision: number,
+    text: string,
+  ): Promise<void> {
     await runQueueEntryAction((sessionId) =>
-      retractQueueEntryToDraft(queueEntryDraftDeps, sessionId, entry)
+      window.maka.sessions.updateQueueEntry(sessionId, entryId, expectedQueueRevision, text)
+    );
+  }
+
+  async function deleteQueuedEntry(entryId: string): Promise<void> {
+    await runQueueEntryAction((sessionId) =>
+      window.maka.sessions.retractQueueEntry(sessionId, entryId).then(() => undefined)
     );
   }
 
@@ -3016,9 +3014,11 @@ function AppShellContent({
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   onSend={sendOwningItsTarget}
                   onStop={stop}
-                  queuedMessages={activeMessageQueue}
+                  queuedMessages={activeMessageQueue?.entries}
+                  queuedMessageRevision={activeMessageQueue?.queueRevision}
                   onPromoteQueuedEntry={activeId ? promoteQueuedEntry : undefined}
-                  onRetractQueuedEntry={activeId ? retractQueuedEntry : undefined}
+                  onUpdateQueuedEntry={activeId ? updateQueuedEntry : undefined}
+                  onDeleteQueuedEntry={activeId ? deleteQueuedEntry : undefined}
                   onReorderQueuedEntries={activeId ? reorderQueuedEntries : undefined}
                   revisionNotice={
                     revisionDraft && activeId === revisionDraft.draftSessionId

@@ -51,6 +51,7 @@ import {
   type QueueEntriesReorderInput,
   type QueueEntryPromoteInput,
   type QueueEntryRetractInput,
+  type QueueEntryUpdateInput,
   type QueueMutationResult,
   type QueueRetractInput,
   type QueueRetractResult,
@@ -185,8 +186,8 @@ export type CandidateSnapshotPreflight = (
 interface LiveEntry {
   readonly entryId: string;
   readonly messageId: string;
-  readonly content: MessageContent;
-  readonly modelContent: MessageContent;
+  content: MessageContent;
+  modelContent: MessageContent;
   readonly initiatingConnectionId: string;
   readonly placement: MessagePlacement;
   readonly disposition: 'steering' | 'followup';
@@ -211,7 +212,12 @@ interface PendingSubmit {
   readonly result: Promise<MessageOutcome<TurnMessageSubmitResult>>;
 }
 
-type QueuedMutationReceiptKind = 'retract' | 'retract_entry' | 'promote' | 'reorder';
+type QueuedMutationReceiptKind =
+  | 'retract'
+  | 'retract_entry'
+  | 'promote'
+  | 'update_entry'
+  | 'reorder';
 
 interface PendingQueuedMutation {
   readonly payload: object;
@@ -295,6 +301,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     'queue.retract': (input) => this.retract(input),
     'queue.entry.retract': (input) => this.retractQueuedEntry(input),
     'queue.entry.promote': (input) => this.promoteQueuedEntry(input),
+    'queue.entry.update': (input) => this.updateQueuedEntry(input),
     'queue.entries.reorder': (input) => this.reorderQueuedEntries(input),
     'turn.interrupt': (input) => this.interrupt(input),
   };
@@ -830,6 +837,19 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     });
   }
 
+  private updateQueuedEntry(
+    input: QueueEntryUpdateInput,
+  ): Promise<MessageOutcome<QueueMutationResult>> {
+    return this.#runQueuedMutation({
+      spec: MESSAGE_OPERATION_SPECS['queue.entry.update'],
+      receiptKind: 'update_entry',
+      operationId: input.updateId,
+      verb: 'Update',
+      input,
+      execute: () => this.#updateQueuedEntryAdmitted(input),
+    });
+  }
+
   private reorderQueuedEntries(
     input: QueueEntriesReorderInput,
   ): Promise<MessageOutcome<QueueMutationResult>> {
@@ -1009,6 +1029,96 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     const result = { queueRevision: state.revision };
     try {
       await this.#commitReceipt('promote', input.sessionId, input.promoteId, input, result);
+    } catch (error) {
+      this.#failStop();
+      throw error;
+    }
+    return success(result);
+  }
+
+  async #updateQueuedEntryAdmitted(
+    input: QueueEntryUpdateInput,
+  ): Promise<MessageOutcome<QueueMutationResult>> {
+    const header = await this.#root.readSessionHeader(input.sessionId);
+    if (this.#failStopped) {
+      return failure('host_draining', 'Runtime Host message authority has failed');
+    }
+    if (!header) return failure('not_found', 'Session does not exist');
+    if (header.isArchived) return failure('session_archived', 'Session is archived');
+    const state = this.#state(input.sessionId);
+    if (state.transition) {
+      return failure('operation_conflict', 'Message queue is draining into the next Turn');
+    }
+    const queued = findQueuedEntry(state, input.entryId);
+    if (!queued) {
+      if ([...state.inFlight.values()].some((entry) => entry.entryId === input.entryId)) {
+        return failure('operation_conflict', 'Message entry is already being delivered');
+      }
+      return failure('not_found', 'Message queue entry does not exist');
+    }
+    if (state.revision !== input.expectedQueueRevision) {
+      return failure('operation_conflict', 'Message queue changed since editing began');
+    }
+    if (!state.reservedRoot) {
+      throw new RuntimeMessageAuthorityInvariantError('Queued entry has no root Turn reservation');
+    }
+    const currentRevision = state.revision;
+    const content = normalizeMessageContent({
+      ...queued.entry.content,
+      text: input.text,
+      displayText: input.text,
+      inlineReferences: relocateInlineReferences(queued.entry.content.inlineReferences, input.text),
+    });
+    const prepared = await this.#root.prepareMessage({
+      sessionId: input.sessionId,
+      turnId: state.reservedRoot.turnId,
+      content,
+      placement: queued.entry.placement,
+      initiatingConnectionId: queued.entry.initiatingConnectionId,
+    });
+    if (prepared.kind === 'rejected') return failure('operation_conflict', prepared.error);
+    const modelContent = prepared.content;
+    const candidate = this.#project(state);
+    const updateSnapshot = <T extends SteeringMessageSnapshot | QueuedMessageSnapshot>(
+      entry: T,
+    ): T =>
+      entry.entryId === input.entryId && entry.state === 'queued' ? { ...entry, content } : entry;
+    const updatedProjection = {
+      ...candidate,
+      queueRevision: candidate.queueRevision + 1,
+      steering: candidate.steering.map(updateSnapshot),
+      followup: candidate.followup.map(updateSnapshot),
+    };
+    if (!projectionFitsEveryEntryState(updatedProjection)) {
+      return failure('session_busy', 'Message queue projection capacity is full');
+    }
+    const sources = allLiveEntries(state).map((entry) =>
+      entry === queued.entry
+        ? {
+            ...sourceFromEntry(entry),
+            content: modelContent,
+            submittedContentDigest: messageContentDigest(content),
+          }
+        : sourceFromEntry(entry),
+    ) satisfies RootTurnSourceMessage[];
+    if (!rootAdmissionPayloadFits(sources)) {
+      return failure('session_busy', 'Message queue mutation exceeds root admission capacity');
+    }
+    if (!(await this.#preflightSessionSnapshot(input.sessionId, { queue: updatedProjection }))) {
+      return failure('session_busy', 'Session projection capacity is full');
+    }
+    if (
+      state.revision !== currentRevision ||
+      findQueuedEntry(state, input.entryId)?.entry !== queued.entry
+    ) {
+      return failure('session_busy', 'Message queue changed during update');
+    }
+    queued.entry.content = content;
+    queued.entry.modelContent = modelContent;
+    this.#mutated(state);
+    const result = { queueRevision: state.revision };
+    try {
+      await this.#commitReceipt('update_entry', input.sessionId, input.updateId, input, result);
     } catch (error) {
       this.#failStop();
       throw error;
@@ -1616,6 +1726,34 @@ function findQueuedEntry(
     return { entry, remove: () => queue.splice(index, 1) };
   }
   return undefined;
+}
+
+function relocateInlineReferences(
+  references: MessageContent['inlineReferences'],
+  text: string,
+): MessageContent['inlineReferences'] {
+  if (!references) return undefined;
+  const relocated = references
+    .flatMap((reference) => {
+      if (
+        text.slice(reference.start, reference.start + reference.value.length) === reference.value
+      ) {
+        return [reference];
+      }
+      const first = text.indexOf(reference.value);
+      if (first === -1 || text.indexOf(reference.value, first + reference.value.length) !== -1) {
+        return [];
+      }
+      return [{ ...reference, start: first }];
+    })
+    .sort((left, right) => left.start - right.start || right.value.length - left.value.length);
+  const nonOverlapping: NonNullable<MessageContent['inlineReferences']> = [];
+  for (const reference of relocated) {
+    const previous = nonOverlapping.at(-1);
+    if (previous && reference.start < previous.start + previous.value.length) continue;
+    nonOverlapping.push(reference);
+  }
+  return nonOverlapping;
 }
 
 function decodeInterruptReceiptOutcome(value: unknown): MessageOutcome<TurnInterruptResult> {

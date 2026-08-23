@@ -83,21 +83,42 @@ test('keeps Host order visible until the reordered projection arrives', async ()
   assert.ok(container);
   const root = createRoot(container);
   let requestedOrder: readonly string[] | undefined;
+  const updatedEntries: Array<{
+    entryId: string;
+    expectedQueueRevision: number;
+    text: string;
+  }> = [];
+  const deletedEntryIds: string[] = [];
 
   try {
     await act(() => root.render(
       <LocaleProvider locale="en">
         <Composer
           streaming
-          queuedMessages={['first', 'second'].map((entryId) => ({
-            entryId,
-            messageId: `message-${entryId}`,
-            content: { text: entryId },
-            placement: 'next_turn',
-            state: 'queued',
-          }))}
+          queuedMessages={[
+            {
+              entryId: 'steering',
+              messageId: 'message-steering',
+              content: { text: 'steering' },
+              placement: 'current_turn',
+              state: 'queued',
+            },
+            ...['first', 'second'].map((entryId) => ({
+              entryId,
+              messageId: `message-${entryId}`,
+              content: { text: entryId },
+              placement: 'next_turn' as const,
+              state: 'queued' as const,
+            })),
+          ]}
+          queuedMessageRevision={7}
           onPromoteQueuedEntry={() => undefined}
-          onRetractQueuedEntry={() => undefined}
+          onUpdateQueuedEntry={(entryId, expectedQueueRevision, text) => {
+            updatedEntries.push({ entryId, expectedQueueRevision, text });
+          }}
+          onDeleteQueuedEntry={(entryId) => {
+            deletedEntryIds.push(entryId);
+          }}
           onReorderQueuedEntries={(entryIds) => {
             requestedOrder = entryIds;
             return new Promise<void>(() => undefined);
@@ -107,8 +128,44 @@ test('keeps Host order visible until the reordered projection arrives', async ()
         />
       </LocaleProvider>,
     ));
-    assert.equal(container.querySelectorAll('[aria-label="Send now"]').length, 2);
-    assert.equal(container.querySelectorAll('[aria-label="Restore to draft"]').length, 2);
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>('button')];
+    const editButtons = buttons.filter((button) => button.textContent === 'Edit');
+    const deleteButtons = [
+      ...container.querySelectorAll<HTMLButtonElement>('[aria-label="Delete"]'),
+    ];
+    assert.equal(buttons.filter((button) => button.textContent === 'Steer').length, 2);
+    assert.equal(editButtons.length, 3);
+    assert.equal(deleteButtons.length, 3);
+    await act(async () => {
+      editButtons[0]?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    const editInput = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Edit"]',
+    );
+    assert.ok(editInput);
+    await act(() => {
+      editInput.value = 'updated steering\nsecond line';
+      editInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Save"]')
+        ?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Delete"]')
+        ?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    assert.deepEqual(updatedEntries, [{
+      entryId: 'steering',
+      expectedQueueRevision: 7,
+      text: 'updated steering\nsecond line',
+    }]);
+    assert.deepEqual(deletedEntryIds, ['steering']);
     const grips = [...container.querySelectorAll<HTMLElement>('.maka-composer-queue-grip')];
     assert.equal(grips.length, 2);
     const dragStart = new window.Event('dragstart', { bubbles: true });
@@ -116,16 +173,22 @@ test('keeps Host order visible until the reordered projection arrives', async ()
       value: { effectAllowed: '', setData() {} },
     });
     await act(() => grips[1]?.dispatchEvent(dragStart));
+    const rows = [...container.querySelectorAll('li')];
+    const steeringRow = rows[0]?.parentElement;
+    assert.ok(steeringRow);
+    await act(() => steeringRow.dispatchEvent(new window.Event('drop', { bubbles: true })));
+    assert.equal(requestedOrder, undefined);
     const firstRow = grips[0]?.closest('li')?.parentElement;
     assert.ok(firstRow);
     await act(() => firstRow.dispatchEvent(new window.Event('drop', { bubbles: true })));
 
     assert.deepEqual(requestedOrder, ['second', 'first']);
     assert.deepEqual(
-      [...container.querySelectorAll('li')].map((row) =>
-        row.textContent?.includes('first') ? 'first' : 'second'
-      ),
-      ['first', 'second'],
+      rows.map((row) => {
+        if (row.textContent?.includes('steering')) return 'steering';
+        return row.textContent?.includes('first') ? 'first' : 'second';
+      }),
+      ['steering', 'first', 'second'],
     );
   } finally {
     await act(() => root.unmount());
