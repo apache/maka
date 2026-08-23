@@ -82,6 +82,27 @@ export function normalizeSessionSummaryForDisplay<T extends SessionSummary>(sess
   return { ...rest, status: 'active' } as T;
 }
 
+type CommittedSessionSettingsPatch = Partial<Pick<
+  SessionSummary,
+  | 'collaborationMode'
+  | 'orchestrationMode'
+  | 'permissionMode'
+  | 'llmConnectionSlug'
+  | 'model'
+  | 'thinkingLevel'
+>>;
+
+export function replaceCommittedSessionSettings<T extends SessionSummary>(
+  current: T[],
+  sessionId: string,
+  patch: CommittedSessionSettingsPatch,
+): T[] {
+  if (!current.some((session) => session.id === sessionId)) return current;
+  return current.map((session) => (
+    session.id === sessionId ? { ...session, ...patch } : session
+  ));
+}
+
 /**
  * Generalized Chinese phrasing for a failed turn's `errorClass`
  * Mirrors `describeBlockedReason()` in `@maka/ui`, under the same rule: a UI

@@ -23,6 +23,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import type { StoredMessage } from '@maka/core/session';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import { createAppShellSessionSettingsActions } from '../../renderer/app-shell-session-settings-actions.js';
+import { replaceCommittedSessionSettings } from '../../renderer/session-status-presentation.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -72,6 +73,10 @@ function createHarness(options: {
   const errors: string[] = [];
   const errorTargets: Array<{ sessionId: string } | undefined> = [];
   const successes: Array<{ title: string; description?: string }> = [];
+  const committedSessionSettings: Array<{
+    sessionId: string;
+    patch: Partial<DesktopSessionSummary>;
+  }> = [];
   const newTaskPermissionModes: string[] = [];
   const modelResult = deferred<DesktopSessionSummary>();
   const thinkingResult = deferred<DesktopSessionSummary>();
@@ -109,6 +114,9 @@ function createHarness(options: {
     pendingPermissionModeChangesRef: { current: new Set() },
     pendingSessionModelChangesRef: { current: pending },
     refreshSessions: async () => sessions,
+    applyCommittedSessionSettings: (sessionId, patch) => {
+      committedSessionSettings.push({ sessionId, patch });
+    },
     saveComposerDefaults: () => undefined,
     sessionsRef,
     setNewTaskPermissionMode: (mode) => void newTaskPermissionModes.push(mode),
@@ -131,6 +139,7 @@ function createHarness(options: {
   return {
     actions,
     activeIdRef,
+    committedSessionSettings,
     errors,
     errorTargets,
     modelCalls,
@@ -145,6 +154,22 @@ function createHarness(options: {
     successes,
   };
 }
+
+describe('committed session settings', () => {
+  it('repaints an existing row without inserting or reordering catalog entries', () => {
+    const current = [session('session-a'), session('session-b')];
+    const next = replaceCommittedSessionSettings(current, 'session-b', {
+      collaborationMode: 'plan',
+    });
+
+    assert.deepEqual(next.map(({ id }) => id), ['session-a', 'session-b']);
+    assert.equal(next[1]?.collaborationMode, 'plan');
+    assert.strictEqual(
+      replaceCommittedSessionSettings(current, 'missing', { collaborationMode: 'plan' }),
+      current,
+    );
+  });
+});
 
 describe('AppShell session settings actions', () => {
   it('keeps a new-task permission choice in the draft instead of mutating a Host default', async () => {
@@ -181,6 +206,10 @@ describe('AppShell session settings actions', () => {
 
     assert.equal(switched, true);
     assert.deepEqual(harness.permissionCalls, ['session-a:bypass']);
+    assert.deepEqual(harness.committedSessionSettings, [{
+      sessionId: 'session-a',
+      patch: { permissionMode: 'bypass' },
+    }]);
   });
 
   it('does not report success when the Host returns another permission mode', async () => {
