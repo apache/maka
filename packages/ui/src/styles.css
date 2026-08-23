@@ -1006,20 +1006,93 @@
 .maka-web-search-error-repair { color: var(--foreground-secondary); }
 
 .maka-load-tool-preview {
-  font: var(--maka-text-supporting);
- display: grid; gap: var(--space-0-5); margin: var(--space-1) 0 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius-control); background: var(--background); box-shadow: var(--ring-soft); }
+  display: grid;
+  grid-template-columns: var(--space-8) minmax(0, 1fr);
+  gap: var(--space-2-5);
+  align-items: start;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2) var(--space-2) var(--space-2-5);
+}
 .maka-load-tool-preview p { margin: 0; }
+.maka-load-tool-icon {
+  display: grid;
+  width: var(--space-8);
+  height: var(--space-8);
+  place-items: center;
+  border-radius: var(--radius-element);
+  color: var(--foreground-secondary);
+  background: var(--foreground-5);
+}
+.maka-load-tool-summary {
+  min-width: 0;
+  padding-top: var(--space-0-5);
+}
 .maka-load-tool-title {
   font: var(--maka-text-heading-5);
- }
-.maka-load-tool-count,
-.maka-load-tool-footer { color: var(--muted-foreground); }
-.maka-load-tool-tools {
+}
+.maka-load-tool-description {
   font: var(--maka-text-supporting);
- word-break: break-word; }
-.maka-load-tool-footer {
+  margin-top: var(--space-0-5) !important;
+  color: var(--foreground-secondary);
+  overflow-wrap: anywhere;
+}
+.maka-load-tool-count {
   font: var(--maka-text-supporting);
- }
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-1) !important;
+  color: var(--muted-foreground);
+}
+.maka-load-tool-separator {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+}
+.maka-load-tool-technical {
+  grid-column: 1 / -1;
+  margin-left: calc(var(--space-8) + var(--space-2-5));
+  color: var(--muted-foreground);
+}
+.maka-load-tool-technical > summary {
+  width: fit-content;
+  padding: var(--space-0-5) 0;
+  font: var(--maka-text-supporting);
+  cursor: pointer;
+}
+.maka-load-tool-technical > summary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 var(--focus-ring-width) var(--focus-ring);
+  border-radius: var(--radius-control);
+}
+.maka-load-tool-technical dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
+  margin: var(--space-1) 0 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-soft);
+  font: var(--maka-text-supporting);
+}
+.maka-load-tool-technical:not([open]) > dl {
+  display: none;
+}
+.maka-load-tool-technical dt {
+  color: var(--muted-foreground);
+}
+.maka-load-tool-technical dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--foreground-secondary);
+}
+.maka-load-tool-technical code {
+  font: var(--maka-text-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* Turn-footer action rings go inset (T5 geometry probe): the Astryx chat
    layout's scrollport clips an outward ring on the first visible row's

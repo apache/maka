@@ -23,11 +23,19 @@ import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import { type ToolResultContent } from '@maka/core/events';
 import { type UiLocale } from '@maka/core/ui-locale';
 import {
+  Blocks,
   ICON_SIZE,
   Check,
   ChevronRight,
   Copy,
+  GitBranch,
+  Globe,
+  Monitor,
+  Plug,
+  Settings,
   ShieldAlert,
+  Workflow,
+  type LucideIcon,
 } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { useUiLocale } from './locale-context.js';
@@ -62,7 +70,11 @@ import {
 } from '@astryxdesign/core';
 import { ToolCodeBlock, ToolDetailReveal } from './tool-activity/tool-code-block.js';
 import { cn } from './ui.js';
-import { describeLoadToolResult, formatToolIntent } from './tool-format.js';
+import {
+  describeLoadToolResult,
+  formatToolIntent,
+  type LoadToolGroupKind,
+} from './tool-format.js';
 import {
   formatDuration,
   formatUserVisibleToolText,
@@ -97,14 +109,62 @@ function LoadToolResultPreview(props: {
       />
     );
   }
+  const Icon = loadToolGroupIcon(desc.kind);
+  const copy = getToolActivityCopy(locale).loadTools;
   return (
     <div className={previewVariants({ part: 'load-tool' })} data-kind="load_tool">
-      <p className={previewVariants({ part: 'load-tool-title' })}>{desc.title}</p>
-      <p className={previewVariants({ part: 'load-tool-count' })}>{desc.countLabel}</p>
-      <p className={previewVariants({ part: 'load-tool-tools' })}>{desc.toolsText}</p>
-      <p className={previewVariants({ part: 'load-tool-footer' })}>{desc.footer}</p>
+      <span className="maka-load-tool-icon" aria-hidden="true">
+        <Icon size={ICON_SIZE.chrome} />
+      </span>
+      <div className="maka-load-tool-summary">
+        <p className={previewVariants({ part: 'load-tool-title' })}>{desc.title}</p>
+        <p className="maka-load-tool-description">{desc.description}</p>
+        <p className={previewVariants({ part: 'load-tool-count' })}>
+          <span>{desc.label}</span>
+          <span className="maka-load-tool-separator" aria-hidden="true" />
+          <span>{desc.countLabel}</span>
+        </p>
+      </div>
+      {(desc.groupId || desc.toolIds.length > 0) && (
+        <details className="maka-load-tool-technical">
+          <summary>{copy.technicalDetails}</summary>
+          <dl>
+            {desc.groupId && (
+              <>
+                <dt>{copy.groupId}</dt>
+                <dd><code>{desc.groupId}</code></dd>
+              </>
+            )}
+            {desc.toolIds.length > 0 && (
+              <>
+                <dt>{copy.toolIds}</dt>
+                <dd><code>{desc.toolIds.join('\n')}</code></dd>
+              </>
+            )}
+          </dl>
+        </details>
+      )}
     </div>
   );
+}
+
+function loadToolGroupIcon(kind: LoadToolGroupKind): LucideIcon {
+  switch (kind) {
+    case 'browser':
+      return Globe;
+    case 'computer_use':
+      return Monitor;
+    case 'mcp':
+      return Plug;
+    case 'rive':
+      return Workflow;
+    case 'agent':
+      return GitBranch;
+    case 'settings':
+      return Settings;
+    default:
+      return Blocks;
+  }
 }
 
 /**

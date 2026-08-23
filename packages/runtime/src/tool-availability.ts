@@ -69,6 +69,17 @@ export interface ToolAvailabilityConfig {
   groups?: readonly ToolGroup[];
 }
 
+export interface LoadedToolGroup {
+  readonly id: string;
+  readonly label?: string;
+  readonly description?: string;
+}
+
+export interface LoadToolsResult {
+  readonly loaded: string[];
+  readonly group: LoadedToolGroup;
+}
+
 export function toolAvailabilityHash(config: ToolAvailabilityConfig): `sha256:${string}` {
   return stableHash({
     economy: config.economy,
@@ -272,7 +283,7 @@ export class ToolAvailabilityRuntime {
     return out;
   }
 
-  private buildConnector(): MakaTool<{ group: string }, { loaded: string[] }> {
+  private buildConnector(): MakaTool<{ group: string }, LoadToolsResult> {
     // Only reached when economy is on, which requires at least one gated group,
     // so `ids` is always non-empty — a plain enum, no empty fallback.
     const ids = this.groups.map((group) => group.id);
@@ -289,8 +300,23 @@ export class ToolAvailabilityRuntime {
         if (!found) {
           throw new Error(`Unknown tool group "${group}". Available: ${ids.join(', ')}.`);
         }
-        return { loaded: [...found.toolNames] };
+        return {
+          loaded: [...found.toolNames],
+          group: {
+            id: found.id,
+            ...(found.label ? { label: found.label } : {}),
+            ...(found.description ? { description: found.description } : {}),
+          },
+        };
       },
+      // Keep presentation metadata in the durable result without spending
+      // provider context on copy the model already received in the catalog.
+      toModelOutput: ({ output }) => ({
+        type: 'json',
+        value: {
+          loaded: [...(output as LoadToolsResult).loaded],
+        },
+      }),
     };
   }
 

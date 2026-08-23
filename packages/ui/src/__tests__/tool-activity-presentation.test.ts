@@ -99,6 +99,143 @@ describe('tool activity presentation', () => {
     );
   });
 
+  it('renders a client capability activation as a localized capability summary', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'load-computer-use',
+      toolName: 'load_tools',
+      activityKind: 'tool',
+      status: 'completed',
+      args: { group: 'client_a5b9af66b60c5f5c_desktop_computer_use' },
+      result: {
+        kind: 'json',
+        value: {
+          loaded: ['mcp__desktop_computer_use__maka_computer'],
+          group: {
+            id: 'client_a5b9af66b60c5f5c_desktop_computer_use',
+            label: 'Computer Use',
+            description: 'Observe and operate the desktop through this Desktop client.',
+          },
+        },
+      },
+    };
+
+    const row = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
+    assert.match(row, /启用桌面操作/);
+    const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+    assert.match(detail, /桌面操作已启用/);
+    assert.match(detail, /可以查看和操作已授权的本地应用/);
+    assert.match(detail, /Computer Use/);
+    assert.match(detail, /1 项能力可用/);
+    assert.match(detail, /技术详情/);
+    assert.match(detail, /client_a5b9af66b60c5f5c_desktop_computer_use/);
+  });
+
+  it('keeps legacy Computer Use activations friendly without result metadata', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'legacy-load-computer-use',
+      toolName: 'load_tool',
+      status: 'completed',
+      args: { namespace: 'client_legacy_desktop_computer_use' },
+      result: {
+        kind: 'json',
+        value: { loaded: ['mcp__desktop_computer_use__maka_computer'] },
+      },
+    };
+
+    const markup = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+    assert.match(markup, /桌面操作已启用/);
+    assert.doesNotMatch(markup, /已加载 client_legacy_desktop_computer_use 工具组/);
+  });
+
+  it('uses supplied labels for third-party capability groups', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'load-third-party',
+      toolName: 'load_tools',
+      status: 'completed',
+      args: { group: 'client_external_notionsuite' },
+      result: {
+        kind: 'json',
+        value: {
+          loaded: ['mcp__notion__search', 'mcp__notion__create_page'],
+          group: {
+            id: 'client_external_notionsuite',
+            label: 'Notion',
+            description: 'Search and update the connected workspace.',
+          },
+        },
+      },
+    };
+
+    const row = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
+    assert.match(row, /启用 Notion/);
+    const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+    assert.match(detail, /Notion 已启用/);
+    assert.match(detail, /Search and update the connected workspace/);
+    assert.match(detail, /2 项能力可用/);
+  });
+
+  it('uses one localized presentation model for every first-party capability group', () => {
+    const cases = [
+      {
+        id: 'browser',
+        label: 'Browser',
+        tool: 'browser_navigate',
+        row: '启用浏览器操作',
+        title: '浏览器操作已启用',
+      },
+      {
+        id: 'client_desktop_mcp',
+        label: 'MCP',
+        tool: 'mcp__desktop_mcp__list',
+        row: '连接 MCP',
+        title: 'MCP 工具已连接',
+      },
+      {
+        id: 'rive',
+        label: 'Rive',
+        tool: 'RiveWorkflow',
+        row: '启用 Rive 工作流',
+        title: 'Rive 工作流已启用',
+      },
+      {
+        id: 'agent',
+        label: 'Agent',
+        tool: 'agent_spawn',
+        row: '启用子智能体',
+        title: '子智能体协作已启用',
+      },
+      {
+        id: 'client_desktop_settings',
+        label: 'Client settings',
+        tool: 'mcp__desktop_settings__MakaSettingsGet',
+        row: '启用设置工具',
+        title: '设置工具已启用',
+      },
+    ] as const;
+
+    for (const capability of cases) {
+      const item: ToolActivityItem = {
+        toolUseId: `load-${capability.id}`,
+        toolName: 'load_tools',
+        status: 'completed',
+        args: { group: capability.id },
+        result: {
+          kind: 'json',
+          value: {
+            loaded: [capability.tool],
+            group: { id: capability.id, label: capability.label },
+          },
+        },
+      };
+
+      const row = renderToStaticMarkup(createElement(ToolTrow, { items: [item] }));
+      assert.match(row, new RegExp(capability.row));
+      const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
+      assert.match(detail, new RegExp(capability.title));
+      assert.doesNotMatch(detail, new RegExp(`>${capability.id}</p>`));
+    }
+  });
+
   it('contains a malformed persisted terminal result instead of crashing the renderer', () => {
     const malformed = {
       kind: 'terminal',
