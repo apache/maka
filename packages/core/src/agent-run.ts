@@ -408,7 +408,6 @@ export const AGENT_RUN_EVENT_TYPES = [
   'provider_request_attempt_recorded',
   'model_call_attempt_recorded',
   'history_compact_checkpoint_recorded',
-  'semantic_compact_block_recorded',
   'task_gate_decided',
   'abort_requested',
   'run_completed',

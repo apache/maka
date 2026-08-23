@@ -152,7 +152,10 @@ import {
   readSessionListViewMode,
 } from './session-list-layout';
 import { modelSetupToastCopy } from './model-connection-errors';
-import type { AppShellCommandListOptions } from './app-shell-command-actions';
+import {
+  contextCompactionNotice,
+  type AppShellCommandListOptions,
+} from './app-shell-command-actions';
 import { AppShellTopbarActions } from './app-shell-chrome-actions';
 import { updateReminderFromStatus } from './app-shell-app-update';
 import { useBuildStamp } from './app-shell-build-stamp';
@@ -2062,7 +2065,15 @@ function AppShellContent({
       const sessionId = activeIdRef.current;
       if (!sessionId) return true;
       try {
-        await window.maka.sessions.compact(sessionId);
+        const result = await window.maka.sessions.compact(sessionId);
+        if (result.kind === 'finished') {
+          const notice = contextCompactionNotice(result.outcome, uiLocale);
+          if (notice.level === 'error') {
+            showSessionError(sessionId, notice.title, notice.description);
+            return false;
+          }
+          toastApi[notice.level](notice.title, notice.description);
+        }
         return true;
       } catch (error) {
         if (activeIdRef.current !== sessionId) return false;

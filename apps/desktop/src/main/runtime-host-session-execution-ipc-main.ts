@@ -542,8 +542,9 @@ export function registerRuntimeHostSessionExecutionIpc(
 
   ipcMain.handle("sessions:compact", async (_event, sessionId: string) => {
     const turnId = newId();
-    await deps.client.compactContext({ sessionId, turnId });
+    const result = await deps.client.compactContext({ sessionId, turnId });
     deps.emitSessionsChanged("status-change", sessionId, { turnId });
+    return result;
   });
   ipcMain.handle("sessions:resumeLatest", async (_event, sessionId: string) => {
     const plan = await deps.client.queryTurnResume({ sessionId });

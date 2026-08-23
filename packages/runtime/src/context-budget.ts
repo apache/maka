@@ -21,9 +21,6 @@ import {
   estimateTokens,
   estimateRuntimeEventsTokens,
   stableJsonLength,
-  turnKey,
-  groupEventsByTurn,
-  finitePositive,
 } from './context-budget-helpers.js';
 
 // Public re-export surface for @maka/runtime consumers. Explicit list keeps
@@ -34,13 +31,9 @@ export {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
   isArchivedToolResultPlaceholder,
   deserializeToolResultArchive,
-  retrieveArchivedToolResultsForReplay,
   serializeToolResultForArchive,
 } from './tool-result-archive.js';
 export type {
-  ArchiveRetrievalMode,
-  ArchiveRetrievalPolicy,
-  ArchiveRetrievalResult,
   StaleToolResultPrunePolicy,
   StaleToolResultArchiveCandidate,
   ToolResultArchiveReader,
@@ -50,72 +43,30 @@ export type {
   ToolResultArchiveRef,
   ArchivedToolResultPlaceholder,
 } from './tool-result-archive.js';
-export type { ArchivedToolResultReason, SynthesisSourceRef } from './context-source-ref.js';
-export {
-  retrieveRuntimeEventHistoryAround,
-  searchRuntimeEventHistory,
-} from './runtime-event-history-search.js';
+export type { ArchivedToolResultReason } from './tool-result-archive.js';
 export type {
-  RuntimeEventHistoryAroundResult,
-  RuntimeEventHistorySearchHit,
-  RuntimeEventHistorySearchPolicy,
-} from './runtime-event-history-search.js';
-export {
-  buildSynthesisCacheBlocksFromHydratedArchives,
-  deriveSynthesisCoverageFromSourceRefs,
-  rawEvidenceRequestReason,
-  stableSynthesisBlockId,
-  validateSynthesisCacheBlockShape,
-} from './synthesis-cache.js';
-export type {
-  SynthesisCacheBlock,
-  SynthesisCacheCoverage,
-  SynthesisCachePolicy,
-} from './synthesis-cache.js';
-export {
-  buildHistoryCompactBlockFromSummary,
-  historyCompactBlockToRuntimeEvent,
-  renderHistoryCompactBlock,
-  validateHistoryCompactBlockShape,
-} from './history-compact.js';
-export type {
-  HistoryCompactBlock,
-  HistoryCompactCoverage,
-  HistoryCompactMidTurnPolicy,
-  HistoryCompactPolicy,
-  HistoryCompactReplayResult,
-  HistoryCompactSourceArchiveRef,
-  HistoryRewriteGatePolicy,
-} from './history-compact.js';
+  HistoryCompactionPolicy,
+  HistoryCompactionReplayResult,
+} from './history-compaction.js';
 export { ACTIVE_ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND } from './active-tool-result-prune.js';
 export type { ActiveArchivedToolResultPlaceholder } from './active-tool-result-prune.js';
 
-import { SynthesisCachePolicy } from './synthesis-cache.js';
 import {
-  searchRuntimeEventHistory,
-  type RuntimeEventHistoryAroundResult,
-  type RuntimeEventHistorySearchPolicy,
-} from './runtime-event-history-search.js';
-import {
-  ArchiveRetrievalPolicy,
   collectStaleToolResultArchiveCandidates as collectStaleToolResultArchiveCandidatesNarrow,
   pruneStaleToolResultsBeforeCompact,
   type StaleToolResultPrunePolicy,
   type StaleToolResultArchiveCandidate,
 } from './tool-result-archive.js';
-import { isValidSynthesisSourceRef, type SynthesisSourceRef } from './context-source-ref.js';
 import { type ActiveToolResultPrunePolicy } from './active-tool-result-prune.js';
 import {
   applyRuntimeEventHistoryCompact as applyRuntimeEventHistoryCompactNarrow,
   evaluateHistoryCompactCheckpointReplay as evaluateHistoryCompactCheckpointReplayNarrow,
   isHistoryCompactContentEvent,
-  type HistoryCompactBlock,
-  type HistoryCompactPolicy,
-  type HistoryCompactReplayOptions,
-  type HistoryCompactReplayResult,
-  type HistoryCompactCheckpointReplayFit,
-  type HistoryRewriteGatePolicy,
-} from './history-compact.js';
+  type HistoryCompactionPolicy,
+  type HistoryCompactionReplayOptions,
+  type HistoryCompactionReplayResult,
+  type HistoryCompactionCheckpointReplayFit,
+} from './history-compaction.js';
 
 import type { ModelMessage } from './model-protocol.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -124,18 +75,8 @@ import type {
   ContextBudgetDiagnostic,
   PromptSegmentEstimate,
 } from '@maka/core/usage-stats/types';
-import {
-  compactionDecisionDiagnosticPatch,
-  historyCompactBlockToCompactionBoundary,
-} from './compaction-boundary.js';
-import type { SemanticCompactPolicy } from './semantic-compact.js';
-import {
-  historyCompactCheckpointToRuntimeEvent,
-  matchHistoryCompactCheckpointPrefix,
-  midTurnHeadAnchorEvent,
-  renderHistoryCompactCheckpoint,
-  type HistoryCompactCheckpoint,
-} from './history-compact-checkpoint.js';
+import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
+import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 
 export interface ContextBudgetPolicy {
   name?: string;
@@ -144,10 +85,6 @@ export interface ContextBudgetPolicy {
    * used for shaping, not provider billing.
    */
   maxHistoryEstimatedTokens?: number;
-  /** Hard cap on prior turns retained for model replay. */
-  maxHistoryTurns?: number;
-  /** Keep at least this many recent turns even if the token estimate exceeds the cap. */
-  minRecentTurns?: number;
   /** Estimate conversion. Defaults to 4 chars/token, intentionally conservative for mixed text. */
   charsPerToken?: number;
   /** Optional replay-only pruning for stale oversized tool results before whole-turn compaction. */
@@ -157,27 +94,13 @@ export interface ContextBudgetPolicy {
    * AI SDK step. Defaults off and does not mutate persisted session messages.
    */
   activeToolResultPrune?: ActiveToolResultPrunePolicy;
-  /**
-   * Optional current-turn LLM semantic compact replacement. Runs after active
-   * tool-result pruning and before the next provider step.
-   */
-  semanticCompact?: SemanticCompactPolicy;
-  /** Optional replay-only archive hydration after pruning. Defaults off. */
-  archiveRetrieval?: ArchiveRetrievalPolicy;
-  /** Optional deterministic prior-history search used to re-add bounded around-context. Defaults off. */
-  historySearch?: RuntimeEventHistorySearchPolicy;
-  /** Optional replay-only source-bearing synthesis cache over older RuntimeEvent history. Defaults off. */
-  synthesisCache?: SynthesisCachePolicy;
-  /** Optional replay-only high-water compaction of older RuntimeEvent history into a source-bearing block. */
-  historyCompact?: HistoryCompactPolicy;
-  /** Named rewrite/compaction gate for diagnostics and explicit cache-shape resets. */
-  historyRewrite?: HistoryRewriteGatePolicy;
+  /** Latest checkpoint projection and automatic capacity settings. */
+  historyCompact?: HistoryCompactionPolicy;
 }
 
 export interface BudgetedRuntimeContext {
   events: RuntimeEvent[];
   diagnostic: ContextBudgetDiagnostic;
-  historyCompactBlocks?: HistoryCompactBlock[];
   /**
    * The checkpoint this projection was actually replayed through — present only
    * when it passed the prefix match and the replay fit, i.e. when these events
@@ -204,103 +127,45 @@ export interface PromptSegmentInput {
 export function applyRuntimeEventContextBudget(
   events: readonly RuntimeEvent[],
   policy: ContextBudgetPolicy | undefined,
-  options: Pick<HistoryCompactReplayOptions, 'historyCompactProtocol'> = {},
 ): BudgetedRuntimeContext | undefined {
   const prunePolicy = policy?.staleToolResultPrune;
   const pruneEnabled = prunePolicy?.enabled === true;
-  const archiveRetrievalEnabled = policy?.archiveRetrieval?.enabled === true;
-  const historySearchEnabled = policy?.historySearch?.enabled === true;
-  const synthesisCacheEnabled = policy?.synthesisCache?.enabled === true;
   const historyCompactEnabled = policy?.historyCompact?.enabled === true;
-  const historyRewriteEnabled = policy?.historyRewrite?.enabled === true;
   const enabled = Boolean(
-    policy?.maxHistoryEstimatedTokens ||
-      policy?.maxHistoryTurns ||
-      pruneEnabled ||
-      archiveRetrievalEnabled ||
-      historySearchEnabled ||
-      synthesisCacheEnabled ||
-      historyCompactEnabled ||
-      historyRewriteEnabled,
+    policy?.maxHistoryEstimatedTokens || pruneEnabled || historyCompactEnabled,
   );
   if (!enabled) return undefined;
   if (!policy) return undefined;
   const charsPerToken = policy?.charsPerToken ?? 4;
-  const maxTokens = finitePositive(policy?.maxHistoryEstimatedTokens);
-  const maxTurns = finitePositive(policy?.maxHistoryTurns);
-  const minRecentTurns = Math.max(0, Math.floor(policy?.minRecentTurns ?? 1));
   const estimatedTokensBefore = estimateRuntimeEventsTokens(events, charsPerToken);
   const pruned = pruneStaleToolResultsBeforeCompact(
     events,
     policy?.staleToolResultPrune,
     charsPerToken,
-    policy?.minRecentTurns,
   );
   const compacted = applyRuntimeEventHistoryCompactNarrow(
     pruned.events,
     policy?.historyCompact,
     policy?.charsPerToken,
     policy?.maxHistoryEstimatedTokens,
-    {
-      charsPerToken,
-      maxHistoryEstimatedTokens: maxTokens,
-      ...(options.historyCompactProtocol
-        ? { historyCompactProtocol: options.historyCompactProtocol }
-        : {}),
-    },
+    { charsPerToken },
   );
-  const hasCompactedReplay = compacted.blocks.length > 0 || compacted.checkpoint !== undefined;
-  const budgetEvents = hasCompactedReplay ? compacted.events : pruned.events;
-  const turnGroups = groupEventsByTurn(
-    budgetEvents.filter(isHistoryCompactContentEvent),
-    charsPerToken,
-  );
-
-  const keptTurnIds = new Set<string>();
-  let keptEvents: RuntimeEvent[];
-  if (hasCompactedReplay) {
-    keptEvents = budgetEvents;
-    for (const event of keptEvents) keptTurnIds.add(turnKey(event));
-  } else {
-    let keptTokens = 0;
-    for (let index = turnGroups.length - 1; index >= 0; index -= 1) {
-      const group = turnGroups[index]!;
-      const nextTurnCount = keptTurnIds.size + 1;
-      const mustKeep = nextTurnCount <= minRecentTurns;
-      const wouldExceedTurns = maxTurns !== undefined && nextTurnCount > maxTurns;
-      const wouldExceedTokens =
-        maxTokens !== undefined && keptTokens > 0 && keptTokens + group.estimatedTokens > maxTokens;
-      if (!mustKeep && (wouldExceedTurns || wouldExceedTokens)) break;
-      keptTurnIds.add(group.turnId);
-      keptTokens += group.estimatedTokens;
-    }
-    keptEvents = budgetEvents.filter((event) => keptTurnIds.has(turnKey(event)));
-  }
+  const keptEvents = compacted.events;
+  const keptTurnIds = new Set(keptEvents.map((event) => runtimeEventTurnKey(event)));
+  const originalTurnIds = new Set(events.map((event) => runtimeEventTurnKey(event)));
 
   const diagnostic: ContextBudgetDiagnostic = {
     enabled: true,
     ...(policy?.name ? { policyName: policy.name } : {}),
-    ...(maxTokens !== undefined ? { maxHistoryEstimatedTokens: maxTokens } : {}),
-    ...(maxTurns !== undefined ? { maxHistoryTurns: maxTurns } : {}),
+    ...(policy.maxHistoryEstimatedTokens !== undefined
+      ? { maxHistoryEstimatedTokens: policy.maxHistoryEstimatedTokens }
+      : {}),
     estimatedTokensBefore,
     estimatedTokensAfter: estimateRuntimeEventsTokens(keptEvents, charsPerToken),
     keptTurns: keptTurnIds.size,
-    droppedTurns: hasCompactedReplay
-      ? compacted.blocks.reduce((total, block) => total + block.coverage.turnIds.length, 0) +
-        (compacted.checkpoint?.coverage.turnCount ?? 0)
-      : Math.max(0, turnGroups.length - keptTurnIds.size),
+    droppedTurns: Math.max(0, originalTurnIds.size - keptTurnIds.size),
     keptEvents: keptEvents.length,
-    droppedEvents: Math.max(
-      0,
-      (hasCompactedReplay ? pruned.events.length : budgetEvents.length) - keptEvents.length,
-    ),
-    ...(policy.historyRewrite?.enabled === true
-      ? {
-          historyRewriteVersion: policy.historyRewrite.historyRewriteVersion,
-          historyRewriteResetReason: policy.historyRewrite.resetReason,
-          historyRewriteGate: policy.historyRewrite.name ?? 'history-rewrite',
-        }
-      : {}),
+    droppedEvents: Math.max(0, pruned.events.length - keptEvents.length),
     ...compacted.diagnosticPatch,
     ...(pruned.prunedToolResults > 0
       ? {
@@ -323,21 +188,8 @@ export function applyRuntimeEventContextBudget(
   return {
     events: keptEvents,
     diagnostic,
-    ...(compacted.blocks.length > 0 ? { historyCompactBlocks: compacted.blocks } : {}),
     ...(compacted.checkpoint ? { historyCompactCheckpoint: compacted.checkpoint } : {}),
   };
-}
-
-export function hasOversizedRetainedHistoryTurn(
-  events: readonly RuntimeEvent[],
-  policy: ContextBudgetPolicy | undefined,
-): boolean {
-  const maxTokens = finitePositive(policy?.maxHistoryEstimatedTokens);
-  if (maxTokens === undefined) return false;
-  const charsPerToken = policy?.charsPerToken ?? 4;
-  return groupEventsByTurn(events.filter(isHistoryCompactContentEvent), charsPerToken).some(
-    (turn) => turn.estimatedTokens > maxTokens,
-  );
 }
 
 export function buildPromptSegmentEstimates(input: PromptSegmentInput): PromptSegmentEstimate[] {
@@ -402,8 +254,6 @@ function segment(
   };
 }
 
-// finiteRatio / normalizeWhitespace / boundText relocated to context-budget-helpers.ts
-
 // ============================================================================
 // Replay ordering + context-budget diagnostic merge helpers.
 // Relocated from ai-sdk-backend.ts: these are pure functions over
@@ -447,104 +297,17 @@ export function buildContextBudgetDiagnosticShell(
     ...(policy?.maxHistoryEstimatedTokens !== undefined
       ? { maxHistoryEstimatedTokens: policy.maxHistoryEstimatedTokens }
       : {}),
-    ...(policy?.maxHistoryTurns !== undefined ? { maxHistoryTurns: policy.maxHistoryTurns } : {}),
     estimatedTokensBefore: estimateRuntimeEventsTokens(before, charsPerToken),
     estimatedTokensAfter: estimateRuntimeEventsTokens(after, charsPerToken),
     keptTurns: turnCountAfter,
     droppedTurns: Math.max(0, turnCountBefore - turnCountAfter),
     keptEvents: after.length,
     droppedEvents: Math.max(0, before.length - after.length),
-    ...(policy?.historyRewrite?.enabled === true
-      ? {
-          historyRewriteVersion: policy.historyRewrite.historyRewriteVersion,
-          historyRewriteResetReason: policy.historyRewrite.resetReason,
-          historyRewriteGate: policy.historyRewrite.name ?? 'history-rewrite',
-        }
-      : {}),
   };
 }
 
 export function runtimeEventTurnKey(event: RuntimeEvent): string {
   return event.turnId || '<unknown-turn>';
-}
-
-export function retrieveReplayHistoryAroundSearchSource(
-  replayEvents: readonly RuntimeEvent[],
-  searchEvents: readonly RuntimeEvent[],
-  query: string,
-  policy: RuntimeEventHistorySearchPolicy | undefined,
-  options: { charsPerToken?: number } = {},
-): RuntimeEventHistoryAroundResult {
-  if (policy?.enabled !== true) {
-    return { events: [], hits: [], diagnosticPatch: {} };
-  }
-  const charsPerToken = options.charsPerToken ?? 4;
-  const around = Math.max(0, Math.floor(policy.around ?? 1));
-  const maxEstimatedTokens =
-    typeof policy.maxEstimatedTokens === 'number' &&
-    Number.isFinite(policy.maxEstimatedTokens) &&
-    policy.maxEstimatedTokens > 0
-      ? Math.floor(policy.maxEstimatedTokens)
-      : 4_096;
-  const hits = searchRuntimeEventHistory(searchEvents, policy.query ?? query, policy);
-  const selectedIndexes = new Set<number>();
-  const indexesByEventId = new Map(replayEvents.map((event, index) => [event.id, index]));
-  let skipped = 0;
-  for (const hit of hits) {
-    const index = indexesByEventId.get(hit.eventId);
-    if (index === undefined) {
-      skipped += 1;
-      continue;
-    }
-    for (
-      let cursor = Math.max(0, index - around);
-      cursor <= Math.min(replayEvents.length - 1, index + around);
-      cursor += 1
-    ) {
-      selectedIndexes.add(cursor);
-    }
-  }
-
-  const selectedEvents: RuntimeEvent[] = [];
-  let selectedTokens = 0;
-  for (const index of [...selectedIndexes].sort((a, b) => a - b)) {
-    const event = replayEvents[index]!;
-    const estimate = estimateRuntimeEventsTokens([event], charsPerToken);
-    if (selectedTokens + estimate > maxEstimatedTokens) {
-      skipped += 1;
-      continue;
-    }
-    selectedEvents.push(event);
-    selectedTokens += estimate;
-  }
-
-  return {
-    events: selectedEvents,
-    hits,
-    diagnosticPatch: {
-      historySearchMatches: hits.length,
-      historyAroundRetrievedEvents: selectedEvents.length,
-      historyAroundEstimatedTokens: selectedTokens,
-      ...(skipped > 0 ? { historyAroundSkippedEvents: skipped } : {}),
-    },
-  };
-}
-
-export function buildHistorySearchSource(
-  events: readonly RuntimeEvent[],
-  policy: ContextBudgetPolicy | undefined,
-): readonly RuntimeEvent[] {
-  if (policy?.staleToolResultPrune?.enabled !== true) return events;
-  return (
-    applyRuntimeEventContextBudget(events, {
-      ...policy,
-      maxHistoryEstimatedTokens: undefined,
-      maxHistoryTurns: undefined,
-      archiveRetrieval: undefined,
-      historySearch: undefined,
-      historyRewrite: undefined,
-    })?.events ?? events
-  );
 }
 
 export function mergeContextBudgetDiagnostic(
@@ -554,60 +317,9 @@ export function mergeContextBudgetDiagnostic(
   return {
     ...base,
     ...patch,
-    ...mergeCountRecordField(
-      'archiveRetrievalFailureReasonCounts',
-      base.archiveRetrievalFailureReasonCounts,
-      patch.archiveRetrievalFailureReasonCounts,
-    ),
-    ...mergeCountRecordField(
-      'archiveRetrievalSkippedReasonCounts',
-      base.archiveRetrievalSkippedReasonCounts,
-      patch.archiveRetrievalSkippedReasonCounts,
-    ),
-    ...mergeCountRecordField(
-      'synthesisCacheSkippedReasonCounts',
-      base.synthesisCacheSkippedReasonCounts,
-      patch.synthesisCacheSkippedReasonCounts,
-    ),
-    ...mergeCountRecordField(
-      'synthesisCacheInvalidationReasonCounts',
-      base.synthesisCacheInvalidationReasonCounts,
-      patch.synthesisCacheInvalidationReasonCounts,
-    ),
-    ...mergeCountRecordField(
-      'synthesisCacheLoadSkippedReasonCounts',
-      base.synthesisCacheLoadSkippedReasonCounts,
-      patch.synthesisCacheLoadSkippedReasonCounts,
-    ),
-    ...mergeCountRecordField(
-      'synthesisCacheWriteSkippedReasonCounts',
-      base.synthesisCacheWriteSkippedReasonCounts,
-      patch.synthesisCacheWriteSkippedReasonCounts,
-    ),
-    ...mergeCountRecordField(
-      'synthesisCacheEvictionReasonCounts',
-      base.synthesisCacheEvictionReasonCounts,
-      patch.synthesisCacheEvictionReasonCounts,
-    ),
-    ...mergeCountRecordField(
-      'historyCompactSkippedReasonCounts',
-      base.historyCompactSkippedReasonCounts,
-      patch.historyCompactSkippedReasonCounts,
-    ),
-    ...mergeCountRecordField(
-      'historyCompactLoadSkippedReasonCounts',
-      base.historyCompactLoadSkippedReasonCounts,
-      patch.historyCompactLoadSkippedReasonCounts,
-    ),
-    ...mergeCountRecordField(
-      'historyCompactWriteSkippedReasonCounts',
-      base.historyCompactWriteSkippedReasonCounts,
-      patch.historyCompactWriteSkippedReasonCounts,
-    ),
     ...mergeCompactionDecisionDiagnostics(base.compactionDecisions, patch.compactionDecisions),
   };
 }
-
 export function mergeContextBudgetDiagnosticPatches(
   left: Partial<ContextBudgetDiagnostic> | undefined,
   right: Partial<ContextBudgetDiagnostic> | undefined,
@@ -621,7 +333,6 @@ export function mergeContextBudgetDiagnosticPatches(
 export function shouldAppendContextCompactedNote(
   contextBudget: ContextBudgetDiagnostic | undefined,
 ): boolean {
-  if ((contextBudget?.historyCompactBlocksWritten ?? 0) <= 0) return false;
   return (
     contextBudget?.compactionDecisions?.some(
       (decision) =>
@@ -636,7 +347,6 @@ export function shouldAppendContextCompactionFailedOpenNote(
   contextBudget: ContextBudgetDiagnostic | undefined,
 ): boolean {
   return (
-    (contextBudget?.historyCompactWriteFailures ?? 0) > 0 &&
     contextBudget?.compactionDecisions?.some(
       (decision) =>
         decision.stage === 'priorReplay' &&
@@ -656,27 +366,6 @@ export function minimalContextBudgetDiagnostic(): ContextBudgetDiagnostic {
     keptEvents: 0,
     droppedEvents: 0,
   };
-}
-
-function mergeCountRecords(
-  left: Record<string, number> | undefined,
-  right: Record<string, number> | undefined,
-): Record<string, number> | undefined {
-  if (!left && !right) return undefined;
-  const out: Record<string, number> = { ...(left ?? {}) };
-  for (const [key, value] of Object.entries(right ?? {})) {
-    out[key] = (out[key] ?? 0) + value;
-  }
-  return out;
-}
-
-function mergeCountRecordField<K extends keyof ContextBudgetDiagnostic>(
-  key: K,
-  left: Record<string, number> | undefined,
-  right: Record<string, number> | undefined,
-): Pick<ContextBudgetDiagnostic, K> | Record<string, never> {
-  const merged = mergeCountRecords(left, right);
-  return merged === undefined ? {} : ({ [key]: merged } as Pick<ContextBudgetDiagnostic, K>);
 }
 
 function mergeCompactionDecisionDiagnostics(
@@ -708,15 +397,14 @@ export function collectStaleToolResultArchiveCandidates(
     events,
     policy?.staleToolResultPrune,
     policy?.charsPerToken ?? 4,
-    policy?.minRecentTurns,
   );
 }
 
 export function applyRuntimeEventHistoryCompact(
   events: readonly RuntimeEvent[],
   policy: ContextBudgetPolicy | undefined,
-  options: HistoryCompactReplayOptions = {},
-): HistoryCompactReplayResult {
+  options: HistoryCompactionReplayOptions = {},
+): HistoryCompactionReplayResult {
   return applyRuntimeEventHistoryCompactNarrow(
     events,
     policy?.historyCompact,
@@ -730,8 +418,8 @@ export function evaluateHistoryCompactCheckpointReplay(
   checkpoint: HistoryCompactCheckpoint,
   replayTail: readonly RuntimeEvent[],
   policy: ContextBudgetPolicy | undefined,
-  options: HistoryCompactReplayOptions = {},
-): HistoryCompactCheckpointReplayFit {
+  options: HistoryCompactionReplayOptions = {},
+): HistoryCompactionCheckpointReplayFit {
   return evaluateHistoryCompactCheckpointReplayNarrow(
     checkpoint,
     replayTail,

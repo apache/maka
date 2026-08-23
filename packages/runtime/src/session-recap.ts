@@ -19,11 +19,8 @@
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import { applyRuntimeEventContextBudget } from './context-budget.js';
-import {
-  buildDefaultContextBudgetPolicy,
-  resolveSelectedModelContextWindow,
-} from './context-budget-policy.js';
+import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
+import { groupEventsByTurn } from './context-budget-helpers.js';
 import { replayPlanItemsToModelMessages } from './history-compact-summarizer.js';
 import { buildRuntimeEventModelReplayPlan } from './model-history.js';
 import type { ModelMessage } from './model-protocol.js';
@@ -39,18 +36,29 @@ export function buildSessionRecapMessages(input: {
   const contextWindow = resolveSelectedModelContextWindow(input.connection, input.modelId);
   let events = input.events;
   if (contextWindow !== undefined) {
-    const budget = buildDefaultContextBudgetPolicy(input.connection, {
-      name: 'session-recap-history-budget',
-      modelId: input.modelId,
-    });
-    if (budget?.maxHistoryEstimatedTokens !== undefined) {
-      budget.maxHistoryEstimatedTokens = Math.max(0, Math.floor(contextWindow * 0.85) - 4_096);
-    }
-    events = applyRuntimeEventContextBudget(events, budget)?.events ?? events;
+    events = recentTurnsWithinBudget(events, Math.max(0, Math.floor(contextWindow * 0.85) - 4_096));
   }
   const messages = replayPlanItemsToModelMessages(buildRuntimeEventModelReplayPlan(events).items);
   messages.push({ role: 'user', content: SESSION_RECAP_INSTRUCTION });
   return messages;
+}
+
+/** Request-only recap projection; never mutates or replaces canonical history. */
+function recentTurnsWithinBudget(
+  events: readonly RuntimeEvent[],
+  maxEstimatedTokens: number,
+  charsPerToken = 4,
+): RuntimeEvent[] {
+  const groups = groupEventsByTurn(events, charsPerToken);
+  const selected: RuntimeEvent[][] = [];
+  let selectedTokens = 0;
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index]!;
+    if (selectedTokens + group.estimatedTokens > maxEstimatedTokens) break;
+    selected.unshift(group.events);
+    selectedTokens += group.estimatedTokens;
+  }
+  return selected.flat();
 }
 
 export function cleanSessionRecapText(raw: string): string {

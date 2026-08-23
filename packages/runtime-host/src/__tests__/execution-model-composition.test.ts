@@ -402,7 +402,6 @@ test('Codex OAuth history compaction uses the provider-native route and preserve
       turnId: 'turn-compact',
       runId: 'run-compact',
       runtimeContext,
-      minRecentTurns: 1,
     });
 
     assert.equal(requests.length, 1, JSON.stringify(result));
@@ -410,7 +409,7 @@ test('Codex OAuth history compaction uses the provider-native route and preserve
     const requestText = JSON.stringify(requests[0]!.body);
     assert.match(requestText, /"type":"compaction_trigger"/);
     assert.doesNotMatch(requestText, /context summarization assistant/i);
-    assert.equal(result.contextBudget?.historyCompactWriteFailures, 1);
+    assert.deepEqual(result.outcome, { kind: 'failed', reason: 'provider_error' });
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'failedOpen');
     assert.equal(attempts.length, 1);
     assert.equal(attempts[0]?.callKind, 'history_compact');

@@ -36,7 +36,7 @@ import {
   validateHistoryCompactCheckpointShape,
 } from './history-compact-checkpoint.js';
 import { findCheckpointSummaryDefect } from './history-compact-summary-validation.js';
-import { isHistoryCompactContentEvent } from './history-compact.js';
+import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
@@ -861,15 +861,11 @@ function isCopiedAgentRunEvent(event: AgentRunEvent): event is EmittedAgentRunEv
   // into the target with source identities intact. The ledger's `type` is open, so such an event
   // may predate a retired writer or postdate this build entirely (#1942).
   if (!isEmittedAgentRunEventType(event.type)) return false;
-  // Semantic blocks hash the exact provider-visible source. Rewriting
-  // target-owned RuntimeEvent and Artifact references invalidates that
-  // evidence, so a copied Session starts without these derived diagnostics.
   return (
     event.type !== 'run_completed' &&
     event.type !== 'run_failed' &&
     event.type !== 'run_cancelled' &&
-    event.type !== 'event_corrupt' &&
-    event.type !== 'semantic_compact_block_recorded'
+    event.type !== 'event_corrupt'
   );
 }
 

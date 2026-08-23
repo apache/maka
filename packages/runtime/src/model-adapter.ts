@@ -62,10 +62,7 @@ import {
   providerFailureSummary,
   providerRetryMetadata,
 } from './provider-error-classification.js';
-import {
-  withProviderGenerateTracking,
-  type ProviderRequestTracker,
-} from './provider-request-telemetry.js';
+import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
 import {
   createOpenAiChatReasoningTransportState,
@@ -115,27 +112,6 @@ export interface ModelAdapterInput {
   now: () => number;
   /** Test seam; production adapters own one state instance for their lifetime. */
   openAiResponsesTransportState?: OpenAiResponsesTransportState;
-}
-
-export interface CompactSummaryRequest {
-  model: unknown;
-  system: string;
-  messages: readonly ModelMessage[];
-  maxOutputTokens: number;
-  abortSignal?: AbortSignal;
-  /**
-   * Physical provider-call tracking for this summarization. Attaching it here
-   * rather than at the call site keeps "wrap a model with a tracker" in the one
-   * place that already owns it for streams.
-   */
-  providerRequestTracker?: ProviderRequestTracker;
-}
-
-export interface CompactSummaryResult {
-  text: string;
-  usage?: NormalizedAiSdkUsage;
-  finishReason?: string;
-  providerRequestId?: string;
 }
 
 export interface ModelAdapterStreamInput {
@@ -436,54 +412,6 @@ export class ModelAdapter {
 
   dispose(): void {
     this.openAiResponsesTransportState.close();
-  }
-
-  async generateCompactSummary(input: CompactSummaryRequest): Promise<CompactSummaryResult> {
-    const ai = await import('ai').catch((err) => {
-      throw new Error(
-        `Failed to load 'ai' package. Run \`npm install ai\`. Inner: ${(err as Error).message}`,
-      );
-    });
-    const { generateText, wrapLanguageModel } = ai as unknown as {
-      generateText: (opts: Record<string, unknown>) => Promise<{
-        text?: string;
-        usage?: AiSdkUsageLike;
-        finishReason?: unknown;
-        providerMetadata?: unknown;
-        finalStep?: { response?: { id?: string } };
-      }>;
-      wrapLanguageModel: (input: Record<string, unknown>) => unknown;
-    };
-
-    const trackedModel = input.providerRequestTracker
-      ? withProviderGenerateTracking({
-          model: input.model,
-          wrapLanguageModel,
-          tracker: input.providerRequestTracker,
-          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-        })
-      : input.model;
-
-    const result = await generateText({
-      model: trackedModel,
-      instructions: input.system,
-      messages: input.messages,
-      maxOutputTokens: input.maxOutputTokens,
-      abortSignal: input.abortSignal,
-    });
-    const usage = normalizeAiSdkUsage(result.usage, {
-      rawFinishReason: result.finishReason,
-    });
-    return {
-      text: result.text ?? '',
-      ...(usage ? { usage } : {}),
-      ...(result.finishReason !== undefined
-        ? { finishReason: rawFinishReasonString(result.finishReason) }
-        : {}),
-      ...(typeof result.finalStep?.response?.id === 'string'
-        ? { providerRequestId: result.finalStep.response.id }
-        : {}),
-    };
   }
 
   /**

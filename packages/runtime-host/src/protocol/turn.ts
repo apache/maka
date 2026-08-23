@@ -21,6 +21,7 @@ import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachmen
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
   isCanonicalAttachmentRef,
+  type ContextCompactionOutcome,
   type MessageContent,
   type ProviderRetryReason,
 } from '@maka/core/events';
@@ -182,7 +183,11 @@ export type LiveTurnSnapshot = TurnSnapshotBase & {
 
 export type TurnSnapshot =
   | LiveTurnSnapshot
-  | (TurnSnapshotBase & { status: 'completed'; terminalEventId: string })
+  | (TurnSnapshotBase & {
+      status: 'completed';
+      terminalEventId: string;
+      contextCompactionOutcome?: ContextCompactionOutcome;
+    })
   | (TurnSnapshotBase & {
       status: 'failed';
       terminalEventId: string;
@@ -631,17 +636,23 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
   };
   const status = requireTurnRunStatus(record.status);
   if (status === 'completed') {
-    assertExactKeys(record, 'completed Turn snapshot', [
-      'sessionId',
-      'turnId',
-      'runId',
-      'status',
-      'terminalEventId',
-    ]);
+    requireShapedRecord(
+      record,
+      'completed Turn snapshot',
+      ['sessionId', 'turnId', 'runId', 'status', 'terminalEventId'],
+      ['contextCompactionOutcome'],
+    );
     return {
       ...base,
       status,
       terminalEventId: requireId(record.terminalEventId, 'terminalEventId'),
+      ...(record.contextCompactionOutcome !== undefined
+        ? {
+            contextCompactionOutcome: decodeContextCompactionOutcome(
+              record.contextCompactionOutcome,
+            ),
+          }
+        : {}),
     };
   }
   if (status === 'failed') {
@@ -697,6 +708,20 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
       ? { providerRetry: decodeTurnProviderRetry(record.providerRetry) }
       : {}),
   };
+}
+
+export function decodeContextCompactionOutcome(value: unknown): ContextCompactionOutcome {
+  const record = requireRecord(value, 'Context compaction outcome');
+  const kind = requireString(record.kind, 'kind', 32);
+  if (kind === 'compacted') {
+    assertExactKeys(record, 'compacted context outcome', ['kind', 'checkpointId']);
+    return { kind, checkpointId: requireEntityId(record.checkpointId, 'checkpointId') };
+  }
+  if (kind === 'unchanged' || kind === 'failed') {
+    assertExactKeys(record, `${kind} context outcome`, ['kind', 'reason']);
+    return { kind, reason: requireString(record.reason, 'reason', 256) };
+  }
+  throw invalidProtocolFrame('Invalid context compaction outcome kind');
 }
 
 export function decodeTurnProviderRetry(value: unknown): TurnProviderRetry {

@@ -19,6 +19,7 @@
 
 import { useMemo, useRef } from "react";
 import type { DailyReviewSummary } from '@maka/core/daily-review';
+import type { ContextCompactionOutcome } from '@maka/core/events';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionStartMode } from '@maka/core/explore-agent';
@@ -57,6 +58,28 @@ type ToastApi = {
     diagnosticTarget?: { sessionId: string } | { profileId: string },
   ): void;
 };
+
+export function contextCompactionNotice(
+  outcome: ContextCompactionOutcome,
+  uiLocale: UiLocale = 'en',
+): { level: 'success' | 'info' | 'error'; title: string; description: string } {
+  const copy = getShellCopy(uiLocale).app;
+  if (outcome.kind === 'compacted') {
+    return {
+      level: 'success',
+      title: copy.compactSuccessTitle,
+      description: copy.compactSuccessDescription,
+    };
+  }
+  if (outcome.kind === 'unchanged') {
+    return {
+      level: 'info',
+      title: copy.compactUnchangedTitle,
+      description: copy.compactUnchangedDescription,
+    };
+  }
+  return { level: 'error', title: copy.compactErrorTitle, description: outcome.reason };
+}
 
 type ComposerImportOwner = {
   sessionId: string | undefined;

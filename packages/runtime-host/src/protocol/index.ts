@@ -91,7 +91,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 40 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 41 as const;
+// 41: Context compaction returns a typed terminal outcome on both Turn
+// snapshots and context.compact results. Epoch-40 peers reject these closed
+// shapes after admission, so mixed peers must fail during the handshake.
 // 40: The message queue gains per-entry mutation operations
 // (queue.entry.promote, queue.entry.retract, queue.entries.reorder).
 // 39: Client Capability tool descriptors carry trusted activity semantics and

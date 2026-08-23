@@ -55,7 +55,7 @@ import {
   type AdmittedProposalFields,
   type MemoryProposalItem,
 } from './memory-extraction-proposal.js';
-import { isHistoryCompactContentEvent } from './history-compact.js';
+import { isHistoryCompactContentEvent } from './history-compaction.js';
 import {
   isTextHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,

@@ -61,6 +61,7 @@ import {
   type RuntimeEventContent,
   type RuntimeEventRole,
 } from '@maka/core/runtime-event';
+import { withToolResultArchiveResourceRef } from './tool-result-archive.js';
 import { formatAttachmentResourceRef } from '@maka/core/attachments';
 import { decodeCanonicalShellToolResultContent } from '@maka/core/shell-run-result';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
@@ -611,7 +612,7 @@ export function buildRuntimeEventModelReplayPlan(
         let normalizedResult: unknown =
           event.content.providerExecuted && event.content.providerOutput !== undefined
             ? event.content.providerOutput
-            : event.content.result;
+            : withToolResultArchiveResourceRef(event.content.result);
         if (shellResult.state === 'invalid') {
           invalidResultMessage = 'function_response contains an invalid shell tool result';
         } else if (shellResult.state === 'valid') {

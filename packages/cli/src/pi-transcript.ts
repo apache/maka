@@ -509,21 +509,24 @@ export async function submitCompactToTranscript(input: {
   driver: Pick<MakaSessionDriver, 'compactSession'>;
   onChange?: () => void;
 }): Promise<void> {
-  let completed = false;
-  let sawCompactionNotice = false;
+  let outcome: Extract<SessionEvent, { type: 'complete' }>['contextCompactionOutcome'];
   try {
     for await (const event of input.driver.compactSession()) {
-      if (event.type === 'token_usage' && contextBudgetOutcomeNotice(event.contextBudget))
-        sawCompactionNotice = true;
-      if (event.type === 'complete' && event.stopReason === 'end_turn') completed = true;
-      applyMakaSessionEventToTranscript(input.state, event);
+      if (event.type === 'complete') outcome = event.contextCompactionOutcome;
+      if (event.type === 'token_usage') accumulateUsage(input.state.usage, event);
+      else applyMakaSessionEventToTranscript(input.state, event);
       input.onChange?.();
     }
-    if (completed && !sawCompactionNotice) {
+    if (outcome) {
       input.state.entries.push({
         kind: 'notice',
-        level: 'info',
-        text: 'Nothing to compact.',
+        level: outcome.kind === 'failed' ? 'error' : 'info',
+        text:
+          outcome.kind === 'compacted'
+            ? 'Context compacted.'
+            : outcome.kind === 'unchanged'
+              ? 'Nothing to compact.'
+              : `Context compaction failed: ${outcome.reason}.`,
       });
       input.onChange?.();
     }
@@ -1060,15 +1063,11 @@ function contextBudgetNoticeText(
     (candidate) => candidate.decision === 'replaced',
   );
   if (!contextBudget || !decision) return undefined;
-  const kind = decision.boundaryKind ?? contextBudget.highWaterReason ?? 'context';
-  const coveredTurns = decision.coveredTurns ?? contextBudget.historyCompactedTurns;
-  const coveredEvents = decision.coveredRuntimeEvents ?? contextBudget.historyCompactedEvents;
+  const kind = decision.boundaryKind ?? 'context';
+  const coveredTurns = decision.coveredTurns;
+  const coveredEvents = decision.coveredRuntimeEvents;
   const savedTokens =
     decision.estimatedTokensSaved ??
-    tokenDelta(
-      contextBudget.historyCompactedEstimatedTokensBefore,
-      contextBudget.historyCompactedEstimatedTokensAfter,
-    ) ??
     tokenDelta(contextBudget.estimatedTokensBefore, contextBudget.estimatedTokensAfter);
   const parts = [`Context compacted: ${kind}`];
   if (coveredTurns !== undefined || coveredEvents !== undefined) {

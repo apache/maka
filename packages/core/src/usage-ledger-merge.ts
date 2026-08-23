@@ -42,9 +42,10 @@ import type {
  * says how much came from where, until the old table ages out of the queried
  * range and `legacyRecords` reaches zero on its own.
  *
- * Model calls that have not yet been routed through the canonical seam —
- * `semantic_compact` and `history_compact` — still write only to the old table,
- * so this merge is what keeps them counted in the meantime.
+ * History compaction calls have not yet been routed through the canonical seam
+ * and still write only to the old table, so this merge keeps them counted in
+ * the meantime. Historical records may also contain the retired
+ * `semantic_compact` call kind.
  */
 export interface UsageProvenance {
   /** Classification of the canonical records behind this result. */

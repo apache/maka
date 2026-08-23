@@ -1710,7 +1710,6 @@ test('Agent Graph context recovery fences competing root turns while compaction 
     backend?.releaseCompact();
     assert.equal(await recovery, undefined);
     assert.equal(backend?.compactInput?.turnId, compactTurnId);
-    assert.equal(backend?.compactInput?.minRecentTurns, 0);
     assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), {
       kind: 'idle',
     });
@@ -1751,14 +1750,15 @@ test('manual context compact uses durable root query, stop, and exact retry auth
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
-    assert.equal(started.result.sessionId, fixture.sessionId);
-    assert.equal(started.result.turnId, turnId);
+    assert.equal(started.result.kind, 'started');
+    assert.equal(started.result.turn.sessionId, fixture.sessionId);
+    assert.equal(started.result.turn.turnId, turnId);
     await backend?.compactStarted.promise;
     assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), {
       kind: 'active',
       sessionId: fixture.sessionId,
       turnId,
-      runId: started.result.runId,
+      runId: started.result.turn.runId,
     });
 
     const queried = await fixture.turnControl.handlers['turn.query'](
@@ -1766,13 +1766,13 @@ test('manual context compact uses durable root query, stop, and exact retry auth
       context,
     );
     assert.equal(queried.ok, true);
-    if (queried.ok) assert.equal(queried.result.runId, started.result.runId);
+    if (queried.ok) assert.equal(queried.result.runId, started.result.turn.runId);
 
     const stopped = await fixture.turnControl.handlers['turn.stop'](
       {
         sessionId: fixture.sessionId,
         turnId,
-        runId: started.result.runId,
+        runId: started.result.turn.runId,
       },
       context,
     );
@@ -1784,7 +1784,14 @@ test('manual context compact uses durable root query, stop, and exact retry auth
       { sessionId: fixture.sessionId, turnId },
       context,
     );
-    assert.deepEqual(retried, stopped);
+    assert.deepEqual(retried, {
+      ok: true,
+      result: {
+        kind: 'finished',
+        turn: stopped.result,
+        outcome: { kind: 'failed', reason: stopped.result.abortSource },
+      },
+    });
     const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
       fixture.sessionId,
       turnId,
@@ -5278,7 +5285,7 @@ class BlockingContextRecoveryBackend implements AgentBackend {
     this.compactInput = input;
     this.compactStarted.resolve();
     await this.#compactReleased.promise;
-    return {};
+    return { outcome: { kind: 'unchanged' as const, reason: 'test' } };
   }
 
   releaseCompact(): void {
@@ -5345,7 +5352,7 @@ class GraphFollowupRecoveryBackend implements AgentBackend {
     this.compactStartedCount += 1;
     this.compactStarted.resolve();
     await this.#compactReleased.promise;
-    return {};
+    return { outcome: { kind: 'unchanged' as const, reason: 'test' } };
   }
 
   releaseGraphTurn(): void {

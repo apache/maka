@@ -136,14 +136,13 @@ describe('tool-result prune policy env plumbing', () => {
     });
   });
 
-  test('applies explicit bounds and stale recent-turn precedence', () => {
+  test('applies explicit active and stale tool-result bounds', () => {
     const policy = buildDefaultContextBudgetPolicy(connection(), {
       env: {
         MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MAX_ESTIMATED_TOKENS: '4096',
         MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MIN_SUPERSEDED_TOKENS: '384',
         MAKA_CONTEXT_ACTIVE_TOOL_RESULT_MIN_STEP_NUMBER: '3',
         MAKA_CONTEXT_STALE_TOOL_RESULT_MAX_TOKENS: '8192',
-        MAKA_CONTEXT_MIN_RECENT_TURNS: '4',
         MAKA_CONTEXT_STALE_TOOL_RESULT_MIN_RECENT_TURNS: '5',
       },
     });

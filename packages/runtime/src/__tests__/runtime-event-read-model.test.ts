@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-inputs';
@@ -740,6 +741,36 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       },
     });
     expect(out.diagnostics.map((diag) => diag.code)).toEqual(['archived_tool_result_placeholder']);
+  });
+
+  test('legacy archived tool-result placeholders gain a deterministic ArchiveRead ref for replay', () => {
+    const events = baseEvents();
+    const toolResult = events.find((event) => event.id === 'evt-tool-result');
+    if (toolResult?.content?.kind !== 'function_response')
+      throw new Error('fixture missing tool result');
+    toolResult.content.result = {
+      kind: 'maka.archived_tool_result',
+      rewriteVersion: 1,
+      artifactId: 'artifact-tool-result',
+      runtimeEventId: 'evt-tool-result',
+      toolCallId: 'tool-1',
+      toolName: 'Read',
+      bodySha256: 'a'.repeat(64),
+      originalEstimatedTokens: 200,
+      originalBytes: 800,
+      reason: 'stale_tool_result_pruned_before_compact',
+    };
+
+    const replay = buildRuntimeEventModelReplayPlan(events);
+    const result = replay.items.find(
+      (item) => item.kind === 'tool_result' && item.toolCallId === 'tool-1',
+    );
+    assert.equal(
+      result?.kind === 'tool_result' && typeof result.output === 'object' && result.output !== null
+        ? (result.output as { resourceRef?: string }).resourceRef
+        : undefined,
+      `maka://archive/artifact-tool-result/${'a'.repeat(64)}/800`,
+    );
   });
 
   test('archive status wrapper can project missing and corrupt rows without changing sync defaults', () => {

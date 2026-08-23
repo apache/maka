@@ -744,7 +744,7 @@ export interface MakaBridge {
     ): () => void;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     listTurnLandmarks(sessionId: string): Promise<OperationOutput<'session.turn_landmarks.query'>>;
-    compact(sessionId: string): Promise<void>;
+    compact(sessionId: string): Promise<OperationOutput<'context.compact'>>;
     resumeLatest(sessionId: string): Promise<
       | { disposition: 'started'; runId: string; turnId: string }
       | { disposition: 'park'; rejectionReasons: string[]; diagnostics: unknown[] }

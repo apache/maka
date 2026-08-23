@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { resolveManualDiagnosticTarget } from '../../renderer/app-shell-command-actions.js';
+import {
+  contextCompactionNotice,
+  resolveManualDiagnosticTarget,
+} from '../../renderer/app-shell-command-actions.js';
 
 test('targets manual diagnostics to the current task or new-task Host profile', () => {
   assert.deepEqual(
@@ -60,4 +63,22 @@ test('targets manual diagnostics to the current task or new-task Host profile', 
     ),
     undefined,
   );
+});
+
+test('presents every successful-frame context compaction outcome', () => {
+  assert.deepEqual(contextCompactionNotice({ kind: 'compacted', checkpointId: 'checkpoint-1' }), {
+    level: 'success',
+    title: 'Context compacted',
+    description: 'Older context was replaced with a checkpoint summary.',
+  });
+  assert.deepEqual(contextCompactionNotice({ kind: 'unchanged', reason: 'already_compacted' }), {
+    level: 'info',
+    title: 'Nothing to compact',
+    description: 'The task already uses the latest checkpoint.',
+  });
+  assert.deepEqual(contextCompactionNotice({ kind: 'failed', reason: 'write_failed' }), {
+    level: 'error',
+    title: 'Compaction failed',
+    description: 'write_failed',
+  });
 });

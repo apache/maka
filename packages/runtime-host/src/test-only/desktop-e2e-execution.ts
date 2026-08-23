@@ -61,7 +61,7 @@ export class DesktopE2eBackend extends FakeBackend {
       ].join('\n'),
     });
     await recordCheckpoint(checkpoint, input.turnId);
-    return {};
+    return { outcome: { kind: 'compacted', checkpointId: checkpoint.checkpointId } };
   }
 }
 

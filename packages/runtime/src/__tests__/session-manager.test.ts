@@ -3917,6 +3917,9 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     const usage = events[0];
     if (usage?.type !== 'token_usage') throw new Error('expected token_usage');
     expect(usage.contextBudget?.compactionDecisions?.[0]?.decision).toBe('replaced');
+    const complete = events[1];
+    if (complete?.type !== 'complete') throw new Error('expected complete');
+    expect(complete.contextCompactionOutcome?.kind).toBe('compacted');
 
     const messages = await store.readMessages(session.id);
     expect(
@@ -3943,7 +3946,7 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     expect(runStore.operations).toEqual(['terminalRuntimeEvent', 'completedRunHeader']);
     expect(
       (await runStore.readRuntimeEvents(session.id, compactRun!.runId)).some(
-        (event) => event.actions?.tokenUsage?.contextBudget,
+        (event) => event.actions?.stateDelta?.contextCompactionOutcome,
       ),
     ).toBe(true);
     await manager.stopSession(session.id, { source: 'stop_button' });
@@ -4018,7 +4021,6 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
         contextBudget: {
           name: 'manual-compact-accounting',
           maxHistoryEstimatedTokens: 10_000,
-          minRecentTurns: 1,
           charsPerToken: 1,
         },
         summarizeHistoryCompact: buildLlmHistorySummarizer({
@@ -16257,6 +16259,7 @@ class ActiveTurnBackend extends TestBackend {
 
 function compactHistoryResult() {
   return {
+    outcome: { kind: 'compacted' as const, checkpointId: 'checkpoint-1' },
     contextBudget: {
       enabled: true,
       policyName: 'unit-budget',
@@ -16281,6 +16284,7 @@ function compactHistoryResult() {
 
 function compactHistoryFailOpenResult() {
   return {
+    outcome: { kind: 'failed' as const, reason: 'write_failed' },
     contextBudget: {
       enabled: true,
       policyName: 'unit-budget',
@@ -16290,7 +16294,6 @@ function compactHistoryFailOpenResult() {
       droppedTurns: 1,
       keptEvents: 1,
       droppedEvents: 1,
-      historyCompactWriteFailures: 1,
       compactionDecisions: [
         {
           stage: 'priorReplay' as const,

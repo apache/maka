@@ -59,7 +59,6 @@
     "./goal-state": "./dist/goal-state.js",
     "./goal-tools": "./dist/goal-tools.js",
     "./goal-turn-lifecycle": "./dist/goal-turn-lifecycle.js",
-    "./history-compact-artifacts": "./dist/history-compact-artifacts.js",
     "./history-compact-checkpoint": "./dist/history-compact-checkpoint.js",
     "./history-compact-ledger": "./dist/history-compact-ledger.js",
     "./history-compact-summarizer": "./dist/history-compact-summarizer.js",

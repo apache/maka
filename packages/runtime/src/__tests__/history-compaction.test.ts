@@ -24,15 +24,15 @@ import {
   estimateNextRequestTokens,
   exceedsContextWindow,
   exceedsHighWater,
-  planMidTurnCapacityCompaction,
-  selectMidTurnSafeBoundary,
-  type PlanMidTurnCapacityCompactionInput,
-} from '../mid-turn-capacity-compact.js';
+  applyRuntimeEventHistoryCompact,
+  planHistoryCompaction,
+  selectSafeCompactionPrefix,
+  type PlanHistoryCompactionInput,
+} from '../history-compaction.js';
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
-import { applyRuntimeEventHistoryCompact } from '../history-compact.js';
 import { matchHistoryCompactCheckpointPrefix } from '../history-compact-checkpoint.js';
 
-describe('mid-turn capacity trigger measurement', () => {
+describe('context compaction trigger measurement', () => {
   test('anchors on real provider usage plus a tail char/4 delta', () => {
     // last step: 100 input + 40 output real tokens, then 400 chars of new tool results
     assert.equal(
@@ -72,7 +72,7 @@ describe('mid-turn capacity trigger measurement', () => {
   });
 });
 
-describe('mid-turn safe boundary selection', () => {
+describe('safe compaction prefix selection', () => {
   test('folds the largest immutable non-partial prefix, leaving the reserved tail', () => {
     const events = [
       user('anchor', 'turn-1'),
@@ -80,7 +80,7 @@ describe('mid-turn safe boundary selection', () => {
       model('m2', 'turn-1'),
       model('m3', 'turn-1'),
     ];
-    const boundary = selectMidTurnSafeBoundary(events, { reserveTailEvents: 1 });
+    const boundary = selectSafeCompactionPrefix(events, { reserveTailEvents: 1 });
     assert.deepEqual(boundary, { ok: true, coveredCount: 3 });
   });
 
@@ -91,7 +91,7 @@ describe('mid-turn safe boundary selection', () => {
       { ...model('m2-partial', 'turn-1'), partial: true },
     ];
     // Reserving 0 tail would cut after the partial; it must retreat to m1.
-    const boundary = selectMidTurnSafeBoundary(events, { reserveTailEvents: 0 });
+    const boundary = selectSafeCompactionPrefix(events, { reserveTailEvents: 0 });
     assert.deepEqual(boundary, { ok: true, coveredCount: 2 });
   });
 
@@ -106,7 +106,7 @@ describe('mid-turn safe boundary selection', () => {
     // reserveTail=2 would cut at index 3, between call-2 and its result → retreat to 3? No:
     // index 3 straddles call-2(3)/result-2(4)? call at 3 >= 3, result at 4 >= 3, both outside → safe.
     // Force a straddle: reserveTail=1 → maxCut=4 straddles nothing (call-2 at 3<4, result-2 at 4>=4) → straddle, retreat to 3.
-    const boundary = selectMidTurnSafeBoundary(events, { reserveTailEvents: 1 });
+    const boundary = selectSafeCompactionPrefix(events, { reserveTailEvents: 1 });
     assert.deepEqual(boundary, { ok: true, coveredCount: 3 });
   });
 
@@ -119,7 +119,7 @@ describe('mid-turn safe boundary selection', () => {
     // With no reserved tail the largest cut ends on the immutable m-final, but
     // the prefix would still span the partial snapshot — coverage must stop
     // strictly before the first partial.
-    const boundary = selectMidTurnSafeBoundary(events, { reserveTailEvents: 0 });
+    const boundary = selectSafeCompactionPrefix(events, { reserveTailEvents: 0 });
     assert.deepEqual(boundary, { ok: true, coveredCount: 1 });
   });
 
@@ -131,19 +131,19 @@ describe('mid-turn safe boundary selection', () => {
     ];
     // Even with no reserved tail, covering the open call would orphan the
     // response that lands after compaction — the cut must stop before it.
-    const boundary = selectMidTurnSafeBoundary(events, { reserveTailEvents: 0 });
+    const boundary = selectSafeCompactionPrefix(events, { reserveTailEvents: 0 });
     assert.deepEqual(boundary, { ok: true, coveredCount: 2 });
   });
 
   test('reports no safe completed span when the whole pool is one atomic pair', () => {
     const events = [call('c1', 'call-1', 'turn-1'), result('r1', 'call-1', 'turn-1')];
     // Reserving 1 tail forces maxCut=1, which straddles the only pair → no safe span.
-    const boundary = selectMidTurnSafeBoundary(events, { reserveTailEvents: 1 });
+    const boundary = selectSafeCompactionPrefix(events, { reserveTailEvents: 1 });
     assert.deepEqual(boundary, { ok: false, reason: 'no_safe_completed_span' });
   });
 });
 
-describe('plan mid-turn capacity compaction', () => {
+describe('plan context compaction', () => {
   // A long turn: two prior turns folded already conceptually, plus the current
   // turn's head anchor and several completed steps.
   function longTurnEvents(): RuntimeEvent[] {
@@ -162,16 +162,11 @@ describe('plan mid-turn capacity compaction', () => {
   function structuredSummary(body: string): string {
     return `## Goal\n${body}\n\n## Progress\n- done\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`;
   }
-  function planInput(
-    over: Partial<PlanMidTurnCapacityCompactionInput> = {},
-  ): PlanMidTurnCapacityCompactionInput {
+  function planInput(over: Partial<PlanHistoryCompactionInput> = {}): PlanHistoryCompactionInput {
     return {
       sessionId: 'session-1',
       orderedEvents: longTurnEvents(),
       headAnchor: { runtimeEventId: 'anchor', turnId: 'turn-1' },
-      estimatedNextRequestTokens: 120_000,
-      contextWindow: 128_000,
-      reserveTokens: 16_384,
       reserveTailEvents: 1,
       charsPerToken: 4,
       now: 1_800_000_010_000,
@@ -180,15 +175,13 @@ describe('plan mid-turn capacity compaction', () => {
     };
   }
 
-  test('skips below the high-water threshold', async () => {
-    const result = await planMidTurnCapacityCompaction(
-      planInput({ estimatedNextRequestTokens: 100_000 }),
-    );
-    assert.deepEqual(result, { decision: 'skip', reason: 'below_high_water' });
+  test('compacts whenever the caller has emitted a compaction command', async () => {
+    const result = await planHistoryCompaction(planInput());
+    assert.equal(result.decision, 'compacted');
   });
 
   test('compacts a safe prefix, keeps the head anchor verbatim, and continues with the tail', async () => {
-    const result = await planMidTurnCapacityCompaction(planInput());
+    const result = await planHistoryCompaction(planInput());
     assert.equal(result.decision, 'compacted');
     if (result.decision !== 'compacted') return;
     assert.equal(result.checkpoint.phase, 'mid_turn');
@@ -208,7 +201,7 @@ describe('plan mid-turn capacity compaction', () => {
 
   test('step-0 recovery folds prior history without covering the current user anchor', async () => {
     const events = longTurnEvents();
-    const result = await planMidTurnCapacityCompaction(
+    const result = await planHistoryCompaction(
       planInput({ phase: 'pre_turn', orderedEvents: events }),
     );
     assert.equal(result.decision, 'compacted');
@@ -226,9 +219,44 @@ describe('plan mid-turn capacity compaction', () => {
     assert.deepEqual(result.replacementEvents[1], events[2]);
   });
 
+  test('backs the safe prefix down locally when the full summary input does not fit', async () => {
+    const events = [
+      user('old-user', 'old-turn'),
+      model('old-model', 'old-turn', 'old result'),
+      user('recent-user', 'recent-turn'),
+      model('recent-model', 'recent-turn', 'recent result'),
+    ];
+    const attemptedCoverage: string[][] = [];
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: events,
+        reserveTailEvents: 0,
+        summarize: ({ coveredRuntimeEvents }) => {
+          attemptedCoverage.push(coveredRuntimeEvents.map((event) => event.id));
+          if (coveredRuntimeEvents.length === events.length) {
+            throw new HistoryCompactSummarizerError('input_too_large');
+          }
+          return structuredSummary('A bounded automatic summary.');
+        },
+      }),
+    );
+
+    assert.equal(result.decision, 'compacted');
+    if (result.decision !== 'compacted') return;
+    assert.deepEqual(attemptedCoverage, [
+      ['old-user', 'old-model', 'recent-user', 'recent-model'],
+      ['old-user', 'old-model', 'recent-user'],
+    ]);
+    assert.deepEqual(
+      result.tailRuntimeEvents.map((event) => event.id),
+      ['recent-model'],
+    );
+  });
+
   test('persisted checkpoint replay-validates against the same ledger prefix (recovery)', async () => {
     const events = longTurnEvents();
-    const result = await planMidTurnCapacityCompaction(planInput({ orderedEvents: events }));
+    const result = await planHistoryCompaction(planInput({ orderedEvents: events }));
     assert.equal(result.decision, 'compacted');
     if (result.decision !== 'compacted') return;
 
@@ -243,7 +271,7 @@ describe('plan mid-turn capacity compaction', () => {
     // re-injects the replaced raw span.
     const replay = applyRuntimeEventHistoryCompact(
       events,
-      { enabled: true, mode: 'read_write', checkpoint: result.checkpoint },
+      { enabled: true, checkpoint: result.checkpoint },
       4,
       1_000_000,
     );
@@ -254,10 +282,9 @@ describe('plan mid-turn capacity compaction', () => {
     assert.equal(replayIds.includes('call-a'), false);
   });
 
-  test('fails open below the window when the summarizer fails', async () => {
-    const result = await planMidTurnCapacityCompaction(
+  test('fails open when the summarizer throws', async () => {
+    const result = await planHistoryCompaction(
       planInput({
-        estimatedNextRequestTokens: 120_000, // over high-water, under window
         summarize: () => {
           throw new Error('summarizer down');
         },
@@ -267,7 +294,7 @@ describe('plan mid-turn capacity compaction', () => {
   });
 
   test('preserves a typed summarizer failure as the mid-turn diagnostic reason', async () => {
-    const result = await planMidTurnCapacityCompaction(
+    const result = await planHistoryCompaction(
       planInput({
         summarize: () => {
           throw new HistoryCompactSummarizerError('provider_error');
@@ -281,12 +308,9 @@ describe('plan mid-turn capacity compaction', () => {
     });
   });
 
-  test('fails open (never terminates) above the window when the summarizer fails', async () => {
-    // The engine is a pure shaper: the over-window pass/terminate verdict is
-    // issued by the backend's final-request estimate owner, never here.
-    const result = await planMidTurnCapacityCompaction(
+  test('fails open when the summarizer returns no checkpoint', async () => {
+    const result = await planHistoryCompaction(
       planInput({
-        estimatedNextRequestTokens: 130_000, // over the window itself
         summarize: () => '',
       }),
     );
@@ -296,7 +320,7 @@ describe('plan mid-turn capacity compaction', () => {
   test('the write gate rejects a malformed summary from any producer', async () => {
     // The default summarizer validates its own completions; the write gate
     // enforces the same invariant for any other producer (#3029).
-    const result = await planMidTurnCapacityCompaction(
+    const result = await planHistoryCompaction(
       planInput({ summarize: () => '这不是结构化摘要，而是一段自由文本。' }),
     );
     assert.deepEqual(result, {
@@ -314,17 +338,16 @@ describe('plan mid-turn capacity compaction', () => {
       call('c', 'c1', 'turn-1'),
       result('r', 'c1', 'turn-1'),
     ];
-    const outcome = await planMidTurnCapacityCompaction(
+    const outcome = await planHistoryCompaction(
       planInput({
         orderedEvents: events,
-        estimatedNextRequestTokens: 130_000,
         reserveTailEvents: 1,
       }),
     );
     assert.deepEqual(outcome, { decision: 'fail_open', reason: 'no_safe_completed_span' });
   });
 
-  test('still shapes when the estimate exceeds the window — no post-fold window verdict here', async () => {
+  test('does not issue a post-fold window verdict', async () => {
     // Review round-3 finding A: a post-fold re-estimate that subtracts the
     // RAW covered span is wrong on a rolling (second) compaction — the
     // previous request was already `[block, anchor, tail]` and never carried
@@ -332,13 +355,7 @@ describe('plan mid-turn capacity compaction', () => {
     // still-over-window request. The engine therefore makes NO window claim
     // after folding: it returns the shape and the backend owner re-measures
     // the actual replacement payload.
-    const outcome = await planMidTurnCapacityCompaction(
-      planInput({
-        estimatedNextRequestTokens: 10_000,
-        contextWindow: 1_000,
-        reserveTokens: 100,
-      }),
-    );
+    const outcome = await planHistoryCompaction(planInput());
     assert.equal(outcome.decision, 'compacted');
   });
 
@@ -349,7 +366,7 @@ describe('plan mid-turn capacity compaction', () => {
 
   test('rolls forward from a matching previous checkpoint (only the new span is summarized)', async () => {
     const events = longTurnEvents();
-    const first = await planMidTurnCapacityCompaction(
+    const first = await planHistoryCompaction(
       planInput({
         orderedEvents: events.slice(0, 5), // fold through res-a
       }),
@@ -358,7 +375,7 @@ describe('plan mid-turn capacity compaction', () => {
     if (first.decision !== 'compacted') return;
 
     let seenNewlyFolded: string[] = [];
-    const second = await planMidTurnCapacityCompaction(
+    const second = await planHistoryCompaction(
       planInput({
         orderedEvents: events,
         previousCheckpoint: first.checkpoint,

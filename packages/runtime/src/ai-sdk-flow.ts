@@ -646,6 +646,9 @@ function completeRuntimeEvent(
   if (event.contextBudgetExhaustedDetail !== undefined) {
     stateDelta.contextBudgetExhaustedDetail = event.contextBudgetExhaustedDetail;
   }
+  if (event.contextCompactionOutcome !== undefined) {
+    stateDelta.contextCompactionOutcome = event.contextCompactionOutcome;
+  }
   if (status === 'aborted') stateDelta.abortSource = stopReason;
   return {
     ...base,

@@ -1155,7 +1155,14 @@ export interface CompleteEvent extends BaseEvent {
    * outcome, not a provider context-length error.
    */
   contextBudgetExhaustedDetail?: ContextBudgetExhaustedDetail;
+  /** Durable result of an explicit context-compaction execution. */
+  contextCompactionOutcome?: ContextCompactionOutcome;
 }
+
+export type ContextCompactionOutcome =
+  | { kind: 'compacted'; checkpointId: string }
+  | { kind: 'unchanged'; reason: string }
+  | { kind: 'failed'; reason: string };
 
 export type ContextBudgetExhaustedDetail =
   | 'no_safe_completed_span'

@@ -18,6 +18,7 @@
  */
 
 import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { ContextCompactionOutcome } from '@maka/core/events';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime/terminal-run-commit';
@@ -55,12 +56,16 @@ export async function readCanonicalTurnSnapshot(
   if (terminal.kind === 'fact') {
     const fact = terminal.fact;
     if (fact.runStatus === 'completed') {
+      const contextCompactionOutcome = readContextCompactionOutcome(
+        fact.terminalEvent.actions?.stateDelta?.contextCompactionOutcome,
+      );
       return {
         sessionId,
         turnId,
         runId,
         status: 'completed',
         terminalEventId: fact.terminalEvent.id,
+        ...(contextCompactionOutcome ? { contextCompactionOutcome } : {}),
       };
     }
     if (fact.runStatus === 'failed') {
@@ -103,6 +108,21 @@ export async function readCanonicalTurnSnapshot(
     throw new Error('Non-created Run has no durable start fact');
   }
   return { sessionId, turnId, runId, status: run.status };
+}
+
+function readContextCompactionOutcome(value: unknown): ContextCompactionOutcome | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const outcome = value as Record<string, unknown>;
+  if (outcome.kind === 'compacted' && typeof outcome.checkpointId === 'string') {
+    return { kind: 'compacted', checkpointId: outcome.checkpointId };
+  }
+  if (
+    (outcome.kind === 'unchanged' || outcome.kind === 'failed') &&
+    typeof outcome.reason === 'string'
+  ) {
+    return { kind: outcome.kind, reason: outcome.reason };
+  }
+  return undefined;
 }
 
 /** Maximizes the encoded size of a protocol-valid failed Turn snapshot. */
