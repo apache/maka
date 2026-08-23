@@ -105,12 +105,8 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 49 as const;
 // last-used timestamp. Older peers reject those strict projection shapes.
 // 43: Session tool-start events correlate hidden shell polls with `shellRunRef`.
 // Older peers reject that added closed-union field.
-=======
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 43 as const;
-// 43: Durable provider failures may classify as `ProviderPermission`; older
 // peers reject that strict error-class value, so mixed versions must fail
 // handshake before the class can surface.
->>>>>>> 1e6c4a139 (fix(runtime-host): advance provider failure epoch)
 // 42: Turn provider retry progress adds `provider_capacity`. Older peers reject
 // that strict retry-reason enum value, so mixed versions must fail handshake.
 // 41: Context compaction returns a typed terminal outcome on both Turn
