@@ -91,9 +91,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 43 as const;
-// 43: Session continuity and inspection stop carrying the retired Session
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 44 as const;
+// 44: Session continuity and inspection stop carrying the retired Session
 // last-used timestamp. Older peers reject those strict projection shapes.
+// 43: Session tool-start events correlate hidden shell polls with `shellRunRef`.
+// Older peers reject that added closed-union field.
 // 42: Turn provider retry progress adds `provider_capacity`. Older peers reject
 // that strict retry-reason enum value, so mixed versions must fail handshake.
 // 41: Context compaction returns a typed terminal outcome on both Turn
