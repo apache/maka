@@ -206,16 +206,132 @@ test('refresh rejects unknown model modalities instead of dropping them', async 
   }
 });
 
+test('refresh rejects a partial provider shrink until it is explicitly accepted', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-provider-shrink-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    const initial = fixtureCatalog();
+    initial.anthropic.models['model-two'] = {
+      name: 'Model Two',
+      limit: { context: 2048, output: 256 },
+      reasoning: true,
+      tool_call: true,
+      cost: { input: 3, output: 4 },
+    };
+    await writeFile(input, JSON.stringify(initial));
+    const refreshArgs = [
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ];
+    await main(refreshArgs);
+    const before = {
+      snapshot: await readFile(snapshot, 'utf8'),
+      metadata: await readFile(metadata, 'utf8'),
+      pricing: await readFile(pricing, 'utf8'),
+    };
+
+    await writeFile(input, JSON.stringify(fixtureCatalog()));
+    await assert.rejects(main(refreshArgs), /remove committed models: anthropic:model-two/);
+    assert.deepEqual(
+      {
+        snapshot: await readFile(snapshot, 'utf8'),
+        metadata: await readFile(metadata, 'utf8'),
+        pricing: await readFile(pricing, 'utf8'),
+      },
+      before,
+    );
+
+    await main([...refreshArgs, '--accept-upstream-removals']);
+    const accepted = JSON.parse(await readFile(snapshot, 'utf8'));
+    assert.equal(accepted.projection.metadata.anthropic['model-two'], undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh rejects lost pricing coverage from an otherwise valid model', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-pricing-shrink-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    const refreshArgs = [
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ];
+    await writeFile(input, JSON.stringify(fixtureCatalog()));
+    await main(refreshArgs);
+    const before = {
+      snapshot: await readFile(snapshot, 'utf8'),
+      metadata: await readFile(metadata, 'utf8'),
+      pricing: await readFile(pricing, 'utf8'),
+    };
+
+    const truncated = fixtureCatalog();
+    delete truncated.anthropic.models.model.cost;
+    await writeFile(input, JSON.stringify(truncated));
+    await assert.rejects(main(refreshArgs), /remove committed pricing coverage: anthropic:model/);
+    assert.deepEqual(
+      {
+        snapshot: await readFile(snapshot, 'utf8'),
+        metadata: await readFile(metadata, 'utf8'),
+        pricing: await readFile(pricing, 'utf8'),
+      },
+      before,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('refresh leaves all targets unchanged when any output cannot be staged', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-transaction-'));
   try {
     const input = join(root, 'api.json');
     const snapshot = join(root, 'snapshot.json');
     const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
     const missingPricing = join(root, 'missing', 'pricing.ts');
     await writeFile(input, JSON.stringify(fixtureCatalog()));
-    await writeFile(snapshot, 'old snapshot');
-    await writeFile(metadata, 'old metadata');
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ]);
+    const before = {
+      snapshot: await readFile(snapshot, 'utf8'),
+      metadata: await readFile(metadata, 'utf8'),
+    };
 
     await assert.rejects(
       main([
@@ -233,10 +349,15 @@ test('refresh leaves all targets unchanged when any output cannot be staged', as
       ]),
       /ENOENT/,
     );
-    assert.equal(await readFile(snapshot, 'utf8'), 'old snapshot');
-    assert.equal(await readFile(metadata, 'utf8'), 'old metadata');
+    assert.equal(await readFile(snapshot, 'utf8'), before.snapshot);
+    assert.equal(await readFile(metadata, 'utf8'), before.metadata);
     await assert.rejects(readFile(missingPricing), /ENOENT/);
-    assert.deepEqual((await readdir(root)).sort(), ['api.json', 'metadata.ts', 'snapshot.json']);
+    assert.deepEqual((await readdir(root)).sort(), [
+      'api.json',
+      'metadata.ts',
+      'pricing.ts',
+      'snapshot.json',
+    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

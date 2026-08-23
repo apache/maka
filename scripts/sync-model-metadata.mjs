@@ -114,10 +114,14 @@ export async function main(argv = process.argv) {
     (outputPath === DEFAULT_OUTPUT ? DEFAULT_PRICING_OUTPUT : undefined);
   const refresh = argv.includes('--refresh');
   const check = argv.includes('--check');
+  const acceptUpstreamRemovals = argv.includes('--accept-upstream-removals');
   if (refreshInputPath && !refresh) throw new Error('--refresh-input requires --refresh');
+  if (acceptUpstreamRemovals && !refresh) {
+    throw new Error('--accept-upstream-removals requires --refresh');
+  }
 
   const source = refresh
-    ? await refreshSnapshot(snapshotPath, refreshInputPath)
+    ? await refreshSnapshot(snapshotPath, refreshInputPath, { acceptUpstreamRemovals })
     : await loadSnapshot(snapshotPath);
   const {
     metadata: generated,
@@ -231,7 +235,7 @@ function buildProjection(catalog) {
   return { metadata, pricing, providerFacts, providerOverrides };
 }
 
-async function refreshSnapshot(snapshotPath, refreshInputPath) {
+async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
   let sourceText;
   let sourceEtag = null;
   let retrievedAt = new Date().toISOString();
@@ -245,6 +249,10 @@ async function refreshSnapshot(snapshotPath, refreshInputPath) {
     retrievedAt = new Date(response.headers.get('date') ?? Date.now()).toISOString();
   }
   const projection = buildProjection(selectCatalog(JSON.parse(sourceText)));
+  if (!options.acceptUpstreamRemovals) {
+    const previous = await loadSnapshotIfPresent(snapshotPath);
+    if (previous) assertProjectionDoesNotShrink(previous.projection, projection);
+  }
   const projectionText = JSON.stringify(projection);
   const snapshot = {
     formatVersion: 1,
@@ -265,6 +273,32 @@ async function refreshSnapshot(snapshotPath, refreshInputPath) {
     snapshotLabel: snapshotPath,
     snapshotWrite: { path: snapshotPath, text: `${JSON.stringify(snapshot, null, 2)}\n` },
   };
+}
+
+function assertProjectionDoesNotShrink(previous, next) {
+  const removedModels = [];
+  for (const [providerType, models] of Object.entries(previous.metadata ?? {})) {
+    const nextModels = next.metadata?.[providerType] ?? {};
+    for (const modelId of Object.keys(models)) {
+      if (!Object.prototype.hasOwnProperty.call(nextModels, modelId)) {
+        removedModels.push(`${providerType}:${modelId}`);
+      }
+    }
+  }
+
+  const nextPricingKeys = new Set((next.pricing ?? []).map((entry) => entry.modelKey));
+  const removedPricing = (previous.pricing ?? [])
+    .map((entry) => entry.modelKey)
+    .filter((modelKey) => !nextPricingKeys.has(modelKey));
+  if (removedModels.length === 0 && removedPricing.length === 0) return;
+
+  const details = [
+    ...(removedModels.length > 0 ? [`models: ${removedModels.sort().join(', ')}`] : []),
+    ...(removedPricing.length > 0 ? [`pricing coverage: ${removedPricing.sort().join(', ')}`] : []),
+  ].join('; ');
+  throw new Error(
+    `models.dev refresh would remove committed ${details}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
+  );
 }
 
 async function replaceFilesTransactionally(writes) {
@@ -352,6 +386,15 @@ async function loadSnapshot(snapshotPath) {
     snapshotDigest: actualDigest,
     snapshotLabel: snapshotPath,
   };
+}
+
+async function loadSnapshotIfPresent(snapshotPath) {
+  try {
+    return await loadSnapshot(snapshotPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined;
+    throw error;
+  }
 }
 
 function selectCatalog(catalog) {

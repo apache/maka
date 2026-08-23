@@ -244,7 +244,7 @@ npm --workspace @maka/eval test
 npm --workspace @maka/desktop test
 ```
 
-Use `refresh:model-metadata` to fetch the current catalog from models.dev, update the committed snapshot, and regenerate the derived TypeScript files. `sync:model-metadata` is intentionally offline: it only regenerates those files from the committed snapshot. Keep access-path-specific overrides in `model-metadata.ts`; do not edit the generated files by hand.
+Use `refresh:model-metadata` to fetch the current catalog from models.dev, update the committed snapshot, and regenerate the derived TypeScript files. A refresh fails closed when selected models or existing pricing coverage disappear; after reviewing an intentional upstream removal, acknowledge it with `npm run refresh:model-metadata -- --accept-upstream-removals`. `sync:model-metadata` is intentionally offline: it only regenerates those files from the committed snapshot. Keep access-path-specific overrides in `model-metadata.ts`; do not edit the generated files by hand.
 
 ```sh
 npm run refresh:model-metadata
