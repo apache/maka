@@ -424,9 +424,7 @@ test('entry retract removes one queued entry, replays its receipt, and rejects s
   );
   assert.equal(retracted.ok, true);
   if (!retracted.ok) return;
-  assert.equal(retracted.result.retracted.messageId, 'follow-1');
-  assert.deepEqual(retracted.result.retracted.content, { text: 'first' });
-  assert.equal(retracted.result.retracted.state, 'retracted');
+  assert.equal(retracted.result.queueRevision, 4);
   assert.deepEqual(
     fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
     ['follow-2'],
@@ -481,7 +479,7 @@ test('entry retract removes one queued entry, replays its receipt, and rejects s
     operationContext(),
   );
   assert.equal(steering.ok, true);
-  if (steering.ok) assert.equal(steering.result.retracted.messageId, 'steer-1');
+  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).steering, []);
   assert.equal(fixture.liveResidencies(), 1);
 
   await fixture.coordinator.handlers['queue.retract'](

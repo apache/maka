@@ -109,7 +109,6 @@ export interface QueueEntryRetractInput {
 
 export interface QueueEntryRetractResult {
   readonly queueRevision: number;
-  readonly retracted: RetractedMessageSnapshot;
 }
 
 export interface QueueEntryPromoteInput {
@@ -304,20 +303,8 @@ function decodeQueueEntryRetractInput(value: unknown): QueueEntryRetractInput {
 }
 
 function decodeQueueEntryRetractResult(value: unknown): QueueEntryRetractResult {
-  const record = requireExactRecord(value, 'queue.entry.retract result', [
-    'queueRevision',
-    'retracted',
-  ]);
-  const retracted = decodeMessageQueueEntrySnapshot(record.retracted);
-  if (retracted.state !== 'retracted') {
-    throw invalidProtocolFrame('Invalid retracted message state');
-  }
-  const result = {
-    queueRevision: requireCount(record.queueRevision, 'queueRevision'),
-    retracted,
-  };
-  requireEncodedByteLimit(result, 'queue.entry.retract result', MESSAGE_OPERATION_RESULT_MAX_BYTES);
-  return result;
+  const record = requireExactRecord(value, 'queue.entry.retract result', ['queueRevision']);
+  return { queueRevision: requireCount(record.queueRevision, 'queueRevision') };
 }
 
 function decodeQueueEntryPromoteInput(value: unknown): QueueEntryPromoteInput {

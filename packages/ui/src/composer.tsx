@@ -250,7 +250,7 @@ export const Composer = forwardRef<
     /** Promote a queued follow-up into the active Turn (立即发送). */
     onPromoteQueuedEntry?(entryId: string): void | Promise<void>;
     /** Retract one queued entry back into the draft (收回草稿). */
-    onRetractQueuedEntry?(entryId: string): void | Promise<void>;
+    onRetractQueuedEntry?(entry: MessageQueueEntryProjection): void | Promise<void>;
     /** Reorder the follow-up queue; entryIds is the full intended order. */
     onReorderQueuedEntries?(entryIds: readonly string[]): void | Promise<void>;
     /** Runtime-only key used to keep unsent drafts isolated per session. */

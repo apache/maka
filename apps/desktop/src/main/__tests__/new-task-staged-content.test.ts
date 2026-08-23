@@ -192,7 +192,7 @@ test('retracted queue attachments can be restored and submitted without re-inges
 
   await probe.render('session-1');
   await act(() =>
-    probe.latest().restoreAttachments([
+    probe.latest().restoreAttachments('session-1', [
       {
         kind: 'other',
         name: 'notes.txt',

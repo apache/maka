@@ -393,16 +393,7 @@ test('treats empty configuration patches as read-only lookups', async () => {
 test('binds message controls to the current Host Epoch', async () => {
   const { client, requests } = clientWithResponses([
     { disposition: 'steering', queueRevision: 2 },
-    {
-      queueRevision: 3,
-      retracted: {
-        entryId: 'entry-1',
-        messageId: 'message-1',
-        content: { text: 'Steer it' },
-        placement: 'current_turn',
-        state: 'retracted',
-      },
-    },
+    { queueRevision: 3 },
     {
       queueRevision: 4,
       retracted: [],

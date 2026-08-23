@@ -37,7 +37,7 @@ export interface ComposerMessageQueueProps {
   queuedMessages: readonly MessageQueueEntryProjection[];
   copy: ConversationCopy['composer'];
   onPromoteEntry?(entryId: string): void | Promise<void>;
-  onRetractEntry?(entryId: string): void | Promise<void>;
+  onRetractEntry?(entry: MessageQueueEntryProjection): void | Promise<void>;
   onReorderEntries?(entryIds: readonly string[]): void | Promise<void>;
 }
 
@@ -64,14 +64,14 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
 
   async function runEntryAction(
     entryId: string,
-    action: ((entryId: string) => void | Promise<void>) | undefined,
+    action: (() => void | Promise<void>) | undefined,
   ) {
     if (!action || pendingEntryId) return;
     setPendingEntryId(entryId);
     try {
       // The caller (app shell) surfaces failures itself; the projection is
       // unchanged on failure, so there is nothing to settle here.
-      await action(entryId);
+      await action();
     } catch {
       // surfaced by the caller
     } finally {
@@ -107,7 +107,10 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
         isDisabled={pendingEntryId !== null}
         label={copy.retractQueuedEntry}
         tooltip={copy.retractQueuedEntry}
-        onClick={() => void runEntryAction(entry.entryId, props.onRetractEntry)}
+        onClick={() => void runEntryAction(
+          entry.entryId,
+          props.onRetractEntry ? () => props.onRetractEntry?.(entry) : undefined,
+        )}
         icon={<Undo2 size={ICON_SIZE.control} aria-hidden="true" />}
       />
     );
@@ -157,7 +160,12 @@ export const ComposerMessageQueue = memo(function ComposerMessageQueue(
                     isDisabled={pendingEntryId !== null}
                     label={copy.promoteQueuedEntry}
                     tooltip={copy.promoteQueuedEntry}
-                    onClick={() => void runEntryAction(entry.entryId, props.onPromoteEntry)}
+                    onClick={() => void runEntryAction(
+                      entry.entryId,
+                      props.onPromoteEntry
+                        ? () => props.onPromoteEntry?.(entry.entryId)
+                        : undefined,
+                    )}
                     icon={<CornerDownRight size={ICON_SIZE.control} aria-hidden="true" />}
                   />
                   {retractButton(entry)}

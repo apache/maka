@@ -446,12 +446,11 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (typeof entryId !== "string") {
         throw new TypeError("Invalid queue entry identity");
       }
-      const result = await deps.client.retractQueueEntry({
+      await deps.client.retractQueueEntry({
         sessionId,
         entryId,
         retractId: newId(),
       });
-      return result.retracted.content;
     },
   );
   ipcMain.handle(

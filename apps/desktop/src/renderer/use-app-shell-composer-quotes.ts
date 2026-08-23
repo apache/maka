@@ -68,9 +68,8 @@ export function useAppShellComposerQuotes(options: { draftKey: string }) {
     setPendingByKey({});
   }
 
-  function restoreQuotes(quotes: readonly QuoteRef[]): void {
+  function restoreQuotes(ownerKey: string, quotes: readonly QuoteRef[]): void {
     if (quotes.length === 0) return;
-    const ownerKey = options.draftKey;
     setPendingByKey((map) =>
       appendPending(
         map,

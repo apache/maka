@@ -1542,7 +1542,7 @@ const makaBridge = {
         attachments: projectDesktopAttachmentRefs(session.scope, result.attachments),
       };
     },
-    retractQueueEntry(sessionId: string, entryId: string): Promise<MessageContent> {
+    retractQueueEntry(sessionId: string, entryId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:retractQueueEntry', sessionId, entryId);
     },
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void> {

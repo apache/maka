@@ -952,17 +952,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       }
       return failure('not_found', 'Message queue entry does not exist');
     }
-    const result = {
-      queueRevision: state.revision + 1,
-      retracted: retractedSnapshot(queued.entry),
-    };
-    if (!fitsEncodedByteLimit(result, MESSAGE_OPERATION_RESULT_MAX_BYTES)) {
-      return failure('session_busy', 'Retract result exceeds protocol capacity');
-    }
     queued.remove();
     this.#releaseEntry(queued.entry);
     this.#mutated(state);
     this.#maybeReclaim(input.sessionId, state);
+    const result = { queueRevision: state.revision };
     try {
       await this.#commitReceipt('retract_entry', input.sessionId, input.retractId, input, result);
     } catch (error) {

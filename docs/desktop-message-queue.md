@@ -28,7 +28,7 @@ Runtime Host already owns the durable message semantics:
 - `current_turn` queues steering for the next provider boundary.
 - `next_turn` queues a successor turn.
 - queue projections are authoritative.
-- `queue.entry.retract` returns the queued message content.
+- queue projections carry the canonical queued message content; mutation results return only queue state.
 
 ## Desktop Behavior
 

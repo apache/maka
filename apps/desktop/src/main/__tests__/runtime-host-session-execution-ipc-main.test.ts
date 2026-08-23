@@ -775,16 +775,7 @@ test("routes per-entry queue mutations to the Runtime Host", async () => {
       client: executionClient({
         retractQueueEntry: async (input) => {
           calls.push({ operation: "retract", ...input });
-          return {
-            queueRevision: 3,
-            retracted: {
-              entryId: input.entryId,
-              messageId: "message-1",
-              content: { text: "queued text" },
-              placement: "next_turn",
-              state: "retracted",
-            },
-          };
+          return { queueRevision: 3 };
         },
         promoteQueueEntry: async (input) => {
           calls.push({ operation: "promote", ...input });
@@ -806,10 +797,7 @@ test("routes per-entry queue mutations to the Runtime Host", async () => {
     ipc,
   );
 
-  assert.deepEqual(
-    await ipc.invoke("sessions:retractQueueEntry", "session-1", "entry-1"),
-    { text: "queued text" },
-  );
+  assert.equal(await ipc.invoke("sessions:retractQueueEntry", "session-1", "entry-1"), undefined);
   await ipc.invoke("sessions:promoteQueueEntry", "session-1", "entry-2");
   await ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-3", "entry-2"]);
 

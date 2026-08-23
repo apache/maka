@@ -30,7 +30,12 @@ import {
 } from 'react';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import type { ProjectRecord } from '@maka/core/project';
-import type { FollowUpMode, InlineReference, QuoteRef } from '@maka/core/events';
+import type {
+  FollowUpMode,
+  InlineReference,
+  MessageQueueEntryProjection,
+  QuoteRef,
+} from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
@@ -102,6 +107,7 @@ import {
   mergeWorkspaceReferences,
   resolveFollowUpModeAtSubmit,
 } from './follow-up-submit-routing';
+import { retractQueueEntryToDraft } from './app-shell-queue-entry-actions';
 import {
   PlanExecutionPanel,
   PlanProposalCard,
@@ -692,6 +698,16 @@ function AppShellContent({
   const [viewMode, setViewMode] = useState<SessionViewMode>(() => readSessionListViewMode());
   const composerRef = useRef<ComposerHandle>(null);
   const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
+  const queueEntryDraftDeps = {
+    activeIdRef,
+    composerRef,
+    restoreAttachments,
+    restoreQuotes,
+    setRestoredWorkspaceReferences: (sessionId, references) => {
+      retractedWorkspaceReferencesRef.current[sessionId] = [...references];
+    },
+    requestFocus: (callback) => window.requestAnimationFrame(callback),
+  } satisfies Parameters<typeof retractQueueEntryToDraft>[0];
   // The rail's toggle has to reach Astryx's resizable state, not just this
   // boolean — see the prop's note on SessionListPanel. The sidenav is mounted
   // for the whole shell, so the handle is always live by the time it is called.
@@ -2203,26 +2219,10 @@ function AppShellContent({
     return ok;
   }
 
-  async function retractQueuedEntry(entryId: string): Promise<void> {
-    await runQueueEntryAction(async (sessionId) => {
-      const content = await window.maka.sessions.retractQueueEntry(sessionId, entryId);
-      if (activeIdRef.current !== sessionId) return;
-      const displayText = content.displayText ?? content.text;
-      const before = composerRef.current?.getText() ?? '';
-      composerRef.current?.appendDraft?.(sessionId, displayText);
-      const after = composerRef.current?.getText() ?? displayText;
-      const insertionStart = Math.max(0, after.lastIndexOf(displayText, before.length + 2));
-      retractedWorkspaceReferencesRef.current[sessionId] = (
-        content.inlineReferences ?? []
-      ).flatMap((reference) =>
-        reference.kind === 'workspace_file'
-          ? [{ ...reference, start: insertionStart + reference.start }]
-          : [],
-      );
-      restoreAttachments(content.attachments ?? []);
-      restoreQuotes(content.quotes ?? []);
-      window.requestAnimationFrame(() => composerRef.current?.focus());
-    });
+  async function retractQueuedEntry(entry: MessageQueueEntryProjection): Promise<void> {
+    await runQueueEntryAction((sessionId) =>
+      retractQueueEntryToDraft(queueEntryDraftDeps, sessionId, entry)
+    );
   }
 
   // Surfaces the failure, then rethrows so the caller (the pending plate) can

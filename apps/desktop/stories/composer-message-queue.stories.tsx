@@ -117,8 +117,8 @@ function QueuedComposer() {
       onPromoteQueuedEntry={(entryId) => {
         setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
       }}
-      onRetractQueuedEntry={(entryId) => {
-        setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
+      onRetractQueuedEntry={(entry) => {
+        setFollowup((current) => current.filter((candidate) => candidate.entryId !== entry.entryId));
       }}
       onReorderQueuedEntries={(entryIds) => {
         setFollowup((current) =>
