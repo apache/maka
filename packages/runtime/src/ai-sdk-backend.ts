@@ -2791,7 +2791,15 @@ export class AiSdkBackend implements AgentBackend {
             currentStepMessageId = this.newId();
             continue agentLoop;
           }
-          if (mayTakeAnotherStep) {
+          // Continuing the turn needs the durable current-run reader, for the
+          // same reason the tool-call edge above demands it: the next request
+          // has to carry the assistant output this step just produced, and only
+          // the ledger projection has it. The no-reader fallback at the top of
+          // the loop appends steering alone, which would ask the model to
+          // redirect work it cannot see. Without a reader this edge is skipped
+          // rather than throwing — the turn still completes and the Host folds
+          // the message into the next Turn, which is today's behaviour.
+          if (mayTakeAnotherStep && this.input.loadTurnRuntimeEvents) {
             // Last chance for a steer that landed after this turn's final
             // tool-call boundary — including the only boundary a tool-free
             // turn has, which precedes the model's first token. Without it the
