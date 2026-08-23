@@ -67,7 +67,7 @@ test('reconciles retired OpenCode Free models without removing user models', asy
         name: 'OpenCode Free',
         providerType: 'opencode-free',
         enabled: true,
-        enabledModelIds: ['nemotron-3-ultra-free', 'big-pickle', 'user-model'],
+        enabledModelIds: ['nemotron-3-ultra-free', 'deepseek-v4-flash-free', 'user-model'],
       },
     });
     assert.equal(created.kind, 'committed');
@@ -84,7 +84,7 @@ test('reconciles retired OpenCode Free models without removing user models', asy
     const updatedConnection = updated.snapshot.connections[0]!;
     const defaulted = await stores.connectionCatalog.setDefaultTarget({
       expectedCatalogRevision: updated.snapshot.revision,
-      target: { connectionId: updatedConnection.connectionId, modelId: 'big-pickle' },
+      target: { connectionId: updatedConnection.connectionId, modelId: 'deepseek-v4-flash-free' },
     });
     assert.equal(defaulted.kind, 'committed');
 
@@ -327,7 +327,7 @@ test('a user-modified opencode-free inventory is never migrated', async () => {
   // the (documented, lossy) proof a row is still system-owned.
   for (const enabledModelIds of [
     ['nemotron-3-ultra-free', 'big-pickle'],
-    ['deepseek-v4-flash-free', 'nemotron-3-ultra-free', 'mimo-v2.5-free'],
+    ['mimo-v2.5-free', 'nemotron-3-ultra-free', 'user-model'],
   ]) {
     await withFixture(async ({ root, stores }) => {
       const created = await stores.connectionCatalog.create({
