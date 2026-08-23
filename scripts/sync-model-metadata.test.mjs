@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -139,6 +139,104 @@ test('a modified snapshot fails closed before generation', async () => {
       main(['node', 'sync-model-metadata.mjs', '--snapshot', snapshot, '--output', metadata]),
       /digest mismatch/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh rejects an empty required provider before replacing outputs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-empty-provider-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const catalog = fixtureCatalog();
+    catalog.anthropic.models = {};
+    await writeFile(input, JSON.stringify(catalog));
+    await writeFile(snapshot, 'old snapshot');
+    await writeFile(metadata, 'old metadata');
+
+    await assert.rejects(
+      main([
+        'node',
+        'sync-model-metadata.mjs',
+        '--refresh',
+        '--refresh-input',
+        input,
+        '--snapshot',
+        snapshot,
+        '--output',
+        metadata,
+      ]),
+      /provider anthropic has no non-empty models object/,
+    );
+    assert.equal(await readFile(snapshot, 'utf8'), 'old snapshot');
+    assert.equal(await readFile(metadata, 'utf8'), 'old metadata');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh rejects unknown model modalities instead of dropping them', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-modalities-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const catalog = fixtureCatalog();
+    catalog.anthropic.models.model.modalities = { input: ['text', 'video'], output: ['text'] };
+    await writeFile(input, JSON.stringify(catalog));
+
+    await assert.rejects(
+      main([
+        'node',
+        'sync-model-metadata.mjs',
+        '--refresh',
+        '--refresh-input',
+        input,
+        '--snapshot',
+        snapshot,
+        '--output',
+        metadata,
+      ]),
+      /unsupported modalities/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh leaves all targets unchanged when any output cannot be staged', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-transaction-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const missingPricing = join(root, 'missing', 'pricing.ts');
+    await writeFile(input, JSON.stringify(fixtureCatalog()));
+    await writeFile(snapshot, 'old snapshot');
+    await writeFile(metadata, 'old metadata');
+
+    await assert.rejects(
+      main([
+        'node',
+        'sync-model-metadata.mjs',
+        '--refresh',
+        '--refresh-input',
+        input,
+        '--snapshot',
+        snapshot,
+        '--output',
+        metadata,
+        '--pricing-output',
+        missingPricing,
+      ]),
+      /ENOENT/,
+    );
+    assert.equal(await readFile(snapshot, 'utf8'), 'old snapshot');
+    assert.equal(await readFile(metadata, 'utf8'), 'old metadata');
+    await assert.rejects(readFile(missingPricing), /ENOENT/);
+    assert.deepEqual((await readdir(root)).sort(), ['api.json', 'metadata.ts', 'snapshot.json']);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -18,9 +18,9 @@
  */
 
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { stripTypeScriptTypes } from 'node:module';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -127,6 +127,7 @@ export async function main(argv = process.argv) {
   } = source.projection;
   if (check) {
     await assertGeneratedOutputs(outputPath, pricingOutputPath, source);
+    if (source.snapshotWrite) await replaceFilesTransactionally([source.snapshotWrite]);
     return;
   }
 
@@ -163,14 +164,16 @@ export async function main(argv = process.argv) {
   }
   lines.push('};', '');
   const metadataText = formatGenerated(lines.join('\n'), outputPath);
-  await writeFile(outputPath, metadataText);
+  const writes = [{ path: outputPath, text: metadataText }];
   if (pricingOutputPath) {
     const pricingText = formatGenerated(
       buildPricingModule(generatedPricing, source),
       pricingOutputPath,
     );
-    await writeFile(pricingOutputPath, pricingText);
+    writes.push({ path: pricingOutputPath, text: pricingText });
   }
+  if (source.snapshotWrite) writes.push(source.snapshotWrite);
+  await replaceFilesTransactionally(writes);
 }
 
 function buildProjection(catalog) {
@@ -183,8 +186,13 @@ function buildProjection(catalog) {
     if (!provider) {
       throw new Error(`models.dev provider ${sourceId} is missing`);
     }
-    if (!provider.models || typeof provider.models !== 'object') {
-      throw new Error(`models.dev provider ${sourceId} has no models object`);
+    if (
+      !provider.models ||
+      typeof provider.models !== 'object' ||
+      Array.isArray(provider.models) ||
+      Object.keys(provider.models).length === 0
+    ) {
+      throw new Error(`models.dev provider ${sourceId} has no non-empty models object`);
     }
     if (
       typeof provider.id !== 'string' ||
@@ -251,12 +259,71 @@ async function refreshSnapshot(snapshotPath, refreshInputPath) {
     projection,
   };
   await mkdir(dirname(snapshotPath), { recursive: true });
-  await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
   return {
     projection,
     snapshotDigest: snapshot.projectionSha256,
     snapshotLabel: snapshotPath,
+    snapshotWrite: { path: snapshotPath, text: `${JSON.stringify(snapshot, null, 2)}\n` },
   };
+}
+
+async function replaceFilesTransactionally(writes) {
+  if (new Set(writes.map((write) => write.path)).size !== writes.length) {
+    throw new Error('model metadata outputs must use distinct paths');
+  }
+  const transactionId = `${process.pid}-${randomUUID()}`;
+  const entries = writes.map((write) => ({
+    ...write,
+    stagedPath: `${write.path}.tmp-${transactionId}`,
+    backupPath: `${write.path}.bak-${transactionId}`,
+    hadOriginal: false,
+    installed: false,
+  }));
+
+  let committed = false;
+  try {
+    // Stage every byte before replacing any target. Missing/unwritable output
+    // directories therefore leave the existing snapshot and outputs intact.
+    const stageResults = await Promise.allSettled(
+      entries.map((entry) => writeFile(entry.stagedPath, entry.text, { flag: 'wx' })),
+    );
+    const stageFailure = stageResults.find((result) => result.status === 'rejected');
+    if (stageFailure) throw stageFailure.reason;
+    for (const entry of entries) {
+      try {
+        await rename(entry.path, entry.backupPath);
+        entry.hadOriginal = true;
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+      await rename(entry.stagedPath, entry.path);
+      entry.installed = true;
+    }
+    committed = true;
+  } catch (error) {
+    let rollbackError;
+    for (const entry of [...entries].reverse()) {
+      try {
+        if (entry.installed) await rm(entry.path, { force: true });
+        if (entry.hadOriginal) await rename(entry.backupPath, entry.path);
+      } catch (candidate) {
+        rollbackError ??= candidate;
+      }
+    }
+    if (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        'model metadata transaction rollback failed',
+      );
+    }
+    throw error;
+  } finally {
+    const cleanupPaths = entries.flatMap((entry) => [
+      entry.stagedPath,
+      ...(committed ? [entry.backupPath] : []),
+    ]);
+    await Promise.all(cleanupPaths.map((path) => rm(path, { force: true }).catch(() => {})));
+  }
 }
 
 async function loadSnapshot(snapshotPath) {
@@ -384,6 +451,16 @@ export function toMetadata(providerId, modelId, provider, model) {
     throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
   }
   if (
+    model.modalities?.input.some(
+      (value) => value !== 'text' && value !== 'image' && value !== 'audio' && value !== 'pdf',
+    ) ||
+    model.modalities?.output.some(
+      (value) => value !== 'text' && value !== 'image' && value !== 'audio',
+    )
+  ) {
+    throw new Error(`models.dev model ${providerId}/${modelId} has unsupported modalities`);
+  }
+  if (
     (model.description !== undefined && typeof model.description !== 'string') ||
     (model.knowledge !== undefined && typeof model.knowledge !== 'string') ||
     (model.limit?.input !== undefined &&
@@ -443,13 +520,8 @@ export function toMetadata(providerId, modelId, provider, model) {
     ...(model.modalities
       ? {
           modalities: {
-            input: model.modalities.input.filter(
-              (value) =>
-                value === 'text' || value === 'image' || value === 'audio' || value === 'pdf',
-            ),
-            output: (Array.isArray(model.modalities.output) ? model.modalities.output : []).filter(
-              (value) => value === 'text' || value === 'image' || value === 'audio',
-            ),
+            input: model.modalities.input,
+            output: model.modalities.output,
           },
         }
       : {}),
