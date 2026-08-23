@@ -89,5 +89,6 @@ packaged-release trust root。
 ## 6. 下一切片
 
 下一步只把 exact repository observation 转换成 T1 前可消费的 owner-bound opaque admission
-capability，并绑定 canonical repository path、object format、HEAD commit/tree 与 observation protocol。
-不在该切片中实现 source import、worktree projection、candidate 或 ref CAS。
+capability，并绑定 canonical repository path、object format、HEAD commit/tree 与 observation protocol；
+合同见 `gitoxide-repository-admission-capability-v1.zh-CN.md`。不在该切片中实现 source import、
+worktree projection、candidate 或 ref CAS。

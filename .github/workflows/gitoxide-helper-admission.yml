@@ -76,4 +76,8 @@ jobs:
       - name: Test the real helper invocation contract
         env:
           MAKA_GITOXIDE_HELPER_PATH: ${{ github.workspace }}/native/gitoxide-helper/target/debug/maka-gitoxide-helper${{ runner.os == 'Windows' && '.exe' || '' }}
-        run: node --test packages/runtime-host/dist/__tests__/gitoxide-helper-invocation-internal.test.js
+        run: >-
+          node --test
+          packages/runtime-host/dist/__tests__/gitoxide-helper-artifact-authority-internal.test.js
+          packages/runtime-host/dist/__tests__/gitoxide-helper-invocation-internal.test.js
+          packages/runtime-host/dist/__tests__/gitoxide-repository-admission-authority-internal.test.js
