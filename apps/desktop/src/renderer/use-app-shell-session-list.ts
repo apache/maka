@@ -23,7 +23,6 @@ import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
   normalizeSessionSummaryForDisplay,
-  replaceCommittedSessionSettings,
 } from './session-status-presentation';
 import {
   createSessionListRefresher,
@@ -37,15 +36,6 @@ type ToastApi = {
 };
 
 type RefBox<T> = { current: T };
-type CommittedSessionSettingsPatch = Partial<Pick<
-  DesktopSessionSummary,
-  | 'collaborationMode'
-  | 'orchestrationMode'
-  | 'permissionMode'
-  | 'llmConnectionSlug'
-  | 'model'
-  | 'thinkingLevel'
->>;
 
 export function useAppShellSessionList(
   toastApi: ToastApi,
@@ -112,14 +102,7 @@ export function useAppShellSessionList(
     return next;
   }
 
-  function applyCommittedSessionSettings(
-    sessionId: string,
-    patch: CommittedSessionSettingsPatch,
-  ): void {
-    const current = sessionsRef.current;
-    const next = replaceCommittedSessionSettings(current, sessionId, patch);
-    if (next !== current) commitSessions(next);
-  }
+
 
   return {
     sessions,
@@ -127,6 +110,5 @@ export function useAppShellSessionList(
     sessionsRef,
     refreshSessions,
     seedSessions,
-    applyCommittedSessionSettings,
   };
 }

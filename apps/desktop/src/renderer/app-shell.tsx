@@ -357,7 +357,6 @@ function AppShellContent({
     sessionsRef,
     refreshSessions,
     seedSessions,
-    applyCommittedSessionSettings,
     activeId,
     activeIdRef,
     bootstrapSelectionLease,
@@ -428,11 +427,14 @@ function AppShellContent({
   // The rows stay interactive while a commit runs, so a click landing in that
   // window is the user updating their mind — not noise to drop. Each map holds
   // only the LATEST ask per session; the in-flight commit's finally block
-  // applies it if the settled state does not already satisfy it. Nothing
-  // renders from a mode commit's round trip — painting it (disable/dim, then
-  // restore) is exactly the ＋ menu blink MatrixA/fix-plan-click-flicker
-  // removed — so there is no pending state here, only the registry refs.
+  // applies it if the settled state does not already satisfy it. The Plan
+  // control separately keeps the last committed value visible while the
+  // catalog refresh is pending; that transient view never inserts, removes,
+  // or reorders a catalog row.
   const queuedCollaborationModeBySession = useRef(new Map<string, boolean>());
+  const [transientPlanModeBySession, setTransientPlanModeBySession] = useState<
+    Record<string, boolean>
+  >({});
   const queuedOrchestrationModeBySession = useRef(new Map<string, OrchestrationMode>());
   const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
@@ -911,9 +913,8 @@ function AppShellContent({
 
   // The registry ref is the re-entrancy authority; the setter is only for
   // actions whose pending state something actually renders (permission, model,
-  // message retry). Mode toggles pass none — their round trip is deliberately
-  // not painted, and a write-only state would still schedule a render per
-  // add/clear.
+  // message retry). Mode toggles pass none: Plan paints the Host's committed
+  // value through its separate transient view, not this registry's busy state.
   function addPendingSessionAction(
     sessionId: string,
     pendingRef: { current: Set<string> },
@@ -945,6 +946,7 @@ function AppShellContent({
     // in-flight commit's finally would otherwise replay an old ask against a
     // Session this cleanup has already let go of.
     queuedCollaborationModeBySession.current.delete(sessionId);
+    setTransientPlanModeBySession((current) => omitSessionKey(current, sessionId));
     queuedOrchestrationModeBySession.current.delete(sessionId);
     sessionModelChangeRegistry.keysRef.current.delete(sessionId);
   }
@@ -983,7 +985,6 @@ function AppShellContent({
     pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
     pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
     refreshSessions,
-    applyCommittedSessionSettings,
     saveComposerDefaults,
     sessionsRef,
     setNewTaskPermissionMode,
@@ -1049,16 +1050,16 @@ function AppShellContent({
         // Abandoning the proposal is what leaves Plan: Runtime writes the
         // Session back to `agent` itself as part of it.
         await window.maka.sessions.abandonPlanProposal(sessionId, latestProposal.proposalId);
-        applyCommittedSessionSettings(sessionId, { collaborationMode: 'agent' });
       } else {
-        const next = await window.maka.sessions.setCollaborationMode(
+        await window.maka.sessions.setCollaborationMode(
           sessionId,
           active ? 'plan' : 'agent',
         );
-        applyCommittedSessionSettings(sessionId, {
-          collaborationMode: next.collaborationMode,
-        });
       }
+      // The Host has committed this value. Keep that fact visible while the
+      // catalog refresh reconciles the full row; do not write it into the
+      // catalog snapshot itself.
+      setTransientPlanModeBySession((current) => ({ ...current, [sessionId]: active }));
       await refreshSessions();
       return true;
     } catch (error) {
@@ -1071,6 +1072,7 @@ function AppShellContent({
       }
       return false;
     } finally {
+      setTransientPlanModeBySession((current) => omitSessionKey(current, sessionId));
       clearPendingSessionAction(
         sessionId,
         collaborationModeChangeRegistry.keysRef,
@@ -1114,10 +1116,7 @@ function AppShellContent({
     }
 
     try {
-      const next = await window.maka.sessions.setOrchestrationMode(sessionId, mode);
-      applyCommittedSessionSettings(sessionId, {
-        orchestrationMode: next.orchestrationMode,
-      });
+      await window.maka.sessions.setOrchestrationMode(sessionId, mode);
       await refreshSessions();
       return true;
     } catch (error) {
@@ -1312,7 +1311,8 @@ function AppShellContent({
   // to keep in sync: a Session in Plan with Swarm as its orchestration default
   // says both, because it is both.
   const activePlanMode = activeId
-    ? (activeSessionForView?.collaborationMode ?? 'agent') === 'plan'
+    ? transientPlanModeBySession[activeId]
+      ?? ((activeSessionForView?.collaborationMode ?? 'agent') === 'plan')
     : newChatPlanModeActive;
   const activeOrchestrationMode: OrchestrationMode = activeId
     ? activeSessionForView?.orchestrationMode ?? 'default'

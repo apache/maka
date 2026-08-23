@@ -31,10 +31,6 @@ import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.j
 
 type RefBox<T> = { current: T };
 type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void;
-type CommittedSessionSettingsPatch = Partial<Pick<
-  DesktopSessionSummary,
-  'permissionMode' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
->>;
 
 type ToastApi = {
   success(title: string, description?: string): void;
@@ -67,10 +63,6 @@ export function createAppShellSessionSettingsActions(deps: {
   pendingPermissionModeChangesRef: RefBox<Set<string>>;
   pendingSessionModelChangesRef: RefBox<Set<string>>;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
-  applyCommittedSessionSettings: (
-    sessionId: string,
-    patch: CommittedSessionSettingsPatch,
-  ) => void;
   saveComposerDefaults: (patch: {
     model: { llmConnectionSlug: string; model: string };
   }) => void;
@@ -89,7 +81,6 @@ export function createAppShellSessionSettingsActions(deps: {
     pendingPermissionModeChangesRef,
     pendingSessionModelChangesRef,
     refreshSessions,
-    applyCommittedSessionSettings,
     saveComposerDefaults,
     sessionsRef,
     setNewTaskPermissionMode,
@@ -152,7 +143,6 @@ export function createAppShellSessionSettingsActions(deps: {
       if (sessionId) {
         const next = await window.maka.sessions.setPermissionMode(sessionId, mode);
         nextMode = next.permissionMode === 'bypass' ? 'bypass' : 'ask';
-        applyCommittedSessionSettings(sessionId, { permissionMode: next.permissionMode });
       } else {
         await setNewTaskPermissionMode(mode);
       }
@@ -189,10 +179,6 @@ export function createAppShellSessionSettingsActions(deps: {
     }));
     try {
       const next = await window.maka.sessions.setModel(sessionId, input);
-      applyCommittedSessionSettings(sessionId, {
-        llmConnectionSlug: next.llmConnectionSlug,
-        model: next.model,
-      });
       if (activeIdRef.current === sessionId) {
         const connectionChanged = previous?.llmConnectionSlug !== next.llmConnectionSlug;
         const to = modelEndpointLabel(next.llmConnectionSlug, next.model, connectionChanged);
@@ -240,8 +226,7 @@ export function createAppShellSessionSettingsActions(deps: {
       [sessionId]: true,
     }));
     try {
-      const next = await window.maka.sessions.setThinkingLevel(sessionId, level);
-      applyCommittedSessionSettings(sessionId, { thinkingLevel: next.thinkingLevel });
+      await window.maka.sessions.setThinkingLevel(sessionId, level);
       if (activeIdRef.current === sessionId) {
         toastApi.success(copy.thinkingUpdatedTitle, level ? copy.thinkingLabels[level] : copy.thinkingDefault);
       }
