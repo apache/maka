@@ -897,7 +897,7 @@ function codexCompletedItemText(item: JsonRecord | undefined): string {
         : [];
     })
     .filter((text) => text.length > 0)
-    .join('\n');
+    .join('');
 }
 
 function codexCompletedReasoningText(item: JsonRecord | undefined): string {

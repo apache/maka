@@ -272,7 +272,7 @@ describe('CodexSessionAdapter', () => {
         id: 'user-client-1',
         turnId: 'codex-turn-item-completed',
         ts: Date.parse('2026-08-22T00:00:02.100Z'),
-        text: 'Analyze the image.\nUse OpenCV.js.',
+        text: 'Analyze the image. Use OpenCV.js.',
       });
       assert.deepEqual(session.messages[1], {
         type: 'assistant',
@@ -289,7 +289,7 @@ describe('CodexSessionAdapter', () => {
         id: 'assistant-item-1',
         turnId: 'codex-turn-item-completed',
         ts: Date.parse('2026-08-22T00:00:04.000Z'),
-        text: 'Use canvas.\nThen process the pixels.',
+        text: 'Use canvas. Then process the pixels.',
         modelId: 'gpt-codex-item-test',
         contentOrder: ['text'],
       });
