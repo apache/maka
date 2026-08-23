@@ -471,7 +471,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     }
   }
 
-  #acceptGraphTranscript(messages: StoredMessage[]): void {
+  #acceptGraphTranscript(messages: readonly StoredMessage[]): void {
     const replacement = messages.map((message) => structuredClone(message));
     this.#latestTranscriptReplacement = replacement;
     for (const [turnId, waiters] of this.#graphTerminalWaiters) {
@@ -484,7 +484,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     }
   }
 
-  #acceptRootTranscript(sessionId: string, turnId: string, messages: StoredMessage[]): void {
+  #acceptRootTranscript(
+    sessionId: string,
+    turnId: string,
+    messages: readonly StoredMessage[],
+  ): void {
     const active = this.#activeTurn;
     if (!active || active.sessionId !== sessionId || active.turnId !== turnId) return;
     active.outcome = classifierFromStoredTurn(messages, turnId, active.runId);

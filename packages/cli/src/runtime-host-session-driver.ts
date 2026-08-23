@@ -41,10 +41,7 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
-import {
-  isRuntimeHostTerminalTurn as isTerminalTurn,
-  type RuntimeHostTerminalTurn as TerminalTurnSnapshot,
-} from '@maka/runtime-host/adapter';
+import { isRuntimeHostTerminalTurn as isTerminalTurn } from '@maka/runtime-host/adapter';
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
   readRuntimeHostResources,
@@ -133,7 +130,7 @@ export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
     listener: (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void;
@@ -189,7 +186,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void
   >();
@@ -634,7 +631,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     listener: (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void {
@@ -1028,8 +1025,8 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         for (const listener of this.#pendingInteractionListeners) listener(pending);
       },
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
-      onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn, sessionGeneration),
-      onToolResult: (turnId) => this.#refreshLiveTranscript(sessionId, sessionGeneration, turnId),
+      onTurnTerminal: (turn) => this.#refreshTranscript(sessionId, sessionGeneration, turn.turnId),
+      onToolResult: (turnId) => this.#refreshTranscript(sessionId, sessionGeneration, turnId),
       onTranscriptReplaced: (turnId, messages) => {
         if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) {
           return;
@@ -1080,23 +1077,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .catch(() => undefined);
   }
 
-  #refreshTerminalTranscript(turn: TerminalTurnSnapshot, sessionGeneration: number): void {
-    const refreshSequence = ++this.#transcriptRefreshSequence;
-    void loadCurrentMessages(this.#connection, turn.sessionId)
-      .then((messages) => {
-        if (
-          this.#sessionId !== turn.sessionId ||
-          this.#sessionGeneration !== sessionGeneration ||
-          refreshSequence !== this.#transcriptRefreshSequence
-        ) {
-          return;
-        }
-        this.#publishTranscriptReplacement(turn.sessionId, turn.turnId, messages, 'terminal');
-      })
-      .catch(() => undefined);
-  }
-
-  #refreshLiveTranscript(sessionId: string, sessionGeneration: number, turnId: string): void {
+  #refreshTranscript(sessionId: string, sessionGeneration: number, turnId: string): void {
     const refreshSequence = ++this.#transcriptRefreshSequence;
     void loadCurrentMessages(this.#connection, sessionId)
       .then((messages) => {
@@ -1107,7 +1088,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         ) {
           return;
         }
-        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'tool_result');
+        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconcile');
       })
       .catch(() => undefined);
   }
@@ -1120,12 +1101,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   ): void {
     if (this.#sessionId !== sessionId) return;
     for (const listener of this.#transcriptListeners) {
-      listener(
-        sessionId,
-        turnId,
-        messages.map((message) => structuredClone(message)),
-        reason,
-      );
+      listener(sessionId, turnId, messages, reason);
     }
   }
 
