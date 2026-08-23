@@ -23,7 +23,7 @@ import {
   Key,
   ProcessTerminal,
   SelectList,
-  TUI,
+  TuiMainScreen,
   isKeyRelease,
   isKeyRepeat,
   matchesKey,
@@ -278,7 +278,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const setTaskbarProgress = (active: boolean): void => {
     if (taskbarProgress) terminal.setProgress(active);
   };
-  const tui = new TUI(terminal);
+  const tui = new TuiMainScreen(terminal);
   const state = createMakaPiTranscriptState();
   let transcriptLastUsedModel: string | undefined;
   const rememberTranscriptModel = (messages: readonly StoredMessage[]): void => {

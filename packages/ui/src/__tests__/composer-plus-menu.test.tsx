@@ -27,28 +27,78 @@
  * is chosen at rest, and no row stands for that; every prop that feeds them is
  * optional, so a host can wire the modes alone, and then there is nothing
  * above the divider to divide.
+ *
+ * Astryx mounts DropdownMenu layers from a client ref, so the rows are not in
+ * server markup. The assertions observe the same document after that mount.
  */
 
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import { renderToStaticMarkup } from 'react-dom/server';
+import { afterEach, test } from 'node:test';
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { parseHTML } from 'linkedom';
 import { Composer } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
 
-function render(props: Parameters<typeof Composer>[0]): string {
-  return renderToStaticMarkup(
-    <LocaleProvider locale="en">
-      <Composer {...props} />
-    </LocaleProvider>,
-  );
+const originalGlobals = {
+  document: globalThis.document,
+  matchMedia: globalThis.matchMedia,
+  requestAnimationFrame: globalThis.requestAnimationFrame,
+  cancelAnimationFrame: globalThis.cancelAnimationFrame,
+  window: globalThis.window,
+};
+const originalActEnvironment = (globalThis as typeof globalThis & {
+  IS_REACT_ACT_ENVIRONMENT?: boolean;
+}).IS_REACT_ACT_ENVIRONMENT;
+const mountedRoots: ReturnType<typeof createRoot>[] = [];
+
+afterEach(async () => {
+  for (const root of mountedRoots.splice(0)) await act(() => root.unmount());
+  Object.assign(globalThis, {
+    ...originalGlobals,
+    IS_REACT_ACT_ENVIRONMENT: originalActEnvironment,
+  });
+});
+
+function computedStyle(): CSSStyleDeclaration {
+  return {
+    direction: 'ltr',
+    writingMode: 'horizontal-tb',
+    getPropertyValue: () => '',
+  } as unknown as CSSStyleDeclaration;
 }
 
-function plusMenu(props: Parameters<typeof Composer>[0]): string {
-  const parts = render(props).split('maka-composer-plus-menu');
-  // Without the marker `split` returns the whole markup, and a menu that
-  // stopped rendering would still satisfy an absence assertion.
-  assert.ok(parts.length > 1, 'the composer rendered no ＋ menu');
-  return parts[parts.length - 1] ?? '';
+async function render(props: Parameters<typeof Composer>[0]): Promise<string> {
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => computedStyle();
+  Object.assign(globalThis, {
+    document,
+    window,
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame() {},
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoots.push(root);
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <Composer {...props} />
+      </LocaleProvider>,
+    );
+  });
+  return document.documentElement.innerHTML;
+}
+
+async function plusMenu(props: Parameters<typeof Composer>[0]): Promise<string> {
+  const markup = await render(props);
+  // The marker stays in the composer chrome while menu rows portal elsewhere
+  // in the same document.
+  assert.ok(markup.includes('maka-composer-plus-menu'), 'the composer rendered no ＋ menu');
+  return markup;
 }
 
 function count(markup: string, needle: string): number {
@@ -71,17 +121,17 @@ const base = {
   onOrchestrationModeChange: () => undefined,
 };
 
-test('the mode controls alone open the menu on a row, not on a rule', () => {
-  assert.equal(plusMenu(base).includes('astryx-dropdown-menu-divider'), false);
+test('the mode controls alone open the menu on a row, not on a rule', async () => {
+  assert.equal((await plusMenu(base)).includes('astryx-dropdown-menu-divider'), false);
 });
 
-test('an action row above the mode controls keeps the divider', () => {
-  const withAction = plusMenu({ ...base, onPickAttachments: () => undefined });
+test('an action row above the mode controls keeps the divider', async () => {
+  const withAction = await plusMenu({ ...base, onPickAttachments: () => undefined });
   assert.equal(withAction.includes('astryx-dropdown-menu-divider'), true);
 });
 
-test('each mode row is the control its field is, and none of them is on', () => {
-  const menu = plusMenu(base);
+test('each mode row is the control its field is, and none of them is on', async () => {
+  const menu = await plusMenu(base);
   assert.equal(count(menu, 'role="menuitemcheckbox"'), 1, 'Plan alone is a switch');
   // Two rows, not three: the field's third value is this group holding none.
   assert.equal(count(menu, 'role="menuitemradio"'), 2, 'Swarm and Graph, no neutral row');
@@ -100,13 +150,13 @@ function skillsRow(menu: string): string {
   return rows[0] ?? '';
 }
 
-test('a refreshing skill catalog is not "no skills": the row stays put', () => {
+test('a refreshing skill catalog is not "no skills": the row stays put', async () => {
   // The host clears `mentionSkills` while it re-fetches the projection (a
   // Plan toggle or model change does that with this menu open) but holds its
   // settled verdict steady. Painting the transient `[]` as "no skills
   // available" grows the row by a description line and grays it, then snaps
   // back — the menu visibly jumps.
-  const menu = plusMenu({ ...base, mentionSkills: [], mentionSkillsUnavailable: false });
+  const menu = await plusMenu({ ...base, mentionSkills: [], mentionSkillsUnavailable: false });
   assert.equal(count(menu, 'Choose skills'), 1, 'the Skills row is rendered');
   assert.equal(count(menu, 'No skills available'), 0, 'no transient empty-state line');
   assert.equal(
@@ -116,21 +166,21 @@ test('a refreshing skill catalog is not "no skills": the row stays put', () => {
   );
 });
 
-test('a settled empty skill catalog still says why the row is unavailable', () => {
+test('a settled empty skill catalog still says why the row is unavailable', async () => {
   for (const props of [
     // A host that never clears the list mid-flight wires no verdict; the row
     // falls back to the list itself.
     { ...base, mentionSkills: [] },
     { ...base, mentionSkills: [], mentionSkillsUnavailable: true },
   ]) {
-    const menu = plusMenu(props);
+    const menu = await plusMenu(props);
     assert.ok(count(menu, 'No skills available') > 0, 'the empty state says why');
     assert.equal(skillsRow(menu).includes('aria-disabled="true"'), true);
   }
 });
 
-test('a populated skill catalog renders the row enabled with no caveat', () => {
-  const menu = plusMenu({
+test('a populated skill catalog renders the row enabled with no caveat', async () => {
+  const menu = await plusMenu({
     ...base,
     mentionSkills: [{ id: 'demo', name: 'Demo' }],
   });
@@ -140,13 +190,13 @@ test('a populated skill catalog renders the row enabled with no caveat', () => {
   assert.equal(menu.includes('maka-composer-skills-loading'), false);
 });
 
-test('a loading catalog holds the row still and marks the held state', () => {
+test('a loading catalog holds the row still and marks the held state', async () => {
   // Mid-refresh the row keeps the previous catalog's look (here: populated).
   // `aria-busy` is what assistive technology gets instead of a geometry
   // change: activation is deferred, and a row that still announced plain
   // "available" would silently ignore it. The class is the same contract for
   // tests and styling.
-  const menu = plusMenu({
+  const menu = await plusMenu({
     ...base,
     mentionSkills: [],
     mentionSkillsUnavailable: false,
@@ -166,17 +216,17 @@ test('a loading catalog holds the row still and marks the held state', () => {
   );
 });
 
-test('a settled catalog carries no busy announcement', () => {
+test('a settled catalog carries no busy announcement', async () => {
   for (const props of [
     { ...base, mentionSkills: [{ id: 'demo', name: 'Demo' }], mentionSkillsLoading: false },
     { ...base, mentionSkills: [{ id: 'demo', name: 'Demo' }] },
   ]) {
-    assert.equal(plusMenu(props).includes('aria-busy'), false);
+    assert.equal((await plusMenu(props)).includes('aria-busy'), false);
   }
 });
 
-test('a loading refresh from a settled-empty catalog holds the empty look', () => {
-  const menu = plusMenu({
+test('a loading refresh from a settled-empty catalog holds the empty look', async () => {
+  const menu = await plusMenu({
     ...base,
     mentionSkills: [],
     mentionSkillsUnavailable: true,
@@ -186,16 +236,16 @@ test('a loading refresh from a settled-empty catalog holds the empty look', () =
   assert.equal(skillsRow(menu).includes('aria-disabled="true"'), true);
 });
 
-test('Plan and an orchestration mode are both on at once', () => {
-  const markup = render({ ...base, planModeActive: true, orchestrationMode: 'swarm' });
-  const menu = markup.split('maka-composer-plus-menu')[1] ?? '';
+test('Plan and an orchestration mode are both on at once', async () => {
+  const markup = await render({ ...base, planModeActive: true, orchestrationMode: 'swarm' });
+  assert.ok(markup.includes('maka-composer-plus-menu'), 'the composer rendered no ＋ menu');
   assert.equal(
-    tagsWith(menu, 'role="menuitemcheckbox"', 'aria-checked="true"').length,
+    tagsWith(markup, 'role="menuitemcheckbox"', 'aria-checked="true"').length,
     1,
     'Plan is not checked',
   );
   assert.equal(
-    tagsWith(menu, 'role="menuitemradio"', 'aria-checked="true"').length,
+    tagsWith(markup, 'role="menuitemradio"', 'aria-checked="true"').length,
     1,
     'Swarm is not checked, or Graph is checked with it',
   );

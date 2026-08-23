@@ -104,12 +104,12 @@ const LICENSE_METADATA_OVERRIDES = new Map([
 ]);
 // The published tarball omits the repository LICENSE; package.json declares Apache-2.0.
 // Keyed by exact version so a bump re-checks the license rather than inheriting this.
-const APACHE_TEXT_OVERRIDE_KEYS = new Set(['@ai-sdk/provider-utils@5.0.27']);
+const APACHE_TEXT_OVERRIDE_KEYS = new Set(['@ai-sdk/provider-utils@5.0.28']);
 const EMBEDDED_COMPONENT_LICENSES = new Map([
   [
     '@ai-sdk/code-mode',
     {
-      version: '1.0.23',
+      version: '1.0.27',
       components: [
         {
           name: 'quickjs-emscripten (embedded runtime)',
@@ -131,12 +131,14 @@ const EMBEDDED_COMPONENT_LICENSES = new Map([
 const MIT_COPYRIGHT_OVERRIDES = new Map([
   // The published tarball omits the monorepo-root LICENSE.
   ['@earendil-works/pi-tui@0.83.0', 'Copyright (c) 2025 Mario Zechner'],
+  ['@earendil-works/pi-tui@0.84.2', 'Copyright (c) 2025 Mario Zechner'],
   // The published tarball omits the repository LICENSE; sibling @astryxdesign
   // packages ship it verbatim with this notice.
   ['@astryxdesign/core@0.1.9', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.2.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.3.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.4.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.4.5', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@stylexjs/stylex@0.19.0', 'Copyright (c) Meta Platforms, Inc. and affiliates.'],
   ['@wecom/aibot-node-sdk@1.0.7', 'Copyright (c) WeComTeam contributors'],
   [
@@ -155,6 +157,12 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   // Published from TooTallNate/proxy-agents, which keeps its LICENSE at the
   // repo root; the per-package tarball ships no license file.
   ['proxy-agent-negotiate@1.1.0', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
+  // The published tarball and upstream repository omit a LICENSE file;
+  // package.json declares MIT and the distributed source names both authors.
+  ['fastdom@1.0.12', 'Copyright (c) Wilson Page and Kornel Lesinski'],
+  // The published tarball and upstream repository omit a LICENSE file;
+  // package.json declares MIT and identifies Wilson Page as the author.
+  ['strictdom@1.0.1', 'Copyright (c) Wilson Page'],
   ['lazy-val@1.0.5', 'Copyright (c) Vladimir Krivosheev'],
 ]);
 

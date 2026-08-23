@@ -73,6 +73,11 @@ test('keeps Host order visible until the reordered projection arrives', async ()
     }).IS_REACT_ACT_ENVIRONMENT,
   };
   const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({
+    direction: 'ltr',
+    writingMode: 'horizontal-tb',
+    getPropertyValue: () => '',
+  }) as unknown as CSSStyleDeclaration;
   Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
   const container = document.querySelector('#root');
   assert.ok(container);
