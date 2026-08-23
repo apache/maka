@@ -2409,6 +2409,10 @@ describe('Maka Pi TUI transcript', () => {
 
     const afterAbort = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.doesNotMatch(afterAbort, /● Read/);
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'tool' && entry.hidden),
+      false,
+    );
   });
 
   test('folds a background-task Read result into its parent Bash card', () => {

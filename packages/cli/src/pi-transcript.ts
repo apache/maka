@@ -736,6 +736,7 @@ export function applyMakaSessionEventToTranscript(
 
     case 'error':
       clearPendingInteractions(state);
+      dropHiddenTools(state);
       state.entries.push({
         kind: 'notice',
         level: 'error',
@@ -745,6 +746,7 @@ export function applyMakaSessionEventToTranscript(
 
     case 'abort':
       clearPendingInteractions(state);
+      dropHiddenTools(state);
       state.entries.push({
         kind: 'notice',
         level: 'info',
@@ -1183,6 +1185,10 @@ function findPendingInteraction(
 function clearPendingInteractions(state: MakaPiTranscriptState): void {
   state.pendingInteraction = undefined;
   state.queuedInteractions = [];
+}
+
+function dropHiddenTools(state: MakaPiTranscriptState): void {
+  state.entries = state.entries.filter((entry) => entry.kind !== 'tool' || !entry.hidden);
 }
 
 /**
