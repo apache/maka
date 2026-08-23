@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import type { IPty } from 'node-pty';
 import {
   type RuntimeHostSshProcessFactory,
@@ -265,6 +265,47 @@ test('reads a framed service result without projecting it into the SSH terminal'
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   assert.match(JSON.stringify(harness.events), /Password/u);
   await harness.terminal.close();
+});
+
+test('keeps a received service result when the SSH process times out', async () => {
+  mock.timers.enable();
+  try {
+    const harness = createHarness('pending');
+    const management = harness.terminal.runServiceManagement({
+      destination: 'operator@example.com',
+      operatorPath: '/home/operator/.local/share/maka/operator',
+      action: 'status',
+      expectedTarget: {
+        serviceId: 'b'.repeat(64),
+        rootPath: '/home/operator/.config/Maka/workspaces/default',
+        rootId: 'a'.repeat(64),
+      },
+    });
+    await waitFor(() => harness.pty.hasDataListener());
+    harness.pty.emitData(encodeRuntimeHostServiceManagementFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'status',
+      service: {
+        platform: 'linux',
+        arch: 'x64',
+        osRelease: '6.8.0',
+        state: 'running',
+        pid: 42,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        projectDirectoryRoots: [],
+      },
+    }));
+
+    mock.timers.tick(2 * 60_000);
+
+    const result = await management;
+    assert.equal(result.kind, 'result');
+    await harness.terminal.close();
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test('rejects a framed service result for a different action', async () => {

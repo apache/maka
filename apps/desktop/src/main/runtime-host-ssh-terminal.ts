@@ -455,16 +455,28 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       );
       managementTerminal = terminal;
       if (frame) completePresentation(terminal);
-      const result = await waitForTerminalProcess(process, {
-        signal: managementInput.signal,
-        timeoutMs: MANAGEMENT_TIMEOUT_MS,
-        timeoutMessage: 'Remote Runtime Host service management timed out',
-        stopGraceMs: input.processStopGraceMs,
-        onAbort: () => dismissPresentation(terminal),
-      });
+      let result: Awaited<RuntimeHostSshProcess['exited']> | undefined;
+      try {
+        result = await waitForTerminalProcess(process, {
+          signal: managementInput.signal,
+          timeoutMs: MANAGEMENT_TIMEOUT_MS,
+          timeoutMessage: 'Remote Runtime Host service management timed out',
+          stopGraceMs: input.processStopGraceMs,
+          onAbort: () => dismissPresentation(terminal),
+        });
+      } catch (error) {
+        if (
+          !frame ||
+          !(error instanceof Error) ||
+          error.message !== 'Remote Runtime Host service management timed out'
+        ) {
+          throw error;
+        }
+      }
       filter.finish();
       if (frameFailure) throw frameFailure;
       if (!frame) {
+        if (!result) throw new Error('Remote Runtime Host service management ended without a process result');
         throw new Error(
           result.code === 0
             ? 'Remote Runtime Host service management ended without a result'
