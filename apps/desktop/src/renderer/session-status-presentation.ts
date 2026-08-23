@@ -83,36 +83,6 @@ export function normalizeSessionSummaryForDisplay<T extends SessionSummary>(sess
 }
 
 /**
- * Mutation responses describe persisted metadata and legitimately omit live
- * run state. Preserve the last authoritative state in that case; an explicit
- * empty or non-empty array from a catalog read always replaces it.
- */
-export function mergeSessionSummaryForDisplay<T extends SessionSummary>(
-  current: T | undefined,
-  incoming: T,
-): T {
-  const merged: T =
-    incoming.runningTurnIds === undefined && current?.runningTurnIds !== undefined
-      ? ({ ...incoming, runningTurnIds: [...current.runningTurnIds] } as T)
-      : incoming;
-  return normalizeSessionSummaryForDisplay(merged);
-}
-
-/**
- * Apply the same live-state preservation rule at the shared list state
- * boundary, so every metadata mutation path gets it even when a refresh fails.
- */
-export function mergeSessionSummaryListForDisplay<T extends SessionSummary>(
-  current: readonly T[],
-  incoming: readonly T[],
-): T[] {
-  const currentById = new Map(current.map((session) => [session.id, session]));
-  return incoming.map((session) =>
-    mergeSessionSummaryForDisplay(currentById.get(session.id), session),
-  );
-}
-
-/**
  * Generalized Chinese phrasing for a failed turn's `errorClass`
  * Mirrors `describeBlockedReason()` in `@maka/ui`, under the same rule: a UI
  * label must never display the raw enum identifier.
