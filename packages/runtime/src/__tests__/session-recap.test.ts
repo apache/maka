@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import { buildSessionRecapMessages } from '../session-recap.js';
+import { buildSessionRecapMessages, SESSION_RECAP_INSTRUCTION } from '../session-recap.js';
 
 test('session recap bounds its request to the newest complete turns', () => {
   const events: RuntimeEvent[] = [];
@@ -94,6 +94,33 @@ test('session recap bounds an oversized tool result without splitting its protoc
   );
   assert.equal(serialized.includes(oversizedOutput), false);
   assert.ok(serialized.length <= 13_000);
+});
+
+test('session recap treats a zero evidence budget as no evidence, not unbounded input', () => {
+  const sentinel = 'ZERO-BUDGET-SENTINEL';
+  const messages = buildSessionRecapMessages({
+    events: [
+      textEvent(
+        'latest-user',
+        'turn-1',
+        'user',
+        `${sentinel} ${'oversized context '.repeat(2_000)}`,
+      ),
+    ],
+    connection: {
+      ...connection(),
+      defaultModel: 'declared-4k-model',
+      relayModelProfiles: { 'declared-4k-model': { contextWindow: 4_096 } },
+    },
+    modelId: 'declared-4k-model',
+  });
+
+  assert.deepEqual(messages, [
+    {
+      role: 'user',
+      content: SESSION_RECAP_INSTRUCTION,
+    },
+  ]);
 });
 
 function textEvent(id: string, turnId: string, role: 'user' | 'model', text: string): RuntimeEvent {

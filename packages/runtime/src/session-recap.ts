@@ -43,7 +43,12 @@ export function buildSessionRecapMessages(input: {
     events = recentTurnsWithinBudget(events, maxEstimatedTokens);
   }
   let messages = replayPlanItemsToModelMessages(buildRuntimeEventModelReplayPlan(events).items);
-  if (messages.length === 0 && input.events.length > 0 && maxEstimatedTokens !== undefined) {
+  if (
+    messages.length === 0 &&
+    input.events.length > 0 &&
+    maxEstimatedTokens !== undefined &&
+    maxEstimatedTokens > 0
+  ) {
     const latestTurn = groupEventsByTurn(input.events, 4).at(-1)?.events ?? [];
     messages = boundedOversizedTurnMessages(latestTurn, maxEstimatedTokens);
   }
