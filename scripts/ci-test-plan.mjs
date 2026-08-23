@@ -62,6 +62,8 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/verify-windows-installer-lifecycle.mjs',
   'scripts/verify-windows-x64.mjs',
   'scripts/windows-upgrade-baseline.json',
+  'scripts/windows-package-source-closure.mjs',
+  'scripts/windows-package-source-closure.test.mjs',
 ]);
 
 const TYPECHECK_ONLY_FILES = new Set([

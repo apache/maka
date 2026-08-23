@@ -37,6 +37,7 @@ import {
   waitForUsableRenderer,
 } from './verify-packaged-app.mjs';
 import { waitForInstalledProductVersion } from './verify-windows-autoupdate.mjs';
+import { verifyPackagedWindowsSandboxLifecycle } from './verify-windows-x64.mjs';
 import {
   deleteUninstallRegistrationForInstall,
   readUninstallDisplayVersionsForInstall,
@@ -147,6 +148,41 @@ describe('rendererLayoutMatchesViewport', () => {
       false,
     );
   });
+});
+
+it('runs packaged sandbox lifecycle evidence against the exact shipped broker', async () => {
+  const calls = [];
+  const sandboxExecutable = 'C:\\release\\resources\\windows-sandbox\\maka-windows-sandbox.exe';
+
+  await verifyPackagedWindowsSandboxLifecycle(sandboxExecutable, {
+    run: async (command, args) => {
+      calls.push({ command, args });
+      return { stdout: '', stderr: '' };
+    },
+  });
+
+  assert.deepEqual(
+    calls.map(({ command, args }) => ({
+      command,
+      script: args[2].replaceAll('\\', '/').split('/').at(-1),
+      launcherFlag: args[3],
+      launcher: args[4],
+    })),
+    [
+      {
+        command: 'pwsh',
+        script: 'appcontainer-smoke.ps1',
+        launcherFlag: '-LauncherPath',
+        launcher: sandboxExecutable,
+      },
+      {
+        command: 'pwsh',
+        script: 'acl-recovery-smoke.ps1',
+        launcherFlag: '-LauncherPath',
+        launcher: sandboxExecutable,
+      },
+    ],
+  );
 });
 
 it('uses the product SemVer contract throughout Windows release verification', () => {
