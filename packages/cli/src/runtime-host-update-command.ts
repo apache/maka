@@ -190,9 +190,11 @@ export async function runManagedRuntimeHostUpdateCli(
           emit(progress('retiring', currentVersion, options.version));
           const currentOperatorPath = deployment.operatorPath;
           const runCurrentOperator = (args: readonly string[]) =>
-            deps.withLegacyOperatorLeases(options.clientDataRoot, (inheritedFds) =>
-              deps.runOperator(currentOperatorPath, args, inheritedFds),
-            );
+            serviceConfig.operatorLockProtocol === 'process-lifetime-v1'
+              ? deps.runOperator(currentOperatorPath, args)
+              : deps.withLegacyOperatorLeases(options.clientDataRoot, (inheritedFds) =>
+                  deps.runOperator(currentOperatorPath, args, inheritedFds),
+                );
           let retirement = await runCurrentOperator([
             'retire',
             '--framed',

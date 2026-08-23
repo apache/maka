@@ -58,6 +58,7 @@ const SERVICE_READY_POLL_MS = 50;
 export interface RuntimeHostManagedServiceConfig {
   readonly schemaVersion: 1;
   readonly managedDeploymentRoot?: string;
+  readonly operatorLockProtocol?: 'process-lifetime-v1';
   readonly rootPath: string;
   readonly projectDirectoryRoots: readonly {
     readonly label: string;
@@ -710,6 +711,7 @@ async function prepareServiceConfig(
   const config: RuntimeHostManagedServiceConfig = {
     schemaVersion: 1,
     ...(managedDeploymentRoot ? { managedDeploymentRoot } : {}),
+    operatorLockProtocol: 'process-lifetime-v1',
     rootPath,
     projectDirectoryRoots,
     websocket: { host: '127.0.0.1', port, path: websocketPath },
@@ -857,6 +859,12 @@ function validateServiceConfig(
       !isRuntimeHostManagedDeploymentCli(value.managedDeploymentRoot, serviceId, launch.cliPath))
   ) {
     throw new TypeError('Invalid managed deployment root');
+  }
+  if (
+    value.operatorLockProtocol !== undefined &&
+    value.operatorLockProtocol !== 'process-lifetime-v1'
+  ) {
+    throw new TypeError('Invalid operator lock protocol');
   }
 }
 

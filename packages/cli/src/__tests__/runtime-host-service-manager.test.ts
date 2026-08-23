@@ -1284,6 +1284,7 @@ describe('managed Runtime Host service', () => {
       await readFile(resolveRuntimeHostManagedServiceConfigPath(clientDataRoot), 'utf8'),
     ) as RuntimeHostManagedServiceConfig;
     assert.equal(config.launch.cliPath, await realpath(targetCli));
+    assert.equal(config.operatorLockProtocol, 'process-lifetime-v1');
   });
 
   it('updates through the current operator and preserves exact update outcomes', async () => {
@@ -1312,6 +1313,7 @@ describe('managed Runtime Host service', () => {
           config: {
             schemaVersion: 1,
             managedDeploymentRoot: deploymentRoot,
+            ...(operatorLockProtocol ? { operatorLockProtocol } : {}),
             rootPath: expectedTarget.rootPath,
             projectDirectoryRoots: [],
             websocket: { host: '127.0.0.1', port: 7400, path: '/runtime-host' },
@@ -1327,6 +1329,8 @@ describe('managed Runtime Host service', () => {
     let observedState: 'running' | 'stopped' = 'running';
     let readyChecks = 0;
     let readyFailure = false;
+    let operatorLockProtocol: RuntimeHostManagedServiceConfig['operatorLockProtocol'];
+    let legacyLeaseCalls = 0;
     let operatorFailure: Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> | undefined;
     let insideLifecycle = false;
     let output = '';
@@ -1355,7 +1359,10 @@ describe('managed Runtime Host service', () => {
       withLegacyOperatorLeases: async <T>(
         _root: string,
         operation: (fds: readonly number[]) => Promise<T>,
-      ) => operation([]),
+      ) => {
+        legacyLeaseCalls += 1;
+        return operation([]);
+      },
       prepareDeployment: async () => ({
         version: '2.0.0',
         root: deploymentRoot,
@@ -1427,6 +1434,7 @@ describe('managed Runtime Host service', () => {
       replace: async () => {
         assert.equal(insideLifecycle, true);
         order.push('replace');
+        operatorLockProtocol = 'process-lifetime-v1';
         return service('2.0.0', 'running').service;
       },
       writeOutput: (value: string) => {
@@ -1436,6 +1444,7 @@ describe('managed Runtime Host service', () => {
     const exitCode = await runManagedRuntimeHostUpdateCli(options, overrides);
     assert.equal(exitCode, 0);
     assert.deepEqual(order, ['retire', 'activate', 'replace', 'cleanup']);
+    assert.equal(legacyLeaseCalls, 1);
     const frames = output
       .trim()
       .split('\n')
@@ -1479,6 +1488,7 @@ describe('managed Runtime Host service', () => {
     assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
     assert.equal(readyChecks, 2);
     assert.deepEqual(order, ['retire', 'activate', 'replace', 'cleanup']);
+    assert.equal(legacyLeaseCalls, 1);
     const activeRecovery = decodeRuntimeHostServiceManagementFrame(
       output.trim().split('\n').at(-1) ?? '',
     );
@@ -1500,6 +1510,7 @@ describe('managed Runtime Host service', () => {
     };
     assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
     assert.deepEqual(order, ['retire', 'stop', 'activate', 'replace', 'cleanup']);
+    assert.equal(legacyLeaseCalls, 1);
 
     statusReads = 0;
     observedVersion = '1.0.0';
