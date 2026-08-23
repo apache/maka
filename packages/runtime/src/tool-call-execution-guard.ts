@@ -82,32 +82,46 @@
  * distinguish "evidence existed but failed a condition" from "no evidence at
  * all", because a caller can never act on that difference anyway.
  *
- * A caller (see `ai-sdk-backend.ts`) resolves a call with neither a `proofs`
- * nor an `atomicProofs` entry by falling back to "genuinely atomic; use the
- * step-level fallback" ONLY when `hadRawArgumentEvidence` is false for the
- * WHOLE physical request — i.e. this tracker observed no `tool-input-delta`
- * bytes anywhere in the request, meaning either every call in it is
- * legitimately atomic or the provider's protocol never emits granular
- * per-call lifecycle chunks at all. The moment any call anywhere in the
- * request streamed real bytes, a THIRD call's absence from both maps is
- * indistinguishable from an id mismatch between this tracker's raw-chunk
- * view and the SDK's resolved `tool-call`; that case must still fail closed.
- * This whole-request fallback is deliberately the last resort: a call with a
- * `proofs` or `atomicProofs` entry of its own never needs it, which is
- * exactly what fixed the case a purely request-global rule got wrong — an
- * argument-bearing call and a legitimate zero-argument sibling in the same
- * request, each proved from its own lifecycle, neither one's fate decided by
- * the other's.
+ * `atomicProofs` is deliberately silent on VALUE, and that is the caller's
+ * responsibility to get right, not this tracker's: this tracker only ever
+ * observes `tool-input-start`/`tool-input-delta`/`tool-input-end`, never the
+ * resolved `tool-call` chunk itself, so it has no way to know — and does not
+ * claim to know — what the SDK's own projected `toolCall.input` for that id
+ * turned out to be. A complete, unpoisoned, zero-delta id/name lifecycle
+ * proves the provider streamed no argument bytes; it does not, by itself,
+ * prove what the SDK-resolved input contains. The caller (see
+ * `ai-sdk-backend.ts`) closes that gap by additionally requiring
+ * `hadRawArgumentEvidence` to be true before it will consult `atomicProofs`
+ * at all, and by treating the canonical empty object — never
+ * `toolCall.input` — as the executed value once it does: see that file for
+ * why (the installed Google adapter's own source confirms a real zero-delta
+ * id and a real non-empty id are never the same wire shape, so the SDK's
+ * projection is not needed and is not trusted for this branch).
+ *
+ * A caller resolves a call with neither a `proofs` nor an (its own
+ * `hadRawArgumentEvidence`-gated) `atomicProofs` entry by falling back to
+ * "genuinely atomic; use the step-level fallback, trusting `toolCall.input`
+ * verbatim" ONLY when `hadRawArgumentEvidence` is false for the WHOLE
+ * physical request — i.e. this tracker observed no `tool-input-delta` bytes
+ * anywhere in the request, meaning either every call in it is legitimately
+ * atomic (a provider that hands off complete, possibly non-empty calls in
+ * one shot, with no incremental streaming at all) or the provider's protocol
+ * never emits granular per-call lifecycle chunks in the first place. That is
+ * a separate, pre-existing policy this tracker does not change. The moment
+ * any call anywhere in the request streamed real bytes, a call with no
+ * `proofs` entry AND no `atomicProofs` entry is indistinguishable from an id
+ * mismatch between this tracker's raw-chunk view and the SDK's resolved
+ * `tool-call`; that case must still fail closed. A call with a `proofs`
+ * entry of its own, or an `atomicProofs` entry the caller is willing to
+ * trust, never needs this fallback — which is exactly what fixed the case a
+ * purely request-global rule got wrong: an argument-bearing call and a
+ * legitimate zero-argument sibling in the same request, each proved from its
+ * own lifecycle, neither one's fate decided by the other's.
  *
  * A call with a present `proofs` entry gets the raw-stream name/value as
- * execution authority. A call with a present `atomicProofs` entry gets the
- * raw-stream name as an identity check only — its value comes from the
- * SDK's own resolved `tool-call` input, since zero bytes streamed for it
- * leaves nothing else to derive a value from; that AI SDK projection is
- * trustworthy specifically because this id's own raw lifecycle proves
- * nothing was ever truncated or substituted for it. Neither case ever
- * defers to the SDK's post-hoc projection for a DIFFERENT id, and neither
- * lets one call's raw evidence stand in for another's.
+ * execution authority. Neither case ever defers to the SDK's post-hoc
+ * projection for a DIFFERENT id, and neither lets one call's raw evidence
+ * stand in for another's.
  *
  * Concurrency note: nothing here is shared across requests or stored beyond
  * one `ModelAdapter.startStream` result. `createToolCallSafetyTracker()` owns

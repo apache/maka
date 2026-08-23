@@ -290,6 +290,32 @@ function shellTool(onExecute: (input: unknown) => void): MakaTool {
   };
 }
 
+/** A genuinely zero-argument tool -- the schema itself takes nothing. */
+function pingTool(onExecute: (input: unknown) => void): MakaTool {
+  return {
+    name: 'Ping',
+    description: 'Zero-argument health check',
+    parameters: z.object({}),
+    impl: async (input) => {
+      onExecute(input);
+      return { ok: true };
+    },
+  };
+}
+
+/** Zero required arguments, but a declared default -- composes with P1. */
+function listTodosTool(onExecute: (input: unknown) => void): MakaTool {
+  return {
+    name: 'ListTodos',
+    description: 'List todos',
+    parameters: z.object({ limit: z.number().default(10) }),
+    impl: async (input) => {
+      onExecute(input);
+      return { ok: true };
+    },
+  };
+}
+
 async function runModel(
   model: MockLanguageModelV4,
   tools: MakaTool[],
@@ -507,13 +533,15 @@ describe('tool execution safety (real production path)', () => {
   // call's eligibility must come only from its own lifecycle — the
   // argument-bearing sibling having raw evidence must not poison the
   // zero-argument sibling's own, independently-proved atomic completion.
+  // A. A genuinely zero-argument sibling -- the installed Google adapter's
+  // real wire shape, input "{}" -- executes from its own atomic proof,
+  // isolated from an argument-bearing sibling in the same physical request.
   test('a legitimate zero-argument sibling executes from its own atomic proof, isolated from an argument-bearing sibling', async () => {
     let writeExecutions = 0;
-    let notifyExecutions = 0;
+    let pingExecutions = 0;
     let writeReceived: unknown;
-    let notifyReceived: unknown;
+    let pingReceived: unknown;
     const writeInput = { path: 'notes.md', content: 'hello' };
-    const notifyInput = { message: 'done' };
     const model = twoStepModel([
       { type: 'stream-start', warnings: [] },
       { type: 'tool-input-start', id: 'call-incremental', toolName: 'Write' },
@@ -529,14 +557,9 @@ describe('tool execution safety (real production path)', () => {
         toolName: 'Write',
         input: JSON.stringify(writeInput),
       },
-      { type: 'tool-input-start', id: 'call-atomic', toolName: 'Notify' },
+      { type: 'tool-input-start', id: 'call-atomic', toolName: 'Ping' },
       { type: 'tool-input-end', id: 'call-atomic' },
-      {
-        type: 'tool-call',
-        toolCallId: 'call-atomic',
-        toolName: 'Notify',
-        input: JSON.stringify(notifyInput),
-      },
+      { type: 'tool-call', toolCallId: 'call-atomic', toolName: 'Ping', input: '{}' },
       {
         type: 'finish',
         finishReason: { unified: 'stop', raw: 'stop' },
@@ -548,21 +571,27 @@ describe('tool execution safety (real production path)', () => {
         writeExecutions += 1;
         writeReceived = input;
       }),
-      notifyTool((input) => {
-        notifyExecutions += 1;
-        notifyReceived = input;
+      pingTool((input) => {
+        pingExecutions += 1;
+        pingReceived = input;
       }),
     ]);
     assert.equal(writeExecutions, 1);
-    assert.equal(notifyExecutions, 1);
+    assert.equal(pingExecutions, 1);
     assert.deepEqual(writeReceived, writeInput);
-    assert.deepEqual(notifyReceived, notifyInput);
+    assert.deepEqual(pingReceived, {});
   });
 
-  test('a zero-delta sibling whose final name disagrees with its own observed start is still rejected', async () => {
+  // B. THE CRITICAL REGRESSION CASE: a zero-delta call whose SDK-resolved
+  // final `tool-call` carries a NON-EMPTY projected input must still not
+  // execute with that value. Zero raw delta bytes for this id is itself the
+  // proof that the provider supplied no arguments (see ai-sdk-backend.ts);
+  // a divergent non-empty projection is never trusted, so this executes with
+  // the canonical empty object -- which, against Notify's *required*
+  // `message` field, fails schema validation and never reaches `impl`.
+  test('a zero-delta sibling with a non-empty final projected input still executes zero times', async () => {
     let writeExecutions = 0;
     let notifyExecutions = 0;
-    let shellExecutions = 0;
     const writeInput = { path: 'notes.md', content: 'hello' };
     const model = twoStepModel([
       { type: 'stream-start', warnings: [] },
@@ -575,58 +604,11 @@ describe('tool execution safety (real production path)', () => {
         toolName: 'Write',
         input: JSON.stringify(writeInput),
       },
-      // Observed as "Notify" with zero deltas, but the AI SDK resolves the
-      // same id under a DIFFERENT tool name. The guard's own observed name
-      // for this id must still win — exactly like the raw-byte proof case
-      // below — never the SDK's post-hoc projection under either name.
+      // Zero tool-input-delta chunks for call-atomic, yet the SDK's own
+      // resolved tool-call somehow carries a non-empty payload -- a stale
+      // repair, a provider bug, or worse. It must never reach `impl`.
       { type: 'tool-input-start', id: 'call-atomic', toolName: 'Notify' },
       { type: 'tool-input-end', id: 'call-atomic' },
-      {
-        type: 'tool-call',
-        toolCallId: 'call-atomic',
-        toolName: 'Shell',
-        input: JSON.stringify({ command: 'rm -rf /' }),
-      },
-      {
-        type: 'finish',
-        finishReason: { unified: 'stop', raw: 'stop' },
-        usage: ZERO_USAGE,
-      },
-    ]);
-    await runModel(model, [
-      writeTool(() => {
-        writeExecutions += 1;
-      }),
-      notifyTool(() => {
-        notifyExecutions += 1;
-      }),
-      shellTool(() => {
-        shellExecutions += 1;
-      }),
-    ]).catch(() => []);
-    assert.equal(writeExecutions, 1);
-    assert.equal(notifyExecutions, 0);
-    assert.equal(shellExecutions, 0);
-  });
-
-  test('a zero-delta sibling missing its own tool-input-end is still rejected, even next to a proved sibling', async () => {
-    let writeExecutions = 0;
-    let notifyExecutions = 0;
-    const writeInput = { path: 'notes.md', content: 'hello' };
-    const model = twoStepModel([
-      { type: 'stream-start', warnings: [] },
-      { type: 'tool-input-start', id: 'call-incremental', toolName: 'Write' },
-      { type: 'tool-input-delta', id: 'call-incremental', delta: JSON.stringify(writeInput) },
-      { type: 'tool-input-end', id: 'call-incremental' },
-      {
-        type: 'tool-call',
-        toolCallId: 'call-incremental',
-        toolName: 'Write',
-        input: JSON.stringify(writeInput),
-      },
-      // No tool-input-end for call-atomic at all: an incomplete lifecycle,
-      // not a proof of atomicity.
-      { type: 'tool-input-start', id: 'call-atomic', toolName: 'Notify' },
       {
         type: 'tool-call',
         toolCallId: 'call-atomic',
@@ -649,6 +631,233 @@ describe('tool execution safety (real production path)', () => {
     ]).catch(() => []);
     assert.equal(writeExecutions, 1);
     assert.equal(notifyExecutions, 0);
+  });
+
+  // C. Name substitution under a zero-delta, canonically-empty call is still
+  // rejected -- isolated from case B by using an empty projected input here,
+  // so this test fails only on identity, never on argument content.
+  test('a zero-delta sibling whose final name disagrees with its own observed start is still rejected', async () => {
+    let writeExecutions = 0;
+    let notifyExecutions = 0;
+    let shellExecutions = 0;
+    const writeInput = { path: 'notes.md', content: 'hello' };
+    const model = twoStepModel([
+      { type: 'stream-start', warnings: [] },
+      { type: 'tool-input-start', id: 'call-incremental', toolName: 'Write' },
+      { type: 'tool-input-delta', id: 'call-incremental', delta: JSON.stringify(writeInput) },
+      { type: 'tool-input-end', id: 'call-incremental' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-incremental',
+        toolName: 'Write',
+        input: JSON.stringify(writeInput),
+      },
+      // Observed as "Notify" with zero deltas, but the AI SDK resolves the
+      // same id under a DIFFERENT tool name. The guard's own observed name
+      // for this id must still win — exactly like the raw-byte proof case
+      // below — never the SDK's post-hoc projection under either name.
+      { type: 'tool-input-start', id: 'call-atomic', toolName: 'Notify' },
+      { type: 'tool-input-end', id: 'call-atomic' },
+      { type: 'tool-call', toolCallId: 'call-atomic', toolName: 'Shell', input: '{}' },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+    await runModel(model, [
+      writeTool(() => {
+        writeExecutions += 1;
+      }),
+      notifyTool(() => {
+        notifyExecutions += 1;
+      }),
+      shellTool(() => {
+        shellExecutions += 1;
+      }),
+    ]).catch(() => []);
+    assert.equal(writeExecutions, 1);
+    assert.equal(notifyExecutions, 0);
+    assert.equal(shellExecutions, 0);
+  });
+
+  // D. Id substitution under a zero-delta, canonically-empty call is still
+  // rejected: the started id never got its own resolved tool-call, and the
+  // resolved id never got its own start/end, so neither has an atomic proof
+  // -- exactly the raw-byte proof's "call_1 evidence cannot authorize a
+  // resolved call_2" shape, one level down.
+  test('a zero-delta start/end pair cannot authorize a resolved call under a different id', async () => {
+    let writeExecutions = 0;
+    let pingExecutions = 0;
+    const writeInput = { path: 'notes.md', content: 'hello' };
+    const model = twoStepModel([
+      { type: 'stream-start', warnings: [] },
+      { type: 'tool-input-start', id: 'call-incremental', toolName: 'Write' },
+      { type: 'tool-input-delta', id: 'call-incremental', delta: JSON.stringify(writeInput) },
+      { type: 'tool-input-end', id: 'call-incremental' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-incremental',
+        toolName: 'Write',
+        input: JSON.stringify(writeInput),
+      },
+      { type: 'tool-input-start', id: 'call-atomic-started', toolName: 'Ping' },
+      { type: 'tool-input-end', id: 'call-atomic-started' },
+      // Resolved under a different id than the one that streamed start/end.
+      { type: 'tool-call', toolCallId: 'call-atomic-resolved', toolName: 'Ping', input: '{}' },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+    await runModel(model, [
+      writeTool(() => {
+        writeExecutions += 1;
+      }),
+      pingTool(() => {
+        pingExecutions += 1;
+      }),
+    ]).catch(() => []);
+    assert.equal(writeExecutions, 1);
+    assert.equal(pingExecutions, 0);
+  });
+
+  // E. A zero-delta call missing its own tool-input-end (empty projected
+  // input, so only the incomplete lifecycle -- not argument content -- is
+  // under test here) is still rejected, even next to a proved sibling.
+  test('a zero-delta sibling missing its own tool-input-end is still rejected, even next to a proved sibling', async () => {
+    let writeExecutions = 0;
+    let pingExecutions = 0;
+    const writeInput = { path: 'notes.md', content: 'hello' };
+    const model = twoStepModel([
+      { type: 'stream-start', warnings: [] },
+      { type: 'tool-input-start', id: 'call-incremental', toolName: 'Write' },
+      { type: 'tool-input-delta', id: 'call-incremental', delta: JSON.stringify(writeInput) },
+      { type: 'tool-input-end', id: 'call-incremental' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-incremental',
+        toolName: 'Write',
+        input: JSON.stringify(writeInput),
+      },
+      // No tool-input-end for call-atomic at all: an incomplete lifecycle,
+      // not a proof of atomicity.
+      { type: 'tool-input-start', id: 'call-atomic', toolName: 'Ping' },
+      { type: 'tool-call', toolCallId: 'call-atomic', toolName: 'Ping', input: '{}' },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+    await runModel(model, [
+      writeTool(() => {
+        writeExecutions += 1;
+      }),
+      pingTool(() => {
+        pingExecutions += 1;
+      }),
+    ]).catch(() => []);
+    assert.equal(writeExecutions, 1);
+    assert.equal(pingExecutions, 0);
+  });
+
+  // F. A complete, unpoisoned zero-delta lifecycle next to an unsafe
+  // terminal reason still executes zero times -- terminal safety gates the
+  // atomic proof exactly like it gates the raw-byte proof.
+  test('a zero-delta sibling is withheld when the physical request terminates unsafely', async () => {
+    let writeExecutions = 0;
+    let pingExecutions = 0;
+    const writeInput = { path: 'notes.md', content: 'hello' };
+    const model = twoStepModel([
+      { type: 'stream-start', warnings: [] },
+      { type: 'tool-input-start', id: 'call-incremental', toolName: 'Write' },
+      { type: 'tool-input-delta', id: 'call-incremental', delta: JSON.stringify(writeInput) },
+      { type: 'tool-input-end', id: 'call-incremental' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-incremental',
+        toolName: 'Write',
+        input: JSON.stringify(writeInput),
+      },
+      { type: 'tool-input-start', id: 'call-atomic', toolName: 'Ping' },
+      { type: 'tool-input-end', id: 'call-atomic' },
+      { type: 'tool-call', toolCallId: 'call-atomic', toolName: 'Ping', input: '{}' },
+      {
+        type: 'finish',
+        finishReason: { unified: 'length', raw: 'length' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+    await runModel(model, [
+      writeTool(() => {
+        writeExecutions += 1;
+      }),
+      pingTool(() => {
+        pingExecutions += 1;
+      }),
+    ]).catch(() => []);
+    assert.equal(writeExecutions, 0);
+    assert.equal(pingExecutions, 0);
+  });
+
+  // G. Composes with P1: a genuinely empty raw lifecycle, run through
+  // ToolRuntime's own schema, reaches `impl` with the schema's declared
+  // default filled in -- and the SDK's own (divergent, non-empty) projected
+  // input is never what gets used, proving the atomic path never falls back
+  // to `toolCall.input` even when a value happens to be available there.
+  //
+  // Mixed with a real incremental sibling on purpose: the per-call atomic
+  // proof's canonical-empty-value rule is scoped to `hadRawArgumentEvidence`
+  // being true (see ai-sdk-backend.ts) -- a genuinely whole-request-atomic
+  // delivery is a separate, unchanged policy that trusts `toolCall.input`
+  // directly, so this composition only exercises the new path with a
+  // sibling that streamed real delta bytes.
+  test('a zero-delta call composes with a schema default: the defaulted value reaches impl, never the divergent SDK projection', async () => {
+    let writeExecutions = 0;
+    let listTodosExecutions = 0;
+    let listTodosReceived: unknown;
+    const writeInput = { path: 'notes.md', content: 'hello' };
+    const model = twoStepModel([
+      { type: 'stream-start', warnings: [] },
+      { type: 'tool-input-start', id: 'call-incremental', toolName: 'Write' },
+      { type: 'tool-input-delta', id: 'call-incremental', delta: JSON.stringify(writeInput) },
+      { type: 'tool-input-end', id: 'call-incremental' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-incremental',
+        toolName: 'Write',
+        input: JSON.stringify(writeInput),
+      },
+      { type: 'tool-input-start', id: 'call-atomic', toolName: 'ListTodos' },
+      { type: 'tool-input-end', id: 'call-atomic' },
+      {
+        type: 'tool-call',
+        toolCallId: 'call-atomic',
+        toolName: 'ListTodos',
+        // Divergent from the canonical empty proof on purpose: must never
+        // reach `impl`, whether or not it happens to satisfy the schema.
+        input: JSON.stringify({ limit: 999 }),
+      },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: ZERO_USAGE,
+      },
+    ]);
+    await runModel(model, [
+      writeTool(() => {
+        writeExecutions += 1;
+      }),
+      listTodosTool((input) => {
+        listTodosExecutions += 1;
+        listTodosReceived = input;
+      }),
+    ]);
+    assert.equal(writeExecutions, 1);
+    assert.equal(listTodosExecutions, 1);
+    assert.deepEqual(listTodosReceived, { limit: 10 });
   });
 
   test('proved Write identity cannot be substituted with Shell under the same id', async () => {

@@ -2641,18 +2641,33 @@ export class AiSdkBackend implements AgentBackend {
                 // `buildInvalidMakaTool` expects.
                 //
                 // An atomic proof is checked only when there is no raw-byte
-                // proof for this id — an id with real delta bytes is never
-                // atomic-eligible (see tool-call-execution-guard.ts) — and it
-                // is a PER-CALL fact: it says nothing about any sibling call
-                // in the same request. This is what lets a zero-argument tool
-                // call (the installed Google adapter's start/end/final-call
-                // with no delta events) execute even when an
-                // argument-bearing sibling in the same request streamed real
-                // bytes — each call's eligibility comes only from its own
-                // lifecycle, never from `hadRawArgumentEvidence`, which is
-                // reserved for the narrower whole-request fallback below.
+                // proof for this id AND some OTHER call in the same physical
+                // request did stream real delta bytes
+                // (`hadRawArgumentEvidence`) — i.e. only inside a genuinely
+                // mixed-delivery request, the installed Google adapter's own
+                // shape for one argument-bearing call plus one zero-argument
+                // sibling. It is a PER-CALL fact: it says nothing about any
+                // OTHER sibling in the same request, which is what lets the
+                // zero-argument sibling execute independently of whether the
+                // argument-bearing one streamed real bytes.
+                //
+                // A genuinely whole-request-atomic delivery (no call in the
+                // request streamed any delta bytes at all — some providers
+                // never emit granular per-call lifecycle chunks and instead
+                // hand off a complete, possibly non-empty call in one shot)
+                // is a separate, pre-existing policy this leaves untouched:
+                // `atomicProofs` is deliberately NOT consulted when
+                // `hadRawArgumentEvidence` is false, so that case keeps
+                // falling through to the unscoped whole-request fallback
+                // below exactly as it always has, trusting `toolCall.input`
+                // verbatim with no emptiness requirement. That policy is
+                // sound specifically because those calls have no
+                // real-delta-carrying sibling in the request to be confused
+                // with — the ambiguity this scoping resolves does not arise.
                 const proof = toolCallSafety.proofs.get(toolCall.toolCallId);
-                const atomicProof = toolCallSafety.atomicProofs.get(toolCall.toolCallId);
+                const atomicProof = toolCallSafety.hadRawArgumentEvidence
+                  ? toolCallSafety.atomicProofs.get(toolCall.toolCallId)
+                  : undefined;
                 const provedNameMatches =
                   proof !== undefined &&
                   proof.name.toLowerCase() === toolCall.toolName.toLowerCase();
@@ -2670,14 +2685,41 @@ export class AiSdkBackend implements AgentBackend {
                 // raw bytes, never the SDK-projected `toolCall.input` a
                 // later repair/coercion could have substituted — is the
                 // sole payload authority whenever the proved identity
-                // genuinely matches the tool about to run. The atomic proof
-                // (zero raw bytes for this id specifically), the
-                // whole-request atomic fallback (no proof of any kind
-                // anywhere), and the invalid-tool bypass above all have no
-                // such value and fall back to `toolCall.input` — there is
-                // nothing else to derive a value from when this id never
-                // streamed argument bytes.
+                // genuinely matches the tool about to run.
+                //
+                // A mixed-delivery atomic proof (the branch above, only
+                // reached when `hadRawArgumentEvidence` is true) has no raw
+                // bytes to decode a value from, but it does not fall back to
+                // `toolCall.input` either: zero `tool-input-delta` chunks for
+                // this id, next to a sibling that DID stream real bytes, is
+                // itself the raw evidence, and what it proves is that the
+                // provider supplied no arguments at all for this one id
+                // (confirmed against the installed Google adapter's own
+                // source — its ONLY zero-delta path is `isNoArgsCompleteCall`,
+                // gated on the model producing no arguments; its complete-call
+                // path with real arguments always emits exactly one
+                // `tool-input-delta` carrying them, so a real zero-delta id
+                // and a real non-empty id are never the same wire shape from
+                // that adapter). The canonical empty object is therefore this
+                // proof's own value, in the same sense `JSON.parse(state.raw)`
+                // is the raw-byte proof's — never `toolCall.input`, which
+                // could disagree with that proof (a divergent SDK projection,
+                // a stale repair, or simply a bug) with nothing here able to
+                // tell. Schema defaults still apply from here exactly as they
+                // do for any other call: the guard proves the id's own
+                // arguments were empty, and `ToolRuntime`'s own schema parsing
+                // is what may add trusted local defaults/transforms on top of
+                // that proven value.
+                //
+                // The whole-request atomic fallback — reached both when a
+                // call has no proof of any kind AND `hadRawArgumentEvidence`
+                // is false (a genuinely all-atomic request, where a
+                // non-empty `toolCall.input` is an ordinary complete call,
+                // not a contradiction) — and the invalid-tool bypass above
+                // have no proved value either and fall back to
+                // `toolCall.input`, per that separate, pre-existing policy.
                 const provedValue = provedNameMatches ? proof.value : undefined;
+                const atomicValue = atomicNameMatches ? {} : undefined;
                 const requestedTool = confirmedSafe
                   ? toolsByName.get(toolCall.toolName)
                   : undefined;
@@ -2703,7 +2745,9 @@ export class AiSdkBackend implements AgentBackend {
                     requestedTool !== undefined
                       ? provedValue !== undefined
                         ? provedValue
-                        : toolCall.input
+                        : atomicValue !== undefined
+                          ? atomicValue
+                          : toolCall.input
                       : {
                           tool: toolCall.toolName,
                           error: confirmedSafe
