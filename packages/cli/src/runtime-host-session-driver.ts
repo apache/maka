@@ -1027,16 +1027,14 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
       onTurnTerminal: (turn) => this.#refreshTranscript(sessionId, sessionGeneration, turn.turnId),
       onToolResult: (turnId) => this.#refreshTranscript(sessionId, sessionGeneration, turnId),
-      onTranscriptReplaced: (turnId, messages) => {
-        if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) {
-          return;
-        }
-        // A reconnect snapshot is newer than every transcript read started by
-        // the retired channel. Invalidate those reads before publishing so a
-        // late tool-result snapshot cannot roll the transcript back.
-        this.#transcriptRefreshSequence += 1;
-        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect');
-      },
+      onTranscriptReplaced: (turnId, messages) =>
+        this.#publishTranscriptReplacement(
+          sessionId,
+          sessionGeneration,
+          turnId,
+          messages,
+          'reconnect',
+        ),
       onGoalChanged: (goal) => {
         // A closing channel from a previous session can still be draining a
         // frame when the swap happens; only the live session may publish.
@@ -1088,18 +1086,26 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         ) {
           return;
         }
-        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconcile');
+        this.#publishTranscriptReplacement(
+          sessionId,
+          sessionGeneration,
+          turnId,
+          messages,
+          'reconcile',
+        );
       })
       .catch(() => undefined);
   }
 
   #publishTranscriptReplacement(
     sessionId: string,
+    sessionGeneration: number,
     turnId: string,
     messages: readonly StoredMessage[],
     reason: MakaTranscriptReplacementReason,
   ): void {
-    if (this.#sessionId !== sessionId) return;
+    if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
+    this.#transcriptRefreshSequence += 1;
     for (const listener of this.#transcriptListeners) {
       listener(sessionId, turnId, messages, reason);
     }
@@ -1244,9 +1250,6 @@ export function runtimeHostSessionSummary(session: SessionCatalogProjection): Se
     status: session.status,
     ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
     ...(session.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: session.statusUpdatedAt }),
-    ...(session.liveRunState === undefined
-      ? {}
-      : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),
     ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
     ...(session.branchOfTurnId === undefined ? {} : { branchOfTurnId: session.branchOfTurnId }),
     ...(session.subagent === undefined ? {} : { subagent: session.subagent }),
