@@ -276,29 +276,56 @@ async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
 }
 
 function assertProjectionDoesNotShrink(previous, next) {
-  const removedModels = [];
-  for (const [providerType, models] of Object.entries(previous.metadata ?? {})) {
-    const nextModels = next.metadata?.[providerType] ?? {};
-    for (const modelId of Object.keys(models)) {
-      if (!Object.prototype.hasOwnProperty.call(nextModels, modelId)) {
-        removedModels.push(`${providerType}:${modelId}`);
+  const removals = [];
+  collectProjectionRemovals(previous, next, [], removals);
+  if (removals.length === 0) return;
+
+  throw new Error(
+    `models.dev refresh would remove committed projection paths: ${removals.sort().join(', ')}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
+  );
+}
+
+function collectProjectionRemovals(previous, next, path, removals) {
+  if (Array.isArray(previous)) {
+    if (!Array.isArray(next)) {
+      removals.push(projectionPath(path));
+      return;
+    }
+    if (path.length === 1 && path[0] === 'pricing') {
+      const nextByModelKey = new Map(next.map((entry) => [entry?.modelKey, entry]));
+      for (const entry of previous) {
+        const modelPath = [...path, entry.modelKey];
+        const nextEntry = nextByModelKey.get(entry.modelKey);
+        if (!nextEntry) removals.push(projectionPath(modelPath));
+        else collectProjectionRemovals(entry, nextEntry, modelPath, removals);
+      }
+      return;
+    }
+    for (const value of previous) {
+      if (!next.some((candidate) => Object.is(candidate, value))) {
+        removals.push(`${projectionPath(path)} value ${JSON.stringify(value)}`);
       }
     }
+    return;
   }
 
-  const nextPricingKeys = new Set((next.pricing ?? []).map((entry) => entry.modelKey));
-  const removedPricing = (previous.pricing ?? [])
-    .map((entry) => entry.modelKey)
-    .filter((modelKey) => !nextPricingKeys.has(modelKey));
-  if (removedModels.length === 0 && removedPricing.length === 0) return;
+  if (!previous || typeof previous !== 'object') return;
+  if (!next || typeof next !== 'object' || Array.isArray(next)) {
+    removals.push(projectionPath(path));
+    return;
+  }
+  for (const [key, value] of Object.entries(previous)) {
+    const childPath = [...path, key];
+    if (!Object.prototype.hasOwnProperty.call(next, key)) {
+      removals.push(projectionPath(childPath));
+    } else {
+      collectProjectionRemovals(value, next[key], childPath, removals);
+    }
+  }
+}
 
-  const details = [
-    ...(removedModels.length > 0 ? [`models: ${removedModels.sort().join(', ')}`] : []),
-    ...(removedPricing.length > 0 ? [`pricing coverage: ${removedPricing.sort().join(', ')}`] : []),
-  ].join('; ');
-  throw new Error(
-    `models.dev refresh would remove committed ${details}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
-  );
+function projectionPath(path) {
+  return `/${path.map((segment) => String(segment).replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`;
 }
 
 async function replaceFilesTransactionally(writes) {

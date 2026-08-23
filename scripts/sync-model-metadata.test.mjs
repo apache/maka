@@ -243,7 +243,7 @@ test('refresh rejects a partial provider shrink until it is explicitly accepted'
     };
 
     await writeFile(input, JSON.stringify(fixtureCatalog()));
-    await assert.rejects(main(refreshArgs), /remove committed models: anthropic:model-two/);
+    await assert.rejects(main(refreshArgs), /projection paths: \/metadata\/anthropic\/model-two/);
     assert.deepEqual(
       {
         snapshot: await readFile(snapshot, 'utf8'),
@@ -292,7 +292,64 @@ test('refresh rejects lost pricing coverage from an otherwise valid model', asyn
     const truncated = fixtureCatalog();
     delete truncated.anthropic.models.model.cost;
     await writeFile(input, JSON.stringify(truncated));
-    await assert.rejects(main(refreshArgs), /remove committed pricing coverage: anthropic:model/);
+    await assert.rejects(main(refreshArgs), /projection paths: \/pricing\/anthropic:model/);
+    assert.deepEqual(
+      {
+        snapshot: await readFile(snapshot, 'utf8'),
+        metadata: await readFile(metadata, 'utf8'),
+        pricing: await readFile(pricing, 'utf8'),
+      },
+      before,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh rejects nested capability and pricing shrinkage', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-nested-shrink-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    const refreshArgs = [
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ];
+    const initial = fixtureCatalog();
+    initial.anthropic.models.model.modalities = {
+      input: ['text', 'image'],
+      output: ['text'],
+    };
+    initial.anthropic.models.model.cost.cache_read = 0.25;
+    await writeFile(input, JSON.stringify(initial));
+    await main(refreshArgs);
+    const before = {
+      snapshot: await readFile(snapshot, 'utf8'),
+      metadata: await readFile(metadata, 'utf8'),
+      pricing: await readFile(pricing, 'utf8'),
+    };
+
+    const truncated = structuredClone(initial);
+    truncated.anthropic.models.model.modalities.input = ['text'];
+    delete truncated.anthropic.models.model.cost.cache_read;
+    await writeFile(input, JSON.stringify(truncated));
+    await assert.rejects(
+      main(refreshArgs),
+      (error) =>
+        /\/metadata\/anthropic\/model\/modalities\/input value "image"/.test(error.message) &&
+        /\/pricing\/anthropic:model\/cacheReadUsdPer1M/.test(error.message),
+    );
     assert.deepEqual(
       {
         snapshot: await readFile(snapshot, 'utf8'),
