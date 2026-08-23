@@ -28,3 +28,4 @@ export type {
   ModuleHubClipboardService,
   ModuleHubServices,
 } from './ports.js';
+export { ModuleHubHost } from './ui/module-hub-host.js';
