@@ -95,4 +95,13 @@ describe('openAiAdapterApiProtocol', () => {
     assert.equal(openAiAdapterApiProtocol('deepseek-v4-pro', 'deepseek'), 'openai-responses');
     assert.equal(openAiAdapterApiProtocol('deepseek-chat', 'deepseek'), 'openai-chat');
   });
+
+  it('routes only OpenCode Go Muse Spark through its supported Responses wire', () => {
+    assert.equal(
+      openAiAdapterApiProtocol('muse-spark-1.2-contributor', 'opencode-go'),
+      'openai-responses',
+    );
+    assert.equal(openAiAdapterApiProtocol('muse-spark-1.2-contributor', 'opencode'), 'openai-chat');
+    assert.equal(openAiAdapterApiProtocol('minimax-m3', 'opencode-go'), 'openai-chat');
+  });
 });
