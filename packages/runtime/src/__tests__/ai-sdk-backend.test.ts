@@ -35,7 +35,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import { projectRuntimeEventsToStoredMessages } from '../runtime-event-read-model.js';
-import { materializeSession } from '../materializer.js';
 import type { InvocationContext } from '../invocation-context.js';
 import type { AssistantMessage, StoredMessage, ToolResultMessage } from '@maka/core/session';
 import { z } from 'zod';
@@ -10674,13 +10673,6 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.equal(assistant.text, 'Final answer.');
     assert.equal(assistant.thinking?.text, 'Let me reason.');
     assert.equal(assistant.thinking?.signature, 'sig-123');
-
-    // materializeSession (session reload) surfaces the reconstructed thinking.
-    const viewModel = materializeSession(projection.messages);
-    const assistantItem = viewModel.items.find((item) => item.kind === 'assistant');
-    assert.ok(assistantItem && assistantItem.kind === 'assistant');
-    assert.equal(assistantItem.message.thinking?.text, 'Let me reason.');
-    assert.equal(assistantItem.message.thinking?.signature, 'sig-123');
   });
 
   test('persists reasoning for a thinking-only turn that produces no final text', async () => {
@@ -10742,8 +10734,8 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.equal(assistantMessage.text, '');
     assert.equal(assistantMessage.thinking?.text, 'silent thought');
 
-    // Full chain: RuntimeEvent projection + materialize keep the reasoning on an
-    // empty-text assistant row without crashing.
+    // Full chain: RuntimeEvent projection keeps the reasoning on an empty-text
+    // assistant row without crashing.
     const ctx = {
       sessionId: 'session-1',
       invocationId: 'inv-1',
@@ -10774,11 +10766,6 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.ok(assistant && assistant.type === 'assistant');
     assert.equal(assistant.text, '');
     assert.equal(assistant.thinking?.text, 'silent thought');
-
-    const viewModel = materializeSession(projection.messages);
-    const assistantItem = viewModel.items.find((item) => item.kind === 'assistant');
-    assert.ok(assistantItem && assistantItem.kind === 'assistant');
-    assert.equal(assistantItem.message.thinking?.text, 'silent thought');
   });
 
   test('text-only terminal replay fixture preserves signed thinking and usage exactly', async () => {

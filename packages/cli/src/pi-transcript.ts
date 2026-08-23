@@ -27,6 +27,7 @@ import type {
   ToolResultContent,
 } from '@maka/core/events';
 import {
+  deriveTurnRecords,
   STEP_LIMIT_NOTICE_TEXT,
   type StoredMessage,
   type SystemNoteMessage,
@@ -37,13 +38,13 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
+import {
+  type ToolActivityStatus,
+  toolResultActivityStatus,
+  unfinishedToolActivityStatus,
+} from '@maka/core/tool-result-status';
 import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
-import {
-  materializeSession,
-  type ChatItem,
-  type ToolActivityItem,
-} from '@maka/runtime/materializer';
 import type { MakaSessionDriver } from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
@@ -322,8 +323,7 @@ export function replaceTranscriptWithStoredMessages(
   state: MakaPiTranscriptState,
   messages: readonly StoredMessage[],
 ): void {
-  const view = materializeSession(messages);
-  state.entries = foldStoredShellRunChildren(view.items.flatMap(chatItemToTranscriptEntries));
+  state.entries = foldStoredShellRunChildren(storedMessagesToTranscriptEntries(messages));
   clearPendingInteractions(state);
   state.expandAllTools = false;
   state.expandAllThinking = false;
@@ -356,9 +356,7 @@ export function reconcileToolsWithStoredMessages(
 ): boolean {
   const turnMessages = messages.filter((message) => message.turnId === turnId);
   const durableTools = new Map(
-    foldStoredShellRunChildren(
-      materializeSession(turnMessages).items.flatMap(chatItemToTranscriptEntries),
-    )
+    foldStoredShellRunChildren(storedMessagesToTranscriptEntries(turnMessages))
       .filter(
         (entry): entry is Extract<MakaPiTranscriptEntry, { kind: 'tool' }> => entry.kind === 'tool',
       )
@@ -771,71 +769,106 @@ export function applyMakaSessionEventToTranscript(
   }
 }
 
-function chatItemToTranscriptEntries(item: ChatItem): MakaPiTranscriptEntry[] {
-  switch (item.kind) {
-    case 'user':
-      return [
-        {
+function storedMessagesToTranscriptEntries(
+  messages: readonly StoredMessage[],
+): MakaPiTranscriptEntry[] {
+  const entries: MakaPiTranscriptEntry[] = [];
+  const resultsByToolUseId = new Map(
+    messages
+      .filter(
+        (message): message is Extract<StoredMessage, { type: 'tool_result' }> =>
+          message.type === 'tool_result',
+      )
+      .map((message) => [message.toolUseId, message]),
+  );
+  const turnStatusById = new Map(
+    deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]),
+  );
+
+  for (const message of messages) {
+    switch (message.type) {
+      case 'user':
+        entries.push({
           kind:
-            item.message.origin?.kind === 'legacy_automation'
+            message.origin?.kind === 'legacy_automation'
               ? 'legacy_automation'
-              : item.message.origin?.kind === 'goal'
+              : message.origin?.kind === 'goal'
                 ? 'goal_continuation'
                 : 'user',
-          text: item.message.displayText ?? item.message.text,
-        },
-      ];
-    case 'assistant': {
-      const entries: MakaPiTranscriptEntry[] = [];
-      // Stored thinking happened before the reply text, so it resumes above it.
-      const thinking = item.message.thinking?.text;
-      if (thinking?.trim()) {
-        // Replay resets the expansion defaults to collapsed, so replayed
-        // entries start collapsed too.
-        entries.push({
-          kind: 'thinking',
-          messageId: item.message.id,
-          text: thinking,
-          expanded: false,
+          text: message.displayText ?? message.text,
         });
+        break;
+      case 'assistant': {
+        // Stored thinking happened before the reply text, so it resumes above it.
+        const thinking = message.thinking?.text;
+        if (thinking?.trim()) {
+          entries.push({
+            kind: 'thinking',
+            messageId: message.id,
+            text: thinking,
+            expanded: false,
+          });
+        }
+        entries.push({ kind: 'assistant', messageId: message.id, text: message.text });
+        break;
       }
-      entries.push({ kind: 'assistant', messageId: item.message.id, text: item.message.text });
-      return entries;
-    }
-    case 'tool':
-      return [toolActivityToTranscriptEntry(item.item)];
-    case 'system_note': {
-      const entry = systemNoteToTranscriptEntry(item.message);
-      return entry ? [entry] : [];
+      case 'tool_call':
+        entries.push(
+          storedToolToTranscriptEntry(
+            message,
+            resultsByToolUseId.get(message.id),
+            turnStatusById.get(message.turnId),
+          ),
+        );
+        break;
+      case 'system_note': {
+        const entry = systemNoteToTranscriptEntry(message);
+        if (entry) entries.push(entry);
+        break;
+      }
+      case 'tool_result':
+      case 'permission_decision':
+      case 'token_usage':
+      case 'turn_state':
+        break;
     }
   }
+  return entries;
 }
 
-function toolActivityToTranscriptEntry(item: ToolActivityItem): MakaPiToolEntry {
+function storedToolToTranscriptEntry(
+  call: Extract<StoredMessage, { type: 'tool_call' }>,
+  result: Extract<StoredMessage, { type: 'tool_result' }> | undefined,
+  turnStatus: ReturnType<typeof deriveTurnRecords>[number]['status'] | undefined,
+): MakaPiToolEntry {
   const entry: MakaPiToolEntry = {
     kind: 'tool',
-    toolUseId: item.toolUseId,
-    toolName: item.toolName,
-    ...(item.displayName ? { title: item.displayName } : {}),
-    input: item.args,
+    toolUseId: call.id,
+    toolName: call.toolName,
+    ...(call.displayName ? { title: call.displayName } : {}),
+    input: projectToolActivityArgs(call.toolName, call.args),
     progress: createProgressBuffer(),
     outputDeltas: createOutputBuffer(),
-    ...(item.result ? { result: item.result } : {}),
-    resultVersion: item.result ? 1 : 0,
-    ...(item.durationMs !== undefined ? { durationMs: item.durationMs } : {}),
-    status: transcriptToolStatus(item.status),
+    ...(result ? { result: result.content } : {}),
+    resultVersion: result ? 1 : 0,
+    ...(result?.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
+    status: transcriptToolStatus(
+      result
+        ? toolResultActivityStatus(result.isError, result.content)
+        : unfinishedToolActivityStatus(turnStatus),
+    ),
     expanded: false,
   };
-  if (item.result?.kind === 'subagent') {
-    entry.status = subagentTranscriptStatus(item.result.status);
+  if (result?.content.kind === 'subagent') {
+    entry.status = subagentTranscriptStatus(result.content.status);
   }
   // A failed call keeps its error status and raw payload: applying the shell_run
   // as the card's own result would let a still-running or settled payload
   // overwrite the error and swallow the failure on replay. This mirrors the live
   // tool_result path, which forces `error` for any errored shell_run result, and
   // is what lets the stored fold below recognize an errored poll by its status.
-  if (item.result?.kind === 'shell_run' && !item.isError)
-    applyOwnShellRunResult(entry, item.result);
+  if (result?.content.kind === 'shell_run' && !result.isError)
+    applyOwnShellRunResult(entry, result.content);
   return entry;
 }
 
@@ -866,7 +899,7 @@ function foldStoredShellRunChildren(entries: MakaPiTranscriptEntry[]): MakaPiTra
   return folded;
 }
 
-function transcriptToolStatus(status: ToolActivityItem['status']): MakaPiToolEntry['status'] {
+function transcriptToolStatus(status: ToolActivityStatus): MakaPiToolEntry['status'] {
   switch (status) {
     case 'completed':
       return 'done';
