@@ -46,6 +46,39 @@ it('keeps raw HTML inert instead of expanding the Markdown trust surface', () =>
   assert.doesNotMatch(markup, /<details/);
 });
 
+it('renders Markdown emphasis and LaTeX without exposing their source delimiters', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: '**Calculating CRT Solution**\n\nSet \\( n \\equiv 3 \\pmod 7 \\) and $a = 5$.',
+    density: 'compact',
+  }));
+
+  assert.match(markup, /<strong[^>]*>Calculating CRT Solution<\/strong>/);
+  assert.match(markup, /class="maka-math maka-math-inline"/);
+  assert.match(markup, /class="katex"/);
+  assert.doesNotMatch(markup, /\*\*Calculating/);
+  assert.doesNotMatch(markup, /\\\\\\\(/);
+});
+
+it('leaves LaTeX delimiters untouched inside inline and fenced code', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: ['Use `\\( x + 1 \\)` literally.', '', '```tex', '\\( y + 2 \\)', '```'].join('\n'),
+  }));
+
+  assert.doesNotMatch(markup, /class="maka-math/);
+  assert.match(markup, /\\\( x \+ 1 \\\)/);
+  assert.match(markup, /\\\( y \+ 2 \\\)/);
+});
+
+it('renders display math while leaving ordinary currency alone', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: 'Budget: $5 and $10.\n\n\\[ x^2 + y^2 = z^2 \\]',
+  }));
+
+  assert.match(markup, /Budget: \$5 and \$10/);
+  assert.match(markup, /class="maka-math maka-math-display"/);
+  assert.match(markup, /class="katex-display"/);
+});
+
 it('keeps the copy control in a toolbar above a one-line code scroll viewport', () => {
   const markup = renderToStaticMarkup(createElement(LocaleProvider, {
     locale: 'en',
