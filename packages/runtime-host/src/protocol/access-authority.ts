@@ -63,6 +63,19 @@ export interface AccessCredentialRevokeInput {
   readonly credentialId: string;
 }
 
+export interface AccessCredentialRotationPrepareInput {
+  readonly replacementOfCredentialId: string;
+}
+
+export type AccessCredentialRotationPrepareResult = AccessCredentialPrepareResult;
+
+export interface AccessCredentialRotationRevokeInput {
+  readonly credentialId: string;
+  readonly requiredActiveCredentialId: string;
+}
+
+export type AccessCredentialRotationRevokeResult = AccessCredentialRevokeResult;
+
 export interface AccessCredentialRevokeResult {
   readonly credentialId: string;
   readonly revoked: boolean;
@@ -114,6 +127,28 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
     availability: 'ready',
     errors: ACCESS_ERRORS,
     decodeInput: decodeAccessCredentialRevokeInput,
+    decodeOutput: decodeAccessCredentialRevokeResult,
+  }),
+  'access.credential.rotation.prepare': defineOperation<
+    AccessCredentialRotationPrepareInput,
+    AccessCredentialRotationPrepareResult,
+    (typeof ACCESS_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCESS_ERRORS,
+    decodeInput: decodeAccessCredentialRotationPrepareInput,
+    decodeOutput: decodeAccessCredentialIssueResult,
+  }),
+  'access.credential.rotation.revoke': defineOperation<
+    AccessCredentialRotationRevokeInput,
+    AccessCredentialRotationRevokeResult,
+    (typeof ACCESS_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCESS_ERRORS,
+    decodeInput: decodeAccessCredentialRotationRevokeInput,
     decodeOutput: decodeAccessCredentialRevokeResult,
   }),
   'access.credential.finalize': defineOperation<
@@ -183,6 +218,36 @@ function principalKind(value: unknown): AccessCredentialPrincipalKind {
 export function decodeAccessCredentialRevokeInput(value: unknown): AccessCredentialRevokeInput {
   const record = requireExactRecord(value, 'access credential revoke input', ['credentialId']);
   return { credentialId: requireId(record.credentialId, 'credentialId') };
+}
+
+export function decodeAccessCredentialRotationPrepareInput(
+  value: unknown,
+): AccessCredentialRotationPrepareInput {
+  const record = requireExactRecord(value, 'access credential rotation prepare input', [
+    'replacementOfCredentialId',
+  ]);
+  return {
+    replacementOfCredentialId: requireId(
+      record.replacementOfCredentialId,
+      'replacementOfCredentialId',
+    ),
+  };
+}
+
+export function decodeAccessCredentialRotationRevokeInput(
+  value: unknown,
+): AccessCredentialRotationRevokeInput {
+  const record = requireExactRecord(value, 'access credential rotation revoke input', [
+    'credentialId',
+    'requiredActiveCredentialId',
+  ]);
+  return {
+    credentialId: requireId(record.credentialId, 'credentialId'),
+    requiredActiveCredentialId: requireId(
+      record.requiredActiveCredentialId,
+      'requiredActiveCredentialId',
+    ),
+  };
 }
 
 export function decodeAccessCredentialRevokeResult(value: unknown): AccessCredentialRevokeResult {

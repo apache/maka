@@ -446,6 +446,7 @@ export function RuntimeHostProfilesSection(props: {
         onRemoteHostAdded={props.onRemoteHostAdded}
       />
       <RuntimeHostManagementDialog
+        key={managedProfile ? `profile:${managedProfile.id}` : 'no-profile'}
         profile={managedProfile}
         onClose={() => {
           setManagedProfile(undefined);

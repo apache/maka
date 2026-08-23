@@ -123,6 +123,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service status|start|stop|restart|logs|uninstall [--json]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
+    `  ${cliCommand} runtime-host access list`,
     `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
     `  ${cliCommand} runtime-host access revoke --credential <id>`,
     `  ${cliCommand} runtime-host project list [--root <path>]`,
@@ -272,10 +273,24 @@ export async function runMakaCli(
         ...(command.retainManagedDeployment ? { retainManagedDeployment: true } : {}),
       });
     }
+    case 'runtime-host-managed-deployment-cleanup': {
+      const { runManagedRuntimeHostDeploymentCleanupCli } = await import(
+        './runtime-host-service-management-command.js'
+      );
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
+      return runManagedRuntimeHostDeploymentCleanupCli({
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        cliPath: process.argv[1] ?? '',
+        expectedTarget: command.expectedTarget,
+      });
+    }
     case 'runtime-host-access-issue': {
       const { runRuntimeHostAccessIssueCli } = await import('./runtime-host-access-command.js');
       return runRuntimeHostAccessIssueCli({
         rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+        ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
         principalKind: command.principalKind,
         principalId: command.principalId,
         operationGrants: command.operationGrants,
@@ -284,12 +299,37 @@ export async function runMakaCli(
         ...(command.preset ? { preset: command.preset } : {}),
       });
     }
+    case 'runtime-host-access-prepare': {
+      const { runRuntimeHostAccessPrepareCli } = await import('./runtime-host-access-command.js');
+      return runRuntimeHostAccessPrepareCli({
+        rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+        ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
+        currentCredentialFingerprint: command.currentCredentialFingerprint,
+      });
+    }
+    case 'runtime-host-access-list': {
+      const { runRuntimeHostAccessListCli } = await import('./runtime-host-access-command.js');
+      return runRuntimeHostAccessListCli(
+        {
+          rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+          ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
+        },
+        command.framed,
+      );
+    }
     case 'runtime-host-access-revoke': {
       const { runRuntimeHostAccessRevokeCli } = await import('./runtime-host-access-command.js');
-      return runRuntimeHostAccessRevokeCli({
-        rootPath: command.rootPath ?? dataRoots.workspaceRoot,
-        credentialId: command.credentialId,
-      });
+      return runRuntimeHostAccessRevokeCli(
+        {
+          rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+          ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
+          credentialId: command.credentialId,
+          ...(command.currentCredentialFingerprint
+            ? { currentCredentialFingerprint: command.currentCredentialFingerprint }
+            : {}),
+        },
+        command.framed,
+      );
     }
     case 'runtime-host-project-list':
     case 'runtime-host-project-add': {

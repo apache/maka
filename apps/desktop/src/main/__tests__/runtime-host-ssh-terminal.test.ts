@@ -27,8 +27,10 @@ import {
   type RuntimeHostSshProcessFactory,
 } from '@maka/runtime-host/client';
 import {
+  encodeRuntimeHostAccessManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
+  runtimeHostAccessCredentialFingerprint,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
 } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
@@ -236,6 +238,8 @@ test('reads a framed service result without projecting it into the SSH terminal'
   await waitFor(() => harness.pty.hasDataListener());
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /\.local\/share\/maka\/operator/u);
+  assert.match(remoteCommand, /MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST/u);
+  assert.match(remoteCommand, /access-management-v1/u);
   assert.doesNotMatch(remoteCommand, /npx|maka-agent@/u);
   harness.pty.emitData('Password: ');
   harness.pty.emitData(
@@ -264,6 +268,53 @@ test('reads a framed service result without projecting it into the SSH terminal'
   assert.equal(result.service.installedVersion, '1.2.3');
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   assert.match(JSON.stringify(harness.events), /Password/u);
+  await harness.terminal.close();
+});
+
+test('keeps a prepared access credential out of the SSH terminal projection', async () => {
+  const harness = createHarness('pending');
+  const credential = 'maka_rh_secret-replacement';
+  const management = harness.terminal.runAccessManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    rootPath: '/srv/maka',
+    expectedRootId: 'a'.repeat(64),
+    action: 'prepare',
+    currentCredentialFingerprint: 'b'.repeat(32),
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData('Password: ');
+  harness.pty.emitData(
+    encodeRuntimeHostAccessManagementFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'prepare',
+      credential,
+      credentials: [{
+        credentialId: 'credential-2',
+        credentialFingerprint: runtimeHostAccessCredentialFingerprint(credential),
+        principalKind: 'remote_owner',
+        principalId: 'desktop:stable-client',
+        status: 'pending',
+        operationGrants: ['host.status', 'access.credential.finalize'],
+        canPublishClientCapabilities: true,
+        canUseHostPaths: false,
+        createdAt: '2026-08-21T01:00:00.000Z',
+        expiresAt: '2026-08-21T01:15:00.000Z',
+      }],
+    }),
+  );
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(result.kind, 'result');
+  assert.equal(result.kind === 'result' && result.action === 'prepare' ? result.credential : undefined, credential);
+  assert.doesNotMatch(JSON.stringify(harness.events), /secret-replacement|MAKA_RUNTIME/u);
+  const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(command, /access.*prepare/u);
+  assert.match(command, /--current-fingerprint/u);
+  assert.match(command, new RegExp('b{32}', 'u'));
+  assert.doesNotMatch(command, /secret-replacement/u);
   await harness.terminal.close();
 });
 
@@ -297,7 +348,6 @@ test('keeps a received service result when the SSH process times out', async () 
         projectDirectoryRoots: [],
       },
     }));
-
     mock.timers.tick(2 * 60_000);
 
     const result = await management;
@@ -349,6 +399,11 @@ test('requires an absent operator deployment root to be absent or empty', async 
   const cleanup = harness.terminal.cleanupManagedDeployment({
     destination: 'operator@example.com',
     operatorPath: '/home/operator/.local/share/maka/operator',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+    },
   });
   await waitFor(() => harness.pty.hasDataListener());
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
@@ -356,6 +411,9 @@ test('requires an absent operator deployment root to be absent or empty', async 
   assert.match(remoteCommand, /rmdir --/u);
   assert.match(remoteCommand, /home\/operator\/\.local\/share\/maka/u);
   assert.match(remoteCommand, /__cleanup-managed-deployment/u);
+  assert.match(remoteCommand, /--expected-service-id/u);
+  assert.match(remoteCommand, /--expected-root-path/u);
+  assert.match(remoteCommand, /--expected-root-id/u);
   harness.pty.exit(0);
 
   await cleanup;

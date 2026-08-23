@@ -40,6 +40,7 @@ import {
 } from './runtime-host-managed-deployment.js';
 
 const SERVICE_CONFIG_FILE = 'runtime-host-service.json';
+const SERVICE_LIFECYCLE_LOCK_FILE = 'runtime-host-setup';
 const DEFAULT_WEBSOCKET_PATH = '/runtime-host';
 const SERVICE_OPERATION_LOCK_TIMEOUT_MS = 60_000;
 const SERVICE_READY_TIMEOUT_MS = 45_000;
@@ -138,6 +139,12 @@ export interface RuntimeHostManagedServiceTarget {
   readonly rootId: string;
 }
 
+export interface RuntimeHostManagedDeploymentCleanupInput {
+  readonly clientDataRoot: string;
+  readonly cliPath: string;
+  readonly expectedTarget: RuntimeHostManagedServiceTarget;
+}
+
 interface RuntimeHostServiceManagerDeps {
   readonly allocateLoopbackPort: () => Promise<number>;
   readonly waitForReady: (
@@ -194,6 +201,52 @@ export async function manageRuntimeHostService(
   );
 }
 
+export async function withRuntimeHostManagedServiceLifecycleLock<T>(
+  clientDataRoot: string,
+  operation: () => Promise<T>,
+  timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
+): Promise<T> {
+  await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });
+  return withFileUpdateLock(
+    join(clientDataRoot, SERVICE_LIFECYCLE_LOCK_FILE),
+    operation,
+    timeoutMs,
+  );
+}
+
+export async function cleanupRuntimeHostManagedDeployment(
+  input: RuntimeHostManagedDeploymentCleanupInput,
+  backend: RuntimeHostServiceBackend,
+): Promise<void> {
+  await withRuntimeHostManagedServiceLifecycleLock(input.clientDataRoot, async () => {
+    const configPath = resolveRuntimeHostManagedServiceConfigPath(input.clientDataRoot);
+    await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
+    await withFileUpdateLock(
+      configPath,
+      async () => {
+        const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
+        assertExpectedServiceIdentity(serviceId, input.expectedTarget);
+        const service = await readServiceStatus(configPath, backend);
+        if (service.installed || service.active || service.enabled || service.config !== null) {
+          throw new RuntimeHostServiceManagerError(
+            'uninstall_incomplete',
+            'Runtime Host service was installed again; refusing to remove its managed deployment',
+          );
+        }
+        const deploymentRoot = resolveRuntimeHostManagedDeploymentForCli(serviceId, input.cliPath);
+        if (!deploymentRoot) {
+          throw new RuntimeHostServiceManagerError(
+            'invalid_launch',
+            'The Runtime Host operator does not belong to the expected managed deployment',
+          );
+        }
+        await removeRuntimeHostManagedDeployment(deploymentRoot, serviceId);
+      },
+      SERVICE_OPERATION_LOCK_TIMEOUT_MS,
+    );
+  });
+}
+
 async function manageRuntimeHostServiceLocked(
   input: RuntimeHostManagedServiceInput,
   backend: RuntimeHostServiceBackend,
@@ -201,16 +254,7 @@ async function manageRuntimeHostServiceLocked(
   configPath: string,
 ): Promise<RuntimeHostManagedServiceResult> {
   const serviceId = resolveRuntimeHostManagedServiceId(input.clientDataRoot);
-  if (
-    input.expectedTarget &&
-    (!/^[a-f0-9]{64}$/u.test(input.expectedTarget.serviceId) ||
-      input.expectedTarget.serviceId !== serviceId)
-  ) {
-    throw new RuntimeHostServiceManagerError(
-      'target_mismatch',
-      'The managed Runtime Host service does not match the expected service identity',
-    );
-  }
+  if (input.expectedTarget) assertExpectedServiceIdentity(serviceId, input.expectedTarget);
   if (input.action === 'install') {
     const previous = await readServiceConfigForRepair(configPath);
     const expectedRootPath = await resolveExpectedServiceRoot(previous, input);
@@ -300,6 +344,18 @@ async function manageRuntimeHostServiceLocked(
     }
   }
   return result(input.action, await readServiceStatus(configPath, backend));
+}
+
+function assertExpectedServiceIdentity(
+  serviceId: string,
+  expectedTarget: RuntimeHostManagedServiceTarget,
+): void {
+  if (!/^[a-f0-9]{64}$/u.test(expectedTarget.serviceId) || expectedTarget.serviceId !== serviceId) {
+    throw new RuntimeHostServiceManagerError(
+      'target_mismatch',
+      'The managed Runtime Host service does not match the expected service identity',
+    );
+  }
 }
 
 async function resolveExpectedServiceRoot(

@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { connectRemoteRuntimeHost } from '@maka/runtime-host/client';
@@ -32,7 +31,6 @@ import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
-import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
   prepareRuntimeHostAccessCredential,
   replaceRuntimeHostAccessCredential,
@@ -49,6 +47,7 @@ import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
+  withRuntimeHostManagedServiceLifecycleLock,
   type RuntimeHostManagedServiceResult,
   type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
@@ -113,9 +112,8 @@ export async function runRuntimeHostSetupCli(
   };
   const emit = createEmitter(options.json, deps);
   try {
-    await mkdir(options.clientDataRoot, { recursive: true, mode: 0o700 });
-    await withFileUpdateLock(
-      join(options.clientDataRoot, 'runtime-host-setup'),
+    await withRuntimeHostManagedServiceLifecycleLock(
+      options.clientDataRoot,
       () => runRuntimeHostSetupLocked(options, deps, emit),
       SETUP_LOCK_TIMEOUT_MS,
     );

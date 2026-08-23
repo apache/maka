@@ -33,10 +33,15 @@ import {
   type RuntimeHostSshTunnelInput,
 } from '@maka/runtime-host/client';
 import {
+  decodeRuntimeHostAccessManagementFrame,
   decodeRuntimeHostServiceManagementFrame,
   decodeRuntimeHostSetupFrame,
+  RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
+  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
+  type RuntimeHostAccessManagementFrame,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostSetupFrame,
@@ -61,6 +66,7 @@ const TERMINAL_REVEAL_DELAY_MS = 500;
 const TERMINAL_OUTPUT_MAX = 64 * 1024;
 const SETUP_FRAME_PENDING_MAX = 20 * 1024;
 const MANAGEMENT_FRAME_PENDING_MAX = 128 * 1024;
+const ACCESS_MANAGEMENT_FRAME_PENDING_MAX = 768 * 1024;
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 const MANAGEMENT_TIMEOUT_MS = 2 * 60_000;
 const PROCESS_STOP_GRACE_MS = 2_000;
@@ -94,8 +100,29 @@ export interface DesktopRuntimeHostSshCleanupInput {
   readonly destination: string;
   readonly sshPort?: number;
   readonly operatorPath: string;
+  readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly signal?: AbortSignal;
 }
+
+interface DesktopRuntimeHostSshAccessTarget {
+  readonly destination: string;
+  readonly sshPort?: number;
+  readonly operatorPath: string;
+  readonly rootPath: string;
+  readonly expectedRootId: string;
+  readonly signal?: AbortSignal;
+}
+
+export type DesktopRuntimeHostSshAccessInput = DesktopRuntimeHostSshAccessTarget &
+  (
+    | { readonly action: 'list' }
+    | { readonly action: 'prepare'; readonly currentCredentialFingerprint: string }
+    | {
+        readonly action: 'revoke';
+        readonly credentialId: string;
+        readonly currentCredentialFingerprint: string;
+      }
+  );
 
 export type DesktopRuntimeHostSetupPackage =
   | { readonly kind: 'npm'; readonly specifier: string }
@@ -124,6 +151,9 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   runServiceManagement(
     input: DesktopRuntimeHostSshManagementInput,
   ): Promise<RuntimeHostServiceManagementFrame>;
+  runAccessManagement(
+    input: DesktopRuntimeHostSshAccessInput,
+  ): Promise<RuntimeHostAccessManagementFrame>;
   cleanupManagedDeployment(input: DesktopRuntimeHostSshCleanupInput): Promise<void>;
   close(): Promise<void>;
 } {
@@ -323,6 +353,87 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     await terminateActiveTerminal(terminal, input.processStopGraceMs);
   });
 
+  const runFramedManagement = async <Frame>(options: {
+    readonly destination: string;
+    readonly sshPort?: number;
+    readonly signal?: AbortSignal;
+    readonly remoteCommand: string;
+    readonly prefix: string;
+    readonly pendingMaxBytes: number;
+    readonly decode: (line: string) => Frame | undefined;
+    readonly action: string;
+    readonly frameAction: (frame: Frame) => string;
+    readonly label: string;
+  }): Promise<Frame> => {
+    if (closed) throw new Error('Runtime Host SSH terminal is closed');
+    options.signal?.throwIfAborted();
+    const destination = normalizeRuntimeHostSshDestination(options.destination);
+    const sshPort = options.sshPort === undefined ? undefined : requireSetupPort(options.sshPort);
+    let frame: Frame | undefined;
+    let failure: Error | undefined;
+    let activeTerminal: ActiveTerminal | undefined;
+    const filter = createFramedOutputFilter({
+      prefix: options.prefix,
+      pendingMaxBytes: options.pendingMaxBytes,
+      decode: options.decode,
+      label: options.label,
+      onFrame: (next) => {
+        const action = options.frameAction(next);
+        if (action !== options.action) {
+          failure = new Error(`${options.label} returned ${action} for ${options.action}`);
+          return;
+        }
+        if (frame) {
+          failure = new Error(`${options.label} returned multiple results`);
+          return;
+        }
+        frame = next;
+        if (activeTerminal) completePresentation(activeTerminal);
+      },
+      onError: (error) => {
+        failure = error;
+      },
+    });
+    const { process, terminal } = startTerminalProcess(
+      'ssh',
+      sshRemoteCommandArgs(destination, sshPort, options.remoteCommand),
+      filter.push,
+      true,
+    );
+    activeTerminal = terminal;
+    if (frame) completePresentation(terminal);
+    let result: Awaited<RuntimeHostSshProcess['exited']> | undefined;
+    try {
+      result = await waitForTerminalProcess(process, {
+        signal: options.signal,
+        timeoutMs: MANAGEMENT_TIMEOUT_MS,
+        timeoutMessage: `${options.label} timed out`,
+        stopGraceMs: input.processStopGraceMs,
+        onAbort: () => dismissPresentation(terminal),
+      });
+    } catch (error) {
+      if (
+        !frame ||
+        !(error instanceof Error) ||
+        error.message !== `${options.label} timed out`
+      ) {
+        throw error;
+      }
+    }
+    filter.finish();
+    if (failure) throw failure;
+    if (!frame) {
+      if (!result) throw new Error(`${options.label} ended without a process result`);
+      throw new Error(
+        result.code === 0
+          ? `${options.label} ended without a result`
+          : `${options.label} exited with code ${String(result.code)}`,
+      );
+    }
+    completePresentation(terminal);
+    return frame;
+  };
+
   return {
     openSshTunnel: async (tunnelInput) => {
       if (closed) throw new Error('Runtime Host SSH terminal is closed');
@@ -408,84 +519,28 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         cancellation.close();
       }
     },
-    runServiceManagement: async (managementInput) => {
-      if (closed) throw new Error('Runtime Host SSH terminal is closed');
-      managementInput.signal?.throwIfAborted();
-      const destination = normalizeRuntimeHostSshDestination(managementInput.destination);
-      const sshPort = managementInput.sshPort === undefined
-        ? undefined
-        : requireSetupPort(managementInput.sshPort);
-      let frame: RuntimeHostServiceManagementFrame | undefined;
-      let frameFailure: Error | undefined;
-      let managementTerminal: ActiveTerminal | undefined;
-      const filter = createFramedOutputFilter({
+    runServiceManagement: (managementInput) =>
+      runFramedManagement({
+        ...managementInput,
+        remoteCommand: runtimeHostServiceManagementRemoteCommand(managementInput),
         prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
         pendingMaxBytes: MANAGEMENT_FRAME_PENDING_MAX,
         decode: decodeRuntimeHostServiceManagementFrame,
+        action: managementInput.action,
+        frameAction: (frame) => frame.action,
         label: 'Remote Runtime Host service management',
-        onFrame: (next) => {
-          if (next.action !== managementInput.action) {
-            frameFailure = new Error(
-              `Remote Runtime Host service management returned ${next.action} for ${managementInput.action}`,
-            );
-            return;
-          }
-          if (frame) {
-            frameFailure = new Error(
-              'Remote Runtime Host service management returned multiple results',
-            );
-            return;
-          }
-          frame = next;
-          if (managementTerminal) completePresentation(managementTerminal);
-        },
-        onError: (error) => {
-          frameFailure = error;
-        },
-      });
-      const { process, terminal } = startTerminalProcess(
-        'ssh',
-        sshRemoteCommandArgs(
-          destination,
-          sshPort,
-          runtimeHostServiceManagementRemoteCommand(managementInput),
-        ),
-        filter.push,
-        true,
-      );
-      managementTerminal = terminal;
-      if (frame) completePresentation(terminal);
-      let result: Awaited<RuntimeHostSshProcess['exited']> | undefined;
-      try {
-        result = await waitForTerminalProcess(process, {
-          signal: managementInput.signal,
-          timeoutMs: MANAGEMENT_TIMEOUT_MS,
-          timeoutMessage: 'Remote Runtime Host service management timed out',
-          stopGraceMs: input.processStopGraceMs,
-          onAbort: () => dismissPresentation(terminal),
-        });
-      } catch (error) {
-        if (
-          !frame ||
-          !(error instanceof Error) ||
-          error.message !== 'Remote Runtime Host service management timed out'
-        ) {
-          throw error;
-        }
-      }
-      filter.finish();
-      if (frameFailure) throw frameFailure;
-      if (!frame) {
-        if (!result) throw new Error('Remote Runtime Host service management ended without a process result');
-        throw new Error(
-          result.code === 0
-            ? 'Remote Runtime Host service management ended without a result'
-            : `Remote Runtime Host service management exited with code ${String(result.code)}`,
-        );
-      }
-      completePresentation(terminal);
-      return frame;
-    },
+      }),
+    runAccessManagement: (accessInput) =>
+      runFramedManagement({
+        ...accessInput,
+        remoteCommand: runtimeHostAccessManagementRemoteCommand(accessInput),
+        prefix: RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
+        pendingMaxBytes: ACCESS_MANAGEMENT_FRAME_PENDING_MAX,
+        decode: decodeRuntimeHostAccessManagementFrame,
+        action: accessInput.action,
+        frameAction: (frame) => frame.action,
+        label: 'Remote Runtime Host access management',
+      }),
     cleanupManagedDeployment: async (cleanupInput) => {
       if (closed) throw new Error('Runtime Host SSH terminal is closed');
       cleanupInput.signal?.throwIfAborted();
@@ -498,7 +553,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         sshRemoteCommandArgs(
           destination,
           sshPort,
-          runtimeHostManagedDeploymentCleanupRemoteCommand(cleanupInput.operatorPath),
+          runtimeHostManagedDeploymentCleanupRemoteCommand(cleanupInput),
         ),
         undefined,
         true,
@@ -804,17 +859,52 @@ function runtimeHostServiceManagementRemoteCommand(
     ...(input.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
     ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
+  const invocation =
+    `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
+    `${quotePosix(RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)} exec ${command}`;
+  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
+}
+
+function runtimeHostAccessManagementRemoteCommand(
+  input: DesktopRuntimeHostSshAccessInput,
+): string {
+  const actionArgs = input.action === 'prepare'
+    ? ['--current-fingerprint', input.currentCredentialFingerprint]
+    : input.action === 'revoke'
+      ? [
+          '--credential', input.credentialId,
+          '--current-fingerprint', input.currentCredentialFingerprint,
+        ]
+      : [];
+  const command = [
+    input.operatorPath,
+    'access',
+    input.action,
+    '--framed',
+    '--root',
+    input.rootPath,
+    '--expected-root',
+    input.expectedRootId,
+    ...actionArgs,
+  ].map(quotePosix).join(' ');
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
 }
 
-function runtimeHostManagedDeploymentCleanupRemoteCommand(operatorPath: string): string {
-  const operator = quotePosix(operatorPath);
-  const deploymentRoot = quotePosix(pathPosix.dirname(operatorPath));
+function runtimeHostManagedDeploymentCleanupRemoteCommand(
+  input: DesktopRuntimeHostSshCleanupInput,
+): string {
+  const operator = quotePosix(input.operatorPath);
+  const deploymentRoot = quotePosix(pathPosix.dirname(input.operatorPath));
+  const cleanup = [
+    input.operatorPath,
+    '__cleanup-managed-deployment',
+    ...managedServiceTargetArgs(input.expectedTarget),
+  ].map(quotePosix).join(' ');
   const invocation =
     `if [ ! -e ${operator} ]; then ` +
     `if [ ! -e ${deploymentRoot} ]; then exit 0; fi; ` +
     `exec rmdir -- ${deploymentRoot}; fi; ` +
-    `exec ${operator} __cleanup-managed-deployment`;
+    `exec ${cleanup}`;
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
 }
 

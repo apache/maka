@@ -17,16 +17,20 @@
  * under the License.
  */
 
-export {
-  RuntimeHostKernel,
-  type RuntimeHostComposition,
-} from './host-kernel.js';
-export { defineInteractiveRuntimeHostComposition } from './host-composition.js';
-export { createUnavailableDomainOperationHandlers } from './operation-dispatcher.js';
-export { startExecutionRuntimeHostService } from './execution-service.js';
-export { runRuntimeHostProcessLifecycle } from './process-lifecycle.js';
-export { installRuntimeHostLogCapture } from '../process-diagnostics.js';
-export {
-  readRuntimeHostAccessCredentialMetadata,
-  type RuntimeHostAccessCredentialMetadata,
-} from './access-credential-metadata.js';
+import { createHash } from 'node:crypto';
+
+const CREDENTIAL_FINGERPRINT_HEX_LENGTH = 32;
+
+export function runtimeHostAccessCredentialHash(credential: string): Buffer {
+  return createHash('sha256').update(credential, 'utf8').digest();
+}
+
+export function runtimeHostAccessCredentialFingerprintFromHash(hash: string): string {
+  return hash.slice(0, CREDENTIAL_FINGERPRINT_HEX_LENGTH);
+}
+
+export function runtimeHostAccessCredentialFingerprint(credential: string): string {
+  return runtimeHostAccessCredentialFingerprintFromHash(
+    runtimeHostAccessCredentialHash(credential).toString('hex'),
+  );
+}

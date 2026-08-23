@@ -21,17 +21,21 @@ import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { release } from 'node:os';
 import {
   encodeRuntimeHostServiceManagementFrame,
+  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceSummary,
 } from '@maka/runtime-host/operator';
 import {
+  cleanupRuntimeHostManagedDeployment,
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceInput,
   type RuntimeHostManagedServiceResult,
+  type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
 import { createSystemdUserRuntimeHostService } from './runtime-host-systemd-service.js';
@@ -102,6 +106,24 @@ export async function runManagedRuntimeHostServiceCli(
   }
 }
 
+export async function runManagedRuntimeHostDeploymentCleanupCli(options: {
+  readonly clientDataRoot: string;
+  readonly cliPath: string;
+  readonly expectedTarget: RuntimeHostManagedServiceTarget;
+}): Promise<number> {
+  try {
+    const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
+    await cleanupRuntimeHostManagedDeployment(
+      options,
+      createPlatformRuntimeHostServiceBackend(serviceId),
+    );
+    return 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
 function formatHumanResult(result: RuntimeHostManagedServiceResult): string {
   const service = result.service;
   if (result.action === 'uninstall') {
@@ -140,6 +162,10 @@ function successFrame(result: RuntimeHostManagedServiceResult): RuntimeHostServi
     kind: 'result',
     action: result.action,
     service,
+    ...(process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] ===
+    RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY
+      ? { operatorCapabilities: [RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY] }
+      : {}),
     ...(result.retainedStateRoot ? { retainedStateRoot: result.retainedStateRoot } : {}),
     ...(result.logs !== undefined ? { logs: result.logs } : {}),
   };

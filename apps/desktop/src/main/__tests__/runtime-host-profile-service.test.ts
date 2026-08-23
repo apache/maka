@@ -39,6 +39,11 @@ import {
   RuntimeHostPairingFinalizationInterruptedError,
   type RuntimeHostDesktopTargetState,
 } from "../runtime-host-desktop-manager.js";
+import { createDesktopRuntimeHostManagedServiceStore } from "../runtime-host-managed-services.js";
+import {
+  createDesktopRuntimeHostPairingIntent,
+  writeDesktopRuntimeHostPairingIntents,
+} from "../runtime-host-pairing-journal.js";
 import {
   createDesktopRuntimeHostProfileService,
   resolveDesktopRuntimeHostStartup,
@@ -481,10 +486,19 @@ test("finishes a persisted pairing after Desktop restarts before finalization", 
   );
 });
 
-test("preserves a staged pairing when finalization is interrupted", async () => {
+test("recovers interrupted managed credential rotation after restart", async () => {
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);
   await catalog.create(MANAGED_PROFILE, "old-token");
+  await createDesktopRuntimeHostManagedServiceStore(root).save(MANAGED_PROFILE, MANAGED_SERVICE);
+  await writeFile(
+    join(root, "runtime-host-profile-selection.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+      enabledRemoteProfileIds: [MANAGED_PROFILE.id],
+    })}\n`,
+  );
   const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
@@ -499,19 +513,28 @@ test("preserves a staged pairing when finalization is interrupted", async () => 
     },
   });
 
+  const managedAccess = await service.resolveManagedAccess(MANAGED_PROFILE.id);
+  assert.ok(managedAccess);
   await assert.rejects(
-    () =>
-      service.addAndEnableVerified({
-        profile: MANAGED_PROFILE,
-        credential: "new-token",
-        managedService: MANAGED_SERVICE,
-      }),
+    () => service.rotateManagedCredential(managedAccess, "new-token"),
     RuntimeHostPairingFinalizationInterruptedError,
   );
   assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "new-token");
+  const managed = await service.resolveManagedService(MANAGED_PROFILE.id);
+  assert.ok(managed);
+  await assert.rejects(
+    service.markManagedServiceUninstalling(managed),
+    /unfinished pairing/u,
+  );
 
   const recoveredStartup = await resolveDesktopRuntimeHostStartup(root, { catalog });
   assert.equal(recoveredStartup.pairingIntents.length, 1);
+  const resolve = catalog.resolve.bind(catalog);
+  let catalogReadable = false;
+  catalog.resolve = async (profileId) => {
+    if (!catalogReadable) throw new Error("profile catalog is temporarily unavailable");
+    return resolve(profileId);
+  };
   const recovered = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     startup: recoveredStartup,
@@ -522,8 +545,20 @@ test("preserves a staged pairing when finalization is interrupted", async () => 
     setDefault: () => undefined,
     finalizePairing: async () => undefined,
   });
+  await assert.rejects(
+    recovered.resolveManagedAccess(MANAGED_PROFILE.id),
+    /unfinished pairing/u,
+  );
+  await recovered.startEnabledProfiles();
+  assert.equal(
+    (await resolveDesktopRuntimeHostStartup(root)).pairingIntents.length,
+    1,
+  );
+
+  catalogReadable = true;
   await recovered.startEnabledProfiles();
 
+  assert.ok(await recovered.resolveManagedAccess(MANAGED_PROFILE.id));
   assert.equal(
     (await recovered.getSnapshot()).entries.find(
       (entry) => entry.profile.id === MANAGED_PROFILE.id,
@@ -533,6 +568,167 @@ test("preserves a staged pairing when finalization is interrupted", async () => 
   assert.deepEqual(
     (await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents,
     [],
+  );
+});
+
+test("does not rotate a managed credential after its profile target changes", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
+  await catalog.create(MANAGED_PROFILE, "old-token");
+  await managedServices.save(MANAGED_PROFILE, MANAGED_SERVICE);
+  await writeFile(
+    join(root, "runtime-host-profile-selection.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+      enabledRemoteProfileIds: [MANAGED_PROFILE.id],
+    })}\n`,
+  );
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  let finalized = false;
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    managedServices,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => {
+      finalized = true;
+    },
+  });
+  const managedAccess = await service.resolveManagedAccess(MANAGED_PROFILE.id);
+  assert.ok(managedAccess);
+
+  const replacementProfile = {
+    ...MANAGED_PROFILE,
+    rootId: "d".repeat(64),
+    transport: {
+      ...MANAGED_PROFILE.transport,
+      destination: "other@example.com",
+    },
+  };
+  const replacementService = {
+    ...MANAGED_SERVICE,
+    id: "e".repeat(64),
+    rootPath: "/srv/other-maka",
+  };
+  await catalog.remove(MANAGED_PROFILE.id);
+  await catalog.create(replacementProfile, "other-token");
+  await managedServices.save(replacementProfile, replacementService);
+
+  await assert.rejects(
+    service.rotateManagedCredential(managedAccess, "prepared-for-original-host"),
+    /profile changed/u,
+  );
+  assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "other-token");
+  assert.equal(finalized, false);
+  assert.deepEqual(
+    (await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents,
+    [],
+  );
+});
+
+test("reactivates the previous credential after a pre-rebind rotation crash", async () => {
+  const root = await clientRoot();
+  const credentialStore = createClientRuntimeHostCredentialStore(root);
+  const catalog = createClientRuntimeHostProfileCatalog(root, credentialStore);
+  await catalog.create(MANAGED_PROFILE, "old-token");
+  await createDesktopRuntimeHostManagedServiceStore(root).save(
+    MANAGED_PROFILE,
+    MANAGED_SERVICE,
+  );
+  await writeFile(
+    join(root, "runtime-host-profile-selection.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+      enabledRemoteProfileIds: [MANAGED_PROFILE.id],
+    })}\n`,
+  );
+  await writeDesktopRuntimeHostPairingIntents(credentialStore, [
+    createDesktopRuntimeHostPairingIntent({
+      target: { profile: MANAGED_PROFILE, credential: "new-token" },
+      previous: { profile: MANAGED_PROFILE, credential: "old-token" },
+      wasEnabled: true,
+    }),
+  ]);
+  const startup = await resolveDesktopRuntimeHostStartup(root, {
+    catalog,
+    credentialStore,
+  });
+  const enabled: ResolvedRuntimeHostProfile[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    credentialStore,
+    states: () => [connectingLocal()],
+    enable: async (target) => {
+      enabled.push(target);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => assert.fail("an unapplied credential cannot be finalized"),
+  });
+
+  await service.startEnabledProfiles();
+
+  assert.deepEqual(enabled.map((target) => target.credential), ["old-token"]);
+  assert.deepEqual(
+    (await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents,
+    [],
+  );
+});
+
+test("does not let unfinished pairing recovery override a later disable", async () => {
+  const root = await clientRoot();
+  const credentials = createClientRuntimeHostCredentialStore(root);
+  const credentialStore = {
+    getSecret: credentials.getSecret.bind(credentials),
+    setSecret: credentials.setSecret.bind(credentials),
+    deleteSecret: async () => {
+      throw new Error("credential cleanup failed");
+    },
+  };
+  const catalog = createClientRuntimeHostProfileCatalog(root, credentialStore);
+  await catalog.create(MANAGED_PROFILE, "old-token");
+  await createDesktopRuntimeHostManagedServiceStore(root).save(
+    MANAGED_PROFILE,
+    MANAGED_SERVICE,
+  );
+  await writeFile(
+    join(root, "runtime-host-profile-selection.json"),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+      enabledRemoteProfileIds: [MANAGED_PROFILE.id],
+    })}\n`,
+  );
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog, credentialStore });
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    credentialStore,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+  const access = await service.resolveManagedAccess(MANAGED_PROFILE.id);
+  assert.ok(access);
+
+  await service.rotateManagedCredential(access, "new-token");
+
+  assert.equal((await service.getSnapshot()).pairingRecoveryPending, true);
+  await assert.rejects(
+    () => service.setEnabled(MANAGED_PROFILE.id, false),
+    /unfinished pairing/u,
   );
 });
 
