@@ -17,7 +17,6 @@
  * under the License.
  */
 
-export interface BotSessionCreateInput {
 export interface BotSessionResolveInput {
   readonly conversationId: string;
   readonly name: string;
