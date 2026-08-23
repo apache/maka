@@ -1029,8 +1029,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       },
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
       onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn),
-      onToolResult: (turnId) =>
-        this.#refreshLiveTranscript(sessionId, sessionGeneration, turnId),
+      onToolResult: (turnId) => this.#refreshLiveTranscript(sessionId, sessionGeneration, turnId),
       onTranscriptReplaced: (turnId, messages) =>
         this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect'),
       onGoalChanged: (goal) => {
