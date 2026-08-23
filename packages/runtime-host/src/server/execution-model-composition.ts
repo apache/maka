@@ -288,7 +288,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     readonly runId?: string;
     readonly emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
   }) => {
-    return await modelComposition.resolveSystemPrompt({
+    const resolved = await modelComposition.resolveSystemPrompt({
       sessionId: input.context.sessionId,
       turnId: context.turnId,
       ...(context.runId ? { runId: context.runId } : {}),
@@ -297,6 +297,11 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(context.emitSkillCatalogTrace
         ? { emitSkillCatalogTrace: context.emitSkillCatalogTrace }
         : {}),
+    });
+    const model = target.model.replace(/[\r\n\t]+/g, ' ').trim();
+    return Object.freeze({
+      ...resolved,
+      text: [`Active model: ${model}`, resolved.text].filter(Boolean).join('\n\n'),
     });
   };
   const recordRunComposition = input.context.recordRunComposition;
