@@ -387,6 +387,37 @@ test('mutations keep titles current, preserve refreshes, and fence confirm conti
   );
 });
 
+test('a destructive confirmation cannot continue after controller unmount', async () => {
+  const { root } = installReactRenderer();
+  const records: ToastRecord[] = [];
+  const confirmResult = deferred<boolean>();
+  const deleted: string[] = [];
+  const defaults = createFakeModuleHubServices();
+  const services = createFakeModuleHubServices({
+    scheduledTasks: {
+      ...defaults.scheduledTasks,
+      delete: async (id) => {
+        deleted.push(id);
+      },
+    },
+  });
+  await act(async () =>
+    renderController(root, services, {
+      selection: activeSelection,
+      selectModule: () => undefined,
+      toastApi: toastRecorder(records, () => confirmResult.promise),
+    }),
+  );
+
+  const deletion = controller().delete('task-a');
+  await act(async () => root.unmount());
+  confirmResult.resolve(true);
+  await act(async () => deletion);
+
+  assert.deepEqual(deleted, []);
+  assert.deepEqual(records, []);
+});
+
 test('subscriptions refresh, due navigation action is live, disposers run, and nonce resets', async () => {
   const { root } = installReactRenderer();
   const records: ToastRecord[] = [];

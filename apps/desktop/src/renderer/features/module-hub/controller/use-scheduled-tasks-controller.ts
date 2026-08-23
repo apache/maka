@@ -88,6 +88,7 @@ export function useScheduledTasksController(options: {
   notificationsCopyRef.current = notificationsCopy;
 
   const isSurfaceActive = () =>
+    mountedRef.current &&
     selectionRef.current.section === 'automations' &&
     selectionRef.current.module === 'scheduled-tasks';
 
