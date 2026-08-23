@@ -949,7 +949,7 @@ export const Trace: Story = {
 // Real path: resize the right workbar to its 320px floor while a failed turn
 // is visible. The timestamp owns the first row; the failure and measurement
 // share the second without squeezing the failure into a vertical word.
-export const TraceNarrow: Story = {
+export const TraceMinimumWidth: Story = {
   decorators: [bridge({ trace: narrowTrace, context: populatedContext })],
   render: () => <Workbar tab="inspector" width={320} />,
   play: async ({ canvasElement }) => {
