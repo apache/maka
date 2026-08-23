@@ -194,7 +194,7 @@ test('Desktop packaging does not distribute the retired bundled Git runtime', ()
   );
 });
 
-test('a successful Windows upgrade invalidates backup authority before best-effort cleanup', async () => {
+test('a successful Windows upgrade invalidates stale backup authority before best-effort cleanup', async () => {
   const source = await readFile(
     join(repoRoot, 'apps', 'desktop', 'build', 'installer.nsh'),
     'utf8',

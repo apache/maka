@@ -616,8 +616,8 @@ FunctionEnd
   # Success tail: the upgrade completed, so the backup and any aside residue
   # are redundant. Invalidate the completeness marker before the best-effort
   # tree removal: if a scanner holds an application file, RMDir may leave the
-  # old backup behind, and a later upgrade must not mistake that residue for a
-  # live recovery source from the newly installed version.
+  # old backup behind. Its old-version marker would make a later upgrade
+  # reject the healthy current installation as mismatched recovery state.
   ClearErrors
   Delete "$makaBackupDir\${MAKA_BACKUP_MARKER}"
   Delete "$makaBackupDir\${MAKA_RECOVERY_README}"
