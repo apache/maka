@@ -24,7 +24,7 @@ import { relayModelProfile } from '@maka/core/model-thinking';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
-import { executionBoundaryDisplayMode, type ExecutionBoundary } from '@maka/core/sandbox-boundary';
+import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { AiSdkBackend, type AiSdkBackendInput } from '@maka/runtime/ai-sdk-backend';
 import {
   buildDefaultContextBudgetPolicy,
@@ -97,21 +97,20 @@ export function createHostSandboxDiagnosticsResolver(input: {
     | undefined;
   return async ({ abortSignal }) => {
     const boundary = await input.readExecutionBoundary();
-    const mode = executionBoundaryDisplayMode(boundary);
     // External isolation carries no local profile or network fact. Do not
     // reconstruct either one from a stale Session header.
-    if (!mode) return undefined;
+    if (boundary.kind === 'external') return undefined;
     const key = `${boundary.kind}:${boundary.revision}`;
     let entry = cache;
     if (!entry || entry.key !== key) {
       entry = {
         key,
         promise: Promise.resolve().then(() =>
-          input.sandboxDiagnostics.resolve({
-            mode,
-            cwd: input.cwd,
-            ...(boundary.kind === 'managed' ? { permissionProfile: boundary.profile } : {}),
-          }),
+          input.sandboxDiagnostics.resolve(
+            boundary.kind === 'managed'
+              ? { cwd: input.cwd, permissionProfile: boundary.profile }
+              : { cwd: input.cwd, mode: 'bypass' },
+          ),
         ),
       };
       cache = entry;

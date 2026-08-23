@@ -102,12 +102,16 @@ export interface SandboxRunTraceProjection {
   readonly capabilities: SandboxDiagnosticsSnapshot['capabilities'];
 }
 
-export interface ResolveSandboxDiagnosticsInput {
-  mode: PermissionMode;
-  cwd: string;
-  workspaceRoots?: readonly string[];
-  permissionProfile?: PermissionProfile;
+interface ResolveSandboxDiagnosticsBaseInput {
+  readonly cwd: string;
+  readonly workspaceRoots?: readonly string[];
 }
+
+export type ResolveSandboxDiagnosticsInput = ResolveSandboxDiagnosticsBaseInput &
+  (
+    | { readonly permissionProfile: PermissionProfile; readonly mode?: undefined }
+    | { readonly permissionProfile?: undefined; readonly mode: PermissionMode }
+  );
 
 export interface SandboxDiagnosticsProvider {
   resolve(input: ResolveSandboxDiagnosticsInput): Promise<SandboxDiagnosticsSnapshot>;

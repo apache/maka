@@ -189,53 +189,58 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
   });
 });
 
-test('sandbox diagnostics failure terminates the turn before provider dispatch', async () => {
-  let fetchCalls = 0;
-  const traces: RunTraceEvent[] = [];
-  const backend = await createHostAiSdkBackend(
-    backendCreationFixture({
-      abortSignal: new AbortController().signal,
-      resolveExecutionConnection: async () => readyExecutionConnection(),
-      readPricing: async () => ({ revision: 0, overrides: [] }),
-      executionBoundary: createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
-      sandboxDiagnostics: {
-        resolve: async () => {
-          throw new Error('sandbox diagnostics unavailable');
-        },
-      },
-      recordRunTrace: (event) => traces.push(event),
-      createFetchTransport: () => ({
-        fetch: async () => {
-          fetchCalls += 1;
-          throw new Error('provider dispatch was not expected');
-        },
-        close: async () => undefined,
-      }),
-    }),
-  );
-
+test('sandbox diagnostics failure degrades to a traced prompt omission', async () => {
+  const provider = await startProvider();
   try {
-    const events = [];
-    for await (const event of backend.send({
-      turnId: 'sandbox-diagnostics-failure-turn',
-      text: 'This request must fail before provider dispatch.',
-      context: [],
-    })) {
-      events.push(event);
-    }
-
-    assert.equal(fetchCalls, 0);
-    assert.ok(events.some((event) => event.type === 'error'));
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
-    assert.ok(
-      traces.some(
-        (event) =>
-          event.type === 'model_stream_failed' &&
-          event.data?.errorClass === 'SandboxDiagnosticsResolutionError',
-      ),
+    const traces: RunTraceEvent[] = [];
+    const backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createManagedExecutionBoundary(
+          createWorkspaceWritePermissionProfile(),
+          0,
+        ),
+        sandboxDiagnostics: {
+          resolve: async () => {
+            throw new Error('sandbox diagnostics unavailable');
+          },
+        },
+        recordRunTrace: (event) => traces.push(event),
+      }),
     );
+
+    try {
+      const events = [];
+      for await (const event of backend.send({
+        turnId: 'sandbox-diagnostics-failure-turn',
+        text: 'Continue without optional sandbox diagnostics.',
+        context: [],
+      })) {
+        events.push(event);
+      }
+
+      const requests = provider.requests.filter((request) => request.body.stream === true);
+      assert.equal(requests.length, 1);
+      assert.doesNotMatch(JSON.stringify(requests[0]?.body), /<sandbox_context>/u);
+      assert.equal(
+        events.some((event) => event.type === 'error'),
+        false,
+      );
+      assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+      assert.equal(
+        traces.some((event) => event.type === 'sandbox_context_resolved'),
+        false,
+      );
+      const failure = traces.find((event) => event.type === 'sandbox_context_failed');
+      assert.equal(failure?.phase, 'sandbox');
+      assert.equal(failure?.data?.stage, 'resolve');
+    } finally {
+      await backend.dispose();
+    }
   } finally {
-    await backend.dispose();
+    await provider.close();
   }
 });
 
@@ -2139,7 +2144,10 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.equal(child?.subagentRuntime?.profile, 'implementation');
     assert.equal(child?.subagentParent?.parentSessionId, parent.id);
     if (!child) return;
-    assert.equal(child.permissionMode, 'execute');
+    // The persisted header is a configuration projection, not execution
+    // authority, and may be narrower than the inherited live boundary. Keep
+    // them deliberately different so this test proves the prompt follows it.
+    assert.notEqual(child.permissionMode, 'bypass');
     const childBoundary = await execution.sessionStore.readExecutionBoundary(child.id);
     assert.equal(childBoundary.kind, 'bypass');
     const childRequestText = JSON.stringify(childRequests[0]?.body);
@@ -2897,12 +2905,17 @@ test('host sandbox resolver caches by live boundary revision and omits external 
     7,
   );
   let diagnosticsResolutions = 0;
+  let failNextResolution = false;
   const resolver = createHostSandboxDiagnosticsResolver({
     readExecutionBoundary: async () => liveBoundary,
     cwd: '/workspace',
     sandboxDiagnostics: {
       resolve: async (input) => {
         diagnosticsResolutions += 1;
+        if (failNextResolution) {
+          failNextResolution = false;
+          throw new Error('transient diagnostics failure');
+        }
         return await TEST_SANDBOX_DIAGNOSTICS.resolve(input);
       },
     },
@@ -2918,14 +2931,20 @@ test('host sandbox resolver caches by live boundary revision and omits external 
     { ...workspaceProfile, name: 'live-boundary-revision-8', network: { kind: 'enabled' } },
     8,
   );
+  failNextResolution = true;
+  await assert.rejects(
+    resolver({ abortSignal: new AbortController().signal }),
+    /transient diagnostics failure/u,
+  );
+  assert.equal(diagnosticsResolutions, 2);
   const expanded = await resolver({ abortSignal: new AbortController().signal });
   assert.equal(expanded?.profile.name, 'live-boundary-revision-8');
   assert.equal(expanded?.profile.network, 'enabled');
-  assert.equal(diagnosticsResolutions, 2);
+  assert.equal(diagnosticsResolutions, 3);
 
   liveBoundary = { kind: 'external', revision: 9 };
   assert.equal(await resolver({ abortSignal: new AbortController().signal }), undefined);
-  assert.equal(diagnosticsResolutions, 2);
+  assert.equal(diagnosticsResolutions, 3);
 });
 
 test('one composer freezes Runtime Policy while each Run freezes its remaining prompt sources', async () => {

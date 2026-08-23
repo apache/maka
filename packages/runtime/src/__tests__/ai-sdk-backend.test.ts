@@ -1151,7 +1151,7 @@ describe('AiSdkBackend model history', () => {
     assert.equal(JSON.stringify(contextEvent).includes('/tmp/maka'), false);
   });
 
-  test('fails before provider dispatch when sandbox context cannot be rendered', async () => {
+  test('continues without sandbox prompt context when the snapshot cannot be rendered', async () => {
     const model = completionModel();
     const traces: RunTraceEvent[] = [];
     const snapshot = sandboxSnapshot();
@@ -1179,19 +1179,27 @@ describe('AiSdkBackend model history', () => {
       events,
     );
 
-    assert.equal(model.doStreamCalls.length, 0);
-    assert.ok(events.some((event) => event.type === 'error'));
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    assert.equal(model.doStreamCalls.length, 1);
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    assert.doesNotMatch(JSON.stringify(compactPrompt(model)), /<sandbox_context>/u);
     assert.equal(
       traces.some((event) => event.type === 'sandbox_context_resolved'),
       false,
     );
-    assert.ok(
+    const failure = traces.find((event) => event.type === 'sandbox_context_failed');
+    assert.equal(failure?.phase, 'sandbox');
+    assert.equal(failure?.data?.stage, 'render');
+    assert.equal(
       traces.some(
         (event) =>
           event.type === 'model_stream_failed' &&
           event.data?.errorClass === 'SandboxDiagnosticsResolutionError',
       ),
+      false,
     );
     await backend.dispose();
   });
@@ -1248,6 +1256,10 @@ describe('AiSdkBackend model history', () => {
           event.type === 'model_stream_failed' &&
           event.data?.errorClass === 'SandboxDiagnosticsResolutionError',
       ),
+      false,
+    );
+    assert.equal(
+      traces.some((event) => event.type === 'sandbox_context_failed'),
       false,
     );
     await backend.dispose();

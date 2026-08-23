@@ -1641,6 +1641,7 @@ export class AiSdkBackend implements AgentBackend {
     }
     let sandboxDiagnosticsSnapshot: SandboxDiagnosticsSnapshot | undefined;
     let sandboxPrompt: string | undefined;
+    let sandboxContextStage: 'resolve' | 'render' = 'resolve';
     try {
       sandboxDiagnosticsSnapshot = this.input.resolveSandboxDiagnosticsSnapshot
         ? await raceWithTurnAbort(
@@ -1650,6 +1651,7 @@ export class AiSdkBackend implements AgentBackend {
             turnAbortController.signal,
           )
         : this.input.sandboxDiagnosticsSnapshot;
+      sandboxContextStage = 'render';
       sandboxPrompt = sandboxDiagnosticsSnapshot
         ? renderSandboxTurnTailPrompt(sandboxDiagnosticsSnapshot)
         : undefined;
@@ -1673,18 +1675,12 @@ export class AiSdkBackend implements AgentBackend {
         yield* this.drain(queue);
         return;
       }
-      trace.modelStreamFailed('SandboxDiagnosticsResolutionError', err);
-      queue.push(this.makeErrorEvent(turnId, err));
-      queue.push({
-        type: 'complete',
-        id: this.newId(),
-        turnId,
-        ts: this.now(),
-        stopReason: 'error',
-      } satisfies CompleteEvent);
-      queue.close();
-      yield* this.drain(queue);
-      return;
+      trace.sandboxContextFailed(sandboxContextStage, err);
+      // This context is model guidance, not execution authority. Never fall
+      // back to a stale snapshot; continue without the prompt while the live
+      // ExecutionBoundary remains authoritative for every tool invocation.
+      sandboxDiagnosticsSnapshot = undefined;
+      sandboxPrompt = undefined;
     }
     if (sandboxDiagnosticsSnapshot) {
       trace.sandboxContextResolved(toSandboxRunTraceProjection(sandboxDiagnosticsSnapshot));
