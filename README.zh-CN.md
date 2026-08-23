@@ -33,7 +33,7 @@
 </p>
 
 <p align="center">
-  <sub><a href="./README.md">English</a></sub>
+  <a href="./README.md"><img src="https://img.shields.io/badge/English-4C8DFF?style=flat" alt="English" /></a>
 </p>
 
 <p align="center">

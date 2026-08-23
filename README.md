@@ -33,7 +33,7 @@
 </p>
 
 <p align="center">
-  <sub><a href="./README.zh-CN.md">简体中文</a></sub>
+  <a href="./README.zh-CN.md"><img src="https://img.shields.io/badge/%E4%B8%AD%E6%96%87%E6%96%87%E6%A1%A3-4C8DFF?style=flat" alt="中文文档" /></a>
 </p>
 
 <p align="center">
