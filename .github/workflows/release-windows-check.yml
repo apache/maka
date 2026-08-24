@@ -87,6 +87,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt'
+      - '.github/workflows/release.yml'
       - '.github/workflows/release-windows-check.yml'
   workflow_dispatch:
 

@@ -365,6 +365,12 @@ test('the packaged Windows gate owns Runtime Host candidate election changes', (
   assert.match(workflow, /'packages\/runtime-host\/src\/client\/launcher\.ts'/u);
 });
 
+test('the packaged Windows gate triggers on release orchestration changes', () => {
+  const workflow = readWorkflow('release-windows-check.yml');
+
+  assert.match(workflow, /'\.github\/workflows\/release\.yml'/u);
+});
+
 test('the packaged Windows gate triggers on packaged sandbox inputs', () => {
   const workflow = readWorkflow('release-windows-check.yml');
 
