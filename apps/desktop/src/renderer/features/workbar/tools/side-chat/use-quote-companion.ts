@@ -265,7 +265,10 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
 
   const ensureFork = useCallback(
-    (name: string): Promise<EnsureCompanionForkResult> => {
+    (
+      name: string,
+      options: { readonly showPreparing?: boolean } = {},
+    ): Promise<EnsureCompanionForkResult> => {
       const existing = companionRef.current;
       if (existing) return Promise.resolve({ status: 'ready', session: existing });
       if (forkSetupPromiseRef.current) return forkSetupPromiseRef.current;
@@ -273,7 +276,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         return Promise.resolve({ status: 'error', code: 'fork_setup_failed' });
       }
 
-      setPreparing(true);
+      const showPreparing = options.showPreparing ?? true;
+      if (showPreparing) setPreparing(true);
       const promise = ensureCompanionFork({
         api: sideChat,
         sourceSession,
@@ -317,7 +321,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         })
         .finally(() => {
           forkSetupPromiseRef.current = null;
-          if (mountedRef.current) setPreparing(false);
+          if (showPreparing && mountedRef.current) setPreparing(false);
         });
       forkSetupPromiseRef.current = promise;
       return promise;
@@ -339,7 +343,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       void (async () => {
         if (currentSetup) await currentSetup;
         if (!mountedRef.current || companionRef.current) return;
-        await ensureFork(copyRef.current.defaultName);
+        await ensureFork(copyRef.current.defaultName, { showPreparing: false });
       })().finally(() => {
         retrying = false;
       });

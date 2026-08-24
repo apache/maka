@@ -70,6 +70,7 @@ test('retries a busy Side Conversation at the newest settled boundary and clears
 
   let listCount = 0;
   let sessionChange: ((event: SessionChangedEvent) => void) | undefined;
+  let releaseRetry: (() => void) | undefined;
   const branchInputs: Array<{ sourceTurnId: string; copyId: string }> = [];
   const defaults = createFakeWorkbarServices();
   const services: WorkbarServices = {
@@ -84,9 +85,13 @@ test('retries a busy Side Conversation at the newest settled boundary and clears
       },
       branchFromTurn: async (_sessionId, input) => {
         branchInputs.push({ sourceTurnId: input.sourceTurnId, copyId: input.copyId });
-        return branchInputs.length === 1
-          ? { ok: false as const, reason: 'session_busy' as const }
-          : { ok: true as const, session: session('side-conversation') };
+        if (branchInputs.length === 1) {
+          return { ok: false as const, reason: 'session_busy' as const };
+        }
+        await new Promise<void>((resolve) => {
+          releaseRetry = resolve;
+        });
+        return { ok: true as const, session: session('side-conversation') };
       },
       subscribeSessionChanges: (handler) => {
         sessionChange = handler;
@@ -124,6 +129,14 @@ test('retries a busy Side Conversation at the newest settled boundary and clears
     });
     await Promise.resolve();
   });
+  await waitUntil(() => branchInputs.length === 2 && releaseRetry !== undefined);
+  assert.equal(probe.getAttribute('data-preparing'), 'false');
+  assert.match(container.textContent, /source conversation is still running/i);
+
+  await act(async () => {
+    releaseRetry?.();
+    await Promise.resolve();
+  });
   await waitUntil(
     () => probe.getAttribute('data-companion-id') === 'side-conversation',
     () =>
@@ -149,6 +162,7 @@ function QuoteCompanionProbe() {
   return createElement('div', {
     'data-error': companion.error ?? '',
     'data-companion-id': companion.companionSession?.id ?? '',
+    'data-preparing': String(companion.preparing),
   }, companion.error);
 }
 
