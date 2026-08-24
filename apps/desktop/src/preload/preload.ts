@@ -498,7 +498,6 @@ async function loadNewTaskCatalog(): Promise<DesktopNewTaskCatalog> {
               : entry.readiness === 'disabled'
                 ? 'unavailable'
                 : entry.readiness,
-            ...(entry.message ? { message: entry.message } : {}),
           };
         }
         const host = { profileId: entry.profile.id, hostId: entry.hostId };

@@ -163,9 +163,9 @@ export function RuntimeHostProfilesSection(props: {
       setTestInvalidated(false);
       if (result.kind === "connected") toast.success(copy.testConnected);
       else toast.error(copy.testConnection, copy.testFailed[result.stage]);
-    } catch (error) {
+    } catch {
       if (mountedRef.current) {
-        toast.error(copy.testConnection, settingsActionErrorMessage(error, locale));
+        toast.error(copy.testConnection, copy.testFailed.connection);
       }
     } finally {
       if (mountedRef.current) setTesting(false);
@@ -206,15 +206,10 @@ export function RuntimeHostProfilesSection(props: {
       setDraft(createRemoteHostDraft());
       setTestResult(undefined);
       setTestInvalidated(false);
-    } catch (error) {
+    } catch {
       if (mountedRef.current) {
         await reload().catch(() => undefined);
-        toast.error(
-          copy.saveFailed,
-          settingsActionErrorMessage(error, locale),
-          undefined,
-          { profileId },
-        );
+        toast.error(copy.saveFailed, copy.testFailed.connection, undefined, { profileId });
       }
     } finally {
       if (mountedRef.current) setSwitching(false);
@@ -244,10 +239,10 @@ export function RuntimeHostProfilesSection(props: {
       if (!mountedRef.current) return;
       setSnapshot(next);
       const entry = next.entries.find((candidate) => candidate.profile.id === profileId);
-      if (entry?.readiness === "unavailable" && entry.message) {
+      if (entry?.readiness === "unavailable") {
         toast.error(
           copy.selectFailed,
-          entry.message,
+          copy.testFailed[entry.failureStage ?? "connection"],
           undefined,
           { profileId },
         );

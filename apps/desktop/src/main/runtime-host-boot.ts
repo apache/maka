@@ -525,7 +525,7 @@ const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
       const snapshot = await runtimeHostProfileService.setEnabled(profileId, true);
       const entry = snapshot.entries.find((candidate) => candidate.profile.id === profileId);
       return entry?.readiness === "unavailable"
-        ? new Error(entry.message ?? "Runtime Host is unavailable")
+        ? new Error("Runtime Host is unavailable")
         : undefined;
     } catch (error) {
       return error instanceof Error ? error : new Error(String(error));

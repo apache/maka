@@ -289,7 +289,7 @@ export interface DesktopRuntimeHostProfileEntry {
   readonly isDefault: boolean;
   readonly readiness: 'disabled' | 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
   readonly hostId?: string;
-  readonly message?: string;
+  readonly failureStage?: DesktopRuntimeHostProfileTestStage;
 }
 
 export interface DesktopRuntimeHostProfileSnapshot {
@@ -355,7 +355,6 @@ export type DesktopRuntimeHostProfileAddResult =
   | {
       readonly kind: 'unavailable';
       readonly snapshot: DesktopRuntimeHostProfileSnapshot;
-      readonly message: string;
       readonly stage: DesktopRuntimeHostProfileTestStage;
     };
 

@@ -27,6 +27,7 @@ import {
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
+  RuntimeHostRemoteCompatibilityError,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
@@ -348,7 +349,7 @@ export function createDesktopRuntimeHostProfileService(input: {
             : state && "hostId" in state && state.hostId
               ? { hostId: state.hostId }
               : {}),
-          ...(error ? { message: error.message } : {}),
+          ...(error ? { failureStage: classifyConnectionTestFailure(error) } : {}),
         };
       }),
     };
@@ -629,7 +630,6 @@ export function createDesktopRuntimeHostProfileService(input: {
           ? {
               kind: "unavailable",
               snapshot: await snapshot(),
-              message: error.message,
               stage: classifyConnectionTestFailure(error),
             }
           : { kind: "connected", snapshot: await snapshot() };
@@ -1079,6 +1079,7 @@ export function registerDesktopRuntimeHostProfileIpc(
 
 function classifyConnectionTestFailure(error: unknown): DesktopRuntimeHostProfileTestStage {
   const message = error instanceof Error ? error.message : "";
+  if (error instanceof RuntimeHostRemoteCompatibilityError) return "compatibility";
   if (error instanceof RuntimeHostPermanentReconnectError) {
     if (message.includes("access credential")) return "credential";
     if (message.includes("unexpected State Root")) return "state_root";
