@@ -1134,7 +1134,7 @@ test('does not let one backpressured transcript consumer block another', async (
   await observer.close();
 });
 
-test('releases an idle session when transcript delivery fails', async () => {
+test('keeps a transcript consumer available after a delivery fails', async () => {
   const events = new AsyncFrameQueue();
   let closeCount = 0;
   const observer = new RuntimeHostSessionObserver({
@@ -1176,12 +1176,18 @@ test('releases an idle session when transcript delivery fails', async () => {
     },
     emitSessionsChanged() {},
   });
-  let opened = false;
+  let failDelivery = false;
+  let failedDeliveries = 0;
+  let successfulDeliveries = 0;
   const consumerId = 'consumer-failing';
-  await observer.openTranscript('session-1', consumerId, {
+  const opened = await observer.openTranscript('session-1', consumerId, {
     id: 25,
     send(_channel, batch) {
-      if (opened) throw new Error('renderer unavailable');
+      if (failDelivery) {
+        failedDeliveries += 1;
+        throw new Error('renderer unavailable');
+      }
+      successfulDeliveries += 1;
       queueMicrotask(() =>
         observer.acknowledgeTranscript(
           consumerId,
@@ -1194,7 +1200,7 @@ test('releases an idle session when transcript delivery fails', async () => {
     once() {},
     off() {},
   });
-  opened = true;
+  failDelivery = true;
   events.push({
     kind: 'subscription.transcript_advanced',
     hostEpoch: 'host-1',
@@ -1204,6 +1210,22 @@ test('releases an idle session when transcript delivery fails', async () => {
     throughSequence: 0,
   });
 
+  await waitFor(() => failedDeliveries === 1);
+  failDelivery = false;
+  await assert.doesNotReject(
+    observer.loadTranscriptAround(
+      {
+        consumerId,
+        generation: opened.generation,
+        anchorSequence: 0,
+        maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+      },
+      25,
+    ),
+  );
+  assert.ok(successfulDeliveries > 1);
+  assert.equal(closeCount, 0);
+  await observer.closeTranscript(consumerId, 25);
   await waitFor(() => closeCount === 1);
   await observer.close();
 });
