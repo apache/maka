@@ -29,11 +29,9 @@ import type { StoredMessage } from '@maka/core/session';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { isSessionInlineRun } from '@maka/core/agent-run';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
-import {
-  createSqliteAgentRunStore,
-  createSqliteRuntimeStore,
-  createWorkspaceRuntimeStore,
-} from '@maka/storage';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,

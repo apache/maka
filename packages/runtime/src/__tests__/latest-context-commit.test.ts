@@ -38,11 +38,9 @@ import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
-import {
-  createSessionStore,
-  createSqliteAgentRunStore,
-  createWorkspaceRuntimeStore,
-} from '@maka/storage';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
+import { createSessionStore } from '@maka/storage/session-store';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';

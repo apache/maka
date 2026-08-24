@@ -20,11 +20,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MCP_CONFIG_VERSION, type McpConfigFile, type McpServerStatus } from '@maka/core/mcp';
-import { McpServerExistsError } from '@maka/storage';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createMcpConfigStore } from '@maka/storage';
+import { createMcpConfigStore, McpServerExistsError } from '@maka/storage/mcp-config-store';
 import { createMcpExclusiveLane, registerMcpIpcMain } from '../mcp-ipc-main.js';
 
 test('MCP IPC commits config before publishing capabilities and emitting status', async () => {

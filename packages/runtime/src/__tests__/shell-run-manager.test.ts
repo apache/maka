@@ -34,7 +34,7 @@ import {
   type ShellRunStore,
 } from '@maka/core/shell-run';
 import { type ShellRunUpdate, type ToolResultContent } from '@maka/core/events';
-import { createSqliteShellRunStore } from '@maka/storage';
+import { createSqliteShellRunStore } from '@maka/storage/shell-run-store';
 
 import { ShellRunProcessManager } from '../shell-run-manager.js';
 import {

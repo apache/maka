@@ -26,7 +26,7 @@ import type {
 import type { AgentGraphIntentClaimStore } from '@maka/core/agent-graph-control';
 import type { AgentGraphOperatorProvision } from '@maka/core/agent-graph-topology';
 import type { SessionHeader } from '@maka/core/session';
-import { createSqliteSessionMetadataStore } from '@maka/storage';
+import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
 import type {
   AgentGraphIntentExecutor,
   AgentGraphSupervisorObservation,

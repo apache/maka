@@ -33,7 +33,7 @@ import type {
   ProxySettings,
   TestProxyInput,
 } from "@maka/core/settings/network-settings";
-import type { SettingsStore } from "@maka/storage";
+import type { SettingsStore } from "@maka/storage/settings-store";
 import {
   buildSettingsUpdateResult,
   maskAppSettings,

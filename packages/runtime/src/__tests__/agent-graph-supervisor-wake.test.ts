@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { createSqliteSessionMetadataStore } from '@maka/storage';
+import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
 import {
   AgentGraphSupervisorContextOverflowError,
   AgentGraphSupervisorWakeCoordinator,

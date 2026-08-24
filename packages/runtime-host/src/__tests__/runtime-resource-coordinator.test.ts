@@ -27,7 +27,7 @@ import {
 } from '@maka/core/events';
 import type { ShellRunBashInput, ShellRunWriteInput } from '@maka/runtime/shell-run-contract';
 import { ShellPreferenceError } from '@maka/runtime/shell-detect';
-import { SessionNotFoundError } from '@maka/storage';
+import { SessionNotFoundError } from '@maka/storage/session-store';
 import { RUNTIME_RESOURCE_RESULT_MAX_BYTES } from '../protocol/runtime-resource.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import {

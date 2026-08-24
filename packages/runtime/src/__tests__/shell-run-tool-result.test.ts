@@ -25,7 +25,7 @@ import { describe, test } from 'node:test';
 import { type PtyShellOutput, type ShellRunRecord } from '@maka/core/shell-run';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
-import { createSessionStore } from '@maka/storage';
+import { createSessionStore } from '@maka/storage/session-store';
 
 import {
   projectPtyOutputForModel,

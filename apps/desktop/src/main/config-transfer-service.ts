@@ -25,9 +25,9 @@ import {
 import {
   type ConfigBundle,
   type ConnectionConflictStrategy,
-  type CredentialKind,
   planConnectionMerge,
-} from '@maka/storage';
+} from '@maka/storage/config-transfer';
+import { type CredentialKind } from '@maka/storage/credential-store';
 
 /**
  * Electron-free config import orchestration. Runtime Host owns export because

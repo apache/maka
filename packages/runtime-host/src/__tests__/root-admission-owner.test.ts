@@ -26,8 +26,8 @@ import {
   type RootTurnAdmission,
   type RootTurnAdmissionStore,
   type RootTurnSourceMessage,
-} from '@maka/storage';
-import { createSqliteAgentRunStore } from '@maka/storage';
+} from '@maka/storage/agent-run-store';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
