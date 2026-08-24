@@ -26,6 +26,7 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -282,7 +283,7 @@ test('managed setup replaces one exact development package with another', async 
   assert.deepEqual(await readdir(join(previousDeployment.root, 'versions')), [nextVersion]);
 });
 
-test('registry package identity does not reuse same-version local content', async (t) => {
+test('registry package identity avoids local content and recovers an interrupted removal', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-registry-package-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const version = '0.2.0';
@@ -319,9 +320,25 @@ test('registry package identity does not reuse same-version local content', asyn
   assert.deepEqual(await readdir(dirname(dirname(dirname(registry.cliPath)))), [
     basename(dirname(dirname(registry.cliPath))),
   ]);
+
+  const registryRoot = dirname(dirname(registry.cliPath));
+  const versionsRoot = dirname(registryRoot);
+  await rename(registryRoot, join(versionsRoot, `.${basename(registryRoot)}.interrupted.deleted`));
+  const recovered = await prepareRuntimeHostManagedPackageDeployment(
+    {
+      serviceId,
+      clientDataRoot,
+      sourcePackageRoot: registryPackage,
+      version,
+      packageIntegrity: PACKAGE_INTEGRITY,
+    },
+    pathOptions,
+  );
+  assert.equal(await readFile(recovered.cliPath, 'utf8'), 'registry package\n');
+  assert.deepEqual(await readdir(versionsRoot), [basename(registryRoot)]);
 });
 
-test('managed setup removes a newly copied package when service installation fails', async (t) => {
+test('managed setup leaves no inactive package when service installation fails', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-failure-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const sourcePackageRoot = await createReleasePackage(base, '0.2.0');

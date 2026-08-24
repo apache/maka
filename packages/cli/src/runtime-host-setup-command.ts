@@ -175,7 +175,14 @@ async function runRuntimeHostSetupLocked(
       backend,
     );
   } catch (error) {
-    await deployment.rollback().catch(() => undefined);
+    try {
+      await deployment.rollback();
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        'Runtime Host setup failed and its staged package could not be removed',
+      );
+    }
     throw error;
   }
   const config = installed.service.config;

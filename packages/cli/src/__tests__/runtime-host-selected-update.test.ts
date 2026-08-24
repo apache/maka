@@ -103,6 +103,7 @@ describe('managed Runtime Host selected update', () => {
     assert.equal(updateInput?.sourcePackageRoot, '/verified/package');
     assert.equal(updateInput?.version, '2.0.0');
     assert.equal(updateInput?.expectedCurrentVersion, '1.0.0');
+    assert.equal(updateInput?.expectedCurrentCliPath, '/managed/versions/1.0.0/dist/cli.js');
     assert.equal(updateInput?.packageIntegrity, INTEGRITY);
   });
 
@@ -155,6 +156,7 @@ function updateSelection(
     selector: OPTIONS.selector,
     candidate,
     outcome,
+    currentCliPath: `/managed/versions/${outcome.kind === 'current' ? candidate.version : '1.0.0'}/dist/cli.js`,
     service: {
       platform: 'linux',
       arch: 'x64',

@@ -57,6 +57,16 @@ export interface RuntimeHostManagedPackageDeployment {
   rollback(): Promise<void>;
 }
 
+export function resolveRuntimeHostManagedPackageCliPath(
+  deploymentRoot: string,
+  version: string,
+  packageIntegrity?: string,
+): string {
+  assertVersion(version);
+  const packageDirectory = packageIntegrity ? registryPackageDirectory(packageIntegrity) : version;
+  return join(resolve(deploymentRoot), 'versions', packageDirectory, 'dist', 'cli.js');
+}
+
 export function isRuntimeHostDevelopmentPackageVersion(value: unknown): value is string {
   return typeof value === 'string' && /(?:-|\.)dev-[0-9a-f]{12}$/u.test(value);
 }
@@ -81,14 +91,18 @@ export async function prepareRuntimeHostManagedPackageDeployment(
     ? registryPackageDirectory(input.packageIntegrity)
     : input.version;
   const packageRoot = join(versionsRoot, packageDirectory);
-  const cliPath = join(packageRoot, 'dist', 'cli.js');
+  const cliPath = resolveRuntimeHostManagedPackageCliPath(
+    deploymentRoot,
+    input.version,
+    input.packageIntegrity,
+  );
   const clientDataRoot = resolve(input.clientDataRoot);
   if (await pathExists(packageRoot)) {
     await validatePackage(packageRoot, input.version);
     return deployment(input.version, deploymentRoot, packageRoot, cliPath, clientDataRoot, false);
   }
 
-  await removeAbandonedStagingPackages(versionsRoot, packageDirectory);
+  await removeAbandonedPackageWorkspaces(versionsRoot, packageDirectory);
   const stagingRoot = join(versionsRoot, `.${packageDirectory}.${randomUUID()}.tmp`);
   try {
     await cp(sourcePackageRoot, stagingRoot, {
@@ -118,14 +132,18 @@ export async function prepareRuntimeHostManagedPackageDeployment(
   }
 }
 
-async function removeAbandonedStagingPackages(
+async function removeAbandonedPackageWorkspaces(
   versionsRoot: string,
-  version: string,
+  packageDirectory: string,
 ): Promise<void> {
-  const prefix = `.${version}.`;
+  const prefix = `.${packageDirectory}.`;
   await Promise.all(
     (await readdir(versionsRoot, { withFileTypes: true }))
-      .filter((entry) => entry.name.startsWith(prefix) && entry.name.endsWith('.tmp'))
+      .filter(
+        (entry) =>
+          entry.name.startsWith(prefix) &&
+          (entry.name.endsWith('.tmp') || entry.name.endsWith('.deleted')),
+      )
       .map((entry) => rm(join(versionsRoot, entry.name), { recursive: true, force: true })),
   );
 }
@@ -298,7 +316,9 @@ function deployment(
     activate: () => writeOperatorLauncher(operatorPath, process.execPath, cliPath, clientDataRoot),
     cleanup: () => pruneInactivePackages(dirname(packageRoot), basename(packageRoot)),
     rollback: () =>
-      created ? rm(packageRoot, { recursive: true, force: true }) : Promise.resolve(),
+      created
+        ? removePackageAtomically(dirname(packageRoot), basename(packageRoot))
+        : Promise.resolve(),
   };
 }
 
@@ -350,8 +370,28 @@ async function pruneInactivePackages(versionsRoot: string, retainedPackage: stri
   await Promise.all(
     (await readdir(versionsRoot, { withFileTypes: true }))
       .filter((entry) => entry.name !== retainedPackage)
-      .map((entry) => rm(join(versionsRoot, entry.name), { recursive: true, force: true })),
+      .map((entry) => removePackageAtomically(versionsRoot, entry.name)),
   );
+}
+
+async function removePackageAtomically(versionsRoot: string, packageName: string): Promise<void> {
+  const packageRoot = join(versionsRoot, packageName);
+  try {
+    if (packageName.startsWith('.') && packageName.endsWith('.deleted')) {
+      await rm(packageRoot, { recursive: true, force: true });
+      return;
+    }
+    const tombstone = join(versionsRoot, `.${packageName}.${randomUUID()}.deleted`);
+    await rename(packageRoot, tombstone);
+    await rm(tombstone, { recursive: true, force: true });
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return;
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'Unable to remove an inactive managed Runtime Host package',
+      { cause: error },
+    );
+  }
 }
 
 function registryPackageDirectory(integrity: string): string {

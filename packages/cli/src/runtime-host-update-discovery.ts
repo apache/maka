@@ -20,7 +20,7 @@
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   compareProductReleaseVersions,
@@ -106,6 +106,7 @@ export async function runManagedRuntimeHostUpdateCheckCli(
 
 export interface RuntimeHostUpdateSelection {
   readonly service: RuntimeHostUpdateCheckFrame['service'];
+  readonly currentCliPath: string;
   readonly selector: RuntimeHostUpdateSelector;
   readonly candidate: RuntimeHostUpdateCandidate;
   readonly outcome: RuntimeHostUpdateCheck['outcome'];
@@ -167,6 +168,7 @@ async function resolveManagedRuntimeHostUpdate(
       state: serviceState,
       installedVersion: currentVersion,
     },
+    currentCliPath: resolve(config.launch.cliPath),
     selector: options.selector,
     candidate,
     outcome: assessment,
