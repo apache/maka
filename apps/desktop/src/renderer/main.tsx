@@ -32,6 +32,8 @@ import { ModuleHubServicesProvider } from './features/module-hub';
 import { createDesktopModuleHubServices } from './platform/desktop/create-module-hub-services';
 import { SessionNavigationServicesProvider } from './features/session-navigation';
 import { createDesktopSessionNavigationServices } from './platform/desktop/create-session-navigation-services';
+import { TaskEntryServicesProvider } from './features/task-entry';
+import { createDesktopTaskEntryServices } from './platform/desktop/create-task-entry-services';
 
 const ONBOARDING_SNAPSHOT_RETRY_DELAY_MS = 150;
 const ONBOARDING_SNAPSHOT_TIMEOUT_MS = 2_500;
@@ -42,6 +44,7 @@ const workbarServices = createDesktopWorkbarServices();
 const goalServices = createDesktopGoalServices();
 const moduleHubServices = createDesktopModuleHubServices();
 const sessionNavigationServices = createDesktopSessionNavigationServices();
+const taskEntryServices = createDesktopTaskEntryServices();
 
 /**
  * Prefetch the onboarding snapshot BEFORE mounting React. The preload
@@ -75,13 +78,15 @@ async function prefetchOnboardingSnapshot(): Promise<OnboardingSnapshot | null> 
 void prefetchOnboardingSnapshot().then((initialOnboardingSnapshot) => {
   createRoot(document.getElementById('root')!).render(
     <SessionNavigationServicesProvider services={sessionNavigationServices}>
-      <ModuleHubServicesProvider services={moduleHubServices}>
-        <GoalServicesProvider services={goalServices}>
-          <WorkbarServicesProvider services={workbarServices}>
-            <App initialOnboardingSnapshot={initialOnboardingSnapshot} />
-          </WorkbarServicesProvider>
-        </GoalServicesProvider>
-      </ModuleHubServicesProvider>
+      <TaskEntryServicesProvider services={taskEntryServices}>
+        <ModuleHubServicesProvider services={moduleHubServices}>
+          <GoalServicesProvider services={goalServices}>
+            <WorkbarServicesProvider services={workbarServices}>
+              <App initialOnboardingSnapshot={initialOnboardingSnapshot} />
+            </WorkbarServicesProvider>
+          </GoalServicesProvider>
+        </ModuleHubServicesProvider>
+      </TaskEntryServicesProvider>
     </SessionNavigationServicesProvider>,
   );
 });
