@@ -1889,7 +1889,7 @@ const makaBridge = {
         }
         return ipcRenderer.invoke(operation, consumerScope, {
           consumerId,
-          sessionId,
+          sessionId: opened.sessionId,
           hostEpoch: currentIdentity.hostEpoch,
           anchorSequence,
           maxBytes,
