@@ -243,6 +243,49 @@ describe('filesystem worker operations', () => {
     });
   });
 
+  test('separates dash-prefixed patterns from flags with the -- argv separator', async () => {
+    const root = await temporaryDirectory('maka-worker-grep-dash-pattern-');
+    const target = join(root, 'style.css');
+    await writeFile(target, 'a { display: -webkit-box; }', 'utf8');
+    let grepArgs: readonly string[] | undefined;
+
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        {
+          kind: 'grep',
+          cwd: root,
+          path: target,
+          // Without `--`, ripgrep parses a leading `-` as flags and exits 1,
+          // which this worker maps to "no matches" — reporting a present
+          // string as absent. Mirrors workspace-executor's pinned behavior.
+          pattern: '-webkit-box',
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 1_000,
+        },
+        { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'file' },
+      ),
+      {
+        grepExecutable: '/usr/bin/rg',
+        runGrep: async (input) => {
+          grepArgs = input.args;
+          return { exitCode: 0, stdout: '1:a { display: -webkit-box; }\n', stderrTail: '' };
+        },
+      },
+    );
+
+    assert.ok(grepArgs, 'grep must be invoked');
+    const separator = grepArgs.indexOf('--');
+    assert.notEqual(separator, -1, 'argv must contain a -- separator before the pattern');
+    assert.equal(grepArgs[separator + 1], '-webkit-box');
+    assert.deepEqual(response, {
+      version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+      requestId: 'request-1',
+      ok: true,
+      result: { kind: 'grep', matches: ['1:a { display: -webkit-box; }'] },
+    });
+  });
+
   test('returns no Grep matches for exit code 1 and surfaces bounded stderr for failures', async () => {
     const root = await temporaryDirectory('maka-worker-grep-result-');
     const target = join(root, 'file.ts');

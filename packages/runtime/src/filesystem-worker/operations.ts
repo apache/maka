@@ -413,7 +413,9 @@ export async function executeFilesystemOperation(
         throw operationError('grep_unavailable', 'Grep is unavailable in this runtime.');
       const args = ['-n', '--no-heading', `--max-count=${operation.maxCountPerFile}`];
       if (operation.glob) args.push('--glob', operation.glob);
-      args.push(operation.pattern, path);
+      // `--` keeps ripgrep from parsing a dash-prefixed pattern as flags
+      // (a flag-like pattern exits 1, which maps to "no matches" below).
+      args.push('--', operation.pattern, path);
       const result = await (dependencies.runGrep ?? runRipgrep)({
         executable: dependencies.grepExecutable,
         args,
