@@ -584,7 +584,10 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       if (result.kind === 'upgrade_required' && result.restartable) {
         const activity = result.handshake?.activity;
         const decision =
-          activity && activity.activeOperations === 0 && activity.residencies.length === 0
+          activity &&
+          activity.connections === 0 &&
+          activity.activeOperations === 0 &&
+          activity.residencies.length === 0
             ? 'restart'
             : await this.#resolveRestartable(result);
         if (decision === 'cancel') {
