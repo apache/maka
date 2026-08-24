@@ -358,9 +358,19 @@ fn adversarial_probe(input: &AdversarialProbeInput) -> Result<u8, String> {
     let allowed_write = fs::write(&input.allowed_write_path, b"allowed-write").is_ok();
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), input.loopback_port);
     let tcp_denied = TcpStream::connect_timeout(&address, Duration::from_secs(2)).is_err();
-    let udp_denied = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .and_then(|socket| socket.send_to(b"maka-phase4", (Ipv4Addr::LOCALHOST, input.udp_port)))
-        .is_err();
+    let udp_denied = match UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)) {
+        Ok(socket) => {
+            let _ = socket.set_read_timeout(Some(Duration::from_secs(2)));
+            match socket.send_to(b"maka-phase4", (Ipv4Addr::LOCALHOST, input.udp_port)) {
+                Ok(_) => {
+                    let mut response = [0u8; 64];
+                    socket.recv_from(&mut response).is_err()
+                }
+                Err(_) => true,
+            }
+        }
+        Err(_) => true,
+    };
     let named_pipe_denied = fs::OpenOptions::new()
         .read(true)
         .write(true)

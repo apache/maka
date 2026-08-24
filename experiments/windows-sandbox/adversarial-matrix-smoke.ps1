@@ -24,6 +24,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 $launcher = (Resolve-Path -LiteralPath $LauncherPath).Path
+$launcherDirectory = Split-Path -Parent $launcher
 $tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
 $workRoot = Join-Path $tempRoot "maka-phase4-adversarial-$PID"
 $ledgerRoot = Join-Path ([IO.Path]::GetTempPath()) 'maka-sandbox-acl-ledgers'
@@ -145,6 +146,18 @@ try {
   $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
   $udpListener = [Net.Sockets.UdpClient]::new(0)
   $udpPort = ([Net.IPEndPoint]$udpListener.Client.LocalEndPoint).Port
+  $udpCallback = [AsyncCallback]{
+    param($asyncResult)
+    try {
+      $remote = [Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)
+      [void]$udpListener.EndReceive($asyncResult, [ref]$remote)
+      $reply = [Text.Encoding]::UTF8.GetBytes('phase4-udp-ok')
+      [void]$udpListener.Send($reply, $reply.Length, $remote)
+    } catch {
+      # The probe is already fail-closed if no response arrives.
+    }
+  }
+  $udpListener.BeginReceive($udpCallback, $null)
   $pipe = [IO.Pipes.NamedPipeServerStream]::new(
     $pipeShortName,
     [IO.Pipes.PipeDirection]::InOut,
@@ -173,9 +186,9 @@ try {
 
   $probeRequest = Write-LaunchRequest -Name "phase4-adversarial-$PID" `
     -Arguments @('--adversarial-probe', $probeInputPath) `
-    -ReadRoots @($probeInputPath, $allowedReadPath, $launcher) `
+    -ReadRoots @($probeInputPath, $allowedReadPath, $launcherDirectory) `
     -WriteRoots @($allowedWritePath) `
-    -ExactReadRoots @($probeInputPath, $allowedReadPath, $launcher) `
+    -ExactReadRoots @($probeInputPath, $allowedReadPath) `
     -ExactWriteRoots @($allowedWritePath)
   $result = Invoke-Launcher @('--appcontainer', $probeRequest)
   $output = $result.Output
