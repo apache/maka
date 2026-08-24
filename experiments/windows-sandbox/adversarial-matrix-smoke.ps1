@@ -243,7 +243,7 @@ try {
   $hardLinkRequest = Write-LaunchRequest -Name "phase4-hardlink-$PID" `
     -Arguments @('--self-probe') -ReadRoots @($hardLinkRoot) -WriteRoots @() `
     -ExactReadRoots @() -ExactWriteRoots @()
-  Invoke-ExpectedAdmissionFailure -RequestPath $hardLinkRequest -Pattern 'multiple hard links' `
+  Invoke-ExpectedAdmissionFailure -RequestPath $hardLinkRequest -Pattern 'multi-link' `
     -Description 'Hard-link alias admission'
 
   # An unsettled identity is never interpreted or reused by later launches.
