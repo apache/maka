@@ -107,7 +107,7 @@ describe('managed Runtime Host update reconciliation', () => {
           expectedTarget: TARGET,
         },
         {
-          withReconciliationLock: async (_root, operation) => operation(),
+          withDeploymentLock: async (_root, operation) => operation(),
           createBackend: () => unusedBackend(),
           manage: async () => ({
             schemaVersion: 1,
@@ -149,7 +149,7 @@ describe('managed Runtime Host update reconciliation', () => {
       await runManagedRuntimeHostUpdatePolicyCli(
         { ...common, policy: { kind: 'manual' } },
         {
-          withReconciliationLock: async (_root, operation) => operation(),
+          withDeploymentLock: async (_root, operation) => operation(),
           writeOutput: () => undefined,
         },
       ),
@@ -161,7 +161,6 @@ describe('managed Runtime Host update reconciliation', () => {
       await runManagedRuntimeHostUpdateReconcileCli(
         { ...common, json: false, framed: true },
         {
-          withReconciliationLock: async (_root, operation) => operation(),
           resolveSelection: async () => assert.fail('manual policy must not resolve a target'),
           writeOutput: (value) => {
             manualOutput += value;
@@ -197,7 +196,6 @@ describe('managed Runtime Host update reconciliation', () => {
         defaultRootPath: '/workspace',
       },
       {
-        withReconciliationLock: async (_root, operation) => operation(),
         resolveSelection: async (options) => {
           assert.deepEqual(options.selector, { kind: 'exact', version: '2.0.0' });
           assert.deepEqual(options.expectedTarget, TARGET);
@@ -209,9 +207,17 @@ describe('managed Runtime Host update reconciliation', () => {
             service: SERVICE,
           };
         },
-        applySelection: async (_options, _selection, _overrides, observer) => {
+        applySelection: async (_options, _selection, _overrides, emit) => {
           applied = true;
-          observer?.onFrame?.({
+          emit?.({
+            schemaVersion: 1,
+            kind: 'progress',
+            action: 'update',
+            phase: 'checking',
+            currentVersion: '1.0.0',
+            targetVersion: '2.0.0',
+          });
+          emit?.({
             schemaVersion: 1,
             kind: 'result',
             action: 'update',
@@ -250,7 +256,6 @@ describe('managed Runtime Host update reconciliation', () => {
       await runManagedRuntimeHostUpdateReconcileCli(
         { json: true, framed: false, clientDataRoot, defaultRootPath: '/workspace' },
         {
-          withReconciliationLock: async (_root, operation) => operation(),
           writeOutput: (value) => {
             errorOutput += value;
           },
@@ -270,7 +275,6 @@ describe('managed Runtime Host update reconciliation', () => {
       await runManagedRuntimeHostUpdateReconcileCli(
         { json: true, framed: false, clientDataRoot, defaultRootPath: '/workspace' },
         {
-          withReconciliationLock: async (_root, operation) => operation(),
           resolveSelection: async (options) => ({
             selector: options.selector,
             candidate: { version: '2.0.0', integrity: INTEGRITY },
@@ -289,7 +293,7 @@ describe('managed Runtime Host update reconciliation', () => {
     assert.equal(JSON.parse(output).reconciliation.kind, 'manual_action');
   });
 
-  it('removes installation-owned policy when the managed service is uninstalled', async (t) => {
+  it('keeps automatic policy revoked when uninstall later fails', async (t) => {
     const clientDataRoot = await mkdtemp(join(tmpdir(), 'maka-update-uninstall-'));
     t.after(() => rm(clientDataRoot, { recursive: true, force: true }));
     await writeRuntimeHostManagedUpdatePolicy(clientDataRoot, {
@@ -309,30 +313,17 @@ describe('managed Runtime Host update reconciliation', () => {
           cliPath: '/cli.js',
         },
         {
-          withReconciliationLock: immediate,
           withDeploymentLock: immediate,
           withLifecycleLock: immediate,
           createBackend: () => unusedBackend(),
-          manage: async () => ({
-            schemaVersion: 1,
-            action: 'uninstall',
-            service: {
-              manager: 'systemd_user',
-              installed: false,
-              enabled: false,
-              active: false,
-              state: 'not_installed',
-              pid: null,
-              lastExitCode: null,
-              installedVersion: null,
-              config: null,
-            },
-            retainedStateRoot: '/srv/maka',
-          }),
-          writeOutput: () => undefined,
+          manage: async () => {
+            assert.equal(await readRuntimeHostManagedUpdatePolicy(clientDataRoot), null);
+            throw new Error('uninstall failed after policy revocation');
+          },
+          writeError: () => undefined,
         },
       ),
-      0,
+      1,
     );
     assert.equal(await readRuntimeHostManagedUpdatePolicy(clientDataRoot), null);
   });

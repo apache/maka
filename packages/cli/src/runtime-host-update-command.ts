@@ -128,10 +128,7 @@ export type RuntimeHostUpdateFrame = Extract<
   { action: 'update' }
 >;
 
-export interface RuntimeHostUpdateCliObserver {
-  readonly onFrame?: (frame: RuntimeHostUpdateFrame) => void;
-  readonly suppressPresentation?: boolean;
-}
+export type RuntimeHostUpdateFrameSink = (frame: RuntimeHostUpdateFrame) => void;
 
 interface RuntimeHostOperatorInvocation {
   readonly inheritedFds?: readonly number[];
@@ -141,7 +138,7 @@ interface RuntimeHostOperatorInvocation {
 export async function runManagedRuntimeHostUpdateCli(
   options: RuntimeHostUpdateCliOptions,
   overrides: Partial<RuntimeHostUpdateCliDeps> = {},
-  observer: RuntimeHostUpdateCliObserver = {},
+  frameSink?: RuntimeHostUpdateFrameSink,
 ): Promise<number> {
   const deps: RuntimeHostUpdateCliDeps = {
     manage: manageRuntimeHostService,
@@ -162,26 +159,8 @@ export async function runManagedRuntimeHostUpdateCli(
   let exactTargetObserved = false;
   let cutoverStarted = false;
   let retired = false;
-  const emit = (frame: RuntimeHostUpdateFrame): void => {
-    observer.onFrame?.(frame);
-    if (observer.suppressPresentation) return;
-    if (options.framed) {
-      deps.writeOutput(encodeRuntimeHostServiceManagementFrame(frame));
-      return;
-    }
-    if (frame.kind === 'progress') {
-      if (!options.json) deps.writeError(`${humanPhase(frame.phase)}\n`);
-      return;
-    }
-    if (options.json) deps.writeOutput(`${JSON.stringify(frame)}\n`);
-    else if (frame.kind === 'error') deps.writeError(`${frame.error.message}\n`);
-    else {
-      if (frame.action !== 'update') {
-        throw new TypeError('Managed Runtime Host update returned an unrelated result');
-      }
-      deps.writeOutput(`${humanResult(frame)}\n`);
-    }
-  };
+  const emit =
+    frameSink ?? ((frame: RuntimeHostUpdateFrame) => presentUpdateFrame(frame, options, deps));
   try {
     return await deps.withDeploymentLock(options.clientDataRoot, async () => {
       try {
@@ -505,7 +484,7 @@ export async function runManagedRuntimeHostUpdateCli(
 export async function runManagedRuntimeHostSelectedUpdateCli(
   options: RuntimeHostSelectedUpdateCliOptions,
   overrides: Partial<RuntimeHostSelectedUpdateCliDeps> = {},
-  observer: RuntimeHostUpdateCliObserver = {},
+  frameSink?: RuntimeHostUpdateFrameSink,
 ): Promise<number> {
   const deps: RuntimeHostSelectedUpdateCliDeps = {
     resolveSelection: resolveManagedRuntimeHostUpdateSelection,
@@ -515,6 +494,8 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
     writeError: (value) => process.stderr.write(value),
     ...overrides,
   };
+  const emit =
+    frameSink ?? ((frame: RuntimeHostUpdateFrame) => presentUpdateFrame(frame, options, deps));
 
   try {
     const selection = await deps.resolveSelection({
@@ -523,7 +504,7 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
       selector: options.selector,
       expectedTarget: options.expectedTarget,
     });
-    return await runManagedRuntimeHostResolvedUpdateCli(options, selection, deps, observer);
+    return await runManagedRuntimeHostResolvedUpdateCli(options, selection, deps, emit);
   } catch (error) {
     const code =
       error instanceof RuntimeHostUpdateDiscoveryError ||
@@ -532,7 +513,7 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
         ? error.code
         : 'update_resolution_failed';
     const message = error instanceof Error ? error.message : String(error);
-    emitSelectedUpdateTerminal(options, deps, observer, {
+    emit({
       schemaVersion: 1,
       kind: 'error',
       action: 'update',
@@ -553,7 +534,7 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
   options: RuntimeHostSelectedUpdateCliOptions,
   selection: RuntimeHostUpdateSelection,
   overrides: Partial<RuntimeHostResolvedUpdateCliDeps> = {},
-  observer: RuntimeHostUpdateCliObserver = {},
+  frameSink?: RuntimeHostUpdateFrameSink,
 ): Promise<number> {
   const deps: RuntimeHostResolvedUpdateCliDeps = {
     withPackage: withRuntimeHostRegistryUpdatePackage,
@@ -562,10 +543,12 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
     writeError: (value) => process.stderr.write(value),
     ...overrides,
   };
+  const emit =
+    frameSink ?? ((frame: RuntimeHostUpdateFrame) => presentUpdateFrame(frame, options, deps));
 
   try {
     if (selection.outcome.kind === 'manual_action') {
-      emitSelectedUpdateTerminal(options, deps, observer, {
+      emit({
         schemaVersion: 1,
         kind: 'error',
         action: 'update',
@@ -596,7 +579,7 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
           },
         },
         {},
-        observer,
+        emit,
       );
     };
     return selection.outcome.kind === 'current'
@@ -610,7 +593,7 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
         ? error.code
         : 'update_resolution_failed';
     const message = error instanceof Error ? error.message : String(error);
-    emitSelectedUpdateTerminal(options, deps, observer, {
+    emit({
       schemaVersion: 1,
       kind: 'error',
       action: 'update',
@@ -627,16 +610,15 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
   }
 }
 
-function emitSelectedUpdateTerminal(
-  options: RuntimeHostSelectedUpdateCliOptions,
+function presentUpdateFrame(
+  frame: RuntimeHostUpdateFrame,
+  options: Pick<RuntimeHostUpdateCliOptions, 'json' | 'framed'>,
   deps: Pick<RuntimeHostResolvedUpdateCliDeps, 'writeOutput' | 'writeError'>,
-  observer: RuntimeHostUpdateCliObserver,
-  frame: Exclude<RuntimeHostUpdateFrame, { kind: 'progress' }>,
 ): void {
-  observer.onFrame?.(frame);
-  if (observer.suppressPresentation) return;
   if (options.framed) {
     deps.writeOutput(encodeRuntimeHostServiceManagementFrame(frame));
+  } else if (frame.kind === 'progress') {
+    if (!options.json) deps.writeError(`${humanPhase(frame.phase)}\n`);
   } else if (options.json) {
     deps.writeOutput(`${JSON.stringify(frame)}\n`);
   } else if (frame.kind === 'error') {

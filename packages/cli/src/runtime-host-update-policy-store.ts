@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
   isProductReleaseVersion,
@@ -90,12 +90,22 @@ export async function writeRuntimeHostManagedUpdatePolicy(
   const path = resolveRuntimeHostManagedUpdatePolicyPath(clientDataRoot);
   if (record === null) {
     try {
-      await rm(path, { force: true });
+      await unlink(path);
+    } catch (error) {
+      if (isNodeError(error, 'ENOENT')) return;
+      throw new RuntimeHostUpdatePolicyError(
+        'update_policy_write_failed',
+        `Unable to remove the managed Runtime Host update policy at ${path}`,
+        { cause: error },
+      );
+    }
+    try {
+      await syncDirectory(dirname(path));
       return;
     } catch (error) {
       throw new RuntimeHostUpdatePolicyError(
         'update_policy_write_failed',
-        `Unable to remove the managed Runtime Host update policy at ${path}`,
+        `Unable to persist removal of the managed Runtime Host update policy at ${path}`,
         { cause: error },
       );
     }
@@ -113,12 +123,7 @@ export async function writeRuntimeHostManagedUpdatePolicy(
       await file.close();
     }
     await rename(temporaryPath, path);
-    const parent = await open(directory, 'r');
-    try {
-      await parent.sync();
-    } finally {
-      await parent.close();
-    }
+    await syncDirectory(directory);
   } catch (error) {
     throw new RuntimeHostUpdatePolicyError(
       'update_policy_write_failed',
@@ -127,6 +132,15 @@ export async function writeRuntimeHostManagedUpdatePolicy(
     );
   } finally {
     await rm(temporaryPath, { force: true });
+  }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const directory = await open(path, 'r');
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
   }
 }
 

@@ -29,7 +29,7 @@ import {
   manageRuntimeHostService,
   resolveRuntimeHostManagedServiceId,
   RuntimeHostServiceManagerError,
-  withRuntimeHostManagedServiceReconciliationLock,
+  withRuntimeHostManagedServiceDeploymentLock,
   type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
@@ -77,7 +77,7 @@ interface RuntimeHostUpdateReconcileCliOptions {
 }
 
 interface RuntimeHostUpdateReconciliationDeps {
-  readonly withReconciliationLock: typeof withRuntimeHostManagedServiceReconciliationLock;
+  readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly readPolicy: typeof readRuntimeHostManagedUpdatePolicy;
   readonly writePolicy: typeof writeRuntimeHostManagedUpdatePolicy;
   readonly manage: typeof manageRuntimeHostService;
@@ -96,7 +96,7 @@ export async function runManagedRuntimeHostUpdatePolicyCli(
   try {
     const requestedPolicy = options.policy;
     const record = requestedPolicy
-      ? await deps.withReconciliationLock(options.clientDataRoot, async () => {
+      ? await deps.withDeploymentLock(options.clientDataRoot, async () => {
           if (requestedPolicy.kind === 'manual') {
             await deps.writePolicy(options.clientDataRoot, null);
             return null;
@@ -151,79 +151,69 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
 ): Promise<number> {
   const deps = reconciliationDeps(overrides);
   try {
-    return await deps.withReconciliationLock(options.clientDataRoot, async () => {
-      const record = await deps.readPolicy(options.clientDataRoot);
-      if (!record) {
-        writeFrame(
-          {
-            schemaVersion: 1,
-            kind: 'result',
-            action: 'reconcile_update',
-            updatePolicy: { policy: { kind: 'manual' } },
-            reconciliation: { kind: 'disabled' },
-          },
-          options,
-          deps,
-        );
-        return 0;
-      }
-      const selection = await deps.resolveSelection({
-        clientDataRoot: options.clientDataRoot,
-        defaultRootPath: options.defaultRootPath,
-        selector: policySelector(record.policy),
-        expectedTarget: record.target,
-      });
-      const updatePolicy = policyResult(record);
-      if (selection.outcome.kind === 'manual_action') {
-        writeFrame(
-          {
-            schemaVersion: 1,
-            kind: 'result',
-            action: 'reconcile_update',
-            updatePolicy,
-            service: selection.service,
-            reconciliation: {
-              kind: 'manual_action',
-              candidate: {
-                version: selection.candidate.version,
-                integrity: selection.candidate.integrity,
-              },
-              reason: selection.outcome.reason,
-            },
-          },
-          options,
-          deps,
-        );
-        return 1;
-      }
-
-      let terminal: ReconcileUpdateFrame | undefined;
-      const selectedOptions: RuntimeHostSelectedUpdateCliOptions = {
-        json: false,
-        framed: false,
-        clientDataRoot: options.clientDataRoot,
-        defaultRootPath: options.defaultRootPath,
-        selector: selection.selector,
-        expectedTarget: record.target,
-      };
-      const exitCode = await deps.applySelection(
-        selectedOptions,
-        selection,
-        {},
+    const record = await deps.readPolicy(options.clientDataRoot);
+    if (!record) {
+      writeFrame(
         {
-          suppressPresentation: true,
-          onFrame: (frame) => {
-            const mapped = reconcileFrame(frame, updatePolicy);
-            writeFrame(mapped, options, deps);
-            if (mapped.kind !== 'progress') terminal = mapped;
+          schemaVersion: 1,
+          kind: 'result',
+          action: 'reconcile_update',
+          updatePolicy: { policy: { kind: 'manual' } },
+          reconciliation: { kind: 'disabled' },
+        },
+        options,
+        deps,
+      );
+      return 0;
+    }
+    const selection = await deps.resolveSelection({
+      clientDataRoot: options.clientDataRoot,
+      defaultRootPath: options.defaultRootPath,
+      selector: policySelector(record.policy),
+      expectedTarget: record.target,
+    });
+    const updatePolicy = policyResult(record);
+    if (selection.outcome.kind === 'manual_action') {
+      writeFrame(
+        {
+          schemaVersion: 1,
+          kind: 'result',
+          action: 'reconcile_update',
+          updatePolicy,
+          service: selection.service,
+          reconciliation: {
+            kind: 'manual_action',
+            candidate: {
+              version: selection.candidate.version,
+              integrity: selection.candidate.integrity,
+            },
+            reason: selection.outcome.reason,
           },
         },
+        options,
+        deps,
       );
-      if (!terminal) {
-        throw new Error('The managed Runtime Host update did not return a terminal result');
-      }
-      return exitCode;
+      return 1;
+    }
+
+    let terminal: ReconcileUpdateFrame | undefined;
+    const selectedOptions: RuntimeHostSelectedUpdateCliOptions = {
+      json: false,
+      framed: false,
+      clientDataRoot: options.clientDataRoot,
+      defaultRootPath: options.defaultRootPath,
+      selector: selection.selector,
+      expectedTarget: record.target,
+    };
+    const exitCode = await deps.applySelection(selectedOptions, selection, {}, (frame) => {
+      const mapped = reconcileFrame(frame, updatePolicy);
+      writeFrame(mapped, options, deps);
+      if (mapped.kind !== 'progress') terminal = mapped;
     });
+    if (!terminal) {
+      throw new Error('The managed Runtime Host update did not return a terminal result');
+    }
+    return exitCode;
   } catch (error) {
     writeFrame(reconcileError(error), options, deps);
     return 1;
@@ -234,7 +224,7 @@ function reconciliationDeps(
   overrides: Partial<RuntimeHostUpdateReconciliationDeps>,
 ): RuntimeHostUpdateReconciliationDeps {
   return {
-    withReconciliationLock: withRuntimeHostManagedServiceReconciliationLock,
+    withDeploymentLock: withRuntimeHostManagedServiceDeploymentLock,
     readPolicy: readRuntimeHostManagedUpdatePolicy,
     writePolicy: writeRuntimeHostManagedUpdatePolicy,
     manage: manageRuntimeHostService,
@@ -331,6 +321,16 @@ function writeFrame(
   options: { readonly json: boolean; readonly framed: boolean },
   deps: Pick<RuntimeHostUpdateReconciliationDeps, 'writeOutput' | 'writeError'>,
 ): void {
+  if (frame.kind === 'progress') {
+    if (options.framed) {
+      deps.writeOutput(encodeRuntimeHostServiceManagementFrame(frame));
+    } else if (!options.json) {
+      deps.writeError(
+        `Reconciling Maka ${frame.currentVersion} toward ${frame.targetVersion} (${frame.phase})...\n`,
+      );
+    }
+    return;
+  }
   if (options.framed) {
     deps.writeOutput(encodeRuntimeHostServiceManagementFrame(frame));
     return;
@@ -341,12 +341,6 @@ function writeFrame(
   }
   if (frame.kind === 'error') {
     deps.writeError(`${frame.error.message}\n`);
-    return;
-  }
-  if (frame.kind === 'progress') {
-    deps.writeError(
-      `Reconciling Maka ${frame.currentVersion} toward ${frame.targetVersion} (${frame.phase})...\n`,
-    );
     return;
   }
   deps.writeOutput(`${humanResult(frame)}\n`);

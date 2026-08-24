@@ -37,7 +37,6 @@ import {
   RuntimeHostServiceManagerError,
   withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLifecycleLock,
-  withRuntimeHostManagedServiceReconciliationLock,
   type RuntimeHostManagedServiceInput,
   type RuntimeHostManagedServiceResult,
   type RuntimeHostManagedServiceTarget,
@@ -58,7 +57,6 @@ export interface RuntimeHostServiceManagementCliDeps {
   readonly manage: typeof manageRuntimeHostService;
   readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
-  readonly withReconciliationLock: typeof withRuntimeHostManagedServiceReconciliationLock;
   readonly clearUpdatePolicy: (clientDataRoot: string) => Promise<void>;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly writeOutput: (value: string) => unknown;
@@ -73,7 +71,6 @@ export async function runManagedRuntimeHostServiceCli(
     manage: manageRuntimeHostService,
     withDeploymentLock: withRuntimeHostManagedServiceDeploymentLock,
     withLifecycleLock: withRuntimeHostManagedServiceLifecycleLock,
-    withReconciliationLock: withRuntimeHostManagedServiceReconciliationLock,
     clearUpdatePolicy: (clientDataRoot) =>
       writeRuntimeHostManagedUpdatePolicy(clientDataRoot, null),
     createBackend: createPlatformRuntimeHostServiceBackend,
@@ -95,10 +92,9 @@ export async function runManagedRuntimeHostServiceCli(
         : options.action === 'retire'
           ? await deps.withLifecycleLock(options.clientDataRoot, manage)
           : options.action === 'uninstall'
-            ? await deps.withReconciliationLock(options.clientDataRoot, async () => {
-                const uninstalled = await mutate();
+            ? await deps.withDeploymentLock(options.clientDataRoot, async () => {
                 await deps.clearUpdatePolicy(options.clientDataRoot);
-                return uninstalled;
+                return await deps.withLifecycleLock(options.clientDataRoot, manage);
               })
             : await mutate();
     const blocked = result.action === 'retire' && result.retirement.kind === 'active_tasks';
