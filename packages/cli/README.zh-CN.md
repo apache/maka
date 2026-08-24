@@ -125,8 +125,9 @@ maka runtime-host service check-update --target next --json
 ```
 
 结果会把频道固定为精确版本和 package integrity，并说明 package 是否提供足够的兼容性证据，
-可供未来的无人值守更新使用；该命令不会安装或切换 package。更新程序仍须以该 integrity
-校验下载的 archive，并从解压后的 package manifest 中再次确认兼容性值。
+可供无人值守流程使用；该命令不会安装或切换 package。安装管理方可以把同一
+selector 传给 `service update --target`。该路径会先校验 archive 与解包后的 manifest，再委托给
+现有的精确 package 更新事务；需要人工审查的候选不会改变当前 Host。
 
 ## 卸载
 

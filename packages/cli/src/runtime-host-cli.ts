@@ -88,6 +88,7 @@ export type RuntimeHostCliCommand =
       framed?: true;
       clientDataRoot?: string;
       expectedTarget: RuntimeHostManagedServiceTarget;
+      selector?: RuntimeHostUpdateSelector;
       allowInterruptActiveTasks?: true;
     }
   | {
@@ -291,7 +292,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
         if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
         clientDataRoot = value;
       },
-      ...(action === 'check-update'
+      ...(action === 'check-update' || action === 'update'
         ? {
             '--target': (value: string) => {
               if (updateTarget !== undefined) return error('Duplicate --target');
@@ -319,12 +320,16 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     };
   }
   if (action === 'update') {
+    const selector =
+      updateTarget === undefined ? undefined : parseUpdateSelector(updateTarget, 'update');
+    if (selector && 'kind' in selector && selector.kind === 'error') return selector;
     return {
       kind: 'runtime-host-service-update',
       json: options.json,
       ...(options.framed ? { framed: true } : {}),
       ...(clientDataRoot ? { clientDataRoot } : {}),
       expectedTarget: options.expectedTarget!,
+      ...(selector ? { selector } : {}),
       ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
     };
   }
@@ -340,8 +345,9 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
 
 function parseUpdateSelector(
   value: string | undefined,
+  action: 'check-update' | 'update' = 'check-update',
 ): RuntimeHostUpdateSelector | RuntimeHostCliError {
-  if (!value) return error('runtime-host service check-update requires --target');
+  if (!value) return error(`runtime-host service ${action} requires --target`);
   if (value === 'latest' || value === 'next') {
     return { kind: 'channel', channel: value };
   }

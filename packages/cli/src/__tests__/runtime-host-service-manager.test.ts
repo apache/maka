@@ -1564,6 +1564,25 @@ describe('managed Runtime Host service', () => {
       retirementFailure?.kind === 'error' ? retirementFailure.error.code : undefined,
       'retirement_failed',
     );
+
+    statusReads = 0;
+    observedVersion = '3.0.0';
+    operatorFailure = undefined;
+    output = '';
+    order.length = 0;
+    assert.equal(
+      await runManagedRuntimeHostUpdateCli(
+        { ...options, expectedCurrentVersion: '1.0.0' },
+        overrides,
+      ),
+      1,
+    );
+    assert.deepEqual(order, []);
+    const staleCandidate = decodeRuntimeHostServiceManagementFrame(output.trim());
+    assert.equal(
+      staleCandidate?.kind === 'error' ? staleCandidate.error.code : undefined,
+      'target_mismatch',
+    );
   });
 
   it('rejects invalid Project roots and temporary npx launch paths before deployment', async (t) => {

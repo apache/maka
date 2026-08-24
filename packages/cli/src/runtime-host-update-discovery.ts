@@ -56,22 +56,25 @@ export interface RuntimeHostUpdateCandidate {
   readonly compatibility?: number;
 }
 
-type RuntimeHostUpdateCheckFrame = Extract<
+export type RuntimeHostUpdateCheckFrame = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result'; action: 'check_update' }
 >;
 type RuntimeHostUpdateCheck = RuntimeHostUpdateCheckFrame['updateCheck'];
 
-export interface RuntimeHostUpdateCheckCliOptions {
-  readonly json: boolean;
-  readonly framed: boolean;
+export interface RuntimeHostUpdateCheckOptions {
   readonly clientDataRoot: string;
   readonly defaultRootPath: string;
   readonly selector: RuntimeHostUpdateSelector;
   readonly expectedTarget?: RuntimeHostManagedServiceTarget;
 }
 
-class RuntimeHostUpdateDiscoveryError extends Error {
+export interface RuntimeHostUpdateCheckCliOptions extends RuntimeHostUpdateCheckOptions {
+  readonly json: boolean;
+  readonly framed: boolean;
+}
+
+export class RuntimeHostUpdateDiscoveryError extends Error {
   constructor(
     readonly code: 'target_unavailable' | 'registry_unavailable' | 'invalid_registry_metadata',
     message: string,
@@ -86,51 +89,7 @@ export async function runManagedRuntimeHostUpdateCheckCli(
   options: RuntimeHostUpdateCheckCliOptions,
 ): Promise<number> {
   try {
-    const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-    const backend = createPlatformRuntimeHostServiceBackend(serviceId);
-    const status = await manageRuntimeHostService(
-      {
-        action: 'status',
-        clientDataRoot: options.clientDataRoot,
-        defaultRootPath: options.defaultRootPath,
-        nodePath: process.execPath,
-        cliPath: process.argv[1] ?? '',
-        ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
-      },
-      backend,
-    );
-    const currentVersion = status.service.installedVersion;
-    const config = status.service.config;
-    const service = runtimeHostServiceSummary(status);
-    const serviceState = service.state;
-    if (
-      !status.service.installed ||
-      serviceState === 'not_installed' ||
-      !currentVersion ||
-      !config?.managedDeploymentRoot
-    ) {
-      throw new RuntimeHostServiceManagerError(
-        'not_installed',
-        'A Maka-managed Runtime Host service is required to check for updates',
-      );
-    }
-    await backend.verifyDeployment(config);
-    const [candidate, currentCompatibility] = await Promise.all([
-      resolveRuntimeHostRegistryUpdateCandidate(options.selector),
-      readPackageCompatibility(config.launch.cliPath, currentVersion),
-    ]);
-    const assessment = assessRuntimeHostUpdate(currentVersion, currentCompatibility, candidate);
-    const frame: RuntimeHostUpdateCheckFrame = {
-      schemaVersion: 1,
-      kind: 'result',
-      action: 'check_update',
-      service: { ...service, state: serviceState, installedVersion: currentVersion },
-      updateCheck: {
-        selector: options.selector,
-        candidate: { version: candidate.version, integrity: candidate.integrity },
-        outcome: assessment,
-      },
-    };
+    const { frame } = await resolveManagedRuntimeHostUpdateCheck(options);
     writeSuccess(frame, options);
     return 0;
   } catch (error) {
@@ -143,6 +102,64 @@ export async function runManagedRuntimeHostUpdateCheckCli(
     writeFailure(code, message, options);
     return 1;
   }
+}
+
+export interface RuntimeHostUpdateCheckResolution {
+  readonly frame: RuntimeHostUpdateCheckFrame;
+  readonly candidate: RuntimeHostUpdateCandidate;
+}
+
+export async function resolveManagedRuntimeHostUpdateCheck(
+  options: RuntimeHostUpdateCheckOptions,
+): Promise<RuntimeHostUpdateCheckResolution> {
+  const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
+  const backend = createPlatformRuntimeHostServiceBackend(serviceId);
+  const status = await manageRuntimeHostService(
+    {
+      action: 'status',
+      clientDataRoot: options.clientDataRoot,
+      defaultRootPath: options.defaultRootPath,
+      nodePath: process.execPath,
+      cliPath: process.argv[1] ?? '',
+      ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+    },
+    backend,
+  );
+  const currentVersion = status.service.installedVersion;
+  const config = status.service.config;
+  const service = runtimeHostServiceSummary(status);
+  const serviceState = service.state;
+  if (
+    !status.service.installed ||
+    serviceState === 'not_installed' ||
+    !currentVersion ||
+    !config?.managedDeploymentRoot
+  ) {
+    throw new RuntimeHostServiceManagerError(
+      'not_installed',
+      'A Maka-managed Runtime Host service is required to check for updates',
+    );
+  }
+  await backend.verifyDeployment(config);
+  const [candidate, currentCompatibility] = await Promise.all([
+    resolveRuntimeHostRegistryUpdateCandidate(options.selector),
+    readPackageCompatibility(config.launch.cliPath, currentVersion),
+  ]);
+  const assessment = assessRuntimeHostUpdate(currentVersion, currentCompatibility, candidate);
+  return {
+    candidate,
+    frame: {
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'check_update',
+      service: { ...service, state: serviceState, installedVersion: currentVersion },
+      updateCheck: {
+        selector: options.selector,
+        candidate: { version: candidate.version, integrity: candidate.integrity },
+        outcome: assessment,
+      },
+    },
+  };
 }
 
 export function assessRuntimeHostUpdate(

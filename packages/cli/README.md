@@ -133,9 +133,11 @@ maka runtime-host service check-update --target next --json
 ```
 
 The result pins the selected channel to an exact version and package integrity. It also reports
-whether the package carries enough compatibility evidence for a future unattended update; this
-command never installs or switches a package. An updater must still verify the downloaded archive
-against that integrity and confirm the compatibility value from its extracted package manifest.
+whether the package carries enough compatibility evidence for unattended use; this command never
+installs or switches a package. Installation-management callers can pass the same selector to
+`service update --target`. That path verifies the archive and extracted manifest before delegating
+to the existing exact-package update transaction, and does not mutate a candidate that requires
+manual review.
 
 ## Uninstall
 

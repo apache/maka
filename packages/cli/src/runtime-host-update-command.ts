@@ -54,6 +54,15 @@ import {
   createPlatformRuntimeHostServiceBackend,
   runtimeHostServiceSummary,
 } from './runtime-host-service-management-command.js';
+import {
+  resolveManagedRuntimeHostUpdateCheck,
+  RuntimeHostUpdateDiscoveryError,
+} from './runtime-host-update-discovery.js';
+import {
+  acquireRuntimeHostRegistryUpdatePackage,
+  RuntimeHostUpdatePackageError,
+} from './runtime-host-update-package.js';
+import type { RuntimeHostUpdateSelector } from './runtime-host-cli.js';
 
 const OPERATOR_TIMEOUT_MS = 2 * 60_000;
 const OPERATOR_OUTPUT_MAX_BYTES = 256 * 1024;
@@ -66,7 +75,13 @@ export interface RuntimeHostUpdateCliOptions {
   readonly sourcePackageRoot: string;
   readonly version: string;
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
+  readonly expectedCurrentVersion?: string;
   readonly allowInterruptActiveTasks?: boolean;
+}
+
+export interface RuntimeHostSelectedUpdateCliOptions
+  extends Omit<RuntimeHostUpdateCliOptions, 'sourcePackageRoot' | 'version'> {
+  readonly selector: RuntimeHostUpdateSelector;
 }
 
 interface RuntimeHostUpdateCliDeps {
@@ -83,6 +98,14 @@ interface RuntimeHostUpdateCliDeps {
     args: readonly string[],
     invocation?: RuntimeHostOperatorInvocation,
   ) => Promise<RuntimeHostServiceManagementFrame>;
+  readonly writeOutput: (value: string) => unknown;
+  readonly writeError: (value: string) => unknown;
+}
+
+interface RuntimeHostSelectedUpdateCliDeps {
+  readonly resolveCheck: typeof resolveManagedRuntimeHostUpdateCheck;
+  readonly acquire: typeof acquireRuntimeHostRegistryUpdatePackage;
+  readonly update: typeof runManagedRuntimeHostUpdateCli;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
 }
@@ -151,6 +174,16 @@ export async function runManagedRuntimeHostUpdateCli(
         } as const;
         const status = await deps.manage({ ...common, action: 'status' }, backend);
         const currentVersion = requireManagedVersion(status);
+        if (
+          options.expectedCurrentVersion &&
+          currentVersion !== options.expectedCurrentVersion &&
+          currentVersion !== options.version
+        ) {
+          throw new RuntimeHostServiceManagerError(
+            'target_mismatch',
+            'The managed Runtime Host changed after its update candidate was selected',
+          );
+        }
         const serviceConfig = status.service.config;
         if (!serviceConfig?.managedDeploymentRoot) {
           throw new RuntimeHostServiceManagerError(
@@ -373,6 +406,102 @@ export async function runManagedRuntimeHostUpdateCli(
   }
 }
 
+export async function runManagedRuntimeHostSelectedUpdateCli(
+  options: RuntimeHostSelectedUpdateCliOptions,
+  overrides: Partial<RuntimeHostSelectedUpdateCliDeps> = {},
+): Promise<number> {
+  const deps: RuntimeHostSelectedUpdateCliDeps = {
+    resolveCheck: resolveManagedRuntimeHostUpdateCheck,
+    acquire: acquireRuntimeHostRegistryUpdatePackage,
+    update: runManagedRuntimeHostUpdateCli,
+    writeOutput: (value) => process.stdout.write(value),
+    writeError: (value) => process.stderr.write(value),
+    ...overrides,
+  };
+  const emit = (frame: Exclude<RuntimeHostServiceManagementFrame, { kind: 'progress' }>): void => {
+    if (options.framed) {
+      deps.writeOutput(encodeRuntimeHostServiceManagementFrame(frame));
+    } else if (options.json) {
+      deps.writeOutput(`${JSON.stringify(frame)}\n`);
+    } else if (frame.kind === 'error') {
+      deps.writeError(`${frame.error.message}\n`);
+    } else {
+      if (frame.action !== 'update') {
+        throw new TypeError('Managed Runtime Host update returned an unrelated result');
+      }
+      deps.writeOutput(`${humanResult(frame)}\n`);
+    }
+  };
+
+  try {
+    const resolution = await deps.resolveCheck({
+      clientDataRoot: options.clientDataRoot,
+      defaultRootPath: options.defaultRootPath,
+      selector: options.selector,
+      expectedTarget: options.expectedTarget,
+    });
+    const { frame, candidate } = resolution;
+    if (frame.updateCheck.outcome.kind === 'current') {
+      emit({
+        schemaVersion: 1,
+        kind: 'result',
+        action: 'update',
+        service: frame.service,
+        ...operatorCapabilities(),
+        update: { kind: 'already_current', version: candidate.version },
+      });
+      return 0;
+    }
+    if (frame.updateCheck.outcome.kind === 'manual_action') {
+      emit({
+        schemaVersion: 1,
+        kind: 'error',
+        action: 'update',
+        error: {
+          code: 'update_not_admitted',
+          message: manualUpdateRequiredMessage(candidate.version, frame.updateCheck.outcome.reason),
+        },
+      });
+      return 1;
+    }
+
+    const acquired = await deps.acquire(candidate);
+    try {
+      const { selector: _selector, ...updateOptions } = options;
+      return await deps.update({
+        ...updateOptions,
+        sourcePackageRoot: acquired.root,
+        version: candidate.version,
+        expectedCurrentVersion: frame.service.installedVersion,
+      });
+    } finally {
+      await acquired.cleanup().catch(() => undefined);
+    }
+  } catch (error) {
+    const code =
+      error instanceof RuntimeHostUpdateDiscoveryError ||
+      error instanceof RuntimeHostServiceManagerError ||
+      error instanceof RuntimeHostUpdatePackageError
+        ? error.code
+        : 'update_resolution_failed';
+    const message = error instanceof Error ? error.message : String(error);
+    emit({
+      schemaVersion: 1,
+      kind: 'error',
+      action: 'update',
+      error: {
+        code:
+          truncateUtf8(code, RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES) ||
+          'update_resolution_failed',
+        message:
+          truncateUtf8(message, RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES) ||
+          'Unable to prepare the Runtime Host update',
+      },
+    });
+    return 1;
+  }
+}
+
 function progress(
   phase: RuntimeHostServiceUpdatePhase,
   currentVersion: string,
@@ -540,4 +669,24 @@ function humanResult(
     return `Runtime Host ${frame.update.version} was restored to a ready state.`;
   }
   return `Runtime Host was updated from ${frame.update.previousVersion} to ${frame.update.targetVersion}.`;
+}
+
+function manualUpdateRequiredMessage(
+  targetVersion: string,
+  reason:
+    | 'target_not_newer'
+    | 'current_compatibility_unknown'
+    | 'target_compatibility_unknown'
+    | 'compatibility_mismatch',
+): string {
+  if (reason === 'target_not_newer') {
+    return `Maka ${targetVersion} is older than the installed Runtime Host and will not be applied automatically`;
+  }
+  if (reason === 'current_compatibility_unknown') {
+    return 'The installed Runtime Host does not publish enough compatibility evidence for an automatic update';
+  }
+  if (reason === 'target_compatibility_unknown') {
+    return `Maka ${targetVersion} does not publish enough compatibility evidence for an automatic update`;
+  }
+  return `Maka ${targetVersion} requires an explicit manual compatibility transition`;
 }
