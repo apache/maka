@@ -2311,11 +2311,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         sessions.map(async (session) => {
           try {
             const availability = options.onlyResumable
-              ? (await input.driver.getSessionResumeCandidateAvailability?.(session)) ??
+              ? ((await input.driver.getSessionResumeCandidateAvailability?.(session)) ??
                 (await input.driver.getSessionResumeAvailability?.(session)) ??
-                (await inspectSessionResumeAvailability(session))
-              : (await input.driver.getSessionResumeAvailability?.(session)) ??
-                (await inspectSessionResumeAvailability(session));
+                (await inspectSessionResumeAvailability(session)))
+              : ((await input.driver.getSessionResumeAvailability?.(session)) ??
+                (await inspectSessionResumeAvailability(session)));
             return [session.id, availability] as const;
           } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
@@ -2440,8 +2440,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         sessions.find((candidate) => candidate.id === sessionId) ??
         sessions.find((candidate) => candidate.cwd === cwd);
       if (!session) return;
-      const availability =
-        await input.driver.getSessionResumeCandidateAvailability(session);
+      const availability = await input.driver.getSessionResumeCandidateAvailability(session);
       if (availability.available) {
         state.entries.push({
           kind: 'notice',
