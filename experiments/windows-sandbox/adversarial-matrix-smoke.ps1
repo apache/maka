@@ -305,4 +305,5 @@ try {
   Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+$global:LASTEXITCODE = 0
 exit 0
