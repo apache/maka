@@ -39,6 +39,7 @@ const SERVICE_ACTIONS = [
   'stop',
   'restart',
   'retire',
+  'check_update',
   'update',
   'logs',
   'uninstall',
@@ -53,6 +54,13 @@ const NON_RETIRE_SERVICE_ACTIONS = [
   'uninstall',
 ] as const;
 const UPDATE_PHASES = ['checking', 'staging', 'retiring', 'replacing'] as const;
+const UPDATE_CHANNELS = ['latest', 'next'] as const;
+const UPDATE_MANUAL_ONLY_REASONS = [
+  'target_not_newer',
+  'current_compatibility_unknown',
+  'target_compatibility_unknown',
+  'compatibility_mismatch',
+] as const;
 const SERVICE_STATES = ['not_installed', 'stopped', 'starting', 'running', 'failed'] as const;
 const OPERATOR_CAPABILITIES = [
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
@@ -120,6 +128,48 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
       phase: z.enum(UPDATE_PHASES),
       currentVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
       targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+    })
+    .strict(),
+  z
+    .object({
+      ...SERVICE_RESULT_COMMON,
+      action: z.literal('check_update'),
+      updateCheck: z
+        .object({
+          selector: z.discriminatedUnion('kind', [
+            z.object({ kind: z.literal('channel'), channel: z.enum(UPDATE_CHANNELS) }).strict(),
+            z
+              .object({
+                kind: z.literal('exact'),
+                version: boundedNonEmptyString(FIELD_MAX_BYTES),
+              })
+              .strict(),
+          ]),
+          currentVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+          candidate: z
+            .object({
+              version: boundedNonEmptyString(FIELD_MAX_BYTES),
+              integrity: boundedNonEmptyString(FIELD_MAX_BYTES),
+            })
+            .strict(),
+          status: z.enum(['current', 'newer', 'older']),
+          unattended: z.discriminatedUnion('kind', [
+            z.object({ kind: z.literal('not_needed') }).strict(),
+            z
+              .object({
+                kind: z.literal('allowed'),
+                compatibility: z.number().int().positive(),
+              })
+              .strict(),
+            z
+              .object({
+                kind: z.literal('manual_only'),
+                reason: z.enum(UPDATE_MANUAL_ONLY_REASONS),
+              })
+              .strict(),
+          ]),
+        })
+        .strict(),
     })
     .strict(),
   z
