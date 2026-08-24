@@ -424,12 +424,15 @@ export type DesktopRuntimeHostManagementResult = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result' }
 > & {
+  readonly action: DesktopRuntimeHostManagementAction | 'update';
   readonly accessManagementAvailable: boolean;
 };
 
 export type DesktopRuntimeHostManagementResponse =
   | DesktopRuntimeHostManagementResult
-  | Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }>
+  | (Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> & {
+      readonly action: DesktopRuntimeHostManagementAction | 'update';
+    })
   | {
       readonly kind: 'uninstalled';
       readonly retainedStateRoot: string;

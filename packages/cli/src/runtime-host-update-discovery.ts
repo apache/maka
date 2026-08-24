@@ -247,13 +247,9 @@ interface NpmViewResult {
 
 function runNpmView(args: readonly string[]): Promise<NpmViewResult> {
   return new Promise((resolve, reject) => {
-    // Windows requires its command shell to resolve npm.cmd. The only dynamic
-    // argument has already passed the strict release-version/channel parser.
     const child = spawn('npm', args, {
       cwd: homedir(),
       stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-      shell: process.platform === 'win32',
       timeout: REGISTRY_TIMEOUT_MS,
       killSignal: 'SIGKILL',
     });
