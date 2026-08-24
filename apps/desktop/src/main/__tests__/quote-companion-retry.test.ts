@@ -151,11 +151,72 @@ test('retries a busy Side Conversation at the newest settled boundary and clears
   assert.equal(probe.getAttribute('data-error'), '');
 });
 
-function QuoteCompanionProbe() {
+test('does not restart foreground setup when the source Session object refreshes', async () => {
+  const parsed = parseHTML('<html><body><div id="root"></div></body></html>');
+  const { document, window } = parsed;
+  Object.assign(globalThis, {
+    document,
+    window,
+    HTMLElement: window.HTMLElement,
+    HTMLIFrameElement: window.HTMLIFrameElement ?? class HTMLIFrameElement {},
+    Event: window.Event,
+    Node: window.Node,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+
+  let branchCount = 0;
+  const defaults = createFakeWorkbarServices();
+  const services: WorkbarServices = {
+    ...defaults,
+    sideChat: {
+      ...defaults.sideChat,
+      listTurns: async () => [settledTurn('settled-turn')],
+      branchFromTurn: async () => {
+        branchCount += 1;
+        if (branchCount === 1) {
+          return { ok: false as const, reason: 'session_busy' as const };
+        }
+        return await new Promise<never>(() => undefined);
+      },
+    },
+  };
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+
+  const render = (sourceSession: SessionSummary) =>
+    root.render(
+      createElement(WorkbarServicesProvider, {
+        services,
+        children: createElement(QuoteCompanionProbe, { sourceSession }),
+      }),
+    );
+
+  await act(async () => {
+    render(session('source-session'));
+    await Promise.resolve();
+  });
+  const probe = container.firstElementChild;
+  assert.ok(probe);
+  await waitUntil(
+    () => branchCount === 1 && probe.getAttribute('data-preparing') === 'false',
+  );
+
+  await act(async () => {
+    render(session('source-session'));
+    await Promise.resolve();
+  });
+
+  assert.equal(branchCount, 1);
+  assert.equal(probe.getAttribute('data-preparing'), 'false');
+});
+
+function QuoteCompanionProbe(props: { sourceSession?: SessionSummary }) {
   const companion = useQuoteCompanion({
     panelId: 'retry-panel',
     pendingQuotes: [],
-    sourceSession: SOURCE_SESSION,
+    sourceSession: props.sourceSession ?? SOURCE_SESSION,
     locale: 'en',
     onQuotesConsumed: () => undefined,
   });

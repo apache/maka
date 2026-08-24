@@ -106,11 +106,18 @@ export async function prepareAgentGraphRevisionReferences(
     return failure('session_busy', 'A retained linked child is still active');
   }
   const headersById = new Map(input.sessionHeaders.map((header) => [header.id, header]));
-  const hasRetainedGraph =
-    directChildren.some((child) => child.subagentParent?.graph !== undefined) ||
-    requests.some(
-      (request) => headersById.get(request.childSessionId)?.subagentParent?.graph !== undefined,
-    );
+  const referencedGraphs = new Map<string, Set<string>>();
+  const retainGraph = (header: SessionHeader | undefined) => {
+    const parent = header?.subagentParent;
+    if (!parent?.graph) return;
+    const graphIds = referencedGraphs.get(parent.parentSessionId) ?? new Set<string>();
+    graphIds.add(parent.graph.graphId);
+    referencedGraphs.set(parent.parentSessionId, graphIds);
+  };
+  for (const request of requests) retainGraph(headersById.get(request.childSessionId));
+  if (input.kind === 'side_conversation') {
+    for (const child of directChildren) retainGraph(child);
+  }
   const retainedSessionGraphFailure = async () => {
     try {
       if ((await dependencies.graph.readSessionState(input.sourceSessionId)) === 'live') {
@@ -121,8 +128,30 @@ export async function prepareAgentGraphRevisionReferences(
     }
     return undefined;
   };
-  if (input.kind === 'side_conversation' && hasRetainedGraph) {
-    const graphFailure = await retainedSessionGraphFailure();
+  const retainedExactGraphFailure = async () => {
+    for (const [rootSessionId, graphIds] of referencedGraphs) {
+      for (const graphId of graphIds) {
+        let state: 'absent' | 'live' | 'terminal';
+        try {
+          state = await dependencies.graph.readGraphState(rootSessionId, graphId);
+        } catch {
+          return failure('operation_unavailable', 'Retained Agent Graph state is unavailable');
+        }
+        if (state === 'live') {
+          return failure('session_busy', 'A retained Agent Graph is not terminal');
+        }
+        if (state === 'absent') {
+          return failure(
+            'operation_unavailable',
+            'Retained Agent Graph control state is unavailable',
+          );
+        }
+      }
+    }
+    return undefined;
+  };
+  if (input.kind === 'side_conversation') {
+    const graphFailure = await retainedExactGraphFailure();
     if (graphFailure) return graphFailure;
   }
   if (
@@ -142,33 +171,8 @@ export async function prepareAgentGraphRevisionReferences(
   if (input.kind === 'revision') {
     const graphFailure = await retainedSessionGraphFailure();
     if (graphFailure) return graphFailure;
-  }
-  const referencedGraphs = new Map<string, Set<string>>();
-  for (const request of requests) {
-    const parent = headersById.get(request.childSessionId)?.subagentParent;
-    if (!parent?.graph) continue;
-    const graphIds = referencedGraphs.get(parent.parentSessionId) ?? new Set<string>();
-    graphIds.add(parent.graph.graphId);
-    referencedGraphs.set(parent.parentSessionId, graphIds);
-  }
-  for (const [rootSessionId, graphIds] of referencedGraphs) {
-    for (const graphId of graphIds) {
-      let state: 'absent' | 'live' | 'terminal';
-      try {
-        state = await dependencies.graph.readGraphState(rootSessionId, graphId);
-      } catch {
-        return failure('operation_unavailable', 'Retained Agent Graph state is unavailable');
-      }
-      if (state === 'live') {
-        return failure('session_busy', 'A retained Agent Graph is not terminal');
-      }
-      if (state === 'absent') {
-        return failure(
-          'operation_unavailable',
-          'Retained Agent Graph control state is unavailable',
-        );
-      }
-    }
+    const exactGraphFailure = await retainedExactGraphFailure();
+    if (exactGraphFailure) return exactGraphFailure;
   }
 
   const references = new Map<string, MutableExternalChildReferences>();

@@ -151,8 +151,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   // A created fork is hidden immediately, but is not considered usable until
   // onForkCommitted promotes it.
   const pendingForkIdRef = useRef<string | null>(null);
+  const sourceSessionRef = useRef(sourceSession);
+  sourceSessionRef.current = sourceSession;
+  const sourceSessionId = sourceSession?.id;
   const sourceSessionIdRef = useRef(sourceSession?.id);
-  sourceSessionIdRef.current = sourceSession?.id;
+  sourceSessionIdRef.current = sourceSessionId;
   const forkSetupPromiseRef = useRef<Promise<EnsureCompanionForkResult> | null>(null);
   const stopRequestedRef = useRef(false);
   const activeTurnIdRef = useRef<string | null>(null);
@@ -272,7 +275,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       const existing = companionRef.current;
       if (existing) return Promise.resolve({ status: 'ready', session: existing });
       if (forkSetupPromiseRef.current) return forkSetupPromiseRef.current;
-      if (!sourceSession) {
+      const currentSourceSession = sourceSessionRef.current;
+      if (!currentSourceSession) {
         return Promise.resolve({ status: 'error', code: 'fork_setup_failed' });
       }
 
@@ -280,7 +284,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       if (showPreparing) setPreparing(true);
       const promise = ensureCompanionFork({
         api: sideChat,
-        sourceSession,
+        sourceSession: currentSourceSession,
         panelId,
         name,
         isDisposed: () => !mountedRef.current,
@@ -326,15 +330,15 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       forkSetupPromiseRef.current = promise;
       return promise;
     },
-    [commitFork, mountedRef, panelId, sideChat, sourceSession],
+    [commitFork, mountedRef, panelId, sideChat],
   );
 
   useEffect(() => {
-    if (sourceSession) void ensureFork(copyRef.current.defaultName);
-  }, [ensureFork, sourceSession]);
+    if (sourceSessionId) void ensureFork(copyRef.current.defaultName);
+  }, [ensureFork, sourceSessionId]);
 
   useEffect(() => {
-    if (!sourceSession || !forkRetryPending) return;
+    if (!sourceSessionId || !forkRetryPending) return;
     let retrying = false;
     const retry = () => {
       if (retrying || !mountedRef.current || companionRef.current) return;
@@ -350,7 +354,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     };
     const unsubscribe = sideChat.subscribeSessionChanges((event) => {
       if (
-        event.sessionId === sourceSession.id &&
+        event.sessionId === sourceSessionId &&
         (event.reason === 'turn-status-change' ||
           event.reason === 'status-change' ||
           event.reason === 'message-appended')
@@ -363,7 +367,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       globalThis.clearInterval(retryTimer);
       unsubscribe();
     };
-  }, [ensureFork, forkRetryPending, mountedRef, sideChat, sourceSession]);
+  }, [ensureFork, forkRetryPending, mountedRef, sideChat, sourceSessionId]);
 
   // The fork is ephemeral (用完即弃): when the panel is dismissed — 退出,
   // switching source session — unsubscribe and remove the fork so it never

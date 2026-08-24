@@ -66,6 +66,7 @@ const GRAPH_REVISION_TARGET_ID = 'graph-revision-target';
 const GRAPH_SIDE_CONVERSATION_TARGET_ID = 'graph-side-conversation-target';
 const GRAPH_SIDE_CONVERSATION_REMOVAL_TARGET_ID = 'graph-side-conversation-removal-target';
 const ARCHIVED_SIDE_CONVERSATION_TARGET_ID = 'archived-side-conversation-target';
+const ACTIVE_SOURCE_SIDE_CONVERSATION_TARGET_ID = 'active-source-side-conversation-target';
 
 test('two Clients share exact retryable Session branch and revision authority', {
   skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
@@ -121,6 +122,7 @@ test('two Clients share exact retryable Session branch and revision authority', 
       GRAPH_REVISION_TARGET_ID,
       GRAPH_SIDE_CONVERSATION_TARGET_ID,
       ARCHIVED_SIDE_CONVERSATION_TARGET_ID,
+      ACTIVE_SOURCE_SIDE_CONVERSATION_TARGET_ID,
       graphChildSessionId,
     );
   } finally {
@@ -461,6 +463,66 @@ async function verifyConcurrentRevisionAuthority(
         throw new AggregateError(
           [assertionError, cleanupError],
           'session_busy check failed and parked-turn cleanup failed',
+        );
+      }
+      throw cleanupError;
+    }
+    if (assertionError !== undefined) throw assertionError;
+
+    const activeSourceTurn = requireStartedTurn(
+      await desktop.startTurn({
+        sessionId: sourceSessionId,
+        turnId: 'active-source-turn',
+        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      }),
+    );
+    assertionError = undefined;
+    try {
+      const activeSource = await querySession(desktop, sourceSessionId);
+      const historicalCopyInput = {
+        sourceSessionId,
+        sourceTurnId: 'turn-2',
+        expectedSourceRevision: activeSource.revision,
+      };
+      await assert.rejects(
+        tui.request('session.branch.create', {
+          ...historicalCopyInput,
+          targetSessionId: 'active-source-ordinary-branch-target',
+        }),
+        operationError('session_busy'),
+      );
+      const sideConversation = await tui.request('session.branch.create', {
+        ...historicalCopyInput,
+        targetSessionId: ACTIVE_SOURCE_SIDE_CONVERSATION_TARGET_ID,
+        intent: 'side_conversation',
+      });
+      assert.equal(sideConversation.kind, 'committed');
+      if (sideConversation.kind !== 'committed') {
+        assert.fail('Side Conversation must fork a settled Turn while the source keeps running');
+      }
+      assert.ok(
+        requireSessionProjection(sideConversation.session).labels.includes(
+          'mode:side_conversation',
+        ),
+      );
+    } catch (error) {
+      assertionError = error;
+    }
+    try {
+      const stopped = await desktop.stopTurn(
+        {
+          sessionId: sourceSessionId,
+          turnId: 'active-source-turn',
+          runId: activeSourceTurn.runId,
+        },
+        PROCESS_TIMEOUT_MS,
+      );
+      assert.equal(stopped.status, 'cancelled');
+    } catch (cleanupError) {
+      if (assertionError !== undefined) {
+        throw new AggregateError(
+          [assertionError, cleanupError],
+          'active-source Side Conversation check failed and parked-turn cleanup failed',
         );
       }
       throw cleanupError;
@@ -1416,6 +1478,7 @@ async function verifyDurableBranch(
   graphRevisionTargetId: string,
   graphSideConversationTargetId: string,
   archivedSideConversationTargetId: string,
+  activeSourceSideConversationTargetId: string,
   graphChildSessionId: string,
 ): Promise<void> {
   const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -1490,6 +1553,15 @@ async function verifyDurableBranch(
     assert.equal(sideConversationResult.content.items[0]?.runId, undefined);
     const sideConversationArtifactId = sideConversationResult.content.items[0]?.artifactIds[0];
     assert.ok(sideConversationArtifactId);
+    const activeSourceSideConversationMessages = await execution.sessionStore.readMessagesSnapshot(
+      activeSourceSideConversationTargetId,
+    );
+    assert.ok(activeSourceSideConversationMessages.some((message) => message.turnId === 'turn-2'));
+    assert.ok(
+      activeSourceSideConversationMessages.every(
+        (message) => message.turnId !== 'active-source-turn',
+      ),
+    );
     const sideConversationRuns = await execution.agentRunStore.listSessionRuns(
       graphSideConversationTargetId,
     );

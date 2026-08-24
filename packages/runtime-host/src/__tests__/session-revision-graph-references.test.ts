@@ -102,6 +102,25 @@ test('Side Conversation references wait for live Graph and child state', async (
   }
 });
 
+test('Side Conversation validates the retained Graph instead of a newer live Graph', async () => {
+  const sideConversation = await prepare({
+    kind: 'side_conversation',
+    sessionGraphState: 'live',
+    graphState: 'terminal',
+  });
+  assert.equal(sideConversation.ok, true);
+
+  const revision = await prepare({
+    sessionGraphState: 'live',
+    graphState: 'terminal',
+  });
+  assert.deepEqual(revision, {
+    ok: false,
+    code: 'session_busy',
+    message: 'A retained Agent Graph is not terminal',
+  });
+});
+
 test('Side Conversation rejects a retained child without a terminal result snapshot', async () => {
   const outcome = await prepare({
     kind: 'side_conversation',
@@ -303,6 +322,7 @@ interface PrepareOverrides {
   readonly archivedResults?: readonly string[];
   readonly sessionHeaders?: readonly SessionHeader[];
   readonly runs?: readonly AgentRunHeader[];
+  readonly sessionGraphState?: 'absent' | 'live' | 'terminal';
   readonly graphState?: 'absent' | 'live' | 'terminal';
   readonly artifactTurnId?: string;
   readonly artifactStatus?: 'live' | 'deleted';
@@ -349,7 +369,8 @@ async function prepare(overrides: PrepareOverrides = {}) {
         }),
       },
       graph: {
-        readSessionState: async () => overrides.graphState ?? 'terminal',
+        readSessionState: async () =>
+          overrides.sessionGraphState ?? overrides.graphState ?? 'terminal',
         readGraphState: async (_rootSessionId, graphId) => {
           if (graphId !== agentGraphIdForRootSession(ROOT_SESSION_ID)) {
             throw new Error('Graph is not bound to this root Session');
