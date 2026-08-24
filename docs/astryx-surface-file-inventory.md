@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 207 files — blocker 0, polish 1, aligned 206.
+**Totals:** 209 files — blocker 0, polish 1, aligned 208.
 
 ## Exclusions (explicit)
 
@@ -175,8 +175,8 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/styles/workbar/shell.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workbar/side-chat.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/styles/workbar/terminal.css` | shell-chrome-or-panel | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
-| `apps/desktop/src/renderer/work-board-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Spinner, TextInput | aligned — uses Astryx (Banner, Button, EmptyState, Spinner, TextInput) | aligned |
 | `apps/desktop/src/renderer/styles/workhub.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
+| `apps/desktop/src/renderer/work-board-panel.tsx` | shell-chrome-or-panel | Banner, Button, EmptyState, Spinner, TextInput | aligned — uses Astryx (Banner, Button, EmptyState, Spinner, TextInput) | aligned |
 | `apps/desktop/src/renderer/workhub-surface.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
 | `packages/ui/src/astryx-chat-reasoning.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/astryx-i18n.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
