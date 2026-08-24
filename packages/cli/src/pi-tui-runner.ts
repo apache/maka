@@ -2310,6 +2310,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       Promise.all(
         sessions.map(async (session) => {
           try {
+            if (!session.cwd) {
+              return [session.id, { available: false, reason: 'Missing working directory' }] as const;
+            }
             const availability = options.onlyResumable
               ? ((await input.driver.getSessionResumeCandidateAvailability?.(session)) ??
                 (await input.driver.getSessionResumeAvailability?.(session)) ??
@@ -2404,7 +2407,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           void importForeignSession(foreign);
           return;
         }
-        if (options.onlyResumable && availability.get(item.value)?.available === false) return;
+        if (availability.get(item.value)?.available === false) return;
         closeOverlay();
         void (async () => {
           await goToSession(item.value);

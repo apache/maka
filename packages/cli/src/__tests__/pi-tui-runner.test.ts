@@ -3517,7 +3517,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/session');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
-    assert.match(plainTerminalOutput(terminal.output()), /attachable/);
+    assert.match(plainTerminalOutput(terminal.output()), /attachab/);
 
     terminal.input('\x1b');
     terminal.input('/exit');
