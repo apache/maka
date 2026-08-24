@@ -21,7 +21,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Child, Command, Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -279,6 +279,125 @@ fn rejects_an_unknown_managed_tree_policy_before_creating_the_destination() {
 }
 
 #[test]
+fn rejects_an_invalid_baseline_ref_before_creating_the_destination() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("invalid-ref.git");
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/a..b",
+        "managedTreePolicyVersion": 1,
+    }));
+
+    assert_helper_error(&output, "invalid_baseline_ref");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn exactly_one_process_claims_a_fresh_import_destination() {
+    let first_source = RepositoryFixture::sha1_with_commit();
+    let second_source = RepositoryFixture::sha1_with_commit_content(b"second source\n");
+    let first_head = first_source.git_output(["rev-parse", "HEAD"]);
+    let second_head = second_source.git_output(["rev-parse", "HEAD"]);
+    let first_blob = first_source.git_output(["rev-parse", "HEAD:hello.txt"]);
+    let second_blob = second_source.git_output(["rev-parse", "HEAD:hello.txt"]);
+    let destination = first_source.root.join("contended.git");
+
+    let first_request = serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": first_source.root,
+        "expectedSourceHeadCommitOid": first_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 1,
+    });
+    let second_request = serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": second_source.root,
+        "expectedSourceHeadCommitOid": second_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 1,
+    });
+
+    let first = spawn_request(first_request);
+    let second = spawn_request(second_request);
+    let first_output = first.wait_with_output().unwrap();
+    let second_output = second.wait_with_output().unwrap();
+    let outputs = [first_output, second_output];
+    assert_eq!(
+        outputs.iter().filter(|output| output.status.success()).count(),
+        1
+    );
+    assert_eq!(
+        outputs
+            .iter()
+            .filter(|output| {
+                serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                    .is_ok_and(|response| response["reason"] == "import_destination_not_fresh")
+            })
+            .count(),
+        1
+    );
+
+    let imported = outputs
+        .iter()
+        .find(|output| output.status.success())
+        .and_then(|output| serde_json::from_slice::<serde_json::Value>(&output.stdout).ok())
+        .unwrap();
+    let winner_is_first = imported["sourceHeadCommitOid"] == first_head;
+    let winner_blob = if winner_is_first {
+        first_blob.as_str()
+    } else {
+        second_blob.as_str()
+    };
+    let loser_blob = if winner_is_first {
+        second_blob.as_str()
+    } else {
+        first_blob.as_str()
+    };
+    assert!(git_bare_succeeds(
+        &destination,
+        ["cat-file", "-e", winner_blob]
+    ));
+    assert!(!git_bare_succeeds(
+        &destination,
+        ["cat-file", "-e", loser_blob]
+    ));
+}
+
+#[test]
+fn rejects_an_oversized_commit_before_creating_the_destination() {
+    let fixture = RepositoryFixture::sha1_with_oversized_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("oversized-commit.git");
+
+    let output = invoke_import(&fixture.root, &source_head, &destination);
+
+    assert_helper_error(&output, "commit_object_limit_exceeded");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn rejects_an_oversized_tree_before_creating_the_destination() {
+    let fixture = RepositoryFixture::sha1_with_oversized_tree();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("oversized-tree.git");
+
+    let output = invoke_import(&fixture.root, &source_head, &destination);
+
+    assert_helper_error(&output, "source_tree_object_limit_exceeded");
+    assert!(!destination.exists());
+}
+
+#[test]
 fn rejects_a_destination_below_an_aliased_parent() {
     let fixture = RepositoryFixture::sha1_with_commit();
     let source_head = fixture.git_output(["rev-parse", "HEAD"]);
@@ -311,6 +430,10 @@ fn invoke_helper(repository_path: &Path) -> Output {
 }
 
 fn invoke_request(request: serde_json::Value) -> Output {
+    spawn_request(request).wait_with_output().unwrap()
+}
+
+fn spawn_request(request: serde_json::Value) -> Child {
     let mut child = Command::new(HELPER)
         .env("PATH", "")
         .env("GIT_CONFIG_COUNT", "1")
@@ -327,7 +450,19 @@ fn invoke_request(request: serde_json::Value) -> Output {
         .unwrap()
         .write_all(serde_json::to_string(&request).unwrap().as_bytes())
         .unwrap();
-    child.wait_with_output().unwrap()
+    child
+}
+
+fn invoke_import(source: &Path, source_head: &str, destination: &Path) -> Output {
+    invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": source,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 1,
+    }))
 }
 
 fn assert_helper_error(output: &Output, expected_reason: &str) {
@@ -384,8 +519,12 @@ struct RepositoryFixture {
 
 impl RepositoryFixture {
     fn sha1_with_commit() -> Self {
+        Self::sha1_with_commit_content(b"hello from sha1\n")
+    }
+
+    fn sha1_with_commit_content(content: &[u8]) -> Self {
         let fixture = Self::init("sha1");
-        fs::write(fixture.root.join("hello.txt"), b"hello from sha1\n").unwrap();
+        fs::write(fixture.root.join("hello.txt"), content).unwrap();
         fixture.git(["add", "hello.txt"]);
         fixture.git([
             "-c",
@@ -396,6 +535,40 @@ impl RepositoryFixture {
             "-m",
             "fixture",
         ]);
+        fixture
+    }
+
+    fn sha1_with_oversized_commit() -> Self {
+        let fixture = Self::init("sha1");
+        let tree = fixture.git_input_output(["hash-object", "-t", "tree", "-w", "--stdin"], &[]);
+        let mut commit = format!(
+            "tree {tree}\nauthor Maka Test <maka@example.invalid> 946684800 +0000\ncommitter Maka Test <maka@example.invalid> 946684800 +0000\n\n"
+        )
+        .into_bytes();
+        commit.resize(1024 * 1024 + 1, b'x');
+        let commit_oid = fixture.git_input_output(
+            ["hash-object", "-t", "commit", "-w", "--stdin"],
+            &commit,
+        );
+        fixture.git(["update-ref", "HEAD", &commit_oid]);
+        fixture
+    }
+
+    fn sha1_with_oversized_tree() -> Self {
+        let fixture = Self::init("sha1");
+        let invalid_tree = vec![0_u8; 8 * 1024 * 1024 + 1];
+        let tree_oid = fixture.git_input_output(
+            ["hash-object", "--literally", "-t", "tree", "-w", "--stdin"],
+            &invalid_tree,
+        );
+        let commit = format!(
+            "tree {tree_oid}\nauthor Maka Test <maka@example.invalid> 946684800 +0000\ncommitter Maka Test <maka@example.invalid> 946684800 +0000\n\noversized tree\n"
+        );
+        let commit_oid = fixture.git_input_output(
+            ["hash-object", "-t", "commit", "-w", "--stdin"],
+            commit.as_bytes(),
+        );
+        fixture.git(["update-ref", "HEAD", &commit_oid]);
         fixture
     }
 
@@ -476,6 +649,26 @@ impl RepositoryFixture {
             .output()
             .unwrap();
         assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    fn git_input_output<const N: usize>(&self, args: [&str; N], input: &[u8]) -> String {
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(&self.root)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "git fixture command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 }

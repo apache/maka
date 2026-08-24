@@ -343,6 +343,7 @@ test('pull request triggers stay on an explicit allowlist', () => {
     'ci.yml',
     'copilot-auto-review.yml',
     'dependency-audit.yml',
+    'gitoxide-helper-admission.yml',
     'release-windows-check.yml',
     'runtime-host-owner-platform.yml',
     'windows-sandbox-w0.yml',
@@ -409,6 +410,19 @@ test('pull-request and release lanes share the packaged sandbox lifecycle verifi
   assert.match(
     verifier,
     /await verifyPackagedWindowsSandboxLifecycle\(sandboxExecutable, \{ run \}\)/u,
+  );
+});
+
+test('the Gitoxide gate owns repository admission changes', () => {
+  const workflow = readWorkflow('gitoxide-helper-admission.yml');
+
+  assert.match(
+    workflow,
+    /'packages\/runtime-host\/src\/server\/gitoxide-repository-admission-authority-internal\.ts'/u,
+  );
+  assert.match(
+    workflow,
+    /'packages\/runtime-host\/src\/__tests__\/gitoxide-repository-admission-authority-internal\.test\.ts'/u,
   );
 });
 

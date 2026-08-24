@@ -34,6 +34,11 @@ const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMPORT_FILES: u64 = 200_000;
+const MAX_COMMIT_OBJECT_BYTES: u64 = 1024 * 1024;
+const MAX_SINGLE_TREE_OBJECT_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_TOTAL_TREE_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_GITOXIDE_OBJECT_ALLOCATION_BYTES: &str =
+    "gitoxide.objects.allocLimit=67108864";
 const MANAGED_TREE_POLICY_V1: ManagedTreePolicy = ManagedTreePolicy {
     max_depth: 64,
     max_tree_visits: 250_000,
@@ -44,6 +49,9 @@ const MANAGED_TREE_POLICY_V1: ManagedTreePolicy = ManagedTreePolicy {
     max_files: MAX_IMPORT_FILES,
     max_file_bytes: MAX_IMPORT_FILE_BYTES,
     max_bytes: MAX_IMPORT_BYTES,
+    max_commit_object_bytes: MAX_COMMIT_OBJECT_BYTES,
+    max_single_tree_object_bytes: MAX_SINGLE_TREE_OBJECT_BYTES,
+    max_total_tree_object_bytes: MAX_TOTAL_TREE_OBJECT_BYTES,
 };
 const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "internal_error_reason_invalid",
@@ -54,10 +62,11 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "repository_open_failed",
     "head_commit_unavailable",
     "head_tree_unavailable",
+    "commit_object_limit_exceeded",
     "baseline_commit_write_failed",
     "baseline_publish_failed",
-    "baseline_publish_conflict",
     "baseline_ref_outside_maka_namespace",
+    "invalid_baseline_ref",
     "import_destination_create_failed",
     "import_destination_not_fresh",
     "import_destination_object_format_mismatch",
@@ -82,6 +91,8 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "source_tree_entry_limit_exceeded",
     "source_tree_identity_mismatch",
     "source_tree_invalid",
+    "source_tree_object_byte_limit_exceeded",
+    "source_tree_object_limit_exceeded",
     "source_tree_unavailable",
     "source_tree_visit_limit_exceeded",
     "unsupported_source_entry_kind",
@@ -205,10 +216,7 @@ fn assert_protocol_version(protocol_version: u8) -> Result<(), &'static str> {
 }
 
 fn inspect_repository(repository_path: PathBuf) -> Result<ExitCode, &'static str> {
-    let repository = match gix::open::Options::isolated()
-        .strict_config(true)
-        .open(repository_path)
-    {
+    let repository = match managed_open_options().open(repository_path) {
         Ok(repository) => repository.to_thread_local(),
         Err(gix::open::Error::Config(gix::config::Error::ConfigTypedString(error)))
             if error.key.as_slice() == b"extensions.objectFormat" =>
@@ -229,8 +237,20 @@ fn inspect_repository(repository_path: PathBuf) -> Result<ExitCode, &'static str
 
     match repository.object_hash() {
         gix::hash::Kind::Sha1 => {
+            let head_id = repository
+                .head_id()
+                .map_err(|_| "head_commit_unavailable")?
+                .detach();
+            assert_object_header(
+                &repository,
+                head_id,
+                gix::objs::Kind::Commit,
+                MAX_COMMIT_OBJECT_BYTES,
+                "head_commit_unavailable",
+                "commit_object_limit_exceeded",
+            )?;
             let head = repository
-                .head_commit()
+                .find_commit(head_id)
                 .map_err(|_| "head_commit_unavailable")?;
             let head_commit_oid = head.id().detach().to_string();
             let head_tree_oid = head
@@ -252,11 +272,16 @@ fn inspect_repository(repository_path: PathBuf) -> Result<ExitCode, &'static str
 }
 
 fn open_repository(repository_path: PathBuf) -> Result<gix::Repository, &'static str> {
-    Ok(gix::open::Options::isolated()
-        .strict_config(true)
+    Ok(managed_open_options()
         .open(repository_path)
         .map_err(|_| "repository_open_failed")?
         .to_thread_local())
+}
+
+fn managed_open_options() -> gix::open::Options {
+    gix::open::Options::isolated()
+        .strict_config(true)
+        .config_overrides([MAX_GITOXIDE_OBJECT_ALLOCATION_BYTES])
 }
 
 fn import_source_head(
@@ -271,6 +296,8 @@ fn import_source_head(
     if !baseline_ref.starts_with("refs/maka/") {
         return Err("baseline_ref_outside_maka_namespace");
     }
+    gix::refs::FullName::try_from(baseline_ref.as_str())
+        .map_err(|_| "invalid_baseline_ref")?;
     if managed_tree_policy_version != MANAGED_TREE_POLICY_VERSION {
         return Err("unsupported_managed_tree_policy");
     }
@@ -284,26 +311,40 @@ fn import_source_head(
     if expected_source_head.kind() != gix::hash::Kind::Sha1 {
         return Err("invalid_source_head_commit_oid");
     }
-    let source_head = source
-        .head_commit()
+    let source_head_id = source
+        .head_id()
         .map_err(|_| "source_head_commit_unavailable")?;
-    if source_head.id().detach() != expected_source_head {
+    if source_head_id.detach() != expected_source_head {
         return Err("source_head_commit_mismatch");
     }
+    assert_object_header(
+        &source,
+        expected_source_head,
+        gix::objs::Kind::Commit,
+        MANAGED_TREE_POLICY_V1.max_commit_object_bytes,
+        "source_head_commit_unavailable",
+        "commit_object_limit_exceeded",
+    )?;
+    let source_head = source
+        .find_commit(expected_source_head)
+        .map_err(|_| "source_head_commit_unavailable")?;
     let source_tree = source_head
         .tree_id()
         .map_err(|_| "source_head_tree_unavailable")?
         .detach();
 
+    let mut stats = ManagedTreeStats::default();
+    validate_source_tree(
+        &source,
+        source_tree,
+        "",
+        0,
+        MANAGED_TREE_POLICY_V1,
+        &mut stats,
+    )?;
+
     assert_import_destination_parent(&destination_repository_path)?;
-    let destination = match fs::symlink_metadata(&destination_repository_path) {
-        Ok(_) => return Err("import_destination_not_fresh"),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            gix::init_bare(&destination_repository_path)
-                .map_err(|_| "import_destination_create_failed")?
-        }
-        Err(_) => return Err("import_destination_unreadable"),
-    };
+    let destination = claim_fresh_import_destination(&destination_repository_path)?;
     if destination.object_hash() != gix::hash::Kind::Sha1 {
         return Err("import_destination_object_format_mismatch");
     }
@@ -313,16 +354,7 @@ fn import_source_head(
     fs::create_dir(destination_repository_path.join("hooks"))
         .map_err(|_| "import_hooks_cleanup_failed")?;
 
-    let mut stats = ManagedTreeStats::default();
-    copy_source_tree(
-        &source,
-        &destination,
-        source_tree,
-        "",
-        0,
-        MANAGED_TREE_POLICY_V1,
-        &mut stats,
-    )?;
+    copy_source_tree(&source, &destination, source_tree)?;
 
     let signature = gix::actor::SignatureRef {
         name: b"Maka Workspace Service".as_bstr(),
@@ -340,30 +372,14 @@ fn import_source_head(
         .map_err(|_| "baseline_commit_write_failed")?
         .id()
         .detach();
-    match destination
-        .try_find_reference(baseline_ref.as_str())
-        .map_err(|_| "baseline_publish_failed")?
-    {
-        Some(reference) => {
-            let current = reference
-                .into_fully_peeled_id()
-                .map_err(|_| "baseline_publish_failed")?
-                .detach();
-            if current != baseline_commit {
-                return Err("baseline_publish_conflict");
-            }
-        }
-        None => {
-            destination
-                .reference(
-                    baseline_ref.as_str(),
-                    baseline_commit,
-                    gix::refs::transaction::PreviousValue::MustNotExist,
-                    "maka managed workspace baseline",
-                )
-                .map_err(|_| "baseline_publish_failed")?;
-        }
-    }
+    destination
+        .reference(
+            baseline_ref.as_str(),
+            baseline_commit,
+            gix::refs::transaction::PreviousValue::MustNotExist,
+            "maka managed workspace baseline",
+        )
+        .map_err(|_| "baseline_publish_failed")?;
 
     write_response(&Response::SourceImported {
         protocol_version: PROTOCOL_VERSION,
@@ -378,6 +394,49 @@ fn import_source_head(
         bytes_imported: stats.bytes,
     });
     Ok(ExitCode::SUCCESS)
+}
+
+fn claim_fresh_import_destination(path: &Path) -> Result<gix::Repository, &'static str> {
+    match fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err("import_destination_not_fresh");
+        }
+        Err(_) => return Err("import_destination_create_failed"),
+    }
+    gix::ThreadSafeRepository::init_opts(
+        path,
+        gix::create::Kind::Bare,
+        gix::create::Options {
+            destination_must_be_empty: Some(true),
+            object_hash: Some(gix::hash::Kind::Sha1),
+            ..Default::default()
+        },
+        managed_open_options(),
+    )
+    .map_err(|_| "import_destination_create_failed")
+    .map(|repository| repository.to_thread_local())
+}
+
+fn assert_object_header(
+    repository: &gix::Repository,
+    object_id: gix::hash::ObjectId,
+    expected_kind: gix::objs::Kind,
+    max_bytes: u64,
+    unavailable_reason: &'static str,
+    limit_reason: &'static str,
+) -> Result<u64, &'static str> {
+    let header = repository
+        .find_header(object_id)
+        .map_err(|_| unavailable_reason)?;
+    if header.kind() != expected_kind {
+        return Err(unavailable_reason);
+    }
+    let size = header.size();
+    if size > max_bytes {
+        return Err(limit_reason);
+    }
+    Ok(size)
 }
 
 fn assert_import_destination_parent(destination: &Path) -> Result<(), &'static str> {
@@ -415,16 +474,23 @@ fn is_windows_reparse_point(_metadata: &fs::Metadata) -> bool {
     false
 }
 
-fn copy_source_tree(
+fn validate_source_tree(
     source: &gix::Repository,
-    destination: &gix::Repository,
     tree_oid: gix::hash::ObjectId,
     prefix: &str,
     depth: u64,
     policy: ManagedTreePolicy,
     stats: &mut ManagedTreeStats,
 ) -> Result<(), &'static str> {
-    stats.enter_tree(depth, policy)?;
+    let size = assert_object_header(
+        source,
+        tree_oid,
+        gix::objs::Kind::Tree,
+        policy.max_single_tree_object_bytes,
+        "source_tree_unavailable",
+        "source_tree_object_limit_exceeded",
+    )?;
+    stats.enter_tree(depth, size, policy)?;
     let tree = source
         .find_tree(tree_oid)
         .map_err(|_| "source_tree_unavailable")?;
@@ -445,9 +511,8 @@ fn copy_source_tree(
         stats.observe_entry(&relative_path, policy)?;
         match entry.mode().kind() {
             gix::objs::tree::EntryKind::Tree => {
-                copy_source_tree(
+                validate_source_tree(
                     source,
-                    destination,
                     entry.object_id(),
                     &relative_path,
                     depth.checked_add(1).ok_or("source_tree_depth_exceeded")?,
@@ -461,6 +526,28 @@ fn copy_source_tree(
                     return Err("source_blob_invalid");
                 }
                 stats.observe_blob(header.size(), policy)?;
+            }
+            _ => return Err("unsupported_source_entry_kind"),
+        }
+    }
+    Ok(())
+}
+
+fn copy_source_tree(
+    source: &gix::Repository,
+    destination: &gix::Repository,
+    tree_oid: gix::hash::ObjectId,
+) -> Result<(), &'static str> {
+    let tree = source
+        .find_tree(tree_oid)
+        .map_err(|_| "source_tree_unavailable")?;
+    for entry in tree.iter() {
+        let entry = entry.map_err(|_| "source_tree_invalid")?;
+        match entry.mode().kind() {
+            gix::objs::tree::EntryKind::Tree => {
+                copy_source_tree(source, destination, entry.object_id())?;
+            }
+            gix::objs::tree::EntryKind::Blob | gix::objs::tree::EntryKind::BlobExecutable => {
                 let blob = entry
                     .object()
                     .map_err(|_| "source_blob_unavailable")?
@@ -509,6 +596,9 @@ struct ManagedTreePolicy {
     max_files: u64,
     max_file_bytes: u64,
     max_bytes: u64,
+    max_commit_object_bytes: u64,
+    max_single_tree_object_bytes: u64,
+    max_total_tree_object_bytes: u64,
 }
 
 #[derive(Default)]
@@ -518,11 +608,17 @@ struct ManagedTreeStats {
     total_path_bytes: u64,
     files: u64,
     bytes: u64,
+    tree_object_bytes: u64,
     folded_paths: HashSet<String>,
 }
 
 impl ManagedTreeStats {
-    fn enter_tree(&mut self, depth: u64, policy: ManagedTreePolicy) -> Result<(), &'static str> {
+    fn enter_tree(
+        &mut self,
+        depth: u64,
+        object_bytes: u64,
+        policy: ManagedTreePolicy,
+    ) -> Result<(), &'static str> {
         if depth > policy.max_depth {
             return Err("source_tree_depth_exceeded");
         }
@@ -531,6 +627,11 @@ impl ManagedTreeStats {
             .checked_add(1)
             .filter(|visits| *visits <= policy.max_tree_visits)
             .ok_or("source_tree_visit_limit_exceeded")?;
+        self.tree_object_bytes = self
+            .tree_object_bytes
+            .checked_add(object_bytes)
+            .filter(|bytes| *bytes <= policy.max_total_tree_object_bytes)
+            .ok_or("source_tree_object_byte_limit_exceeded")?;
         Ok(())
     }
 
@@ -593,6 +694,9 @@ mod tests {
             max_files: 1,
             max_file_bytes: 3,
             max_bytes: 3,
+            max_commit_object_bytes: 3,
+            max_single_tree_object_bytes: 3,
+            max_total_tree_object_bytes: 5,
         }
     }
 
@@ -600,16 +704,16 @@ mod tests {
     fn managed_tree_budget_bounds_depth_visits_and_entries() {
         let policy = tiny_policy();
         let mut stats = ManagedTreeStats::default();
-        assert_eq!(stats.enter_tree(0, policy), Ok(()));
-        assert_eq!(stats.enter_tree(1, policy), Ok(()));
+        assert_eq!(stats.enter_tree(0, 2, policy), Ok(()));
+        assert_eq!(stats.enter_tree(1, 3, policy), Ok(()));
         assert_eq!(
-            stats.enter_tree(1, policy),
+            stats.enter_tree(1, 0, policy),
             Err("source_tree_visit_limit_exceeded")
         );
 
         let mut stats = ManagedTreeStats::default();
         assert_eq!(
-            stats.enter_tree(2, policy),
+            stats.enter_tree(2, 0, policy),
             Err("source_tree_depth_exceeded")
         );
         assert_eq!(stats.observe_entry("a", policy), Ok(()));
@@ -617,6 +721,17 @@ mod tests {
         assert_eq!(
             stats.observe_entry("c", policy),
             Err("source_tree_entry_limit_exceeded")
+        );
+    }
+
+    #[test]
+    fn managed_tree_budget_bounds_single_and_total_tree_object_bytes() {
+        let policy = tiny_policy();
+        let mut stats = ManagedTreeStats::default();
+        assert_eq!(stats.enter_tree(0, 3, policy), Ok(()));
+        assert_eq!(
+            stats.enter_tree(1, 3, policy),
+            Err("source_tree_object_byte_limit_exceeded")
         );
     }
 
