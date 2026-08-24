@@ -91,9 +91,11 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 49 as const;
-// 49: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`. An older Host rejects a
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 50 as const;
+// 50: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`. An older Host rejects a
 // login start for it, so the pair must be refused rather than fail mid-flow.
+// Re-derived from 49 because that number was independently claimed by other
+// open pull requests (#3299, #3651); see PR #3390 for the derivation.
 // 48: Session branch creation accepts an explicit Side Conversation intent.
 // Older peers reject the strict input shape or cannot apply its snapshot semantics.
 // 47: Project registration can carry an explicit location preference. Epoch-46
