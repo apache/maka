@@ -265,7 +265,7 @@ Enforced (merged in #2961 unless tagged with a follow-up PR):
 - a packaged 64-launch repeated-wave concurrency soak with disjoint launch identities, followed by
   process and ACL-ledger residue assertions;
 - a packaged malicious-child matrix covering recursive junction and multi-hard-link admission,
-  outside-file access, TCP/UDP/listener creation, host named-pipe access, ambient environment,
+  outside-file access, TCP connection denial, host named-pipe access, ambient environment,
   host HKCU values, parent-token access, descendant AppContainer/Job inheritance, and quarantined
   identity non-reuse;
 - per-launch private-desktop **placement** (§6.3) **(#3174)**: each production launch and the readiness probe
@@ -350,6 +350,8 @@ Designed but deferred as later gates (not enforced in the preview slice):
 - Inbound listener enforcement. AppContainer denies the packaged outbound TCP/UDP attempts, but
   local listener creation is not itself denied by the current token policy; full inbound-channel
   enforcement remains a W2/W3 network hardening gate.
+- UDP channel enforcement. The W1 matrix proves outbound TCP denial; UDP send/response and DNS/SMB
+  enforcement remain a W2/W3 network hardening gate rather than a vacuous bind-only claim.
 
 Deferral narrows readiness richness and desktop-layer defense-in-depth, not the enforcement
 boundary: an unavailable, drifted, or failed backend still fails closed, and a restricted managed
@@ -486,7 +488,7 @@ For the W1 preview, the packaged verifier maps the supported attack surface to e
 | Category | Packaged evidence |
 | --- | --- |
 | Filesystem aliases | outside denial plus recursive junction and multi-hard-link admission refusal |
-| Network channels | TCP connect and UDP send denial without network capabilities |
+| Network channels | TCP connect denial without network capabilities |
 | IPC | host named-pipe denial and an explicit inherited-handle list |
 | Descendants | child creation is denied fail-closed, or a created descendant retains the AppContainer token and kill-on-close Job |
 | Environment/credentials | ambient host secret and outside credential file are unavailable |

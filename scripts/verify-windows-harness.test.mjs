@@ -82,6 +82,7 @@ it('pins every Phase 4 adversarial category to executable evidence', async () =>
     'Authenticode identity verification',
     'direct Credential Manager and DPAPI probes',
     'inbound listener enforcement',
+    'UDP channel enforcement',
     'no-Win32k mitigation',
     'dedicated window-station and clipboard isolation',
     'power-loss automatic recovery',
@@ -107,7 +108,6 @@ it('pins every Phase 4 adversarial category to executable evidence', async () =>
   for (const field of [
     'fileDenied',
     'tcpDenied',
-    'udpDenied',
     'namedPipeDenied',
     'environmentDenied',
     'registryDenied',

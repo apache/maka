@@ -47,7 +47,7 @@ mod windows_launcher_tests;
 
 use std::env;
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
@@ -340,7 +340,6 @@ struct AdversarialProbeInput {
     allowed_read_path: String,
     allowed_write_path: String,
     loopback_port: u16,
-    udp_port: u16,
     pipe_name: String,
     environment_secret_name: String,
     registry_subkey: String,
@@ -358,19 +357,6 @@ fn adversarial_probe(input: &AdversarialProbeInput) -> Result<u8, String> {
     let allowed_write = fs::write(&input.allowed_write_path, b"allowed-write").is_ok();
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), input.loopback_port);
     let tcp_denied = TcpStream::connect_timeout(&address, Duration::from_secs(2)).is_err();
-    let udp_denied = match UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)) {
-        Ok(socket) => {
-            let _ = socket.set_read_timeout(Some(Duration::from_secs(2)));
-            match socket.send_to(b"maka-phase4", (Ipv4Addr::LOCALHOST, input.udp_port)) {
-                Ok(_) => {
-                    let mut response = [0u8; 64];
-                    socket.recv_from(&mut response).is_err()
-                }
-                Err(_) => true,
-            }
-        }
-        Err(_) => true,
-    };
     let named_pipe_denied = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -387,7 +373,6 @@ fn adversarial_probe(input: &AdversarialProbeInput) -> Result<u8, String> {
         "allowedRead": allowed_read,
         "allowedWrite": allowed_write,
         "tcpDenied": tcp_denied,
-        "udpDenied": udp_denied,
         "namedPipeDenied": named_pipe_denied,
         "environmentDenied": environment_denied,
         "registryDenied": registry_denied,
@@ -402,7 +387,6 @@ fn adversarial_probe(input: &AdversarialProbeInput) -> Result<u8, String> {
         && allowed_read
         && allowed_write
         && tcp_denied
-        && udp_denied
         && named_pipe_denied
         && environment_denied
         && registry_denied

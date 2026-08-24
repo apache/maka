@@ -36,7 +36,7 @@ export const WINDOWS_SANDBOX_PHASE4_MATRIX = Object.freeze([
   },
   {
     category: 'network_channels',
-    evidence: ['TCP connect denial', 'UDP send denial'],
+    evidence: ['TCP connect denial'],
   },
   { category: 'ipc', evidence: ['host named-pipe denial', 'bounded inherited handle list'] },
   {
@@ -70,6 +70,7 @@ export const WINDOWS_SANDBOX_DEFERRED_HARDENING = Object.freeze([
   'Authenticode identity verification',
   'direct Credential Manager and DPAPI probes',
   'inbound listener enforcement',
+  'UDP channel enforcement',
   'no-Win32k mitigation',
   'dedicated window-station and clipboard isolation',
   'power-loss automatic recovery',
