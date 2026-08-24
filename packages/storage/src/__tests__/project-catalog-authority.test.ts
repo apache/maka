@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import {
   authenticateInteractiveProjectCatalogWriter,
   openInteractiveProjectCatalogForWrite,
@@ -31,13 +31,23 @@ import {
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
 } from '../root-authority.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 test('Project Catalog writes require one live interactive root owner', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-catalog-authority-'));
   const dataRoot = join(base, 'data');
   const projectRoot = join(base, 'project');
   await mkdir(projectRoot);
-  const capability = await resolveStorageRoot({ path: dataRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: dataRoot, kind: 'interactive' }),
+  );
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) return;

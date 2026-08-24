@@ -205,8 +205,16 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  test('publishes a new compatibility epoch for typed context compaction outcomes', () => {
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 39);
+  test('publishes a new compatibility epoch for provider capacity retry progress', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 41);
+  });
+
+  test('publishes a new compatibility epoch for shell-run poll correlation', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 42);
+  });
+
+  test('publishes a new compatibility epoch for the retired Session timestamp', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 43);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -1724,7 +1732,6 @@ function continuitySnapshot(hostEpoch: string) {
       metadataRevision: 1,
       status: 'running' as const,
       createdAt: 1,
-      lastUsedAt: 2,
       isArchived: false,
     },
     projectionRevision: 1,

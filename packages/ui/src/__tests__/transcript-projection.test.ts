@@ -68,6 +68,37 @@ function streamingTurn(text: string): LiveTurnProjection {
 }
 
 describe('incremental transcript projection', () => {
+  test('a locale change rematerializes localized system notes', () => {
+    const projection = createTranscriptProjection();
+    const messages: StoredMessage[] = [{
+      type: 'system_note',
+      id: 'note-1',
+      turnId: 'turn-1',
+      ts: 1,
+      kind: 'context_compacted',
+    }];
+
+    const english = projection.project({
+      sessionId: SESSION,
+      messages,
+      locale: 'en',
+    });
+    const chinese = projection.project({
+      sessionId: SESSION,
+      messages,
+      locale: 'zh',
+    });
+
+    assert.equal(
+      english[0]?.notes[0]?.text,
+      'Context compacted to keep this session within the model window.',
+    );
+    assert.equal(
+      chinese[0]?.notes[0]?.text,
+      '已压缩较早的对话内容，以适应模型上下文窗口。',
+    );
+    assert.notStrictEqual(chinese, english);
+  });
 
   test('a shell-run update whose semantics are unchanged affects nothing', () => {
     const projection = createTranscriptProjection();

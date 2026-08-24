@@ -47,7 +47,6 @@ function projection(sessionId: string) {
     labels: [],
     status: 'active' as const,
     createdAt: 1,
-    lastUsedAt: 1,
     backend: 'fake' as const,
     llmConnectionSlug: 'fake',
     connectionLocked: false,

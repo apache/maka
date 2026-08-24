@@ -2186,6 +2186,24 @@ describe('builtin write tools path containment', () => {
     expect(await readFile(join(root, 'inside.txt'), 'utf8')).toBe('hello Maka');
   });
 
+  test('Edit returns a file diff for a localized change in a large file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-edit-large-diff-'));
+    const content = Array.from({ length: 900 }, (_, index) => `const v${index} = ${index};`).join(
+      '\n',
+    );
+    await writeFile(join(root, 'large.ts'), `${content}\n`, 'utf8');
+
+    const result = await runTool(
+      tool('Edit'),
+      { path: 'large.ts', old_string: 'const v500 = 500;', new_string: 'const v500 = -1;' },
+      root,
+    );
+
+    expect(result).toMatchObject({ kind: 'file_diff' });
+    assert.match((result as { diff: string }).diff, /-const v500 = 500;/);
+    assert.match((result as { diff: string }).diff, /\+const v500 = -1;/);
+  });
+
   test('file tools stay usable when the session cwd is reached through a symlink', async () => {
     // The session cwd itself sits under a symlink (macOS hands out `/var/...`
     // tmpdirs whose realpath is `/private/var/...`, and workspace roots are often

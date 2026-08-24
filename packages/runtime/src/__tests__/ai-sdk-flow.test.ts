@@ -704,6 +704,29 @@ describe('AiSdkFlow seam', () => {
       },
     });
   });
+
+  test('maps provider capacity retry progress without collapsing its reason', () => {
+    const retry = ev({
+      type: 'provider_retry',
+      phase: 'scheduled',
+      attempt: 2,
+      maxAttempts: 10,
+      delayMs: 4_000,
+      reason: 'provider_capacity',
+    });
+
+    const mapped = mapSessionEventToRuntimeEvent(retry, ctx);
+
+    assert.deepEqual(mapped.actions?.stateDelta, {
+      providerRetry: {
+        phase: 'scheduled',
+        attempt: 2,
+        maxAttempts: 10,
+        delayMs: 4_000,
+        reason: 'provider_capacity',
+      },
+    });
+  });
 });
 
 // ============================================================================

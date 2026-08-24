@@ -29,7 +29,11 @@ import {
   prepareStorageRootControlDirectory,
   resolveStorageRoot,
 } from '@maka/storage/root-authority';
-import { decodeStoredMessage } from '@maka/core/session';
+import {
+  decodeStoredMessage as decodePersistedStoredMessage,
+  type StoredMessage,
+} from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 import {
   connectRuntimeHost,
   RuntimeHostSubscriptionError,
@@ -56,6 +60,8 @@ import {
 import { FramedTransport } from '../transport/framed-transport.js';
 import { frameLocalIpcProtocolMessage } from '../transport/local-ipc-framing.js';
 
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
   max: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -1237,7 +1243,6 @@ function openResult(
         metadataRevision: 1,
         status: 'running' as const,
         createdAt: 1,
-        lastUsedAt: 2,
         isArchived: false,
       },
       projectionRevision: 1,

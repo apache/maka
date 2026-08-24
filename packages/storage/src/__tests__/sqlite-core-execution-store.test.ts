@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core/agent-run';
 import {
@@ -40,6 +40,14 @@ import {
 import { createSqliteMessageReceiptStore } from '../message-receipt-store.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import { createSqliteShellRunStore } from '../shell-run-store.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 describe('SQLite core execution stores', () => {
   test('persists AgentRun header and events', async () => {
@@ -53,6 +61,49 @@ describe('SQLite core execution stores', () => {
       try {
         assert.equal((await reopened.readRun('session-1', 'run-1')).runId, 'run-1');
         assert.equal((await reopened.readEvents('session-1', 'run-1'))[0]?.id, 'event-1');
+      } finally {
+        reopened.close?.();
+      }
+    });
+  });
+
+  test('folds retired AgentRun values only when reading persisted rows', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await assert.rejects(
+        () =>
+          store.createRun({
+            ...runHeader({ runId: 'run-retired', turnId: 'turn-retired' }),
+            permissionMode: 'execute',
+          } as unknown as AgentRunHeader),
+        /Invalid AgentRun header schema/,
+      );
+      store.close?.();
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        const row = database
+          .prepare("SELECT record_json AS recordJson FROM core_agent_runs WHERE run_id = 'run-1'")
+          .get() as { recordJson: string };
+        const retired = JSON.parse(row.recordJson) as Record<string, unknown>;
+        retired.status = 'waiting_permission';
+        retired.permissionMode = 'execute';
+        retired.automationId = 'automation-1';
+        database
+          .prepare("UPDATE core_agent_runs SET record_json = ? WHERE run_id = 'run-1'")
+          .run(JSON.stringify(retired));
+      } finally {
+        database.close();
+      }
+
+      const reopened = createSqliteAgentRunStore(root);
+      try {
+        const decoded = await reopened.readRun('session-1', 'run-1');
+        assert.equal(decoded.status, 'waiting_for_user');
+        assert.equal(decoded.permissionMode, 'ask');
+        assert.equal(decoded.legacyAutomationId, 'automation-1');
+        assert.equal(Object.hasOwn(decoded, 'automationId'), false);
       } finally {
         reopened.close?.();
       }
@@ -343,7 +394,9 @@ describe('SQLite core execution stores', () => {
 
   test('persists interaction request and outcome', async () => {
     await withRoot(async (root) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const capability = trackControlDirectory(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;

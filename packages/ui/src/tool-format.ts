@@ -26,20 +26,32 @@ export function loadToolDisplayName(locale: UiLocale): string {
   return getToolActivityCopy(locale).loadTools.displayName;
 }
 
-interface LoadToolResultDescription {
+export type LoadToolGroupKind =
+  | 'browser'
+  | 'computer_use'
+  | 'mcp'
+  | 'rive'
+  | 'agent'
+  | 'settings'
+  | 'generic';
+
+export interface LoadToolResultDescription {
+  kind: LoadToolGroupKind;
+  actionLabel: string;
   title: string;
+  description: string;
+  label: string;
   countLabel: string;
-  toolsText: string;
-  footer: string;
+  groupId?: string;
+  toolIds: string[];
 }
 
 /**
- * Turn a `load_tools` call + its thin `{ loaded: [...] }` result into friendly,
- * locale-aware card copy. Reads the group id from `group` (current) or the
- * historical `namespace` arg (`load_tool`, PR #30) so replayed old sessions
- * still render. Returns `null` when the result is not the expected shape (e.g. a
- * load failure, a text/error result) so the caller falls back to the generic
- * preview.
+ * Turn a `load_tools` call + result into friendly, locale-aware card copy.
+ * Current results carry presentation metadata; historical `{ loaded: [...] }`
+ * results are inferred from the call args and tool ids so replayed sessions
+ * still render. Returns `null` for unexpected shapes so the caller falls back
+ * to the generic preview.
  */
 export function describeLoadToolResult(
   args: unknown,
@@ -50,19 +62,105 @@ export function describeLoadToolResult(
   if (!Array.isArray(loaded) || !loaded.every((name) => typeof name === 'string')) {
     return null;
   }
-  const tools = loaded as string[];
+  const tools = (loaded as string[]).map(safeDisplayText).filter(Boolean);
   const argRecord = args as { group?: unknown; namespace?: unknown } | null | undefined;
   const rawGroup = argRecord?.group ?? argRecord?.namespace;
-  const namespace =
-    typeof rawGroup === 'string' && rawGroup.length > 0 ? rawGroup : undefined;
+  const resultGroup = (value as { group?: unknown }).group;
+  const groupRecord =
+    resultGroup && typeof resultGroup === 'object'
+      ? resultGroup as { id?: unknown; label?: unknown; description?: unknown }
+      : undefined;
+  const groupId = firstSafeText(groupRecord?.id, rawGroup);
+  const suppliedLabel = firstSafeText(groupRecord?.label);
+  const suppliedDescription = firstSafeText(groupRecord?.description);
+  const kind = loadToolGroupKind(groupId, suppliedLabel, tools);
   const n = tools.length;
   const copy = getToolActivityCopy(locale).loadTools;
+  if (kind !== 'generic') {
+    const groupCopy = copy.groups[kind];
+    return {
+      kind,
+      actionLabel: groupCopy.action,
+      title: groupCopy.title,
+      description: groupCopy.description,
+      label: groupCopy.label,
+      countLabel: copy.count(n),
+      ...(groupId ? { groupId } : {}),
+      toolIds: tools,
+    };
+  }
+
+  const label = suppliedLabel ?? (locale === 'en' ? 'Tools' : '工具');
   return {
-    title: copy.loaded(namespace),
+    kind,
+    actionLabel: suppliedLabel
+      ? locale === 'en' ? `Enable ${suppliedLabel}` : `启用 ${suppliedLabel}`
+      : copy.genericAction,
+    title: suppliedLabel
+      ? locale === 'en' ? `${suppliedLabel} enabled` : `${suppliedLabel} 已启用`
+      : copy.genericTitle,
+    description: suppliedDescription ?? copy.genericDescription,
+    label,
     countLabel: copy.count(n),
-    toolsText: tools.join(locale === 'en' ? ', ' : '、'),
-    footer: copy.footer,
+    ...(groupId ? { groupId } : {}),
+    toolIds: tools,
   };
+}
+
+function firstSafeText(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const safe = safeDisplayText(value);
+    if (safe) return safe;
+  }
+  return undefined;
+}
+
+function safeDisplayText(value: string): string {
+  return redactSecrets(value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim());
+}
+
+function loadToolGroupKind(
+  groupId: string | undefined,
+  label: string | undefined,
+  tools: readonly string[],
+): LoadToolGroupKind {
+  const id = groupId?.toLowerCase() ?? '';
+  const normalizedLabel = label?.toLowerCase() ?? '';
+  const names = tools.map((name) => name.toLowerCase());
+  const hasTool = (name: string) =>
+    names.some((candidate) => candidate === name || candidate.endsWith(`__${name}`));
+
+  if (
+    id === 'computer_use'
+    || id.endsWith('_desktop_computer_use')
+    || normalizedLabel === 'computer use'
+    || hasTool('maka_computer')
+  ) return 'computer_use';
+  if (
+    id === 'browser'
+    || id.endsWith('_desktop_browser')
+    || normalizedLabel === 'browser'
+    || hasTool('browser_navigate')
+  ) return 'browser';
+  if (
+    id === 'rive'
+    || id.endsWith('_desktop_rive')
+    || normalizedLabel === 'rive'
+    || hasTool('riveworkflow')
+  ) return 'rive';
+  if (
+    id === 'agent'
+    || normalizedLabel === 'agent'
+    || hasTool('agent_spawn')
+  ) return 'agent';
+  if (
+    id.endsWith('_desktop_settings')
+    || normalizedLabel === 'client settings'
+    || hasTool('makasettingsget')
+  ) return 'settings';
+  if (id.endsWith('_desktop_mcp') || normalizedLabel === 'mcp') return 'mcp';
+  return 'generic';
 }
 
 export function formatRedactedJson(value: unknown): string {

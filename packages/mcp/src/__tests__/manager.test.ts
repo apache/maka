@@ -749,7 +749,9 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       );
     });
 
-    test('gives spaced list-changed notifications independent refresh budgets', async () => {
+    test('gives spaced list-changed notifications independent refresh budgets', {
+      timeout: 30_000,
+    }, async () => {
       const fixture = await createRemoteFixture('sse');
       let now = 0;
       const manager = createManager({ now: () => now });
@@ -757,8 +759,23 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
 
       for (let change = 1; change <= 4; change += 1) {
         now += 1_000;
+        const refreshCompleted = new Promise<void>((resolve) => {
+          const unsubscribe = manager.onChange((status) => {
+            if (
+              status.serverId !== 'remote' ||
+              status.state !== 'connected' ||
+              status.updatedAt !== now ||
+              status.error !== undefined
+            ) {
+              return;
+            }
+            unsubscribe();
+            resolve();
+          });
+        });
         await fixture.notifyToolListChanged();
-        await waitFor(() => countProtocolMethod(fixture, 'tools/list') === change + 1);
+        await refreshCompleted;
+        assert.equal(countProtocolMethod(fixture, 'tools/list'), change + 1);
       }
 
       assert.equal(manager.status('remote')?.error, undefined);
@@ -1008,6 +1025,32 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
   });
 
   describe('McpClientManager stdio E2E', () => {
+    test('drops non-semantic JSON Schema annotations from discovered tools', async () => {
+      const manager = createManager();
+      await manager.sync(fixtureConfig(['--schema-annotations']));
+
+      assert.deepEqual(manager.status('fixture')?.tools[0]?.inputSchema, {
+        $id: 'https://example.com/annotated.schema.json',
+        type: 'object',
+        properties: { value: { type: 'string' } },
+        patternProperties: { '^tag:': { type: 'string' } },
+        dependentSchemas: { value: { required: ['dependent'] } },
+        dependencies: {
+          value: { required: ['detail'] },
+          detail: ['value'],
+        },
+        prefixItems: [{ type: 'string' }],
+        additionalItems: { type: 'integer' },
+        unevaluatedItems: { type: 'boolean' },
+        contains: { type: 'number' },
+        not: { required: ['forbidden'] },
+        if: { required: ['value'] },
+        then: { required: ['detail'] },
+        else: { required: ['fallback'] },
+        unevaluatedProperties: { type: 'boolean' },
+      });
+    });
+
     test('discovers paginated tools and calls structured content', async () => {
       const manager = createManager();
       await manager.sync(fixtureConfig());

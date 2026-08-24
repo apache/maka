@@ -173,3 +173,13 @@ test('an app icon that never passed normalization still coerces to the brand mar
   expect(toAppIconChoice('sky')).toBe('sky');
   expect(toAppIconChoice(`custom:${'a'.repeat(32)}`)).toBe(`custom:${'a'.repeat(32)}`);
 });
+
+test('WorkHub stays opt-in and malformed persisted values fail closed', () => {
+  const defaults = createDefaultSettings();
+  expect(defaults.workHub).toEqual({ enabled: false });
+  expect(normalizeSettings({ workHub: { enabled: true } }).workHub).toEqual({ enabled: true });
+  expect(normalizeSettings({ workHub: { enabled: 'yes' } }).workHub).toEqual({ enabled: false });
+  expect(mergeSettings(defaults, { workHub: { enabled: true } }).workHub).toEqual({
+    enabled: true,
+  });
+});

@@ -62,7 +62,10 @@ interface NormalizedSendSessionCommand {
   quotes?: QuoteRef[];
   workspaceFileReferences?: WorkspaceFileReferencePosition[];
 }
-type NormalizedStopSessionInput = { source?: 'stop_button' };
+type NormalizedStopSessionInput = {
+  source?: 'stop_button';
+  expectedTurnId?: string;
+};
 
 export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundaryResponse {
   if (!input || typeof input !== 'object') {
@@ -311,11 +314,20 @@ export function normalizeSessionSkillIds(input: unknown): string[] {
 export function normalizeStopSessionInput(input: unknown): NormalizedStopSessionInput {
   if (input === undefined) return {};
   const value = requireObject(input, 'Invalid stop session input');
-  if (value.source === undefined) return {};
-  if (value.source !== 'stop_button') {
+  if (value.source !== undefined && value.source !== 'stop_button') {
     throw new Error('Invalid stop session source');
   }
-  return { source: 'stop_button' };
+  const expectedTurnId = value.expectedTurnId === undefined
+    ? undefined
+    : normalizeRequiredString(
+        value.expectedTurnId,
+        'Invalid stop session expectedTurnId',
+        MAX_TURN_ID_LENGTH,
+      );
+  return {
+    ...(value.source ? { source: 'stop_button' as const } : {}),
+    ...(expectedTurnId ? { expectedTurnId } : {}),
+  };
 }
 
 function requireObject(input: unknown, errorMessage: string): Record<string, unknown> {

@@ -138,7 +138,6 @@ export function createAppShellChatActions(deps: {
    *  looking at". Both halves matter — the section AND the session id — which
    *  is why the send path asks it instead of comparing the id itself. */
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
-  markSessionReadLocally: (sessionId: string, readMessages: readonly StoredMessage[]) => void;
   messageRetryPendingRef: RefBox<Set<string>>;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   setActiveId: (sessionId: string | undefined) => void;
@@ -160,7 +159,6 @@ export function createAppShellChatActions(deps: {
     diagnosticTarget?: { sessionId: string } | { profileId: string },
   ) => void;
   toastApi: ToastApi;
-  upsertSessionSummary: (session: DesktopSessionSummary) => void;
   newChatModel: PendingNewChatModel;
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   /**
@@ -188,7 +186,6 @@ export function createAppShellChatActions(deps: {
     clearPendingSessionAction,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
-    markSessionReadLocally,
     messageRetryPendingRef,
     refreshSessions,
     setActiveId,
@@ -203,7 +200,6 @@ export function createAppShellChatActions(deps: {
     onExecutionBoundaryChanged,
     showModelSetupToast,
     toastApi,
-    upsertSessionSummary,
     newChatModel,
     pendingNewChatThinkingLevel,
     newChatPermissionChoice,
@@ -402,7 +398,6 @@ export function createAppShellChatActions(deps: {
         // Consumed: the choice is now the created Session's, not the next
         // draft's. A failed create leaves it in place so a retry keeps it.
         if (newChatPermissionChoice) clearNewChatPermissionChoice();
-        upsertSessionSummary(session);
         optimisticSessionId = session.id;
         optimisticTurnId = turnId;
         armTurnActive(session.id, turnId);
@@ -688,7 +683,6 @@ export function createAppShellChatActions(deps: {
       const snapshot = range.snapshot();
       if (snapshot.sessionId !== sessionId) return false;
       const next = [...snapshot.messages];
-      markSessionReadLocally(sessionId, next);
       setMessages(next);
       setMessageLoadErrorBySession((current) => {
         if (!current[sessionId]) return current;

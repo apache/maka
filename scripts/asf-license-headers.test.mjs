@@ -228,6 +228,7 @@ describe('ASF header classification', () => {
       'patches/node-pty+1.2.0-beta.15.patch': 'third-party-source',
       'packages/ui/src/astryx-chat-reasoning.tsx': 'third-party-source',
       'packages/core/src/model-metadata.generated.ts': 'generated-files',
+      'scripts/model-metadata/models-dev-api.snapshot.json': 'no-comment-syntax',
       'packages/runtime/resources/bundled-skills/computer-use/SKILL.md':
         'verbatim-runtime-payloads',
       '.github/pull_request_template.md': 'verbatim-github-templates',
@@ -245,6 +246,7 @@ describe('ASF header classification', () => {
       'packages/runtime/src/edit-replace.ts',
       'packages/runtime/src/model-protocol.ts',
       'packages/runtime/src/tool-output.ts',
+      'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
     ]) {
       assert.deepEqual(
         classifyPath(path),

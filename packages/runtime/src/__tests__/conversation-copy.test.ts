@@ -37,6 +37,7 @@ import {
 import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
+  collectConversationCopyLinkedChildReferences,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
   rewriteConversationCopyMessage,
@@ -70,6 +71,22 @@ test('archived tool-result copy preflight detects conversation-owned references'
           sessionId: 'session-source',
           relativePath: 'session-source/image.png',
         },
+      }),
+      'session-source',
+    ),
+    true,
+  );
+  assert.equal(
+    archivedToolResultContainsConversationOwnedReferences(
+      serialized({
+        kind: 'subagent',
+        agentName: 'Researcher',
+        turnId: 'retired-turn',
+        runId: 'retired-run',
+        status: 'completed',
+        permissionMode: 'execute',
+        summary: 'done',
+        artifactIds: [],
       }),
       'session-source',
     ),
@@ -156,6 +173,61 @@ test('archived tool-result copy preflight detects conversation-owned references'
       'session-source',
     ),
     true,
+  );
+});
+
+test('conversation copy discovers linked children in persisted retired tool results', () => {
+  const result = {
+    kind: 'subagent',
+    childSessionId: 'child-session',
+    agentName: 'Researcher',
+    turnId: 'child-turn',
+    runId: 'child-run',
+    status: 'completed',
+    permissionMode: 'execute',
+    summary: 'done',
+    artifactIds: ['child-artifact'],
+  };
+  const runtimeEvent = {
+    id: 'event-retired-result',
+    invocationId: 'invocation-source',
+    runId: 'run-source',
+    sessionId: 'session-source',
+    turnId: 'turn-source',
+    ts: 1,
+    partial: false,
+    role: 'tool',
+    author: 'tool',
+    content: {
+      kind: 'function_response',
+      id: 'tool-1',
+      name: 'subagent',
+      result,
+    },
+  } as RuntimeEvent;
+
+  assert.deepEqual(
+    collectConversationCopyLinkedChildReferences({
+      messages: [],
+      runtimeEvents: [runtimeEvent],
+      archivedResults: [JSON.stringify(result)],
+    }),
+    [
+      {
+        childSessionId: 'child-session',
+        runId: 'child-run',
+        turnId: 'child-turn',
+        artifactIds: ['child-artifact'],
+        status: 'completed',
+      },
+      {
+        childSessionId: 'child-session',
+        runId: 'child-run',
+        turnId: 'child-turn',
+        artifactIds: ['child-artifact'],
+        status: 'completed',
+      },
+    ],
   );
 });
 
@@ -973,7 +1045,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
             turnId: 'turn-1',
             runId: 'run-source',
             status: 'completed',
-            permissionMode: 'ask',
+            permissionMode: 'execute' as never,
             summary: 'done',
             artifactIds: ['artifact-deleted'],
           },
@@ -1242,6 +1314,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         ? targetEvents[4].content.result
         : undefined;
     const typedResult = decodeCanonicalToolResultContent(typedResultValue);
+    assert.equal(typedResult.kind === 'subagent' ? typedResult.permissionMode : undefined, 'ask');
     assert.deepEqual(typedResult.kind === 'subagent' ? typedResult.artifactIds : undefined, [
       'artifact-target-deleted',
     ]);

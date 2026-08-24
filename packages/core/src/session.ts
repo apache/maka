@@ -42,7 +42,11 @@ import {
 } from './record-schema.js';
 import { isPermissionDecisionFields } from './interaction-record-schema.js';
 import { isTokenUsageFields, type TokenUsageFields } from './usage-record-schema.js';
-import { decodeCanonicalToolResultContent } from './tool-result-record-schema.js';
+import {
+  decodeCanonicalToolResultContent,
+  decodePersistedToolResultContent,
+} from './tool-result-record-schema.js';
+import { markPersisted, type PersistedValue } from './persisted-value.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 
@@ -212,7 +216,6 @@ export interface SessionHeader {
 
   // Lifecycle timestamps
   createdAt: number;
-  lastUsedAt: number;
   lastMessageAt?: number;
 
   // User metadata
@@ -370,6 +373,11 @@ export interface SessionSummary {
   collaborationMode?: CollaborationMode;
   /** Defaults to `default` when absent on legacy summaries. */
   orchestrationMode?: OrchestrationMode;
+}
+
+/** A complete Session catalog row. Its order key is authoritative and never synthesized by clients. */
+export interface SessionCatalogSummary extends SessionSummary {
+  activityAt: number;
 }
 
 export function sessionRevisionFamilyId(
@@ -685,10 +693,8 @@ export type SessionChangedReason =
   | 'rebound';
 
 export interface SessionChangedEvent {
-  type: 'sessions_changed';
   reason: SessionChangedReason;
   sessionId?: string;
-  connectionSlug?: string;
   modelId?: string;
   /**
    * The turn this change is ABOUT, when the change has a turn to name.
@@ -1021,8 +1027,21 @@ const SYSTEM_NOTE_KINDS = new Set([
   'abort',
 ]);
 
-export function decodeStoredMessage(value: unknown): StoredMessage {
-  const message = decodeStoredMessageContent(value, decodeCanonicalToolResultContent);
+export function decodeCanonicalMessage(value: unknown): StoredMessage {
+  return decodeMessage(value, decodeCanonicalToolResultContent);
+}
+
+export function decodeStoredMessage(persisted: PersistedValue<StoredMessage>): StoredMessage {
+  return decodeMessage(persisted as unknown, (content) =>
+    decodePersistedToolResultContent(markPersisted<ToolResultContent>(content)),
+  );
+}
+
+function decodeMessage(
+  value: unknown,
+  decodeToolResultContent: (content: unknown) => ToolResultContent,
+): StoredMessage {
+  const message = decodeStoredMessageContent(value, decodeToolResultContent);
   if (!isRecord(message)) throw new Error('Invalid stored message schema');
   switch (message.type) {
     case 'user':
@@ -1205,27 +1224,13 @@ function isToolActivityIdentity(value: Record<string, unknown>): boolean {
 export const STEP_LIMIT_NOTICE_TEXT =
   'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.';
 
-/**
- * View-boundary facts for explaining a model selection without adding a
- * second persisted model authority. Assistant rows already record the actual
- * model used by each completed step, so the latest such row is the only
- * durable model fact the switcher needs.
- */
-export function deriveModelSwitchTranscript(messages: readonly StoredMessage[]): {
-  hasConversation: boolean;
-  lastUsedModel?: string;
-} {
-  let lastUsedModel: string | undefined;
+/** Latest actual model recorded by a completed assistant step. */
+export function latestAssistantModelId(messages: readonly StoredMessage[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message?.type !== 'assistant') continue;
-    lastUsedModel = message.modelId;
-    break;
+    if (message?.type === 'assistant') return message.modelId;
   }
-  return {
-    hasConversation: messages.length > 0,
-    ...(lastUsedModel ? { lastUsedModel } : {}),
-  };
+  return undefined;
 }
 
 export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecord[] {

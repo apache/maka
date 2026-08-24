@@ -217,7 +217,14 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
     const capabilityToolNames = [tool.name, rejectedTool.name].sort((left, right) =>
       left.localeCompare(right),
     );
-    assert.deepEqual(loaded, { loaded: capabilityToolNames });
+    assert.deepEqual(loaded, {
+      loaded: capabilityToolNames,
+      group: {
+        id: group.id,
+        label: 'Unknown fixture',
+        description: 'A capability the Host source does not enumerate.',
+      },
+    });
     assert.deepEqual(
       availability.projectActiveTools?.({
         completedSteps: [

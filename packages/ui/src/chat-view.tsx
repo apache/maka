@@ -233,6 +233,8 @@ export function ChatView(props: {
    * reconciliation on the hot streaming path (ChatView also ref-wraps this).
    */
   onOpenLinkedSession?(sessionId: string): void;
+  /** Resolve a requires-bypass tool refusal, then regenerate its owning turn. */
+  onSwitchToBypassAndRetry?(turnId: string): void | Promise<void>;
   onNew(): void;
   onPromptSuggestion?(prompt: string): void;
   /**
@@ -251,7 +253,8 @@ export function ChatView(props: {
    */
   onAskAboutSelection?(input: { text: string; turnId: string }): void;
 }) {
-  const conversationCopy = getConversationCopy(useUiLocale());
+  const locale = useUiLocale();
+  const conversationCopy = getConversationCopy(locale);
   const copy = conversationCopy.chat;
   // chat survives for the empty-state path; the main message log is driven by
   // `turns` (per @kenji UI-04 turn-grouping projection).
@@ -268,13 +271,14 @@ export function ChatView(props: {
       : props.messages,
     [drainingMessageIds, props.messages],
   );
-  const chat = useMemo(() => materializeChat(visibleMessages), [visibleMessages]);
+  const chat = useMemo(() => materializeChat(visibleMessages, locale), [visibleMessages, locale]);
   // The projection owns the derived turns, so a turn nothing said anything
   // about keeps its object identity and its memoized TurnView skips — across
   // deltas AND across the message refreshes that fire at every step/tool
   // boundary (#2030).
   const turns = useTranscriptProjection({
     sessionId: props.activeSession?.id,
+    locale,
     messages: visibleMessages,
     liveTurn: props.liveTurn,
     shellRunUpdates: props.shellRunUpdates,
@@ -401,6 +405,12 @@ export function ChatView(props: {
   onOpenLinkedSessionRef.current = props.onOpenLinkedSession;
   const stableOpenLinkedSession = useCallback(
     (sessionId: string) => onOpenLinkedSessionRef.current?.(sessionId),
+    [],
+  );
+  const onSwitchToBypassAndRetryRef = useRef(props.onSwitchToBypassAndRetry);
+  onSwitchToBypassAndRetryRef.current = props.onSwitchToBypassAndRetry;
+  const stableSwitchToBypassAndRetry = useCallback(
+    (turnId: string) => onSwitchToBypassAndRetryRef.current?.(turnId),
     [],
   );
   const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
@@ -646,6 +656,11 @@ export function ChatView(props: {
                       onReadAttachmentBytes={props.onReadAttachmentBytes}
                       onOpenLinkedSession={
                         props.onOpenLinkedSession ? stableOpenLinkedSession : undefined
+                      }
+                      onSwitchToBypassAndRetry={
+                        props.onSwitchToBypassAndRetry
+                          ? stableSwitchToBypassAndRetry
+                          : undefined
                       }
                       searchHighlighted={highlightedTurnId === turn.turnId}
                       liveStreaming={

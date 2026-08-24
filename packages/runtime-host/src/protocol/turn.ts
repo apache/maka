@@ -762,6 +762,7 @@ export function decodeTurnProviderRetry(value: unknown): TurnProviderRetry {
 function requireProviderRetryReason(value: unknown): ProviderRetryReason {
   if (
     value === 'network' ||
+    value === 'provider_capacity' ||
     value === 'provider_unavailable' ||
     value === 'rate_limit' ||
     value === 'timeout' ||

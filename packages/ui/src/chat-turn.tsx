@@ -435,6 +435,8 @@ export const TurnView = memo(function TurnView(props: {
    * linked subagent tool rows; omitted when the host has no navigation.
    */
   onOpenLinkedSession?(sessionId: string): void;
+  /** Resolve a requires-bypass tool refusal, then regenerate this turn. */
+  onSwitchToBypassAndRetry?(turnId: string): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).messages;
@@ -665,6 +667,11 @@ export const TurnView = memo(function TurnView(props: {
                     key={`processing-${item.id}`}
                     entries={item.children}
                     onOpenLinkedSession={props.onOpenLinkedSession}
+                    onSwitchToBypassAndRetry={
+                      props.onSwitchToBypassAndRetry
+                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
+                        : undefined
+                    }
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ) : (
@@ -673,6 +680,11 @@ export const TurnView = memo(function TurnView(props: {
                     item={item}
                     onStreamingSettled={props.liveStreaming?.onStreamingSettled}
                     onOpenLinkedSession={props.onOpenLinkedSession}
+                    onSwitchToBypassAndRetry={
+                      props.onSwitchToBypassAndRetry
+                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
+                        : undefined
+                    }
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ),
@@ -1181,6 +1193,7 @@ function TurnTimelineEntry(props: {
   item: Exclude<TurnTimelineItem, { kind: 'user' }>;
   onStreamingSettled?: (messageId?: string) => void;
   onOpenLinkedSession?(sessionId: string): void;
+  onSwitchToBypassAndRetry?(): void | Promise<void>;
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
   const { item } = props;
@@ -1195,7 +1208,13 @@ function TurnTimelineEntry(props: {
     );
   }
   if (item.kind === 'tools') {
-    return <ToolTrow items={item.items} onOpenLinkedSession={props.onOpenLinkedSession} />;
+    return (
+      <ToolTrow
+        items={item.items}
+        onOpenLinkedSession={props.onOpenLinkedSession}
+        onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
+      />
+    );
   }
   // Same component either way — a type swap here would remount the answer.
   if (item.live !== true) return <AssistantAnswerBubble text={item.text} phase="historical" />;
@@ -1213,6 +1232,7 @@ function TurnTimelineEntry(props: {
 function ProcessingBlock(props: {
   entries: FoldedTimelineChild[];
   onOpenLinkedSession?(sessionId: string): void;
+  onSwitchToBypassAndRetry?(): void | Promise<void>;
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
   const { entries } = props;
@@ -1223,6 +1243,7 @@ function ProcessingBlock(props: {
           key={timelineEntryKey(entry, index)}
           item={entry}
           onOpenLinkedSession={props.onOpenLinkedSession}
+          onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
           initialLiveContent={props.initialLiveContent}
         />
       ))}

@@ -18,6 +18,7 @@
  */
 
 import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 import type {
   DesktopTranscriptBatchPayload,
   DesktopTranscriptFragment,
@@ -308,7 +309,7 @@ export class DesktopTranscriptRangeStore {
     const encoded = new TextDecoder('utf-8', { fatal: true }).decode(pending.bytes);
     const message = projectDesktopStoredMessage(
       { hostId: this.#hostId },
-      decodeStoredMessage(JSON.parse(encoded) as unknown),
+      decodeStoredMessage(markPersisted<StoredMessage>(JSON.parse(encoded))),
     );
     const projected = JSON.stringify(message);
     this.#pending.delete(key);

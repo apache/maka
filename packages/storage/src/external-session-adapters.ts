@@ -23,10 +23,15 @@ import {
   type ClaudeCodeSessionAdapterOptions,
 } from './claude-code-session-adapter.js';
 import { CodexSessionAdapter, type CodexSessionAdapterOptions } from './codex-session-adapter.js';
+import {
+  OpenCodeSessionAdapter,
+  type OpenCodeSessionAdapterOptions,
+} from './opencode-session-adapter.js';
 
 export interface ExternalSessionAdapterOptions {
   codex?: CodexSessionAdapterOptions;
   claudeCode?: ClaudeCodeSessionAdapterOptions;
+  opencode?: OpenCodeSessionAdapterOptions;
 }
 
 /** Default source registry shared by product-facing external Session import surfaces. */
@@ -36,5 +41,6 @@ export function createExternalSessionAdapterRegistry(
   return new ExternalSessionAdapterRegistry([
     new CodexSessionAdapter(options.codex),
     new ClaudeCodeSessionAdapter(options.claudeCode),
+    new OpenCodeSessionAdapter(options.opencode),
   ]);
 }

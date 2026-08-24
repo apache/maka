@@ -19,10 +19,10 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { deriveModelSwitchTranscript, type StoredMessage } from '../session.js';
+import { latestAssistantModelId, type StoredMessage } from '../session.js';
 
-describe('deriveModelSwitchTranscript', () => {
-  it('treats any durable transcript as an existing conversation', () => {
+describe('latestAssistantModelId', () => {
+  it('returns undefined until an assistant response exists', () => {
     const messages: StoredMessage[] = [
       {
         type: 'user',
@@ -33,9 +33,7 @@ describe('deriveModelSwitchTranscript', () => {
       },
     ];
 
-    assert.deepEqual(deriveModelSwitchTranscript(messages), {
-      hasConversation: true,
-    });
+    assert.equal(latestAssistantModelId(messages), undefined);
   });
 
   it('uses the latest assistant model as the actual baseline', () => {
@@ -58,9 +56,6 @@ describe('deriveModelSwitchTranscript', () => {
       },
     ];
 
-    assert.deepEqual(deriveModelSwitchTranscript(messages), {
-      hasConversation: true,
-      lastUsedModel: 'model-b',
-    });
+    assert.equal(latestAssistantModelId(messages), 'model-b');
   });
 });

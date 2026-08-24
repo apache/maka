@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import {
   authenticateInteractiveArtifactStoreWriter,
   openInteractiveArtifactStoreForWrite,
@@ -34,6 +34,14 @@ import {
   tryAcquireInteractiveRootOwner,
   type StorageRootLease,
 } from '../root-authority.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 describe('interactive artifact store authority', () => {
   test('requires authentic leases and writer facades', async () => {
@@ -95,7 +103,9 @@ describe('interactive artifact store authority', () => {
 
   test('root close revokes new facade operations after draining an in-flight write', async () => {
     await withTemporaryRoot('interactive', async (root, track) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const capability = trackControlDirectory(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       const writer = track(await openInteractiveArtifactStoreForWrite(owner.lease));
@@ -167,7 +177,9 @@ async function withInteractiveOwner(
   ) => Promise<void>,
 ): Promise<void> {
   await withTemporaryRoot('interactive', async (root, track) => {
-    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: root, kind: 'interactive' }),
+    );
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {

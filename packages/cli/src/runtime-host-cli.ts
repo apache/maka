@@ -70,6 +70,14 @@ export type RuntimeHostCliCommand =
       allowInterruptActiveTasks?: true;
     }
   | {
+      kind: 'runtime-host-service-update';
+      json: boolean;
+      framed?: true;
+      clientDataRoot?: string;
+      expectedTarget: RuntimeHostManagedServiceTarget;
+      allowInterruptActiveTasks?: true;
+    }
+  | {
       kind: 'runtime-host-managed-deployment-cleanup';
       clientDataRoot?: string;
       expectedTarget: RuntimeHostManagedServiceTarget;
@@ -227,13 +235,14 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     action !== 'stop' &&
     action !== 'restart' &&
     action !== 'retire' &&
+    action !== 'update' &&
     action !== 'logs' &&
     action !== 'uninstall'
   ) {
     return error(
       action
         ? `Unexpected runtime-host service command: ${action}`
-        : 'runtime-host service requires install, status, start, stop, restart, retire, logs, or uninstall',
+        : 'runtime-host service requires install, status, start, stop, restart, retire, update, logs, or uninstall',
     );
   }
 
@@ -248,7 +257,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             retainManagedDeployment = true;
           },
         }
-      : action === 'retire'
+      : action === 'retire' || action === 'update'
         ? {
             '--allow-interrupt-active-tasks': () => {
               if (allowInterruptActiveTasks) {
@@ -271,8 +280,18 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     flagOptions,
   });
   if ('kind' in options) return options;
-  if (action === 'retire' && !options.expectedTarget) {
-    return error('runtime-host service retire requires an expected target');
+  if ((action === 'retire' || action === 'update') && !options.expectedTarget) {
+    return error(`runtime-host service ${action} requires an expected target`);
+  }
+  if (action === 'update') {
+    return {
+      kind: 'runtime-host-service-update',
+      json: options.json,
+      ...(options.framed ? { framed: true } : {}),
+      ...(clientDataRoot ? { clientDataRoot } : {}),
+      expectedTarget: options.expectedTarget!,
+      ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+    };
   }
   return {
     kind: 'runtime-host-service-manage',

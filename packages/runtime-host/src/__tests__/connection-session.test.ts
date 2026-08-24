@@ -1420,7 +1420,6 @@ function canonicalProjection(sessionId: string): CanonicalSessionProjection {
       metadataRevision: 1,
       status: 'running',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     rootTurn: {

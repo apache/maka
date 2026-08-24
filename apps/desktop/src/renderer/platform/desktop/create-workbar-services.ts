@@ -102,8 +102,6 @@ export function createDesktopWorkbarServices(
         bridge.sessions.subscribeEvents(sessionId, handler),
       subscribeUsageChanges: (sessionId, handler) =>
         bridge.inspector.subscribeUsageChanges(sessionId, handler),
-      getRecordFile: async () =>
-        (await bridge.app.info()).operationalStateDatabasePath,
     },
     attachments: {
       pickFiles: () => bridge.attachments.pickFiles(),

@@ -35,7 +35,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import { projectRuntimeEventsToStoredMessages } from '../runtime-event-read-model.js';
-import { materializeSession } from '../materializer.js';
 import type { InvocationContext } from '../invocation-context.js';
 import type { AssistantMessage, StoredMessage, ToolResultMessage } from '@maka/core/session';
 import { z } from 'zod';
@@ -8578,6 +8577,69 @@ describe('AiSdkBackend RunTrace', () => {
     );
   });
 
+  test('preserves provider capacity in retry progress', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new APICallError({
+            message: 'The model is currently at capacity due to high demand.',
+            url: 'https://api.x.ai/v1/chat/completions',
+            requestBodyValues: {},
+            data: { error: { code: 'resource-exhausted' } },
+          });
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, reason }) => ({ phase, reason })),
+      [
+        { phase: 'scheduled', reason: 'provider_capacity' },
+        { phase: 'started', reason: 'provider_capacity' },
+      ],
+    );
+  });
+
   test('retries one idle watchdog timeout after preserving partial thinking', async () => {
     const timers = manualWatchdogTimer();
     const assistants: AssistantMessage[] = [];
@@ -10616,13 +10678,6 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.equal(assistant.text, 'Final answer.');
     assert.equal(assistant.thinking?.text, 'Let me reason.');
     assert.equal(assistant.thinking?.signature, 'sig-123');
-
-    // materializeSession (session reload) surfaces the reconstructed thinking.
-    const viewModel = materializeSession(projection.messages);
-    const assistantItem = viewModel.items.find((item) => item.kind === 'assistant');
-    assert.ok(assistantItem && assistantItem.kind === 'assistant');
-    assert.equal(assistantItem.message.thinking?.text, 'Let me reason.');
-    assert.equal(assistantItem.message.thinking?.signature, 'sig-123');
   });
 
   test('persists reasoning for a thinking-only turn that produces no final text', async () => {
@@ -10684,8 +10739,8 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.equal(assistantMessage.text, '');
     assert.equal(assistantMessage.thinking?.text, 'silent thought');
 
-    // Full chain: RuntimeEvent projection + materialize keep the reasoning on an
-    // empty-text assistant row without crashing.
+    // Full chain: RuntimeEvent projection keeps the reasoning on an empty-text
+    // assistant row without crashing.
     const ctx = {
       sessionId: 'session-1',
       invocationId: 'inv-1',
@@ -10716,11 +10771,6 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.ok(assistant && assistant.type === 'assistant');
     assert.equal(assistant.text, '');
     assert.equal(assistant.thinking?.text, 'silent thought');
-
-    const viewModel = materializeSession(projection.messages);
-    const assistantItem = viewModel.items.find((item) => item.kind === 'assistant');
-    assert.ok(assistantItem && assistantItem.kind === 'assistant');
-    assert.equal(assistantItem.message.thinking?.text, 'silent thought');
   });
 
   test('text-only terminal replay fixture preserves signed thinking and usage exactly', async () => {
@@ -12239,7 +12289,9 @@ function structuredSummary(body: string): string {
 describe('AiSdkBackend steering durability and identity', () => {
   const steeringBackend = (
     model: MockLanguageModelV4,
-    options: Partial<Pick<AiSdkBackendInput, 'supportsVision' | 'readAttachmentBytes'>> = {},
+    options: Partial<
+      Pick<AiSdkBackendInput, 'supportsVision' | 'readAttachmentBytes' | 'loadTurnRuntimeEvents'>
+    > = {},
   ): AiSdkBackend =>
     createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -12276,6 +12328,128 @@ describe('AiSdkBackend steering durability and identity', () => {
       if (event.type === 'steering_message') return event;
     }
   };
+
+  test('injects a steer that arrives after the turn last tool-call boundary', async () => {
+    // A tool-free turn runs exactly one provider step, and the top-of-loop
+    // drain happens before the model has said anything — so a steer typed
+    // while the answer streams has no boundary left to land on. Whether
+    // "Steer" works at all must not depend on the model happening to call a
+    // tool afterwards (#3529).
+    const model = textCompletionModel('the first answer');
+    const durable = durableTurnHarness('turn-1', 'start');
+    const backend = steeringBackend(model, {
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    });
+    const acked: string[] = [];
+    const nacked: string[] = [];
+    let pulls = 0;
+    const events = await drainDurably(
+      backend.send(
+        durable.input({
+          pullSteering: () => {
+            pulls += 1;
+            // Nothing to take before the model speaks; the interjection lands
+            // while the first (and only) step is streaming.
+            if (pulls !== 2) return [];
+            return [
+              { id: 'lease-late', messageId: 'message-late', content: { text: 'late steer' } },
+            ];
+          },
+          ackSteering: (leaseIds: readonly string[]) => acked.push(...leaseIds),
+          nackSteering: (leaseIds: readonly string[]) => nacked.push(...leaseIds),
+        }),
+      ),
+      durable,
+    );
+
+    const steering = events.filter((event) => event.type === 'steering_message');
+    assert.equal(steering.length, 1);
+    assert.deepEqual(acked, ['lease-late']);
+    assert.deepEqual(nacked, []);
+    // Echoing the message is not the point — the model has to be asked again
+    // with it. Draining without taking another step would satisfy every
+    // assertion above while the user still never gets an answer.
+    assert.equal(model.doStreamCalls.length, 2);
+    const secondPrompt = JSON.stringify(model.doStreamCalls[1]?.prompt);
+    assert.match(secondPrompt, /late steer/);
+    // …and it has to carry what the model just said, or the correction lands on
+    // work the model cannot see.
+    assert.match(secondPrompt, /the first answer/);
+  });
+
+  test('the late-steer edge is skipped without a durable current-run reader', async () => {
+    // The no-reader projection at the top of the loop appends steering alone —
+    // it never appends the assistant output of the step just finished. Taking
+    // the continuation edge there would ask the model to redirect work it
+    // cannot see, so the edge requires the reader the way the tool-call edge
+    // does. The turn still completes; the Host folds the message into the next
+    // Turn, which is the behaviour before #3529.
+    const model = textCompletionModel('the first answer');
+    const backend = steeringBackend(model);
+    const acked: string[] = [];
+    let pulls = 0;
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({
+      turnId: 'turn-1',
+      text: 'start',
+      context: [],
+      pullSteering: () => {
+        pulls += 1;
+        if (pulls !== 2) return [];
+        return [{ id: 'lease-late', messageId: 'message-late', content: { text: 'late steer' } }];
+      },
+      ackSteering: (leaseIds) => acked.push(...leaseIds),
+    })) {
+      events.push(event);
+    }
+
+    assert.equal(model.doStreamCalls.length, 1);
+    assert.equal(events.filter((event) => event.type === 'steering_message').length, 0);
+    assert.deepEqual(acked, []);
+  });
+
+  test('a stop that lands during the final drain wins over the injected steer', async () => {
+    // The final drain awaits a durable push, so an `after_step` stop can arrive
+    // while it is in flight. Deciding to take another step from flags read
+    // BEFORE that await would spend a provider step the user already stopped —
+    // which is precisely what `after_step` exists to prevent.
+    const model = textCompletionModel('done');
+    const durable = durableTurnHarness('turn-1', 'start');
+    // The reader has to be present, or the edge is skipped for that reason
+    // instead and this test would pass while exercising nothing.
+    const backend = steeringBackend(model, {
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    });
+    let pulls = 0;
+    const iterator = backend
+      .send(
+        durable.input({
+          pullSteering: () => {
+            pulls += 1;
+            if (pulls !== 2) return [];
+            return [
+              { id: 'lease-late', messageId: 'message-late', content: { text: 'late steer' } },
+            ];
+          },
+          ackSteering: () => {},
+        }),
+      )
+      [Symbol.asyncIterator]();
+
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) break;
+      const event = next.value as SessionEvent;
+      durable.record(event);
+      // Consuming the echo is what resolves the drain's push, so the stop lands
+      // in the window between that resolution and the post-drain decision.
+      if (event.type === 'steering_message') await backend.stop('user_stop', 'after_step');
+    }
+
+    // The steer was still delivered — it is durable and the Host will carry it
+    // into the next Turn — but no further provider step was dispatched.
+    assert.equal(model.doStreamCalls.length, 1);
+  });
 
   test('holds the provider request until the steering event is durably consumed', async () => {
     // Persist-before-include: the initial user message is durable before the
@@ -13733,7 +13907,6 @@ function header(permissionMode: SessionHeader['permissionMode'] = 'ask'): Sessio
     workspaceRoot: '/tmp/maka',
     cwd: '/tmp/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,

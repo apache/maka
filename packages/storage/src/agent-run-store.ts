@@ -24,6 +24,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import {
   decodeAgentRunEvent,
   decodeAgentRunHeader,
+  decodeCurrentAgentRunHeader,
   decodeRuntimeEvent,
 } from './execution-record-codec.js';
 import { immutableSteeringMessageId } from './runtime-event-invariants.js';
@@ -317,7 +318,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     header: AgentRunHeader,
     _options: { durable?: boolean } = {},
   ): Promise<AgentRunHeader> {
-    const normalized = normalizeAgentRunHeader(header, header.sessionId, header.runId);
+    const normalized = normalizeCurrentAgentRunHeader(header, header.sessionId, header.runId);
     this.#lease.transaction('write', () => {
       const inserted = this.#lease.database
         .prepare(`
@@ -378,7 +379,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
           throw new Error('AgentRun Run Composition is immutable');
         }
       }
-      const next = normalizeAgentRunHeader(
+      const next = normalizeCurrentAgentRunHeader(
         { ...current, ...patch, sessionId, runId },
         sessionId,
         runId,
@@ -422,7 +423,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       if (typeof row.session_id !== 'string' || typeof row.record_json !== 'string') {
         throw new Error('Invalid SQLite AgentRun identity row');
       }
-      return normalizeAgentRunHeader(JSON.parse(row.record_json), row.session_id, runId);
+      return decodePersistedAgentRunHeader(JSON.parse(row.record_json), row.session_id, runId);
     });
     return { runs, truncated };
   }
@@ -447,7 +448,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       if (typeof row.run_id !== 'string' || typeof row.record_json !== 'string') {
         throw new Error('Invalid SQLite AgentRun row');
       }
-      return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
+      return decodePersistedAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
     });
     return { runs, truncated };
   }
@@ -503,7 +504,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       ) {
         throw new Error('Invalid SQLite AgentRun page row');
       }
-      return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
+      return decodePersistedAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
     });
     const last = pageRows.at(-1);
     return {
@@ -532,7 +533,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       if (typeof row.run_id !== 'string' || typeof row.record_json !== 'string') {
         throw new Error('Invalid SQLite AgentRun row');
       }
-      return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
+      return decodePersistedAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
     });
   }
 
@@ -860,13 +861,27 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
   }
 }
 
-function normalizeAgentRunHeader(value: unknown, sessionId: string, runId: string): AgentRunHeader {
+function normalizeCurrentAgentRunHeader(
+  value: unknown,
+  sessionId: string,
+  runId: string,
+): AgentRunHeader {
   assertSafeId(sessionId, 'Invalid session id');
   assertSafeId(runId, 'Invalid run id');
-  return decodeAgentRunHeader(JSON.parse(JSON.stringify(value, sanitizeJson)), {
+  return decodeCurrentAgentRunHeader(JSON.parse(JSON.stringify(value, sanitizeJson)), {
     sessionId,
     runId,
   });
+}
+
+function decodePersistedAgentRunHeader(
+  value: unknown,
+  sessionId: string,
+  runId: string,
+): AgentRunHeader {
+  assertSafeId(sessionId, 'Invalid session id');
+  assertSafeId(runId, 'Invalid run id');
+  return decodeAgentRunHeader(value, { sessionId, runId });
 }
 
 function readSqliteAgentRun(db: DatabaseSync, sessionId: string, runId: string): AgentRunHeader {
@@ -883,7 +898,7 @@ function readSqliteAgentRun(db: DatabaseSync, sessionId: string, runId: string):
     throw error;
   }
   if (typeof row.record_json !== 'string') throw new Error('Invalid SQLite AgentRun row');
-  return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, runId);
+  return decodePersistedAgentRunHeader(JSON.parse(row.record_json), sessionId, runId);
 }
 
 function readSqliteAgentRunEvents(

@@ -308,6 +308,70 @@ test('keeps a received management result when SSH teardown times out', async () 
   await harness.terminal.close();
 });
 
+test('runs an exact update package and reports progress before an active-work result', async () => {
+  const harness = createHarness('pending');
+  const phases: string[] = [];
+  const update = harness.terminal.runUpdate(
+    {
+      destination: 'operator@example.com',
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@1.3.0' },
+      expectedTarget: {
+        serviceId: 'b'.repeat(64),
+        rootPath: '/srv/maka',
+        rootId: 'a'.repeat(64),
+      },
+    },
+    (phase) => phases.push(phase),
+  );
+  await waitFor(() => harness.pty.hasDataListener());
+  const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(remoteCommand, /--package.*maka-agent@1\.3\.0/u);
+  assert.match(remoteCommand, /runtime-host.*service.*update/u);
+  assert.match(remoteCommand, /MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST/u);
+  harness.pty.emitData('Password: ');
+  harness.pty.emitData(
+    encodeRuntimeHostServiceManagementFrame({
+      schemaVersion: 1,
+      kind: 'progress',
+      action: 'update',
+      phase: 'retiring',
+      currentVersion: '1.2.3',
+      targetVersion: '1.3.0',
+    }),
+  );
+  harness.pty.emitData(
+    encodeRuntimeHostServiceManagementFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'update',
+      service: {
+        platform: 'linux',
+        arch: 'x64',
+        osRelease: '6.8.0',
+        state: 'running',
+        pid: 42,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        projectDirectoryRoots: [],
+      },
+      update: {
+        kind: 'active_tasks',
+        currentVersion: '1.2.3',
+        targetVersion: '1.3.0',
+      },
+    }),
+  );
+  harness.pty.exit(1);
+
+  const result = await update;
+  assert.equal(result.kind, 'result');
+  assert.equal(result.kind === 'result' ? result.update.kind : undefined, 'active_tasks');
+  assert.deepEqual(phases, ['retiring']);
+  assert.deepEqual(harness.events.map(({ kind }) => kind), ['opened', 'data', 'connected']);
+  assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
+  await harness.terminal.close();
+});
+
 test('keeps a prepared access credential out of the SSH terminal projection', async () => {
   const harness = createHarness('pending');
   const credential = 'maka_rh_secret-replacement';

@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { GoalArmOutcome } from '../../shared/goal-arm.js';
-import { interpretGoalArmOutcome } from '../../renderer/goal-arm-outcome.js';
+import { interpretGoalArmOutcome } from '../../renderer/features/goals/testing.js';
 import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 
 test('successful Goal arming closes while every reconciliation result locks the form', () => {

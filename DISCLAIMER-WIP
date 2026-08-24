@@ -11,7 +11,6 @@ policy. For example, releases may have incomplete or un-reviewed licensing
 conditions. What follows is a list of issues the project is currently aware of
 (this list is likely to be incomplete):
 
- * NOTICE has not yet been reworked into ASF form.
  * The software grant and committer ICLAs are not yet complete.
 
 If you are planning to incorporate this work into your product/project, please

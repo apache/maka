@@ -19,6 +19,7 @@
 
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
   applyShellRunOverlayEntry,
@@ -59,6 +60,7 @@ export interface TranscriptProjectionInput {
    * turn is only reused when its value matches.
    */
   sessionId?: string;
+  locale?: UiLocale;
   messages: readonly StoredMessage[];
   liveTurn?: LiveTurnProjection;
   shellRunUpdates?: readonly ShellRunUpdate[];
@@ -77,6 +79,7 @@ export function createTranscriptProjection(): TranscriptProjection {
 
   // Stage inputs, remembered so a stage only reruns when its own input moved.
   let lastMessages: readonly StoredMessage[] | undefined;
+  let lastLocale: UiLocale | undefined;
   let lastLiveTurn: LiveTurnProjection | undefined;
   let lastUpdates: readonly ShellRunUpdate[] | undefined;
 
@@ -92,6 +95,7 @@ export function createTranscriptProjection(): TranscriptProjection {
   function reset(): void {
     hasProjected = false;
     lastMessages = undefined;
+    lastLocale = undefined;
     lastLiveTurn = undefined;
     lastUpdates = undefined;
     settledTurns = NO_TURNS;
@@ -118,15 +122,20 @@ export function createTranscriptProjection(): TranscriptProjection {
     if (
       hasProjected
       && input.messages === lastMessages
+      && input.locale === lastLocale
       && input.liveTurn === lastLiveTurn
       && !updatesMoved
     ) {
       return lastTurns;
     }
 
-    if (input.messages !== lastMessages) {
-      settledTurns = reconcileTurnIdentities(settledTurns, materializeTurns(input.messages));
+    if (input.messages !== lastMessages || input.locale !== lastLocale) {
+      settledTurns = reconcileTurnIdentities(
+        settledTurns,
+        materializeTurns(input.messages, input.locale),
+      );
       lastMessages = input.messages;
+      lastLocale = input.locale;
     }
     if (liveTurnsFrom !== settledTurns || input.liveTurn !== lastLiveTurn) {
       liveTurns = overlayLiveTurn(settledTurns, input.liveTurn);

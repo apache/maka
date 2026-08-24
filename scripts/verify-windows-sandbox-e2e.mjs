@@ -17,13 +17,17 @@
  * under the License.
  */
 
+import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const execFileAsync = promisify(execFile);
 
 function assertCondition(condition, message) {
   if (!condition) throw new Error(message);
@@ -154,6 +158,21 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
       'Sandboxed read did not return the written content.',
     );
 
+    console.log('[verify-windows-sandbox] cancelling an active packaged AppContainer worker');
+    await verifyPackagedClientCancellation({
+      FilesystemWorkerClient,
+      FilesystemWorkerClientError,
+      SandboxManager,
+      WindowsBrokerSandboxBackend,
+      createWindowsBrokerManifestWriter,
+      client,
+      launchSpec: launchSpec.spec,
+      sandboxExecutable,
+      workspace,
+      targetPath: insidePath,
+    });
+    console.log('[verify-windows-sandbox] packaged client cancellation and recovery verified');
+
     const sourceDirectory = join(workspace, 'src');
     await mkdir(sourceDirectory, { recursive: true });
     await writeFile(join(sourceDirectory, 'health.ts'), 'export const healthSignal = true;\n');
@@ -205,6 +224,213 @@ export async function verifyWindowsSandboxWorkerE2E(appDirectoryPath) {
       await rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   }
+}
+
+async function verifyPackagedClientCancellation({
+  FilesystemWorkerClient,
+  FilesystemWorkerClientError,
+  SandboxManager,
+  WindowsBrokerSandboxBackend,
+  createWindowsBrokerManifestWriter,
+  client,
+  launchSpec,
+  sandboxExecutable,
+  workspace,
+  targetPath,
+}) {
+  const requestId = `packaged-client-cancel-${process.pid}-${randomBytes(4).toString('hex')}`;
+  const launchRequestId = `${requestId}-launch`;
+  const sleepSeconds = 47;
+  assertCondition(
+    (await listCancellationProcesses(sandboxExecutable)).length === 0,
+    'Client-cancel evidence started with an existing sandbox process.',
+  );
+  const controller = new AbortController();
+  const cancelClient = new FilesystemWorkerClient({
+    sandboxManager: new SandboxManager([
+      new WindowsBrokerSandboxBackend({
+        clientPath: sandboxExecutable,
+        writeManifest: createWindowsBrokerManifestWriter(),
+        requestId: () => requestId,
+      }),
+    ]),
+    platform: 'win32',
+    newId: () => `${requestId}-operation`,
+    timeoutMs: 60_000,
+    getLaunchSpec: async () => ({
+      ok: true,
+      spec: {
+        ...launchSpec,
+        program: sandboxExecutable,
+        args: ['--stdio-probe', '--sleep', String(sleepSeconds)],
+      },
+    }),
+  });
+
+  let cancellationError;
+  let cancellationSettled = false;
+  const cancellation = cancelClient
+    .execute({
+      operation: { kind: 'read', path: targetPath },
+      cwd: workspace,
+      mode: 'ask',
+      abortSignal: controller.signal,
+    })
+    .then(
+      () => {
+        cancellationSettled = true;
+      },
+      (error) => {
+        cancellationError = error;
+        cancellationSettled = true;
+      },
+    );
+
+  let primaryError;
+  try {
+    await waitForObservation({
+      description: 'packaged client-cancel AppContainer child',
+      probe: (remainingMs) => listCancellationProcesses(sandboxExecutable, remainingMs),
+      accept: (processes) => processes.length >= 2,
+      settledEarly: () => cancellationSettled,
+    });
+
+    controller.abort();
+    await cancellation;
+    assertCondition(
+      cancellationError instanceof FilesystemWorkerClientError &&
+        cancellationError.reason === 'aborted' &&
+        cancellationError.stage === 'launch' &&
+        cancellationError.dispatched === true,
+      `Client cancellation did not report an unknown dispatched outcome: ${renderError(
+        cancellationError,
+      )}`,
+    );
+
+    await waitForObservation({
+      description: 'packaged client-cancel AppContainer child exit',
+      probe: (remainingMs) => listCancellationProcesses(sandboxExecutable, remainingMs),
+      accept: (processes) => processes.length === 0,
+    });
+
+    // The process runner terminates the one-shot broker. Its kill-on-close Job
+    // tears down the AppContainer child. The next ordinary launch owns any
+    // stale-ledger replay before it establishes its own grants; a future
+    // graceful-cancel path is also valid if it already cleaned the ledger.
+    await client.execute({
+      operation: { kind: 'read', path: targetPath },
+      cwd: workspace,
+      mode: 'ask',
+    });
+    assertCondition(
+      (await findRecoveryRecord(launchRequestId)) === undefined,
+      'Normal packaged launch did not remove the client-cancel recovery ledger.',
+    );
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    controller.abort();
+    await cancellation;
+    if (primaryError) {
+      try {
+        await client.execute({
+          operation: { kind: 'read', path: targetPath },
+          cwd: workspace,
+          mode: 'ask',
+        });
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [primaryError, cleanupError],
+          'Client-cancel evidence failed and its recovery launch also failed.',
+        );
+      }
+    }
+  }
+  if (primaryError) throw primaryError;
+}
+
+async function listCancellationProcesses(sandboxExecutable, timeoutMs = 10_000) {
+  const script = String.raw`
+$imageName = [IO.Path]::GetFileName($env:MAKA_CANCEL_SANDBOX)
+$matches = @(
+  Get-CimInstance Win32_Process | ForEach-Object {
+    if ($_.Name -eq $imageName) {
+      [PSCustomObject]@{
+        processId = $_.ProcessId
+        commandLine = [string]$_.CommandLine
+      }
+    }
+  }
+)
+@($matches) | ConvertTo-Json -Compress
+`;
+  const { stdout } = await execFileAsync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    {
+      env: {
+        ...process.env,
+        MAKA_CANCEL_SANDBOX: sandboxExecutable,
+      },
+      timeout: Math.min(timeoutMs, 10_000),
+      windowsHide: true,
+    },
+  );
+  if (!stdout.trim()) return [];
+  const parsed = JSON.parse(stdout);
+  return Array.isArray(parsed) ? parsed : [parsed];
+}
+
+async function findRecoveryRecord(requestId) {
+  const ledgerRoot = join(tmpdir(), 'maka-sandbox-acl-ledgers');
+  const entries = await readdir(ledgerRoot, { withFileTypes: true }).catch((error) => {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const path = join(ledgerRoot, entry.name);
+    const contents = await readFile(path, 'utf8').catch(() => undefined);
+    if (contents?.includes(`"requestId":"${requestId}"`)) return path;
+  }
+  return undefined;
+}
+
+async function waitForObservation({
+  description,
+  probe,
+  accept,
+  settledEarly = () => false,
+  timeoutMs = 30_000,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastObservation;
+  let lastError;
+  while (Date.now() < deadline) {
+    if (settledEarly()) {
+      throw new Error(`${description} settled before the expected state was observed.`);
+    }
+    try {
+      lastObservation = await probe(Math.max(1, deadline - Date.now()));
+      lastError = undefined;
+      if (accept(lastObservation)) return lastObservation;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  throw new Error(
+    `${description} was not observed within ${timeoutMs}ms.` +
+      `${lastObservation === undefined ? '' : ` Last observation: ${JSON.stringify(lastObservation)}.`}` +
+      `${lastError ? ` Last probe error: ${renderError(lastError)}.` : ''}`,
+  );
+}
+
+function renderError(error) {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}`;
+  }
+  return JSON.stringify(error);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

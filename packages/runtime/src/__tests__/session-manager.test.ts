@@ -17452,7 +17452,6 @@ class MemorySessionStore implements SessionStore {
       cwd: input.cwd,
       ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
       createdAt: 1,
-      lastUsedAt: 1,
       name: input.name ?? 'New Chat',
       titleIsManual: false,
       isFlagged: false,

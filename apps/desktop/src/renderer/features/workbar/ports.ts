@@ -174,7 +174,6 @@ export interface WorkbarInspectorService {
     sessionId: string,
     handler: () => void,
   ): WorkbarUnsubscribe;
-  getRecordFile(): Promise<string>;
 }
 
 export interface WorkbarAttachmentsService {

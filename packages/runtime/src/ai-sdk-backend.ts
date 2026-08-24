@@ -934,6 +934,8 @@ function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
     case 'rate_limit':
     case 'timeout':
       return kind;
+    case 'provider_capacity':
+      return 'provider_capacity';
     default:
       return 'unknown';
   }
@@ -2816,14 +2818,42 @@ export class AiSdkBackend implements AgentBackend {
             ...(providerStepUsage ? { usage: providerStepUsage } : {}),
           });
           const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
-          if (
-            returnedToolCalls.length > 0 &&
-            !stepLimitReached &&
-            !scope.loopStopRequested &&
-            !scope.aborted
-          ) {
+          const mayTakeAnotherStep =
+            !stepLimitReached && !scope.loopStopRequested && !scope.aborted;
+          if (returnedToolCalls.length > 0 && mayTakeAnotherStep) {
             currentStepMessageId = this.newId();
             continue agentLoop;
+          }
+          // Continuing the turn needs the durable current-run reader, for the
+          // same reason the tool-call edge above demands it: the next request
+          // has to carry the assistant output this step just produced, and only
+          // the ledger projection has it. The no-reader fallback at the top of
+          // the loop appends steering alone, which would ask the model to
+          // redirect work it cannot see. Without a reader this edge is skipped
+          // rather than throwing — the turn still completes and the Host folds
+          // the message into the next Turn, which is today's behaviour.
+          if (mayTakeAnotherStep && this.input.loadTurnRuntimeEvents) {
+            // Last chance for a steer that landed after this turn's final
+            // tool-call boundary — including the only boundary a tool-free
+            // turn has, which precedes the model's first token. Without it the
+            // message is never pulled at all, and whether Steer works would
+            // depend on the model happening to call a tool afterwards (#3529).
+            // A step-limited turn deliberately skips this: its budget is spent,
+            // and the Host folds the message into the next Turn instead.
+            const injectedBefore = scope.injectedSteeringMessages.length;
+            await this.drainSteeringInto(scope, input, queue);
+            // Re-read the stop flags: the drain awaits a durable push, so an
+            // `after_step` stop or an abort can land while it is in flight, and
+            // `mayTakeAnotherStep` is stale by now. Stop wins — the message is
+            // already durable, so the Host folds it into the next Turn.
+            if (
+              scope.injectedSteeringMessages.length > injectedBefore &&
+              !scope.loopStopRequested &&
+              !scope.aborted
+            ) {
+              currentStepMessageId = this.newId();
+              continue agentLoop;
+            }
           }
           break agentLoop;
         }

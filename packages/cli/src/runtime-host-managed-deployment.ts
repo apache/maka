@@ -51,7 +51,8 @@ export interface RuntimeHostManagedPackageDeployment {
   readonly root: string;
   readonly cliPath: string;
   readonly operatorPath: string;
-  commit(): Promise<void>;
+  activate(): Promise<void>;
+  cleanup(): Promise<void>;
   rollback(): Promise<void>;
 }
 
@@ -267,10 +268,8 @@ function deployment(
     root,
     cliPath,
     operatorPath,
-    commit: async () => {
-      await writeOperatorLauncher(operatorPath, process.execPath, cliPath, clientDataRoot);
-      await pruneInactiveDevelopmentPackages(dirname(packageRoot), version);
-    },
+    activate: () => writeOperatorLauncher(operatorPath, process.execPath, cliPath, clientDataRoot),
+    cleanup: () => pruneInactiveDevelopmentPackages(dirname(packageRoot), version),
     rollback: () =>
       created ? rm(packageRoot, { recursive: true, force: true }) : Promise.resolve(),
   };
