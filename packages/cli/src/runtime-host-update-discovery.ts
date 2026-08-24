@@ -85,6 +85,7 @@ export async function runManagedRuntimeHostUpdateCheckCli(
 ): Promise<number> {
   try {
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
+    const backend = createPlatformRuntimeHostServiceBackend(serviceId);
     const status = await manageRuntimeHostService(
       {
         action: 'status',
@@ -94,7 +95,7 @@ export async function runManagedRuntimeHostUpdateCheckCli(
         cliPath: process.argv[1] ?? '',
         ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
       },
-      createPlatformRuntimeHostServiceBackend(serviceId),
+      backend,
     );
     const currentVersion = status.service.installedVersion;
     const config = status.service.config;
@@ -104,6 +105,7 @@ export async function runManagedRuntimeHostUpdateCheckCli(
         'A Maka-managed Runtime Host service is required to check for updates',
       );
     }
+    await backend.verifyDeployment(config);
     const [candidate, currentCompatibility] = await Promise.all([
       resolveRuntimeHostRegistryUpdateCandidate(options.selector),
       readPackageCompatibility(config.launch.cliPath, currentVersion),
@@ -118,7 +120,7 @@ export async function runManagedRuntimeHostUpdateCheckCli(
         selector: options.selector,
         currentVersion,
         candidate: { version: candidate.version, integrity: candidate.integrity },
-        ...assessment,
+        outcome: assessment,
       },
     };
     writeSuccess(frame, options);
@@ -139,35 +141,21 @@ export function assessRuntimeHostUpdate(
   currentVersion: string,
   currentCompatibility: number | undefined,
   candidate: RuntimeHostUpdateCandidate,
-): Pick<RuntimeHostUpdateCheck, 'status' | 'unattended'> {
+): RuntimeHostUpdateCheck['outcome'] {
   const relation = compareProductReleaseVersions(candidate.version, currentVersion);
-  if (relation === 0) return { status: 'current', unattended: { kind: 'not_needed' } };
+  if (relation === 0) return { kind: 'current' };
   if (relation < 0) {
-    return {
-      status: 'older',
-      unattended: { kind: 'manual_only', reason: 'target_not_newer' },
-    };
+    return { kind: 'manual_action', reason: 'target_not_newer' };
   }
-  const status = 'newer' as const;
   if (currentCompatibility === undefined) {
-    return {
-      status,
-      unattended: { kind: 'manual_only', reason: 'current_compatibility_unknown' },
-    };
+    return { kind: 'manual_action', reason: 'current_compatibility_unknown' };
   }
   if (candidate.compatibility === undefined) {
-    return {
-      status,
-      unattended: { kind: 'manual_only', reason: 'target_compatibility_unknown' },
-    };
+    return { kind: 'manual_action', reason: 'target_compatibility_unknown' };
   }
-  return {
-    status,
-    unattended:
-      candidate.compatibility === currentCompatibility
-        ? { kind: 'allowed', compatibility: currentCompatibility }
-        : { kind: 'manual_only', reason: 'compatibility_mismatch' },
-  };
+  return candidate.compatibility === currentCompatibility
+    ? { kind: 'unattended_update', compatibility: currentCompatibility }
+    : { kind: 'manual_action', reason: 'compatibility_mismatch' };
 }
 
 export async function resolveRuntimeHostRegistryUpdateCandidate(
@@ -211,8 +199,7 @@ export async function resolveRuntimeHostRegistryUpdateCandidate(
     !isProductReleaseVersion(version) ||
     (selector.kind === 'exact' && version !== selector.version) ||
     typeof integrity !== 'string' ||
-    !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(integrity) ||
-    Buffer.byteLength(integrity, 'utf8') > 512
+    !isSha512Integrity(integrity)
   ) {
     return invalidMetadata();
   }
@@ -292,25 +279,25 @@ function writeSuccess(
 ): void {
   if (options.framed) process.stdout.write(encodeRuntimeHostServiceManagementFrame(frame));
   else if (options.json) process.stdout.write(`${JSON.stringify({ ...frame, ok: true })}\n`);
-  else {
-    const check = frame.updateCheck;
-    if (check.status === 'current') {
-      process.stdout.write(
-        `Runtime Host ${check.currentVersion} already matches the selected target.\n`,
-      );
-    } else if (check.unattended.kind === 'allowed') {
-      process.stdout.write(
-        `Runtime Host ${check.candidate.version} is available for unattended update.\n`,
-      );
-    } else if (check.status === 'older') {
-      process.stdout.write(
-        `Selected Runtime Host ${check.candidate.version} is older than installed ${check.currentVersion}; manual selection is required.\n`,
-      );
-    } else {
-      process.stdout.write(
-        `Runtime Host ${check.candidate.version} is available for manual update.\n`,
-      );
-    }
+  else process.stdout.write(`${formatRuntimeHostUpdateCheck(frame.updateCheck)}\n`);
+}
+
+export function formatRuntimeHostUpdateCheck(check: RuntimeHostUpdateCheck): string {
+  if (check.outcome.kind === 'current') {
+    return `Runtime Host ${check.currentVersion} already matches the selected target.`;
+  }
+  if (check.outcome.kind === 'unattended_update') {
+    return `Runtime Host ${check.candidate.version} is available for unattended update.`;
+  }
+  switch (check.outcome.reason) {
+    case 'target_not_newer':
+      return `Selected Runtime Host ${check.candidate.version} is older than installed ${check.currentVersion}; manual selection is required.`;
+    case 'current_compatibility_unknown':
+      return `Runtime Host ${check.candidate.version} requires a manual update because the installed package has no unattended-update compatibility evidence.`;
+    case 'target_compatibility_unknown':
+      return `Runtime Host ${check.candidate.version} requires a manual update because the target package has no unattended-update compatibility evidence.`;
+    case 'compatibility_mismatch':
+      return `Runtime Host ${check.candidate.version} requires a manual update because it crosses the declared compatibility boundary.`;
   }
 }
 
@@ -350,6 +337,14 @@ function invalidMetadata(): never {
 
 function positiveInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function isSha512Integrity(value: string): boolean {
+  if (!value.startsWith('sha512-')) return false;
+  const encoded = value.slice('sha512-'.length);
+  if (encoded.length !== 88 || !/^[A-Za-z0-9+/]+={2}$/u.test(encoded)) return false;
+  const digest = Buffer.from(encoded, 'base64');
+  return digest.length === 64 && digest.toString('base64') === encoded;
 }
 
 function parseJson(value: string): unknown {

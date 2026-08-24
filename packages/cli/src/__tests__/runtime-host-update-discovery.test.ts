@@ -22,8 +22,12 @@ import { describe, it } from 'node:test';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
 import {
   assessRuntimeHostUpdate,
+  formatRuntimeHostUpdateCheck,
   resolveRuntimeHostRegistryUpdateCandidate,
 } from '../runtime-host-update-discovery.js';
+
+const INTEGRITY =
+  'sha512-jUKdo/5dbM94KXq+kOZ1d+obhDLAENfI/QWr1PnXWcdu2PqDyLklJBtiVO6HRwoL1l40z1NE9Rq+hLAxCN0Fyg==';
 
 describe('managed Runtime Host update discovery', () => {
   it('accepts only channels or canonical exact versions', () => {
@@ -61,7 +65,7 @@ describe('managed Runtime Host update discovery', () => {
           exitCode: 0,
           stdout: JSON.stringify({
             version: '2.0.0-beta.1',
-            'dist.integrity': 'sha512-YWJjZA==',
+            'dist.integrity': INTEGRITY,
             'maka.managedRuntimeHostUpdateCompatibility': 7,
           }),
         };
@@ -77,10 +81,21 @@ describe('managed Runtime Host update discovery', () => {
     ]);
     assert.deepEqual(candidate, {
       version: '2.0.0-beta.1',
-      integrity: 'sha512-YWJjZA==',
+      integrity: INTEGRITY,
       compatibility: 7,
     });
 
+    await assert.rejects(
+      resolveRuntimeHostRegistryUpdateCandidate({ kind: 'channel', channel: 'next' }, async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({
+          version: '2.0.0',
+          'dist.integrity': 'sha512-YWJjZA==',
+        }),
+      })),
+      (error: unknown) =>
+        error instanceof Error && 'code' in error && error.code === 'invalid_registry_metadata',
+    );
     await assert.rejects(
       resolveRuntimeHostRegistryUpdateCandidate({ kind: 'exact', version: '9.0.0' }, async () => ({
         exitCode: 1,
@@ -100,33 +115,39 @@ describe('managed Runtime Host update discovery', () => {
   });
 
   it('admits only newer packages with matching compatibility evidence', () => {
-    const integrity = 'sha512-YWJjZA==';
-    assert.deepEqual(assessRuntimeHostUpdate('1.0.0', undefined, { version: '1.0.0', integrity }), {
-      status: 'current',
-      unattended: { kind: 'not_needed' },
-    });
+    assert.deepEqual(
+      assessRuntimeHostUpdate('1.0.0', undefined, { version: '1.0.0', integrity: INTEGRITY }),
+      { kind: 'current' },
+    );
     assert.deepEqual(
       assessRuntimeHostUpdate('1.0.0-beta.1', 4, {
         version: '1.0.0-beta.2',
-        integrity,
+        integrity: INTEGRITY,
         compatibility: 4,
       }),
-      { status: 'newer', unattended: { kind: 'allowed', compatibility: 4 } },
+      { kind: 'unattended_update', compatibility: 4 },
     );
-    assert.deepEqual(assessRuntimeHostUpdate('1.0.0', 4, { version: '2.0.0', integrity }), {
-      status: 'newer',
-      unattended: { kind: 'manual_only', reason: 'target_compatibility_unknown' },
+    const manual = assessRuntimeHostUpdate('1.0.0', 4, {
+      version: '2.0.0',
+      integrity: INTEGRITY,
     });
+    assert.deepEqual(manual, { kind: 'manual_action', reason: 'target_compatibility_unknown' });
     assert.deepEqual(
       assessRuntimeHostUpdate('1.0.0', 4, {
         version: '0.9.0',
-        integrity,
+        integrity: INTEGRITY,
         compatibility: 4,
       }),
-      {
-        status: 'older',
-        unattended: { kind: 'manual_only', reason: 'target_not_newer' },
-      },
+      { kind: 'manual_action', reason: 'target_not_newer' },
+    );
+    assert.match(
+      formatRuntimeHostUpdateCheck({
+        selector: { kind: 'channel', channel: 'next' },
+        currentVersion: '1.0.0',
+        candidate: { version: '2.0.0', integrity: INTEGRITY },
+        outcome: manual,
+      }),
+      /target package has no unattended-update compatibility evidence/u,
     );
   });
 });

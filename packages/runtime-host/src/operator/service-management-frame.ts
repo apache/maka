@@ -55,7 +55,7 @@ const NON_RETIRE_SERVICE_ACTIONS = [
 ] as const;
 const UPDATE_PHASES = ['checking', 'staging', 'retiring', 'replacing'] as const;
 const UPDATE_CHANNELS = ['latest', 'next'] as const;
-const UPDATE_MANUAL_ONLY_REASONS = [
+const MANUAL_ACTION_REASONS = [
   'target_not_newer',
   'current_compatibility_unknown',
   'target_compatibility_unknown',
@@ -152,19 +152,18 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
               integrity: boundedNonEmptyString(FIELD_MAX_BYTES),
             })
             .strict(),
-          status: z.enum(['current', 'newer', 'older']),
-          unattended: z.discriminatedUnion('kind', [
-            z.object({ kind: z.literal('not_needed') }).strict(),
+          outcome: z.discriminatedUnion('kind', [
+            z.object({ kind: z.literal('current') }).strict(),
             z
               .object({
-                kind: z.literal('allowed'),
+                kind: z.literal('unattended_update'),
                 compatibility: z.number().int().positive(),
               })
               .strict(),
             z
               .object({
-                kind: z.literal('manual_only'),
-                reason: z.enum(UPDATE_MANUAL_ONLY_REASONS),
+                kind: z.literal('manual_action'),
+                reason: z.enum(MANUAL_ACTION_REASONS),
               })
               .strict(),
           ]),

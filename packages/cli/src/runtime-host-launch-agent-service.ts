@@ -135,10 +135,10 @@ export function createLaunchAgentRuntimeHostService(
           throw error;
         }),
       ]);
-      if (!status.loaded || plist !== renderLaunchAgentPlist(config, context)) {
+      if (!status.installed || plist !== renderLaunchAgentPlist(config, context)) {
         throw new RuntimeHostServiceManagerError(
           'target_mismatch',
-          'The loaded Runtime Host LaunchAgent does not match its managed deployment',
+          'The installed Runtime Host LaunchAgent does not match its managed deployment',
         );
       }
     },
