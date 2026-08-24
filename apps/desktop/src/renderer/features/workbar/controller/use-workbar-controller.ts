@@ -87,6 +87,8 @@ export interface UseWorkbarControllerInput {
   /** Whether the Session workspace (rather than a module page) owns the shell. */
   available: boolean;
   activeSession: SessionSummary | undefined;
+  projectId: string | null | undefined;
+  projectAliases: readonly string[];
   authoritativeSessionIds: ReadonlySet<string> | undefined;
   shellObscured: boolean;
   modelChoices: readonly ChatModelChoice[];
@@ -675,6 +677,8 @@ export function useWorkbarController(
     },
     host: {
       activeId: input.available ? activeSessionId : undefined,
+      projectId: input.projectId,
+      projectAliases: input.projectAliases,
       rightCollapsed: layout.workbarCollapsed,
       bottomOpen: layout.bottomPanelOpen,
       hidden: input.shellObscured,

@@ -168,6 +168,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               key={props.activeId}
               sessionId={props.activeId}
               projectId={props.projectId}
+              projectAliases={props.projectAliases}
               hidden={props.hidden}
               onDismissPanel={props.onDismissPanel}
               panelsState={props.panelsState}

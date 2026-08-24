@@ -1720,6 +1720,8 @@ function AppShellContent({
   const workbar = useWorkbarController({
     available: workbarAvailable,
     activeSession: activeSessionForView,
+    projectId: currentProjectId,
+    projectAliases: currentProject?.aliases ?? [],
     authoritativeSessionIds: authoritativeSessionIds ?? undefined,
     shellObscured,
     modelChoices: chatModelChoices,
@@ -3287,12 +3289,7 @@ function AppShellContent({
             </div>
             {/* Collapse hides the Workbar surface without unmounting its tools;
                 dynamic resources therefore keep their existing lifecycle. */}
-            <WorkbarHost
-              model={{
-                ...workbar.host,
-                projectAliases: currentProject?.aliases ?? [],
-              }}
-            />
+            <WorkbarHost model={workbar.host} />
           </div>
           </MakaUriContext.Provider>
         </AppShellDetailPanel>

@@ -113,4 +113,34 @@ describe('Workbar feature boundary', () => {
       true,
     );
   });
+
+  it('projects Work Board project identity through the controller-owned host model', () => {
+    const appShell = readFileSync(
+      join(desktopRoot, 'src', 'renderer', 'app-shell.tsx'),
+      'utf8',
+    );
+    const controller = readFileSync(
+      join(featureRoot, 'controller', 'use-workbar-controller.ts'),
+      'utf8',
+    );
+    const host = readFileSync(
+      join(featureRoot, 'ui', 'workbar-host.tsx'),
+      'utf8',
+    );
+
+    assert.equal(appShell.includes('projectId: currentProjectId'), true);
+    assert.equal(
+      appShell.includes('projectAliases: currentProject?.aliases ?? []'),
+      true,
+    );
+    assert.equal(controller.includes('projectId: input.projectId'), true);
+    assert.equal(
+      controller.includes('projectAliases: input.projectAliases'),
+      true,
+    );
+    assert.equal(
+      host.includes('projectAliases={props.projectAliases}'),
+      true,
+    );
+  });
 });
