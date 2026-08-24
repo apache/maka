@@ -264,7 +264,7 @@ describe('CodexSessionAdapter', () => {
         ['user', 'assistant', 'assistant', 'turn_state'],
       );
       for (const message of session.messages) {
-        assert.deepEqual(decodeStoredMessage(message), message);
+        assert.deepEqual(decodeCanonicalMessage(message), message);
       }
 
       assert.deepEqual(session.messages[0], {
