@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useLayoutEffect, useRef } from 'react';
+import { useRef } from 'react';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
@@ -86,27 +86,6 @@ export function SettingsModal(props: {
   // happens per streamed token), and a focus side effect keyed on it yanks
   // focus away from anything open inside Settings while a session streams.
   const activeNavRef = useRef<HTMLButtonElement>(null);
-  const onCloseRef = useRef(props.onClose);
-  useLayoutEffect(() => {
-    onCloseRef.current = props.onClose;
-  });
-
-  // Settings owns Escape from the same committed frame that makes its surface
-  // observable. A passive-effect subscription leaves a window where the DOM
-  // is visible but the first Escape has no owner; Playwright can reach that
-  // window, and so can an input event already queued during the transition.
-  // Keep the listener stable across streamed-token renders while reading the
-  // current close callback from the render-updated ref.
-  useLayoutEffect(() => {
-    function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      event.preventDefault();
-      onCloseRef.current();
-    }
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
 
   return (
     <div

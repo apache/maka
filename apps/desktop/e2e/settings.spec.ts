@@ -19,6 +19,13 @@
 
 import { test, expect, COMPOSER_INPUT } from './fixtures';
 
+interface SettingsChunkLatchWindow extends Window {
+  makaE2eLatch?: {
+    arm(key: 'settings.chunk'): void;
+    release(key: 'settings.chunk'): void;
+  };
+}
+
 async function choiceContentGeometry(card: import('@playwright/test').Locator) {
   return card.evaluate((element) => {
     const content = Array.from(element.children).find((child) => child.tagName !== 'INPUT');
@@ -35,6 +42,54 @@ async function choiceContentGeometry(card: import('@playwright/test').Locator) {
     };
   });
 }
+
+test('Settings loading surface owns unmodified Escape', async ({ window: page }) => {
+  const latchInstalled = await page.evaluate(() => {
+    const e2eLatch = (window as unknown as SettingsChunkLatchWindow).makaE2eLatch;
+    e2eLatch?.arm('settings.chunk');
+    return e2eLatch !== undefined;
+  });
+  expect(latchInstalled, 'the preload E2E latch is installed').toBe(true);
+
+  try {
+    await page.getByRole('button', { name: '设置' }).click();
+
+    const loadingSurface = page.locator('.maka-lazy-fallback');
+    await expect(loadingSurface).toBeVisible();
+
+    for (const modifier of ['ctrlKey', 'metaKey', 'altKey'] as const) {
+      const wasNotPrevented = await page.evaluate((key) =>
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Escape',
+            [key]: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        ), modifier);
+      expect(wasNotPrevented).toBe(true);
+      await expect(loadingSurface).toBeVisible();
+    }
+
+    const wasNotPrevented = await page.evaluate(() =>
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    expect(wasNotPrevented).toBe(false);
+    await expect(page.locator('.settingsModal')).toHaveCount(0);
+  } finally {
+    await page.evaluate(() =>
+      (window as unknown as SettingsChunkLatchWindow).makaE2eLatch?.release(
+        'settings.chunk',
+      ),
+    );
+  }
+});
 
 test('opening settings commits an active titlebar rename', async ({ window: page }) => {
   const composer = page.locator(COMPOSER_INPUT);

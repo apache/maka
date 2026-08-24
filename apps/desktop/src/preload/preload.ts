@@ -3144,27 +3144,29 @@ const makaBridge = {
   },
 } satisfies MakaBridge;
 
-// E2E-only IPC latches. Real users never get these: the preload mirrors the
+// E2E-only async latches. Real users never get these: the preload mirrors the
 // main process's isolated-E2E gate (startup-context.ts) — MAKA_E2E alone is
 // not enough without the throwaway profile dir. An armed latch holds the next
-// call (or every call) to one bridge method until the test releases it, so
-// Playwright gets a deterministic in-flight window instead of racing the fake
-// backend's near-instant replies. The wrappers must be installed BEFORE
+// bridge call or an explicitly gated renderer boundary until the test releases
+// it, so Playwright gets a deterministic in-flight window instead of racing
+// near-instant work. The wrappers must be installed BEFORE
 // exposeInMainWorld: the bridge is cloned into the main world at expose time,
 // and the exposed clone is sealed against later patching.
 if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
-  type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list';
+  type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list' | 'settings.chunk';
   const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
   const releases = new Map<LatchKey, { resolve: () => void; reject: (error: Error) => void }>();
+  const waitForLatch = async (key: LatchKey): Promise<void> => {
+    const gate = gates.get(key);
+    if (!gate) return;
+    if (gate.oneShot) gates.delete(key);
+    await gate.promise;
+  };
   const wrapLatched = <Args extends unknown[], Result>(
     call: (...args: Args) => Promise<Result>,
     key: LatchKey,
   ) => async (...args: Args): Promise<Result> => {
-    const gate = gates.get(key);
-    if (gate) {
-      if (gate.oneShot) gates.delete(key);
-      await gate.promise;
-    }
+    await waitForLatch(key);
     return call(...args);
   };
   makaBridge.newTasks.listInvocableSkills = wrapLatched(
@@ -3185,6 +3187,9 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
       });
       gates.set(key, { promise, oneShot: options?.oneShot === true });
       releases.set(key, { resolve, reject });
+    },
+    wait(key: 'settings.chunk') {
+      return waitForLatch(key);
     },
     release(key: LatchKey) {
       releases.get(key)?.resolve();
