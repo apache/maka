@@ -70,7 +70,7 @@ export type {
 
 export function isRelayProviderType(
   providerType: ProviderType,
-): providerType is 'openai-compatible' | 'openai-responses-compatible' {
+): providerType is 'openai-compatible' | 'openai-responses-compatible' | 'anthropic-compatible' {
   return PROVIDER_REGISTRY[providerType].relayModelProfiles === true;
 }
 

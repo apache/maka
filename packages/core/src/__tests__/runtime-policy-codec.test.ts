@@ -356,9 +356,64 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     facts,
   );
 
-  // `thinkingLevels` and `serviceTier` name a wire feature only the
-  // OpenAI-compatible relays accept, so they stay relay-only on both write
-  // paths: elsewhere they are a request Maka would never send.
+  // `thinkingLevels` names a wire feature the relay declarations accept:
+  // all three custom relays (OpenAI chat/responses + Anthropic protocol)
+  // may declare them, with `off` legal only where the provider has a true
+  // disable wire. `serviceTier` stays OpenAI-relay-only on both write
+  // paths: elsewhere it is a request Maka would never send.
+  const anthropicRelayThinking = { 'relay-reasoner': { thinkingLevels: ['off', 'high'] } };
+  assert.deepEqual(
+    normalizeCreateCatalogConnectionInput({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'anthropic-relay',
+        name: 'Anthropic Relay',
+        providerType: 'anthropic-compatible',
+        baseUrl: 'https://relay.example',
+        enabled: true,
+        enabledModelIds: ['relay-reasoner'],
+        relayModelProfiles: anthropicRelayThinking,
+      },
+    }).connection.relayModelProfiles,
+    anthropicRelayThinking,
+  );
+  assert.deepEqual(
+    decodeCanonicalConnectionCatalogEntry({
+      ...normalizeCreateCatalogConnectionInput({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'anthropic-relay',
+          name: 'Anthropic Relay',
+          providerType: 'anthropic-compatible',
+          baseUrl: 'https://relay.example',
+          enabled: true,
+          enabledModelIds: ['relay-reasoner'],
+          relayModelProfiles: anthropicRelayThinking,
+        },
+      }).connection,
+      connectionId: '123e4567-e89b-42d3-a456-426614174000',
+      revision: 1,
+      models: [],
+    }).relayModelProfiles,
+    anthropicRelayThinking,
+  );
+  // `off` stays out of OpenAI-relay declarations: no such wire there.
+  assert.throws(
+    () =>
+      normalizeCreateCatalogConnectionInput({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'relay',
+          name: 'Relay',
+          providerType: 'openai-compatible',
+          baseUrl: 'https://relay.example/v1',
+          enabled: true,
+          enabledModelIds: ['relay-reasoner'],
+          relayModelProfiles: { 'relay-reasoner': { thinkingLevels: ['off', 'low'] } },
+        },
+      }),
+    /not declarable/,
+  );
   for (const wireShaped of [
     { 'relay-reasoner': { thinkingLevels: ['low'] } },
     { 'relay-reasoner': { serviceTier: 'fast' } },
@@ -376,7 +431,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
             relayModelProfiles: wireShaped,
           },
         }),
-      /require[s]? an OpenAI-compatible connection/,
+      /require[s]? (a custom relay|an OpenAI-compatible) connection/,
       JSON.stringify(wireShaped),
     );
     assert.throws(
@@ -390,10 +445,43 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
           },
           'anthropic',
         ),
-      /require[s]? an OpenAI-compatible connection/,
+      /require[s]? (a custom relay|an OpenAI-compatible) connection/,
       JSON.stringify(wireShaped),
     );
   }
+
+  // The update path accepts an anthropic-relay thinking declaration with
+  // `off` too — the same per-provider vocabulary the create path applies.
+  const anthropicRelayUpdate = {
+    name: 'Anthropic Relay',
+    enabled: true,
+    enabledModelIds: ['relay-reasoner'],
+    relayModelProfiles: { 'relay-reasoner': { thinkingLevels: ['off', 'high'] } },
+  };
+  assert.deepEqual(
+    normalizeConnectionCatalogEntryUpdateForProvider(anthropicRelayUpdate, 'anthropic-compatible')
+      .relayModelProfiles,
+    { 'relay-reasoner': { thinkingLevels: ['off', 'high'] } },
+  );
+
+  // `serviceTier` also stays off the Anthropic protocol relay: it is an
+  // OpenAI Responses wire fact (priority processing), not a thinking field.
+  assert.throws(
+    () =>
+      normalizeCreateCatalogConnectionInput({
+        expectedCatalogRevision: 0,
+        connection: {
+          slug: 'anthropic-relay',
+          name: 'Anthropic Relay',
+          providerType: 'anthropic-compatible',
+          baseUrl: 'https://relay.example',
+          enabled: true,
+          enabledModelIds: ['relay-reasoner'],
+          relayModelProfiles: { 'relay-reasoner': { serviceTier: 'fast' } },
+        },
+      }),
+    /require[s]? (a custom relay|an OpenAI-compatible) connection/,
+  );
 
   assert.equal(
     normalizeConnectionCatalogEntryUpdateForProvider(
@@ -428,6 +516,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
       '{"__proto__":{"vision":true},"constructor":{"vision":false},"toString":{"contextWindow":8192}}',
     ),
     ['__proto__', 'constructor', 'toString'],
+    'openai-compatible',
   );
   assert.deepEqual(Object.keys(hostileTable).sort(), ['__proto__', 'constructor', 'toString']);
   assert.equal(JSON.stringify(hostileTable).includes('"__proto__"'), true);
@@ -448,7 +537,7 @@ test('relay model profiles round-trip canonical entries and drafts, strictly', (
     { m: { vision: true, extra: 1 } }, // unknown key in the entry
   ]) {
     assert.throws(
-      () => decodeRelayModelProfilesTable(bad, ['m']),
+      () => decodeRelayModelProfilesTable(bad, ['m'], 'openai-compatible'),
       RuntimePolicyDomainDecodeError,
       JSON.stringify(bad),
     );

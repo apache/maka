@@ -214,7 +214,11 @@ export function registerRuntimeHostConnectionsIpc(
         // entirely, which the store reads as "leave the table alone".
         ...(patch.relayModelProfiles === undefined
           ? {}
-          : { relayModelProfiles: normalizeRelayModelProfiles(patch.relayModelProfiles) ?? null }),
+          : {
+              relayModelProfiles:
+                normalizeRelayModelProfiles(patch.relayModelProfiles, current.providerType) ??
+                null,
+            }),
         ...(patch.requestBodyOverlay === undefined
           ? {}
           : { requestBodyOverlay: patch.requestBodyOverlay }),

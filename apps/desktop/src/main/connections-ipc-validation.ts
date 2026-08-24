@@ -72,10 +72,14 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
     ? undefined
     : normalizeConnectionApiKeyForIpc(input.apiKey, 'apiKey');
   const slug = normalizeConnectionSlugForIpc(input.slug, 'connection slug');
+  // providerType is validated against PROVIDER_DEFAULTS above, so the
+  // declaration vocabulary can key off it (off is legal only where the
+  // provider has a true disable wire).
+  const providerType = input.providerType;
   const relayModelProfiles =
     input.relayModelProfiles === undefined
       ? undefined
-      : normalizeRelayModelProfiles(input.relayModelProfiles);
+      : normalizeRelayModelProfiles(input.relayModelProfiles, providerType);
   const requestHeaders =
     input.requestHeaders === undefined ? undefined : normalizeRequestHeaders(input.requestHeaders);
   const requestBodyOverlay =
