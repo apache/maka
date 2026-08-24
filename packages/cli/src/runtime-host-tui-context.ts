@@ -40,6 +40,7 @@ import {
   connectRuntimeHostCli,
   readHostChatDefaultPermissionMode,
   resolveRuntimeHostCliTarget,
+  type RuntimeHostCliLocalGenerationRequest,
 } from './runtime-host-cli-context.js';
 import type {
   MakaPiTuiTurnActivitySurface,
@@ -83,7 +84,6 @@ export interface RuntimeHostTuiContext {
   readonly profile: RuntimeHostProfile;
   close(): Promise<void>;
 }
-
 export interface CreateRuntimeHostTuiContextInput {
   readonly clientDataRoot: string;
   readonly rootPath: string;
@@ -91,6 +91,7 @@ export interface CreateRuntimeHostTuiContextInput {
   readonly resumeSessionId?: string;
   readonly hostProfileId?: string;
   readonly projectId?: string;
+  readonly localGenerationRequest?: RuntimeHostCliLocalGenerationRequest;
 }
 
 export async function createRuntimeHostTuiContext(
@@ -101,6 +102,9 @@ export async function createRuntimeHostTuiContext(
     rootPath: input.rootPath,
     interactiveSsh: true,
     ...(input.hostProfileId ? { profileId: input.hostProfileId } : {}),
+    ...(input.localGenerationRequest
+      ? { localGenerationRequest: input.localGenerationRequest }
+      : {}),
   });
   const connection = connected.connection;
   try {

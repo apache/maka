@@ -46,6 +46,7 @@ import {
   removeRuntimeHostManagedDeployment,
   resolveRuntimeHostManagedDeploymentForCli,
 } from './runtime-host-managed-deployment.js';
+import { isTemporaryNpxInstallation } from './runtime-host-installation-provenance.js';
 
 const SERVICE_CONFIG_FILE = 'runtime-host-service.json';
 const SERVICE_LIFECYCLE_LOCK_FILE = 'runtime-host-setup';
@@ -910,12 +911,7 @@ async function assertPersistentCliInstallation(
   environment: NodeJS.ProcessEnv,
   homeDir: string,
 ): Promise<void> {
-  const cacheRoots = await Promise.all(
-    [environment.npm_config_cache, join(homeDir, '.npm')].flatMap((root) =>
-      root ? [realpath(resolve(root, '_npx')).catch(() => resolve(root, '_npx'))] : [],
-    ),
-  );
-  if (cacheRoots.some((root) => isWithin(root, cliPath))) {
+  if (await isTemporaryNpxInstallation(cliPath, { environment, homeDir })) {
     throw new RuntimeHostServiceManagerError(
       'invalid_launch',
       'A persistent Runtime Host service cannot use a temporary npx installation; install Maka globally and retry',
@@ -977,6 +973,8 @@ export async function verifyRuntimeHostManagedServiceReady(
     `Runtime Host service did not become ready: ${lastFailure}`,
   );
 }
+
+export const waitForManagedRuntimeHostReady = verifyRuntimeHostManagedServiceReady;
 
 async function prepareRuntimeHostRetirement(
   config: RuntimeHostManagedServiceConfig,
