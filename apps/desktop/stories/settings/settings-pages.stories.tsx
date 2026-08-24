@@ -939,9 +939,9 @@ let generationStoryCodexEmail = 'old-generation@example.com';
 let generationStoryCodexAccountReads = 0;
 let generationStoryOpenedAuthIds: string[] = [];
 let generationStoryCancelledAuthIds: string[] = [];
-let generationStoryCopilotImportAttempts = 0;
+let generationStoryCopilotLoginAttempts = 0;
 let generationStoryCopilotSecretReads = 0;
-let generationStoryCopilotImportResolve:
+let generationStoryCopilotLoginResolve:
   | ((result: { ok: true }) => void)
   | undefined;
 let generationStoryProfileListener:
@@ -958,9 +958,9 @@ function resetGenerationStoryBridge(
   generationStoryCodexAccountReads = 0;
   generationStoryOpenedAuthIds = [];
   generationStoryCancelledAuthIds = [];
-  generationStoryCopilotImportAttempts = 0;
+  generationStoryCopilotLoginAttempts = 0;
   generationStoryCopilotSecretReads = 0;
-  generationStoryCopilotImportResolve = undefined;
+  generationStoryCopilotLoginResolve = undefined;
   generationStoryProfileListener = undefined;
 }
 
@@ -1042,7 +1042,7 @@ const withModelsOAuthAuthorizationGenerationBridge = withScopedMakaBridge({
   },
 } satisfies Record<string, unknown>);
 
-const withModelsCopilotReimportGenerationBridge = withScopedMakaBridge({
+const withModelsCopilotReloginGenerationBridge = withScopedMakaBridge({
   ...makaBridge,
   runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
   connections: {
@@ -1059,15 +1059,28 @@ const withModelsCopilotReimportGenerationBridge = withScopedMakaBridge({
   },
   githubCopilotSubscription: {
     ...makaBridge.githubCopilotSubscription,
-    connectExistingLogin: () => {
-      generationStoryCopilotImportAttempts += 1;
-      if (generationStoryCopilotImportAttempts > 1) {
+    getAccountState: async () => ({ runtimeState: 'authenticated' as const }),
+    getAuthUrl: async () => {
+      generationStoryCopilotLoginAttempts += 1;
+      return {
+        authRequestId: `copilot-from-generation-${generationStoryCopilotLoginAttempts}`,
+        stateHint: 'GEN1-CODE',
+      };
+    },
+    openAuthUrl: async () => ({ ok: true as const }),
+    // The Host polls GitHub for the whole device window, so the first attempt
+    // stays unsettled until this story releases it — after the replacement Host
+    // has already taken over.
+    completeAuthorization: () => {
+      if (generationStoryCopilotLoginAttempts > 1) {
         return Promise.resolve({ ok: true as const });
       }
       return new Promise<{ ok: true }>((resolve) => {
-        generationStoryCopilotImportResolve = resolve;
+        generationStoryCopilotLoginResolve = resolve;
       });
     },
+    cancelAuthorization: async () => ({ ok: true as const }),
+    logout: async () => ({ ok: true as const }),
   },
 } satisfies Record<string, unknown>);
 
@@ -2309,12 +2322,14 @@ export const ModelsOAuthAuthorizationHostGenerationRevalidation: Story = {
   },
 };
 
-// The connection-detail Copilot import owns an action guard and a late
+// The connection-detail Copilot sign-in owns an action guard and a late
 // success callback independently of the catalog login panel. A same-key Host
 // replacement retires that controller without throwing away the detail route
-// or its surrounding Settings state.
-export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
-  decorators: [withModelsCopilotReimportGenerationBridge],
+// or its surrounding Settings state. The detail surface offers the device
+// sign-in rather than a local import: the Host owns enrollment, and Desktop
+// discovers an existing credential from the catalog panel instead.
+export const ModelsCopilotReloginHostGenerationRevalidation: Story = {
+  decorators: [withModelsCopilotReloginGenerationBridge],
   render: () => {
     resetGenerationStoryBridge();
     return (
@@ -2327,11 +2342,11 @@ export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const firstImport = await canvas.findByRole('button', { name: '重新导入' });
-    await userEvent.click(firstImport);
+    const firstLogin = await canvas.findByRole('button', { name: '重新登录' });
+    await userEvent.click(firstLogin);
     await waitForStoryCondition(
-      () => generationStoryCopilotImportAttempts === 1,
-      'GitHub Copilot reimport did not start',
+      () => generationStoryCopilotLoginAttempts === 1,
+      'GitHub Copilot sign-in did not start',
     );
 
     const listener = generationStoryProfileListener;
@@ -2347,22 +2362,22 @@ export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
     });
 
     await waitForStoryCondition(
-      () => canvas.queryByRole('button', { name: '重新导入' })?.hasAttribute('disabled') === false,
-      'Replacement Host kept the previous generation import guard',
+      () => canvas.queryByRole('button', { name: '重新登录' })?.hasAttribute('disabled') === false,
+      'Replacement Host kept the previous generation sign-in guard',
     );
     const readsAfterReplacement = generationStoryCopilotSecretReads;
-    generationStoryCopilotImportResolve?.({ ok: true });
+    generationStoryCopilotLoginResolve?.({ ok: true });
     await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
     await expect(generationStoryCopilotSecretReads).toBe(readsAfterReplacement);
 
-    await userEvent.click(canvas.getByRole('button', { name: '重新导入' }));
+    await userEvent.click(canvas.getByRole('button', { name: '重新登录' }));
     await waitForStoryCondition(
-      () => generationStoryCopilotImportAttempts === 2,
-      'Replacement Host could not start a fresh GitHub Copilot reimport',
+      () => generationStoryCopilotLoginAttempts === 2,
+      'Replacement Host could not start a fresh GitHub Copilot sign-in',
     );
     await waitForStoryCondition(
       () => generationStoryCopilotSecretReads > readsAfterReplacement,
-      'Replacement Host reimport did not refresh the current credential state',
+      'Replacement Host sign-in did not refresh the current credential state',
     );
     await expect(
       canvasElement.querySelector('[data-maka-contract="connection-detail"]'),
