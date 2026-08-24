@@ -45,6 +45,7 @@ import {
 import {
   deleteUninstallRegistrationForInstall,
   readUninstallDisplayVersionsForInstall,
+  verifyRestoredWindowsInstallation,
 } from './verify-windows-installer-rollback.mjs';
 import {
   completeInstalledApplicationUninstall,
@@ -284,6 +285,31 @@ it('uses the product SemVer contract throughout Windows release verification', (
     () => validateWindowsUpgradeBaseline(baseline, '1.2.3-alpha.1'),
     /must be older than the candidate/u,
   );
+});
+
+it('delegates restored-installation checks to the legacy packaged-app verifier', async () => {
+  const calls = [];
+  const run = async () => ({ stdout: '', stderr: '' });
+  const verifyApp = async (appDirectory, options) => {
+    calls.push({ appDirectory, options });
+  };
+
+  await verifyRestoredWindowsInstallation('C:\\fixture\\installed', 'C:\\fixture\\smoke', '1.2.3', {
+    run,
+    verifyApp,
+  });
+
+  assert.deepEqual(calls, [
+    {
+      appDirectory: 'C:\\fixture\\installed',
+      options: {
+        artifactContract: 'legacy-baseline',
+        expectedVersion: '1.2.3',
+        run,
+        workingDirectory: 'C:\\fixture\\smoke',
+      },
+    },
+  ]);
 });
 
 async function makeTree(shape) {

@@ -18,27 +18,22 @@
  */
 
 import { spawn } from 'node:child_process';
-import { access, cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import {
-  diffTreeManifests,
-  directoryTreeManifest,
-  findRendererTarget,
-  isolatedUserEnv,
-  waitForDevToolsPort,
-  waitForUsableRenderer,
-  runCommand,
-  stopChild,
-} from './verify-packaged-app.mjs';
+import { diffTreeManifests, directoryTreeManifest, runCommand } from './verify-packaged-app.mjs';
 import {
   installerVersion,
   waitForInstalledProcessesToExit,
   waitForUninstallRegistrationToClear,
   waitUntilMissing,
 } from './verify-windows-installer-lifecycle.mjs';
-import { assertWindowsProductVersion, powerShellLiteral } from './verify-windows-x64.mjs';
+import {
+  assertWindowsProductVersion,
+  powerShellLiteral,
+  verifyPackagedWindowsApp,
+} from './verify-windows-x64.mjs';
 
 const uninstallExecutableName = 'Uninstall Maka.exe';
 const executableName = 'Maka.exe';
@@ -173,43 +168,19 @@ $entries | ForEach-Object { Remove-Item -LiteralPath $_.Path -Recurse -Force }
   });
 }
 
-async function assertLaunchable(installedExecutable, workingDirectory, expectedVersion) {
-  const home = join(workingDirectory, 'home');
-  const userData = join(workingDirectory, 'user-data');
-  const userEnv = isolatedUserEnv(home);
-  await mkdir(home, { recursive: true });
-  await mkdir(userData, { recursive: true });
-  await mkdir(userEnv.APPDATA, { recursive: true });
-  await mkdir(userEnv.LOCALAPPDATA, { recursive: true });
-  const child = spawn(
-    installedExecutable,
-    ['--remote-debugging-port=0', `--user-data-dir=${userData}`, '--enable-logging=stderr'],
-    {
-      cwd: workingDirectory,
-      env: { ...process.env, MAKA_SKIP_SHELL_ENV: '1', ...userEnv },
-      stdio: ['ignore', 'ignore', 'pipe'],
-    },
-  );
-  let stderr = '';
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (chunk) => {
-    stderr = `${stderr}${chunk}`.slice(-16_384);
-  });
-  try {
-    const cdpPort = await waitForDevToolsPort(child);
-    const target = await findRendererTarget(cdpPort, child);
-    await waitForUsableRenderer(target.webSocketDebuggerUrl, child, {
-      description: 'Restored app renderer',
-    }).catch((error) => {
-      throw new Error(`${error.message}${stderr.trim() ? `\n${stderr.trim()}` : ''}`, {
-        cause: error,
-      });
-    });
-    const productVersion = await readInstalledProductVersion(installedExecutable);
-    assertWindowsProductVersion(productVersion, expectedVersion);
-  } finally {
-    await stopChild(child);
-  }
+export async function verifyRestoredWindowsInstallation(
+  installDirectory,
+  workingDirectory,
+  expectedVersion,
+  { verifyApp = verifyPackagedWindowsApp, run } = {},
+) {
+  const options = {
+    artifactContract: 'legacy-baseline',
+    expectedVersion,
+    workingDirectory,
+  };
+  if (run) options.run = run;
+  await verifyApp(installDirectory, options);
 }
 
 /**
@@ -240,6 +211,7 @@ export async function verifyWindowsInstallerRollback(
     platform = process.platform,
     makeTemporaryDirectory = () => mkdtemp(join(tmpdir(), 'maka-rollback-')),
     run = runCommand,
+    verifyApp = verifyPackagedWindowsApp,
   } = {},
 ) {
   if (platform !== 'win32') {
@@ -364,10 +336,11 @@ export async function verifyWindowsInstallerRollback(
     }
 
     step('asserting the restored installation launches');
-    await assertLaunchable(
-      installedExecutable,
+    await verifyRestoredWindowsInstallation(
+      installDirectory,
       join(temporaryDirectory, 'restored-smoke'),
       candidateVersion,
+      { run, verifyApp },
     );
     await waitForInstalledProcessesToExit(installDirectory);
 
