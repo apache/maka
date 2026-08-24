@@ -46,9 +46,12 @@ import {
   type DecodedSessionTranscriptPage,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
+  type RuntimeHostRetirementMode,
+  type RuntimeHostRetirementPreparation,
   type RuntimeHostSessionSubscription,
   RuntimeHostCatalogReadError,
   RuntimeHostOperationError,
+  prepareConnectedRuntimeHostRetirement,
   readRuntimeHostAgentGraphEpochs,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
@@ -1150,13 +1153,10 @@ export class DesktopRuntimeHostClient {
     return this.connection.queryHostDiagnostics(2_000);
   }
 
-  prepareHostUpgrade(
-    allowInterruptActiveTasks: boolean,
-  ): Promise<OperationOutput<"host.upgrade.prepare">> {
-    return this.request("host.upgrade.prepare", {
-      expectedHostEpoch: this.connection.hostEpoch,
-      allowInterruptActiveTasks,
-    });
+  prepareHostRetirement(
+    mode: RuntimeHostRetirementMode,
+  ): Promise<RuntimeHostRetirementPreparation> {
+    return prepareConnectedRuntimeHostRetirement(this.connection, mode);
   }
 
   stopTurn(

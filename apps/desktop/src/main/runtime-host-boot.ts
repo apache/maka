@@ -157,6 +157,7 @@ import {
   startRuntimeHostDesktopManager,
   type RuntimeHostDesktopManager,
 } from "./runtime-host-desktop-manager.js";
+import { buildRuntimeHostQuitFailureDialog } from "./runtime-host-quit-copy.js";
 import { createRuntimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import {
@@ -653,7 +654,14 @@ const updateService = createAppUpdateService({
     mainWindowController.send("app:updateStatusChanged", status),
   prepareInstall: async (input) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
-    return runtimeHostManager.prepareForUpdate(input.allowInterruptActiveTasks);
+    const retirement = await runtimeHostManager.retireOwnedLocalHost(
+      input.allowInterruptActiveTasks ? "interrupt_active_work" : "refuse_active_work",
+    );
+    if (retirement.kind === "active_tasks") return retirement;
+    return {
+      kind: "prepared",
+      rollback: retirement.kind === "retired" ? retirement.resume : () => {},
+    };
   },
 });
 mcpManager.onChange(() => {
@@ -1521,10 +1529,17 @@ function emitSessionsChanged(
 
 function wireLifecycle(): void {
   const quitCoordinator = createAppQuitCoordinator({
+    prepareToQuit: prepareRuntimeHostDesktopQuit,
     cleanup: closeRuntimeHostDesktop,
     focusOrCreateWindow: (signal) => {
       if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
       else return mainWindowController.createWindow(signal);
+    },
+    onPreparationError: (error) => {
+      console.error("[runtime-host] quit retirement failed:", error);
+      void showRuntimeHostQuitFailure(error).catch((dialogError) =>
+        console.error("[runtime-host] quit failure dialog failed:", dialogError),
+      );
     },
     onCleanupError: (error) =>
       console.error("[runtime-host] shutdown failed:", error),
@@ -1551,6 +1566,20 @@ function wireLifecycle(): void {
   });
   app.on("before-quit", quitCoordinator.handleBeforeQuit);
   quitCoordinator.focusOrCreateWindow();
+}
+
+async function prepareRuntimeHostDesktopQuit(): Promise<void> {
+  const retirement = await runtimeHostManager?.retireOwnedLocalHost(
+    "interrupt_active_work",
+  );
+  if (retirement?.kind === "active_tasks") {
+    throw new Error("Runtime Host refused authorized quit retirement");
+  }
+}
+
+async function showRuntimeHostQuitFailure(error: unknown): Promise<void> {
+  const locale = await desktopLocale.resolve();
+  await dialog.showMessageBox(buildRuntimeHostQuitFailureDialog(error, locale));
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {
