@@ -180,23 +180,40 @@ test('an open menu keeps its container and skills group across projection refres
   // the listbox geometry) being torn down and re-created when the projection
   // cleared and repopulated, so any removal during the refresh is the
   // regression (#2667).
+  //
+  // The watch is scoped to exactly that property: one observer on the menu
+  // itself (subtree) catches a group being torn down inside it, and one on
+  // its parent catches the whole listbox being replaced. Overlays elsewhere
+  // in the document (toasts, tooltips, other popups) are outside the window.
+  // The observers disconnect once the refresh rounds have settled, and the
+  // count is read once afterwards - a monotonic counter cannot be polled
+  // back to zero, so polling it only added latency (see #3727).
   await page.evaluate(() => {
-    const state = { removals: 0 };
+    const menu = document.querySelector('[role="listbox"]');
+    if (!(menu instanceof HTMLElement)) throw new Error('slash menu not found');
+    const state = {
+      removals: 0,
+      observers: [] as MutationObserver[],
+    };
     (globalThis as unknown as { __slashMenuWatch?: unknown }).__slashMenuWatch = state;
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.removedNodes) {
-          if (!(node instanceof HTMLElement)) continue;
-          if (
-            node.matches('[role="listbox"], [role="group"]') ||
-            node.querySelector('[role="listbox"], [role="group"]') !== null
-          ) {
-            state.removals += 1;
+    const watch = (target: Node, childList: MutationObserverInit) => {
+      const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.removedNodes) {
+            if (
+              node === menu ||
+              (node instanceof HTMLElement && node.matches('[role="group"]'))
+            ) {
+              state.removals += 1;
+            }
           }
         }
-      }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
+      });
+      observer.observe(target, childList);
+      state.observers.push(observer);
+    };
+    if (menu.parentElement) watch(menu.parentElement, { childList: true });
+    watch(menu, { childList: true, subtree: true });
   });
 
   // A thinking-level change publishes the session's 'updated' event and
@@ -221,19 +238,27 @@ test('an open menu keeps its container and skills group across projection refres
       sessionId,
     );
   }
-  // The refresh round trip is IPC-fast; the poll below gives it room while
-  // asserting the menu never lost its skills group.
+  // The refresh round trip is IPC-fast; the visibility wait below gives it
+  // room while asserting the menu never lost its skills group.
   await expect(menu.getByRole('group', { name: 'Skills' })).toBeVisible();
-  await expect
-    .poll(
-      () =>
-        page.evaluate(
-          () =>
-            (globalThis as unknown as { __slashMenuWatch: { removals: number } }).__slashMenuWatch
-              .removals,
-        ),
-      { timeout: 3_000 },
-    )
-    .toBe(0);
+  // Settle one extra frame pair so any teardown triggered by the last
+  // refresh lands inside the observation window before it is closed.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
+  const removals = await page.evaluate(() => {
+    const state = (
+      globalThis as unknown as {
+        __slashMenuWatch?: { removals: number; observers: MutationObserver[] };
+      }
+    ).__slashMenuWatch;
+    if (!state) throw new Error('slash menu watch was never armed');
+    for (const observer of state.observers) observer.disconnect();
+    return state.removals;
+  });
+  expect(removals).toBe(0);
   await expect(menu.getByRole('group', { name: 'Skills' })).toBeVisible();
 });
