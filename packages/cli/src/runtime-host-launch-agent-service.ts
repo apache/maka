@@ -41,11 +41,9 @@ import {
 
 const SERVICE_EXIT_TIMEOUT_SECONDS = 45;
 const SERVICE_BOOTOUT_TIMEOUT_MS = (SERVICE_EXIT_TIMEOUT_SECONDS + 5) * 1_000;
+const SERVICE_BOOTOUT_POLL_MS = 250;
 
-type LaunchctlRunner = (
-  args: readonly string[],
-  timeoutMs?: number,
-) => Promise<RuntimeHostServiceManagerCommandResult>;
+type LaunchctlRunner = (args: readonly string[]) => Promise<RuntimeHostServiceManagerCommandResult>;
 
 interface LaunchAgentContext {
   readonly domain: string;
@@ -55,6 +53,7 @@ interface LaunchAgentContext {
   readonly stdoutPath: string;
   readonly stderrPath: string;
   readonly runLaunchctl: LaunchctlRunner;
+  readonly isProcessAlive: (pid: number) => boolean;
 }
 
 interface LaunchAgentStatus extends RuntimeHostServiceBackendStatus {
@@ -70,6 +69,7 @@ export interface LaunchAgentServiceOptions {
   readonly homeDir?: string;
   readonly uid?: number;
   readonly runLaunchctl?: LaunchctlRunner;
+  readonly isProcessAlive?: (pid: number) => boolean;
 }
 
 export function createLaunchAgentRuntimeHostService(
@@ -85,6 +85,7 @@ export function createLaunchAgentRuntimeHostService(
     );
   }
   const runLaunchctl = options.runLaunchctl ?? defaultRunLaunchctl;
+  const isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
   const label = resolveLaunchAgentLabel(serviceId);
   const context: LaunchAgentContext = {
     domain: `gui/${String(uid)}`,
@@ -94,6 +95,7 @@ export function createLaunchAgentRuntimeHostService(
     stdoutPath: resolveLaunchAgentLogPath(serviceId, 'stdout', homeDir),
     stderrPath: resolveLaunchAgentLogPath(serviceId, 'stderr', homeDir),
     runLaunchctl,
+    isProcessAlive,
   };
 
   const readDetailedStatus = () => readLaunchAgentStatus(context);
@@ -416,9 +418,19 @@ async function bootoutLaunchAgent(context: LaunchAgentContext): Promise<void> {
   if (!status.loaded) return;
   await requireLaunchctl(
     context,
-    ['bootout', '--wait', context.serviceTarget],
+    ['bootout', context.serviceTarget],
     'Stopping the Runtime Host LaunchAgent failed',
-    SERVICE_BOOTOUT_TIMEOUT_MS,
+  );
+  const deadline = Date.now() + SERVICE_BOOTOUT_TIMEOUT_MS;
+  let unloaded = false;
+  while (Date.now() < deadline) {
+    if (!unloaded) unloaded = !(await readLaunchAgentStatus(context)).loaded;
+    if (unloaded && (status.pid === null || !context.isProcessAlive(status.pid))) return;
+    await new Promise<void>((resolveWait) => setTimeout(resolveWait, SERVICE_BOOTOUT_POLL_MS));
+  }
+  throw new RuntimeHostServiceManagerError(
+    'service_manager_operation_failed',
+    'The Runtime Host LaunchAgent did not finish stopping',
   );
 }
 
@@ -426,11 +438,10 @@ async function requireLaunchctl(
   context: LaunchAgentContext,
   args: readonly string[],
   message: string,
-  timeoutMs?: number,
 ): Promise<void> {
   let result: RuntimeHostServiceManagerCommandResult;
   try {
-    result = await context.runLaunchctl(args, timeoutMs);
+    result = await context.runLaunchctl(args);
   } catch (error) {
     throw new RuntimeHostServiceManagerError('service_manager_unavailable', message, {
       cause: error,
@@ -472,9 +483,19 @@ async function readLogTail(path: string): Promise<string> {
 
 async function defaultRunLaunchctl(
   args: readonly string[],
-  timeoutMs?: number,
 ): Promise<RuntimeHostServiceManagerCommandResult> {
-  return runRuntimeHostServiceManagerCommand('/bin/launchctl', args, timeoutMs);
+  return runRuntimeHostServiceManagerCommand('/bin/launchctl', args);
+}
+
+function defaultIsProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (isNodeError(error, 'ESRCH')) return false;
+    if (isNodeError(error, 'EPERM')) return true;
+    throw error;
+  }
 }
 
 function readLaunchctlProperty(output: string, property: string): string | undefined {

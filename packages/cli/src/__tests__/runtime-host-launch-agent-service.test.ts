@@ -57,10 +57,15 @@ test('renders the canonical Runtime Host command as a private persistent LaunchA
 
 test('maps install, stop, start, restart, and uninstall onto one LaunchAgent service', async () => {
   await withFixture(async ({ homeDir, cliPath, launchctl }) => {
+    let processChecks = 0;
     const backend = createLaunchAgentRuntimeHostService(SERVICE_ID, {
       homeDir,
       uid: UID,
       runLaunchctl: launchctl.run,
+      isProcessAlive: () => {
+        processChecks += 1;
+        return false;
+      },
     });
     const config = fixtureConfig(process.execPath, cliPath, join(homeDir, 'state'));
 
@@ -89,6 +94,7 @@ test('maps install, stop, start, restart, and uninstall onto one LaunchAgent ser
     launchctl.running = true;
 
     await backend.stop();
+    assert.equal(processChecks, 1);
     assert.equal((await backend.status()).state, 'stopped');
     await backend.start();
     await backend.restart();
@@ -101,10 +107,10 @@ test('maps install, stop, start, restart, and uninstall onto one LaunchAgent ser
       launchctl.calls.filter(([command]) => command !== 'print'),
       [
         ['bootstrap', DOMAIN, resolveLaunchAgentPath(SERVICE_ID, homeDir)],
-        ['bootout', '--wait', TARGET],
+        ['bootout', TARGET],
         ['bootstrap', DOMAIN, resolveLaunchAgentPath(SERVICE_ID, homeDir)],
         ['kickstart', '-k', TARGET],
-        ['bootout', '--wait', TARGET],
+        ['bootout', TARGET],
       ],
     );
   });
@@ -121,6 +127,7 @@ test('restores the previous loaded LaunchAgent when replacement bootstrap fails'
       homeDir,
       uid: UID,
       runLaunchctl: launchctl.run,
+      isProcessAlive: () => false,
     });
 
     await assert.rejects(

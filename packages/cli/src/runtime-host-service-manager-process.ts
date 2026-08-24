@@ -30,13 +30,12 @@ export interface RuntimeHostServiceManagerCommandResult {
 export function runRuntimeHostServiceManagerCommand(
   command: string,
   args: readonly string[],
-  timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
 ): Promise<RuntimeHostServiceManagerCommandResult> {
   return new Promise((resolveResult, reject) => {
     const child = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      timeout: timeoutMs,
+      timeout: DEFAULT_COMMAND_TIMEOUT_MS,
       killSignal: 'SIGKILL',
     });
     let stdout = '';
