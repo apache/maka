@@ -90,7 +90,6 @@ import {
 } from '../server/execution-model-authority.js';
 import {
   createHostAiSdkBackend,
-  createHostSandboxDiagnosticsResolver,
   resolveCollaborationPermissionMode,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
@@ -353,17 +352,10 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
     assert.match(firstRequestText, /<sandbox_context>/u);
     assert.match(firstRequestText, /File system: workspace-write/u);
     assert.match(firstRequestText, /Network: restricted/u);
-    assert.match(firstRequestText, /normalized absolute path/u);
-    assert.match(firstRequestText, /repeat the same declaration when retrying after approval/u);
     assert.deepEqual(toolParameterEnum(mainRequests[0]?.body, 'Bash', 'boundary_intent'), [
       'current',
       'expand',
     ]);
-    assert.equal(
-      toolRequiredParameters(mainRequests[0]?.body, 'Bash').includes('boundary_intent'),
-      false,
-    );
-    assert.equal(toolParameterDefault(mainRequests[0]?.body, 'Bash', 'boundary_intent'), 'current');
     assert.equal((latestToolResultText(mainRequests[1]!.body) ?? '').includes(project), true);
     assert.deepEqual(
       await execution.sessionStore.listPendingSandboxBoundaryRequests(session.id),
@@ -2898,55 +2890,6 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   }
 });
 
-test('host sandbox resolver caches by live boundary revision and omits external context', async () => {
-  const workspaceProfile = createWorkspaceWritePermissionProfile();
-  let liveBoundary = createManagedExecutionBoundary(
-    { ...workspaceProfile, name: 'live-boundary-revision-7' },
-    7,
-  );
-  let diagnosticsResolutions = 0;
-  let failNextResolution = false;
-  const resolver = createHostSandboxDiagnosticsResolver({
-    readExecutionBoundary: async () => liveBoundary,
-    cwd: '/workspace',
-    sandboxDiagnostics: {
-      resolve: async (input) => {
-        diagnosticsResolutions += 1;
-        if (failNextResolution) {
-          failNextResolution = false;
-          throw new Error('transient diagnostics failure');
-        }
-        return await TEST_SANDBOX_DIAGNOSTICS.resolve(input);
-      },
-    },
-  });
-
-  const first = await resolver({ abortSignal: new AbortController().signal });
-  const cached = await resolver({ abortSignal: new AbortController().signal });
-  assert.equal(first?.profile.name, 'live-boundary-revision-7');
-  assert.equal(cached, first);
-  assert.equal(diagnosticsResolutions, 1);
-
-  liveBoundary = createManagedExecutionBoundary(
-    { ...workspaceProfile, name: 'live-boundary-revision-8', network: { kind: 'enabled' } },
-    8,
-  );
-  failNextResolution = true;
-  await assert.rejects(
-    resolver({ abortSignal: new AbortController().signal }),
-    /transient diagnostics failure/u,
-  );
-  assert.equal(diagnosticsResolutions, 2);
-  const expanded = await resolver({ abortSignal: new AbortController().signal });
-  assert.equal(expanded?.profile.name, 'live-boundary-revision-8');
-  assert.equal(expanded?.profile.network, 'enabled');
-  assert.equal(diagnosticsResolutions, 3);
-
-  liveBoundary = { kind: 'external', revision: 9 };
-  assert.equal(await resolver({ abortSignal: new AbortController().signal }), undefined);
-  assert.equal(diagnosticsResolutions, 3);
-});
-
 test('one composer freezes Runtime Policy while each Run freezes its remaining prompt sources', async () => {
   let policyRevision = 3;
   let memoryRevision = 'memory-3';
@@ -3878,39 +3821,6 @@ function toolParameterEnum(
   }) as { function?: { parameters?: { properties?: Record<string, unknown> } } } | undefined;
   const schema = tool?.function?.parameters?.properties?.[property];
   return schema && typeof schema === 'object' ? (schema as { enum?: unknown }).enum : undefined;
-}
-
-function toolParameterDefault(
-  body: Record<string, unknown> | undefined,
-  toolName: string,
-  property: string,
-): unknown {
-  const tools = Array.isArray(body?.tools) ? body.tools : [];
-  const tool = tools.find((candidate) => {
-    if (!candidate || typeof candidate !== 'object') return false;
-    const fn = (candidate as { function?: unknown }).function;
-    return Boolean(fn && typeof fn === 'object' && (fn as { name?: unknown }).name === toolName);
-  }) as { function?: { parameters?: { properties?: Record<string, unknown> } } } | undefined;
-  const schema = tool?.function?.parameters?.properties?.[property];
-  return schema && typeof schema === 'object'
-    ? (schema as { default?: unknown }).default
-    : undefined;
-}
-
-function toolRequiredParameters(
-  body: Record<string, unknown> | undefined,
-  toolName: string,
-): readonly string[] {
-  const tools = Array.isArray(body?.tools) ? body.tools : [];
-  const tool = tools.find((candidate) => {
-    if (!candidate || typeof candidate !== 'object') return false;
-    const fn = (candidate as { function?: unknown }).function;
-    return Boolean(fn && typeof fn === 'object' && (fn as { name?: unknown }).name === toolName);
-  }) as { function?: { parameters?: { required?: unknown } } } | undefined;
-  const required = tool?.function?.parameters?.required;
-  return Array.isArray(required)
-    ? required.filter((field): field is string => typeof field === 'string')
-    : [];
 }
 
 function requireRuntimeResourceRef(body: Record<string, unknown>): string {

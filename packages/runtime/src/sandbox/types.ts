@@ -133,10 +133,9 @@ export type SandboxTransformResult =
     };
 
 /**
- * Side-effect-free capability preview used by diagnostics. A successful probe
- * identifies the executable that would enforce the sandbox without
- * materializing per-execution resources such as a Windows broker manifest or
- * Linux file-descriptor pins.
+ * Non-materializing capability preview used by diagnostics. Success means
+ * static planning selected an enforcing executable; invocation-specific work
+ * may still fail later as the workspace or one-shot launch resources change.
  */
 export type SandboxCapabilityProbeResult =
   | {

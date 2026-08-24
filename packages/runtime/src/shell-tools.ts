@@ -71,6 +71,7 @@ import {
   BASH_REQUIRED_BOUNDARY_DESCRIPTION,
   bashBoundaryIntentSchema,
   preflightDeclaredSandboxBoundary,
+  preprocessBashBoundaryDeclaration,
   refineBashBoundaryDeclaration,
   sandboxBoundaryExpansionSchema,
   selectedBashBoundaryExpansion,
@@ -182,9 +183,9 @@ export function buildManagedBashTool(
     lead?: string;
     /**
      * Whether this host has a sandbox boundary the model can be asked to declare.
-     * False drops `required_boundary` from the schema entirely rather than
-     * accepting and ignoring it: a parameter no host enforces is pure noise in
-     * the model's tool selection.
+     * False drops `boundary_intent` and `required_boundary` from the schema
+     * entirely rather than accepting and ignoring them: parameters no host
+     * enforces are pure noise in the model's tool selection.
      */
     declareSandboxBoundary?: boolean;
     /**
@@ -268,17 +269,19 @@ export function buildManagedBashTool(
       ' Set pty=true together with run_in_background=true only for terminal semantics or later input; use the returned ref with Read or WriteStdin.' +
       (declareSandboxBoundary ? ' Enforced by the current session sandbox boundary.' : ''),
     parameters: declareSandboxBoundary
-      ? z
-          .object({
-            ...managedBashFields,
-            boundary_intent: bashBoundaryIntentSchema,
-            required_boundary: sandboxBoundaryExpansionSchema
-              .optional()
-              .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
-          })
-          .strict()
-          .superRefine(refineManagedBash)
-          .superRefine(refineBashBoundaryDeclaration)
+      ? preprocessBashBoundaryDeclaration(
+          z
+            .object({
+              ...managedBashFields,
+              boundary_intent: bashBoundaryIntentSchema,
+              required_boundary: sandboxBoundaryExpansionSchema
+                .optional()
+                .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
+            })
+            .strict()
+            .superRefine(refineManagedBash)
+            .superRefine(refineBashBoundaryDeclaration),
+        )
       : z.object(managedBashFields).strict().superRefine(refineManagedBash),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),

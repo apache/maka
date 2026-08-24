@@ -402,65 +402,24 @@ describe('discoverNestedProtectedMetadataPaths', () => {
 });
 
 describe('LinuxBubblewrapBackend', () => {
-  it('keeps probe and transform aligned for shared rejection conditions', () => {
-    const availableOptions = {
-      capability: { available: true, bwrapPath: '/usr/bin/bwrap' } as const,
-    };
-    const cases: readonly {
-      name: string;
-      backend: LinuxBubblewrapBackend;
-      request: SandboxTransformRequest;
-    }[] = [
-      {
-        name: 'profile that should not select a sandbox',
-        backend: new LinuxBubblewrapBackend(availableOptions),
-        request: workspaceRequest(createDangerFullAccessPermissionProfile()),
-      },
-      {
-        name: 'unrepresentable deny entry',
-        backend: new LinuxBubblewrapBackend(availableOptions),
-        request: workspaceRequest(deniedChildProfile()),
-      },
-      {
-        name: 'unavailable bubblewrap capability',
-        backend: new LinuxBubblewrapBackend({
-          capability: {
-            available: false,
-            reason: 'missing-bwrap',
-            bwrapPath: '/usr/bin/bwrap',
-          },
-        }),
-        request: workspaceRequest(createWorkspaceWritePermissionProfile()),
-      },
-      {
-        name: 'unsupported network seccomp architecture',
-        backend: new LinuxBubblewrapBackend({ ...availableOptions, arch: 'ia32' }),
-        request: workspaceRequest(createWorkspaceWritePermissionProfile()),
-      },
-    ];
-
-    for (const { name, backend, request } of cases) {
-      const probe = backend.probe(request);
-      const transformed = backend.transform(request);
-      assert.equal(probe.ok, false, `${name}: probe should reject`);
-      assert.deepEqual(transformed, probe, `${name}: probe/transform parity`);
-    }
-  });
-
-  it('keeps per-invocation protected metadata enumeration out of probe', () => {
+  it('keeps mutable protected-metadata materialization out of probe', () => {
+    let scans = 0;
     const backend = new LinuxBubblewrapBackend({
       capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
       discoverProtectedMetadataPaths: () => {
+        scans += 1;
         throw new Error('workspace changed during enumeration');
       },
     });
     const request = workspaceRequest(protectedMetadataProfile());
 
     assert.equal(backend.probe(request).ok, true);
+    assert.equal(scans, 0);
     const transformed = backend.transform(request);
+    assert.equal(scans, 1);
     assert.equal(transformed.ok, false);
     if (!transformed.ok) {
-      assert.equal(transformed.reason, 'invalid_request');
+      assert.equal(transformed.reason, 'backend_not_available');
       assert.match(transformed.message ?? '', /enumerate protected metadata/i);
     }
   });

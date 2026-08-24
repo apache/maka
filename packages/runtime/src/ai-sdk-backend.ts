@@ -195,8 +195,15 @@ import { openAiChatReasoningFieldFromProviderOptions } from './openai-chat-reaso
 import { RunTrace, type RunTraceRecorder } from './run-trace.js';
 import {
   toSandboxRunTraceProjection,
+  type SandboxDiagnosticsProvider,
   type SandboxDiagnosticsSnapshot,
 } from './sandbox/diagnostics.js';
+import { SandboxCommandError } from './sandbox/errors.js';
+import {
+  REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
+  SANDBOX_BOUNDARY_DENIED_FOR_TURN,
+  SANDBOX_BOUNDARY_FINALIZATION_PROMPT,
+} from './sandbox-boundary-tool.js';
 import { renderSandboxTurnTailPrompt } from './system-prompt/sandbox-context-prompt.js';
 import { computeCost } from './telemetry/cost.js';
 import { getBuiltinPricing } from './telemetry/builtin-pricing.js';
@@ -703,17 +710,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
-  /** Static embedding/test fallback used only when the per-turn resolver is absent. */
-  sandboxDiagnosticsSnapshot?: SandboxDiagnosticsSnapshot;
-  /**
-   * Resolves the authoritative sandbox snapshot once for each turn and takes
-   * precedence over sandboxDiagnosticsSnapshot. The Backend races the returned
-   * promise with this Turn's abort even when the resolver cannot cancel its own
-   * underlying read.
-   */
-  resolveSandboxDiagnosticsSnapshot?: (input: {
-    abortSignal: AbortSignal;
-  }) => Promise<SandboxDiagnosticsSnapshot | undefined>;
+  /** Optional model guidance derived fresh from the live boundary each Turn. */
+  sandboxDiagnostics?: SandboxDiagnosticsProvider;
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
   planTraceContext?: {
     mode: 'agent' | 'plan';
@@ -1643,14 +1641,9 @@ export class AiSdkBackend implements AgentBackend {
     let sandboxPrompt: string | undefined;
     let sandboxContextStage: 'resolve' | 'render' = 'resolve';
     try {
-      sandboxDiagnosticsSnapshot = this.input.resolveSandboxDiagnosticsSnapshot
-        ? await raceWithTurnAbort(
-            this.input.resolveSandboxDiagnosticsSnapshot({
-              abortSignal: turnAbortController.signal,
-            }),
-            turnAbortController.signal,
-          )
-        : this.input.sandboxDiagnosticsSnapshot;
+      sandboxDiagnosticsSnapshot = this.input.sandboxDiagnostics
+        ? await raceWithTurnAbort(this.resolveTurnSandboxDiagnostics(), turnAbortController.signal)
+        : undefined;
       sandboxContextStage = 'render';
       sandboxPrompt = sandboxDiagnosticsSnapshot
         ? renderSandboxTurnTailPrompt(sandboxDiagnosticsSnapshot)
@@ -1761,7 +1754,13 @@ export class AiSdkBackend implements AgentBackend {
     // Tool names the repair path matches a mis-cased call against — follows the
     // current step's snapshot so a group loaded mid-turn is repairable on the
     // step it becomes active, not routed to `invalid`.
-    const currentRepairToolNames = plan.currentRepairToolNames;
+    const boundaryAwareToolNames = (names: readonly string[]): string[] => {
+      if (toolRuntime.shouldFinalizeSandboxBoundary()) return [];
+      return toolRuntime.hasSandboxBoundaryDenial()
+        ? names.filter((name) => name !== REQUEST_SANDBOX_BOUNDARY_TOOL_NAME)
+        : [...names];
+    };
+    const currentRepairToolNames = () => boundaryAwareToolNames(plan.currentRepairToolNames());
     if (plan.gating) {
       toolRuntime.setGating(plan.gating);
     }
@@ -2217,12 +2216,24 @@ export class AiSdkBackend implements AgentBackend {
             maxSteps > 1 &&
             runtimeSteps === maxSteps - 1 &&
             completedProviderSteps.length > 0;
-          const activeToolsForRequest = finalChildSummaryStep
-            ? []
-            : (shaped?.activeTools ?? currentRepairToolNames());
-          const requestSystemPrompt = finalChildSummaryStep
-            ? joinPromptFragments([systemPrompt, CHILD_STEP_BUDGET_FINALIZATION_PROMPT])
-            : systemPrompt;
+          const sandboxBoundaryFinalizationStep =
+            toolRuntime.shouldFinalizeSandboxBoundary() ||
+            (toolRuntime.hasSandboxBoundaryDenial() &&
+              maxSteps !== undefined &&
+              runtimeSteps === maxSteps - 1);
+          if (sandboxBoundaryFinalizationStep) {
+            toolRuntime.forceSandboxBoundaryFinalization();
+          }
+          const activeToolsForRequest =
+            finalChildSummaryStep || sandboxBoundaryFinalizationStep
+              ? []
+              : boundaryAwareToolNames(shaped?.activeTools ?? plan.currentRepairToolNames());
+          const requestSystemPrompt = joinPromptFragments([
+            systemPrompt,
+            finalChildSummaryStep ? CHILD_STEP_BUDGET_FINALIZATION_PROMPT : undefined,
+            toolRuntime.hasSandboxBoundaryDenial() ? SANDBOX_BOUNDARY_DENIED_FOR_TURN : undefined,
+            sandboxBoundaryFinalizationStep ? SANDBOX_BOUNDARY_FINALIZATION_PROMPT : undefined,
+          ]);
           providerRequestTracker?.setStep(runtimeSteps);
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
@@ -2262,9 +2273,17 @@ export class AiSdkBackend implements AgentBackend {
             scope.memorySourceTools = modelTools;
             scope.memorySourceActiveTools = [...activeToolsForRequest];
             scope.finalAssistantText = undefined;
+            // Keep a denied boundary request as a Code Mode trap: the provider
+            // no longer sees it as a direct tool, but a nested retry must still
+            // reach ToolRuntime's denial latch instead of becoming an endlessly
+            // variable unknown-tool error inside `exec`.
+            const codeModeActiveTools =
+              toolRuntime.hasSandboxBoundaryDenial() && activeToolsForRequest.includes('exec')
+                ? [...activeToolsForRequest, REQUEST_SANDBOX_BOUNDARY_TOOL_NAME]
+                : activeToolsForRequest;
             scope.codeModeTools =
               toolMode === 'code_mode'
-                ? nestableToolSnapshot(providerTools, activeToolsForRequest)
+                ? nestableToolSnapshot(providerTools, codeModeActiveTools)
                 : undefined;
             const requestWatchdog = watchdogState.current;
             // Read here, beside the messages it describes: `attemptMessages` is
@@ -2676,9 +2695,24 @@ export class AiSdkBackend implements AgentBackend {
                     `Provider-executed tool call "${toolCall.toolName}" is outside the main-agent tool loop`,
                   );
                 }
-                const requestedTool = toolsByName.get(toolCall.toolName);
+                const sandboxBoundaryAttempt = isProviderSandboxBoundaryAttempt(toolCall);
+                const deniedBoundaryRequest =
+                  toolRuntime.hasSandboxBoundaryDenial() &&
+                  toolCall.toolName.toLowerCase() === REQUEST_SANDBOX_BOUNDARY_TOOL_NAME;
+                if (deniedBoundaryRequest) {
+                  toolRuntime.forceSandboxBoundaryFinalization();
+                }
+                const blockedToolCall = sandboxBoundaryFinalizationStep || deniedBoundaryRequest;
+                const requestedTool = blockedToolCall
+                  ? undefined
+                  : toolsByName.get(toolCall.toolName);
                 const tool = requestedTool ?? toolsByName.get(INVALID_TOOL_NAME);
                 if (!tool) throw new Error('Runtime invalid-tool fallback is unavailable');
+                const unavailableError = sandboxBoundaryFinalizationStep
+                  ? 'Sandbox boundary finalization does not permit tool execution.'
+                  : deniedBoundaryRequest
+                    ? SANDBOX_BOUNDARY_DENIED_FOR_TURN
+                    : 'returned tool is unavailable';
                 return await toolRuntime.settleToolCall({
                   tool,
                   turnId,
@@ -2700,7 +2734,8 @@ export class AiSdkBackend implements AgentBackend {
                       ? toolCall.input
                       : {
                           tool: toolCall.toolName,
-                          error: 'returned tool is unavailable',
+                          error: unavailableError,
+                          ...(sandboxBoundaryAttempt ? { sandboxBoundaryAttempt: true } : {}),
                         },
                   abortSignal: turnAbortController.signal,
                   eventSink: queue,
@@ -2764,6 +2799,15 @@ export class AiSdkBackend implements AgentBackend {
             ...(providerStepUsage ? { usage: providerStepUsage } : {}),
           });
           const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
+          if (
+            sandboxBoundaryFinalizationStep ||
+            (stepLimitReached &&
+              (toolRuntime.shouldFinalizeSandboxBoundary() ||
+                toolRuntime.hasSandboxBoundaryDenial()))
+          ) {
+            scope.loopStopReason = 'permission_handoff';
+            scope.loopStopRequested = true;
+          }
           const mayTakeAnotherStep =
             !stepLimitReached && !scope.loopStopRequested && !scope.aborted;
           if (returnedToolCalls.length > 0 && mayTakeAnotherStep) {
@@ -2804,14 +2848,14 @@ export class AiSdkBackend implements AgentBackend {
           break agentLoop;
         }
 
-        // Same-turn deferred load: request projection expanded the provider tool set on
-        // later steps, so refine the durable cost record + prefix baseline against
-        // the final active set — otherwise this turn under-reports the loaded
-        // schema and the cache reset would surface a turn late. No-op when nothing
-        // loaded this turn (the active set length is unchanged; the ratchet only
-        // grows it).
+        // Refine the durable cost record + prefix baseline against the final
+        // active set. Deferred loading may add tools, while boundary convergence
+        // may remove them; comparing membership avoids missing a same-size swap.
         const finalActiveTools = currentRepairToolNames();
-        if (finalActiveTools.length !== activeTools.length) {
+        if (
+          finalActiveTools.length !== activeTools.length ||
+          finalActiveTools.some((name, index) => name !== activeTools[index])
+        ) {
           publishTurnDiagnostics(computeTurnDiagnostics(finalActiveTools));
         }
 
@@ -4494,6 +4538,18 @@ export class AiSdkBackend implements AgentBackend {
     return this.input.systemPrompt;
   }
 
+  private async resolveTurnSandboxDiagnostics(): Promise<SandboxDiagnosticsSnapshot | undefined> {
+    const provider = this.input.sandboxDiagnostics;
+    if (!provider) return undefined;
+    const boundary = await this.input.readExecutionBoundary();
+    if (boundary.kind === 'external') return undefined;
+    return await provider.resolve(
+      boundary.kind === 'managed'
+        ? { cwd: this.input.header.cwd, permissionProfile: boundary.profile }
+        : { cwd: this.input.header.cwd, mode: 'bypass' },
+    );
+  }
+
   private async resolveTurnTailPrompt(turnId: string): Promise<string | undefined> {
     if (typeof this.input.turnTailPrompt === 'function') {
       return await this.input.turnTailPrompt({
@@ -4719,6 +4775,7 @@ export function repairMakaToolCall(input: {
     input: JSON.stringify({
       tool: requestedName,
       error: describeUnrepairableToolCall(input),
+      ...(isProviderSandboxBoundaryAttempt(input.toolCall) ? { sandboxBoundaryAttempt: true } : {}),
     }),
   };
 }
@@ -4765,7 +4822,20 @@ function parseToolCallInput(raw: unknown): unknown {
   }
 }
 
-function buildInvalidMakaTool(): MakaTool<{ tool?: string; error?: string }, never> {
+function isProviderSandboxBoundaryAttempt(toolCall: { toolName: string; input: unknown }): boolean {
+  const toolName = toolCall.toolName.toLowerCase();
+  if (toolName === REQUEST_SANDBOX_BOUNDARY_TOOL_NAME) return true;
+  if (toolName !== 'bash') return false;
+  const parsed = parseToolCallInput(toolCall.input);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  const boundaryIntent = (parsed as Record<string, unknown>).boundary_intent;
+  return boundaryIntent !== undefined && boundaryIntent !== 'current';
+}
+
+function buildInvalidMakaTool(): MakaTool<
+  { tool?: string; error?: string; sandboxBoundaryAttempt?: true },
+  never
+> {
   return {
     name: INVALID_TOOL_NAME,
     description:
@@ -4773,12 +4843,21 @@ function buildInvalidMakaTool(): MakaTool<{ tool?: string; error?: string }, nev
     parameters: z.object({
       tool: z.string().optional(),
       error: z.string().optional(),
+      sandboxBoundaryAttempt: z.literal(true).optional(),
     }),
-    impl: ({ tool, error }) => {
+    impl: ({ tool, error, sandboxBoundaryAttempt }) => {
       const requested = tool ? ` "${tool}"` : '';
-      throw new Error(
-        `模型请求了不可用或格式错误的工具${requested}：${error || 'tool call could not be parsed'}`,
-      );
+      const message = `模型请求了不可用或格式错误的工具${requested}：${error || 'tool call could not be parsed'}`;
+      if (sandboxBoundaryAttempt) {
+        throw new SandboxCommandError({
+          domain: 'command',
+          stage: 'validation',
+          reason: 'invalid_boundary_declaration',
+          recoverable: true,
+          message,
+        });
+      }
+      throw new Error(message);
     },
   };
 }

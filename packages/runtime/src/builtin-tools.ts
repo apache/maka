@@ -88,6 +88,7 @@ import {
   BASH_REQUIRED_BOUNDARY_DESCRIPTION,
   bashBoundaryIntentSchema,
   preflightDeclaredSandboxBoundary,
+  preprocessBashBoundaryDeclaration,
   refineBashBoundaryDeclaration,
   sandboxBoundaryExpansionSchema,
   selectedBashBoundaryExpansion,
@@ -631,17 +632,19 @@ function buildExecutorBashTool(
     description:
       withTurnShellGuidance('Run a shell command in the session cwd.', shell) +
       ' Enforced by the current session sandbox boundary.',
-    parameters: z
-      .object({
-        command: z.string().describe('The shell command to execute'),
-        timeout_ms: z.number().int().positive().max(600_000).optional(),
-        boundary_intent: bashBoundaryIntentSchema,
-        required_boundary: sandboxBoundaryExpansionSchema
-          .optional()
-          .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
-      })
-      .strict()
-      .superRefine(refineBashBoundaryDeclaration),
+    parameters: preprocessBashBoundaryDeclaration(
+      z
+        .object({
+          command: z.string().describe('The shell command to execute'),
+          timeout_ms: z.number().int().positive().max(600_000).optional(),
+          boundary_intent: bashBoundaryIntentSchema,
+          required_boundary: sandboxBoundaryExpansionSchema
+            .optional()
+            .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
+        })
+        .strict()
+        .superRefine(refineBashBoundaryDeclaration),
+    ),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
     impl: async (input, ctx) => {

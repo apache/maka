@@ -36,6 +36,18 @@ export interface NormalizedSandboxBoundaryPath {
   readonly targetType: 'file' | 'directory' | 'other' | 'missing';
 }
 
+/**
+ * A boundary declaration the caller can correct and submit again.
+ *
+ * Filesystem failures are deliberately not wrapped in this error: an invalid
+ * declaration is actionable model input, while realpath/stat/permission/I/O
+ * failures describe an unavailable host operation and need to retain their
+ * original classification.
+ */
+export class SandboxBoundaryDeclarationError extends Error {
+  override readonly name = 'SandboxBoundaryDeclarationError';
+}
+
 export async function normalizeSandboxBoundaryPath(input: {
   path: string;
   access: SandboxBoundaryAccess;
@@ -47,7 +59,9 @@ export async function normalizeSandboxBoundaryPath(input: {
     input.path.includes('\0') ||
     input.path.length > MAX_SANDBOX_BOUNDARY_PATH_CHARS
   ) {
-    throw new Error('Sandbox boundary path is invalid or exceeds the length limit.');
+    throw new SandboxBoundaryDeclarationError(
+      'Sandbox boundary path is invalid or exceeds the length limit.',
+    );
   }
   const canonicalCwd = await fs.realpath(input.cwd);
   const displayPath = resolve(canonicalCwd, input.path);
@@ -56,7 +70,9 @@ export async function normalizeSandboxBoundaryPath(input: {
   const scope =
     input.scope === 'auto' ? (targetType === 'directory' ? 'subtree' : 'exact') : input.scope;
   if (scope === 'subtree' && targetType !== 'directory') {
-    throw new Error('A subtree sandbox boundary must target an existing directory.');
+    throw new SandboxBoundaryDeclarationError(
+      'A subtree sandbox boundary must target an existing directory.',
+    );
   }
   return { displayPath, enforcementPath, access: input.access, scope, targetType };
 }
@@ -66,7 +82,7 @@ export async function normalizeSandboxBoundaryExpansion(
   cwd: string,
 ): Promise<SandboxBoundaryExpansion> {
   const validated = validateSandboxBoundaryExpansion(expansion);
-  if (!validated.ok) throw new Error(validated.message);
+  if (!validated.ok) throw new SandboxBoundaryDeclarationError(validated.message);
   const entries = await Promise.all(
     (validated.expansion.filesystem?.entries ?? []).map(async (entry) => {
       const normalized = await normalizeSandboxBoundaryPath({
@@ -74,7 +90,7 @@ export async function normalizeSandboxBoundaryExpansion(
         cwd,
       });
       if (normalized.scope === 'exact' && normalized.targetType === 'directory') {
-        throw new Error(
+        throw new SandboxBoundaryDeclarationError(
           'An exact sandbox boundary cannot target a directory; use subtree for directory access.',
         );
       }
@@ -89,7 +105,7 @@ export async function normalizeSandboxBoundaryExpansion(
     ...(entries.length > 0 ? { filesystem: { entries } } : {}),
     ...(validated.expansion.network ? { network: validated.expansion.network } : {}),
   });
-  if (!normalized.ok) throw new Error(normalized.message);
+  if (!normalized.ok) throw new SandboxBoundaryDeclarationError(normalized.message);
   return normalized.expansion;
 }
 

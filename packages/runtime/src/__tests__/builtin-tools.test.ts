@@ -313,6 +313,22 @@ describe('builtin Bash streaming output', () => {
         'current',
       );
     }
+    const parsedSurplusBoundary = (linuxBash.parameters as z.ZodTypeAny).safeParse({
+      command: 'echo safe',
+      required_boundary: { network: { enabled: false }, malformed: true },
+    });
+    assert.equal(parsedSurplusBoundary.success, true);
+    if (parsedSurplusBoundary.success) {
+      assert.equal(Object.hasOwn(parsedSurplusBoundary.data as object, 'required_boundary'), false);
+    }
+    assert.equal(
+      (linuxBash.parameters as z.ZodTypeAny).safeParse({
+        command: 'echo unsafe',
+        boundary_intent: 'expand',
+        required_boundary: { network: { enabled: false }, malformed: true },
+      }).success,
+      false,
+    );
     assert.equal(
       (linuxBash.parameters as z.ZodTypeAny).safeParse({
         command: 'echo unsafe',
@@ -396,18 +412,22 @@ describe('builtin Bash streaming output', () => {
         required_boundary: { network: { enabled: true } },
       }).success,
     ).toBe(true);
+    const parsedCurrentSurplus = parameters.safeParse({
+      command: 'npm test',
+      boundary_intent: 'current',
+      required_boundary: { network: { enabled: false }, malformed: true },
+    });
+    expect(parsedCurrentSurplus.success).toBe(true);
+    if (parsedCurrentSurplus.success) {
+      expect(Object.hasOwn(parsedCurrentSurplus.data as object, 'required_boundary')).toBe(false);
+    }
     expect(
       parameters.safeParse({
-        command: 'npm test',
-        boundary_intent: 'current',
-        required_boundary: {
-          filesystem: {
-            entries: [{ path: '.', access: 'read', scope: 'exact' }],
-          },
-          network: { enabled: true },
-        },
+        command: 'curl https://example.com',
+        boundary_intent: 'expand',
+        required_boundary: { network: { enabled: false }, malformed: true },
       }).success,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       parameters.safeParse({ command: 'curl https://example.com', boundary_intent: 'expand' })
         .success,
@@ -415,6 +435,7 @@ describe('builtin Bash streaming output', () => {
 
     const modelVisibleSchema = JSON.stringify(z.toJSONSchema(bash.parameters as z.ZodTypeAny));
     assert.match(modelVisibleSchema, /Defaults to current when omitted/);
+    assert.match(modelVisibleSchema, /"enum":\["current","expand"\]/);
     assert.match(modelVisibleSchema, /"default":"current"/);
     assert.match(modelVisibleSchema, /Use current when the command needs no specifically declared/);
     assert.match(modelVisibleSchema, /ordinary workspace inspection/);

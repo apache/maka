@@ -24,8 +24,7 @@ import { relayModelProfile } from '@maka/core/model-thinking';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
-import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
-import { AiSdkBackend, type AiSdkBackendInput } from '@maka/runtime/ai-sdk-backend';
+import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 import {
   buildDefaultContextBudgetPolicy,
   resolveSelectedModelContextWindow,
@@ -44,7 +43,7 @@ import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type RuntimeCommitSink } from '@maka/runtime/runtime-commit-sink';
-import type { SandboxDiagnosticsProvider, SandboxDiagnosticsSnapshot } from '@maka/runtime/sandbox';
+import type { SandboxDiagnosticsProvider } from '@maka/runtime/sandbox';
 import {
   createAttachmentByteReader,
   persistProviderRequestCaptureArtifact,
@@ -83,53 +82,6 @@ type HostExecutionRuntimePolicyAuthority = {
   readonly operations: Pick<RuntimePolicyStoresWriter['operations'], 'resolveExecutionConnection'>;
   readonly runtimePolicy: Pick<RuntimePolicyStoresWriter['runtimePolicy'], 'getSnapshot'>;
 };
-
-export function createHostSandboxDiagnosticsResolver(input: {
-  readonly readExecutionBoundary: () => Promise<ExecutionBoundary>;
-  readonly sandboxDiagnostics: SandboxDiagnosticsProvider;
-  readonly cwd: string;
-}): NonNullable<AiSdkBackendInput['resolveSandboxDiagnosticsSnapshot']> {
-  let cache:
-    | {
-        readonly key: string;
-        readonly promise: Promise<SandboxDiagnosticsSnapshot>;
-      }
-    | undefined;
-  return async ({ abortSignal }) => {
-    const boundary = await input.readExecutionBoundary();
-    // External isolation carries no local profile or network fact. Do not
-    // reconstruct either one from a stale Session header.
-    if (boundary.kind === 'external') return undefined;
-    const key = `${boundary.kind}:${boundary.revision}`;
-    let entry = cache;
-    if (!entry || entry.key !== key) {
-      entry = {
-        key,
-        promise: Promise.resolve().then(() =>
-          input.sandboxDiagnostics.resolve(
-            boundary.kind === 'managed'
-              ? { cwd: input.cwd, permissionProfile: boundary.profile }
-              : { cwd: input.cwd, mode: 'bypass' },
-          ),
-        ),
-      };
-      cache = entry;
-    }
-    const clearAbortedEntry = () => {
-      if (cache === entry) cache = undefined;
-    };
-    if (abortSignal.aborted) clearAbortedEntry();
-    else abortSignal.addEventListener('abort', clearAbortedEntry, { once: true });
-    try {
-      return await entry.promise;
-    } catch (error) {
-      if (cache === entry) cache = undefined;
-      throw error;
-    } finally {
-      abortSignal.removeEventListener('abort', clearAbortedEntry);
-    }
-  };
-}
 
 type HostExecutionArtifactAuthority = Pick<
   InteractiveArtifactStoreWriter,
@@ -375,12 +327,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       }
     : undefined;
 
-  const resolveSandboxDiagnosticsSnapshot = createHostSandboxDiagnosticsResolver({
-    readExecutionBoundary: () => input.context.store.readExecutionBoundary(input.context.sessionId),
-    sandboxDiagnostics: input.sandboxDiagnostics,
-    cwd: input.context.header.cwd,
-  });
-
   try {
     return new HostAiSdkBackend(
       {
@@ -398,7 +344,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           ((message) => input.context.store.appendMessage(input.context.sessionId, message)),
         readExecutionBoundary: () =>
           input.context.store.readExecutionBoundary(input.context.sessionId),
-        resolveSandboxDiagnosticsSnapshot,
+        sandboxDiagnostics: input.sandboxDiagnostics,
         ...(input.context.store.createSandboxBoundaryRequest
           ? {
               createSandboxBoundaryRequest: (request) =>

@@ -31,128 +31,6 @@ import {
   WindowsBrokerSandboxBackend,
   type WindowsBrokerManifest,
 } from '../sandbox/windows-sandbox.js';
-import type { SandboxTransformRequest } from '../sandbox/types.js';
-
-const WINDOWS_CLIENT_PATH = String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`;
-const WINDOWS_MANIFEST_PATH = String.raw`C:\Users\user\AppData\Local\Temp\request.json`;
-
-function windowsSandboxRequest(): SandboxTransformRequest {
-  return {
-    platform: 'win32',
-    command: {
-      program: String.raw`C:\Windows\System32\cmd.exe`,
-      args: ['/d', '/c', 'exit 0'],
-      cwd: String.raw`C:\work\repo`,
-      env: { SystemRoot: String.raw`C:\Windows` },
-      profile: createWorkspaceWritePermissionProfile(),
-      pathContext: { workspaceRoots: [String.raw`C:\work\repo`] },
-    },
-  };
-}
-
-test('keeps probe and transform aligned for shared Windows rejection conditions', () => {
-  const request = windowsSandboxRequest();
-  const writeManifest = () => WINDOWS_MANIFEST_PATH;
-  const cases: readonly {
-    name: string;
-    backend: WindowsBrokerSandboxBackend;
-    request: SandboxTransformRequest;
-  }[] = [
-    {
-      name: 'unsupported platform',
-      backend: new WindowsBrokerSandboxBackend({
-        clientPath: WINDOWS_CLIENT_PATH,
-        writeManifest,
-      }),
-      request: { ...request, platform: 'linux' },
-    },
-    {
-      name: 'unavailable broker client',
-      backend: new WindowsBrokerSandboxBackend({
-        clientPath: WINDOWS_CLIENT_PATH,
-        isAvailable: () => false,
-        writeManifest,
-      }),
-      request,
-    },
-    {
-      name: 'invalid static client configuration',
-      backend: new WindowsBrokerSandboxBackend({ clientPath: 'client.exe', writeManifest }),
-      request,
-    },
-    {
-      name: 'invalid static timeout configuration',
-      backend: new WindowsBrokerSandboxBackend({
-        clientPath: WINDOWS_CLIENT_PATH,
-        timeoutMs: 999,
-        writeManifest,
-      }),
-      request,
-    },
-    {
-      name: 'uncompilable permission profile',
-      backend: new WindowsBrokerSandboxBackend({
-        clientPath: WINDOWS_CLIENT_PATH,
-        writeManifest,
-      }),
-      request: {
-        ...request,
-        command: {
-          ...request.command,
-          pathContext: { workspaceRoots: ['C:/work/repo'] },
-        },
-      },
-    },
-  ];
-
-  for (const { name, backend, request: candidate } of cases) {
-    const probe = backend.probe(candidate);
-    const transformed = backend.transform(candidate);
-    assert.equal(probe.ok, false, `${name}: probe should reject`);
-    assert.deepEqual(transformed, probe, `${name}: probe/transform parity`);
-  }
-});
-
-test('keeps per-invocation Windows broker values out of probe', () => {
-  const request = windowsSandboxRequest();
-  const cases = [
-    {
-      name: 'request id',
-      backend: new WindowsBrokerSandboxBackend({
-        clientPath: WINDOWS_CLIENT_PATH,
-        requestId: () => 'request:1',
-        writeManifest: () => WINDOWS_MANIFEST_PATH,
-      }),
-      transformReason: 'invalid_request',
-    },
-    {
-      name: 'client nonce',
-      backend: new WindowsBrokerSandboxBackend({
-        clientPath: WINDOWS_CLIENT_PATH,
-        nonce: () => 'not-a-valid-nonce',
-        writeManifest: () => WINDOWS_MANIFEST_PATH,
-      }),
-      transformReason: 'invalid_request',
-    },
-    {
-      name: 'materialized manifest path',
-      backend: new WindowsBrokerSandboxBackend({
-        clientPath: WINDOWS_CLIENT_PATH,
-        writeManifest: () => 'request.json',
-      }),
-      transformReason: 'backend_not_available',
-    },
-  ] as const;
-
-  for (const { name, backend, transformReason } of cases) {
-    assert.equal(backend.probe(request).ok, true, `${name}: probe should ignore dynamic value`);
-    const transformed = backend.transform(request);
-    assert.equal(transformed.ok, false, `${name}: transform should validate dynamic value`);
-    if (!transformed.ok) {
-      assert.equal(transformed.reason, transformReason, `${name}: transform rejection reason`);
-    }
-  }
-});
 
 test('writes broker manifests to exclusive per-process temporary files', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-windows-manifest-test-'));
@@ -193,11 +71,21 @@ test('writes broker manifests to exclusive per-process temporary files', async (
 });
 
 test('probes the Windows broker without materializing a one-shot manifest', () => {
+  let requestIds = 0;
+  let nonces = 0;
   let manifestWrites = 0;
   const clientPath = String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`;
   const backend = new WindowsBrokerSandboxBackend({
     clientPath,
     isAvailable: () => true,
+    requestId: () => {
+      requestIds += 1;
+      return 'request-1';
+    },
+    nonce: () => {
+      nonces += 1;
+      return 'a'.repeat(32);
+    },
     writeManifest: () => {
       manifestWrites += 1;
       return String.raw`C:\Users\user\AppData\Local\Temp\request.json`;
@@ -223,6 +111,8 @@ test('probes the Windows broker without materializing a one-shot manifest', () =
     requiresSandbox: true,
     preference: 'auto',
   });
+  assert.equal(requestIds, 0);
+  assert.equal(nonces, 0);
   assert.equal(manifestWrites, 0);
 });
 
@@ -333,6 +223,58 @@ test('rejects a request id whose derived launch id exceeds the native protocol b
   if (!result.ok) assert.match(result.message ?? '', /request id/i);
 });
 
+test('rejects an invalid per-invocation client nonce', () => {
+  const backend = new WindowsBrokerSandboxBackend({
+    clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
+    nonce: () => 'not-a-valid-nonce',
+    writeManifest: () => String.raw`C:\Users\user\AppData\Local\Temp\request.json`,
+  });
+  const result = backend.transform({
+    platform: 'win32',
+    command: {
+      program: String.raw`C:\Windows\System32\cmd.exe`,
+      args: [],
+      cwd: String.raw`C:\work\repo`,
+      env: {},
+      profile: createWorkspaceWritePermissionProfile(),
+      pathContext: { workspaceRoots: [String.raw`C:\work\repo`] },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, 'invalid_request');
+    assert.match(result.message ?? '', /client nonce/i);
+  }
+});
+
+test('rejects a noncanonical materialized manifest path', () => {
+  const backend = new WindowsBrokerSandboxBackend({
+    clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
+    writeManifest: () => 'request.json',
+  });
+  const result = backend.transform({
+    platform: 'win32',
+    command: {
+      program: String.raw`C:\Windows\System32\cmd.exe`,
+      args: [],
+      cwd: String.raw`C:\work\repo`,
+      env: {},
+      profile: createWorkspaceWritePermissionProfile(),
+      pathContext: { workspaceRoots: [String.raw`C:\work\repo`] },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, 'backend_not_available');
+    assert.match(
+      result.message ?? '',
+      /materialize.*manifest path must be canonical and absolute/i,
+    );
+  }
+});
+
 test('honors a configured broker timeout and rejects out-of-range values', () => {
   let written: WindowsBrokerManifest | undefined;
   const backend = new WindowsBrokerSandboxBackend({
@@ -386,8 +328,8 @@ test('fails closed when broker client is unavailable or policy cannot be compile
   if (!missing.ok) assert.equal(missing.reason, 'backend_not_available');
 
   const invalid = new WindowsBrokerSandboxBackend({
-    clientPath: 'client.exe',
-    writeManifest: () => 'request.json',
+    clientPath: String.raw`C:\Program Files\Maka\maka-windows-sandbox.exe`,
+    writeManifest: () => String.raw`C:\Users\user\AppData\Local\Temp\request.json`,
   }).transform({
     ...input,
     command: { ...input.command, pathContext: { workspaceRoots: ['C:/work/repo'] } },

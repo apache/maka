@@ -251,7 +251,7 @@ describe('SandboxManager.selectInitial', () => {
 });
 
 describe('SandboxManager.probe', () => {
-  it('uses the side-effect-free backend probe without transforming execution', () => {
+  it('uses the non-materializing backend probe without transforming execution', () => {
     const backend = new FakeMacosBackend();
     const manager = new SandboxManager([backend]);
 
