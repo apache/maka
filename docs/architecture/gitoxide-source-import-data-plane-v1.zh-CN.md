@@ -66,8 +66,11 @@ v1 不复制 source commit/history，不创建 alternates，不执行 hook/filte
 
 - commit object 最多 1 MiB；单个 tree object 最多 8 MiB；全部 reachable tree object 总计最多 64 MiB；
 - 单文件最多 64 MiB；总计最多 2 GiB；最多 200,000 个普通文件；
-- 只接受 tree、`100644` blob 与 `100755` executable blob；
-- 拒绝 symlink、submodule、`.git`、`.gitattributes`、非 UTF-8 与 NFC/大小写 collision；
+- 只接受 canonical Git tree ordering，以及 raw mode token `40000`、`100644`、`100755`；
+- 拒绝 symlink、submodule、`.git`、`.gitattributes`、非 UTF-8，以及
+  `Unicode 17.0 NFC → Unicode 16.0 Default Full Case Folding（Non-Turkic）→ Unicode 17.0 NFC`
+  collision；原路径与 folded key
+  分别有单路径和累计 byte budget；
 - repository inspection deadline 为 5 秒；source import deadline 为 10 分钟。2 GiB/200,000 files 是输入
   上限，不是十分钟内一定成功的 SLA；超时后 fail closed；
 - commit/tree/blob 在完整 decode 前先读取 object header 并执行对应预算；isolated Gitoxide open 另固定
@@ -75,6 +78,10 @@ v1 不复制 source commit/history，不创建 alternates，不执行 hook/filte
 - Linux/macOS/Windows 运行同一 locked Cargo suite；当前只证明 fresh-only fail-closed，不承诺 import
   process-crash 自动恢复或断电恢复；
 - Windows 保留 Git tree 中的 executable bit，不把它映射成 ACL 权威。
+
+上述规则只是 portable lexical materialization policy v1。它不证明 Windows path-length、8.3 alias 或
+目标 volume 的大小写行为；这些能力必须由未来 projection owner 的
+`FilesystemMaterializationProfileV1` 在 fresh destination 上独立验证。
 
 ## 5. 后续依赖
 

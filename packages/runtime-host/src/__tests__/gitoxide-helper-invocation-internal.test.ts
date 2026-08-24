@@ -126,6 +126,22 @@ test('applies the import deadline and terminates the helper process tree', {
   assert.equal(isProcessAlive(descendantPid), false);
 });
 
+test('rejects an import response that does not match the requested baseline ref', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  await assertMismatchedImportResponseRejected(t, {
+    baselineRef: 'refs/maka/not-the-requested-ref',
+  });
+});
+
+test('rejects an import response that does not match the requested source HEAD', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  await assertMismatchedImportResponseRejected(t, {
+    sourceHeadCommitOid: 'b'.repeat(40),
+  });
+});
+
 test('keeps the Rust and TypeScript helper error protocol exhaustive', async () => {
   const rustSource = await readFile(
     new URL('../../../../native/gitoxide-helper/src/main.rs', import.meta.url),
@@ -245,6 +261,64 @@ async function admittedHelper(): Promise<AdmittedHelper | undefined> {
     return admitHelperPath(configuredHelperPath);
   })();
   return admittedHelperPromise;
+}
+
+async function assertMismatchedImportResponseRejected(
+  t: TestContext,
+  override: {
+    readonly sourceHeadCommitOid?: string;
+    readonly baselineRef?: string;
+  },
+): Promise<void> {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-gitoxide-correlation-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repositoryPath = await createRepository(t, 'sha1');
+  await writeFile(join(repositoryPath, 'hello.txt'), 'response correlation fixture\n');
+  git(repositoryPath, ['add', 'hello.txt']);
+  git(repositoryPath, [
+    '-c',
+    'user.name=Maka Test',
+    '-c',
+    'user.email=maka@example.invalid',
+    'commit',
+    '--quiet',
+    '-m',
+    'fixture',
+  ]);
+  const expectedSourceHeadCommitOid = git(repositoryPath, ['rev-parse', 'HEAD']);
+  const sourceTreeOid = git(repositoryPath, ['rev-parse', 'HEAD^{tree}']);
+  const helperPath = join(root, 'mismatched-response-helper');
+  const response = JSON.stringify({
+    protocolVersion: 1,
+    kind: 'source_imported',
+    objectFormat: 'sha1',
+    sourceHeadCommitOid: expectedSourceHeadCommitOid,
+    sourceTreeOid,
+    baselineCommitOid: 'a'.repeat(40),
+    baselineTreeOid: sourceTreeOid,
+    baselineRef: 'refs/maka/expected-ref',
+    managedTreePolicyVersion: 1,
+    filesImported: 1,
+    bytesImported: 29,
+    ...override,
+  });
+  await writeFile(helperPath, `#!/bin/sh\nprintf '%s\\n' '${response}'\n`);
+  await chmod(helperPath, 0o755);
+  const helper = await admitHelperPath(helperPath);
+
+  await assert.rejects(
+    importSourceHeadWithGitoxideHelperInternal({
+      ...helper,
+      sourceRepositoryPath: repositoryPath,
+      expectedSourceHeadCommitOid,
+      destinationRepositoryPath: join(root, 'destination.git'),
+      baselineRef: 'refs/maka/expected-ref',
+      managedTreePolicyVersion: 1,
+    }),
+    (error) =>
+      error instanceof GitoxideHelperInvocationError &&
+      error.code === 'gitoxide_helper_invocation_protocol_invalid',
+  );
 }
 
 async function admitHelperPath(configuredHelperPath: string): Promise<AdmittedHelper> {

@@ -134,6 +134,97 @@ fn rejects_a_source_tree_whose_storage_key_does_not_match_its_bytes() {
 }
 
 #[test]
+fn rejects_a_source_blob_whose_storage_key_does_not_match_its_bytes() {
+    let (fixture, claimed_head) = RepositoryFixture::sha1_with_mismatched_blob_storage();
+    let destination = fixture.root.join("mismatched-blob.git");
+
+    let import = invoke_import(&fixture.root, &claimed_head, &destination);
+
+    assert_helper_error(&import, "source_blob_identity_mismatch");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn rejects_noncanonical_tree_entry_modes_before_claiming_the_destination() {
+    for mode in ["100600", "100664", "100700", "100777", "040000", "0100644"] {
+        let (fixture, source_head) = RepositoryFixture::sha1_with_raw_tree(&[RawTreeEntry {
+            mode,
+            name: "entry",
+            object_kind: if mode.ends_with("40000") {
+                RawObjectKind::Tree
+            } else {
+                RawObjectKind::Blob
+            },
+        }]);
+        let destination = fixture.root.join(format!("noncanonical-{mode}.git"));
+
+        let import = invoke_import(&fixture.root, &source_head, &destination);
+
+        assert_helper_error(&import, "source_tree_noncanonical_mode");
+        assert!(!destination.exists());
+    }
+}
+
+#[test]
+fn rejects_unsorted_tree_entries_before_claiming_the_destination() {
+    let (fixture, source_head) = RepositoryFixture::sha1_with_raw_tree(&[
+        RawTreeEntry {
+            mode: "100644",
+            name: "z-last",
+            object_kind: RawObjectKind::Blob,
+        },
+        RawTreeEntry {
+            mode: "100644",
+            name: "a-first",
+            object_kind: RawObjectKind::Blob,
+        },
+    ]);
+    let destination = fixture.root.join("unsorted-tree.git");
+
+    let import = invoke_import(&fixture.root, &source_head, &destination);
+
+    assert_helper_error(&import, "source_tree_not_sorted");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn rejects_full_unicode_casefold_collisions_before_claiming_the_destination() {
+    let (fixture, source_head) = RepositoryFixture::sha1_with_raw_tree(&[
+        RawTreeEntry {
+            mode: "100644",
+            name: "STRASSE.txt",
+            object_kind: RawObjectKind::Blob,
+        },
+        RawTreeEntry {
+            mode: "100644",
+            name: "Straße.txt",
+            object_kind: RawObjectKind::Blob,
+        },
+    ]);
+    let destination = fixture.root.join("unicode-casefold-collision.git");
+
+    let import = invoke_import(&fixture.root, &source_head, &destination);
+
+    assert_helper_error(&import, "source_path_collision");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn rejects_a_nonportable_raw_git_path_before_claiming_the_destination() {
+    let (fixture, source_head) = RepositoryFixture::sha1_with_raw_tree(&[RawTreeEntry {
+        mode: "100644",
+        name: "com¹.txt",
+        object_kind: RawObjectKind::Blob,
+    }]);
+    let destination = fixture.root.join("nonportable-path.git");
+
+    let import = invoke_import(&fixture.root, &source_head, &destination);
+
+    assert_helper_error(&import, "unsupported_source_path");
+    assert!(!destination.exists());
+}
+
+#[test]
 fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
     let fixture = RepositoryFixture::sha1_with_commit();
     fs::create_dir_all(fixture.root.join("docs")).unwrap();
@@ -546,6 +637,18 @@ struct RepositoryFixture {
     root: PathBuf,
 }
 
+#[derive(Clone, Copy)]
+enum RawObjectKind {
+    Blob,
+    Tree,
+}
+
+struct RawTreeEntry<'a> {
+    mode: &'a str,
+    name: &'a str,
+    object_kind: RawObjectKind,
+}
+
 impl RepositoryFixture {
     fn sha1_with_commit() -> Self {
         Self::sha1_with_commit_content(b"hello from sha1\n")
@@ -565,6 +668,41 @@ impl RepositoryFixture {
             "fixture",
         ]);
         fixture
+    }
+
+    fn sha1_with_raw_tree(entries: &[RawTreeEntry<'_>]) -> (Self, String) {
+        let fixture = Self::init("sha1");
+        let blob_oid = fixture.git_input_output(
+            ["hash-object", "-t", "blob", "-w", "--stdin"],
+            b"raw tree blob\n",
+        );
+        let tree_oid =
+            fixture.git_input_output(["hash-object", "-t", "tree", "-w", "--stdin"], &[]);
+        let mut raw_tree = Vec::new();
+        for entry in entries {
+            raw_tree.extend_from_slice(entry.mode.as_bytes());
+            raw_tree.push(b' ');
+            raw_tree.extend_from_slice(entry.name.as_bytes());
+            raw_tree.push(0);
+            let oid = match entry.object_kind {
+                RawObjectKind::Blob => &blob_oid,
+                RawObjectKind::Tree => &tree_oid,
+            };
+            raw_tree.extend_from_slice(&decode_hex_oid(oid));
+        }
+        let root_tree_oid = fixture.git_input_output(
+            ["hash-object", "--literally", "-t", "tree", "-w", "--stdin"],
+            &raw_tree,
+        );
+        let commit = format!(
+            "tree {root_tree_oid}\nauthor Maka Test <maka@example.invalid> 946684800 +0000\ncommitter Maka Test <maka@example.invalid> 946684800 +0000\n\nraw tree fixture\n"
+        );
+        let source_head = fixture.git_input_output(
+            ["hash-object", "-t", "commit", "-w", "--stdin"],
+            commit.as_bytes(),
+        );
+        fixture.git(["update-ref", "HEAD", &source_head]);
+        (fixture, source_head)
     }
 
     fn sha1_with_oversized_commit() -> Self {
@@ -682,6 +820,24 @@ impl RepositoryFixture {
         (fixture, claimed_head)
     }
 
+    fn sha1_with_mismatched_blob_storage() -> (Self, String) {
+        let fixture = Self::sha1_with_commit_content(b"claimed blob content\n");
+        let claimed_head = fixture.git_output(["rev-parse", "HEAD"]);
+        let claimed_blob = fixture.git_output(["rev-parse", "HEAD:hello.txt"]);
+
+        fs::write(
+            fixture.root.join("hello.txt"),
+            b"replacement blob content\n",
+        )
+        .unwrap();
+        fixture.git(["add", "hello.txt"]);
+        let replacement_blob = fixture.git_output(["rev-parse", ":hello.txt"]);
+        fixture.git(["reset", "--hard", &claimed_head]);
+
+        fixture.replace_loose_object(&claimed_blob, &replacement_blob);
+        (fixture, claimed_head)
+    }
+
     fn replace_loose_object(&self, target_oid: &str, replacement_oid: &str) {
         let target = self.loose_object_path(target_oid);
         fs::remove_file(&target).unwrap();
@@ -760,6 +916,16 @@ impl RepositoryFixture {
         );
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
+}
+
+fn decode_hex_oid(oid: &str) -> Vec<u8> {
+    oid.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).unwrap();
+            u8::from_str_radix(pair, 16).unwrap()
+        })
+        .collect()
 }
 
 #[cfg(unix)]

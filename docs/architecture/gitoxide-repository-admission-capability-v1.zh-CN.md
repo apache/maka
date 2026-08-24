@@ -93,10 +93,23 @@ capability 表示一次明确线性化点上的 immutable Git commit/tree snapsh
 6. exact commit/tree/blob checksum verification、atomic destination claim 与 deterministic zero-parent
    baseline publication。
 
-`managedTreePolicyVersion: 1` 是 portable materialization policy，而不只是 Git object import policy。
-它在所有平台统一拒绝 Windows reserved characters/control characters、device names（含 extension）、
-trailing dot/space、`.git`/`.gitattributes` 及其大小写或尾部别名，并用 NFC + case-fold collision 检查
-约束跨平台投影。后续 candidate、projection 与 tree read 必须消费同一 policy version，不能另行放宽。
+`managedTreePolicyVersion: 1` 是 **portable lexical materialization policy v1**，而不只是 Git object
+import policy。它只证明 Git tree 的词法身份满足同一套保守规则，不宣称已证明某个真实 Windows volume
+上的 path-length、8.3 alias、ACL 或大小写能力。
+
+v1 只接受 canonical Git tree ordering 以及 raw mode token `40000`、`100644`、`100755`；mode 的等价
+八进制别名和未排序 tree 都在 destination claim 前拒绝。路径统一拒绝 Windows reserved/control
+characters、device names（含 extension 与小写 superscript 形式）、trailing dot/space、`.git`、
+`.gitattributes` 及其大小写或尾部别名。collision key 的版本化算法固定为：
+
+```text
+Unicode 17.0 NFC → Unicode 16.0 Default Full Case Folding（Non-Turkic）→ Unicode 17.0 NFC
+```
+
+原路径和 folded key 各自执行单路径与累计 byte budget。后续 candidate、tree read 必须消费同一 policy
+version；真实 projection 还必须由独立的 `FilesystemMaterializationProfileV1` 在 fresh destination 上证明
+目标 filesystem 的 case/alias/path-length 能力并执行 create/post-observation，不能把本词法检查冒充为
+真实文件系统准入。
 
 仍未完成、也没有伪装完成：
 

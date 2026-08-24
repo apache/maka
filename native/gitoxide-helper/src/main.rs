@@ -25,6 +25,7 @@ use std::{
     process::ExitCode,
 };
 
+use caseless::Caseless;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
@@ -43,8 +44,10 @@ const MANAGED_TREE_POLICY_V1: ManagedTreePolicy = ManagedTreePolicy {
     max_tree_visits: 250_000,
     max_entries: 400_000,
     max_total_path_bytes: 256 * 1024 * 1024,
+    max_total_folded_path_bytes: 256 * 1024 * 1024,
     max_component_bytes: 255,
     max_relative_path_bytes: 4096,
+    max_folded_relative_path_bytes: 4096,
     max_files: MAX_IMPORT_FILES,
     max_file_bytes: MAX_IMPORT_FILE_BYTES,
     max_bytes: MAX_IMPORT_BYTES,
@@ -80,6 +83,8 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "source_blob_unavailable",
     "source_byte_limit_exceeded",
     "source_file_limit_exceeded",
+    "source_folded_path_byte_limit_exceeded",
+    "source_folded_path_length_exceeded",
     "source_head_commit_mismatch",
     "source_head_commit_identity_mismatch",
     "source_head_commit_unavailable",
@@ -94,6 +99,9 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "source_tree_invalid",
     "source_tree_object_byte_limit_exceeded",
     "source_tree_object_limit_exceeded",
+    "source_tree_noncanonical_mode",
+    "source_tree_not_sorted",
+    "source_tree_observation_mismatch",
     "source_tree_unavailable",
     "source_tree_visit_limit_exceeded",
     "unsupported_source_entry_kind",
@@ -339,6 +347,9 @@ fn import_source_head(
         MANAGED_TREE_POLICY_V1,
         &mut stats,
     )?;
+    let expected_files = stats.files;
+    let expected_bytes = stats.bytes;
+    drop(stats);
 
     assert_import_destination_parent(&destination_repository_path)?;
     let destination = claim_fresh_import_destination(&destination_repository_path)?;
@@ -361,6 +372,9 @@ fn import_source_head(
         MANAGED_TREE_POLICY_V1,
         &mut copy_stats,
     )?;
+    if copy_stats.files != expected_files || copy_stats.bytes != expected_bytes {
+        return Err("source_tree_observation_mismatch");
+    }
 
     let signature = gix::actor::SignatureRef {
         name: b"Maka Workspace Service".as_bstr(),
@@ -396,8 +410,8 @@ fn import_source_head(
         baseline_tree_oid: source_tree.to_string(),
         baseline_ref,
         managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
-        files_imported: stats.files,
-        bytes_imported: stats.bytes,
+        files_imported: copy_stats.files,
+        bytes_imported: copy_stats.bytes,
     });
     Ok(ExitCode::SUCCESS)
 }
@@ -515,8 +529,14 @@ fn walk_verified_source_tree(
     .try_into_tree()
     .map_err(|_| "source_tree_invalid")?;
     stats.enter_tree(depth, tree.data.len() as u64, policy)?;
+    assert_canonical_tree_modes(&tree.data)?;
+    let mut previous_entry = None;
     for entry in tree.iter() {
         let entry = entry.map_err(|_| "source_tree_invalid")?;
+        if previous_entry.is_some_and(|previous| previous >= entry) {
+            return Err("source_tree_not_sorted");
+        }
+        previous_entry = Some(entry);
         let component =
             std::str::from_utf8(entry.filename()).map_err(|_| "unsupported_source_path")?;
         if !is_supported_source_component(component)
@@ -582,6 +602,32 @@ fn walk_verified_source_tree(
     Ok(())
 }
 
+fn assert_canonical_tree_modes(mut data: &[u8]) -> Result<(), &'static str> {
+    const SHA1_OID_BYTES: usize = 20;
+
+    while !data.is_empty() {
+        let mode_end = data
+            .iter()
+            .position(|byte| *byte == b' ')
+            .ok_or("source_tree_invalid")?;
+        let mode = &data[..mode_end];
+        if mode != b"40000" && mode != b"100644" && mode != b"100755" {
+            return Err("source_tree_noncanonical_mode");
+        }
+        data = &data[mode_end + 1..];
+        let filename_end = data
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or("source_tree_invalid")?;
+        data = &data[filename_end + 1..];
+        if data.len() < SHA1_OID_BYTES {
+            return Err("source_tree_invalid");
+        }
+        data = &data[SHA1_OID_BYTES..];
+    }
+    Ok(())
+}
+
 fn is_supported_source_component(component: &str) -> bool {
     !component.is_empty()
         && component != "."
@@ -611,7 +657,10 @@ fn is_windows_reserved_device_name(component: &str) -> bool {
         || folded.strip_prefix("LPT").is_some_and(|suffix| {
             matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
         })
-        || matches!(stem, "COM¹" | "COM²" | "COM³" | "LPT¹" | "LPT²" | "LPT³")
+        || matches!(
+            folded.as_str(),
+            "COM¹" | "COM²" | "COM³" | "LPT¹" | "LPT²" | "LPT³"
+        )
 }
 
 #[derive(Clone, Copy)]
@@ -620,8 +669,10 @@ struct ManagedTreePolicy {
     max_tree_visits: u64,
     max_entries: u64,
     max_total_path_bytes: u64,
+    max_total_folded_path_bytes: u64,
     max_component_bytes: u64,
     max_relative_path_bytes: u64,
+    max_folded_relative_path_bytes: u64,
     max_files: u64,
     max_file_bytes: u64,
     max_bytes: u64,
@@ -635,6 +686,7 @@ struct ManagedTreeStats {
     tree_visits: u64,
     entries: u64,
     total_path_bytes: u64,
+    total_folded_path_bytes: u64,
     files: u64,
     bytes: u64,
     tree_object_bytes: u64,
@@ -683,7 +735,16 @@ impl ManagedTreeStats {
             .checked_add(path_bytes)
             .filter(|bytes| *bytes <= policy.max_total_path_bytes)
             .ok_or("source_path_byte_limit_exceeded")?;
-        let folded_path: String = relative_path.nfc().flat_map(char::to_lowercase).collect();
+        let folded_path: String = relative_path.nfc().default_case_fold().nfc().collect();
+        let folded_path_bytes = folded_path.len() as u64;
+        if folded_path_bytes > policy.max_folded_relative_path_bytes {
+            return Err("source_folded_path_length_exceeded");
+        }
+        self.total_folded_path_bytes = self
+            .total_folded_path_bytes
+            .checked_add(folded_path_bytes)
+            .filter(|bytes| *bytes <= policy.max_total_folded_path_bytes)
+            .ok_or("source_folded_path_byte_limit_exceeded")?;
         if !self.folded_paths.insert(folded_path) {
             return Err("source_path_collision");
         }
@@ -718,8 +779,10 @@ mod tests {
             max_tree_visits: 2,
             max_entries: 2,
             max_total_path_bytes: 5,
+            max_total_folded_path_bytes: 5,
             max_component_bytes: 3,
             max_relative_path_bytes: 4,
+            max_folded_relative_path_bytes: 4,
             max_files: 1,
             max_file_bytes: 3,
             max_bytes: 3,
@@ -803,12 +866,58 @@ mod tests {
             "trailing ",
             ".git.",
             ".git ",
+            "com¹",
+            "lpt².txt",
         ] {
             assert!(
                 !is_supported_source_component(component),
                 "component must be rejected by portable policy: {component:?}"
             );
         }
+    }
+
+    #[test]
+    fn managed_tree_policy_uses_full_unicode_casefold_after_nfc() {
+        let policy = MANAGED_TREE_POLICY_V1;
+        for (first, second) in [
+            ("Σ.txt", "ς.txt"),
+            ("STRASSE.txt", "Straße.txt"),
+            ("é.txt", "e\u{301}.txt"),
+        ] {
+            let mut stats = ManagedTreeStats::default();
+            assert_eq!(stats.observe_entry(first, policy), Ok(()));
+            assert_eq!(
+                stats.observe_entry(second, policy),
+                Err("source_path_collision"),
+                "paths must collide under the versioned fold key: {first:?}, {second:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_tree_policy_bounds_folded_keys_independently() {
+        let policy = ManagedTreePolicy {
+            max_relative_path_bytes: 2,
+            max_folded_relative_path_bytes: 2,
+            ..MANAGED_TREE_POLICY_V1
+        };
+        let mut stats = ManagedTreeStats::default();
+        assert_eq!(
+            stats.observe_entry("İ", policy),
+            Err("source_folded_path_length_exceeded")
+        );
+
+        let policy = ManagedTreePolicy {
+            max_total_path_bytes: 3,
+            max_total_folded_path_bytes: 3,
+            ..MANAGED_TREE_POLICY_V1
+        };
+        let mut stats = ManagedTreeStats::default();
+        assert_eq!(stats.observe_entry("İ", policy), Ok(()));
+        assert_eq!(
+            stats.observe_entry("A", policy),
+            Err("source_folded_path_byte_limit_exceeded")
+        );
     }
 }
 

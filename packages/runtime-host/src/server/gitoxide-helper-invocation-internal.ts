@@ -63,6 +63,8 @@ export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'source_blob_unavailable',
   'source_byte_limit_exceeded',
   'source_file_limit_exceeded',
+  'source_folded_path_byte_limit_exceeded',
+  'source_folded_path_length_exceeded',
   'source_head_commit_mismatch',
   'source_head_commit_identity_mismatch',
   'source_head_commit_unavailable',
@@ -77,6 +79,9 @@ export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'source_tree_invalid',
   'source_tree_object_byte_limit_exceeded',
   'source_tree_object_limit_exceeded',
+  'source_tree_noncanonical_mode',
+  'source_tree_not_sorted',
+  'source_tree_observation_mismatch',
   'source_tree_unavailable',
   'source_tree_visit_limit_exceeded',
   'unsupported_source_entry_kind',
@@ -242,7 +247,11 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
     abortSignal: input.abortSignal,
     timeoutMs: GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.importSourceHeadMs,
   });
-  return decodeSourceImportOutcome(outcome);
+  return decodeSourceImportOutcome(outcome, {
+    expectedSourceHeadCommitOid: input.expectedSourceHeadCommitOid,
+    baselineRef: input.baselineRef,
+    managedTreePolicyVersion: input.managedTreePolicyVersion,
+  });
 }
 
 interface HelperProcessOutcome {
@@ -412,6 +421,11 @@ function decodeOutcome(outcome: HelperProcessOutcome): GitoxideRepositoryInspect
 
 function decodeSourceImportOutcome(
   outcome: HelperProcessOutcome,
+  expected: {
+    readonly expectedSourceHeadCommitOid: string;
+    readonly baselineRef: string;
+    readonly managedTreePolicyVersion: 1;
+  },
 ): GitoxideSourceImportObservationV1 {
   if (outcome.signal !== null) {
     throw new GitoxideHelperInvocationError(
@@ -425,7 +439,9 @@ function decodeSourceImportOutcome(
   } catch {
     throw protocolInvalid('Gitoxide helper stdout is not one JSON response');
   }
-  if (outcome.exitCode === 0 && isSourceImportObservation(value)) return Object.freeze(value);
+  if (outcome.exitCode === 0 && isSourceImportObservation(value, expected)) {
+    return Object.freeze(value);
+  }
   if (outcome.exitCode === 1 && isHelperError(value)) {
     throw new GitoxideHelperInvocationError(
       'gitoxide_helper_operation_failed',
@@ -439,7 +455,14 @@ function decodeSourceImportOutcome(
   );
 }
 
-function isSourceImportObservation(value: unknown): value is GitoxideSourceImportObservationV1 {
+function isSourceImportObservation(
+  value: unknown,
+  expected: {
+    readonly expectedSourceHeadCommitOid: string;
+    readonly baselineRef: string;
+    readonly managedTreePolicyVersion: 1;
+  },
+): value is GitoxideSourceImportObservationV1 {
   return (
     hasExactKeys(value, [
       'protocolVersion',
@@ -459,6 +482,7 @@ function isSourceImportObservation(value: unknown): value is GitoxideSourceImpor
     value.objectFormat === 'sha1' &&
     typeof value.sourceHeadCommitOid === 'string' &&
     SHA1_OID_PATTERN.test(value.sourceHeadCommitOid) &&
+    value.sourceHeadCommitOid === expected.expectedSourceHeadCommitOid &&
     typeof value.sourceTreeOid === 'string' &&
     SHA1_OID_PATTERN.test(value.sourceTreeOid) &&
     typeof value.baselineCommitOid === 'string' &&
@@ -468,7 +492,8 @@ function isSourceImportObservation(value: unknown): value is GitoxideSourceImpor
     value.baselineTreeOid === value.sourceTreeOid &&
     typeof value.baselineRef === 'string' &&
     MAKA_REF_PATTERN.test(value.baselineRef) &&
-    value.managedTreePolicyVersion === 1 &&
+    value.baselineRef === expected.baselineRef &&
+    value.managedTreePolicyVersion === expected.managedTreePolicyVersion &&
     Number.isSafeInteger(value.filesImported) &&
     (value.filesImported as number) >= 0 &&
     Number.isSafeInteger(value.bytesImported) &&
