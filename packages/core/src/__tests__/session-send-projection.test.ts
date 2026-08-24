@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -166,8 +185,8 @@ describe('projectSessionSendOutcome — silent rebind walk', () => {
     const outcome = projectSessionSendOutcome(
       input({
         session: {
-          backend: 'fake',
-          llmConnectionSlug: 'fake',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deleted-connection',
           model: 'fake-model',
           connectionLocked: false,
         },
@@ -180,8 +199,8 @@ describe('projectSessionSendOutcome — silent rebind walk', () => {
     const outcome = projectSessionSendOutcome(
       input({
         session: {
-          backend: 'fake',
-          llmConnectionSlug: 'fake',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deleted-connection',
           model: 'fake-model',
           connectionLocked: false,
         },
@@ -203,7 +222,11 @@ describe('projectSessionSendOutcome — silent rebind walk', () => {
     });
   });
 
-  it('rebind requires a secret on the candidate connection', () => {
+  it('a retired backend never rebinds, even unlocked with a ready connection available', () => {
+    // #3211: activation dispatches off the session header's own `backend`, so
+    // pointing this session at a healthy connection would still leave `'fake'`
+    // in the header and still be refused. Promising a rebind nothing performs
+    // is what pushed the rail and the composer to read `backend` directly.
     const outcome = projectSessionSendOutcome(
       input({
         session: {
@@ -212,11 +235,33 @@ describe('projectSessionSendOutcome — silent rebind walk', () => {
           model: 'fake-model',
           connectionLocked: false,
         },
+      }),
+    );
+    assert.deepEqual(outcome, {
+      kind: 'blocked',
+      reason: 'fake_backend',
+      connectionLocked: false,
+    });
+  });
+
+  it('rebind requires a secret on the candidate connection', () => {
+    const outcome = projectSessionSendOutcome(
+      input({
+        session: {
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deleted-connection',
+          model: 'fake-model',
+          connectionLocked: false,
+        },
         hasSecret: () => false,
       }),
     );
     // Default exists and is enabled but has no key → send still fails.
-    assert.deepEqual(outcome, { kind: 'blocked', reason: 'fake_backend', connectionLocked: false });
+    assert.deepEqual(outcome, {
+      kind: 'blocked',
+      reason: 'connection_missing',
+      connectionLocked: false,
+    });
   });
 
   it('non-rebindable failure blocks even when another ready connection exists', () => {
@@ -236,8 +281,8 @@ describe('projectSessionSendOutcome — silent rebind walk', () => {
     const outcome = projectSessionSendOutcome(
       input({
         session: {
-          backend: 'fake',
-          llmConnectionSlug: 'fake',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deleted-connection',
           model: 'fake-model',
           connectionLocked: false,
         },
@@ -253,8 +298,8 @@ describe('projectSessionSendOutcome — codex normalization', () => {
     const outcome = projectSessionSendOutcome(
       input({
         session: {
-          backend: 'fake',
-          llmConnectionSlug: 'fake',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deleted-connection',
           model: 'fake-model',
           connectionLocked: false,
         },

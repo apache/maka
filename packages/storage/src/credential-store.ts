@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { withFileUpdateLock } from './file-update-lock.js';
 
@@ -236,19 +255,36 @@ async function ensureSecretDir(dir: string): Promise<void> {
 /**
  * Owner-only atomic write for a credentials file: a 0700 dir, an exclusive
  * 0600 temp ('wx'/O_EXCL so we never follow a pre-planted symlink at a
- * predictable path), 0600 re-enforced, an atomic rename, and temp cleanup on
- * failure.
+ * predictable path), a durability fence before and after the atomic rename,
+ * and temp cleanup on failure.
  */
 async function writeSecretFileAtomic(path: string, contents: string): Promise<void> {
   await ensureSecretDir(dirname(path));
   const tempPath = `${path}.${randomUUID()}.tmp`;
   try {
-    await writeFile(tempPath, contents, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    const handle = await open(tempPath, 'wx', 0o600);
+    try {
+      await handle.writeFile(contents, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await chmodStrict(tempPath, 0o600);
     await rename(tempPath, path);
+    await syncDirectory(dirname(path));
   } catch (error) {
     await rm(tempPath, { force: true });
     throw error;
+  }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const handle = await open(path, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }
 

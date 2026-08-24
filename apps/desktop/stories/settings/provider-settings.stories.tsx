@@ -1,5 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, userEvent, within } from 'storybook/test';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core';
 import { ToastProvider } from '@maka/ui';
 import type {
@@ -28,7 +48,14 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
-type AutoOpenTarget = 'detail' | 'add' | 'catalog' | 'oauth' | 'xai-device';
+type AutoOpenTarget =
+  | 'detail'
+  | 'detail-static'
+  | 'detail-relay'
+  | 'add'
+  | 'catalog'
+  | 'oauth'
+  | 'xai-device';
 
 function makeConnection(input: {
   slug: string;
@@ -98,6 +125,54 @@ const configuredConnections = [
     defaultModel: 'qwen2.5-coder',
     lastTestStatus: 'verified',
   }),
+];
+
+// A provider whose key cannot call a model-list endpoint: refresh replays the
+// array this build shipped, so 添加模型 replaces 更新模型目录 as the only way the
+// catalog can grow. `deepseek-v4-pro-beta` is a model added that way — absent
+// from `models`, declared in `relayModelProfiles` (#1584).
+const staticCatalogConnections = [
+  {
+    ...makeConnection({
+      slug: 'ark-plan',
+      name: 'Ark Agent Plan',
+      providerType: 'volcengine-agent-plan',
+      defaultModel: 'doubao-seed-2.1-turbo',
+      lastTestStatus: 'verified',
+      models: [{ id: 'doubao-seed-2.1-turbo' }, { id: 'kimi-k2.6' }],
+      modelSource: 'fetched',
+    }),
+    enabledModelIds: ['doubao-seed-2.1-turbo', 'deepseek-v4-pro-beta'],
+    relayModelProfiles: { 'deepseek-v4-pro-beta': { contextWindow: 262_144 } },
+  },
+];
+
+// A custom relay fronting one model family. Capability declarations are a
+// relay-only surface — a built-in provider's thinking support comes from
+// bundled metadata — and the family shares one `reasoning_effort` vocabulary,
+// which is the case the bulk control exists for. `deepseek-r2` already
+// declares two levels so the story shows partial coverage, not just the
+// all-or-nothing ends.
+const relayConnections = [
+  {
+    ...makeConnection({
+      slug: 'relay-house',
+      name: 'House Relay',
+      providerType: 'openai-compatible',
+      baseUrl: 'https://relay.example.com/v1',
+      defaultModel: 'deepseek-r2',
+      lastTestStatus: 'verified',
+      models: [
+        { id: 'deepseek-r2' },
+        { id: 'deepseek-v4' },
+        { id: 'qwen3-max-thinking' },
+        { id: 'kimi-k2.6' },
+      ],
+      modelSource: 'fetched',
+    }),
+    enabledModelIds: ['deepseek-r2', 'deepseek-v4', 'qwen3-max-thinking', 'kimi-k2.6'],
+    relayModelProfiles: { 'deepseek-r2': { thinkingLevels: ['low', 'high'] as const } },
+  },
 ];
 
 const problemConnections = [
@@ -223,19 +298,6 @@ function installSubscriptionFixtures() {
   };
   target.maka = {
     ...(target.maka ?? {}),
-    claudeSubscription: {
-      getAccountState: async () => ({
-        runtimeState: 'authenticated',
-        profile: { email: 'claude@example.com' },
-      }),
-      isExperimentalEnabled: async () => true,
-      getAuthUrl: async () => ({ authRequestId: 'storybook-claude', stateHint: 'storybook' }),
-      openAuthUrl: async () => ({ ok: true }),
-      completeAuthorization: async () => ({ ok: true }),
-      cancelAuthorization: async () => ({ ok: true }),
-      logout: async () => ({ ok: true }),
-      refreshQuota: async () => ({ ok: true }),
-    },
     openAiCodex: browserSubscriptionFixture({
       runtimeState: 'authenticated',
       email: 'codex@example.com',
@@ -323,7 +385,7 @@ function ProviderStoryFrame(props: {
               window's width and hides exactly the layout question a page-level
               form raises. */}
           <Layout
-            height="fill"
+            height="auto"
             padding={0}
             contentWidth={920}
             header={(
@@ -336,7 +398,7 @@ function ProviderStoryFrame(props: {
               </LayoutHeader>
             )}
             content={(
-              <LayoutContent padding={6}>
+              <LayoutContent padding={6} isScrollable={false}>
                 <SettingsPage className="settingsModelsPage">
                   <ProvidersPanel bridge={props.bridge} />
                 </SettingsPage>
@@ -364,10 +426,12 @@ function reachCatalog(root: HTMLElement): HTMLElement | null {
 }
 
 function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean {
-  if (target === 'detail') {
+  if (target === 'detail' || target === 'detail-static' || target === 'detail-relay') {
     // ListItem's clickable surface is an invisible button inside the row, so
     // the row is located by its slug hook and the button taken from within it.
-    const row = root.querySelector<HTMLElement>('[data-connection-slug="zai-live"]');
+    const slug =
+      target === 'detail' ? 'zai-live' : target === 'detail-static' ? 'ark-plan' : 'relay-house';
+    const row = root.querySelector<HTMLElement>(`[data-connection-slug="${slug}"]`);
     const detailButton = row?.querySelector('button') ?? null;
     detailButton?.click();
     return Boolean(detailButton);
@@ -430,6 +494,57 @@ export const ConnectionDetailPage: Story = {
       autoOpen="detail"
     />
   ),
+};
+
+// Real path: 设置 → 模型 → click a connection whose provider has no model-list
+// endpoint — 添加模型 stands where 更新模型目录 would, and the capability section
+// lists the models Maka's bundled metadata cannot describe.
+export const StaticCatalogConnectionDetail: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: staticCatalogConnections, defaultSlug: 'ark-plan' })}
+      autoOpen="detail-static"
+    />
+  ),
+};
+
+// Real path: 设置 → 模型 → click a custom relay — the capability section with
+// several enabled models, where 批量设置思考档位 sits above the per-model rows it
+// writes into. Opening its menu shows each level's coverage across the table:
+// `low` and `high` on 1 of 4, everything else on none.
+export const RelayConnectionDetail: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: relayConnections, defaultSlug: 'relay-house' })}
+      autoOpen="detail-relay"
+    />
+  ),
+  // Opens the batch menu and asserts that partial coverage reaches assistive
+  // technology, not only the eye. The item carries its own `aria-label`, which
+  // replaces the accessible name the visible description would otherwise have
+  // joined — and the menu item does not wire `description` to
+  // `aria-describedby`. Without an explicit description, "1/4 个模型" and
+  // "全部未声明" both reach a screen reader as an unchecked box with the same
+  // name, which is exactly the state the count exists to distinguish.
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body);
+    const trigger = await body.findByRole('button', { name: /批量设置思考档位/ });
+    await userEvent.click(trigger);
+
+    // `low` is declared by one of the four models; `minimal` by none.
+    const partial = await body.findByRole('menuitemcheckbox', {
+      name: '批量设置思考档位 low',
+    });
+    const none = await body.findByRole('menuitemcheckbox', {
+      name: '批量设置思考档位 minimal',
+    });
+
+    // Both are unchecked — coverage is the only thing separating them.
+    await expect(partial).toHaveAttribute('aria-checked', 'false');
+    await expect(none).toHaveAttribute('aria-checked', 'false');
+    await expect(partial).toHaveAttribute('aria-description', '1/4 个模型');
+    await expect(none).toHaveAttribute('aria-description', '全部未声明');
+  },
 };
 
 // Real path: 设置 → 模型 → 添加连接 — level two, the provider catalog.

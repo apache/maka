@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { z } from 'zod';
@@ -99,6 +118,38 @@ describe('ToolAvailabilityRuntime — economy mode', () => {
       .providerTools.find((t) => t.name === LOAD_TOOLS_NAME);
     assert.ok(connector);
     await assert.rejects(async () => connector!.impl({ group: 'nope' }, ctx), /Unknown tool group/);
+  });
+
+  test('connector returns presentation metadata with the loaded tool ids', async () => {
+    const connector = runtime(true)
+      .prepare([])
+      .providerTools.find((t) => t.name === LOAD_TOOLS_NAME);
+    assert.ok(connector);
+    assert.deepEqual(await connector.impl({ group: 'rive' }, ctx), {
+      loaded: ['rive_run'],
+      group: {
+        id: 'rive',
+        label: 'Rive',
+      },
+    });
+    assert.deepEqual(await connector.impl({ group: 'docs' }, ctx), {
+      loaded: ['docs_edit', 'docs_read'],
+      group: {
+        id: 'docs',
+        description: 'Document tools',
+      },
+    });
+    assert.deepEqual(
+      await connector.toModelOutput?.({
+        toolCallId: 'tc',
+        input: { group: 'rive' },
+        output: await connector.impl({ group: 'rive' }, ctx),
+      }),
+      {
+        type: 'json',
+        value: { loaded: ['rive_run'] },
+      },
+    );
   });
 });
 

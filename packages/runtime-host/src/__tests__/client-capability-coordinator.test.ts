@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
@@ -133,18 +152,20 @@ describe('Host Client Capability coordinator', () => {
                 serverId: 'remote',
                 name: 'inspect',
                 inputSchema: { type: 'object' },
+                activityKind: 'computer',
               },
             ],
           },
         ],
       },
-      { ...connectionContext('connection-a'), surface: 'capability-provider' },
+      connectionContext('connection-a'),
     );
     assert.equal(replaced.ok, true);
     assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
     const snapshot = coordinator.snapshotForSession('session-a');
     assert.ok(snapshot);
     assert.equal(snapshot.tools[0]?.categoryHint, 'client_capability');
+    assert.equal(snapshot.tools[0]?.activityKind, 'tool');
     await invoke(snapshot.tools[0]);
     assert.ok(isRecord(observedCall));
     assert.equal(Object.hasOwn(observedCall, 'cwd'), false);
@@ -194,17 +215,15 @@ describe('Host Client Capability coordinator', () => {
               serverId: 'remote',
               name: 'inspect',
               inputSchema: { type: 'object' },
+              activityKind: 'computer',
             },
           ],
         },
       ],
     };
-    const providerContext = {
-      ...connectionContext('connection-a'),
-      surface: 'capability-provider' as const,
-    };
+    const trustedContext = connectionContext('connection-a');
     assert.equal(
-      (await coordinator.handlers['client.capability.replace'](input, providerContext)).ok,
+      (await coordinator.handlers['client.capability.replace'](input, trustedContext)).ok,
       true,
     );
     assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
@@ -212,6 +231,7 @@ describe('Host Client Capability coordinator', () => {
     assert.ok(snapshot);
     const tool = snapshot.tools[0] ?? assert.fail('Expected trusted provider tool');
     assert.equal(tool.categoryHint, 'custom_tool');
+    assert.equal(tool.activityKind, 'computer');
     const result = await tool.impl(
       {},
       {
@@ -237,7 +257,7 @@ describe('Host Client Capability coordinator', () => {
         registrationId: 'registration-b',
         offers: input.offers.map((offer) => ({ ...offer, affinity: 'call' as const })),
       },
-      providerContext,
+      trustedContext,
     );
     assert.equal(rejected.ok, false);
     snapshot.release();
@@ -1184,7 +1204,6 @@ function connectionContext(connectionId: string) {
   return {
     hostEpoch: 'host',
     connectionId,
-    surface: 'desktop' as const,
     principal: 'local_os_user' as const,
     acquireResidency: () => ({ release: () => undefined }),
   };

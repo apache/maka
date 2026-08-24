@@ -1,8 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   decodeProviderType,
   decodeRuntimePolicyEntityId,
+  normalizeCatalogConnectionBaseUrl,
   normalizeConnectionCatalogEntryUpdateForProvider,
   normalizeConnectionModelDiscoveryResult,
   normalizeCredentialSecret,
@@ -32,6 +52,7 @@ export interface ConnectionOnboardingTransactionInput {
   readonly connectionId: unknown;
   readonly providerType: unknown;
   readonly suppliedSecret: unknown;
+  readonly baseUrl: unknown;
   readonly enabledModelIds: unknown;
   readonly discovery: unknown;
   readonly invalidateLastTest: unknown;
@@ -42,6 +63,7 @@ export interface ConnectionOnboardingIntent {
   readonly connectionId: string;
   readonly providerType: ProviderType;
   readonly suppliedSecret: string | null;
+  readonly baseUrl: string | null;
   readonly enabledModelIds: readonly string[];
   readonly discovery: ConnectionModelDiscoveryResult;
   readonly invalidateLastTest: boolean;
@@ -61,17 +83,27 @@ export function prepareConnectionOnboardingIntent(
   }
   const definition = PROVIDER_DEFAULTS[providerType];
   const discovery = decode(() => normalizeConnectionModelDiscoveryResult(input.discovery));
-  if (discovery.source !== 'fetched' || discovery.models.length === 0) {
+  // Non-empty is the requirement; `source` is write provenance, not a
+  // quality bar. A provider without a model-list endpoint runs discovery by
+  // replaying the array this build shipped, and that inventory onboards a
+  // connection exactly as well (#1584).
+  if (discovery.models.length === 0) {
     throw codecError(
       source === 'persisted' ? 'invalid_document' : 'invalid_connection_input',
-      'Onboarding requires a non-empty fetched model inventory',
+      'Onboarding requires a non-empty model inventory',
     );
   }
+  // Legacy intents predate the field (`undefined` when replayed) and mean
+  // the same thing as an explicit null: no endpoint override.
+  const baseUrl =
+    input.baseUrl === null || input.baseUrl === undefined
+      ? null
+      : (decode(() => normalizeCatalogConnectionBaseUrl(input.baseUrl, providerType)) ?? null);
   const normalized = decode(() =>
     normalizeConnectionCatalogEntryUpdateForProvider(
       {
         name: definition.label,
-        ...(definition.baseUrl ? { baseUrl: definition.baseUrl } : {}),
+        ...((baseUrl ?? definition.baseUrl) ? { baseUrl: baseUrl ?? definition.baseUrl } : {}),
         enabled: true,
         enabledModelIds: input.enabledModelIds,
       },
@@ -105,6 +137,7 @@ export function prepareConnectionOnboardingIntent(
     connectionId: decode(() => decodeRuntimePolicyEntityId(input.connectionId)),
     providerType,
     suppliedSecret,
+    baseUrl,
     enabledModelIds: normalized.enabledModelIds,
     discovery,
     invalidateLastTest: input.invalidateLastTest,
@@ -116,15 +149,32 @@ export async function readConnectionOnboardingIntent(
 ): Promise<ConnectionOnboardingIntent | undefined> {
   const value = await readBoundedJsonDocument(root, FILE, MAX_BYTES);
   if (value === undefined) return undefined;
-  const raw = record(value, FILE, 'invalid_document', [
-    'schemaVersion',
-    'connectionId',
-    'providerType',
-    'suppliedSecret',
-    'enabledModelIds',
-    'discovery',
-    'invalidateLastTest',
-  ]);
+  // `baseUrl` is allowed but not required: an intent journaled by a build
+  // that predates the field must still replay.
+  const raw = record(
+    value,
+    FILE,
+    'invalid_document',
+    [
+      'schemaVersion',
+      'connectionId',
+      'providerType',
+      'suppliedSecret',
+      'baseUrl',
+      'enabledModelIds',
+      'discovery',
+      'invalidateLastTest',
+    ],
+    [
+      'schemaVersion',
+      'connectionId',
+      'providerType',
+      'suppliedSecret',
+      'enabledModelIds',
+      'discovery',
+      'invalidateLastTest',
+    ],
+  );
   if (raw.schemaVersion !== SCHEMA_VERSION) {
     throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
   }
@@ -133,6 +183,7 @@ export async function readConnectionOnboardingIntent(
       providerType: raw.providerType,
       connectionId: raw.connectionId,
       suppliedSecret: raw.suppliedSecret,
+      baseUrl: raw.baseUrl,
       enabledModelIds: raw.enabledModelIds,
       discovery: raw.discovery,
       invalidateLastTest: raw.invalidateLastTest,

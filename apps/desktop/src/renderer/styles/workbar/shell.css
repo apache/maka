@@ -1,0 +1,330 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+/* Chat detail surface — unified session workbar + turn search-highlight +
+   session-branch banner. Relocated from settings/models.css (was misplaced in the
+   model-catalog file) — issue #546 PR1, zero visual change. */
+/* ──────────────────────────────────────────────────────────────────────── */
+/* SessionWorkbar — resizable Tasks / Browser / Files auxiliary workspace.  */
+/* The shell owns its visibility and width; tab contents fill this surface. */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+.maka-detail-with-artifacts {
+  display: grid;
+  grid-template-areas:
+    "main right-handle right"
+    "bottom-handle right-handle right"
+    "bottom right-handle right";
+  grid-template-columns: minmax(0, 1fr) 0 auto;
+  grid-template-rows: minmax(0, 1fr) 0 auto;
+  flex: 1 1 auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.maka-detail-with-artifacts > .mainColumn {
+  grid-area: main;
+  min-width: 0;
+  min-height: 0;
+}
+
+.maka-workbar-layout-vars,
+.maka-workbar-workspace-contents {
+  display: contents;
+}
+
+.maka-session-workbar {
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: var(--maka-plate-titlebar-clearance) minmax(0, 1fr);
+  /* Plate, on the same terms as the conversation beside it: same surface and
+     same corner. The right workbar's tab toolbar owns the shared titlebar band
+     instead of starting below it, so tabs and the panel toggle form one row. */
+  background: var(--agents-content-area-bg);
+  border-radius: var(--radius-modal);
+  box-sizing: border-box;
+}
+
+.maka-session-workbar[data-placement="right"] {
+  grid-area: right;
+  width: var(--maka-session-workbar-width, 480px);
+  min-width: 320px;
+  max-width: 600px;
+  margin-left: var(--agents-content-area-gap);
+}
+
+.maka-session-workbar[data-placement="bottom"] {
+  grid-area: bottom;
+  width: 100%;
+  height: var(--maka-session-bottom-panel-height, 300px);
+  min-height: 180px;
+  max-height: 520px;
+  margin-top: var(--agents-content-area-gap);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.maka-session-workbar[data-collapsed] {
+  display: none;
+}
+
+.maka-workbar-resize-handle-right {
+  grid-area: right-handle;
+}
+
+.maka-workbar-resize-handle-bottom {
+  grid-area: bottom-handle;
+}
+
+.maka-session-workbar-panel[data-overlay] {
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+  background: var(--agents-content-area-bg);
+  border-radius: var(--radius-modal);
+  box-sizing: border-box;
+}
+
+.maka-session-workbar-panel[data-overlay][data-placement="right"] {
+  grid-area: right;
+  width: var(--maka-session-workbar-width, 480px);
+  min-width: 320px;
+  max-width: 600px;
+  margin-left: var(--agents-content-area-gap);
+  padding-top: var(--maka-plate-titlebar-clearance);
+}
+
+.maka-session-workbar-panel[data-overlay][data-placement="bottom"] {
+  grid-area: bottom;
+  width: 100%;
+  height: var(--maka-session-bottom-panel-height, 300px);
+  min-height: 180px;
+  max-height: 520px;
+  margin-top: var(--agents-content-area-gap);
+  padding-top: var(--size-element-sm);
+}
+
+.maka-session-workbar-toolbar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.maka-session-workbar[data-placement="right"] > .maka-session-workbar-toolbar {
+  /* The window titlebar is a transparent drag overlay at z-titlebar. This
+     panel-local toolbar intentionally occupies the same band, so it must sit
+     above that hit-test surface while its empty space remains draggable. */
+  z-index: calc(var(--z-titlebar) + 1);
+  height: var(--maka-plate-titlebar-clearance);
+  padding-inline: var(--space-2)
+    calc(var(--space-6) + var(--maka-titlebar-overlay-right-width));
+  -webkit-app-region: drag;
+}
+
+.maka-session-workbar[data-placement="right"]
+  > .maka-session-workbar-toolbar
+  :is(button, [role="button"], [role="tab"]) {
+  -webkit-app-region: no-drag;
+}
+
+.maka-session-workbar[data-placement="bottom"] > .maka-session-workbar-toolbar {
+  padding: var(--space-2) var(--space-4);
+}
+
+.maka-session-workbar > .maka-lazy-fallback {
+  grid-row: 2;
+}
+
+.maka-workbar-tab-strip {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.maka-workbar-tab-list {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline: var(--space-1);
+  scrollbar-width: none;
+}
+
+.maka-workbar-tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+.maka-workbar-tab-context {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.maka-workbar-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 0;
+  height: var(--size-element-sm);
+  border-radius: var(--radius-element);
+  color: var(--foreground-secondary);
+  touch-action: none;
+  user-select: none;
+  transition:
+    background var(--duration-quick) var(--ease-out-strong),
+    color var(--duration-quick) var(--ease-out-strong);
+}
+
+.maka-workbar-tab:hover,
+.maka-workbar-tab[data-active] {
+  background: var(--color-overlay-hover);
+  color: var(--foreground);
+}
+
+.maka-workbar-tab[data-active]::after {
+  position: absolute;
+  right: var(--space-2);
+  bottom: -1px;
+  left: var(--space-2);
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  content: "";
+}
+
+.maka-workbar-tab[data-dragging] {
+  z-index: 2;
+  opacity: 0.72;
+  box-shadow: var(--shadow-low);
+}
+
+.maka-workbar-tab[data-preparing] {
+  cursor: progress;
+}
+
+.maka-workbar-tab-icon {
+  width: var(--icon-control);
+  height: var(--icon-control);
+  flex: 0 0 auto;
+}
+
+.maka-workbar-tab-spinner {
+  animation: maka-spin 1s linear infinite;
+}
+
+.maka-workbar-tab-select {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: var(--maka-text-supporting);
+  box-shadow: none;
+}
+
+.maka-workbar-tab[data-active] .maka-workbar-tab-select {
+  font-weight: var(--font-weight-semibold);
+}
+
+.maka-workbar-tab-select:focus-visible {
+  border-radius: var(--radius-element);
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: calc(-1 * var(--focus-ring-width));
+}
+
+.maka-workbar-tab[data-preview] .maka-workbar-tab-label {
+  font-style: italic;
+}
+
+.maka-workbar-tab-label {
+  overflow: hidden;
+  max-width: 112px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-workbar-tab-close {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  margin-right: 1px;
+}
+
+.maka-workbar-new-tab {
+  flex: 0 0 auto;
+  margin-left: var(--space-1);
+}
+
+.maka-workbar-panel-toggle {
+  flex: 0 0 auto;
+  margin-left: var(--space-1);
+}
+
+.maka-session-workbar-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Section sets its own `display`, so the attribute needs the override. */
+.maka-session-workbar-panel[hidden] { display: none; }
+
+.maka-workbar-panel-loading {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  min-height: 0;
+  color: var(--muted-foreground);
+}
+
+.maka-workbar-launcher {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+}
+
+.maka-workbar-launcher-frame {
+  width: 100%;
+  max-width: 360px;
+  min-width: 0;
+}
+
+.maka-workbar-launcher-list {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}

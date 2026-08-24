@@ -1,9 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Dispatch, SetStateAction } from 'react';
 import type { SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import { applyTheme } from './theme';
-import type { SessionWorkbarTabKind } from './session-workbar-tabs';
+import type { SessionWorkbarTabKind } from './features/workbar';
 
 export interface AppShellE2eFixtureActions {
   applyE2eFixture(): Promise<void>;
@@ -16,12 +35,14 @@ export function createAppShellE2eFixtureActions(options: {
   setNavSelection: Dispatch<SetStateAction<NavSelection>>;
   setSearchModalOpen: Dispatch<SetStateAction<boolean>>;
   setSessionListCollapsed: Dispatch<SetStateAction<boolean>>;
-  setWorkbarCollapsed: Dispatch<SetStateAction<boolean>>;
-  openWorkbarTab: (
-    kind: Exclude<SessionWorkbarTabKind, 'side-chat'>,
-    placement?: 'right' | 'bottom',
-    options?: { preview?: boolean },
-  ) => void;
+  workbar: {
+    rightCollapsed: boolean;
+    toggleRight(): void;
+    openTool(
+      kind: SessionWorkbarTabKind,
+      placement?: 'right' | 'bottom',
+    ): void;
+  };
   setThemePref: Dispatch<SetStateAction<ThemePreference>>;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
 }): AppShellE2eFixtureActions {
@@ -32,8 +53,7 @@ export function createAppShellE2eFixtureActions(options: {
     setNavSelection,
     setSearchModalOpen,
     setSessionListCollapsed,
-    setWorkbarCollapsed,
-    openWorkbarTab,
+    workbar,
     setThemePref,
     setUiLocaleOverride,
   } = options;
@@ -103,7 +123,12 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.sidebarCollapsed !== undefined) {
       setSessionListCollapsed(state.sidebarCollapsed);
     }
-    if (state.workbarCollapsed !== undefined) setWorkbarCollapsed(state.workbarCollapsed);
+    if (
+      state.workbarCollapsed !== undefined &&
+      state.workbarCollapsed !== workbar.rightCollapsed
+    ) {
+      workbar.toggleRight();
+    }
     if (
       state.workbarTab === 'review' ||
       state.workbarTab === 'terminal' ||
@@ -112,7 +137,7 @@ export function createAppShellE2eFixtureActions(options: {
       state.workbarTab === 'files' ||
       state.workbarTab === 'inspector'
     ) {
-      openWorkbarTab(state.workbarTab, 'right');
+      workbar.openTool(state.workbarTab, 'right');
     }
     if (state.openSettingsSection) {
       openSettingsSection(state.openSettingsSection);

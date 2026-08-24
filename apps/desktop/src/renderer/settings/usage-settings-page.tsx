@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useMemo, useState, type ReactNode } from 'react';
 import {
   Card,
@@ -89,9 +108,10 @@ export function UsageSettingsPage(props: {
   };
 
   async function setRange(range: UsageRange) {
-    const saved = await updateUsage({ range });
-    if (!saved || !usagePageMountedRef.current) return;
-    await props.onReload(range);
+    // Persist only: the surface refetches when the persisted range lands
+    // (the same trigger that reloads a Settings window restored directly
+    // onto this page), so a second fetch here would just race it.
+    await updateUsage({ range });
   }
 
   function updateUsage(patch: Partial<AppSettings['usage']>): Promise<boolean> {
@@ -304,14 +324,14 @@ function UsageRequestsPanel(props: {
       <UsageStatsTable
         ariaLabel={props.copy.tables.requestsAria}
         columns={[
-          { header: props.copy.tables.requestHeaders[0] },
-          { header: props.copy.tables.requestHeaders[1] },
+          { header: props.copy.tables.requestHeaders[0], width: 192 },
+          { header: props.copy.tables.requestHeaders[1], width: 72 },
           { header: props.copy.tables.requestHeaders[2], grow: true },
           { header: props.copy.tables.requestHeaders[3] },
           { header: props.copy.tables.requestHeaders[4], numeric: true },
           { header: props.copy.tables.requestHeaders[5], numeric: true },
           { header: props.copy.tables.requestHeaders[6], numeric: true },
-          { header: props.copy.tables.requestHeaders[7] },
+          { header: props.copy.tables.requestHeaders[7], width: 72 },
         ]}
         rows={props.logs.map((row) => [
           new Date(row.ts).toLocaleString(uiLocaleToIntlLocale(props.locale)),
@@ -449,18 +469,33 @@ interface UsageColumn {
   header: string;
   numeric?: boolean;
   grow?: boolean;
+  width?: number;
 }
 
-type UsageTableRow = Record<string, unknown> & {
-  id: number;
-  cells: Array<ReactNode>;
-};
+type UsageTableRow = Record<string, unknown> & { id: number };
+
+function usageCellNeedsCustomRenderer(value: ReactNode) {
+  return value !== null
+    && value !== undefined
+    && !['string', 'number', 'boolean', 'bigint'].includes(typeof value);
+}
 
 const usageTablePlugins = {
-  rowHeader: {
-    transformBodyCell: (cell, _column, _row, columnIndex) => columnIndex === 0
-      ? { ...cell, htmlProps: { ...cell.htmlProps, role: 'rowheader' } }
-      : cell,
+  cellSemantics: {
+    transformBodyCell: (cell, column, _row, columnIndex) => ({
+      ...cell,
+      htmlProps: {
+        ...cell.htmlProps,
+        ...(columnIndex === 0 ? { role: 'rowheader' as const } : {}),
+        ...(column.align === 'end'
+          ? {
+              className: [cell.htmlProps.className, 'settingsUsageNumericCell']
+                .filter(Boolean)
+                .join(' '),
+            }
+          : {}),
+      },
+    }),
   },
 } satisfies Record<string, TablePlugin<UsageTableRow>>;
 
@@ -490,18 +525,25 @@ function UsageStatsTable(props: {
       />
     );
   }
-  const data: UsageTableRow[] = props.rows.map((cells, id) => ({ id, cells }));
-  const columns: Array<TableColumn<UsageTableRow>> = props.columns.map((column, index) => ({
-    key: `cell-${index}`,
-    header: column.header,
-    align: column.numeric ? 'end' : 'start',
-    width: column.grow ? proportional(1) : pixel(column.numeric ? 88 : 120),
-    renderCell: (row) => (
-      <span className={column.numeric ? 'settingsUsageNumericCell' : undefined}>
-        {row.cells[index]}
-      </span>
-    ),
+  const data: UsageTableRow[] = props.rows.map((cells, id) => ({
+    id,
+    ...Object.fromEntries(cells.map((cell, index) => [`cell-${index}`, cell])),
   }));
+  const columns: Array<TableColumn<UsageTableRow>> = props.columns.map((column, index) => {
+    const key = `cell-${index}`;
+    const needsCustomRenderer = props.rows.some((row) => usageCellNeedsCustomRenderer(row[index]));
+    return {
+      key,
+      header: column.header,
+      align: column.numeric ? 'end' : 'start',
+      width: column.width !== undefined
+        ? pixel(column.width)
+        : column.grow
+          ? proportional(1)
+          : pixel(column.numeric ? 88 : 120),
+      ...(needsCustomRenderer ? { renderCell: (row) => row[key] as ReactNode } : {}),
+    };
+  });
 
   return (
     <Card className="settingsUsageTable" padding={3}>

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createRequire } from 'node:module';
 import {
   defaultCreateWindow,
@@ -745,16 +764,8 @@ export function createComputerUsePipController(
 
 
 
-// Re-exported so the tests that reach for these keep their import path while
-// the code moves. The forwarding line is what makes this a move rather than a
-// change; it comes out in a later cut, not this one.
-export {
-  pipBoundsForAnchor,
-  pipDisplaySize,
-  pipWindowOptions,
-  type ParentWindowLike,
-  type PipWindowLike,
-} from './pip-electron.js';
+// Re-exported so callers keep their type import path while the code moves.
+export type { ParentWindowLike, PipWindowLike } from './pip-electron.js';
 
 // Re-exported so callers and tests keep their import path while the code
 // moves. Comes out in a later cut.

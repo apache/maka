@@ -1,7 +1,25 @@
-import type { SessionEvent } from '@maka/core/events';
-import type { InvocationResult } from '@maka/runtime/invocation-context';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 
-export type SandboxBoundaryFailureReason = 'sandbox_boundary_required' | 'requires_bypass';
+import type { SessionEvent } from '@maka/core/events';
+
+type SandboxBoundaryFailureReason = 'sandbox_boundary_required' | 'requires_bypass';
 
 export function sessionEventSandboxBoundaryFailureReason(
   event: SessionEvent,
@@ -17,56 +35,10 @@ export function sessionEventSandboxBoundaryFailureReason(
   return normalizeSandboxBoundaryFailureReason(event.content.sandboxFailure.reason);
 }
 
-export function invocationHasSandboxBoundaryFailure(result: InvocationResult): boolean {
-  return result.events.some(
-    (event) => runtimeEventSandboxBoundaryFailureReason(event) !== undefined,
-  );
-}
-
-export function invocationRecoveredSandboxBoundaryFailure(
-  result: InvocationResult | undefined,
-): boolean {
-  if (!invocationCompletedWithOutput(result)) return false;
-  let unresolvedBoundaryFailure = false;
-  let recoveredBoundaryFailure = false;
-  for (const event of result.events) {
-    if (event.content?.kind !== 'function_response') continue;
-    if (event.content.isError && runtimeEventSandboxBoundaryFailureReason(event)) {
-      unresolvedBoundaryFailure = true;
-      continue;
-    }
-    if (unresolvedBoundaryFailure && !event.content.isError) {
-      unresolvedBoundaryFailure = false;
-      recoveredBoundaryFailure = true;
-    }
-  }
-  return recoveredBoundaryFailure && !unresolvedBoundaryFailure;
-}
-
-function runtimeEventSandboxBoundaryFailureReason(
-  event: InvocationResult['events'][number],
-): SandboxBoundaryFailureReason | undefined {
-  if (event.content?.kind !== 'function_response' || !isRecord(event.content.result)) {
-    return undefined;
-  }
-  const failure = event.content.result.sandboxFailure;
-  return isRecord(failure) ? normalizeSandboxBoundaryFailureReason(failure.reason) : undefined;
-}
-
 function normalizeSandboxBoundaryFailureReason(
   reason: unknown,
 ): SandboxBoundaryFailureReason | undefined {
   return reason === 'sandbox_boundary_required' || reason === 'requires_bypass'
     ? reason
     : undefined;
-}
-
-function invocationCompletedWithOutput(
-  result: InvocationResult | undefined,
-): result is InvocationResult & { status: 'completed'; finalOutput: string } {
-  return result?.status === 'completed' && typeof result.finalOutput === 'string';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

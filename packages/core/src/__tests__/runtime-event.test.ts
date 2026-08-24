@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { expect } from './test-helpers.js';
@@ -15,7 +34,7 @@ import {
   type RuntimeEvent,
   type RuntimeEventActions,
 } from '../runtime-event.js';
-import { decodeStoredMessage } from '../session.js';
+import { decodeCanonicalMessage } from '../session.js';
 import { decodeTurnOrigin } from '../turn-origin.js';
 
 /** Minimal valid RuntimeEvent; callers spread overrides on top. */
@@ -49,7 +68,7 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
       },
     },
   ];
-  const stored = decodeStoredMessage({
+  const stored = decodeCanonicalMessage({
     type: 'assistant',
     id: 'message-1',
     turnId: 'turn-1',
@@ -65,7 +84,7 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
 });
 
 test('decodes released Automation origins as read-only legacy provenance', () => {
-  const message = decodeStoredMessage({
+  const message = decodeCanonicalMessage({
     type: 'user',
     id: 'message-1',
     turnId: 'turn-1',
@@ -400,7 +419,7 @@ describe('RuntimeEvent content variants', () => {
       event.content && 'quotes' in event.content ? event.content.quotes?.[0] : undefined,
       quotes[0],
     );
-    const stored = decodeStoredMessage({
+    const stored = decodeCanonicalMessage({
       type: 'user',
       id: 'message-1',
       turnId: 'turn-1',
@@ -424,7 +443,7 @@ describe('RuntimeEvent content variants', () => {
     assert.notEqual(stored.quotes?.[0], quotes[0]);
     assert.throws(
       () =>
-        decodeStoredMessage({
+        decodeCanonicalMessage({
           type: 'user',
           id: 'message-1',
           turnId: 'turn-1',

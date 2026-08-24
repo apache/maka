@@ -1,6 +1,27 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { parseMakaRunArgs } from '../run-command-core.js';
+import type { UserMessageInput } from '@maka/core/runtime-inputs';
+import type { SessionSummary } from '@maka/core/session';
+import { parseMakaRunArgs, runMakaTextCliCore, type MakaRunAdapter } from '../run-command-core.js';
 
 describe('maka run argument parsing', () => {
   test('recognizes stdin prompt mode and rejects malformed limits', () => {
@@ -51,4 +72,79 @@ describe('maka run argument parsing', () => {
       'error',
     );
   });
+
+  test('forwards --max-steps to local and Graph turn inputs', async () => {
+    for (const graph of [false, true]) {
+      const messages: UserMessageInput[] = [];
+      const adapter: MakaRunAdapter = {
+        listSessions: async () => [],
+        createContext: async (input) => ({
+          runtime: {
+            createSession: async () => sessionSummary(),
+            readExecutionBoundary: async () => ({
+              kind: 'managed',
+              access: 'writable',
+              revision: 0,
+            }),
+            sendMessage: async function* (_sessionId, message) {
+              messages.push(message);
+              await input.runOutcomeObserver?.({
+                outcomeId: message.turnId,
+                status: 'completed',
+                finalOutput: 'done',
+                sandboxBoundary: 'none',
+              });
+            },
+            respondToSandboxBoundary: async () => {},
+            stopSession: async () => {},
+            setExecutionBoundaryKind: async () => {},
+          },
+          target: { connection: { slug: 'test' }, model: 'test' },
+          agentGraph: {
+            reserveActivity: () => ({ release: () => {} }),
+            waitForCompletion: async () => {},
+          },
+          close: async () => {},
+        }),
+      };
+
+      const exitCode = await runMakaTextCliCore(
+        ['answer once', '--max-steps', '2', ...(graph ? ['--graph'] : [])],
+        adapter,
+        {
+          workspaceRoot: () => process.cwd(),
+          processCwd: () => process.cwd(),
+          stdinIsTTY: () => true,
+          writeStdout: () => {},
+          writeStderr: () => {},
+          onSigint: () => () => {},
+          newId: () => 'turn-1',
+        },
+      );
+
+      assert.equal(exitCode, 0);
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0]?.maxSteps, 2);
+    }
+  });
 });
+
+function sessionSummary(): SessionSummary {
+  return {
+    id: 'session-1',
+    cwd: process.cwd(),
+    name: 'Run once',
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    hasUnread: false,
+    status: 'active',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'test',
+    connectionLocked: true,
+    model: 'test',
+    permissionMode: 'ask',
+    collaborationMode: 'agent',
+    orchestrationMode: 'default',
+  };
+}

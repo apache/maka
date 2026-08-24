@@ -1,208 +1,85 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Contributing to Maka
 
 [![docs](https://img.shields.io/badge/docs-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue?logo=googletranslate&logoColor=white)](./CONTRIBUTING.zh-CN.md)
 
-- [Where to start](#where-to-start)
-- [Public decisions](#public-decisions)
-- [Human ownership and AI attribution](#human-ownership-and-ai-attribution)
-- [Review and fast path](#review-and-fast-path)
-- [Provenance and licensing](#provenance-and-licensing)
-- [Quick start](#quick-start)
-- [Developing Maka](#developing-maka)
-- [Branch naming](#branch-naming)
-- [Pull requests](#pull-requests)
-
 ## Where to start
 
-These changes merge most readily:
+Bug fixes, model provider support, tests, performance work, and documentation merge most readily. Pick something up from [`help wanted`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) · [`good first issue`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [`bug`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Abug) · [`enhancement`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) and claim it in a comment. Use the **Bug report** or **Feature request** template for new issues; report security problems through [SECURITY.md](./SECURITY.md), never as a public issue. Questions, ideas, and not-yet-actionable proposals belong in [Discussions](https://github.com/apache/maka/discussions), which reaches the whole team by email.
 
-- Bug fixes
-- Model provider support — a new provider, or a fix to an existing one
-- Tests and stability work
-- Performance improvements
-- Documentation
-- Fixes for environment-specific problems
-
-For project direction, governance, or material product decisions, follow the public decision process below before implementing a change.
-
-Looking for something to pick up:
-
-- [`help wanted`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
-- [`good first issue`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
-- [`bug`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3Abug)
-- [`enhancement`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement)
-
-To claim one, say so in a comment and a maintainer may assign it to you.
-
-Prefer the **Bug report** or **Feature request** template when opening an issue —
-they ask for the context that makes one actionable. Report security problems through
-the private flow in [SECURITY.md](./SECURITY.md), never as a public issue.
-
-## Public decisions
-
-Discuss project direction, governance, and material product decisions publicly before implementation, and record the reasoning. Once an ASF development list is available, project-level decisions should move there. Implementation-level technical decisions may be discussed in the pull request when the reasoning remains public and reviewable.
+Project direction, governance, and material product decisions are discussed publicly on [`dev@maka.apache.org`](https://lists.apache.org/list.html?dev@maka.apache.org) before implementation; implementation-level decisions may live in the pull request.
 
 ## Human ownership and AI attribution
 
-Every contribution must have a human contributor of record. That person reviews the work, decides to submit it, and accepts responsibility for its accuracy, provenance, licensing, and any applicable ICLA representations. Agents may prepare changes, but they may not use ASF credentials or push commits to ASF repositories.
+Every contribution has a human contributor of record who reviews the work, decides to submit it, and owns its accuracy, provenance, and licensing. Agents may commit and push freely; the final review and merge decision always belongs to a human.
 
-Disclose generative tooling when it makes a substantive contribution to code, documentation, analysis, or a project position. Disclosure is not required when a human determines the facts and position and the tool only translates, edits wording, autocompletes, or corrects spelling. Automated messages must identify themselves.
+Each pull request states whether generative tooling contributed substantively, naming the tool if so; translation, wording edits, autocomplete, and spelling correction don't count. Automated messages must identify themselves. When AI authors a material part of a contribution, add a `Generated-by: <tool>` trailer to each affected commit, and keep it in the final commit through squash or amend.
 
-Every pull request must state whether generative tooling made a substantive contribution. If it did, name the tool and briefly describe its scope. If it did not, explicitly state that no generative tool made a substantive contribution.
+## Review
 
-When AI authors a material part of a contribution, Maka project policy requires the final commit on the target branch to name the tool:
-
-```text
-Generated-by: <tool>
-```
-
-Add the trailer to each pull request commit that contains material AI-authored content, and ensure it survives squash or amend in the final commit.
-
-## Review and fast path
-
-Material changes to user-visible behavior, public contracts, security, licensing, releases, or governance require independent review by another human. AI review does not count as independent human review. This requirement is separate from the human contributor of record, who is required for every contribution.
-
-A contribution may use the fast path and be merged without independent human review only when it is low impact, easy to reverse, does not affect a protected area above, and passes the required checks.
-
-When using the fast path, the person merging the pull request must comment on how the final revision meets these criteria. Any later commit requires a fresh determination and comment. A maintainer makes the final determination. Tests, CI, documentation, and mechanical changes may qualify, but their file type does not exempt them from review.
+Every pull request to `main` needs an approving review from a committer other than the author and a passing `test` check; branch protection in [`.asf.yaml`](./.asf.yaml) enforces both. An approval stays valid across later pushes — push follow-up commits in the open, and ask for another look when the change grows past what was reviewed. The review must be an independent human judgment — AI review does not count. A maintainer decides whether a change is material and whether the review it received is enough.
 
 ## Provenance and licensing
 
-Submit only work that you have the right to contribute. Record third-party sources, licenses, and required attribution. Correctness review does not establish where content came from. For material AI-generated content, check the tool's output terms and scan non-trivial or suspicious output for third-party matches. Follow the current [ASF Generative Tooling Guidance](https://www.apache.org/legal/generative-tooling.html).
-
-By contributing you agree that your contributions are licensed under the [Apache License 2.0](./LICENSE).
+Submit only work you have the right to contribute, and record third-party sources, licenses, and attribution. Contributions are licensed under the [Apache License 2.0](./LICENSE); for material AI-generated content, follow the [ASF Generative Tooling Guidance](https://www.apache.org/legal/generative-tooling.html).
 
 ## Quick start
 
-| Requirement | Value |
-| --- | --- |
-| Node | `>=22.19.0` (`engines`, root `package.json`) |
-| npm | `11.19.0` (`packageManager`) |
-| Platform | macOS Apple Silicon for desktop work. Releases also ship an unsigned Windows x64 build and CI runs a non-blocking `windows_baseline` job, but Windows and Linux are not supported targets yet |
+Requires Node `>=22.19.0` and npm `11.19.0` (root `package.json`); desktop work needs macOS Apple Silicon.
 
 ```sh
-git clone https://github.com/maka-agent/maka-agent.git
-cd maka-agent
+git clone https://github.com/apache/maka.git
+cd maka
 npm install                 # root only — never inside a workspace
 npm run build               # builds every workspace in dependency order
 npm --workspace @maka/core test
 ```
 
-Architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md).
-
 ## Developing Maka
-
-### Running
 
 ```sh
 npm run dev          # desktop app with HMR
-npm run dev:full     # full build, then launch the desktop app
-
-npm run cli:dev                                  # TUI with the Maka Dev profile
-npm run cli:dev -- run "…"                       # one non-interactive turn
+npm run cli:dev      # TUI; `npm run cli:dev -- run "…"` runs one non-interactive turn
+npm test             # all workspaces, or: npm --workspace @maka/core test
 ```
 
-Evaluation commands and contracts live in [`packages/eval`](./packages/eval).
+Building a single workspace only succeeds when its dependencies are already built — when unsure, build from the root. Tests run against compiled output in `dist/`; each workspace's `test` script cleans, builds, then runs `node --test`. Always go through it.
 
-### Building
-
-`npm run build` builds workspaces in dependency order:
-
-```
-code-mode → core → storage → mcp → runtime → runtime-host
-          → computer-use → eval → maka-agent → ui → desktop
-```
-
-Building one workspace only succeeds when its dependencies are already built —
-`@maka/runtime` compiled against a stale `@maka/core` produces type errors that
-look like problems in the code you just wrote. When unsure, build from the root.
-
-The desktop app has four outputs; `build:test` covers the first three:
+Before pushing, match CI locally:
 
 ```sh
-npm --workspace @maka/desktop run build:main      # main process
-npm --workspace @maka/desktop run build:preload   # preload bridge
-npm --workspace @maka/desktop run build:overlay   # overlay windows
-npm --workspace @maka/desktop run build:renderer  # renderer
-```
-
-### Testing
-
-Tests run against compiled output in `dist/`. Every workspace's `test` script
-cleans, builds, then runs `node --test`. **Always go through it** — calling
-`node --test` after a bare `build:*` executes orphaned artifacts from older
-trees, which fail on imports that no longer resolve.
-
-```sh
-npm test                                 # all workspaces
-npm --workspace @maka/core test          # one workspace
-npm --workspace @maka/desktop run e2e    # Playwright
-```
-
-### Before pushing
-
-CI runs these; matching them locally avoids a slow round trip.
-
-```sh
-npm run lint            # biome lint
-npm run format:check    # biome format — separate from lint; passing one proves nothing about the other
+npm run lint
+npm run format:check
 npm run build
-npm run typecheck       # 4 tsconfig projects for desktop, including renderer and storybook
+npm run typecheck
 npx knip --workspace apps/desktop
 npx knip --workspace packages/ui
 ```
 
-The CI job named `test` runs all of them as separate steps, so read which step
-failed rather than relying on the job name.
-
-## Branch naming
-
-```
-<type>/<description>
-```
-
-`<description>` is lowercase and hyphen-separated. `<type>` must be one of:
-
-| Prefix | Meaning |
-| --- | --- |
-| `feat` | New feature |
-| `fix` | Bug fix |
-| `refactor` | Behavior-preserving restructuring |
-| `test` | Test-only change |
-| `chore` | Build, dependency, and housekeeping work |
-| `perf` | Performance improvement |
-| `docs` | Documentation-only change |
-| `ci` | CI configuration and pipelines |
-| `build` | Build system and artifacts |
+Architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md); evaluation commands and contracts live in [`packages/eval`](./packages/eval).
 
 ## Pull requests
 
-Opening a pull request pre-fills
-[`pull_request_template.md`](./.github/pull_request_template.md), which carries
-the required sections and the checklist. Fill it in rather than replacing it.
+Opening a pull request pre-fills [`pull_request_template.md`](./.github/pull_request_template.md); fill it in rather than replacing it.
 
-**Title.** The repository squash-merges, so the title becomes the commit on
-`main`. Follow [Conventional Commits](https://www.conventionalcommits.org/):
+Branches and titles follow [Conventional Commits](https://www.conventionalcommits.org/): branches are `<type>/<description>`, titles are `<type>(<scope>): <summary>`. The repository squash-merges, so the title becomes the commit on `main`; `git log` shows the types and scopes in use.
 
-```
-<type>(<scope>): <summary>
-```
-
-`<type>` is the set in [branch naming](#branch-naming). `<scope>` is the
-workspace or area — `desktop`, `ui`, `runtime`, `eval`, `settings`,
-`runtime-host`, `storage`, `core`, `cli`, `deps`, `computer-use`, `scripts`,
-`release`, `windows`, `e2e`, `security`, and so on — `git log` shows the set
-in use.
-
-```
-fix(desktop): classify provider action errors from the unwrapped IPC message
-feat(runtime): decouple Swarm with asynchronous wakeups
-test(core): pin the shared validation corpus to every envelope value domain
-```
-
-**UI changes.** Include before/after screenshots or a recording. A visual change
-cannot be judged from a diff.
-
-**Keep the description short and your own.** Long generated write-ups slow
-review down. Say what changed and why in your own words; if that needs many
-paragraphs, the pull request is probably too large.
+For UI changes, include before/after screenshots or a recording. Keep the description short and your own — if it needs many paragraphs, the pull request is probably too large.

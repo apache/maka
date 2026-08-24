@@ -1,5 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { OPENCODE_FREE_DEFAULT_ENABLED_MODELS } from '@maka/core/llm-connections';
 import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import {
   projectHostConnections,
@@ -261,11 +281,8 @@ test('preserves the provider default inventory beside the recommended model', as
     defaultModel: 'nemotron-3-ultra-free',
   });
 
-  assert.deepEqual(createdModels, [
-    'nemotron-3-ultra-free',
-    'mimo-v2.5-free',
-    'deepseek-v4-flash-free',
-  ]);
+  // Snapshot-derived set; assert the contract, not today's ids.
+  assert.deepEqual(createdModels, [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS]);
 });
 
 test('projects the Host default target without inventing a second Connection authority', () => {

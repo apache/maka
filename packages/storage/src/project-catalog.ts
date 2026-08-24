@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
@@ -5,12 +24,13 @@ import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep 
 import { promisify } from 'node:util';
 import type { ProjectLocation, ProjectRecord } from '@maka/core/project';
 import type { SessionHeader } from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 import { hasEnclosingGitEntry } from './git-entry.js';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
-import { normalizeSessionHeader } from './session-store.js';
+import { decodePersistedSessionHeader, normalizeSessionHeader } from './session-store.js';
 
 export type { ProjectLocation, ProjectRecord } from '@maka/core/project';
 
@@ -109,6 +129,11 @@ export interface ProjectRegistrationOptions {
    * its published boundary.
    */
   readonly withinRoot?: string;
+  /**
+   * Whether an additional location should be recorded as recently used. A new
+   * project still establishes its sole location as the initial preference.
+   */
+  readonly prefer?: boolean;
 }
 
 interface PersistedProject {
@@ -187,7 +212,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     if (options?.withinRoot && !isPathWithin(options.withinRoot, resolved.canonicalPath)) {
       throw new ProjectPathBoundaryError(resolved.canonicalPath);
     }
-    return this.upsertResolvedProject(resolved, this.now());
+    return this.upsertResolvedProject(resolved, this.now(), options?.prefer !== false);
   }
 
   async resolveHistoricalPath(path: string, usedAt: number = this.now()): Promise<ProjectRecord> {
@@ -216,6 +241,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
   private async upsertResolvedProject(
     resolved: ResolvedProjectLocation,
     timestamp: number,
+    prefer = true,
   ): Promise<ProjectRecord> {
     const registered = await this.mutate((file) => {
       const locationPath =
@@ -224,13 +250,13 @@ class SqliteProjectCatalog implements ProjectCatalog {
       if (existing) {
         const location = existing.locations.find((item) => item.path === locationPath);
         if (location) {
-          location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
+          if (prefer) location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
           location.isWorktree = resolved.git?.isWorktree ?? false;
         } else {
           existing.locations.push({
             path: locationPath,
             isWorktree: resolved.git?.isWorktree ?? false,
-            lastUsedAt: timestamp,
+            lastUsedAt: prefer ? timestamp : 0,
           });
         }
         existing.lastUsedAt = Math.max(existing.lastUsedAt, timestamp);
@@ -723,8 +749,8 @@ function reassignProjectSessions(
   );
   const updatedSessionIds: string[] = [];
   for (const row of rows) {
-    const header = normalizeSessionHeader(
-      JSON.parse(row.payload_json) as SessionHeader,
+    const header = decodePersistedSessionHeader(
+      markPersisted<SessionHeader>(JSON.parse(row.payload_json)),
       row.session_id,
     );
     let patch: Pick<SessionHeader, 'cwd' | 'projectId'> | undefined;

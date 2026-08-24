@@ -1,8 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useCallback, useEffect, useState } from 'react';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { SkillEntry } from '@maka/ui';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
+
+/** One frozen identity, so a context-mismatch render does not churn props. */
+const EMPTY_SKILLS: InvocableSkillEntry[] = [];
 
 /**
  * Owns the composer mention popup wiring so app-shell.tsx keeps no inline
@@ -22,6 +44,8 @@ export function useComposerMentions(options: {
   newTaskTarget?: DesktopNewTaskTarget;
 }): {
   mentionSkills: ReadonlyArray<{ ref?: string; id: string; name: string; description?: string }>;
+  mentionSkillsUnavailable: boolean;
+  mentionSkillsLoading: boolean;
   searchMentionFiles(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
 } {
   const {
@@ -33,18 +57,62 @@ export function useComposerMentions(options: {
     newSessionPermissionMode,
     newTaskTarget,
   } = options;
-  const [mentionSkills, setMentionSkills] = useState<InvocableSkillEntry[]>([]);
+  // One explicit representation of the Skill catalog — in flight, settled
+  // empty, or settled populated — held as a single value so a refresh can
+  // never tear its facets apart.
+  //
+  // `skills` is the live, fail-closed list the `/` popup reads: it is cleared
+  // the moment a refresh starts, because a visible popup must never advertise
+  // a Skill the new backend surface may not carry. That clear is exactly why
+  // `length === 0` cannot tell "re-fetching" from "nothing to offer", so the
+  // ＋ menu's Skills row renders from `settled` — the last RESOLVED verdict,
+  // held across refreshes of the SAME context — and repaints only when the
+  // catalog's emptiness actually changed. `loading` gates interaction: while
+  // a request is in flight (including the very first, before anything has
+  // settled), a click on the row must have no side effect — the held
+  // presentation is the old catalog's look, not a promise the current one
+  // can honor.
+  //
+  // `contextKey` names which backend surface the value describes. The clear
+  // above happens in a passive effect, one commit AFTER a session/project/
+  // model switch has rendered — a window where the old context's Skills are
+  // still on screen for the new one. Deriving through the key below makes the
+  // render itself fail closed the moment the context changes, without waiting
+  // for the effect.
+  const contextKey = [
+    sessionId ?? '',
+    projectPath ?? '',
+    newSessionModel?.llmConnectionSlug ?? '',
+    newSessionModel?.model ?? '',
+    newSessionCollaborationMode ?? 'agent',
+    newSessionPermissionMode ?? '',
+    newTaskTarget?.profileId ?? '',
+    newTaskTarget?.hostId ?? '',
+    newTaskTarget?.projectId ?? '',
+  ].join('\u0000');
+  const [catalog, setCatalog] = useState<{
+    contextKey: string;
+    loading: boolean;
+    settled?: 'empty' | 'populated';
+    skills: InvocableSkillEntry[];
+  }>({ contextKey, loading: true, skills: [] });
+  const liveCatalog = catalog.contextKey === contextKey
+    ? catalog
+    : { contextKey, loading: true, settled: undefined, skills: EMPTY_SKILLS };
 
   useEffect(() => {
     let cancelled = false;
     let requestVersion = 0;
-    // Do not briefly advertise the previous session/project's Skills while the
-    // authoritative projection is being refreshed. The same fail-closed reset
-    // applies when a model/mode/plan or MCP event changes the backend surface:
-    // a visible popup must never retain a now-unavailable Skill.
     const refresh = () => {
       const version = ++requestVersion;
-      setMentionSkills([]);
+      setCatalog((previous) => ({
+        contextKey,
+        loading: true,
+        // A same-context refresh keeps its settled verdict; a context switch
+        // has nothing settled to hold.
+        settled: previous.contextKey === contextKey ? previous.settled : undefined,
+        skills: [],
+      }));
       const context = {
         ...(newSessionModel ?? {}),
         collaborationMode: newSessionCollaborationMode ?? 'agent',
@@ -59,11 +127,19 @@ export function useComposerMentions(options: {
           : Promise.resolve([]);
       void request.then(
         (next) => {
-          if (!cancelled && version === requestVersion) setMentionSkills(next);
+          if (cancelled || version !== requestVersion) return;
+          setCatalog({
+            contextKey,
+            loading: false,
+            settled: next.length === 0 ? 'empty' : 'populated',
+            skills: next,
+          });
         },
         () => {
           // Fail soft: an unavailable projection leaves `/` with no suggestions.
           // Direct `/skill:<id>` input still reaches the same Runtime resolver.
+          if (cancelled || version !== requestVersion) return;
+          setCatalog({ contextKey, loading: false, settled: 'empty', skills: [] });
         },
       );
     };
@@ -125,5 +201,10 @@ export function useComposerMentions(options: {
     ],
   );
 
-  return { mentionSkills, searchMentionFiles };
+  return {
+    mentionSkills: liveCatalog.skills,
+    mentionSkillsUnavailable: liveCatalog.settled === 'empty',
+    mentionSkillsLoading: liveCatalog.loading,
+    searchMentionFiles,
+  };
 }

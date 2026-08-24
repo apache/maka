@@ -1,3 +1,22 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Workspace Version Authority v1：Baseline 事实权威
 
 - 状态：authority foundation 已由 M0 Baseline Open Bundle 接入；仍待前置 PR 合并后从最新 `main`
@@ -292,7 +311,7 @@ SQLite read transaction/snapshot；否则并发 writer 可能让读者拼接两�
 
 以下能力不属于 M0 baseline authority：
 
-- bundled Git 探测、source eligibility 与 internal bare repository；
+- verified Git runtime 探测、source eligibility 与 internal bare repository；
 - managed worktree 创建、owner lifecycle、quarantine 与 repair；
 - `.maka-workspace.json` 在 managed worktree 的 identity/exclude 策略；
 - ignored dependency/cache 路径的挂载或 scratch policy；
@@ -309,9 +328,10 @@ SQLite read transaction/snapshot；否则并发 writer 可能让读者拼接两�
 
 ### Slice 2：Managed Workspace Owner（已完成）
 
-只证明：Maka 能用 bundled Git 创建并独占一个 private internal repository/worktree lifecycle；外部 drift
-被检测后 quarantine。需要先拍板 ignored dependencies/scratch、identity marker、fixed Git config、
-symlink/LFS/submodule/case/filemode 平台政策。
+只证明：Maka 能用一个显式注入且经过校验的 Git runtime 创建并独占 private internal
+repository/worktree lifecycle；外部 drift 被检测后 quarantine。ASF Desktop 不再提供该 runtime，后续实现将
+验证 Apache-2.0/MIT 的 gitoxide backend。需要先拍板 ignored dependencies/scratch、identity marker、fixed
+Git config、symlink/LFS/submodule/case/filemode 平台政策。
 
 ### Slice 3：Baseline Open Bundle（实现中）
 

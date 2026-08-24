@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createDefaultSettings } from '@maka/core/settings';
@@ -8,6 +27,7 @@ test('applies each client settings snapshot once across local writes and file wa
   const keepAwake: boolean[] = [];
   let botApplications = 0;
   let rendererEvents = 0;
+  const appIcons: string[] = [];
   const effects = createClientSettingsEffects({
     settingsStore: { get: async () => current },
     applyKeepSystemAwake: async (enabled) => {
@@ -15,6 +35,9 @@ test('applies each client settings snapshot once across local writes and file wa
     },
     applyBotSettings: async () => {
       botApplications += 1;
+    },
+    applyAppIcon: async (icon) => {
+      appIcons.push(icon);
     },
     observeLocale: () => undefined,
     emitExternalChanged: () => {
@@ -35,4 +58,33 @@ test('applies each client settings snapshot once across local writes and file wa
   assert.deepEqual(keepAwake, [false, true]);
   assert.equal(botApplications, 1);
   assert.equal(rendererEvents, 1);
+  // The shipped default is already on screen before the first snapshot is
+  // read, so a run that never leaves it must not touch the OS icon at all.
+  assert.deepEqual(appIcons, []);
+});
+
+test('applies a chosen app icon once, and again only when the choice changes', async () => {
+  let current = createDefaultSettings();
+  const appIcons: string[] = [];
+  const effects = createClientSettingsEffects({
+    settingsStore: { get: async () => current },
+    applyKeepSystemAwake: async () => undefined,
+    applyBotSettings: async () => undefined,
+    applyAppIcon: async (icon) => {
+      appIcons.push(icon);
+    },
+    observeLocale: () => undefined,
+    emitExternalChanged: () => undefined,
+  });
+
+  await effects.refresh(false);
+  current = { ...current, appearance: { ...current.appearance, appIcon: 'mono' } };
+  assert.equal(await effects.apply(current, false), true);
+  // The file watcher echoes the same write back; the OS call must not repeat.
+  assert.equal(await effects.refresh(false), false);
+
+  current = { ...current, appearance: { ...current.appearance, appIcon: 'default' } };
+  assert.equal(await effects.apply(current, false), true);
+
+  assert.deepEqual(appIcons, ['mono', 'default']);
 });

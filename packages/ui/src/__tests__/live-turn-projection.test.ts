@@ -1,5 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { encodeToolStepProgress } from '@maka/core/events';
 import {
   applyLiveTurnEvent,
   armLiveTurn,
@@ -8,8 +28,9 @@ import {
   settleLiveTurnStep,
   type LiveTurnProjection,
 } from '../live-turn-projection.js';
-import { overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
+import { materializeTurns, overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
 import { redactSecrets } from '../redact.js';
+import { getConversationCopy } from '../conversation-copy.js';
 
 // A client that just sent cannot read "has my turn started" off session status:
 // it is the same before the turn starts and after it ends. The arm carries
@@ -44,6 +65,16 @@ describe('the unconfirmed claim an arm carries', () => {
     });
 
     assert.equal(streamed.unconfirmed, undefined);
+  });
+});
+
+describe('provider retry copy', () => {
+  it('describes capacity retries without collapsing them into generic unavailability', () => {
+    assert.match(getConversationCopy('zh').messages.providerRetryReason.provider_capacity, /满载/);
+    assert.match(
+      getConversationCopy('en').messages.providerRetryReason.provider_capacity,
+      /capacity/,
+    );
   });
 });
 
@@ -174,7 +205,16 @@ describe('applyLiveTurnEvent', () => {
       maxAttempts: 10,
       reason: 'rate_limit',
     });
-    assert.equal(started?.providerRetry?.phase, 'started');
+    assert.deepEqual(started?.providerRetry, {
+      type: 'provider_retry',
+      id: 'retry-2',
+      turnId: 'turn-1',
+      ts: 101,
+      phase: 'started',
+      attempt: 2,
+      maxAttempts: 10,
+      reason: 'rate_limit',
+    });
 
     const streamed = applyLiveTurnEvent(started, {
       type: 'text_delta',
@@ -185,6 +225,33 @@ describe('applyLiveTurnEvent', () => {
       text: '恢复',
     });
     assert.equal(streamed?.providerRetry, undefined);
+  });
+
+  it('keeps provider capacity visible through retry projection', () => {
+    const live = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+      type: 'provider_retry',
+      id: 'retry-capacity',
+      turnId: 'turn-1',
+      ts: 100,
+      phase: 'scheduled',
+      attempt: 2,
+      maxAttempts: 10,
+      delayMs: 4_000,
+      reason: 'provider_capacity',
+    });
+
+    const started = applyLiveTurnEvent(live, {
+      type: 'provider_retry',
+      id: 'retry-capacity-started',
+      turnId: 'turn-1',
+      ts: 101,
+      phase: 'started',
+      attempt: 2,
+      maxAttempts: 10,
+      reason: 'provider_capacity',
+    });
+
+    assert.equal(started?.providerRetry?.reason, 'provider_capacity');
   });
 
 
@@ -237,7 +304,7 @@ describe('applyLiveTurnEvent', () => {
       toolUseId: 'nested-1',
       toolName: 'Read',
       stepId: 'step-1',
-      status: 'pending',
+      status: 'running',
       args: { path: 'README.md' },
       origin: 'code_mode',
       modelVisibility: 'hidden',
@@ -356,6 +423,55 @@ describe('applyLiveTurnEvent', () => {
       }],
       outputTruncated: false,
     }]);
+  });
+
+  it('projects bounded multi-step tool progress onto the running row', () => {
+    const started = applyLiveTurnEvent(undefined, {
+      type: 'tool_start',
+      id: 'event-1',
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolUseId: 'tool-1',
+      toolName: 'mcp__desktop_computer_use__maka_computer',
+      activityKind: 'computer',
+      args: {
+        action: 'element_sequence',
+        steps: [{ label: '<text:1>' }, { label: '<text:1>' }],
+      },
+      ts: 100,
+    });
+    const projection = applyLiveTurnEvent(started, {
+      type: 'tool_progress',
+      id: 'event-2',
+      turnId: 'turn-1',
+      toolUseId: 'tool-1',
+      chunk: encodeToolStepProgress({ current: 1, total: 2 })!,
+      ts: 101,
+    });
+
+    assert.deepEqual(projection.steps[0]?.tools[0]?.progress, { current: 1, total: 2 });
+    assert.equal(projection.steps[0]?.tools[0]?.status, 'running');
+  });
+
+  it('ignores invalid step progress without clearing the last valid value', () => {
+    const valid = applyLiveTurnEvent(undefined, {
+      type: 'tool_progress',
+      id: 'event-1',
+      turnId: 'turn-1',
+      toolUseId: 'tool-1',
+      chunk: encodeToolStepProgress({ current: 1, total: 2 })!,
+      ts: 100,
+    });
+    const invalid = applyLiveTurnEvent(valid, {
+      type: 'tool_progress',
+      id: 'event-2',
+      turnId: 'turn-1',
+      toolUseId: 'tool-1',
+      chunk: 'steps:3/2',
+      ts: 101,
+    });
+
+    assert.deepEqual(invalid.steps[0]?.tools[0]?.progress, { current: 1, total: 2 });
   });
 
   it('preserves steering positions when an output-first tool receives its real step', () => {
@@ -818,20 +934,62 @@ describe('tool_result_preview live projection', () => {
     );
   });
 
-  it('keeps open-facts when RH-style empty tool_result settles the row', () => {
+  it('keeps hydrated result content when Runtime Host omits it from the live event', () => {
     const previewed = previewedSubagentTurn();
-    const settled = applyLiveTurnEvent(previewed, {
+    const hydrated: LiveTurnProjection = {
+      ...previewed,
+      steps: [{
+        ...previewed.steps[0]!,
+        tools: [{
+          ...previewed.steps[0]!.tools[0]!,
+          result: { kind: 'text', text: 'full durable output' },
+        }],
+      }],
+    };
+    const settled = applyLiveTurnEvent(hydrated, {
       type: 'tool_result',
       id: 'event-3',
       turnId: 'turn-1',
       toolUseId: 'tool-1',
+      contentOmitted: true,
       isError: false,
       content: { kind: 'text', text: '' },
       ts: 102,
     });
 
     assert.equal(settled.steps[0]?.tools[0]?.status, 'completed');
-    assert.deepEqual(settled.steps[0]?.tools[0]?.result, previewed.steps[0]?.tools[0]?.result);
+    assert.deepEqual(settled.steps[0]?.tools[0]?.result, { kind: 'text', text: 'full durable output' });
+  });
+
+  it('lets a meaningful live empty result replace older durable content', () => {
+    const turns = materializeTurns([
+      {
+        type: 'tool_call', id: 'tool-1', turnId: 'turn-1', stepId: 'step-1', ts: 1,
+        toolName: 'Read', args: { path: 'README.md' },
+      },
+      {
+        type: 'tool_result', id: 'result-1', turnId: 'turn-1', ts: 2,
+        toolUseId: 'tool-1', isError: false,
+        content: { kind: 'text', text: 'older durable output' },
+      },
+      {
+        type: 'turn_state', id: 'state-1', turnId: 'turn-1', ts: 3,
+        status: 'running', partialOutputRetained: true,
+      },
+    ]);
+    const started = applyLiveTurnEvent(undefined, {
+      type: 'tool_start', id: 'start-1', turnId: 'turn-1', stepId: 'step-1',
+      toolUseId: 'tool-1', toolName: 'Read', args: { path: 'README.md' }, ts: 4,
+    });
+    const settled = applyLiveTurnEvent(started, {
+      type: 'tool_result', id: 'live-result-1', turnId: 'turn-1', toolUseId: 'tool-1',
+      isError: false, content: { kind: 'text', text: '' }, ts: 5,
+    });
+
+    assert.deepEqual(overlayLiveTurn(turns, settled)[0]?.tools[0]?.result, {
+      kind: 'text',
+      text: '',
+    });
   });
 });
 

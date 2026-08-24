@@ -1,4 +1,29 @@
-import { PROVIDER_DEFAULTS, validateSlug, type ProviderType } from '../llm-connections.js';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import {
+  isRelayProviderType,
+  PROVIDER_DEFAULTS,
+  providerDefaultsOf,
+  validateSlug,
+  type ProviderType,
+} from '../llm-connections.js';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   isThinkingLevel,
@@ -36,8 +61,6 @@ import {
   revisionValue,
   stringValue,
 } from './domain-codec.js';
-
-const PROVIDER_TYPES = new Set<string>(Object.keys(PROVIDER_DEFAULTS));
 
 export const CONNECTION_CATALOG_MAX_CONNECTIONS = 1_024;
 export const CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION = 2_048;
@@ -121,9 +144,7 @@ export function normalizeConnectionCatalogEntryDraft(value: unknown): Connection
     item.relayModelProfiles === undefined
       ? {}
       : nonEmptyRelayProfiles(item.relayModelProfiles, enabledModelIds);
-  if (profiles.relayModelProfiles !== undefined) {
-    rejectForeignProfiles(providerType);
-  }
+  assertProfileFieldsFitProvider(profiles.relayModelProfiles, providerType);
   return {
     slug: decodeConnectionSlug(item.slug),
     name: decodeConnectionName(item.name),
@@ -186,11 +207,7 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
 ): ConnectionCatalogEntryUpdate {
   const update = normalizeConnectionCatalogEntryUpdate(value);
   const baseUrl = normalizeCatalogConnectionBaseUrl(update.baseUrl, providerType);
-  // A `null` (clear stale data) or absent (untouched) instruction is legal on
-  // any provider; only a non-empty table is relay-only.
-  if (update.relayModelProfiles !== undefined && update.relayModelProfiles !== null) {
-    rejectForeignProfiles(providerType);
-  }
+  assertProfileFieldsFitProvider(update.relayModelProfiles, providerType);
   return {
     name: update.name,
     ...(baseUrl === undefined ? {} : { baseUrl }),
@@ -203,15 +220,6 @@ export function normalizeConnectionCatalogEntryUpdateForProvider(
       ? {}
       : { requestBodyOverlay: update.requestBodyOverlay }),
   };
-}
-
-// Relay profiles are an openai-compatible feature: on any other provider the
-// metadata chain is the truth, and a table here would either sit as dead
-// state or silently shadow metadata for the ungated read seams.
-function rejectForeignProfiles(providerType: ProviderType): void {
-  if (providerType !== 'openai-compatible') {
-    throw domainError('relay model profiles are only supported for openai-compatible connections');
-  }
 }
 
 /**
@@ -244,13 +252,14 @@ export function decodeRelayModelProfilesTable(
     const entry = exactRecord(
       rawEntry,
       `relay model profile for ${modelId}`,
-      ['thinkingLevels', 'vision', 'contextWindow'],
+      ['thinkingLevels', 'vision', 'contextWindow', 'serviceTier'],
       [],
     );
     const declared: {
       thinkingLevels?: readonly ThinkingLevel[];
       vision?: boolean;
       contextWindow?: number;
+      serviceTier?: 'fast';
     } = {};
     if (entry.thinkingLevels !== undefined) {
       if (!Array.isArray(entry.thinkingLevels) || entry.thinkingLevels.length === 0) {
@@ -283,12 +292,53 @@ export function decodeRelayModelProfilesTable(
         Number.MAX_SAFE_INTEGER,
       );
     }
+    if (entry.serviceTier !== undefined) {
+      if (entry.serviceTier !== 'fast') {
+        throw domainError(`declared service tier for ${modelId} must be fast`);
+      }
+      declared.serviceTier = 'fast';
+    }
     if (Object.keys(declared).length === 0) {
       throw domainError(`relay model profile for ${modelId} declares nothing`);
     }
     parsed.push([modelId, declared]);
   }
   return Object.fromEntries(parsed);
+}
+
+/**
+ * Which declarations a provider can actually carry.
+ *
+ * `contextWindow` and `vision` state facts about a model. A user has them when
+ * Maka does not — a model newer than the bundled snapshot, or any model on a
+ * provider with no model-list endpoint — and that need is not confined to
+ * relays (#1584), so they are legal everywhere.
+ *
+ * `thinkingLevels` and `serviceTier` name a wire feature instead. They encode
+ * into request shapes only the OpenAI-compatible relays accept —
+ * `reasoning_effort` tiers and priority processing — and
+ * `supportsRelayFastServiceTier` gates the read side by provider for the same
+ * reason. A table carrying them on another provider describes a request Maka
+ * would never send: dead state at best, and on a provider whose wire rejects
+ * the unknown value, a 400 the user cannot explain.
+ */
+function assertProfileFieldsFitProvider(
+  profiles: Readonly<Record<string, RelayModelProfile>> | null | undefined,
+  providerType: ProviderType,
+): void {
+  if (!profiles || isRelayProviderType(providerType)) return;
+  for (const [modelId, profile] of Object.entries(profiles)) {
+    if (profile.thinkingLevels !== undefined) {
+      throw domainError(
+        `declared thinking levels for ${modelId} require an OpenAI-compatible connection`,
+      );
+    }
+    if (profile.serviceTier !== undefined) {
+      throw domainError(
+        `declared service tier for ${modelId} requires an OpenAI-compatible connection`,
+      );
+    }
+  }
 }
 
 // An empty table is not a state worth storing: drafts/canonical entries omit
@@ -431,7 +481,15 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
     const raw = exactRecord(
       item.capabilities,
       'connection model capabilities',
-      ['chat', 'vision', 'reasoning', 'functionCalling', 'imageGeneration', 'webSearch'],
+      [
+        'chat',
+        'vision',
+        'reasoning',
+        'functionCalling',
+        'parallelToolCalls',
+        'imageGeneration',
+        'webSearch',
+      ],
       [],
     );
     capabilities = {};
@@ -566,7 +624,7 @@ function decodeConnectionModelIds(value: unknown): string[] {
 }
 
 export function decodeProviderType(value: unknown): ProviderType {
-  if (typeof value !== 'string' || !PROVIDER_TYPES.has(value)) {
+  if (typeof value !== 'string' || providerDefaultsOf(value) === undefined) {
     throw domainError('connection provider type is not registered');
   }
   return value as ProviderType;

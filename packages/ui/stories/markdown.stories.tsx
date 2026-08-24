@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ChatMessageBubble } from '@astryxdesign/core';
 import { Markdown } from '../src/markdown.js';
@@ -74,6 +93,33 @@ export const TranscriptTurn: Story = {
               '> 注意：新增状态只需补一个行图标。',
               '',
               '如果后续要加新状态，只需补充对应的行图标，不再扩张侧栏信息架构。',
+            ].join('\n')}
+          />
+        </ChatMessageBubble>
+      </div>
+    </ProseFrame>
+  ),
+};
+
+// Real path: chat → an assistant turn containing source code. The wide frame
+// keeps the desktop chat measure, rather than the Storybook viewport, as the
+// visible limit so code-line regressions are easy to compare.
+export const TranscriptCodeBlock: Story = {
+  render: () => (
+    <ProseFrame width={1040}>
+      <div className="maka-turn">
+        <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
+          <Markdown
+            density="compact"
+            text={[
+              '## Runtime connection',
+              '',
+              'The desktop keeps the full request readable without wrapping source code into short visual fragments.',
+              '',
+              '```ts',
+              'const connection = await runtimeHost.connect({ workspaceRoot, expectedRootId, initialConnectionTimeoutMs: 45_000 });',
+              'await connection.send({ type: \'session.message\', sessionId, content, attachments });',
+              '```',
             ].join('\n')}
           />
         </ChatMessageBubble>

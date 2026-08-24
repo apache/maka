@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
@@ -26,7 +45,12 @@ type MessageListUpdater = (
 
 type ToastApi = {
   info(title: string, description?: string): void;
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
 };
 
 /** Active edit-and-resend draft owned by the desktop shell. */
@@ -75,7 +99,6 @@ export function createAppShellRevisionActions(deps: {
   commitRevisionDraft: (draft: TurnRevisionDraft | null) => void;
   revisionDraftRef: RefBox<TurnRevisionDraft | null>;
   toastApi: ToastApi;
-  upsertSessionSummary: (session: DesktopSessionSummary) => void;
 }): AppShellRevisionActions {
   const {
     uiLocale,
@@ -90,7 +113,6 @@ export function createAppShellRevisionActions(deps: {
     commitRevisionDraft,
     revisionDraftRef,
     toastApi,
-    upsertSessionSummary,
   } = deps;
   const copy = getDesktopConversationCopy(uiLocale).actions;
   let revisionPreparationAbort: AbortController | undefined;
@@ -124,7 +146,12 @@ export function createAppShellRevisionActions(deps: {
         message.type === 'user' && message.turnId === turnId,
     );
     if (!userMessage) {
-      toastApi.error(copy.operationFailedTitle, copy.operationFailedFallback);
+      toastApi.error(
+        copy.operationFailedTitle,
+        copy.operationFailedFallback,
+        undefined,
+        { sessionId },
+      );
       return;
     }
 
@@ -309,7 +336,6 @@ export function createAppShellRevisionActions(deps: {
       const prepared = { ...startedDraft, draftSessionId: newSession.id };
       composerRef.current?.setDraft(newSession.id, text);
       commitRevisionDraft(prepared);
-      upsertSessionSummary(newSession);
       openSessionInChat(newSession.id);
       setMessages([]);
       const { messages: preparedMessages, settled } = await readSettledMessages(newSession.id, {
@@ -335,11 +361,15 @@ export function createAppShellRevisionActions(deps: {
       }
       if (activeIdRef.current !== sourceSessionId) return false;
       if (isSessionWorkspaceUnavailableError(error)) {
-        showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, {
+          sessionId: sourceSessionId,
+        });
       } else {
         toastApi.error(
           copy.operationFailedTitle,
           localizedShellErrorMessage(error, copy.operationFailedFallback, uiLocale),
+          undefined,
+          { sessionId: sourceSessionId },
         );
       }
       return false;

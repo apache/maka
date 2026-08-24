@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { z } from 'zod';
@@ -270,51 +289,6 @@ describe('AiSdkBackend deferred tool loading', () => {
     );
   });
 
-  test('high-water "after" hash stays consistent with the final recorded requestShapeHash across a same-turn load', async () => {
-    const records: SendDiagnostics[] = [];
-    const implCalls: string[] = [];
-    const be = backend(loadBrowserThenFinishModel(), implCalls, {
-      recordSendDiagnostics: (r) => records.push(r),
-    });
-    // Real high-water reasons only arise from the synthesis-cache subsystem
-    // (selectSynthesisCacheForReplay needs valid cache blocks + matching
-    // history). Inject just the marker by wrapping buildPriorMessages so this
-    // targets the diagnostics-consistency invariant, not that subsystem.
-    type PriorReplayish = { contextBudget?: Record<string, unknown> };
-    const patch = be as unknown as {
-      buildPriorMessages: (scope: unknown, input: unknown) => Promise<PriorReplayish>;
-    };
-    const realBuildPriorMessages = patch.buildPriorMessages.bind(be);
-    patch.buildPriorMessages = async (scope: unknown, input: unknown) => {
-      const prior = await realBuildPriorMessages(scope, input);
-      return {
-        ...prior,
-        contextBudget: {
-          ...(prior.contextBudget ?? {}),
-          highWaterReason: 'synthesis_cache_select',
-        },
-      };
-    };
-
-    await drain(be.send({ turnId: 'turn-1', text: 'load browser', context: [] }));
-
-    assert.equal(records.length, 1, 'one llm-call record for the turn');
-    const cb = records[0]?.contextBudget;
-    assert.ok(cb?.highWaterRequestShapeHashAfter, 'a high-water "after" hash was recorded');
-    // The same-turn load makes the final active set differ from step-0, so this
-    // equality fails if "after" is left at the step-0 hash (the bug).
-    assert.equal(
-      cb.highWaterRequestShapeHashAfter,
-      records[0]?.requestShapeHash,
-      'high-water "after" must equal the final recorded requestShapeHash',
-    );
-    assert.equal(
-      cb.highWaterRequestShapeHashBefore,
-      undefined,
-      'first turn has no pre-turn baseline',
-    );
-  });
-
   test('economy off: every tool stays advertised, no connector', async () => {
     const captured: string[][] = [];
     const implCalls: string[] = [];
@@ -544,7 +518,7 @@ describe('AiSdkBackend deferred agent tools', () => {
     const spawnCalls: unknown[] = [];
     await drainWithDurableTurn(
       agentBackend(loadAgentThenSpawnModel(captured), spawnCalls, {
-        permissionMode: 'execute',
+        permissionMode: 'ask',
         durable,
       }).send(durable.sendInput({ runId: 'parent-run' })),
       durable,
@@ -924,7 +898,6 @@ function header(permissionMode: SessionHeader['permissionMode'] = 'ask'): Sessio
     workspaceRoot: '/tmp/maka',
     cwd: '/tmp/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,

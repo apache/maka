@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { SessionStartMode } from '@maka/core/explore-agent';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
@@ -26,7 +45,12 @@ type ComposerFocusHandle = {
 };
 
 type ToastApi = {
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { profileId: string },
+  ): void;
 };
 
 export interface AppShellSessionStartActions {
@@ -55,7 +79,11 @@ export function createAppShellSessionStartActions(deps: {
    * shared with the send path and the session-event stream. It carries the
    * 打开模型设置 action, which is the only thing that resolves this state.
    */
-  showModelSetupToast: (description: string, reason?: string) => void;
+  showModelSetupToast: (
+    description: string,
+    reason?: string,
+    diagnosticTarget?: { profileId: string },
+  ) => void;
   toastApi: ToastApi;
 }): AppShellSessionStartActions {
   const {
@@ -109,7 +137,9 @@ export function createAppShellSessionStartActions(deps: {
       // not be silently relabelled as "your setup is incomplete".
       if (isSessionWorkspaceUnavailableError(error)) {
         if (isShellSurfaceOwnerActive(owner)) {
-          showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
+          showSessionWorkspaceUnavailableToast(toastApi, uiLocale, {
+            profileId: newTaskTarget.profileId,
+          });
         }
         return false;
       }
@@ -131,7 +161,11 @@ export function createAppShellSessionStartActions(deps: {
         refreshOnboarding();
         if (isShellSurfaceOwnerActive(owner)) {
           const reason = noRealConnectionReasonFromError(error);
-          showModelSetupToast(noRealConnectionSetupDescription(reason, uiLocale), reason);
+          showModelSetupToast(
+            noRealConnectionSetupDescription(reason, uiLocale),
+            reason,
+            { profileId: newTaskTarget.profileId },
+          );
         }
         return false;
       }
@@ -139,6 +173,8 @@ export function createAppShellSessionStartActions(deps: {
         toastApi.error(
           copy.sessionStartFailedTitle,
           localizedShellErrorMessage(error, copy.sessionStartFailedFallback, uiLocale),
+          undefined,
+          { profileId: newTaskTarget.profileId },
         );
       }
       return false;

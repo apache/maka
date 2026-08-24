@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { setImmediate as delayImmediate } from 'node:timers/promises';
 import test from 'node:test';
@@ -11,6 +30,10 @@ import {
   SESSION_TRANSCRIPT_PAGE_MAX_BYTES,
   type SubscriptionFrame,
 } from '../protocol/index.js';
+import {
+  decodeSubscriptionFrame,
+  SESSION_LIVE_DELTA_MAX_BYTES,
+} from '../protocol/session-continuity.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import {
   type CanonicalSessionProjection,
@@ -381,7 +404,7 @@ test('detached canonical refreshes coalesce before Store I/O', async () => {
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
-  projection = canonical({ lastUsedAt: 2 });
+  projection = canonical({ metadataRevision: 2 });
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
   await refreshEntered.promise;
@@ -410,18 +433,17 @@ test('in-flight canonical refresh observes an invalidation after its first read'
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
-  const stale = canonical({ lastUsedAt: 2 });
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
   await waitFor(() => reads === 2);
-  firstRefreshRead.resolve(stale);
-  projection = canonical({ lastUsedAt: 3 });
+  firstRefreshRead.resolve(canonical({ metadataRevision: 2 }));
+  projection = canonical({ metadataRevision: 3 });
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
 
   await waitFor(() => reads === 3 && sink.frames.length === 2);
   assert.deepEqual(
     sink.frames.map((frame) =>
       frame.kind === 'subscription.session_projection'
-        ? frame.snapshot.session.lastUsedAt
+        ? frame.snapshot.session.metadataRevision
         : undefined,
     ),
     [2, 3],
@@ -522,7 +544,8 @@ test('coalesces typed domain invalidations without publishing continuity project
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'plan');
-  await waitFor(() => sink.frames.length === 2);
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'usage');
+  await waitFor(() => sink.frames.length === 3);
 
   assert.deepEqual(
     sink.frames.map((frame) =>
@@ -533,6 +556,7 @@ test('coalesces typed domain invalidations without publishing continuity project
     [
       { kind: 'subscription.session_domain_changed', sequence: 1, domain: 'task' },
       { kind: 'subscription.session_domain_changed', sequence: 2, domain: 'plan' },
+      { kind: 'subscription.session_domain_changed', sequence: 3, domain: 'usage' },
     ],
   );
   coordinator.close();
@@ -625,8 +649,14 @@ test('slow subscriber receives a terminal eviction without delaying another subs
   const fast = await open(coordinator, 'connection-fast');
   fastConnection.activate(fast.subscriptionId);
 
+  // Alternate streams so queued deltas cannot coalesce: this exercises the
+  // eviction path for a genuinely undrainable backlog.
   for (let index = 1; index <= 32; index += 1) {
-    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index));
+    await coordinator.acceptRuntimeEvent(
+      SESSION_ID,
+      'run-1',
+      textEvent(index, `message-${index % 2}`),
+    );
   }
   slowConnection.activate(slow.subscriptionId);
   await waitFor(() => slowSink.frames.length === 1 && fastSink.frames.length === 32);
@@ -642,6 +672,161 @@ test('slow subscriber receives a terminal eviction without delaying another subs
     fastSink.frames.map((frame) => frame.sequence),
     Array.from({ length: 32 }, (_, index) => index + 1),
   );
+  coordinator.close();
+});
+
+test('coalesces queued assistant deltas instead of evicting a slow subscriber', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const slowSink = new RecordingSink();
+  const fastSink = new RecordingSink();
+  const slowConnection = coordinator.attachConnection('connection-slow', slowSink);
+  const fastConnection = coordinator.attachConnection('connection-fast', fastSink);
+  const slow = await open(coordinator, 'connection-slow');
+  const fast = await open(coordinator, 'connection-fast');
+  fastConnection.activate(fast.subscriptionId);
+
+  // A same-stream delta flood that used to overflow the 32-frame budget and
+  // evict the subscriber before it ever activated.
+  for (let index = 1; index <= 64; index += 1) {
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(index));
+  }
+  slowConnection.activate(slow.subscriptionId);
+  await waitFor(() => slowSink.frames.length === 1 && fastSink.frames.length === 64);
+
+  // The lagging subscriber receives one merged, content-identical delta: no
+  // eviction, absolute offsets preserved, no sequence spent on absorbed
+  // frames.
+  const merged = slowSink.frames[0];
+  assert.equal(merged?.kind, 'subscription.session_delta');
+  if (merged?.kind !== 'subscription.session_delta') return;
+  assert.equal(merged.sequence, 1);
+  assert.equal(merged.delta.startOffset, 0);
+  assert.equal(
+    merged.delta.text,
+    Array.from({ length: 64 }, (_, index) => `chunk-${index + 1}`).join(''),
+  );
+
+  // The next enqueue continues the sequence exactly where the merged frame
+  // left it, and the absolute offset continues the stream.
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(65));
+  await waitFor(() => slowSink.frames.length === 2);
+  const next = slowSink.frames[1];
+  assert.equal(next?.kind, 'subscription.session_delta');
+  if (next?.kind !== 'subscription.session_delta') return;
+  assert.equal(next.sequence, 2);
+  assert.equal(next.delta.startOffset, merged.delta.text.length);
+  assert.equal(next.delta.text, 'chunk-65');
+  coordinator.close();
+});
+
+test('keeps stream, kind, and completion boundaries when coalescing deltas', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1, 'message-1'));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2, 'message-1'));
+  // A thinking delta on the same message is a different delta kind: no merge.
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    thinkingEvent('thinking_delta', 'thinking-1', 'think'),
+  );
+  // A different message stream: no merge.
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(3, 'message-2'));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(4, 'message-2'));
+  // Completion closes the stream and must land as its own frame.
+  await coordinator.acceptRuntimeEvent(
+    SESSION_ID,
+    'run-1',
+    textCompleteEvent('message-1', 'chunk-1chunk-2'),
+  );
+
+  connection.activate(opened.subscriptionId);
+  await waitFor(() => sink.frames.length === 4);
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.session_delta'
+        ? {
+            sequence: frame.sequence,
+            kind: frame.delta.kind,
+            messageId: frame.delta.messageId,
+            text: frame.delta.text,
+            complete: frame.delta.complete === true,
+          }
+        : frame.kind,
+    ),
+    [
+      {
+        sequence: 1,
+        kind: 'text',
+        messageId: 'message-1',
+        text: 'chunk-1chunk-2',
+        complete: false,
+      },
+      { sequence: 2, kind: 'thinking', messageId: 'thinking-1', text: 'think', complete: false },
+      {
+        sequence: 3,
+        kind: 'text',
+        messageId: 'message-2',
+        text: 'chunk-3chunk-4',
+        complete: false,
+      },
+      { sequence: 4, kind: 'text', messageId: 'message-1', text: '', complete: true },
+    ],
+  );
+  coordinator.close();
+});
+
+test('keeps coalesced deltas within the protocol text and frame limits', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+
+  // Each delta is individually protocol-valid, but merging the two would
+  // push the text past SESSION_LIVE_DELTA_MAX_BYTES: the second must stay
+  // its own frame so the receiver-side decoder does not reject it.
+  const firstText = 'a'.repeat(SESSION_LIVE_DELTA_MAX_BYTES - 1024);
+  const secondText = 'b'.repeat(SESSION_LIVE_DELTA_MAX_BYTES - 1024);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(1), text: firstText });
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', { ...textEvent(2), text: secondText });
+  // A small continuation still merges into the new tail.
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(3));
+
+  connection.activate(opened.subscriptionId);
+  await waitFor(() => sink.frames.length === 2);
+
+  const first = sink.frames[0];
+  assert.equal(first?.kind, 'subscription.session_delta');
+  if (first?.kind !== 'subscription.session_delta') return;
+  assert.equal(first.sequence, 1);
+  assert.equal(first.delta.startOffset, 0);
+  assert.equal(first.delta.text, firstText);
+
+  const second = sink.frames[1];
+  assert.equal(second?.kind, 'subscription.session_delta');
+  if (second?.kind !== 'subscription.session_delta') return;
+  assert.equal(second.sequence, 2);
+  assert.equal(second.delta.startOffset, firstText.length);
+  assert.equal(second.delta.text, secondText + 'chunk-3');
+
+  // Every emitted frame passes the receiver-side decoder, including its
+  // 16 KiB delta-text and 64 KiB frame limits.
+  for (const frame of sink.frames) decodeSubscriptionFrame(frame);
   coordinator.close();
 });
 
@@ -1643,6 +1828,89 @@ test('tool_result clears retained tool_result_preview so a later open does not s
   coordinator.close();
 });
 
+test('publishes only the minimal sandbox failure reason from a tool result', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_result',
+    id: 'result-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    isError: true,
+    content: {
+      kind: 'text',
+      text: 'sensitive tool output',
+      sandboxFailure: { reason: 'sandbox_boundary_required' },
+    },
+  });
+  await waitFor(() => sink.frames.length === 1);
+
+  const [frame] = sink.frames;
+  assert.equal(frame?.kind, 'subscription.session_event');
+  if (frame?.kind !== 'subscription.session_event') return;
+  assert.deepEqual(frame.event, {
+    type: 'tool_result',
+    id: 'result-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    status: 'errored',
+    sandboxFailureReason: 'sandbox_boundary_required',
+  });
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('publishes only the bounded shell-run correlation from poll args', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+  const ref = 'maka://runtime/background-tasks/bg-1';
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_start',
+    id: 'start-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    toolName: 'Read',
+    args: { ref, unrelated: 'not published' },
+  });
+  await waitFor(() => sink.frames.length === 1);
+
+  const [frame] = sink.frames;
+  assert.equal(frame?.kind, 'subscription.session_event');
+  if (frame?.kind !== 'subscription.session_event') return;
+  assert.deepEqual(frame.event, {
+    type: 'tool_start',
+    id: 'start-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    toolName: 'Read',
+    shellRunRef: ref,
+  });
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
 class RecordingSink implements SessionContinuityFrameSink {
   readonly frames: SubscriptionFrame[] = [];
 
@@ -1777,7 +2045,6 @@ function connectionContext(connectionId: string): ConnectionContext {
   return {
     hostEpoch: HOST_EPOCH,
     connectionId,
-    surface: 'tui',
     principal: 'local_os_user',
     acquireResidency: () => ({ release() {} }),
   };
@@ -1785,7 +2052,7 @@ function connectionContext(connectionId: string): ConnectionContext {
 
 function canonical(
   overrides: {
-    lastUsedAt?: number;
+    metadataRevision?: number;
     rootTurn?: CanonicalSessionProjection['rootTurn'];
     interactions?: CanonicalSessionProjection['interactions'];
     queue?: CanonicalSessionProjection['queue'];
@@ -1794,10 +2061,9 @@ function canonical(
   return {
     session: {
       sessionId: SESSION_ID,
-      metadataRevision: 1,
+      metadataRevision: overrides.metadataRevision ?? 1,
       status: 'active',
       createdAt: 1,
-      lastUsedAt: overrides.lastUsedAt ?? 1,
       isArchived: false,
     },
     rootTurn:
@@ -1882,13 +2148,13 @@ function pendingInteraction() {
   };
 }
 
-function textEvent(index: number) {
+function textEvent(index: number, messageId = 'message-1') {
   return {
     type: 'text_delta' as const,
     id: `event-${index}`,
     turnId: 'turn-1',
     ts: index,
-    messageId: 'message-1',
+    messageId,
     text: `chunk-${index}`,
   };
 }

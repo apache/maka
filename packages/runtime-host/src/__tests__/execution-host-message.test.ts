@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -98,8 +117,8 @@ import {
 test('steering becomes durable and ordered followups automatically start the next root', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const firstTurnId = randomUUID();
     await first.startTurn({
       sessionId: fixture.sessionId,
@@ -226,8 +245,8 @@ test('steering becomes durable and ordered followups automatically start the nex
 test('explicit retract is durable across connections and prevents successor admission', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
       await first.startTurn({
@@ -258,7 +277,7 @@ test('explicit retract is durable across connections and prevents successor admi
     );
 
     await second.close();
-    const retrying = await connectClient(fixture.root, 'run');
+    const retrying = await connectClient(fixture.root);
     assert.deepEqual(await retrying.request('queue.retract', retractInput), retracted);
 
     const terminal = await first.stopTurn({
@@ -282,8 +301,8 @@ test('explicit retract is durable across connections and prevents successor admi
 test('interrupt atomically retracts queued followup, stops the exact run, and is idempotent', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
       await first.startTurn({
@@ -349,7 +368,7 @@ test('interrupt atomically retracts queued followup, stops the exact run, and is
 test('old-Epoch Message submit returns only exact durable outcomes', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
+    const first = await connectClient(fixture.root);
     const rootMessageId = randomUUID();
     const rootContent = { text: `durable root ${'x'.repeat(360)}` };
     const rootResult = await first.request('turn.message.submit', {
@@ -376,7 +395,7 @@ test('old-Epoch Message submit returns only exact durable outcomes', async () =>
     await fixture.stopHost(firstHost);
 
     const successorHost = await fixture.startHost();
-    const successor = await connectClient(fixture.root, 'run');
+    const successor = await connectClient(fixture.root);
     assert.deepEqual(
       await successor.request('turn.message.submit', {
         originHostEpoch: firstHost.hostEpoch,

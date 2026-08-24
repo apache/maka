@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ScheduledTask } from '@maka/core/scheduled-task';
-import { AlertCircle, Blocks, Download, Settings, SquarePen, Timer } from './icons.js';
+import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } from './icons.js';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
@@ -14,6 +33,11 @@ export function SessionSidebarNav(props: {
   moduleMemory?: NavModuleMemory;
   onSelect(selection: NavSelection): void;
   onNew(): void;
+  workHubEntry?: {
+    active: boolean;
+    label: string;
+    onSelect(): void;
+  };
 }) {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
@@ -44,6 +68,15 @@ export function SessionSidebarNav(props: {
         onClick={props.onNew}
         endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
       />
+      {props.workHubEntry ? (
+        <SideNavItem
+          label={props.workHubEntry.label}
+          icon={Network}
+          size="md"
+          isSelected={props.workHubEntry.active}
+          onClick={props.workHubEntry.onSelect}
+        />
+      ) : null}
       {/* No 任务 row. Expanded, the list below IS that row's destination, and a
           control that selects what is already on screen under it is the same
           redundancy as the 会话 list heading this change deleted one row down.
@@ -89,7 +122,25 @@ export type SidebarUpdateReminder = {
   latestVersion: string;
 };
 
+/**
+ * What build is running, shown where the user already looks to reach Settings.
+ *
+ * The About page has carried this since `PR-BUILD-HYGIENE-0`, but reaching it
+ * takes two clicks and a scroll — so the question it answers ("is this the
+ * release or the tree I just built?") is asked in the wrong place to be
+ * answered by it. On the rail it costs a glance.
+ *
+ * `commit` is present only on a dev build (`build-info.ts` resolves it from
+ * `.git/HEAD` and returns null once packaged), which is exactly when the
+ * version number alone cannot distinguish two builds.
+ */
+export type SidebarBuildStamp = {
+  version: string;
+  commit?: string | null;
+};
+
 export function SessionSidebarFooter(props: {
+  buildStamp?: SidebarBuildStamp;
   updateReminder?: SidebarUpdateReminder;
   onOpenSettings(): void;
   onOpenUpdate?(): void;
@@ -97,6 +148,14 @@ export function SessionSidebarFooter(props: {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const reminder = props.updateReminder;
+  // `v0.1.11` on a release, `v0.1.11 · a1b2c3d` on a dev build. Seven hex
+  // characters is what `git log --oneline` shows and what a commit is quoted
+  // as in review, so it is the form a reader can act on without reformatting.
+  const stamp = props.buildStamp
+    ? `v${props.buildStamp.version}${
+        props.buildStamp.commit ? ` · ${props.buildStamp.commit.slice(0, 7)}` : ''
+      }`
+    : undefined;
   const updateAction = reminder && props.onOpenUpdate
     ? {
         // One sentence, serving as both the tooltip and the accessible name.
@@ -143,6 +202,15 @@ export function SessionSidebarFooter(props: {
             onClick={props.onOpenSettings}
           />
         </div>
+        {stamp && (
+          // Between Settings and the update button, not after it: the update
+          // button is an action and keeps the edge, where a control is
+          // reached. The stamp is a label — it reads on the way to that edge
+          // and never moves when the button appears or goes away.
+          <span className="maka-sidebar-build-stamp" title={copy.buildStamp(stamp)}>
+            {stamp}
+          </span>
+        )}
         {updateAction && (
           <Tooltip content={updateAction.label}>
             <IconButton

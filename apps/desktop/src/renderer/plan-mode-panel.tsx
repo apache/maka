@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useCallback, useEffect, useId, useRef, useState, type JSX } from 'react';
 import type { PlanExecutionStep, PlanProposal, PlanSessionState } from '@maka/core/plan';
 import type { SessionEvent } from '@maka/core/events';
@@ -52,7 +71,6 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
         event.type === 'plan_submitted'
         || event.type === 'complete'
         || event.type === 'abort'
-        || isPlanToolResult(event)
       ) {
         refreshOrReport();
       }
@@ -316,16 +334,6 @@ export function PlanExecutionPanel(props: {
       {planMode.error && <Banner status="error" role="alert" title={planMode.error} />}
     </section>
   );
-}
-
-function isPlanToolResult(event: SessionEvent): boolean {
-  if (event.type !== 'tool_result' || event.content.kind !== 'json') return false;
-  const value = event.content.value;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const kind = (value as { kind?: unknown }).kind;
-  return kind === 'plan_progress_updated'
-    || kind === 'plan_execution_completed'
-    || kind === 'plan_execution_cancelled';
 }
 
 function proposalStatusLabel(

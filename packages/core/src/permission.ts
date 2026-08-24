@@ -1,11 +1,56 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /** Legacy permission payloads and shared tool-category compatibility types. */
 
 // ============================================================================
 // Mode + Tool categories
 // ============================================================================
 
-export const PERMISSION_MODES = ['explore', 'ask', 'execute', 'bypass'] as const;
+export const PERMISSION_MODES = ['explore', 'ask', 'bypass'] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
+
+/**
+ * A mode that was removed but still appears in records written before the
+ * removal. It never had behavior of its own — `execute` compiled to the same
+ * profile as `ask`, displayed as `ask`, and produced the same execution
+ * boundary — so folding it costs nothing and is not a downgrade.
+ */
+const RETIRED_PERMISSION_MODES: Readonly<Record<string, PermissionMode>> = {
+  execute: 'ask',
+};
+
+/**
+ * A permission mode read back from a persisted record, or `undefined` when the
+ * value is not one.
+ *
+ * Decoders use this instead of {@link isPermissionMode} so a retired mode
+ * stays readable: the record is old, not malformed, and refusing it would make
+ * the Session, run or task it belongs to unopenable. New input and wire values
+ * use the strict check — nothing should still be *sending* a retired mode.
+ */
+export function decodePersistedPermissionMode(value: unknown): PermissionMode | undefined {
+  if (typeof value !== 'string') return undefined;
+  const retired = RETIRED_PERMISSION_MODES[value];
+  if (retired !== undefined) return retired;
+  return isPermissionMode(value) ? value : undefined;
+}
 
 export const APPROVALS_REVIEWERS = ['user', 'auto_review'] as const;
 export type ApprovalsReviewer = (typeof APPROVALS_REVIEWERS)[number];
@@ -15,14 +60,6 @@ export type ApprovalRiskLevel = (typeof APPROVAL_RISK_LEVELS)[number];
 
 export function isPermissionMode(value: unknown): value is PermissionMode {
   return typeof value === 'string' && (PERMISSION_MODES as readonly string[]).includes(value);
-}
-
-/** Whether a requested mode stays within an immutable creation-time ceiling. */
-export function isPermissionModeWithinCeiling(
-  mode: PermissionMode,
-  ceiling: PermissionMode,
-): boolean {
-  return PERMISSION_MODES.indexOf(mode) <= PERMISSION_MODES.indexOf(ceiling);
 }
 
 /** Canonical category names use Claude SDK terminology. Pi adapter MUST

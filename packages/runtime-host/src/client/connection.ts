@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import { connect } from 'node:net';
@@ -19,7 +38,7 @@ import {
   type ClientCapabilityHostFrame,
   type ClientCapabilityReplaceResult,
   type ClientCapabilityUnregisterResult,
-  type ClientSurface,
+  type ClientHello,
   type ConfigurationChangedFrame,
   type ContextCompactInput,
   type ContextCompactResult,
@@ -99,7 +118,6 @@ const MAX_WEBSOCKET_BUFFERED_CHUNKS = 256;
 
 export interface ConnectRuntimeHostInput {
   rootPath: string;
-  surface: ClientSurface;
   protocol: ProtocolRange;
   compositionId?: string;
   generation?: string;
@@ -168,7 +186,6 @@ export interface ConnectRemoteRuntimeHostInput {
   readonly credential: string;
   readonly expectedRootId: string;
   readonly compositionId: string;
-  readonly surface: ClientSurface;
   readonly protocol: ProtocolRange;
   readonly clientInstanceId?: string;
   readonly connectTimeoutMs?: number;
@@ -200,10 +217,14 @@ export type ConnectRemoteRuntimeHostResult =
     };
 
 type ConnectResolvedRuntimeHostResult =
-  | ConnectRuntimeHostResult
+  | Exclude<ConnectRuntimeHostResult, { kind: 'unavailable' }>
+  | (Extract<ConnectRuntimeHostResult, { kind: 'unavailable' }> & {
+      endpointConnected: boolean;
+    })
   | {
       kind: 'election_deadline_elapsed';
       endpointConnected: boolean;
+      registration?: HostRegistration;
     };
 
 class ElectionDeadlineElapsedError extends Error {
@@ -1125,7 +1146,6 @@ export async function connectRemoteRuntimeHost(
     try {
       const result = await exchangeRuntimeHostHandshake({
         transport,
-        surface: input.surface,
         protocol: input.protocol,
         clientInstanceId: normalized.clientInstanceId,
         compositionId,
@@ -1199,6 +1219,13 @@ function finalizeConnectRuntimeHostResult(
       reason: result.endpointConnected ? 'handshake_failed' : 'connect_failed',
     };
   }
+  if (result.kind === 'unavailable') {
+    return {
+      kind: 'unavailable',
+      reason: result.reason,
+      ...(result.registration ? { registration: result.registration } : {}),
+    };
+  }
   return result;
 }
 
@@ -1238,24 +1265,36 @@ export async function connectResolvedRuntimeHost(
     );
   } catch (error) {
     if (error instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
     if (error instanceof RuntimeHostRegistrationError && error.code === 'invalid_registration') {
-      return { kind: 'unavailable', reason: 'invalid_registration' };
+      return { kind: 'unavailable', reason: 'invalid_registration', endpointConnected: false };
     }
-    return { kind: 'unavailable', reason: 'connect_failed' };
+    return { kind: 'unavailable', reason: 'connect_failed', endpointConnected: false };
   }
-  if (!registration) return { kind: 'unavailable', reason: 'not_registered' };
+  if (!registration) {
+    return { kind: 'unavailable', reason: 'not_registered', endpointConnected: false };
+  }
   if (registration.rootId !== input.capability.rootId) {
-    return { kind: 'unavailable', reason: 'root_mismatch', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'root_mismatch',
+      endpointConnected: false,
+      registration,
+    };
   }
   const connectDeadline = phaseDeadline(connectTimeoutMs, input.electionDeadline);
   const connectBudget = remainingTimeout(connectDeadline.at);
   if (connectBudget === undefined) {
     if (connectDeadline.exhaustsElection) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
-    return { kind: 'unavailable', reason: 'connect_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'connect_failed',
+      endpointConnected: false,
+      registration,
+    };
   }
   let transport: FramedTransport;
   try {
@@ -1266,18 +1305,28 @@ export async function connectResolvedRuntimeHost(
     );
   } catch (error) {
     if (error instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: false };
+      return { kind: 'election_deadline_elapsed', endpointConnected: false, registration };
     }
-    return { kind: 'unavailable', reason: 'connect_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'connect_failed',
+      endpointConnected: false,
+      registration,
+    };
   }
   const handshakeDeadline = phaseDeadline(handshakeTimeoutMs, input.electionDeadline);
   const handshakeBudget = remainingTimeout(handshakeDeadline.at);
   if (handshakeBudget === undefined) {
     transport.abort();
     if (handshakeDeadline.exhaustsElection) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: true };
+      return { kind: 'election_deadline_elapsed', endpointConnected: true, registration };
     }
-    return { kind: 'unavailable', reason: 'handshake_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'handshake_failed',
+      endpointConnected: true,
+      registration,
+    };
   }
   let handshakeTimeoutError: Error | undefined;
   const handshakeTimer = setTimeout(() => {
@@ -1296,7 +1345,6 @@ export async function connectResolvedRuntimeHost(
       : input.protocol;
     const result = await exchangeRuntimeHostHandshake({
       transport,
-      surface: input.surface,
       protocol: input.protocol,
       helloProtocol,
       clientInstanceId: input.clientInstanceId,
@@ -1334,8 +1382,11 @@ export async function connectResolvedRuntimeHost(
       result.handshake.generation !== generation
     ) {
       return registration.lifecycleMode === 'ephemeral' &&
+        result.handshake.state === 'ready' &&
         result.handshake.activity !== undefined &&
-        result.handshake.activity.connections === 0
+        result.handshake.activity.connections === 0 &&
+        result.handshake.activity.activeOperations === 0 &&
+        result.handshake.activity.residencies.length === 0
         ? {
             kind: 'upgrade_required',
             registration,
@@ -1356,18 +1407,38 @@ export async function connectResolvedRuntimeHost(
     transport.abort();
     const failure = handshakeTimeoutError ?? error;
     if (failure instanceof RuntimeHostEpochMismatchError) {
-      return { kind: 'unavailable', reason: 'epoch_mismatch', registration };
+      return {
+        kind: 'unavailable',
+        reason: 'epoch_mismatch',
+        endpointConnected: true,
+        registration,
+      };
     }
     if (failure instanceof RuntimeHostRootMismatchError) {
-      return { kind: 'unavailable', reason: 'root_mismatch', registration };
+      return {
+        kind: 'unavailable',
+        reason: 'root_mismatch',
+        endpointConnected: true,
+        registration,
+      };
     }
     if (failure instanceof RuntimeHostCompositionMismatchError) {
-      return { kind: 'unavailable', reason: 'composition_mismatch', registration };
+      return {
+        kind: 'unavailable',
+        reason: 'composition_mismatch',
+        endpointConnected: true,
+        registration,
+      };
     }
     if (failure instanceof ElectionDeadlineElapsedError) {
-      return { kind: 'election_deadline_elapsed', endpointConnected: true };
+      return { kind: 'election_deadline_elapsed', endpointConnected: true, registration };
     }
-    return { kind: 'unavailable', reason: 'handshake_failed', registration };
+    return {
+      kind: 'unavailable',
+      reason: 'handshake_failed',
+      endpointConnected: true,
+      registration,
+    };
   } finally {
     clearTimeout(handshakeTimer);
   }
@@ -1375,7 +1446,6 @@ export async function connectResolvedRuntimeHost(
 
 interface ExchangeRuntimeHostHandshakeInput {
   readonly transport: RuntimeHostMessageTransport;
-  readonly surface: ClientSurface;
   readonly protocol: ProtocolRange;
   readonly helloProtocol?: ProtocolRange;
   readonly hostProtocol?: ProtocolRange;
@@ -1391,6 +1461,17 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly connectionResource?: RuntimeHostConnectionResource;
 }
 
+interface LegacySurfaceClientHello extends ClientHello {
+  /**
+   * Released Hosts through v0.1.11 require this field while decoding the
+   * bootstrap hello, before compatibility negotiation can run. Keep the
+   * sentinel private until the minimum supported Host release has a tolerant
+   * decoder. Tracked by #3297. This is not part of the Client identity seen by
+   * current Hosts.
+   */
+  readonly surface: 'desktop';
+}
+
 async function exchangeRuntimeHostHandshake(
   input: ExchangeRuntimeHostHandshakeInput,
 ): Promise<
@@ -1399,10 +1480,10 @@ async function exchangeRuntimeHostHandshake(
   | { kind: 'draining' }
 > {
   const helloProtocol = input.helloProtocol ?? input.protocol;
-  await writeClientFrame(input.transport, {
+  const hello: LegacySurfaceClientHello = {
     kind: 'hello',
     clientInstanceId: input.clientInstanceId,
-    surface: input.surface,
+    surface: 'desktop',
     protocolMin: helloProtocol.min,
     protocolMax: helloProtocol.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -1411,7 +1492,8 @@ async function exchangeRuntimeHostHandshake(
     ...(input.takeoverHostEpoch === undefined
       ? {}
       : { takeover: { expectedHostEpoch: input.takeoverHostEpoch } }),
-  });
+  };
+  await writeClientFrame(input.transport, hello);
   const handshake = decodeHostFrame(await input.transport.read(0));
   if (!('kind' in handshake)) {
     throw new Error('Runtime Host returned an operation response before handshake');

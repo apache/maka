@@ -1,8 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
 import { dependencyPatchesCachePlugin } from './vite-dependency-patches.js';
+import { bundledNpmPackagesPlugin } from './vite-bundled-packages.js';
 
 /**
  * PR-ICONS-FULL-REPLACE-0 (WAWQAQ msg `60064e2d` 2026-06-24): point the
@@ -22,7 +42,7 @@ export default defineConfig({
   // Vite hashes plugin names into its dependency-cache key. patch-package does
   // not change package-lock.json, so carry the patch contents in that key while
   // keeping every Astryx entry in one optimized module graph.
-  plugins: [react(), dependencyPatchesCachePlugin(REPO_ROOT)],
+  plugins: [react(), dependencyPatchesCachePlugin(REPO_ROOT), bundledNpmPackagesPlugin()],
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: [

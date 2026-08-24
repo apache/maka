@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
@@ -300,6 +319,145 @@ test('reconnect lifecycle quiescence suppresses replacement until it is resumed'
   assert.equal(connectCalls, 1);
   await lifecycle.close();
 });
+
+test('reconnect delay escalates past maxMs while the Host never stabilizes', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const delays: number[] = [];
+  let attempts = 0;
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    initial: first.connection,
+    connect: async () => {
+      attempts += 1;
+      throw new Error('connect failed');
+    },
+    backoff: {
+      minMs: 1,
+      maxMs: 2,
+      unstableMaxMs: 20,
+      random: () => 0.5,
+      wait: async (delayMs) => {
+        await yieldToEventLoop();
+        delays.push(delayMs);
+      },
+    },
+  });
+  try {
+    first.disconnect();
+    await waitForCondition(() => attempts >= 8);
+    assert.deepEqual(delays.slice(0, 3), [1, 2, 4]);
+    assert.ok(Math.max(...delays) > 2);
+    assert.equal(Math.max(...delays), 20);
+  } finally {
+    await lifecycle.close();
+  }
+});
+
+test('a stabilized connection restarts the reconnect delay ladder', async () => {
+  let clock = 1_000_000;
+  const first = connectionHarness('first', () => undefined);
+  const second = connectionHarness('second', () => undefined);
+  const reconnected = deferred();
+  const delays: number[] = [];
+  let attempts = 0;
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    initial: first.connection,
+    connect: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        reconnected.resolve();
+        return second.connection;
+      }
+      throw new Error('connect failed');
+    },
+    backoff: {
+      minMs: 3,
+      maxMs: 5,
+      unstableMaxMs: 40,
+      stableConnectionMs: 50,
+      now: () => clock,
+      random: () => 0.5,
+      wait: async (delayMs) => {
+        await yieldToEventLoop();
+        clock += delayMs;
+        delays.push(delayMs);
+      },
+    },
+  });
+  try {
+    first.disconnect();
+    await reconnected.promise;
+    clock += 60;
+    second.disconnect();
+    await waitForCondition(() => delays.length >= 3);
+    // The regular ladder clamps at maxMs (5) before the never-stabilized
+    // escalation engages on the next doubling.
+    assert.deepEqual(delays.slice(0, 2), [3, 5]);
+    assert.ok(delays[2]! > 5);
+  } finally {
+    await lifecycle.close();
+  }
+});
+
+test('reconnect backoff rejects an unstable ceiling below maxMs', async () => {
+  const first = connectionHarness('first', () => undefined);
+  await assert.rejects(
+    startRuntimeHostReconnectLifecycle({
+      initial: first.connection,
+      connect: async () => first.connection,
+      backoff: { minMs: 1, maxMs: 10, unstableMaxMs: 5 },
+    }),
+    (error: unknown) => error instanceof RangeError && /unstableMaxMs/u.test(error.message),
+  );
+});
+
+test('an omitted unstableMaxMs stays compatible with a large maxMs', async () => {
+  // Pre-escalation callers could legally set maxMs above the 60s default
+  // ceiling; omitting the new field must derive the ceiling from maxMs rather
+  // than reject a previously valid configuration.
+  const first = connectionHarness('first', () => undefined);
+  const delays: number[] = [];
+  let attempts = 0;
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    initial: first.connection,
+    connect: async () => {
+      attempts += 1;
+      throw new Error('connect failed');
+    },
+    backoff: {
+      minMs: 100,
+      maxMs: 90_000,
+      random: () => 0.5,
+      wait: async (delayMs) => {
+        await yieldToEventLoop();
+        delays.push(delayMs);
+      },
+    },
+  });
+  try {
+    first.disconnect();
+    // 100ms doubling reaches the derived 90s ceiling on the 11th attempt.
+    await waitForCondition(() => attempts >= 12);
+    assert.ok(delays.every((delay) => delay >= 100));
+    // The derived ceiling is max(60_000, 90_000) = 90_000, not the 60s default.
+    assert.equal(Math.max(...delays), 90_000);
+    assert.ok(delays.slice(-1)[0]! >= 90_000);
+  } finally {
+    await lifecycle.close();
+  }
+});
+
+function waitForCondition(condition: () => boolean): Promise<void> {
+  return (async () => {
+    for (let i = 0; i < 1_000 && !condition(); i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    assert.ok(condition());
+  })();
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 function connectionHarness(
   id: string,

@@ -1,8 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   buildHealthSnapshot,
   healthSignalFromCapability,
   healthSignalFromConnection,
   healthSignalFromConnectionRuntime,
+  workspaceHasDefaultModelTarget,
 } from '@maka/core/health';
 import { type AppSettings } from '@maka/core/settings';
 import { type LlmConnection } from '@maka/core/llm-connections';
@@ -72,10 +92,17 @@ export function registerRuntimeHostPermissionsIpc(
       computerUse: deps.getComputerUseCapabilityInput(),
       now,
     });
+    // The catalog projects `defaultModel` onto exactly one connection (the
+    // default target): with a default configured somewhere, other enabled
+    // connections carry an empty `defaultModel` by construction, and their
+    // signal must say "not the default source", not "misconfigured". The
+    // derivation (which requires the holder to be ENABLED — a disabled
+    // holder cannot serve a new chat) lives in core beside the signal.
+    const workspaceHasDefaultTarget = workspaceHasDefaultModelTarget(connections);
     const connectionSignals = (
       await Promise.all(
         connections.map(async (connection) => [
-          healthSignalFromConnection(connection, now),
+          healthSignalFromConnection(connection, now, { workspaceHasDefaultTarget }),
           healthSignalFromConnectionRuntime(
             connection,
             await latestRuntimeProbe(deps.client, connection),

@@ -1,9 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Pure status helper for the Settings → 模型 connection list. Kept out
 // of `providers-panel.tsx` (no React, no DOM) so the decision logic can be
 // exercised directly from the desktop test runner. Behavioural tests live
 // in `provider-connection-status.test.ts`.
 
 import type { LlmConnection } from '@maka/core/llm-connections';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
@@ -22,6 +42,8 @@ export interface ConnectionChipStatus {
  * destructive tone).
  *
  * Branches, in priority order:
+ * - retired: the provider was removed from Maka. Outranks everything below,
+ *   which all describe states that can still be repaired.
  * - needs_reauth: a lapsed OAuth subscription login arrives as
  *   enabled:false + needs_reauth (main.ts subscription sync keeps the
  *   connection but flags it). That is a "please log back in" signal, not a
@@ -42,6 +64,14 @@ export interface ConnectionChipStatus {
  */
 export function connectionChipStatus(connection: LlmConnection, locale: UiLocale = 'zh'): ConnectionChipStatus | null {
   const copy = getProviderSettingsCopy(locale).shared.connectionStatuses;
+  // Ahead of every other branch, including needs_reauth: a retired provider
+  // has no sign-in left to return to, so any repair-shaped status here would
+  // send the user somewhere that no longer exists. `error` rather than
+  // `attention` because this is not "look at it when you can" — the row can
+  // never work again, and deleting it is the only move.
+  if (isRetiredProvider(connection.providerType)) {
+    return { label: copy.retired, tone: 'error' };
+  }
   // Waiting on the user, not on the system: an expired credential is a
   // to-do, and it used to render as the live accent dot — reporting progress
   // where nothing is progressing.

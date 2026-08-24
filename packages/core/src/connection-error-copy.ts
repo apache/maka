@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Human-readable copy for a not-ready chat connection: maps each
  * `NO_REAL_CONNECTION:<reason>` code to one fix sentence so a first-run / CLI
@@ -37,6 +56,8 @@ const REASON_FIX_COPY: Record<ChatConfigurationReason, string> = {
   model_not_chat_capable:
     '当前任务选择的模型不能用于聊天。请到 设置 · 模型 重新选择支持聊天的模型后再发送。',
   fake_backend: '当前任务来自旧的本地模拟连接。请到 设置 · 模型 添加真实模型后新建任务。',
+  provider_retired:
+    '当前模型连接的登录方式已从 Maka 移除，无法用于发送。请到 设置 · 模型 改用其他连接后再发送。',
 };
 
 /**

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -65,7 +84,7 @@ describe('SqliteSessionMetadataStore', () => {
 
     const migrated = createSqliteSessionMetadataStore(path);
     try {
-      assert.equal(migrated.schemaVersion(), 28);
+      assert.equal(migrated.schemaVersion(), 29);
       assert.equal((await migrated.read(legacyHeader.id)).header.externalOrigin, undefined);
     } finally {
       migrated.close();
@@ -84,6 +103,10 @@ describe('SqliteSessionMetadataStore', () => {
       assert.equal(
         columns.some(({ name }) => name === 'external_source_session_id'),
         true,
+      );
+      assert.equal(
+        columns.some(({ name }) => name === 'last_used_at'),
+        false,
       );
       const externalOriginIndex = schema
         .prepare(
@@ -1781,7 +1804,6 @@ describe('SqliteSessionMetadataStore', () => {
         fullHeader({
           id: 'older',
           name: 'Older',
-          lastUsedAt: 10,
           lastMessageAt: 20,
           labels: ['alpha', 'shared'],
           isFlagged: true,
@@ -1791,7 +1813,6 @@ describe('SqliteSessionMetadataStore', () => {
         fullHeader({
           id: 'newer',
           name: 'Newer',
-          lastUsedAt: 30,
           lastMessageAt: 40,
           labels: ['shared'],
           isFlagged: true,
@@ -1855,7 +1876,6 @@ describe('SqliteSessionMetadataStore', () => {
       systemPrompt: 'Read the assigned workspace task.',
       toolNames: ['Read', 'Glob', 'Grep'],
       categoryPolicy: { read: 'allow' as const },
-      permissionCeiling: 'ask' as const,
     };
     const subagentSpawn = {
       schemaVersion: 1 as const,
@@ -1954,7 +1974,6 @@ describe('SqliteSessionMetadataStore', () => {
       systemPrompt: 'Original durable prompt.',
       toolNames: ['Read'],
       categoryPolicy: { read: 'allow' as const },
-      permissionCeiling: 'ask' as const,
     };
     const childHeader = (overrides: Partial<SessionHeader>): SessionHeader =>
       fullHeader({
@@ -2966,7 +2985,6 @@ function fullHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
     workspaceRoot: '/workspace',
     cwd: '/workspace/repo',
     createdAt: 1,
-    lastUsedAt: 2,
     lastMessageAt: 3,
     name: 'Session',
     titleIsManual: true,
@@ -3067,7 +3085,6 @@ function graphChildHeader(overrides: Partial<SessionHeader> = {}): SessionHeader
       systemPrompt: 'Read only.',
       toolNames: ['Read'],
       categoryPolicy: { read: 'allow' },
-      permissionCeiling: 'ask',
     },
     subagentSpawn: {
       schemaVersion: 1,

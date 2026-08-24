@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { CredentialLocator } from '@maka/core/runtime-policy';
 import { buildSubscriptionModelFetch } from '@maka/runtime/subscription-model-fetch';
@@ -320,18 +339,8 @@ export function createHostOAuthModelFetch(input: {
   connection: RuntimeExecutionConnection;
   sessionId: string;
   modelId: string;
-  claudeDeviceId: string;
   fetchFn: typeof fetch;
 }): typeof fetch {
-  if (
-    input.binding.providerType === 'claude-subscription' &&
-    !input.initialTokens.account_uuid?.trim()
-  ) {
-    throw new OAuthExecutionCredentialError(
-      'credential_unavailable',
-      'Claude OAuth credential is missing its canonical account identity',
-    );
-  }
   return async (url, init) => {
     const signal = effectiveRequestSignal(url, init);
     signal?.throwIfAborted();
@@ -348,14 +357,6 @@ export function createHostOAuthModelFetch(input: {
         ? {
             refreshOAuthAccessToken: async () =>
               (tokens = await input.binding.forceRefresh!()).access_token,
-          }
-        : {}),
-      ...(input.binding.providerType === 'claude-subscription'
-        ? {
-            claude: {
-              deviceId: input.claudeDeviceId,
-              accountUuid: tokens.account_uuid ?? '',
-            },
           }
         : {}),
     });

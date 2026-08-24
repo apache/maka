@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { requireCount, requireId, requireRecord, requireString } from './codec.js';
 import { invalidProtocolFrame, RuntimeHostProtocolError } from './errors.js';
 import {
@@ -72,7 +91,49 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 27 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 47 as const;
+// 47: Project registration can carry an explicit location preference. Epoch-46
+// hosts reject that optional field on the closed registration input.
+// 46: Queued message content can be edited in place (queue.entry.update).
+// 45: Connection onboarding inputs require `baseUrl` and `connectionId`, and
+// results can carry the `base_url_not_configured` / `connection_not_found`
+// rejections. Older peers reject all of these shapes.
+// 44: Session continuity and inspection stop carrying the retired Session
+// last-used timestamp. Older peers reject those strict projection shapes.
+// 43: Session tool-start events correlate hidden shell polls with `shellRunRef`.
+// Older peers reject that added closed-union field.
+// 42: Turn provider retry progress adds `provider_capacity`. Older peers reject
+// that strict retry-reason enum value, so mixed versions must fail handshake.
+// 41: Context compaction returns a typed terminal outcome on both Turn
+// snapshots and context.compact results. Epoch-40 peers reject these closed
+// shapes after admission, so mixed peers must fail during the handshake.
+// 40: The message queue gains per-entry mutation operations
+// (queue.entry.promote, queue.entry.retract, queue.entries.reorder).
+// 39: Client Capability tool descriptors carry trusted activity semantics and
+// invocations can stream bounded progress frames.
+// 38: `execute` is no longer a permission mode. Frame decoders reject it, so a
+// peer that still sends it would fail mid-Session rather than at connect.
+// 37: External Session catalog queries carry a search term.
+// 36: Session trace inspection no longer transports aggregate TraceTotals.
+// 35: Session trace inspection uses cursor pages and Session usage has its own
+// invalidation domain. Older peers cannot safely exchange those frames.
+// 34: ScheduledTask execution templates no longer emit `backend`. Epoch-33
+// Clients require that closed-shape response field, so a newer Host must reject
+// them during the handshake instead of failing on the first Automation read.
+// 33: Live tool results may carry the bounded sandbox failure reason. Older
+// Clients reject that closed-frame addition, so mixed peers must not connect.
+// 32: `request_authorization_code` leaves the OAuth presentation wire. An older
+// Client still offers it and an older Host still asks for it, and neither side
+// can carry the authorization code the other expects.
+// 31: `claude-subscription` leaves `OAUTH_LOGIN_PROVIDERS` and the
+// `oauth.account.usage.fetch` operation is removed with the provider that
+// needed its client identity. An older peer still offers both.
+// 30: Access credential pairing adds prepare/finalize operations. Older Hosts
+// cannot complete the staged credential handoff used by managed onboarding.
+// 29: `goal.arm` is a new wire operation. An older Host decodes it as unknown
+// and tears the connection down, so the pair must be refused up front.
+// 28: Relay model profiles carry the Fast service-tier declaration. Older
+// peers cannot safely preserve that Runtime Policy field.
 // 27: Runtime Policy carries the Host-owned shell preference used by tool,
 // PTY, and prompt composition. Older peers cannot safely preserve that field.
 // Transcript pages amortize storage and network round trips with a 512 KiB raw
@@ -88,15 +149,6 @@ export type EncodedProtocolMessage = Buffer & {
   readonly [encodedProtocolMessageBrand]: true;
 };
 
-export type ClientSurface =
-  | 'desktop'
-  | 'tui'
-  | 'run'
-  | 'activation'
-  | 'bot'
-  | 'inspect'
-  | 'capability-provider';
-
 export interface ProtocolRange {
   min: number;
   max: number;
@@ -105,7 +157,6 @@ export interface ProtocolRange {
 export interface ClientHello {
   kind: 'hello';
   clientInstanceId: string;
-  surface: ClientSurface;
   protocolMin: number;
   protocolMax: number;
   compatibilityEpoch: number;
@@ -219,7 +270,6 @@ export function decodeClientFrame(value: unknown): ClientFrame {
     return {
       kind: 'hello',
       clientInstanceId: requireClientInstanceId(frame.clientInstanceId),
-      surface: requireSurface(frame.surface),
       protocolMin,
       protocolMax,
       compatibilityEpoch: decodeCompatibilityEpoch(frame.compatibilityEpoch),
@@ -400,20 +450,6 @@ function decodeCompositionRevision(value: unknown): string {
 function decodeCompatibilityEpoch(value: unknown): number {
   // Epoch 0 represents peers and registrations that do not publish this field.
   return value === undefined ? 0 : requireCompatibilityEpoch(value);
-}
-
-function requireSurface(value: unknown): ClientSurface {
-  if (
-    value === 'desktop' ||
-    value === 'tui' ||
-    value === 'run' ||
-    value === 'activation' ||
-    value === 'bot' ||
-    value === 'inspect' ||
-    value === 'capability-provider'
-  )
-    return value;
-  throw invalidProtocolFrame('Invalid surface');
 }
 
 function requireAcceptedState(value: unknown): Exclude<HostLifecycleState, 'draining'> {

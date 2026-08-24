@@ -1,26 +1,42 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { access, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runCommand } from './package-windows-x64.mjs';
+import { parseProductReleaseVersion } from './release-version.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
 
 /**
  * The version the auto-update harness serves as "newer than the candidate".
- * A plain patch bump keeps the artifact name matching the release regex and
- * avoids every channel/prerelease ambiguity: `allowPrerelease` only affects
- * the GitHub provider, but a stable version never depends on that behavior.
+ * A stable successor keeps the loopback feed independent from prerelease
+ * channel behavior: a prerelease advances to its stable core, while a stable
+ * candidate advances to the next patch.
  */
 export function bumpedAutoupdateVersion(candidateVersion) {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(candidateVersion);
-  if (!match) {
-    throw new Error(
-      `Cannot bump a non-stable x.y.z candidate version: ${JSON.stringify(candidateVersion)}`,
-    );
-  }
-  return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+  const { core, prerelease } = parseProductReleaseVersion(candidateVersion);
+  const [major, minor, patch] = core;
+  return prerelease.length > 0 ? `${major}.${minor}.${patch}` : `${major}.${minor}.${patch + 1n}`;
 }
 
 /**

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mcpProxyToolName } from '@maka/runtime/mcp-tools';
@@ -13,8 +32,8 @@ test('two Clients idempotently start one Host-owned safe-boundary continuation',
   await withExecutionRoot(async (fixture) => {
     const source = await fixture.seedSafeBoundaryContinuationSource();
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const turnId = 'turn-safe-boundary-continuation';
     let clientsClosed = false;
     let hostStopped = false;
@@ -104,7 +123,7 @@ test('startup repairs a continuation Run created before its durable start', asyn
   await withExecutionRoot(async (fixture) => {
     const crash = await fixture.seedSafeBoundaryContinuationCrash('after_run_created');
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     try {
       const repaired = await client.queryTurn({
         sessionId: fixture.sessionId,
@@ -138,7 +157,7 @@ test('startup repairs a continuation claim committed before its target Run', asy
       'after_continuation_claim_committed',
     );
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     let clientClosed = false;
     let hostStopped = false;
     try {
@@ -171,7 +190,7 @@ test('startup parks a provider-indeterminate continuation without blocking the H
       'after_continuation_start_committed',
     );
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     try {
       const indeterminate = await client.queryTurn({
         sessionId: fixture.sessionId,
@@ -255,7 +274,7 @@ test('startup parks a provider-indeterminate continuation when resume is disable
       'after_continuation_start_committed',
     );
     const host = await fixture.startHost(undefined, false);
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     try {
       const indeterminate = await client.queryTurn({
         sessionId: fixture.sessionId,
@@ -295,7 +314,7 @@ test('startup parks a pre-claim continuation whose Client Capability is absent',
     const requiredToolName = mcpProxyToolName('resume_fixture', 'inspect');
     const pending = await fixture.seedPendingSafeBoundaryContinuation(requiredToolName);
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     try {
       assert.deepEqual(
         await client.queryTurnResume({
@@ -364,7 +383,7 @@ test('Runtime Host keeps safe-boundary continuation opt-in', async () => {
     const source = await fixture.seedSafeBoundaryContinuationSource();
     const targetTurnId = 'turn-disabled-safe-boundary-continuation';
     const host = await fixture.startHost(undefined, false);
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     let clientClosed = false;
     let hostStopped = false;
     try {
@@ -414,7 +433,7 @@ test('resume query previews the initiating Client Capability without binding it'
     const requiredToolName = mcpProxyToolName(serverId, toolName);
     const source = await fixture.seedSafeBoundaryContinuationSource(requiredToolName);
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'desktop');
+    const client = await connectClient(fixture.root);
     const provider = resumeFixtureProvider(serverId, [toolName]);
     try {
       assert.deepEqual(await client.queryTurnResume({ sessionId: fixture.sessionId }), {

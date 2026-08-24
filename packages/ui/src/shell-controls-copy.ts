@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 type ShellControlsCopy = {
@@ -10,6 +29,8 @@ type ShellControlsCopy = {
     automations: string;
     extensions: string;
     settings: string;
+    /** Accessible name for the build stamp; the visible text is the stamp itself. */
+    buildStamp: (stamp: string) => string;
     updateDownloaded(version: string): string;
     updateFailed(version: string): string;
     pendingTasks(count: number): string;
@@ -43,6 +64,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       automations: '定时任务',
       extensions: '扩展',
       settings: '设置',
+      buildStamp: (stamp: string) => `当前版本 ${stamp}`,
       updateDownloaded: (version: string) => `新版本 ${version} 已下载，重启后安装`,
       updateFailed: (version: string) => `新版本 ${version} 更新失败，点击重试或手动下载`,
       pendingTasks: (count: number) => `定时任务，${count} 条进行中`,
@@ -74,6 +96,7 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       automations: 'Scheduled tasks',
       extensions: 'Extensions',
       settings: 'Settings',
+      buildStamp: (stamp: string) => `Current build ${stamp}`,
       updateDownloaded: (version: string) => `Update ${version} downloaded. Restart to install.`,
       updateFailed: (version: string) => `Update ${version} failed. Click to retry or download manually.`,
       pendingTasks: (count: number) => `Scheduled tasks, ${count} active`,

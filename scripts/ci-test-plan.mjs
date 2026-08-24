@@ -1,4 +1,22 @@
 #!/usr/bin/env node
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -16,6 +34,36 @@ const FULL_SUITE_FILES = new Set([
   'scripts/run-workspace-tests-parallel.mjs',
 ]);
 
+const RELEASE_CONTRACT_FILES = new Set([
+  'apps/desktop/build/entitlements.mac.inherit.plist',
+  'apps/desktop/build/entitlements.mac.plist',
+  'apps/desktop/bundled-tools.json',
+  'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
+  'apps/desktop/electron-builder.config.mjs',
+  'apps/desktop/package.json',
+  '.github/workflows/cli-package-validation.yml',
+  '.github/workflows/release-cli-finalize.yml',
+  '.github/workflows/release-cli-stage.yml',
+  '.github/workflows/release.yml',
+  'scripts/package-macos-arm64.mjs',
+  'scripts/package-macos-arm64-cli.mjs',
+  'scripts/package-windows-autoupdate-next.mjs',
+  'scripts/package-windows-x64.mjs',
+  'scripts/prepare-windows-upgrade-baseline.mjs',
+  'scripts/generate-third-party-notices.test.mjs',
+  'scripts/prepare-windows-upgrade-baseline.test.mjs',
+  'scripts/product-release.test.mjs',
+  'scripts/release-eval-smoke-sitecustomize.py',
+  'scripts/release-version.mjs',
+  'scripts/verify-macos-arm64-cli.mjs',
+  'scripts/verify-macos-arm64-dmg.mjs',
+  'scripts/verify-packaged-app.mjs',
+  'scripts/verify-windows-autoupdate.mjs',
+  'scripts/verify-windows-installer-lifecycle.mjs',
+  'scripts/verify-windows-x64.mjs',
+  'scripts/windows-upgrade-baseline.json',
+]);
+
 const TYPECHECK_ONLY_FILES = new Set([
   'biome.jsonc',
   'components.json',
@@ -25,13 +73,9 @@ const TYPECHECK_ONLY_FILES = new Set([
 ]);
 
 const CLI_PACKAGE_FILES = new Set([
-  '.gitattributes',
-  '.npmrc',
-  'DISCLAIMER-WIP',
+  '.github/workflows/cli-package-validation.yml',
   'LICENSE',
   'NOTICE',
-  'package-lock.json',
-  'package.json',
   'scripts/apply-dependency-patches.mjs',
   'scripts/clean-paths.mjs',
   'scripts/generate-third-party-notices.mjs',
@@ -40,9 +84,39 @@ const CLI_PACKAGE_FILES = new Set([
   'scripts/smoke-release-cli-package.mjs',
 ]);
 
+const ASF_SOURCE_FILES = new Set([
+  '.github/workflows/asf-source-candidate.yml',
+  'DISCLAIMER-WIP',
+  'LICENSE',
+  'NOTICE',
+  'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',
+  'biome.jsonc',
+  'package.json',
+  'packages/core/src/model-metadata.generated.ts',
+  'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
+  'packages/runtime/src/telemetry/model-pricing.generated.ts',
+  'scripts/asf-license-headers.mjs',
+  'scripts/asf-license-headers.test.mjs',
+  'scripts/asf-source-release.mjs',
+  'scripts/asf-source-release.test.mjs',
+  'scripts/asf-source-workflow-policy.test.mjs',
+  'scripts/model-metadata/models-dev-api.snapshot.json',
+  'scripts/source-legal-inventory.test.mjs',
+  'scripts/sync-model-metadata.mjs',
+  'scripts/sync-model-metadata.test.mjs',
+]);
+
+function isAsfSourcePath(path) {
+  return (
+    ASF_SOURCE_FILES.has(path) ||
+    path.startsWith('patches/') ||
+    path.startsWith('apps/desktop/resources/licenses/renderer/') ||
+    path.startsWith('apps/desktop/src/renderer/assets/provider-brands/')
+  );
+}
+
 const CLI_PACKAGE_WORKSPACES = [
   'packages/cli',
-  'packages/code-mode',
   'packages/core',
   'packages/eval',
   'packages/mcp',
@@ -60,18 +134,33 @@ function isCliPackagePath(path) {
   );
 }
 
+function isReleaseContractPath(path) {
+  return (
+    RELEASE_CONTRACT_FILES.has(path) ||
+    path.startsWith('scripts/product-release-') ||
+    path.startsWith('scripts/release-cli-')
+  );
+}
+
 const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host']);
 
 // Scripts the Electron e2e job runs. Editing one of these changes what that
 // job verifies, so it has to re-run — a unit test on the runner is not
 // evidence that the run it drives still works.
-const E2E_DRIVING_SCRIPTS = new Set(['scripts/audit-alignment.mjs']);
+const E2E_DRIVING_SCRIPTS = new Set([
+  'apps/desktop/scripts/browser-observe-act-smoke.mjs',
+  'scripts/audit-alignment.mjs',
+  'scripts/ax-tree-audit.mjs',
+]);
 
 // Scripts / paths that can break the built Storybook catalog. Product stories
 // mount the UI package and desktop renderer, so runtime export/render changes
 // there belong to this surface even when no story file changes. Main-process
 // and e2e-only desktop changes stay outside it.
-const STORYBOOK_DRIVING_SCRIPTS = new Set(['scripts/storybook-visual-smoke.mjs']);
+const STORYBOOK_DRIVING_SCRIPTS = new Set([
+  'scripts/ax-tree-audit.mjs',
+  'scripts/storybook-visual-smoke.mjs',
+]);
 
 // .storybook/preview.tsx imports THEME_PALETTES from this module. Narrower
 // than "any packages/core change".
@@ -244,11 +333,13 @@ export function planTests(changedFiles, options = {}) {
   if (full) {
     const workspaces = [...graph.dirs];
     return {
+      asfSource: true,
       astryxSurface: true,
       cliPackage: true,
       code: true,
       e2e: true,
       full: true,
+      releaseContract: true,
       runtimeSandbox: graph.dirs.includes('packages/cli'),
       // A complete functional suite is still the default release/main gate.
       // Stress multipliers and native child-process lock probes run only when
@@ -304,15 +395,18 @@ export function planTests(changedFiles, options = {}) {
   const workspaces = reverseDependencyClosure(directWorkspaces, graph);
   const storageStress = files.some((path) => STORAGE_STRESS_FILES.has(path));
 
+  const cliPackage = files.some((path) => isCliPackagePath(path));
   return {
+    asfSource: files.some((path) => isAsfSourcePath(path)),
     astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
-    cliPackage: files.some((path) => isCliPackagePath(path)),
+    cliPackage,
     code,
     // Electron E2E + alignment audit (same job). Product desktop/ui sources and
     // e2e drivers only — a storage/runtime change must not drag cold Electron
     // boots, and packages/ui unit-test-only PRs must not either.
     e2e: files.some((path) => isE2eProductPath(path)),
     full: false,
+    releaseContract: cliPackage || files.some((path) => isReleaseContractPath(path)),
     // packages/cli/src/__tests__/runtime-host-session-driver.test.ts executes real sandboxed
     // shell tools, so the bubblewrap + user-namespace setup is required whenever
     // the cli workspace runs in the dependency closure, not only for direct
@@ -330,12 +424,14 @@ export function planTests(changedFiles, options = {}) {
 
 export function formatGitHubOutputs(plan) {
   return [
+    `asf_source=${plan.asfSource}`,
     `astryx_surface=${plan.astryxSurface}`,
     `cli_package=${plan.cliPackage}`,
     `code=${plan.code}`,
     `e2e=${plan.e2e}`,
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
+    `release_contract=${plan.releaseContract}`,
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,
     `standard_workspaces=${plan.standardWorkspaces.join(',')}`,

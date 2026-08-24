@@ -1,3 +1,22 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Managed Workspace Execution Admission v1：M1.1 可撤销 scope 门
 
 - 状态：M1.1 已实现；M1.2 owner-bound worker bridge 与 runtime-host composition 当前切片；尚未由 Desktop/CLI 默认启用
@@ -155,4 +174,5 @@ JavaScript finally，因此本切片的安全保证来自“只读 operation all
    与 successor workspace version。
 
 M1.2 提供真实 runtime-host composition seam，但本切片不修改 Desktop/CLI 默认配置，因此不默认开启 managed
-execution，也不改变 attached mode。bundled Git 的发行与 launcher 参数接线仍是独立发布能力，不得回退系统 Git。
+execution，也不改变 attached mode。ASF Desktop 已停止分发 bundled Git；在兼容许可证的 verified runtime
+接入前，managed execution 必须在 admission/T1 前保持不可用，且不得回退系统 Git。

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import type { AgentGraphClientChangedEvent } from '@maka/runtime/stream-graph-coordinator';
 import type {
@@ -5,7 +24,7 @@ import type {
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
 } from '@maka/runtime/stream-graph-read-model';
-import type { GoalState } from '@maka/runtime/goal-state';
+import { DEFAULT_MAX_ITERATIONS, type GoalState } from '@maka/runtime/goal-state';
 import type { ShellRunPtyDataEvent } from '@maka/runtime/shell-run-contract';
 import type {
   GoalProjection,
@@ -14,9 +33,16 @@ import type {
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { RuntimeHostSessionObserver } from './runtime-host-session-observer.js';
+import {
+  GOAL_ARM_REQUEST_KEYS,
+  type GoalArmOutcome,
+} from '../shared/goal-arm.js';
 import { projectHostedDeepResearch } from './deep-research-desktop-projection.js';
 import {
+  handleReconciledControl,
   handleReconnectableRead,
+  isDispatchedControlConnectionLoss,
+  rethrowReconnectableReadFailure,
   type ReconnectableReadIpcMain,
 } from './ipc-reconnect-policy.js';
 import {
@@ -27,6 +53,7 @@ import {
 type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
   Pick<
     DesktopRuntimeHostClient,
+    | 'armGoal'
     | 'clearGoal'
   | 'controlGoalWithRetry'
   | 'controlPlan'
@@ -100,6 +127,53 @@ export function registerRuntimeHostSessionDomainsIpc(
   ipcMain.handle('goal:resume', async (_event, sessionId: unknown) => {
     await deps.client.controlGoalWithRetry(requiredId(sessionId, 'Session'), 'resume');
   });
+  handleReconciledControl<GoalArmReconciliationContext, GoalArmOutcome>(
+    ipcMain,
+    'goal:arm',
+    {
+      dispatch: async (_event, ...args) => {
+        const request = canonicalGoalArmRequest(args[0], args[1]);
+        const previous = await deps.client.queryGoal(request.sessionId);
+        try {
+          const result = await deps.client.armGoal(request);
+          return {
+            kind: 'completed',
+            value: { kind: 'armed', goal: toDesktopGoal(result.goal) },
+          };
+        } catch (error) {
+          if (!isDispatchedControlConnectionLoss(error)) throw error;
+          return {
+            kind: 'reconcile',
+            context: Object.freeze({
+              request,
+              previousGoal:
+                previous.goal === null ? null : Object.freeze({ ...previous.goal }),
+            }),
+          };
+        }
+      },
+      reconcile: async (context) => {
+        try {
+          const result = await deps.client.queryGoal(context.request.sessionId);
+          return {
+            kind: 'reconciled',
+            currentGoal: result.goal === null ? null : toDesktopGoal(result.goal),
+            matchesRequestedState: goalMatchesArmRequest(
+              result.goal,
+              context.request,
+              context.previousGoal,
+            ),
+          };
+        } catch (error) {
+          rethrowReconnectableReadFailure(error);
+          return { kind: 'reconciliation_unavailable' };
+        }
+      },
+      reconciliationUnavailable: async () => ({
+        kind: 'reconciliation_unavailable',
+      }),
+    },
+  );
 
   handleReconnectableRead(ipcMain, 'plan-mode:getState', (_event, sessionId: unknown) =>
     deps.client.getPlanState(requiredId(sessionId, 'Session')),
@@ -262,6 +336,9 @@ export function registerRuntimeHostSessionDomainsIpc(
       case 'plan':
         deps.sendToRenderer?.('plan-mode:changed', { sessionId: change.sessionId });
         break;
+      case 'usage':
+        deps.sendToRenderer?.('usage:changed', { sessionId: change.sessionId });
+        break;
       case 'runtime_resource':
         void refreshRuntimeResources(deps, change.sessionId, change.resources);
         break;
@@ -280,6 +357,7 @@ export function registerRuntimeHostSessionDomainsIpc(
       sessionDomainChanged({ sessionId, domain: 'task' });
       sessionDomainChanged({ sessionId, domain: 'deep_research' });
       sessionDomainChanged({ sessionId, domain: 'plan' });
+      sessionDomainChanged({ sessionId, domain: 'usage' });
       deps.sendToRenderer?.('graphs:resync', { rootSessionId: sessionId });
       deps.sendToRenderer?.('shell-runs:resync', { sessionId });
     },
@@ -300,6 +378,84 @@ async function refreshRuntimeResources(
       deps.onError?.(error);
     }
   }
+}
+
+interface CanonicalGoalArmRequest {
+  readonly sessionId: string;
+  readonly condition: string;
+  readonly maxIterations: number | null;
+  readonly tokenBudget: number | null;
+}
+
+interface GoalArmReconciliationContext {
+  readonly request: CanonicalGoalArmRequest;
+  readonly previousGoal: GoalProjection | null;
+}
+
+function canonicalGoalArmRequest(
+  sessionId: unknown,
+  input: unknown,
+): CanonicalGoalArmRequest {
+  const budgets = requireGoalArmBudgets(input);
+  return Object.freeze({
+    sessionId: requiredId(sessionId, 'Session'),
+    condition: budgets.condition.trim(),
+    maxIterations: budgets.maxIterations,
+    tokenBudget: budgets.tokenBudget,
+  });
+}
+
+function goalMatchesArmRequest(
+  current: GoalProjection | null,
+  request: CanonicalGoalArmRequest,
+  previous: GoalProjection | null,
+): boolean {
+  return (
+    current !== null &&
+    current.goalId !== previous?.goalId &&
+    current.sessionId === request.sessionId &&
+    current.condition === request.condition &&
+    current.maxIterations === (request.maxIterations ?? DEFAULT_MAX_ITERATIONS) &&
+    current.tokenBudget === request.tokenBudget
+  );
+}
+
+/**
+ * The renderer sends what the user typed; the Host owns every bound. This only
+ * gets the frame into the shape the protocol decodes — numbers stay numbers,
+ * "not chosen" stays null — so an out-of-range budget is refused once, by the
+ * Host, instead of being clamped here into something the user did not ask for.
+ * The Session comes from the scoped IPC argument, not from this frame, so a
+ * renderer-side Session id can never redirect the operation.
+ */
+function requireGoalArmBudgets(value: unknown): {
+  condition: string;
+  maxIterations: number | null;
+  tokenBudget: number | null;
+} {
+  if (typeof value !== 'object' || value === null) {
+    throw new TypeError('Goal arm input must be an object');
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !GOAL_ARM_REQUEST_KEYS.includes(key as never))) {
+    throw new TypeError('Invalid Goal arm input');
+  }
+  if (typeof record.condition !== 'string' || record.condition.trim().length === 0) {
+    throw new TypeError('Goal condition is required');
+  }
+  return {
+    condition: record.condition,
+    maxIterations: optionalCount(record.maxIterations, 'Goal maxIterations'),
+    tokenBudget: optionalCount(record.tokenBudget, 'Goal tokenBudget'),
+  };
+}
+
+function optionalCount(value: unknown, label: string): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new TypeError(`${label} must be a positive integer`);
+  }
+  return value;
 }
 
 function toDesktopGoal(goal: GoalProjection): GoalState {

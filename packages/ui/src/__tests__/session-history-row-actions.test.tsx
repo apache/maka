@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseHTML } from 'linkedom';
@@ -85,6 +104,27 @@ test('renders session navigation and row actions as sibling controls', () => {
   assert.equal((markup.match(/<button\b/g) ?? []).length, 2);
   assert.match(markup, /class="maka-session-row-action"/);
   assertNoNestedButtons(markup);
+});
+
+test('renders a scan-friendly compact timestamp in the session rail', () => {
+  const now = Date.UTC(2026, 7, 24, 12, 0, 0);
+  const originalDateNow = Date.now;
+  Date.now = () => now;
+  try {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <SessionHistoryList
+          sessions={[{ ...session, lastMessageAt: now - 46 * 60_000 }]}
+          onSelectSession={() => undefined}
+        />
+      </LocaleProvider>,
+    );
+    const { document } = parseHTML(markup);
+
+    assert.equal(document.querySelector('.maka-session-row-time-label')?.textContent, '46min');
+  } finally {
+    Date.now = originalDateNow;
+  }
 });
 
 test('renders Runtime Host live runs without requiring renderer-local streaming', () => {

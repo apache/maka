@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // The 身份 group of the 通用 page: how Maka addresses you, the interface
 // language, and the assistant tone.
 //
@@ -18,6 +37,8 @@ import type { UiLocalePreference } from '@maka/core/ui-locale';
 import { TextArea, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
+import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import { SettingsRowSkeleton } from './settings-skeleton.js';
 
 // PR-TONE-AUTOSAVE-0: the personalization block used to be the page's ONLY
 // control with an explicit 保存 button + helper line — every neighboring row
@@ -30,9 +51,12 @@ import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy
 
 export function PersonalizationSettingsSection(props: {
   settings: AppSettings;
-  runtimeHostAvailable: boolean;
+  runtimeHostSettingsAvailable: boolean;
+  runtimeHostSettingsInteractive: boolean;
+  showRuntimeHostSettingsPlaceholder: boolean;
   onUpdate(patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult>;
 }) {
+  const host = useOptionalRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).personalization;
   const sections = getSettingsPreferencesCopy(locale).sections;
@@ -95,6 +119,9 @@ export function PersonalizationSettingsSection(props: {
   // know, or a failed write collapses the row onto the old value and drops
   // the draft with only a toast to show for it.
   async function persistPersonalization(patch: Partial<PersonalizationSettings>): Promise<boolean> {
+    const updatesRuntimeHost =
+      patch.displayName !== undefined || patch.assistantTone !== undefined;
+    if (updatesRuntimeHost && !props.runtimeHostSettingsInteractive) return false;
     const ticket = ++persistTicketRef.current;
     const localeTicket = patch.uiLocale === undefined ? null : ++localePersistTicketRef.current;
     persistPendingCountRef.current += 1;
@@ -112,7 +139,14 @@ export function PersonalizationSettingsSection(props: {
         setUiLocale(value.uiLocale);
       }
       if (ticket === persistTicketRef.current) {
-        toast.error(copy.saveFailed, settingsActionErrorMessage(error, locale));
+        const targetsRuntimeHost =
+          patch.displayName !== undefined || patch.assistantTone !== undefined;
+        toast.error(
+          copy.saveFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          targetsRuntimeHost && host ? { profileId: host.profileId } : undefined,
+        );
       }
       return false;
     } finally {
@@ -153,13 +187,14 @@ export function PersonalizationSettingsSection(props: {
           the user to fill in something already filled in, and its blur-save
           gave them no way to back out of a change. The row reports the
           settled value and opens on demand; Cancel puts the draft back. */}
-      {props.runtimeHostAvailable ? (
+      {props.runtimeHostSettingsAvailable ? (
         <SettingsExpandableRow
           label={copy.displayName}
           value={value.displayName || copy.displayNameUnset}
           actionLabel={value.displayName ? copy.displayNameChange : copy.displayNameSet}
           isEditing={expandedRow === 'displayName'}
           canSave={displayName.trim() !== value.displayName}
+          isDisabled={!props.runtimeHostSettingsInteractive}
           saveLabel={sharedCopy.save}
           cancelLabel={sharedCopy.cancel}
           onEdit={() => {
@@ -185,8 +220,15 @@ export function PersonalizationSettingsSection(props: {
             description={copy.displayNameHelp}
             isLabelHidden
             width="100%"
+            isDisabled={!props.runtimeHostSettingsInteractive}
           />
         </SettingsExpandableRow>
+      ) : props.showRuntimeHostSettingsPlaceholder ? (
+        <SettingsRowSkeleton
+          label={copy.displayName}
+          description={copy.displayNameHelp}
+          width="7rem"
+        />
       ) : null}
       {/*
         PR-LANG-PREF-0 (WAWQAQ msg `edc9cb41` + kenji `7e532892`
@@ -207,7 +249,7 @@ export function PersonalizationSettingsSection(props: {
           ))}
         </SegmentedControl>}
       />
-      {props.runtimeHostAvailable ? <SettingsField>
+      {props.runtimeHostSettingsAvailable ? <SettingsField>
         {/* No fixed height style: it lands as inline style on the wrapper,
             which pins the visible box while the inner textarea keeps its
             native `resize: vertical` — dragging then moves only the grip.
@@ -227,8 +269,16 @@ export function PersonalizationSettingsSection(props: {
           label={copy.assistantTone}
           description={copy.assistantToneHelp}
           width="100%"
+          isDisabled={!props.runtimeHostSettingsInteractive}
         />
-      </SettingsField> : null}
+      </SettingsField> : props.showRuntimeHostSettingsPlaceholder ? (
+        <SettingsRowSkeleton
+          label={copy.assistantTone}
+          description={copy.assistantToneHelp}
+          width="10rem"
+          height={42}
+        />
+      ) : null}
     </SettingsSection>
   );
 }

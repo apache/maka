@@ -1,8 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   decodeClientFrame,
+  decodeExternalSessionCatalogQueryInput,
   decodeExternalSessionCatalogQueryResult,
   decodeExternalSessionSourceQueryResult,
   EXTERNAL_SESSION_IMPORTED_SESSION_IDS_MAX_ITEMS,
@@ -252,3 +272,37 @@ describe('external Session protocol', () => {
 function isProtocolError(error: unknown): boolean {
   return error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame';
 }
+
+describe('external Session catalog query text', () => {
+  test('a term is accepted and carried through', () => {
+    assert.deepEqual(
+      decodeExternalSessionCatalogQueryInput({ adapterId: 'claude-code', text: 'parser' }),
+      { adapterId: 'claude-code', text: 'parser' },
+    );
+  });
+
+  test('an absent term stays absent rather than becoming an empty filter', () => {
+    assert.deepEqual(decodeExternalSessionCatalogQueryInput({ adapterId: 'codex' }), {
+      adapterId: 'codex',
+    });
+  });
+
+  test('a term that is not a bounded string is refused at the frame', () => {
+    // The term reaches every adapter, so an unbounded or wrong-typed value
+    // must not get past the protocol edge.
+    for (const text of [42, null, {}, '', 'x'.repeat(1_000)]) {
+      assert.throws(
+        () => decodeExternalSessionCatalogQueryInput({ adapterId: 'codex', text }),
+        RuntimeHostProtocolError,
+        `text=${JSON.stringify(text)?.slice(0, 24)}`,
+      );
+    }
+  });
+
+  test('an unknown field is still refused', () => {
+    assert.throws(
+      () => decodeExternalSessionCatalogQueryInput({ adapterId: 'codex', query: 'parser' }),
+      RuntimeHostProtocolError,
+    );
+  });
+});

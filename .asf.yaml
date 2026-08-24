@@ -1,0 +1,114 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Reference: https://github.com/apache/infrastructure-asfyaml
+
+github:
+  description: >-
+    Apache Maka (Incubating) is a local-first AI agent workspace.
+    Model messages, tool calls, tool results, permission decisions,
+    and termination events are recorded as an append-only log.
+  labels:
+    - ai
+    - ai-agent
+    - agent-runtime
+    - local-first
+    - llm
+    - tool-use
+    - event-sourcing
+    - desktop
+    - electron
+    - typescript
+    - cli
+    - apache
+    - incubator
+    - maka
+  features:
+    issues: true
+    wiki: false
+    projects: false
+    discussions: true
+  enabled_merge_buttons:
+    squash: true
+    merge: false
+    rebase: false
+  pull_requests:
+    del_branch_on_merge: true
+  dependabot_alerts: true
+  protected_branches:
+    main:
+      required_pull_request_reviews:
+        # GitHub dismisses approvals on any new commit but never dismisses a
+        # requested change, so leaving this on makes the two halves of a review
+        # decay at different rates: a rebase costs the author a whole new
+        # approval round while an unresolved objection survives untouched.
+        # The head-bound guarantee lives in required_status_checks instead,
+        # which reruns test against every pushed head.
+        dismiss_stale_reviews: false
+        required_approving_review_count: 1
+      required_status_checks:
+        strict: false
+        # test is the single job in .github/workflows/ci.yml, covering lint,
+        # format, build, tsc, knip, the selected workspace suites, e2e and
+        # Storybook. Renaming it there, or adding a paths filter that stops
+        # ci.yml from running, freezes every pull request: the check never
+        # reports and no committer can override it.
+        contexts:
+          - test
+
+  rulesets:
+    - name: Immutable release tags
+      type: tag
+      branches:
+        includes:
+          - "v*"
+        excludes: []
+      restrict_deletion: true
+      restrict_force_push: true
+
+  environments:
+    # These environments are the external human gates around signing secrets
+    # and npm OIDC. Naming an environment here replaces its settings wholesale,
+    # so keep every protection rule in this declarative authority.
+    release:
+      required_reviewers:
+        - id: M4n5ter
+          type: User
+      wait_timer: 0
+      prevent_self_review: true
+      deployment_branch_policy:
+        protected_branches: false
+        policies:
+          - name: "v*-incubating-rc*"
+            type: tag
+    npm-release:
+      required_reviewers:
+        - id: M4n5ter
+          type: User
+      wait_timer: 0
+      prevent_self_review: true
+      deployment_branch_policy:
+        protected_branches: false
+        policies:
+          - name: "v*"
+            type: tag
+
+notifications:
+  commits:      commits@maka.apache.org
+  discussions:  dev@maka.apache.org 
+  issues:       commits@maka.apache.org
+  pullrequests: commits@maka.apache.org

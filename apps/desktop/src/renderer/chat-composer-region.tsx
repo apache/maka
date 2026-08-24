@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useLayoutEffect, useRef, type ComponentProps, type RefObject } from 'react';
 import { Button, Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } from '@maka/ui';
 import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
@@ -55,6 +74,8 @@ interface ChatComposerRegionProps extends Omit<ComponentProps<typeof Composer>, 
   activeInteraction: ComposerInteraction | undefined;
   activeId: string | undefined;
   newTaskDraftKey: string;
+  /** True from the moment a new-task send starts until it has settled. */
+  newTaskSendPending: boolean;
   stopPendingBySession: Record<string, boolean>;
   respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
   activeSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['request'] | undefined;
@@ -71,6 +92,7 @@ export function ChatComposerRegion({
   activeInteraction,
   activeId,
   newTaskDraftKey,
+  newTaskSendPending,
   stopPendingBySession,
   respondToSandboxBoundary,
   activeSandboxBoundary,
@@ -83,28 +105,59 @@ export function ChatComposerRegion({
   const previousNewTaskDraftKey = useRef(newTaskDraftKey);
   useLayoutEffect(() => {
     const previous = previousNewTaskDraftKey.current;
+    // A submission owns the text it submitted until it settles. `sendCurrent`
+    // captures the key it sent from and clears exactly that key when the send
+    // resolves, so carrying the text to a target chosen mid-flight would leave
+    // the sent message sitting in the composer under the new one, ready to be
+    // sent twice. Leave `previous` where it is rather than dropping the change:
+    // the effect re-runs when the send settles, and carries then — from the
+    // slot the completion has already cleared, so nothing sent comes with it,
+    // and anything typed after the send does.
+    if (newTaskSendPending) return;
     previousNewTaskDraftKey.current = newTaskDraftKey;
-    if (previous !== UNRESOLVED_NEW_TASK_DRAFT_KEY || previous === newTaskDraftKey) return;
+    if (previous === newTaskDraftKey) return;
     const composer = composerRef.current;
     if (!composer) return;
-    const reloadIntent = readNewTaskReloadIntent();
-    const reloadTarget = reloadIntent?.draftKey;
-    const canCarryUnresolvedDraft =
-      !reloadTarget ||
-      reloadTarget === UNRESOLVED_NEW_TASK_DRAFT_KEY ||
-      reloadTarget === newTaskDraftKey;
-    if (!canCarryUnresolvedDraft) return;
     // The catalog may settle after the user has opened an existing Session.
-    // Read the unresolved new-task slot itself instead of whichever draft is
-    // currently visible, so Session text can never become a new-task draft.
-    const current = composer.getDraft(UNRESOLVED_NEW_TASK_DRAFT_KEY);
+    // Read the slot the key is LEAVING instead of whichever draft is currently
+    // visible, so Session text can never become a new-task draft. With no
+    // Session open that slot IS the active one, so this is the visible text.
+    const carried = composer.getDraft(previous);
+    // Leaving the UNRESOLVED slot is startup settling, not a choice the user
+    // made: its draft may have been persisted for one specific target by a
+    // reload, and must not be pasted into a different one. Every other change
+    // is the user picking a different target for the task they are already
+    // writing — the workspace picker sits directly under the composer, so
+    // "type, then pick where it runs" is the ordinary order, and the draft
+    // follows the selection rather than staying behind in the slot they
+    // navigated away from, which read as the text being destroyed (#3408).
+    // The slots themselves stay keyed per target, so #3122's Host-scoped
+    // new-task state is unchanged.
+    if (previous === UNRESOLVED_NEW_TASK_DRAFT_KEY) {
+      const reloadIntent = readNewTaskReloadIntent();
+      const reloadTarget = reloadIntent?.draftKey;
+      const canCarryUnresolvedDraft =
+        !reloadTarget ||
+        reloadTarget === UNRESOLVED_NEW_TASK_DRAFT_KEY ||
+        reloadTarget === newTaskDraftKey;
+      if (!canCarryUnresolvedDraft) return;
+    }
+    // Assigned even when nothing is carried, so the target the user arrives at
+    // shows what they arrived with and nothing else. The swap leaves a copy
+    // under every key it passes through (the composer's draft hook re-remembers
+    // the live text under the key it is leaving), so skipping the empty case
+    // would let one of those copies surface later: send the task, come back to
+    // an empty composer, pick another target, and the text just sent would
+    // reappear as that target's own draft. Its persisted draft still wins over
+    // an empty carry — that one outlived a renderer reload rather than being
+    // left behind by this effect.
     composer.setDraft(
       newTaskDraftKey,
-      current.length > 0
-        ? current
+      carried.length > 0
+        ? carried
         : (newTaskDraftPersistence.read(newTaskDraftKey) ?? ''),
     );
-  }, [composerRef, newTaskDraftKey]);
+  }, [composerRef, newTaskDraftKey, newTaskSendPending]);
 
   return (
     <>

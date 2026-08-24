@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -6,6 +25,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { StoredMessage } from '@maka/core/session';
 import {
   EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS,
   EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS,
@@ -29,6 +49,75 @@ describe('SQLite SessionStore', () => {
       );
     } finally {
       await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('folds retired Session and transcript values only on persisted reads', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-persisted-decode-'));
+    const store = createSessionStore(root);
+    const currentMessage = {
+      type: 'tool_result',
+      id: 'result-1',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'call-1',
+      isError: false,
+      content: {
+        kind: 'subagent',
+        childSessionId: 'child-1',
+        agentName: 'Explore',
+        turnId: 'child-turn-1',
+        status: 'completed',
+        permissionMode: 'ask',
+        summary: 'done',
+        artifactIds: [],
+      },
+    } as const satisfies StoredMessage;
+    let sessionId: string;
+    try {
+      const session = await store.create(makeInput({ permissionMode: 'ask' }));
+      sessionId = session.id;
+      await store.appendMessage(session.id, currentMessage);
+      await assert.rejects(
+        () =>
+          store.appendMessage(session.id, {
+            ...currentMessage,
+            id: 'result-retired',
+            content: { ...currentMessage.content, permissionMode: 'execute' },
+          } as unknown as StoredMessage),
+        /Invalid tool result content/,
+      );
+    } finally {
+      await store.close?.();
+    }
+
+    const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      database.exec(`
+        UPDATE session_metadata
+        SET payload_json = json_set(payload_json, '$.permissionMode', 'execute')
+        WHERE session_id = '${sessionId!}';
+        UPDATE session_messages
+        SET record_json = json_set(record_json, '$.content.permissionMode', 'execute')
+        WHERE session_id = '${sessionId!}';
+      `);
+    } finally {
+      database.close();
+    }
+
+    const reopened = createSessionStore(root);
+    try {
+      assert.equal((await reopened.readHeaderSnapshot(sessionId!)).permissionMode, 'ask');
+      const [message] = await reopened.readMessages(sessionId!);
+      assert.equal(
+        message?.type === 'tool_result' && message.content.kind === 'subagent'
+          ? message.content.permissionMode
+          : undefined,
+        'ask',
+      );
+    } finally {
+      await reopened.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -176,6 +265,7 @@ describe('SQLite SessionStore', () => {
       assert.equal(page.kind, 'page');
       if (page.kind !== 'page') assert.fail('expected a catalog page');
       assert.equal(page.records[0]?.summary.lastMessagePreview, 'hello from SQLite');
+      assert.equal(page.records[0]?.activityAt, 10);
     } finally {
       await store.close?.();
     }
@@ -999,6 +1089,55 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('reads back a legacy fake-backend session instead of migrating or rejecting it', async () => {
+    // #3211: `'fake'` was retired as a live backend but never migrated out of
+    // storage. Narrowing the header validator would make these rows decode as
+    // malformed and rewriting them to `'ai-sdk'` would make an unrunnable task
+    // look runnable, since `llmConnectionSlug` still points at nothing.
+    //
+    // The legacy row is seeded under the writer, not through `create`: `'fake'`
+    // is a value only an older build could write, so a test that asks today's
+    // creation path for one would be asserting a write that must not exist.
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-legacy-fake-'));
+    const store = createSessionStore(root);
+    let sessionId: string;
+    try {
+      sessionId = (await store.create(makeInput())).id;
+    } finally {
+      await store.close?.();
+    }
+
+    const legacy = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      const row = legacy
+        .prepare(`SELECT payload_json FROM session_metadata WHERE session_id = ?`)
+        .get(sessionId) as { payload_json: string };
+      const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+      payload.backend = 'fake';
+      payload.llmConnectionSlug = 'fake';
+      legacy
+        .prepare(
+          `UPDATE session_metadata
+             SET payload_json = ?, backend = ?, llm_connection_slug = ?
+           WHERE session_id = ?`,
+        )
+        .run(JSON.stringify(payload), 'fake', 'fake', sessionId);
+    } finally {
+      legacy.close();
+    }
+
+    const reopened = createSessionStore(root);
+    try {
+      const [header] = await reopened.listHeaders();
+      assert.equal(header?.backend, 'fake');
+      assert.equal(header?.llmConnectionSlug, 'fake');
+      assert.equal((await reopened.readHeaderSnapshot(sessionId)).backend, 'fake');
+    } finally {
+      await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('deletes metadata and messages through the same transaction boundary', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-delete-'));
     const store = createSessionStore(root);
@@ -1030,9 +1169,8 @@ describe('SQLite SessionStore', () => {
 function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {
   return {
     cwd: '/tmp/cwd',
-    backend: 'fake',
-    llmConnectionSlug: 'fake',
-    model: 'fake-model',
+    llmConnectionSlug: 'test-connection',
+    model: 'test-model',
     permissionMode: 'ask',
     name: 'Session',
     labels: [],

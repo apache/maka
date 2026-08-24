@@ -1,9 +1,36 @@
-# Maka CLI
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
+# Apache Maka（孵化中）CLI
 
 [English](./README.md)
 
 Maka 是一个本地优先的 Agent 工作空间。`maka-agent` npm 包包含交互式终端界面、非交互
 CLI、Runtime Host 工具和 Eval 命令。
+
+## Apache 孵化免责声明
+
+Apache Maka 正在 Apache Software Foundation 孵化。发布到 npm 的英文 README 会直接从
+release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/DISCLAIMER-WIP)
+注入权威的完整 work-in-progress disclaimer；当前状态另见
+[Maka podling 状态页](https://incubator.apache.org/projects/maka.html)。本段仅为中文说明，
+英文免责声明以随包发布的 `DISCLAIMER-WIP` 为准。
 
 > **Beta：**CLI 仍在积极开发中，稳定版发布前，命令和本地数据格式可能发生变化。
 
@@ -35,7 +62,7 @@ maka --version
 maka --help
 ```
 
-`maka-agent` 是 `maka` 的别名。一次性运行请使用 `npx --yes maka-agent@next`；npm 上与本项目
+公开命令只有 `maka`。一次性运行请使用 `npx --yes --package maka-agent@next maka`；npm 上与本项目
 无关的 `maka` 包不是本项目。`runtime-host service install` 使用上面的持久全局安装；
 `runtime-host setup` 会从 `npx` 调用的精确 package 创建自己的托管副本。
 
@@ -54,7 +81,7 @@ maka
 API Key 和工作空间状态保存在本机的 `Maka` profile 中。当前 credential vault 是受操作系统
 账号边界保护的本地明文文件；在 POSIX 系统上，Maka 会强制使用仅 owner 可访问的目录和文件
 权限。它不是操作系统 Keychain。当前边界详见仓库的
-[安全策略](https://github.com/maka-agent/maka-agent/blob/main/SECURITY.md)。
+[安全策略](https://github.com/apache/maka/blob/main/SECURITY.md)。
 
 执行一次非交互 Turn：
 
@@ -81,29 +108,39 @@ Beta 升级不要使用不带 tag 的 `npm update --global maka-agent`：npm 的
 
 ## 设置远程 Runtime Host
 
-在 Linux 上从精确的发布 package 设置持久 remote Runtime Host：
+在 Linux 或 macOS 上从精确的发布 package 设置持久 remote Runtime Host：
 
 ```sh
-npx --yes maka-agent@next runtime-host setup \
+npx --yes --package maka-agent@next maka runtime-host setup \
   --principal my-client \
   --preset terminal-client
 ```
 
 重复设置会替换该 Client credential。设置成功后，service 不再依赖临时 `npx` cache。
 
+可以在不改变当前 Host 的情况下检查 managed service 对应的发布频道：
+
+```sh
+maka runtime-host service check-update --target next --json
+```
+
+结果会把频道固定为精确版本和 package integrity，并说明 package 是否提供足够的兼容性证据，
+可供未来的无人值守更新使用；该命令不会安装或切换 package。更新程序仍须以该 integrity
+校验下载的 archive，并从解压后的 package manifest 中再次确认兼容性值。
+
 ## 卸载
 
 ```sh
-# 仅限安装过 managed Runtime Host service 的 Linux
-npx --yes maka-agent@next runtime-host service uninstall
+# 仅限安装过 managed Runtime Host service 的 Linux 或 macOS
+npx --yes --package maka-agent@next maka runtime-host service uninstall
 
 # 如果曾全局安装 Maka
 npm uninstall --global maka-agent
 ```
 
-先删除 managed service，再卸载 npm 包，避免 systemd 留下指向已删除 CLI 的 unit。这两个命令
-都不会删除模型连接、凭证、会话或 Artifact。它们仍保留在发布版 CLI 与 Desktop
-共用的 profile 中：
+先删除 managed service，再卸载 npm 包，避免 OS service manager 留下指向已删除 CLI 的
+service。这两个命令都不会删除模型连接、凭证、会话或 Artifact。它们仍保留在发布版 CLI 与
+Desktop 共用的 profile 中：
 
 | 平台 | Profile 目录 |
 | --- | --- |
@@ -147,7 +184,7 @@ python3.12 -m venv ~/.venvs/maka-pier-0.3.0
 
 把 spec 的 `pythonPathEnv` 指向相应的 `bin/python`。不要让两个 framework 复用一个环境：
 它们的依赖和 trial contract 不同。高级实验和 toolchain 说明位于
-[Eval 文档](https://github.com/maka-agent/maka-agent/tree/main/packages/eval)。
+[Eval 文档](https://github.com/apache/maka/tree/main/packages/eval)。
 
 ## 故障排查
 
@@ -166,10 +203,10 @@ maka --version
 - 报告问题时，请提供以上三个版本、操作系统和架构、执行的命令，以及移除凭证后的完整
   错误信息。
 
-请在 <https://github.com/maka-agent/maka-agent/issues> 报告问题。
+请在 <https://github.com/apache/maka/issues> 报告问题。
 
 ## 链接
 
-- [代码仓库](https://github.com/maka-agent/maka-agent)
-- [发布操作手册](https://github.com/maka-agent/maka-agent/blob/main/docs/cli-npm-release.zh-CN.md)
-- [许可证](https://github.com/maka-agent/maka-agent/blob/main/LICENSE)
+- [代码仓库](https://github.com/apache/maka)
+- [发布操作手册](https://github.com/apache/maka/blob/main/docs/cli-npm-release.zh-CN.md)
+- [许可证](https://github.com/apache/maka/blob/main/LICENSE)

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -121,8 +140,8 @@ async function verifyConcurrentRevisionAuthority(
   graphChildSessionId: string,
   continuationSourceSessionId: string,
 ): Promise<void> {
-  const desktop = await connectClient(root, 'desktop');
-  const tui = await connectClient(root, 'tui');
+  const desktop = await connectClient(root);
+  const tui = await connectClient(root);
   try {
     const source = await querySession(desktop, sourceSessionId);
     const continuationSource = await querySession(desktop, continuationSourceSessionId);
@@ -399,7 +418,7 @@ async function verifyRestartRecoveryAndAdmission(
   root: string,
   sourceSessionId: string,
 ): Promise<void> {
-  const restarted = await connectClient(root, 'desktop');
+  const restarted = await connectClient(root);
   try {
     assert.deepEqual(
       await restarted.request('session.catalog.query', {
@@ -485,7 +504,7 @@ async function verifyRestartRecoveryAndAdmission(
 }
 
 async function verifySecondRestartRetention(root: string, sourceSessionId: string): Promise<void> {
-  const recovered = await connectClient(root, 'desktop');
+  const recovered = await connectClient(root);
   try {
     assert.deepEqual(
       await recovered.request('session.catalog.query', {
@@ -584,7 +603,6 @@ async function seedSource(
     const source = await execution.sessionStore.create({
       cwd: root,
       name: 'Source Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -592,7 +610,6 @@ async function seedSource(
     const busy = await execution.sessionStore.create({
       cwd: root,
       name: 'Busy Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -600,7 +617,6 @@ async function seedSource(
     const linkedChildSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Linked Child Source Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -608,7 +624,6 @@ async function seedSource(
     const metadataLinkedSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Metadata-linked Source Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -616,7 +631,6 @@ async function seedSource(
     const archivedOwnedSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Archived-owned Source Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -624,7 +638,6 @@ async function seedSource(
     const continuationSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Continuation Source Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -894,7 +907,6 @@ async function seedSource(
       {
         cwd: root,
         name: 'Graph Worker',
-        backend: 'ai-sdk',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -1132,7 +1144,6 @@ async function seedSource(
     const ordinaryLinkedChild = await execution.sessionStore.createSubagent({
       cwd: root,
       name: 'Metadata-linked Child Session',
-      backend: 'ai-sdk',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1508,13 +1519,9 @@ async function terminateChild(child: ChildProcess): Promise<void> {
   );
 }
 
-async function connectClient(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: CURRENT_PROTOCOL,
   });
   assert.equal(result.kind, 'connected');

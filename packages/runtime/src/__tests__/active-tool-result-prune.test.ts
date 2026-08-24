@@ -1,12 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { z } from 'zod';
 import type { ModelMessage } from '../model-protocol.js';
 
-import {
-  activeToolResultLineageIdentity,
-  rewriteActiveToolResultsInMessages,
-} from '../active-tool-result-prune.js';
+import { rewriteActiveToolResultsInMessages } from '../active-tool-result-prune.js';
 import { planActiveToolResultSupersession } from '../active-tool-result-working-set.js';
 import { composeRequestProjection } from '../request-projection.js';
 import { ToolAvailabilityRuntime, LOAD_TOOLS_NAME } from '../tool-availability.js';
@@ -252,36 +268,6 @@ describe('active current-turn tool-result pruning', () => {
     assert.equal(second.rewritten, 0);
     assert.equal(second.archiveFailures, 0);
     assert.deepEqual(second.messages, first.messages);
-  });
-
-  test('raw result and archive placeholder share a stable lineage identity', async () => {
-    const messages = [largeTextToolMessage('Read', 'tool-1', 'SECRET'.repeat(20))];
-    const rawPart = (messages[0] as Extract<ModelMessage, { role: 'tool' }>).content[0];
-    const rewritten = await rewriteActiveToolResultsInMessages({
-      messages,
-      policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
-      stepNumber: 1,
-      turnId: 'turn-1',
-      charsPerToken: 1,
-      archiveToolResult: () => ({ artifactId: 'artifact-tool-1' }),
-    });
-    const placeholderPart = (rewritten.messages[0] as Extract<ModelMessage, { role: 'tool' }>)
-      .content[0];
-    const differentPart = (
-      largeTextToolMessage('Read', 'tool-1', 'DIFFERENT'.repeat(20)) as Extract<
-        ModelMessage,
-        { role: 'tool' }
-      >
-    ).content[0];
-
-    assert.deepEqual(
-      activeToolResultLineageIdentity(placeholderPart),
-      activeToolResultLineageIdentity(rawPart),
-    );
-    assert.notDeepEqual(
-      activeToolResultLineageIdentity(differentPart),
-      activeToolResultLineageIdentity(rawPart),
-    );
   });
 
   test('returns active prune diagnostics for rewritten and failed archives', async () => {

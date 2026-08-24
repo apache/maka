@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useMemo } from 'react';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -91,8 +110,9 @@ export function useShellChatModel(options: {
   // Renderer-only — it never mutates the persisted Settings · 模型 default.
   // Three states, because two cannot say this: `undefined` is an untouched
   // picker, so Settings → 通用 → 默认思考级别 applies; `null` is the user
-  // explicitly choosing 模型默认 for this one chat, which must beat the
-  // configured default or the per-chat picker could not undo it.
+  // explicitly choosing the per-chat `默认` option (use the model default),
+  // which must beat the configured Settings default or the picker could not
+  // undo it.
   //
   // The pick carries its target key so a Host or Project switch cannot apply it
   // to a different execution authority, even for an identically named model.
@@ -119,13 +139,20 @@ export function useShellChatModel(options: {
     catalogDefault: catalogDefaultNewChatModel,
     choices: chatModelChoices,
   });
-  const activeConnectionLabel = activeSession?.backend === 'fake'
+  // A task whose backend was retired has no model to name (#3211). That verdict
+  // comes from the readiness projection, not from reading `activeSession.backend`
+  // here: the projection is the single authority on whether a task is usable,
+  // and it already answers `fake_backend` for these rows.
+  const isRetiredBackend =
+    options.sessionSendOutcome?.kind === 'blocked' &&
+    options.sessionSendOutcome.reason === 'fake_backend';
+  const activeConnectionLabel = isRetiredBackend
     ? conversationCopy.model.fakeBackendLabel
     : activeConnection?.name ?? activeSession?.llmConnectionSlug;
-  const activeModel = activeSession?.backend === 'fake'
+  const activeModel = isRetiredBackend
     ? undefined
     : activeSession?.model || activeConnection?.defaultModel;
-  const activeModelLabel = activeSession?.backend === 'fake'
+  const activeModelLabel = isRetiredBackend
     ? undefined
     : chatModelChoiceLabel(chatModelChoices, activeSession?.llmConnectionSlug, activeModel);
   const activeThinkingLevels = useMemo(

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { describe, test } from 'node:test';
@@ -31,6 +50,23 @@ describe('Runtime Host operator commands', () => {
         kind: 'runtime-host-project-add',
         rootPath: '/srv/maka',
         path: '/work/project',
+        prefer: false,
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'project',
+        'add',
+        '/work/project',
+        '--prefer',
+        '--root',
+        '/srv/maka',
+      ]),
+      {
+        kind: 'runtime-host-project-add',
+        rootPath: '/srv/maka',
+        path: '/work/project',
+        prefer: true,
       },
     );
     assert.deepEqual(
@@ -103,8 +139,11 @@ describe('Runtime Host operator commands', () => {
       assert.equal(resolved.principalKind, 'remote_owner');
       assert.equal(resolved.canUseHostPaths, false);
       assert.equal(resolved.operationGrants.includes('access.credential.issue'), false);
+      assert.equal(resolved.operationGrants.includes('access.credential.prepare'), false);
       assert.equal(resolved.operationGrants.includes('access.credential.replace'), false);
       assert.equal(resolved.operationGrants.includes('access.credential.revoke'), false);
+      assert.equal(resolved.operationGrants.includes('access.credential.rotation.prepare'), false);
+      assert.equal(resolved.operationGrants.includes('access.credential.rotation.revoke'), false);
       assert.equal(resolved.operationGrants.includes('host.upgrade.prepare'), false);
       assert.equal(resolved.operationGrants.includes('turn.start'), true);
       assert.equal(resolved.operationGrants.includes('project.catalog.query'), true);
@@ -127,6 +166,50 @@ describe('Runtime Host operator commands', () => {
       'error',
     );
     assert.deepEqual(
+      parseRuntimeHostCommand([
+        'access',
+        'prepare',
+        '--current-fingerprint',
+        'a'.repeat(32),
+        '--root',
+        '/srv/maka',
+        '--expected-root',
+        'a'.repeat(64),
+        '--framed',
+      ]),
+      {
+        kind: 'runtime-host-access-prepare',
+        rootPath: '/srv/maka',
+        expectedRootId: 'a'.repeat(64),
+        currentCredentialFingerprint: 'a'.repeat(32),
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand(['access', 'prepare', '--current-fingerprint', 'a'.repeat(32)]).kind,
+      'error',
+    );
+    assert.deepEqual(parseRuntimeHostCommand(['access', 'list', '--framed']), {
+      kind: 'runtime-host-access-list',
+      framed: true,
+    });
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'access',
+        'revoke',
+        '--credential',
+        'credential-1',
+        '--current-fingerprint',
+        'a'.repeat(32),
+        '--framed',
+      ]),
+      {
+        kind: 'runtime-host-access-revoke',
+        credentialId: 'credential-1',
+        currentCredentialFingerprint: 'a'.repeat(32),
+        framed: true,
+      },
+    );
+    assert.deepEqual(
       Object.keys(HOST_OPERATION_SPECS)
         .filter(
           (operation) =>
@@ -137,8 +220,11 @@ describe('Runtime Host operator commands', () => {
         .sort(),
       [
         'access.credential.issue',
+        'access.credential.prepare',
         'access.credential.replace',
         'access.credential.revoke',
+        'access.credential.rotation.prepare',
+        'access.credential.rotation.revoke',
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',
@@ -179,12 +265,12 @@ describe('Runtime Host operator commands', () => {
     assert.equal(JSON.stringify(event).includes('credential'), false);
   });
 
-  test('registers a Project through the local owner connection', async () => {
-    let closed = false;
-    let request: unknown;
+  test('registers a Project without preferring it unless explicitly requested', async () => {
+    let closeCount = 0;
+    const requests: unknown[] = [];
     const connection = {
       request: async (operation: string, input: unknown) => {
-        request = { operation, input };
+        requests.push({ operation, input });
         return {
           kind: 'project',
           project: {
@@ -198,29 +284,38 @@ describe('Runtime Host operator commands', () => {
         };
       },
       close: async () => {
-        closed = true;
+        closeCount += 1;
       },
     } as unknown as RuntimeHostConnection;
     const output: string[] = [];
+    const commands = [
+      { kind: 'add' as const, rootPath: '/srv/maka', path: 'project', prefer: false },
+      { kind: 'add' as const, rootPath: '/srv/maka', path: 'project', prefer: true },
+    ];
 
-    assert.equal(
-      await runRuntimeHostProjectCli(
-        { kind: 'add', rootPath: '/srv/maka', path: 'project' },
-        {
+    for (const command of commands) {
+      assert.equal(
+        await runRuntimeHostProjectCli(command, {
           connect: async () => connection,
           write: (value) => output.push(value),
-        },
-      ),
-      0,
-    );
-    assert.deepEqual(request, {
-      operation: 'project.catalog.mutate',
-      input: { kind: 'register', path: resolve('project') },
-    });
-    assert.equal(closed, true);
-    assert.equal(
-      (JSON.parse(output.join('')) as { project: { id: string } }).project.id,
-      'project-1',
+        }),
+        0,
+      );
+    }
+    assert.deepEqual(requests, [
+      {
+        operation: 'project.catalog.mutate',
+        input: { kind: 'register', path: resolve('project'), prefer: false },
+      },
+      {
+        operation: 'project.catalog.mutate',
+        input: { kind: 'register', path: resolve('project'), prefer: true },
+      },
+    ]);
+    assert.equal(closeCount, 2);
+    assert.deepEqual(
+      output.map((value) => (JSON.parse(value) as { project: { id: string } }).project.id),
+      ['project-1', 'project-1'],
     );
   });
 });

@@ -1,32 +1,52 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
+import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
-  decodeStoredMessage,
+  decodeStoredMessage as decodePersistedStoredMessage,
   userFacingText,
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 import {
   type ActiveInteractionRequestEvent,
   type QueueEnqueueOutcome,
   type SessionEvent,
   type ShellRunUpdate,
 } from '@maka/core/events';
+
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
-import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+
 import { executionBoundaryDisplayMode } from '@maka/core/sandbox-boundary';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
-import {
-  isRuntimeHostTerminalTurn as isTerminalTurn,
-  type RuntimeHostTerminalTurn as TerminalTurnSnapshot,
-} from '@maka/runtime-host/adapter';
+import { isRuntimeHostTerminalTurn as isTerminalTurn } from '@maka/runtime-host/adapter';
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
+  projectSessionCatalogSummary,
   readRuntimeHostResources,
   readRuntimeHostSessions,
   RuntimeHostOperationError,
@@ -58,6 +78,7 @@ import type {
   MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
   MakaTranscriptReplacementReason,
+  CreateSessionRequest,
   RewindTarget,
   SessionResumeAvailability,
 } from './session-driver.js';
@@ -68,6 +89,8 @@ import {
   inspectGitCwdChanges,
   resolveMoveCwd,
 } from './session-driver-policy.js';
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_CATALOG_ATTEMPTS = 3;
 
 /** Optimistic-control retries for goal pause/resume/clear (mirrors the desktop client). */
@@ -79,7 +102,14 @@ export interface RuntimeHostMakaSessionDriverInput {
   workspace?: WorkspaceTarget;
   llmConnectionSlug: string;
   model: string;
-  permissionMode?: PermissionMode;
+  /**
+   * The Host's configured chat default at launch, for display only.
+   *
+   * It is never sent on create — omitting the field is what lets the Host stay
+   * the authority — but a client that shows "the mode the next Session will
+   * start in" needs a value before any Session exists.
+   */
+  prospectivePermissionMode?: PermissionMode;
   orchestrationMode?: OrchestrationMode;
   newId?: () => string;
   now?: () => number;
@@ -93,7 +123,7 @@ type RuntimeHostSessionDriverConnection = Pick<
 >;
 
 export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
-  createSession(input: CreateSessionInput): Promise<SessionSummary>;
+  createSession(input: CreateSessionRequest): Promise<SessionSummary>;
   readMessages(): Promise<StoredMessage[]>;
   resumeLatest(): AsyncIterable<SessionEvent>;
   subscribePendingInteractions(listener: (pending: InteractionPendingSnapshot) => void): () => void;
@@ -105,7 +135,7 @@ export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
     listener: (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void;
@@ -131,12 +161,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #model: string;
   #llmConnectionSlug: string;
   #thinkingLevel: ThinkingLevel | undefined;
-  // Construction-time default a fresh Session is created with. Per-session
-  // elevations (the picker, a resumed Session's boundary) update
-  // `#permissionMode` only; `startNewSession` falls back to this so Full
-  // access never leaks into a fresh Session (#3020).
-  readonly #defaultPermissionMode: PermissionMode;
-  #permissionMode: PermissionMode;
+  // What a Session created right now would start in, for display only. Never
+  // sent on create: an omitted field is what makes the Host's `chatDefaults`
+  // the authority. Refreshed on `/new` because that default can change — and
+  // showing the previous Session's mode there is the one direction that can
+  // report Auto while the Host creates with full access.
+  #prospectivePermissionMode: PermissionMode | undefined;
+  // The user's explicit choice for the Session being created, before it
+  // exists. Cleared by `startNewSession` so a previous Session's elevation
+  // cannot leak into a fresh one (#3020).
+  #permissionMode: PermissionMode | undefined;
   #activeBoundaryDisplayMode: PermissionMode | undefined;
   #orchestrationMode: OrchestrationMode;
   #channel: RuntimeHostSessionChannel | undefined;
@@ -144,6 +178,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #startedTurnReattachTails = new Map<number, Promise<void>>();
   #sessionGeneration = 0;
   #channelGeneration = 0;
+  #transcriptRefreshSequence = 0;
   readonly #startedTurnListeners = new Set<(turn: MakaAttachedSessionTurn) => void>();
   readonly #goalListeners = new Set<(goal: GoalProjection | null) => void>();
   readonly #pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
@@ -156,7 +191,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void
   >();
@@ -179,8 +214,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     };
     this.#model = input.model;
     this.#llmConnectionSlug = input.llmConnectionSlug;
-    this.#defaultPermissionMode = input.permissionMode ?? 'ask';
-    this.#permissionMode = this.#defaultPermissionMode;
+    this.#prospectivePermissionMode = input.prospectivePermissionMode;
     this.#orchestrationMode = input.orchestrationMode ?? 'default';
   }
 
@@ -188,7 +222,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return loadCurrentMessages(this.#connection, this.#requireSession('read messages'));
   }
 
-  async createSession(input: CreateSessionInput): Promise<SessionSummary> {
+  async createSession(input: CreateSessionRequest): Promise<SessionSummary> {
     if (this.#sessionId) throw new Error('Cannot create a Session while another is active.');
     if (!input.model) throw new Error('Runtime Host Session creation requires an explicit model');
     this.#workspace = {
@@ -198,15 +232,18 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#llmConnectionSlug = input.llmConnectionSlug;
     this.#model = input.model;
     this.#thinkingLevel = input.thinkingLevel;
-    this.#permissionMode = input.permissionMode ?? 'ask';
+    // An omitted mode stays omitted: the Host applies its configured default.
+    // Substituting a literal `ask` here would make the CLI a second authority
+    // over the starting boundary and silently override that default.
+    this.#permissionMode = input.permissionMode;
     const session = await this.#createSession(input.name ?? DEFAULT_SESSION_NAME);
-    return runtimeHostSessionSummary(session);
+    return projectSessionCatalogSummary(session);
   }
 
   async listSessions(): Promise<SessionSummary[]> {
     const sessions = (await readRuntimeHostSessions(this.#connection))
       .flatMap(representableSession)
-      .map(runtimeHostSessionSummary);
+      .map(projectSessionCatalogSummary);
     if (this.#executionLocation.kind === 'host') return sessions;
     return sessions
       .map((session, index) => ({ session, index }))
@@ -263,7 +300,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         turnId,
         runId: started.runId,
         events,
-        summary: runtimeHostSessionSummary(configuration.session),
+        summary: projectSessionCatalogSummary(configuration.session),
         ...(skillInvocation ? { skillInvocation } : {}),
       };
     } catch (error) {
@@ -442,7 +479,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     }
     let session = await getRuntimeHostSession(this.#connection, sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
-    let summary = runtimeHostSessionSummary(session);
+    let summary = projectSessionCatalogSummary(session);
     if (options.relocateCwd === undefined) {
       await assertSessionResumeAvailable(summary, this.#executionLocation);
     }
@@ -468,7 +505,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           oldCwdDirty,
         };
       }
-      summary = runtimeHostSessionSummary(session);
+      summary = projectSessionCatalogSummary(session);
       await assertSessionResumeAvailable(summary, this.#executionLocation);
     }
     const expectedChannelGeneration = this.#channelGeneration;
@@ -485,7 +522,6 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#workspace = session.workspace;
     this.#adoptConfiguration(session);
     this.#activeBoundaryDisplayMode = executionBoundaryDisplayMode(boundary);
-    this.#permissionMode = boundary.kind === 'bypass' ? 'bypass' : 'ask';
     const attachedTurnId = opened.attachedTurnId ?? opened.channel.firstObservedTurnId;
     opened.channel.activate(attachedTurnId);
     return {
@@ -566,13 +602,14 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     this.#sessionGeneration += 1;
     this.#channelGeneration += 1;
     this.#sessionId = null;
-    // A fresh Session starts at the construction-time default. Leaving a
-    // previous Session's elevation in `#permissionMode` would both misreport
-    // the mode and create the next Session with it (#3020). Full access stays
-    // an explicit per-session opt-in; `setPermissionMode` can still raise the
-    // mode before the first prompt creates the Session.
-    this.#permissionMode = this.#defaultPermissionMode;
+    // A fresh Session carries no client claim on its mode: leaving a previous
+    // Session's elevation here would both misreport the mode and create the
+    // next Session with it (#3020). Full access stays an explicit per-session
+    // opt-in; `setPermissionMode` can still raise it before the first prompt
+    // creates the Session.
+    this.#permissionMode = undefined;
     this.#activeBoundaryDisplayMode = undefined;
+    void this.#refreshProspectivePermissionMode();
     void this.#replaceChannel(undefined);
   }
 
@@ -599,7 +636,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     listener: (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void {
@@ -718,8 +755,26 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return this.#orchestrationMode;
   }
 
-  getPermissionMode(): PermissionMode {
-    return this.#activeBoundaryDisplayMode ?? this.#permissionMode;
+  getPermissionMode(): PermissionMode | undefined {
+    return (
+      this.#activeBoundaryDisplayMode ?? this.#permissionMode ?? this.#prospectivePermissionMode
+    );
+  }
+
+  /**
+   * Re-read the Host's chat default after the Session it described is gone.
+   *
+   * Best effort on purpose: this only moves a label, and creation omits the
+   * field either way, so a failed refresh keeps the last authoritative reading
+   * rather than inventing one.
+   */
+  async #refreshProspectivePermissionMode(): Promise<void> {
+    try {
+      const policy = await this.#request('runtime.policy.query', {});
+      this.#prospectivePermissionMode = policy.policy.chatDefaults.permissionMode;
+    } catch {
+      // Keep the previous reading.
+    }
   }
 
   async #ensureSession(): Promise<string> {
@@ -743,7 +798,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           connectionSlug: this.#llmConnectionSlug,
           model: this.#model,
         },
-        permissionMode: this.#permissionMode,
+        ...(this.#permissionMode === undefined ? {} : { permissionMode: this.#permissionMode }),
         ...(this.#orchestrationMode === 'default'
           ? {}
           : { orchestrationMode: this.#orchestrationMode }),
@@ -954,7 +1009,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         : {}),
       events: opened.channel.eventsForTurn(turnId),
       messages: opened.messages,
-      summary: runtimeHostSessionSummary(configuration.session),
+      summary: projectSessionCatalogSummary(configuration.session),
     } satisfies MakaAttachedSessionTurn;
     for (const listener of this.#startedTurnListeners) listener(turn);
     opened.channel.activate(turnId);
@@ -975,9 +1030,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         for (const listener of this.#pendingInteractionListeners) listener(pending);
       },
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
-      onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn),
+      onTranscriptSettlement: (turnId) =>
+        this.#refreshTranscript(sessionId, sessionGeneration, turnId),
       onTranscriptReplaced: (turnId, messages) =>
-        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect'),
+        this.#publishTranscriptReplacement(
+          sessionId,
+          sessionGeneration,
+          turnId,
+          messages,
+          'reconnect',
+        ),
       onGoalChanged: (goal) => {
         // A closing channel from a previous session can still be draining a
         // frame when the swap happens; only the live session may publish.
@@ -1018,29 +1080,39 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .catch(() => undefined);
   }
 
-  #refreshTerminalTranscript(turn: TerminalTurnSnapshot): void {
-    void loadCurrentMessages(this.#connection, turn.sessionId)
+  #refreshTranscript(sessionId: string, sessionGeneration: number, turnId: string): void {
+    const refreshSequence = ++this.#transcriptRefreshSequence;
+    void loadCurrentMessages(this.#connection, sessionId)
       .then((messages) => {
-        if (this.#sessionId !== turn.sessionId) return;
-        this.#publishTranscriptReplacement(turn.sessionId, turn.turnId, messages, 'terminal');
+        if (
+          this.#sessionId !== sessionId ||
+          this.#sessionGeneration !== sessionGeneration ||
+          refreshSequence !== this.#transcriptRefreshSequence
+        ) {
+          return;
+        }
+        this.#publishTranscriptReplacement(
+          sessionId,
+          sessionGeneration,
+          turnId,
+          messages,
+          'reconcile',
+        );
       })
       .catch(() => undefined);
   }
 
   #publishTranscriptReplacement(
     sessionId: string,
+    sessionGeneration: number,
     turnId: string,
     messages: readonly StoredMessage[],
     reason: MakaTranscriptReplacementReason,
   ): void {
-    if (this.#sessionId !== sessionId) return;
+    if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
+    this.#transcriptRefreshSequence += 1;
     for (const listener of this.#transcriptListeners) {
-      listener(
-        sessionId,
-        turnId,
-        messages.map((message) => structuredClone(message)),
-        reason,
-      );
+      listener(sessionId, turnId, messages, reason);
     }
   }
 
@@ -1162,48 +1234,4 @@ async function loadCurrentMessages(
     await subscription.close().catch(() => undefined);
     await draining.catch(() => undefined);
   }
-}
-
-export function runtimeHostSessionSummary(session: SessionCatalogProjection): SessionSummary {
-  return {
-    id: session.id,
-    cwd: session.workspace.hostCwd,
-    ...(session.workspace.target.kind === 'project'
-      ? { projectId: session.workspace.target.projectId }
-      : {}),
-    name: session.name,
-    isFlagged: session.isFlagged,
-    isArchived: session.isArchived,
-    labels: [...session.labels],
-    hasUnread: session.hasUnread,
-    ...(session.lastMessageAt === undefined ? {} : { lastMessageAt: session.lastMessageAt }),
-    ...(session.lastMessagePreview === undefined
-      ? {}
-      : { lastMessagePreview: session.lastMessagePreview }),
-    status: session.status,
-    ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
-    ...(session.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: session.statusUpdatedAt }),
-    ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
-    ...(session.branchOfTurnId === undefined ? {} : { branchOfTurnId: session.branchOfTurnId }),
-    ...(session.subagent === undefined ? {} : { subagent: session.subagent }),
-    ...(session.revisionRootSessionId === undefined
-      ? {}
-      : { revisionRootSessionId: session.revisionRootSessionId }),
-    ...(session.revisionParentSessionId === undefined
-      ? {}
-      : { revisionParentSessionId: session.revisionParentSessionId }),
-    ...(session.revisionOfTurnId === undefined
-      ? {}
-      : { revisionOfTurnId: session.revisionOfTurnId }),
-    ...(session.revisionIndex === undefined ? {} : { revisionIndex: session.revisionIndex }),
-    ...(session.revisionState === undefined ? {} : { revisionState: session.revisionState }),
-    backend: session.backend,
-    llmConnectionSlug: session.llmConnectionSlug,
-    connectionLocked: session.connectionLocked,
-    model: session.model,
-    ...(session.thinkingLevel === undefined ? {} : { thinkingLevel: session.thinkingLevel }),
-    permissionMode: session.permissionMode,
-    collaborationMode: session.collaborationMode,
-    orchestrationMode: session.orchestrationMode,
-  };
 }

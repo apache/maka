@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
@@ -54,15 +73,18 @@ describe('deriveOnboardingState', () => {
         { 'missing-model': true },
         { kind: 'needs_model', connectionSlug: 'missing-model' },
       ],
+      // A catalog that lists nothing, or lists other models, no longer routes
+      // the user anywhere: they picked `stale`, and only the provider can say
+      // whether it serves it (#1584). Sending is the way to find out.
       [
         realConnection({ slug: 'empty-models', defaultModel: 'stale', models: [] }),
         { 'empty-models': true },
-        { kind: 'needs_model', connectionSlug: 'empty-models' },
+        { kind: 'ready_empty', connectionSlug: 'empty-models', model: 'stale' },
       ],
       [
         realConnection({ slug: 'stale-model', defaultModel: 'stale', models: [{ id: 'fresh' }] }),
         { 'stale-model': true },
-        { kind: 'needs_model', connectionSlug: 'stale-model' },
+        { kind: 'ready_empty', connectionSlug: 'stale-model', model: 'stale' },
       ],
       [
         realConnection({
@@ -81,7 +103,14 @@ describe('deriveOnboardingState', () => {
 
   it('preserves readiness priority across broken and ready alternatives', () => {
     const missingSecret = realConnection({ slug: 'current' });
-    const brokenAlternative = realConnection({ slug: 'broken-alt', models: [] });
+    // Broken by having nothing chosen at all — an empty catalog is no longer a
+    // fault, so it cannot stand in for one here.
+    const brokenAlternative = realConnection({
+      slug: 'broken-alt',
+      defaultModel: '',
+      enabledModelIds: [],
+      models: [],
+    });
     assert.deepEqual(
       derive({
         connections: [missingSecret, brokenAlternative],
@@ -107,8 +136,10 @@ describe('deriveOnboardingState', () => {
   it('accepts OAuth providers and ignores validation telemetry', () => {
     for (const connection of [
       realConnection({
-        slug: 'claude-subscription',
-        providerType: 'claude-subscription',
+        slug: 'xai-oauth',
+        providerType: 'xai-oauth',
+        defaultModel: 'grok-4',
+        models: [{ id: 'grok-4' }],
         lastTestStatus: 'error',
       }),
       realConnection({
@@ -170,5 +201,23 @@ describe('onboarding milestone persistence', () => {
     for (const [milestones, expected] of cases) {
       assert.equal(hasSettledInitialOnboarding(milestones), expected);
     }
+  });
+
+  it('reports retirement rather than an unhealthy connection', () => {
+    // The generic blocked copy tells the user to re-check credentials and
+    // sign-in; for a retired provider both lead nowhere.
+    const state = derive({
+      connections: [
+        realConnection({
+          slug: 'claude-subscription',
+          providerType: 'claude-subscription',
+          defaultModel: 'claude-opus-5',
+          models: [{ id: 'claude-opus-5' }],
+        }),
+      ],
+      secrets: { 'claude-subscription': true },
+    });
+
+    assert.deepEqual(state, { kind: 'blocked', reason: 'all_connections_retired' });
   });
 });

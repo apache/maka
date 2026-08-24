@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import type {
@@ -8,6 +27,7 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import { clampCacheReadTokens } from '@maka/core/model-call-usage-projection';
 import {
   canonicalPricingConfigsEqual,
   comparePricingModelKeys,
@@ -112,14 +132,21 @@ class SqliteTelemetryRepo implements TelemetryRepo {
     return this.enqueueMutation(() => {
       this.#lease.database
         .prepare(`
-          INSERT INTO usage_llm_calls(storage_key, id, ts, record_json)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO usage_llm_calls(storage_key, id, ts, record_json, session_id)
+          VALUES (?, ?, ?, ?, ?)
           ON CONFLICT(storage_key) DO UPDATE SET
             id = excluded.id,
             ts = excluded.ts,
-            record_json = excluded.record_json
+            record_json = excluded.record_json,
+            session_id = excluded.session_id
         `)
-        .run(usageIdentityKey(admitted.id), admitted.id, admitted.ts, JSON.stringify(admitted));
+        .run(
+          usageIdentityKey(admitted.id),
+          admitted.id,
+          admitted.ts,
+          JSON.stringify(admitted),
+          admitted.sessionId ?? null,
+        );
     });
   }
 
@@ -156,12 +183,16 @@ class SqliteTelemetryRepo implements TelemetryRepo {
         input: sum(rows.map((row) => row.inputTokens)),
         output: sum(rows.map((row) => row.outputTokens)),
         cacheMiss: sum(rows.map((row) => row.cacheMissInputTokens)),
-        cacheRead: sum(rows.map((row) => row.cacheHitInputTokens)),
+        cacheRead: sum(
+          rows.map((row) => clampCacheReadTokens(row.inputTokens, row.cacheHitInputTokens)),
+        ),
         cacheWrite: sum(rows.map((row) => row.cacheWriteInputTokens)),
         reasoning: sum(rows.map((row) => row.reasoningTokens)),
         total: sum(rows.map((row) => row.totalTokens)),
       },
-      cacheHitRequests: rows.filter((row) => row.cacheHitInputTokens > 0).length,
+      cacheHitRequests: rows.filter(
+        (row) => clampCacheReadTokens(row.inputTokens, row.cacheHitInputTokens) > 0,
+      ).length,
       cacheCreateRequests: rows.filter((row) => row.cacheWriteInputTokens > 0).length,
       errorRequests: rows.filter((row) => row.status === 'error').length,
     });
@@ -258,8 +289,8 @@ class SqliteTelemetryRepo implements TelemetryRepo {
   }
 
   private filteredUsageRows(query: UsageQuery, from: number, to: number) {
-    return this.readLlmRows().filter((row) => {
-      if (row.ts < from || row.ts > to) return false;
+    return this.readLlmRows(from, to, query.sessionId).filter((row) => {
+      if (query.sessionId && row.sessionId !== query.sessionId) return false;
       if (query.connectionSlug && row.connectionSlug !== query.connectionSlug) return false;
       if (query.providerId && row.providerId !== query.providerId) return false;
       if (query.modelId && row.modelId !== query.modelId) return false;
@@ -277,9 +308,17 @@ class SqliteTelemetryRepo implements TelemetryRepo {
     });
   }
 
-  private readLlmRows(): PersistedLlmCallRecord[] {
+  private readLlmRows(from: number, to: number, sessionId?: string): PersistedLlmCallRecord[] {
     return (
-      this.#lease.database.prepare('SELECT record_json FROM usage_llm_calls').all() as Array<{
+      this.#lease.database
+        .prepare(
+          sessionId
+            ? `SELECT record_json FROM usage_llm_calls
+               WHERE session_id = ? AND ts >= ? AND ts <= ?`
+            : `SELECT record_json FROM usage_llm_calls
+               WHERE ts >= ? AND ts <= ?`,
+        )
+        .all(...(sessionId ? [sessionId, from, to] : [from, to])) as Array<{
         record_json: string;
       }>
     ).map((row) => decodePersistedLlmCallRecord(JSON.parse(row.record_json)));
@@ -573,7 +612,9 @@ function usageBucket(key: string, rows: readonly PersistedLlmCallRecord[]): Usag
     inputTokens: sum(rows.map((row) => row.inputTokens)),
     outputTokens: sum(rows.map((row) => row.outputTokens)),
     cacheMissTokens: sum(rows.map((row) => row.cacheMissInputTokens)),
-    cacheReadTokens: sum(rows.map((row) => row.cacheHitInputTokens)),
+    cacheReadTokens: sum(
+      rows.map((row) => clampCacheReadTokens(row.inputTokens, row.cacheHitInputTokens)),
+    ),
     cacheWriteTokens: sum(rows.map((row) => row.cacheWriteInputTokens)),
     reasoningTokens: sum(rows.map((row) => row.reasoningTokens)),
     totalTokens: sum(rows.map((row) => row.totalTokens)),

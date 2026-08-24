@@ -1,5 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { userEvent } from 'storybook/test';
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
@@ -7,21 +25,21 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import {
   ChatSurfaceLayout,
   ChatView,
-  clearGlobalInputHistory,
   Composer,
   deriveTitlebarProjectName,
-  saveGlobalInputHistoryEntry,
   SessionListPanel,
   TitlebarSessionIdentity,
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
-import { AppShellTopbarActions, AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
+import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
+import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
 import { deriveBranchBanner } from '../src/renderer/branch-banner';
 import { deriveSessionRevisionNavigation } from '../src/renderer/session-revisions';
 import { deriveSessionRail } from '../src/renderer/session-rail';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
+import { GoalDialog } from '../src/renderer/features/goals/testing';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
@@ -225,15 +243,16 @@ const baseComposerProps: ComposerProps = {
   onPermissionModeChange: noop,
   // Fidelity: production app-shell always wires these (app-shell.tsx
   // ~1851-1960), so the daily composer renders the upload button, the
-  // modes menu (Plan / Swarm), and the Skills picker. Omitting them here
-  // understated the persistent element count in every shell story.
+  // mode controls (Plan / orchestration), and the Skills picker. Omitting them
+  // here understated the persistent element count in every shell story.
   onPickAttachments: noop,
   planModeActive: false,
   onPlanModeChange: noop,
-  swarmModeActive: false,
-  onSwarmModeChange: noop,
-  graphModeActive: false,
-  onGraphModeChange: noop,
+  orchestrationMode: 'default',
+  onOrchestrationModeChange: noop,
+  // Production wires this for every Session it can interact with locally
+  // (app-shell.tsx), so the ＋ menu always carries the Goal entry.
+  onSetGoal: noop,
   // Thinking is a separate right-footer Selector when levels are offered.
   activeThinkingLevels: ['off', 'low', 'medium', 'high', 'xhigh'],
   activeThinkingLevel: 'medium',
@@ -262,7 +281,6 @@ function ShellFrame(props: {
       data-sidebar-state={props.sidebarCollapsed ? 'collapsed' : 'expanded'}
       style={
         {
-          height: '100%',
           minHeight: 640,
           /* Same publication point as production, for the same reason as
              `data-sidebar-state` above: the titlebar's first grid track is a
@@ -382,10 +400,10 @@ function ComposedShell(props: {
             })()}
           />
         )}
-        <AppShellWorkspaceTopActions
-          workbarAvailable
-          workbarCollapsed={false}
-          onToggleWorkbar={noop}
+        <WorkbarTitlebarActions
+          available
+          collapsed={false}
+          onToggle={noop}
         />
       </header>
       <AstryxAppShell
@@ -546,6 +564,65 @@ export const RunningStatusDuringToolRun: Story = {
               status: 'running',
               args: { command: 'npm test' },
             }],
+          }],
+        },
+      }}
+    />
+  ),
+};
+
+// Real path: Desktop Computer Use is exposed through the Runtime Host Client
+// Capability bridge. The settled observation establishes the confirmed target;
+// the following sequence inherits it while live progress replaces the generic
+// working phrase at the bottom of the turn.
+export const ComputerUseObservability: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'running', streaming: true }}
+      chat={{
+        runningStatus: true,
+        messages: [
+          user('msg-cu-1', 'turn-cu', 2, '在计算器里完成这组输入，并确认结果。'),
+          {
+            type: 'turn_state',
+            id: 'state-cu',
+            turnId: 'turn-cu',
+            ts: NOW - 40_000,
+            status: 'running',
+            partialOutputRetained: false,
+          },
+        ],
+        liveTurn: {
+          turnId: 'turn-cu',
+          phase: 'streamed',
+          steps: [{
+            stepId: 'msg-assistant-cu',
+            tools: [
+              {
+                toolUseId: 'tool-cu-observe',
+                toolName: 'mcp__desktop_computer_use__maka_computer',
+                activityKind: 'computer',
+                displayName: 'Maka Computer',
+                status: 'completed',
+                args: { action: 'observe', app: '计算器', window_id: 7 },
+                durationMs: 728,
+              },
+              {
+                toolUseId: 'tool-cu-sequence',
+                toolName: 'mcp__desktop_computer_use__maka_computer',
+                activityKind: 'computer',
+                displayName: 'Maka Computer',
+                status: 'running',
+                args: {
+                  action: 'element_sequence',
+                  observation_id: '00000000-0000-0000-0000-000000000001',
+                  steps: Array.from({ length: 11 }, (_, index) => ({
+                    label: `<text:${String(index).length}>`,
+                  })),
+                },
+                progress: { current: 7, total: 11 },
+              },
+            ],
           }],
         },
       }}
@@ -1003,15 +1080,16 @@ export const PlanModeOn: Story = {
 // product accent, so the icon is what has to keep the modes distinguishable —
 // this story is where that carries its own weight.
 export const SwarmModeOn: Story = {
-  render: () => <ComposedShell composer={{ swarmModeActive: true }} />,
+  render: () => <ComposedShell composer={{ orchestrationMode: 'swarm' }} />,
 };
 
-// Real path: Plan and Swarm are independent switches (collaborationMode vs
-// orchestrationMode), so both can be on at once. This is the widest the mode
-// tail ever gets next to a real model name.
+// Real path: Plan and orchestration are separate Session fields with separate
+// lifetimes, so both can be on at once — Plan is a temporary excursion, Swarm
+// is the standing default the execution afterwards runs under. This is the
+// widest the mode tail ever gets next to a real model name.
 export const PlanAndSwarmModeOn: Story = {
   render: () => (
-    <ComposedShell composer={{ planModeActive: true, swarmModeActive: true }} />
+    <ComposedShell composer={{ planModeActive: true, orchestrationMode: 'swarm' }} />
   ),
 };
 
@@ -1033,38 +1111,43 @@ export const ModeOnWithPendingAttachments: Story = {
   ),
 };
 
-const RECALLED_PROMPT = '帮我把 composer 的样式再收紧一点';
+// Real path: this Session already has a running Goal, which the composer shows
+// above the input. Arming refuses a second one, so the ＋ menu's Goal entry
+// says why instead of opening a dialog that would fail on submit.
+export const GoalAlreadySet: Story = {
+  render: () => <ComposedShell composer={{ goalActive: true }} />,
+};
 
-// Real path: the user has sent this prompt before and starts retyping it, so
-// the editor offers the rest inside the field.
-//
-// A review driver, not coverage: the render smoke opens stories in embedded
-// mode, which disables autoplay (FIDELITY.md), so nothing below is executed by
-// CI. The active-offer lifecycle — Tab, caret, focus, composition, trigger-menu
-// priority, streaming Escape — is pinned in
-// `apps/desktop/e2e/composer-inline-completion.spec.ts`, which does run.
-export const ComposerInlineSuggestion: Story = {
-  // Seeded through the module's own write path, before the story mounts:
-  // `useComposerHistory` reads storage once at mount and thereafter follows
-  // that module's writes, so poking the key from `play` would seed a list
-  // nobody holds.
-  loaders: [
-    async () => {
-      clearGlobalInputHistory();
-      saveGlobalInputHistoryEntry(RECALLED_PROMPT);
-      return {};
-    },
-  ],
-  render: () => <ComposedShell chat={{ messages: [] }} />,
-  play: async ({ canvasElement }) => {
-    // Scoped to this canvas, not the document: Storybook can have other
-    // stories mounted, and a document-wide lookup would drive whichever
-    // composer happened to be first.
-    const editable = canvasElement.querySelector<HTMLElement>(
-      '.maka-composer-editor [contenteditable="true"]',
-    );
-    if (!editable) return;
-    await userEvent.click(editable);
-    await userEvent.keyboard(RECALLED_PROMPT.slice(0, 3));
-  },
+// Real path: composer ＋ → 设定 Goal…, on a Session with no Goal running and no
+// Turn in flight — app-shell mounts this dialog at the top level, over the
+// shell, exactly as composed here. It is the only place the two budgets that
+// stop a Goal are visible before one starts.
+export const GoalDialogOpen: Story = {
+  render: () => (
+    <>
+      <ComposedShell />
+      <GoalDialog
+        sessionId="session-1"
+        onArm={async () => ({
+          kind: 'armed',
+          goal: {
+            id: 'storybook-goal',
+            revision: 1,
+            sessionId: 'storybook-session',
+            condition: 'Ship the Storybook example',
+            status: 'active',
+            setAt: Date.now(),
+            iterations: 0,
+            maxIterations: 25,
+            consecutiveNoProgress: 0,
+            blockCap: 8,
+            tokensAtStart: 0,
+            tokensNow: 0,
+            tokensBaselinePending: false,
+          },
+        })}
+        onClose={noop}
+      />
+    </>
+  ),
 };

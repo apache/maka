@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from "node:assert/strict";
 import { EventEmitter } from 'node:events';
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -660,6 +679,182 @@ test("keeps the busy failure for a Skill send instead of degrading it to steerin
   assert.deepEqual(submits, []);
 });
 
+test("queues explicit Desktop follow-ups", async () => {
+  const submits: unknown[] = [];
+  let sequence = 0;
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        getSession: async () => session(),
+        submitMessage: async (input) => {
+          submits.push(input);
+          return { disposition: "followup", queueRevision: 4 };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => `id-${++sequence}`,
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke("sessions:enqueue", "session-1", "next_turn", {
+      text: "do this next",
+      quotes: [{ text: "quoted context" }],
+      retainedAttachments: [
+        {
+          kind: "other",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          bytes: 5,
+          ref: {
+            kind: "session_file",
+            sessionId: "session-1",
+            relativePath: "attachments/notes.txt",
+          },
+        },
+      ],
+    }),
+    {
+      kind: "queued",
+      attachments: [
+        {
+          kind: "other",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          bytes: 5,
+          ref: {
+            kind: "session_file",
+            sessionId: "session-1",
+            relativePath: "attachments/notes.txt",
+          },
+        },
+      ],
+      inlineReferences: [],
+    },
+  );
+  assert.deepEqual(submits, [
+    {
+      sessionId: "session-1",
+      messageId: "id-2",
+      content: {
+        text: "do this next",
+        attachments: [
+          {
+            kind: "other",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            bytes: 5,
+            ref: {
+              kind: "session_file",
+              sessionId: "session-1",
+              relativePath: "attachments/notes.txt",
+            },
+          },
+        ],
+        quotes: [{ text: "quoted context" }],
+        inlineReferences: [],
+      },
+      placement: "next_turn",
+    },
+  ]);
+});
+
+test("routes per-entry queue mutations to the Runtime Host", async () => {
+  const calls: unknown[] = [];
+  let sequence = 0;
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        retractQueueEntry: async (input) => {
+          calls.push({ operation: "retract", ...input });
+          return { queueRevision: 3 };
+        },
+        promoteQueueEntry: async (input) => {
+          calls.push({ operation: "promote", ...input });
+          return { queueRevision: 4 };
+        },
+        updateQueueEntry: async (input) => {
+          calls.push({ operation: "update", ...input });
+          return { queueRevision: 5 };
+        },
+        reorderQueueEntries: async (input) => {
+          calls.push({ operation: "reorder", ...input });
+          return { queueRevision: 6 };
+        },
+      }),
+      observer: unusedObserver(),
+      attachmentApprovals: createAttachmentApprovalRegistry(),
+      emitSessionsChanged() {},
+      stat: async () => ({ size: 0 }),
+      resizeImage: async (bytes) => bytes,
+      beforeStop() {},
+      newId: () => `id-${++sequence}`,
+    },
+    ipc,
+  );
+
+  assert.equal(await ipc.invoke("sessions:retractQueueEntry", "session-1", "entry-1"), undefined);
+  await ipc.invoke("sessions:promoteQueueEntry", "session-1", "entry-2");
+  await ipc.invoke(
+    "sessions:updateQueueEntry",
+    "session-1",
+    "entry-2",
+    4,
+    " revised ",
+  );
+  await ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-3", "entry-2"]);
+
+  assert.deepEqual(calls, [
+    {
+      operation: "retract",
+      sessionId: "session-1",
+      entryId: "entry-1",
+      retractId: "id-1",
+    },
+    {
+      operation: "promote",
+      sessionId: "session-1",
+      entryId: "entry-2",
+      promoteId: "id-2",
+    },
+    {
+      operation: "update",
+      sessionId: "session-1",
+      entryId: "entry-2",
+      updateId: "id-3",
+      expectedQueueRevision: 4,
+      text: "revised",
+    },
+    {
+      operation: "reorder",
+      sessionId: "session-1",
+      reorderId: "id-4",
+      entryIds: ["entry-3", "entry-2"],
+    },
+  ]);
+
+  await assert.rejects(
+    () => ipc.invoke("sessions:updateQueueEntry", "session-1", "entry-1", 4, " "),
+    /Invalid Queued message text/,
+  );
+  await assert.rejects(
+    () => ipc.invoke("sessions:promoteQueueEntry", "session-1", 42),
+    /Invalid queue entry identity/,
+  );
+  await assert.rejects(
+    () => ipc.invoke("sessions:reorderQueueEntries", "session-1", ["entry-1", 42]),
+    /Invalid queue entry order/,
+  );
+});
+
 test("binds steer and stop to Host-owned queue and active Turn identities", async () => {
   const submits: unknown[] = [];
   const interrupts: unknown[] = [];
@@ -711,7 +906,15 @@ test("binds steer and stop to Host-owned queue and active Turn identities", asyn
       kind: "queued",
     },
   );
-  await ipc.invoke("sessions:stop", "session-1");
+  await ipc.invoke("sessions:stop", "session-1", {
+    source: "stop_button",
+    expectedTurnId: "turn-unrelated",
+  });
+  assert.deepEqual(stopLifecycle, []);
+  await ipc.invoke("sessions:stop", "session-1", {
+    source: "stop_button",
+    expectedTurnId: "turn-1",
+  });
   assert.deepEqual(stopLifecycle, ["teardown", "interrupt"]);
 
   assert.deepEqual(submits, [
@@ -751,6 +954,10 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,
     regenerateTurn: unavailable,
+    retractQueueEntry: unavailable,
+    promoteQueueEntry: unavailable,
+    updateQueueEntry: unavailable,
+    reorderQueueEntries: unavailable,
     setSessionReadMarker: unavailable,
     startTurn: unavailable,
     startTurnResume: unavailable,
@@ -793,7 +1000,6 @@ function observerWithTranscript(
             metadataRevision: 1,
             status: "running",
             createdAt: 1,
-            lastUsedAt: 1,
             isArchived: false,
           },
           projectionRevision: 1,
@@ -901,7 +1107,7 @@ function session(cwd = "/workspace"): SessionCatalogProjection {
       hostCwd: cwd,
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: "Session",
     isFlagged: false,
     isArchived: false,

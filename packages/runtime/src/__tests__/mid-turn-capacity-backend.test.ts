@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -19,7 +38,7 @@ import {
 } from '../ai-sdk-flow.js';
 import type { InvocationContext } from '../invocation-context.js';
 import { applyRuntimeEventContextBudget } from '../context-budget.js';
-import { evaluateHistoryCompactCheckpointReplay } from '../history-compact.js';
+import { evaluateHistoryCompactCheckpointReplay } from '../history-compaction.js';
 import type {
   HistoryCompactCheckpoint,
   HistoryCompactProviderState,
@@ -90,9 +109,6 @@ interface MidTurnFixtureOptions {
    * instead of the hand-built one, so a test can exercise the shipped default.
    */
   useRuntimeDefaultPolicy?: boolean;
-  /** Exercise the supported explicit history-compaction escape hatch. */
-  historyCompactOff?: boolean;
-  historyBudgetTokens?: number;
   reserveTokens?: number;
   summarize?: (
     input: HistoryCompactSummaryInput,
@@ -108,8 +124,6 @@ interface MidTurnFixtureOptions {
   withoutPriorTurns?: boolean;
   /** Enable the default-on active tool-result prune with a tiny threshold. */
   activeToolResultPrune?: boolean;
-  /** Enable semantic compaction so it competes with the capacity hook. */
-  semanticCompact?: boolean;
   /**
    * Summarize through the real `buildLlmHistorySummarizer` against a mock
    * provider, so the compaction settles a canonical record instead of the
@@ -120,9 +134,15 @@ interface MidTurnFixtureOptions {
   record?: (checkpoint: HistoryCompactCheckpoint) => void;
   /** Payload size for each text prior, or for the tool result in a tool-heavy prior. */
   priorChars?: number;
-  priorShape?: 'text' | 'tool_heavy';
+  /** Hydrated image byte length when it must be sized independently from text priors. */
+  imageBytes?: number;
+  priorShape?: 'text' | 'tool_heavy' | 'image_tool';
+  /** Put one image attachment on the durable current-turn user anchor. */
+  currentImage?: boolean;
   /** First tool result is huge (finding C: prune must be able to rescue it). */
   hugeFirstResult?: boolean;
+  /** Exact first Read result for capacity-ordering regressions. */
+  firstResult?: string;
   /** The model finishes on the second request instead of running three steps. */
   finalAtSecondCall?: boolean;
   /** Add a third tool step whose result outgrows even a rolled-forward fold (finding A). */
@@ -240,18 +260,19 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     },
   });
   const priorChars = options.priorChars ?? 120;
+  const imageBytes = options.imageBytes ?? priorChars;
   const priorEvents: RuntimeEvent[] = options.withoutPriorTurns
     ? []
-    : options.priorShape === 'tool_heavy'
+    : options.priorShape === 'image_tool'
       ? [
-          runtimeTextEvent('prior-user', 'turn-0', 'user', 'PRIOR_FACT inspect the artifact'),
+          runtimeTextEvent('prior-user', 'turn-0', 'user', 'PRIOR_IMAGE inspect the screenshot'),
           {
             ...runtimeTextEvent('prior-call', 'turn-0', 'model', ''),
             content: {
               kind: 'function_call' as const,
-              id: 'prior-tool-1',
+              id: 'prior-image-tool-1',
               name: 'Read',
-              args: { path: 'artifact.log' },
+              args: { path: 'screenshot.png' },
             },
           },
           {
@@ -260,30 +281,85 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
             author: 'tool' as const,
             content: {
               kind: 'function_response' as const,
-              id: 'prior-tool-1',
+              id: 'prior-image-tool-1',
               name: 'Read',
-              result: `OVERSIZED_TOOL_RESULT_${'r'.repeat(priorChars)}`,
+              result: {
+                kind: 'image' as const,
+                mimeType: 'image/png',
+                ref: {
+                  kind: 'session_file' as const,
+                  sessionId: 'session-1',
+                  relativePath: 'screenshot.png',
+                },
+              },
               isError: false,
             },
           },
-          runtimeTextEvent('prior-model', 'turn-0', 'model', 'PRIOR_FACT inspection complete'),
+          runtimeTextEvent('prior-model', 'turn-0', 'model', 'PRIOR_IMAGE inspection complete'),
         ]
-      : [
-          runtimeTextEvent(
-            'prior-user',
-            'turn-0',
-            'user',
-            `PRIOR_FACT question ${'p'.repeat(priorChars)}`,
-          ),
-          runtimeTextEvent(
-            'prior-model',
-            'turn-0',
-            'model',
-            `PRIOR_FACT answer ${'q'.repeat(priorChars)}`,
-          ),
-        ];
+      : options.priorShape === 'tool_heavy'
+        ? [
+            runtimeTextEvent('prior-user', 'turn-0', 'user', 'PRIOR_FACT inspect the artifact'),
+            {
+              ...runtimeTextEvent('prior-call', 'turn-0', 'model', ''),
+              content: {
+                kind: 'function_call' as const,
+                id: 'prior-tool-1',
+                name: 'Read',
+                args: { path: 'artifact.log' },
+              },
+            },
+            {
+              ...runtimeTextEvent('prior-result', 'turn-0', 'model', ''),
+              role: 'tool' as const,
+              author: 'tool' as const,
+              content: {
+                kind: 'function_response' as const,
+                id: 'prior-tool-1',
+                name: 'Read',
+                result: `OVERSIZED_TOOL_RESULT_${'r'.repeat(priorChars)}`,
+                isError: false,
+              },
+            },
+            runtimeTextEvent('prior-model', 'turn-0', 'model', 'PRIOR_FACT inspection complete'),
+          ]
+        : [
+            runtimeTextEvent(
+              'prior-user',
+              'turn-0',
+              'user',
+              `PRIOR_FACT question ${'p'.repeat(priorChars)}`,
+            ),
+            runtimeTextEvent(
+              'prior-model',
+              'turn-0',
+              'model',
+              `PRIOR_FACT answer ${'q'.repeat(priorChars)}`,
+            ),
+          ];
   const anchor: RuntimeEvent = {
     ...runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT),
+    ...(options.currentImage
+      ? {
+          content: {
+            kind: 'text' as const,
+            text: ANCHOR_TEXT,
+            attachments: [
+              {
+                kind: 'image' as const,
+                name: 'current.png',
+                mimeType: 'image/png',
+                bytes: imageBytes,
+                ref: {
+                  kind: 'session_file' as const,
+                  sessionId: 'session-1',
+                  relativePath: 'current.png',
+                },
+              },
+            ],
+          },
+        }
+      : {}),
     ...(options.branch !== undefined ? { branch: options.branch } : {}),
   };
 
@@ -355,6 +431,15 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
     modelFactory: () => model,
+    ...(options.priorShape === 'image_tool' || options.currentImage
+      ? {
+          supportsVision: true,
+          readAttachmentBytes: async () => ({
+            ok: true as const,
+            bytes: new Uint8Array(imageBytes),
+          }),
+        }
+      : {}),
     tools: [
       {
         name: 'Read',
@@ -363,7 +448,9 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         impl: async (args: { path: string }) => {
           toolExecutions.push(args.path);
           if (args.path === 'one.md')
-            return { body: options.hugeFirstResult ? HUGE_RESULT : RAW_SPAN_ONE };
+            return {
+              body: options.firstResult ?? (options.hugeFirstResult ? HUGE_RESULT : RAW_SPAN_ONE),
+            };
           if (args.path === 'three.md') return { body: ROLLING_TAIL };
           return { body: RAW_SPAN_TWO };
         },
@@ -399,44 +486,17 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
           {
             name: 'runtime-default-mid-turn',
             modelId: 'mock-model-id',
-            // Every value is the shipped runtime default (including the
-            // default-on midTurn derivation and the window-bounded reserve
-            // under test); a test may still size the reserve to its toy window
-            // through the first-class env knob by passing reserveTokens.
-            env: {
-              ...(options.reserveTokens !== undefined
-                ? {
-                    MAKA_CONTEXT_HISTORY_COMPACT_RESERVE_TOKENS: String(options.reserveTokens),
-                  }
-                : {}),
-              ...(options.historyCompactOff ? { MAKA_CONTEXT_HISTORY_COMPACT: 'off' } : {}),
-              ...(options.historyBudgetTokens !== undefined
-                ? { MAKA_CONTEXT_HISTORY_BUDGET_TOKENS: String(options.historyBudgetTokens) }
-                : {}),
-            },
           },
         )
       : {
           name: 'mid-turn-test',
           maxHistoryEstimatedTokens: 100_000,
-          minRecentTurns: 1,
           historyCompact: {
             enabled: true,
-            mode: 'read_write',
             midTurn: { enabled: true, reserveTokens },
           },
           ...(options.activeToolResultPrune
             ? { activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 30 } }
-            : {}),
-          ...(options.semanticCompact
-            ? {
-                semanticCompact: {
-                  enabled: true,
-                  mode: 'replace' as const,
-                  minStepNumber: 2,
-                  maxActiveEstimatedTokens: 1,
-                },
-              }
             : {}),
         },
     ...(options.activeToolResultPrune
@@ -751,8 +811,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     // never re-injected, even though the raw history is below the high water.
     const replay = applyRuntimeEventContextBudget([...fixture.priorEvents, ...fixture.ledger], {
       maxHistoryEstimatedTokens: 100_000,
-      minRecentTurns: 1,
-      historyCompact: { enabled: true, mode: 'read_write', checkpoint },
+      historyCompact: { enabled: true, checkpoint },
     });
 
     assert.ok(replay);
@@ -799,6 +858,26 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       ),
       false,
     );
+  });
+
+  test('preserves no_safe_completed_span when no summary input can fit', async () => {
+    const fixture = buildFixture({
+      contextWindow: 150,
+      reserveTokens: 100,
+      useRuntimeDefaultPolicy: true,
+      summarize: () => {
+        throw new HistoryCompactSummarizerError('input_too_large');
+      },
+    });
+
+    await runFixtureTurn(fixture, consumer);
+
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type, 'complete');
+    if (complete?.type !== 'complete') return;
+    assert.equal(complete.stopReason, 'context_budget_exhausted');
+    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
+    assert.equal(fixture.summarizerCalls > 0, true);
   });
 
   test('ends the turn with summarizer_failed detail when over the window and the summary fails', async () => {
@@ -864,12 +943,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
     );
     assert.equal(failedOpen?.failOpenReason, 'write_failed');
-    // The recorder WAS invoked and failed: exactly that is what the counters say.
-    const usageEvent = fixture.events.find((event) => event.type === 'token_usage') as
-      | { contextBudget?: ContextBudgetDiagnostic }
-      | undefined;
-    assert.equal(usageEvent?.contextBudget?.historyCompactWritesAttempted, 1);
-    assert.equal(usageEvent?.contextBudget?.historyCompactWriteFailures, 1);
   });
 
   test('a malformed summarizer completion fails open end-to-end with its granular reason', async () => {
@@ -927,8 +1000,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       (decision) => decision.phase === 'mid_turn' && decision.reason === 'context_budget_exhausted',
     );
     assert.equal(exhaustedDecision?.skippedReasonCounts?.write_failed, 1);
-    assert.equal(lastCall?.contextBudget?.historyCompactWritesAttempted, 1);
-    assert.equal(lastCall?.contextBudget?.historyCompactWriteFailures, 1);
   });
 
   test('fails closed before provider dispatch when the durable ledger read fails', async () => {
@@ -968,29 +1039,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(thirdPrompt.includes('RAW_SPAN_TWO_'), false);
     assert.match(thirdPrompt, /artifact-archived-1/);
     assert.match(thirdPrompt, /active_current_turn_tool_result_pruned_before_next_step/);
-  });
-
-  test('semantic compaction yields on the step the capacity hook replaced', async () => {
-    const fixture = buildFixture({ semanticCompact: true });
-    await runFixtureTurn(fixture, consumer);
-
-    // The capacity projection won the replaced step.
-    assert.equal(fixture.model.doStreamCalls.length, 3);
-    assert.equal(fixture.recorded.length, 1);
-    assert.match(promptJson(fixture, 2), /maka_history_compact_checkpoint/);
-
-    // Deterministic priority: semantic compaction was skipped for that step
-    // with an explicit decision — one step never runs two summarizers.
-    const yielded = compactionDecisions(fixture).find(
-      (decision) => decision.reason === 'mid_turn_capacity_precedence',
-    );
-    assert.equal(yielded?.decision, 'unchanged');
-    assert.equal(fixture.summarizerCalls, 1);
-    // No semantic summary model call was ever made.
-    assert.equal(
-      fixture.events.some((event) => event.type === 'error'),
-      false,
-    );
   });
 
   test('a rolling second compaction that still exceeds the window ends explicitly (review finding A)', async () => {
@@ -1155,11 +1203,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     // before any high-water check, so a persisted runaway block would poison
     // every later projection even though this step correctly refused it.
     assert.equal(fixture.recorded.length, 0);
-    // The recorder was never reached, so the diagnostics claim no write.
-    const usageEvent = fixture.events.find((event) => event.type === 'token_usage') as
-      | { contextBudget?: ContextBudgetDiagnostic }
-      | undefined;
-    assert.equal(usageEvent?.contextBudget?.historyCompactWritesAttempted, undefined);
   });
 
   test("the usage baseline is the last request's INPUT tokens — output is not double-counted (review finding 1)", async () => {
@@ -1433,6 +1476,48 @@ describe('mid-turn capacity compaction flow plumbing', () => {
 });
 
 describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
+  test('does not omit hydrated images before a selected-model step-zero provider verdict', async () => {
+    const fixture = buildFixture({
+      contextWindow: 10_000,
+      currentImage: true,
+      imageBytes: 8_000,
+      priorShape: 'image_tool',
+    });
+    await runFixtureTurn(fixture);
+
+    const firstMessages = fixture.model.doStreamCalls[0]?.prompt ?? [];
+    const firstPrompt = promptJson(fixture, 0);
+    assert.equal(fixture.model.doStreamCalls.length > 0, true);
+    assert.equal(firstPrompt.match(/"mediaType":"image\/png"/g)?.length, 2);
+    assert.equal(
+      firstMessages.some(
+        (message) =>
+          message.role === 'user' &&
+          Array.isArray(message.content) &&
+          message.content.some((part) => part.type === 'file' && part.mediaType === 'image/png'),
+      ),
+      true,
+    );
+    assert.equal(
+      firstMessages.some(
+        (message) =>
+          message.role === 'tool' &&
+          message.content.some(
+            (part) =>
+              part.type === 'tool-result' &&
+              part.toolCallId === 'prior-image-tool-1' &&
+              part.output.type === 'content' &&
+              part.output.value.some(
+                (outputPart) => outputPart.type === 'file' && outputPart.mediaType === 'image/png',
+              ),
+          ),
+      ),
+      true,
+    );
+    assert.doesNotMatch(firstPrompt, /omitted after provider context overflow/);
+    assert.equal(fixture.summarizerCalls, 0);
+  });
+
   test('keeps the fallback capacity guard inert below its unknown-model bound', async () => {
     // The unknown model derives a 48,384-token capacity from the default
     // 32,000-token history budget plus its 16,384-token reserve. This small
@@ -1508,53 +1593,10 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(promptJson(fixture, 0).includes('OVERSIZED_TOOL_RESULT_'), false);
   });
 
-  test('rejects an oversized prior turn when history compaction is disabled', async () => {
-    const fixture = buildFixture({
-      useRuntimeDefaultPolicy: true,
-      withoutContextWindow: true,
-      historyCompactOff: true,
-      priorChars: 180_000,
-      priorShape: 'tool_heavy',
-    });
-    await runFixtureTurn(fixture);
-
-    assert.equal(fixture.summarizerCalls, 0);
-    assert.equal(fixture.model.doStreamCalls.length, 0);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
-  });
-
-  test('rejects an oversized penultimate turn when history compaction is disabled', async () => {
-    const fixture = buildFixture({
-      useRuntimeDefaultPolicy: true,
-      withoutContextWindow: true,
-      historyCompactOff: true,
-      priorChars: 180_000,
-      priorShape: 'tool_heavy',
-    });
-    fixture.priorEvents.push(
-      runtimeTextEvent('latest-user', 'turn-latest', 'user', 'small latest question'),
-      runtimeTextEvent('latest-model', 'turn-latest', 'model', 'small latest answer'),
-    );
-    await runFixtureTurn(fixture);
-
-    assert.equal(fixture.model.doStreamCalls.length, 0);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
-  });
-
-  test('keeps multiple bounded recent turns when only their aggregate exceeds the history budget', async () => {
+  test('keeps multiple bounded recent turns below the model capacity', async () => {
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
       contextWindow: 100_000,
-      historyCompactOff: true,
-      historyBudgetTokens: 32_000,
       priorChars: 40_000,
     });
     fixture.priorEvents.push(
@@ -1752,7 +1794,6 @@ function header(): SessionHeader {
     workspaceRoot: '/tmp/maka',
     cwd: '/tmp/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,

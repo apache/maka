@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* Composer — outer container, controls, pickers, tool buttons, send/workspace/branch/streaming. Composer block merged in from tool-output.css (was misplaced there) — issue #546 PR3. Runtime interaction prompt styles live in interaction-prompts.css. */
 .composer {
   flex: 0 0 auto;
@@ -19,6 +38,76 @@
 .maka-composer-astryx {
   width: min(var(--maka-chat-measure), 100%);
   max-width: var(--maka-chat-measure);
+}
+
+.maka-composer-queue {
+  width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-6))));
+  max-width: var(--maka-chat-measure);
+  margin: 0 auto var(--space-1);
+  padding: var(--space-1);
+  box-sizing: border-box;
+  border-radius: var(--radius-chat);
+  background: var(--background-elevated);
+  box-shadow: inset 0 0 0 var(--border-width-hairline) var(--border);
+  /* Concentric with the plate, mirroring what ChatComposer derives for its
+     own footer buttons: max(--radius-element, radius - padding). The plate
+     sits outside the card, so the row ghost buttons must read it here. */
+  --_button-radius: max(var(--radius-element), calc(var(--radius-chat) - var(--spacing-3)));
+}
+
+.maka-composer-queue-list {
+  min-width: 0;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.maka-composer-queue-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  flex: 0 0 auto;
+}
+
+.maka-composer-queue-edit {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-bottom: var(--border-width-hairline) solid var(--border-strong);
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  resize: vertical;
+}
+
+.maka-composer-queue-grip {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  color: var(--muted-foreground);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.maka-composer-queue-list li:hover .maka-composer-queue-grip,
+.maka-composer-queue-grip:focus-visible {
+  opacity: 1;
+}
+
+.maka-composer-queue-grip:active {
+  cursor: grabbing;
+}
+
+@media (max-width: 640px) {
+  .maka-composer-queue {
+    width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-3))));
+  }
+
+  .maka-composer-queue-actions {
+    gap: 0;
+  }
 }
 
 /* Row-flow, not the old stacked column: image thumbnails and file/quote
@@ -116,8 +205,7 @@
   min-width: 0;
 }
 
-.maka-composer-left-controls,
-.maka-composer-right-controls {
+.maka-composer-left-controls {
   display: flex;
   align-items: center;
   /* PR-REFERENCE-PIXEL-8 (WAWQAQ msg `f79de85f` round 8): reference implementation's
@@ -143,11 +231,6 @@
   min-width: 0;
 }
 
-.maka-composer-right-controls {
-  flex: 0 0 auto;
-  justify-content: flex-end;
-}
-
 /* Quiet footer: ＋ and permission are both ghost icon buttons. */
 .maka-composer-left-controls .permissionModeIcon,
 .maka-composer-left-controls .maka-composer-plus-menu {
@@ -158,14 +241,35 @@
 /* Cursor: product-wide native-cursor.css (maka.legacy) owns default vs pointer. */
 
 /* Astryx sm list density: DropdownMenuItem + Selector options use
-   padding-block: var(--spacing-1) (4px) when size=sm. RadioItem only sizes its
-   radio glyph from menuSize and never applies itemSizeStyles, so it stays on
-   Item balanced (8px) and permission rows look taller than + / model. Quiet
-   menus force the sm block pad so all three composer popouts share one ladder.
-   Use product --space-1 (same 4px step as Astryx --spacing-1). Upstream
-   should wire itemSizeStyles into RadioItem; drop this when it does. */
-.maka-composer-quiet-menu [role="menuitemradio"] {
+   padding-block: var(--spacing-1) (4px) when size=sm. The two selectable item
+   types only size their glyph from menuSize and never apply itemSizeStyles, so
+   they stay on Item balanced (8px) and their rows look taller than + / model.
+   Quiet menus force the sm block pad so all three composer popouts share one
+   ladder. Use product --space-1 (same 4px step as Astryx --spacing-1).
+   Upstream should wire itemSizeStyles into both; drop this when it does. */
+.maka-composer-quiet-menu [role="menuitemradio"],
+.maka-composer-quiet-menu [role="menuitemcheckbox"] {
   padding-block: var(--space-1);
+}
+
+/* The ＋ menu's mode rows carry the mark Astryx draws for a chosen option — a
+   check when chosen, nothing when not — which is what its own Selector puts on
+   a selected option, and what a menu of otherwise identical rows needs: no
+   column of empty boxes and circles ahead of the labels, and the mode icons on
+   the same x as the action rows above. Both selectable item types draw their
+   own control at the row's start, so composer.tsx passes the check through
+   `endContent` and the controls are suppressed here.
+
+   `astryx-checkbox-indicator` and `astryx-radio-indicator` are the two
+   indicators' published theme targets (see their themeProps calls), not
+   internal classes. Scoped to the ＋ panel alone: nothing outside this menu is
+   touched.
+
+   Drop these rules and the `endContent` mark together once a selectable item
+   can choose its own indicator upstream. */
+.maka-composer-plus-panel [role="menuitemcheckbox"] .astryx-checkbox-indicator,
+.maka-composer-plus-panel [role="menuitemradio"] .astryx-radio-indicator {
+  display: none;
 }
 
 /* Astryx sizes the popover to its widest row (min-width:anchor-size, no max).

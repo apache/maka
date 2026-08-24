@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useReducer, type ReactElement } from 'react';
 import {
   BreadcrumbItem,
@@ -11,6 +30,7 @@ import {
   StatusDot,
   Text,
   Token,
+  Tooltip,
   type DropdownMenuOption,
 } from '@astryxdesign/core';
 import { getConversationCopy } from './conversation-copy.js';
@@ -329,6 +349,7 @@ export function SessionContextLayer(props: {
       label={copy.sessionContextAriaLabel}
       className="maka-session-context"
       data-session-context-layer="true"
+      data-has-goal={props.goal ? 'true' : undefined}
     >
       <div className="maka-session-context__inner">
         {/* Lineage only. The session's own name moved to the window titlebar
@@ -337,7 +358,15 @@ export function SessionContextLayer(props: {
             twice. What stays is what the titlebar cannot answer: which session
             this one branched FROM. */}
         <div className="maka-session-context__lineage">
-          {props.branch ? (
+          {props.goal ? (
+            <Tooltip content={props.goal.condition}>
+              <div className="maka-session-context__goal-description">
+                <Text type="supporting" maxLines={1}>
+                  {props.goal.condition}
+                </Text>
+              </div>
+            </Tooltip>
+          ) : props.branch ? (
             <Breadcrumbs
               label={copy.sessionLineageAriaLabel}
               variant="supporting"

@@ -1,0 +1,436 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+.maka-artifact-pane {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--background);
+  overflow: hidden;
+}
+
+.maka-artifact-list-error {
+  margin: var(--space-2);
+}
+
+.maka-artifact-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1-5);
+  overflow-y: auto;
+}
+
+.maka-artifact-list-empty {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-4);
+}
+
+.maka-artifact-list-item {
+  margin: 0;
+}
+
+.maka-artifact-row {
+  font: var(--maka-text-supporting);
+  width: 100%;
+  justify-content: flex-start;
+  min-height: 36px;
+  padding: var(--space-1-5) var(--space-2);
+  margin: 0;
+  border: var(--border-width-hairline) solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--foreground);
+  text-align: left;
+  transition:
+    background var(--duration-base) var(--ease-out-strong),
+    border-color var(--duration-base) var(--ease-out-strong);
+}
+
+.maka-artifact-row:hover {
+  background: var(--state-hover-bg);
+}
+
+/* Rows are arrow-key navigable (artifact-list-keyboard.ts); keyboard focus
+   gets the same inset ring the workbar launcher rows use. */
+.maka-artifact-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}
+
+.maka-artifact-row:active:not([data-deleted="true"]) {
+  background: var(--state-selected-bg);
+}
+
+.maka-artifact-row[data-selected="true"] {
+  background: var(--state-selected-bg);
+  /* Selection chrome follows the interaction accent (DESIGN.md §2), not the
+     link text role — --link is a text token and moves with link-contrast
+     fixes independently of selection styling. */
+  border-color: oklch(from var(--accent) l c h / 0.24);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-artifact-row {
+    transition: background 0ms, border-color 0ms;
+  }
+}
+
+.maka-artifact-row[data-deleted="true"] {
+  opacity: var(--opacity-muted);
+}
+
+.maka-artifact-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--link);
+}
+
+.maka-artifact-row-meta {
+  font: var(--maka-text-supporting);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-left: auto;
+  gap: 1px;
+  color: oklch(from var(--foreground) l c h / 0.62);
+  font-variant-numeric: tabular-nums;
+}
+
+.maka-artifact-row-size {
+  font: var(--maka-text-heading-5);
+}
+
+.maka-artifact-row-badge {
+  margin-top: var(--space-0-5);
+}
+
+.maka-artifact-preview-screen {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.maka-artifact-preview-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-height: 48px;
+  padding: var(--space-1) var(--space-1-5);
+  border-bottom: var(--border-width-hairline) solid var(--border);
+  background: var(--background);
+}
+
+.maka-artifact-preview-heading {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.maka-artifact-preview-heading strong {
+  font: var(--maka-text-heading-5);
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-artifact-preview-heading span {
+  font: var(--maka-text-supporting);
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-artifact-preview-more {
+  justify-self: end;
+}
+
+.maka-artifact-preview {
+  position: relative;
+  overflow: auto;
+  padding: var(--space-2);
+  background: var(--background);
+  min-height: 0;
+}
+
+.maka-artifact-preview-text {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.maka-artifact-preview-mode-switch {
+  position: sticky;
+  z-index: 1;
+  top: calc(-1 * var(--space-2));
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-0-5);
+  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-2)) 0;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: var(--border-width-hairline) solid var(--border);
+  background: var(--background);
+}
+
+.maka-artifact-preview-markdown {
+  min-width: 0;
+  padding-inline: var(--space-1);
+}
+
+.maka-artifact-preview-code {
+  min-width: 100%;
+}
+
+.maka-artifact-preview-plain-remainder {
+  font: var(--maka-text-code);
+  min-width: max-content;
+  margin: 0;
+  padding: var(--space-1-5) var(--space-2);
+  color: var(--foreground-secondary);
+  white-space: pre;
+}
+
+.maka-artifact-preview-limit {
+  font: var(--maka-text-supporting);
+  margin: 0;
+  padding: var(--space-1-5) var(--space-2);
+  border-left: 2px solid oklch(from var(--info) l c h / 0.46);
+  color: var(--muted-foreground);
+  background: oklch(from var(--info) l c h / 0.06);
+}
+
+.maka-artifact-preview-diff {
+  display: grid;
+  min-width: max-content;
+  gap: var(--space-2);
+  margin: calc(-1 * var(--space-2));
+}
+
+.maka-artifact-preview-diff > .maka-tool-diff-body {
+  margin: 0;
+}
+
+.maka-artifact-preview-html {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  gap: var(--space-1-5);
+}
+
+.maka-artifact-preview-html-iframe {
+  width: 100%;
+  height: 100%;
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-surface);
+  /* Paper, not a ladder tier — see --surface-paper in maka-tokens.css. The
+     srcDoc we render declares no background of its own. */
+  background: var(--surface-paper);
+  /* iframe sandbox attribute on the JSX side carries the real boundary;
+     this is only visual. NEVER ship `allow-same-origin` here. */
+}
+
+.maka-artifact-preview-external-links-bar {
+  font: var(--maka-text-supporting);
+  padding: var(--space-1) var(--space-1-5);
+  border-radius: var(--radius-control);
+  background: oklch(from var(--info) l c h / 0.10);
+  color: var(--info-text);
+  border: var(--border-width-hairline) solid oklch(from var(--info) l c h / 0.20);
+}
+
+.maka-artifact-preview-image {
+  /* PR-UI-RENDER-3a: bounded image container. The img child uses
+     object-fit: contain so an oversized intrinsic resolution can't
+     stretch the column; max-width/height keep it inside the pane. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  max-height: 70vh;
+  overflow: hidden;
+}
+
+.maka-artifact-preview-image img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-control);
+  border: var(--border-width-hairline) solid var(--border);
+  background: var(--foreground-3);
+}
+
+/* PR-UI-RENDER-3a — Unsupported preview card. Shown when the
+   registry resolves an artifact to `kind: 'unsupported'`. Same
+   tone family as the existing failure cards (info, not destructive
+   — it's not an error, just an unsupported format). */
+.maka-artifact-preview-unsupported {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4);
+  border-radius: var(--radius-surface);
+  /* Detail audit round 4: solid — dashed was the app's last stray border
+     language (the markdown dangerous-link underline is the one deliberate
+     dashed exception). */
+  border: var(--border-width-hairline) solid oklch(from var(--info) l c h / 0.32);
+  background: oklch(from var(--info) l c h / 0.06);
+  color: var(--foreground-secondary);
+}
+
+.maka-artifact-preview-unsupported-body {
+  font: var(--maka-text-body);
+  margin: 0;
+  color: var(--foreground-secondary);
+}
+
+.maka-artifact-preview-unsupported-meta {
+  font: var(--maka-text-body);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: 0;
+  color: var(--foreground-secondary);
+}
+.maka-artifact-preview-unsupported-meta > div {
+  display: contents;
+}
+.maka-artifact-preview-unsupported-meta dt {
+  font: var(--maka-text-label);
+  color: var(--foreground-secondary);
+}
+.maka-artifact-preview-unsupported-meta dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.maka-artifact-preview-unsupported-cta {
+  align-self: flex-start;
+}
+
+.maka-artifact-preview-pdf {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100%;
+  gap: var(--space-1-5);
+}
+
+.maka-artifact-preview-pdf embed {
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-surface);
+  /* Same document viewport as the HTML artifact above. */
+  background: var(--surface-paper);
+  min-height: 240px;
+}
+
+.maka-artifact-preview-pdf-fallback {
+  font: var(--maka-text-supporting);
+  margin: 0;
+  color: oklch(from var(--foreground) l c h / 0.6);
+}
+
+.maka-artifact-preview-loading {
+  font: var(--maka-text-body);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: oklch(from var(--foreground) l c h / 0.65);
+}
+
+.maka-artifact-preview-spinner {
+  flex: 0 0 auto;
+}
+
+.maka-artifact-preview-fail {
+  font: var(--maka-text-body);
+  display: grid;
+  gap: var(--space-1-5);
+  padding: var(--space-2-5) var(--space-3);
+  border-radius: var(--radius-surface);
+  border: var(--border-width-hairline) solid var(--border);
+}
+
+.maka-artifact-preview-fail[data-tone="destructive"] {
+  background: oklch(from var(--destructive) l c h / 0.08);
+  border-color: oklch(from var(--destructive) l c h / 0.22);
+  color: var(--destructive-text);
+}
+
+.maka-artifact-preview-fail[data-tone="info"] {
+  background: oklch(from var(--info) l c h / 0.08);
+  border-color: oklch(from var(--info) l c h / 0.22);
+  color: var(--info-text);
+}
+
+/* Narrow windows place the single workbar below the conversation. */
+@media (max-width: 990px) {
+  .maka-detail-with-artifacts {
+    grid-template-areas:
+      "main"
+      "bottom-handle"
+      "bottom"
+      "right-handle"
+      "right";
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 0 auto 0 auto;
+  }
+
+  .maka-session-workbar[data-placement],
+  .maka-session-workbar-panel[data-overlay][data-placement] {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    min-height: min(220px, 42dvh);
+    max-height: min(42dvh, 360px);
+    height: min(42dvh, 360px);
+    margin-left: 0;
+    margin-top: var(--agents-content-area-gap);
+    padding-top: 0;
+  }
+
+  .maka-session-workbar-panel[data-overlay][data-placement] {
+    padding-top: var(--size-element-sm);
+  }
+
+  .maka-workbar-resize-handle { display: none; }
+
+  .maka-session-workbar .maka-browser-panel,
+  .maka-session-workbar .maka-artifact-pane {
+    width: 100%;
+    min-height: 0;
+    max-height: none;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .maka-artifact-preview {
+    min-height: 120px;
+  }
+}

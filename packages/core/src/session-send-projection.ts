@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Session send projection — pure, sync compatibility answer for an existing
  * session's stored model target. #1038.
@@ -32,9 +51,9 @@ import type { LlmConnection } from './llm-connections.js';
 
 export interface SessionSendProjectionSession {
   /**
-   * Session backend kind. `string` (not `BackendKind`) so legacy on-disk
-   * values like `'claude'` are surfaced exactly as the JSONL stored them;
-   * only `'fake'` is special-cased, everything else goes through the
+   * Session backend kind. `string` (not `PersistedBackendKind`) so legacy
+   * on-disk values like `'claude'` are surfaced exactly as the JSONL stored
+   * them; only `'fake'` is special-cased, everything else goes through the
    * normal connection readiness gate.
    */
   backend: string;
@@ -80,7 +99,7 @@ export function projectSessionSendOutcome(
   }
 
   for (const slug of new Set([defaultSlug, ...connections.map((connection) => connection.slug)])) {
-    if (!slug || slug === 'fake') continue;
+    if (!slug) continue;
     const connection = connections.find((entry) => entry.slug === slug);
     if (!connection) continue;
     const normalized = normalizeOpenAiCodexConnection(connection);
@@ -106,9 +125,12 @@ function sessionOwnConnectionBlockReason(
   ownConnection: LlmConnection | null,
   hasSecret: (slug: string) => boolean,
 ): ChatConfigurationReason | undefined {
+  // Sessions written by builds that shipped FakeBackend keep `'fake'` on disk
+  // forever (#3211). They are refused here — and at activation — rather than
+  // rewritten, because their `llmConnectionSlug` still points at nothing.
   if (session.backend === 'fake') return 'fake_backend';
   const slug = session.llmConnectionSlug;
-  if (!slug || slug === 'fake') return 'missing_default_connection';
+  if (!slug) return 'missing_default_connection';
   if (!ownConnection) return 'connection_missing';
   const normalized = normalizeOpenAiCodexConnection(ownConnection);
   const verdict = isConnectionReady({
@@ -124,10 +146,7 @@ function ownConnectionBlockReason(
   connections: readonly LlmConnection[],
   hasSecret: (slug: string) => boolean,
 ): ChatConfigurationReason | undefined {
-  const own =
-    session.backend === 'fake'
-      ? null
-      : (connections.find((entry) => entry.slug === session.llmConnectionSlug) ?? null);
+  const own = connections.find((entry) => entry.slug === session.llmConnectionSlug) ?? null;
   return sessionOwnConnectionBlockReason(session, own, hasSecret);
 }
 
@@ -137,10 +156,18 @@ function ownConnectionBlockReason(
  * listed here (e.g. `missing_api_key`, `connection_disabled`) stay blocked
  * even when unlocked because masking an explicitly configured connection
  * would make the health/readiness UI misleading.
+ *
+ * `fake_backend` is deliberately absent (#3211). Every reason listed here
+ * names a broken *connection*, which another connection can stand in for. A
+ * retired backend is not: activation dispatches off the session header's own
+ * `backend`, so pointing the session at a healthy connection still leaves
+ * `'fake'` in the header and still gets refused. Claiming a rebind for these
+ * rows made the projection promise a recovery nothing performs — and the
+ * surfaces that must answer "is this task usable?" had to bypass the
+ * projection and read `backend` themselves to work around it.
  */
 function shouldRebindSessionToDefault(reason: string | undefined): boolean {
   return (
-    reason === 'fake_backend' ||
     reason === 'connection_missing' ||
     reason === 'missing_model' ||
     reason === 'empty_model_list' ||

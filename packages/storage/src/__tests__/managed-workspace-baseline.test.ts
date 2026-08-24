@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -32,6 +51,10 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '../root-authority.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
 
 const execFileAsync = promisify(execFile);
 const cleanup: string[] = [];
@@ -68,7 +91,9 @@ test('does not expose artifact-only workspace creation through the public storag
   assert.equal('inspectManagedWorkspaceExecutionScopeInternal' in publicStorage, false);
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   try {
@@ -88,14 +113,23 @@ test('does not expose artifact-only workspace creation through the public storag
 });
 
 afterEach(async () => {
-  await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  await Promise.all(
+    cleanup.splice(0).map(async (path) => {
+      await rm(path, { recursive: true, force: true });
+    }),
+  );
+  // Control directories live outside the temporary roots, so they outlive the
+  // removal above and have to be reclaimed from the recorded rootIds.
+  await removeTrackedControlDirectories();
 });
 
 test('opens one canonical baseline from a durable verified Git receipt', async () => {
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -212,7 +246,9 @@ test('reuses an orphan receipt after interruption before SQLite acceptance', asy
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -259,7 +295,9 @@ test('rejects a receipt read through a replaced instance-root symlink before par
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -301,7 +339,9 @@ test('serializes concurrent baseline opens under the same managed workspace owne
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -335,7 +375,9 @@ test('rejects a leased authority database whose real root differs from its claim
   const actualRoot = join(root, 'actual-storage');
   const claimedRoot = join(root, 'claimed-storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: claimedRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: claimedRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const databaseLease = acquireOperationalStateDatabase(actualRoot);
@@ -366,7 +408,9 @@ test('rejects a leased authority database whose real root differs from its claim
 test('rejects a non-canonical SQLite file in the authenticated storage root', async () => {
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'other.sqlite'));
@@ -394,7 +438,9 @@ test('rejects a non-canonical SQLite file in the authenticated storage root', as
 test('rejects an in-memory SQLite authority store', async () => {
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(':memory:');
@@ -429,7 +475,9 @@ test('rejects a cross-root hard link to the canonical SQLite authority database'
   sourceStore.close();
   await link(sourceDatabasePath, join(claimedStorageRoot, 'runtime.sqlite'));
 
-  const capability = await resolveStorageRoot({ path: claimedStorageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: claimedStorageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(claimedStorageRoot, 'runtime.sqlite'));
@@ -460,10 +508,9 @@ test('rejects a canonical SQLite database copied from a different durable storag
   const claimedStorageRoot = join(root, 'storage-b');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
   const request = openRequest(sourceRoot);
-  const sourceCapability = await resolveStorageRoot({
-    path: sourceStorageRoot,
-    kind: 'interactive',
-  });
+  const sourceCapability = trackControlDirectory(
+    await resolveStorageRoot({ path: sourceStorageRoot, kind: 'interactive' }),
+  );
   const sourceRootOwner = await tryAcquireInteractiveRootOwner(sourceCapability);
   assert.ok(sourceRootOwner);
   const sourceStore = createSqliteRuntimeStore(join(sourceStorageRoot, 'runtime.sqlite'));
@@ -482,10 +529,9 @@ test('rejects a canonical SQLite database copied from a different durable storag
     await sourceRootOwner.close();
   }
 
-  const claimedCapability = await resolveStorageRoot({
-    path: claimedStorageRoot,
-    kind: 'interactive',
-  });
+  const claimedCapability = trackControlDirectory(
+    await resolveStorageRoot({ path: claimedStorageRoot, kind: 'interactive' }),
+  );
   await copyFile(
     join(sourceStorageRoot, 'runtime.sqlite'),
     join(claimedStorageRoot, 'runtime.sqlite'),
@@ -516,10 +562,9 @@ test('preserves the durable database root binding across formal whole-root impor
   const root = await temporaryRoot();
   const sourceStorageRoot = join(root, 'storage-a');
   const importedStorageRoot = join(root, 'storage-imported');
-  const sourceCapability = await resolveStorageRoot({
-    path: sourceStorageRoot,
-    kind: 'interactive',
-  });
+  const sourceCapability = trackControlDirectory(
+    await resolveStorageRoot({ path: sourceStorageRoot, kind: 'interactive' }),
+  );
   const sourceRootOwner = await tryAcquireInteractiveRootOwner(sourceCapability);
   assert.ok(sourceRootOwner);
   const sourceStore = createSqliteRuntimeStore(join(sourceStorageRoot, 'runtime.sqlite'));
@@ -579,7 +624,9 @@ test('preserves the durable database root binding across formal whole-root impor
 test('rejects an authenticated owner after its durable root marker id is replaced', async () => {
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -614,7 +661,9 @@ test('rejects final admission when the root marker changes after post-commit art
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
   const request = openRequest(sourceRoot);
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -658,7 +707,9 @@ test('rejects an authority database whose file identity changes after registrati
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const databasePath = join(storageRoot, 'runtime.sqlite');
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(databasePath);
@@ -694,7 +745,9 @@ test('does not return an accepted baseline when runtime.sqlite is replaced after
   const databasePath = join(storageRoot, 'runtime.sqlite');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
   const request = openRequest(sourceRoot);
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(databasePath);
@@ -762,7 +815,9 @@ test('rejects runtime.sqlite when the canonical database path is a symlink', asy
     throw error;
   }
 
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -791,7 +846,9 @@ test('keeps an orphan receipt across SQLite rollback and accepts it on retry', a
   const root = await temporaryRoot();
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   let interruptOnce = true;
@@ -865,7 +922,9 @@ test('accepts the same durable receipt after a real process crash before SQLite 
     child.kill('SIGKILL');
     await waitForExit(child);
 
-    const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+    );
     const rootOwner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(rootOwner);
     const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -926,7 +985,9 @@ test('reopens the exact accepted baseline after a real crash before post-commit 
     child.kill('SIGKILL');
     await waitForExit(child);
 
-    const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+    );
     const rootOwner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(rootOwner);
     const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -985,7 +1046,9 @@ test('reissues execution authority after a real process crash during admission v
     child.kill('SIGKILL');
     await waitForExit(child);
 
-    const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+    );
     const rootOwner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(rootOwner);
     const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
@@ -1029,7 +1092,9 @@ test('rejects a source tree containing a non-UTF-8 Git path', {
   const storageRoot = join(root, 'storage');
   const sourceRoot = await createEligibleSource(join(root, 'source'));
   await commitInvalidUtf8Path(sourceRoot);
-  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const capability = trackControlDirectory(
+    await resolveStorageRoot({ path: storageRoot, kind: 'interactive' }),
+  );
   const rootOwner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(rootOwner);
   const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));

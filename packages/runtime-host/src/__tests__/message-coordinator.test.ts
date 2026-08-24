@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { MessageContent } from '@maka/core/events';
@@ -10,6 +29,7 @@ import type {
 import {
   MESSAGE_OPERATION_RESULT_MAX_BYTES,
   MESSAGE_QUEUE_PROJECTION_MAX_BYTES,
+  decodeSessionMessageQueueProjection,
   type SessionMessageQueueProjection,
   type TurnSnapshot,
 } from '../protocol/index.js';
@@ -384,6 +404,541 @@ test('pull crosses the retract commit cut and only queued entries are retracted'
   const batch = fixture.coordinator.beginTerminalTransition(ROOT);
   fixture.coordinator.completeIdle(batch);
   assert.equal(fixture.liveResidencies(), 0);
+});
+
+test('entry retract removes one queued entry, replays its receipt, and rejects stale targets', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+
+  await submit(fixture, 'steer-1', 'steer me', 'current_turn');
+  await submit(fixture, 'follow-1', 'first', 'next_turn');
+  await submit(fixture, 'follow-2', 'second', 'next_turn');
+
+  const retracted = await fixture.coordinator.handlers['queue.entry.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-2',
+      retractId: 'retract-entry-1',
+    },
+    operationContext(),
+  );
+  assert.equal(retracted.ok, true);
+  if (!retracted.ok) return;
+  assert.equal(retracted.result.queueRevision, 4);
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
+    ['follow-2'],
+  );
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).steering.map((entry) => entry.messageId),
+    ['steer-1'],
+  );
+
+  const retry = await fixture.coordinator.handlers['queue.entry.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-2',
+      retractId: 'retract-entry-1',
+    },
+    operationContext(),
+  );
+  assert.deepEqual(retry, retracted);
+
+  const conflict = await fixture.coordinator.handlers['queue.entry.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-3',
+      retractId: 'retract-entry-1',
+    },
+    operationContext(),
+  );
+  assert.equal(conflict.ok, false);
+  if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
+
+  const missing = await fixture.coordinator.handlers['queue.entry.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-2',
+      retractId: 'retract-entry-2',
+    },
+    operationContext(),
+  );
+  assert.equal(missing.ok, false);
+  if (!missing.ok) assert.equal(missing.error.code, 'not_found');
+
+  const steering = await fixture.coordinator.handlers['queue.entry.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-1',
+      retractId: 'retract-entry-3',
+    },
+    operationContext(),
+  );
+  assert.equal(steering.ok, true);
+  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).steering, []);
+  assert.equal(fixture.liveResidencies(), 1);
+
+  await fixture.coordinator.handlers['queue.retract'](
+    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, retractId: 'cleanup-entry' },
+    operationContext(),
+  );
+  fixture.coordinator.abandonRootReservation(ROOT);
+  await fixture.coordinator.close();
+});
+
+test('entry retract of an in-flight steering lease conflicts', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+
+  await submit(fixture, 'steer-1', 'steer me', 'current_turn');
+  const [lease] = owner.pull();
+  assert.ok(lease);
+
+  const outcome = await fixture.coordinator.handlers['queue.entry.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-1',
+      retractId: 'retract-in-flight',
+    },
+    operationContext(),
+  );
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) assert.equal(outcome.error.code, 'operation_conflict');
+
+  owner.ack([lease.id]);
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  fixture.coordinator.completeIdle(batch);
+  assert.equal(fixture.liveResidencies(), 0);
+});
+
+test('entry update preserves queue identity, order, and placement and replays its receipt', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+
+  await submit(fixture, 'steer-1', 'steer me', 'current_turn');
+  await submitContent(
+    fixture,
+    'follow-1',
+    {
+      text: 'first @src/a.ts',
+      inlineReferences: [
+        {
+          kind: 'workspace_file',
+          value: '@src/a.ts',
+          label: 'src/a.ts',
+          start: 6,
+        },
+      ],
+    },
+    'next_turn',
+  );
+  await submit(fixture, 'follow-2', 'second', 'next_turn');
+  let preparedUpdateContent: MessageContent | undefined;
+  fixture.setMessagePreparation(async (input) => {
+    preparedUpdateContent = input.content;
+    return { kind: 'ready', content: input.content };
+  });
+
+  const updated = await fixture.coordinator.handlers['queue.entry.update'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-2',
+      updateId: 'update-entry-1',
+      expectedQueueRevision: 3,
+      text: 'please first @src/a.ts',
+    },
+    operationContext(),
+  );
+  assert.equal(updated.ok, true);
+  assert.deepEqual(preparedUpdateContent, {
+    text: 'please first @src/a.ts',
+    inlineReferences: [
+      {
+        kind: 'workspace_file',
+        value: '@src/a.ts',
+        label: 'src/a.ts',
+        start: 13,
+      },
+    ],
+  });
+  const projection = fixture.coordinator.projection(ROOT.sessionId);
+  assert.deepEqual(
+    projection.followup.map((entry) => [entry.entryId, entry.content.text, entry.placement]),
+    [
+      ['id-2', 'please first @src/a.ts', 'next_turn'],
+      ['id-3', 'second', 'next_turn'],
+    ],
+  );
+  assert.deepEqual(
+    projection.steering.map((entry) => [entry.entryId, entry.content.text, entry.placement]),
+    [['id-1', 'steer me', 'current_turn']],
+  );
+
+  const stale = await fixture.coordinator.handlers['queue.entry.update'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-2',
+      updateId: 'update-entry-stale',
+      expectedQueueRevision: 3,
+      text: 'stale overwrite',
+    },
+    operationContext(),
+  );
+  assert.equal(stale.ok, false);
+  if (!stale.ok) assert.equal(stale.error.code, 'operation_conflict');
+
+  const retry = await fixture.coordinator.handlers['queue.entry.update'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-2',
+      updateId: 'update-entry-1',
+      expectedQueueRevision: 3,
+      text: 'please first @src/a.ts',
+    },
+    operationContext(),
+  );
+  assert.deepEqual(retry, updated);
+
+  const conflict = await fixture.coordinator.handlers['queue.entry.update'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-3',
+      updateId: 'update-entry-1',
+      expectedQueueRevision: 3,
+      text: 'conflicting retry',
+    },
+    operationContext(),
+  );
+  assert.equal(conflict.ok, false);
+  if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
+
+  await fixture.coordinator.handlers['queue.retract'](
+    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, retractId: 'cleanup-update' },
+    operationContext(),
+  );
+  fixture.coordinator.abandonRootReservation(ROOT);
+  await fixture.coordinator.close();
+});
+
+test('entry update of an in-flight steering lease conflicts', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+
+  await submit(fixture, 'steer-1', 'steer me', 'current_turn');
+  const [lease] = owner.pull();
+  assert.ok(lease);
+
+  const outcome = await fixture.coordinator.handlers['queue.entry.update'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-1',
+      updateId: 'update-in-flight',
+      expectedQueueRevision: 2,
+      text: 'too late',
+    },
+    operationContext(),
+  );
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) assert.equal(outcome.error.code, 'operation_conflict');
+
+  owner.ack([lease.id]);
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  fixture.coordinator.completeIdle(batch);
+  assert.equal(fixture.liveResidencies(), 0);
+});
+
+test('entry update keeps relocated inline references ordered and non-overlapping', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  await submitContent(
+    fixture,
+    'reordered-refs',
+    {
+      text: '@src/a @src/b',
+      inlineReferences: [
+        { kind: 'workspace_file', value: '@src/a', label: 'src/a', start: 0 },
+        { kind: 'workspace_file', value: '@src/b', label: 'src/b', start: 7 },
+      ],
+    },
+    'next_turn',
+  );
+  await submitContent(
+    fixture,
+    'overlapping-refs',
+    {
+      text: '@src/a @src/a.ts',
+      inlineReferences: [
+        { kind: 'workspace_file', value: '@src/a', label: 'src/a', start: 0 },
+        { kind: 'workspace_file', value: '@src/a.ts', label: 'src/a.ts', start: 7 },
+      ],
+    },
+    'next_turn',
+  );
+
+  const reordered = await fixture.coordinator.handlers['queue.entry.update'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-1',
+      updateId: 'update-reordered-refs',
+      expectedQueueRevision: 2,
+      text: '@src/b @src/a',
+    },
+    operationContext(),
+  );
+  assert.equal(reordered.ok, true);
+
+  const overlapping = await fixture.coordinator.handlers['queue.entry.update'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-2',
+      updateId: 'update-overlapping-refs',
+      expectedQueueRevision: 3,
+      text: '@src/a.ts',
+    },
+    operationContext(),
+  );
+  assert.equal(overlapping.ok, true);
+
+  const [first, second] = fixture.coordinator.projection(ROOT.sessionId).followup;
+  assert.deepEqual(first?.content.inlineReferences, [
+    { kind: 'workspace_file', value: '@src/b', label: 'src/b', start: 0 },
+    { kind: 'workspace_file', value: '@src/a', label: 'src/a', start: 7 },
+  ]);
+  assert.deepEqual(second?.content.inlineReferences, [
+    { kind: 'workspace_file', value: '@src/a.ts', label: 'src/a.ts', start: 0 },
+  ]);
+});
+
+test('entry promote moves a follow-up into the steering queue', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+
+  await submit(fixture, 'follow-1', 'first', 'next_turn');
+  await submit(fixture, 'follow-2', 'second', 'next_turn');
+
+  const promoted = await fixture.coordinator.handlers['queue.entry.promote'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-2',
+      promoteId: 'promote-1',
+    },
+    operationContext(),
+  );
+  assert.equal(promoted.ok, true);
+  const projection = fixture.coordinator.projection(ROOT.sessionId);
+  assert.deepEqual(
+    projection.steering.map((entry) => [entry.messageId, entry.placement]),
+    [['follow-2', 'current_turn']],
+  );
+  assert.deepEqual(
+    projection.followup.map((entry) => entry.messageId),
+    ['follow-1'],
+  );
+
+  const retry = await fixture.coordinator.handlers['queue.entry.promote'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-2',
+      promoteId: 'promote-1',
+    },
+    operationContext(),
+  );
+  assert.deepEqual(retry, promoted);
+
+  const again = await fixture.coordinator.handlers['queue.entry.promote'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-2',
+      promoteId: 'promote-2',
+    },
+    operationContext(),
+  );
+  assert.equal(again.ok, false);
+  if (!again.ok) assert.equal(again.error.code, 'operation_conflict');
+
+  const leases = owner.pull();
+  assert.deepEqual(
+    leases.map((lease) => lease.messageId),
+    ['follow-2'],
+  );
+  owner.ack(leases.map((lease) => lease.id));
+  owner.release();
+
+  const retracted = await fixture.coordinator.handlers['queue.retract'](
+    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, retractId: 'cleanup-promote' },
+    operationContext(),
+  );
+  assert.equal(retracted.ok, true);
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  fixture.coordinator.completeIdle(batch);
+  assert.equal(fixture.liveResidencies(), 0);
+});
+
+test('entry promote requires an active Turn', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+
+  await submit(fixture, 'follow-1', 'first', 'next_turn');
+  fixture.setRootState({ kind: 'idle' });
+
+  const promoted = await fixture.coordinator.handlers['queue.entry.promote'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-1',
+      promoteId: 'promote-idle',
+    },
+    operationContext(),
+  );
+  assert.equal(promoted.ok, false);
+  if (!promoted.ok) assert.equal(promoted.error.code, 'operation_conflict');
+});
+
+test('entries reorder permutes the follow-up queue and rejects stale orders', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+
+  await submit(fixture, 'follow-1', 'first', 'next_turn');
+  await submit(fixture, 'follow-2', 'second', 'next_turn');
+  await submit(fixture, 'follow-3', 'third', 'next_turn');
+  const revisionBefore = fixture.coordinator.projection(ROOT.sessionId).queueRevision;
+
+  const reordered = await fixture.coordinator.handlers['queue.entries.reorder'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      reorderId: 'reorder-1',
+      entryIds: ['id-3', 'id-1', 'id-2'],
+    },
+    operationContext(),
+  );
+  assert.equal(reordered.ok, true);
+  if (!reordered.ok) return;
+  assert.equal(reordered.result.queueRevision, revisionBefore + 1);
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
+    ['follow-3', 'follow-1', 'follow-2'],
+  );
+
+  const retry = await fixture.coordinator.handlers['queue.entries.reorder'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      reorderId: 'reorder-1',
+      entryIds: ['id-3', 'id-1', 'id-2'],
+    },
+    operationContext(),
+  );
+  assert.deepEqual(retry, reordered);
+
+  const stale = await fixture.coordinator.handlers['queue.entries.reorder'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      reorderId: 'reorder-2',
+      entryIds: ['id-2', 'id-1'],
+    },
+    operationContext(),
+  );
+  assert.equal(stale.ok, false);
+  if (!stale.ok) assert.equal(stale.error.code, 'operation_conflict');
+
+  const unchanged = await fixture.coordinator.handlers['queue.entries.reorder'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      reorderId: 'reorder-3',
+      entryIds: ['id-3', 'id-1', 'id-2'],
+    },
+    operationContext(),
+  );
+  assert.equal(unchanged.ok, true);
+  if (unchanged.ok) assert.equal(unchanged.result.queueRevision, revisionBefore + 1);
+
+  await fixture.coordinator.handlers['queue.retract'](
+    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, retractId: 'cleanup-reorder' },
+    operationContext(),
+  );
+  fixture.coordinator.abandonRootReservation(ROOT);
+  await fixture.coordinator.close();
+});
+
+test('queued mutations reject a queue that is draining into the next Turn', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+
+  await submit(fixture, 'follow-1', 'first', 'next_turn');
+  await submit(fixture, 'follow-2', 'second', 'next_turn');
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+
+  const retracted = await fixture.coordinator.handlers['queue.entry.retract'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: 'id-2',
+      retractId: 'retract-draining',
+    },
+    operationContext(),
+  );
+  assert.equal(retracted.ok, false);
+  if (!retracted.ok) assert.equal(retracted.error.code, 'operation_conflict');
+
+  const reordered = await fixture.coordinator.handlers['queue.entries.reorder'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      reorderId: 'reorder-draining',
+      entryIds: ['id-2', 'id-1'],
+    },
+    operationContext(),
+  );
+  assert.equal(reordered.ok, false);
+  if (!reordered.ok) assert.equal(reordered.error.code, 'operation_conflict');
+
+  fixture.coordinator.commitNextRoot(batch, {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+  const after = await fixture.coordinator.handlers['queue.entries.reorder'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      reorderId: 'reorder-after-commit',
+      entryIds: [],
+    },
+    operationContext(),
+  );
+  assert.equal(after.ok, true);
+  fixture.coordinator.abandonRootReservation({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+  await fixture.coordinator.close();
 });
 
 test('submit mutation is visible before its receipt and concurrent retries share the cut', async () => {
@@ -1829,7 +2384,6 @@ function operationContext(connectionId = 'connection-1') {
   return {
     hostEpoch: 'epoch-1',
     connectionId,
-    surface: 'tui' as const,
     principal: 'local_os_user' as const,
     acquireResidency: () => ({ release: () => undefined }),
   };
@@ -1842,3 +2396,41 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+test('a lone folded steering entry leaves the queue projection decodable', async () => {
+  // A steer the run never pulls is folded into `followup` at the terminal
+  // transition. It has to arrive there as a followup entry: the wire decoder
+  // requires `next_turn`, and an undecodable projection takes down the whole
+  // Host by way of the session continuity snapshot (#3530).
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const submitted = await submitContent(
+    fixture,
+    'lone-steer',
+    { text: 'late steer', displayText: 'late steer' },
+    'current_turn',
+  );
+  assert.equal(submitted.ok, true, JSON.stringify(submitted));
+
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+
+  const projection = fixture.coordinator.projection(ROOT.sessionId);
+  assert.deepEqual(projection.steering, []);
+  assert.equal(projection.followup.length, 1);
+  assert.equal(projection.followup[0]?.placement, 'next_turn');
+  assert.doesNotThrow(() => decodeSessionMessageQueueProjection(projection));
+
+  // Durable provenance is unchanged: the source still records where the
+  // message was aimed, which is what makes the fold auditable.
+  assert.equal(batch.sources.length, 1);
+  assert.equal(batch.sources[0]?.placement, 'current_turn');
+  assert.equal(batch.sources[0]?.disposition, 'steering');
+
+  fixture.coordinator.commitNextRoot(batch, {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+});

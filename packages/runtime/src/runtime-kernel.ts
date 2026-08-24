@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
 import type { ContinuationClaimV1, ImmutableRuntimePrefixV1 } from '@maka/core/runtime-boundary';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
@@ -267,7 +286,7 @@ interface SessionSteeringState {
    */
   inFlight: LeasedSteeringMessage[];
   /** Messages waiting to open the next turn. */
-  followup: string[];
+  followup: PendingSteeringMessage[];
   /** Pushes a `queue_update` into the active turn's stream; unset when idle. */
   sink?: (event: QueueUpdateEvent) => void;
   activeTurnId?: string;
@@ -692,8 +711,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
         store: this.deps.store,
         runStore: this.deps.runStore,
         runtimeEventStore: this.deps.runtimeEventStore,
-        ...(runtimeToolBoundaryProtocol(this.deps, header)
-          ? { toolBoundaryProtocol: runtimeToolBoundaryProtocol(this.deps, header) }
+        ...(this.deps.toolBoundaryProtocol
+          ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
           : {}),
         repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
         newId: this.deps.newId,
@@ -835,7 +854,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       );
     }
 
-    const continuationToolBoundaryProtocol = runtimeToolBoundaryProtocol(this.deps, header);
+    const continuationToolBoundaryProtocol = this.deps.toolBoundaryProtocol;
     const run = new AgentRun({
       sessionId: continuation.sessionId,
       header,
@@ -973,12 +992,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     execution: PendingExecutionClaim,
   ): AsyncIterable<SessionEvent> {
     await this.enterExecutionClaim(execution);
-    if (
-      input.minRecentTurns !== undefined &&
-      (!Number.isSafeInteger(input.minRecentTurns) || input.minRecentTurns < 0)
-    ) {
-      throw new Error('Runtime compaction minRecentTurns must be a non-negative safe integer');
-    }
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
       throw new RuntimeContextCompactError(
         'operation_unavailable',
@@ -1003,8 +1016,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       store: this.deps.store,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
-      ...(runtimeToolBoundaryProtocol(this.deps, header)
-        ? { toolBoundaryProtocol: runtimeToolBoundaryProtocol(this.deps, header) }
+      ...(this.deps.toolBoundaryProtocol
+        ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
         : {}),
       repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
       newId: this.deps.newId,
@@ -1059,7 +1072,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
         turnId: run.turnId,
         runId: run.runId,
         runtimeContext: begin.runtimeContext,
-        ...(input.minRecentTurns !== undefined ? { minRecentTurns: input.minRecentTurns } : {}),
       });
       if (run.isStopped()) return;
       const tokenUsageEvent: TokenUsageEvent = {
@@ -1077,6 +1089,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         turnId: run.turnId,
         ts: this.deps.now(),
         stopReason: 'end_turn',
+        contextCompactionOutcome: result.outcome,
       };
       const invocation = this.compactInvocationContext({
         sessionId,
@@ -1092,7 +1105,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       if (run.isStopped()) return;
       await run.recordStoredSessionEvent(tokenUsageEvent);
       if (run.isStopped()) return;
-      if (shouldAppendContextCompactionFailedOpenNote(result.contextBudget)) {
+      if (result.outcome.kind === 'failed') {
         const note: SystemNoteMessage = {
           type: 'system_note',
           id: this.deps.newId(),
@@ -1182,8 +1195,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       store: this.deps.store,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
-      ...(runtimeToolBoundaryProtocol(this.deps, childHeader)
-        ? { toolBoundaryProtocol: runtimeToolBoundaryProtocol(this.deps, childHeader) }
+      ...(this.deps.toolBoundaryProtocol
+        ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
         : {}),
       repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
       newId: this.deps.newId,
@@ -1329,7 +1342,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       );
     }
     await this.deps.continuationFailpoint?.('after_continuation_claim_committed');
-    const continuationToolBoundaryProtocol = runtimeToolBoundaryProtocol(this.deps, childHeader);
+    const continuationToolBoundaryProtocol = this.deps.toolBoundaryProtocol;
     const durableAdmission: {
       claimedRunHeader: AgentRunHeader;
       commitContinuationStart: (
@@ -1604,7 +1617,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           // queue is its only safe home — the same direction a release-time
           // fold takes.
           current.followup = [
-            ...returned.map((message) => message.content.text),
+            ...returned.map(({ id, messageId, content }) => ({ id, messageId, content })),
             ...current.followup,
           ];
         }
@@ -1668,6 +1681,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
           ? { orchestration: begin.backendInput.orchestration }
           : {}),
         ...(begin.backendInput.toolMode ? { toolMode: begin.backendInput.toolMode } : {}),
+        ...(begin.backendInput.maxSteps !== undefined
+          ? { maxSteps: begin.backendInput.maxSteps }
+          : {}),
         text: input.text,
         ...(begin.backendInput.attachments ? { attachments: begin.backendInput.attachments } : {}),
         ...(begin.backendInput.quotes ? { quotes: begin.backendInput.quotes } : {}),
@@ -2405,7 +2421,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     this.assertEmbeddedMessageQueue('queueMessage');
     const state = this.liveSteeringState(sessionId);
     if (!state) return { kind: 'fallback' };
-    state.followup.push(text);
+    const messageId = this.deps.newId();
+    state.followup.push({ id: messageId, messageId, content: { text } });
     this.emitQueueUpdate(sessionId, state);
     return { kind: 'queued' };
   }
@@ -2416,7 +2433,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (!state || state.followup.length === 0) return null;
     const drained = state.followup.splice(0);
     this.emitQueueUpdate(sessionId, state);
-    return drained.join('\n\n');
+    return drained.map((message) => message.content.text).join('\n\n');
   }
 
   retractQueue(sessionId: string): string {
@@ -2429,7 +2446,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // handing its text back to the user here would refill AND execute the
     // same directive. An in-flight lease settles only by the persistence
     // fact (ack when the ledger owns it, nack back to a queue otherwise).
-    const all = [...state.steering.map((message) => message.content.text), ...state.followup];
+    const all = [
+      ...state.steering.map((message) => message.content.text),
+      ...state.followup.map((message) => message.content.text),
+    ];
     state.steering = [];
     state.followup = [];
     this.emitQueueUpdate(sessionId, state);
@@ -2473,7 +2493,30 @@ export class RuntimeKernel implements RuntimeKernelLike {
         ...state.inFlight.map((message) => message.content.text),
         ...state.steering.map((message) => message.content.text),
       ],
-      followup: [...state.followup],
+      followup: state.followup.map((message) => message.content.text),
+      steeringEntries: [
+        ...state.inFlight.map((message) => ({
+          entryId: message.id,
+          messageId: message.messageId,
+          content: message.content,
+          placement: 'current_turn' as const,
+          state: 'in_flight' as const,
+        })),
+        ...state.steering.map((message) => ({
+          entryId: message.id,
+          messageId: message.messageId,
+          content: message.content,
+          placement: 'current_turn' as const,
+          state: 'queued' as const,
+        })),
+      ],
+      followupEntries: state.followup.map((message) => ({
+        entryId: message.id,
+        messageId: message.messageId,
+        content: message.content,
+        placement: 'next_turn' as const,
+        state: 'queued' as const,
+      })),
     });
   }
 
@@ -2502,7 +2545,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       // backstop that keeps a never-settled lease from stranding invisibly.
       if (own.length === 0) return;
       state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
-      state.followup = [...own.map((message) => message.content.text), ...state.followup];
+      state.followup = [...own, ...state.followup];
       this.emitQueueUpdate(sessionId, state);
       return;
     }
@@ -2512,11 +2555,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // migration is a queue change, so emit the final snapshot BEFORE the sink
     // is cleared; otherwise observers stay on the stale pre-fold snapshot.
     if (state.steering.length > 0 || own.length > 0) {
-      state.followup = [
-        ...own.map((message) => message.content.text),
-        ...state.steering.map((message) => message.content.text),
-        ...state.followup,
-      ];
+      state.followup = [...own, ...state.steering, ...state.followup];
       state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
       state.steering = [];
       this.emitQueueUpdate(sessionId, state);
@@ -2784,7 +2823,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     | 'loadHistoryCompactCheckpoint'
     | 'recordHistoryCompactCheckpoint'
     | 'loadTurnRuntimeEvents'
-    | 'recordSemanticCompactBlock'
   > {
     const { resolveActive, sessionId } = input;
     const runFor = (turnId: string): AgentRun | undefined => {
@@ -2837,9 +2875,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
             },
           }
         : {}),
-      recordSemanticCompactBlock: (block) => {
-        runFor(block.turnId)?.recordSemanticCompactBlock(block);
-      },
     };
   }
 
@@ -3750,13 +3785,6 @@ class RuntimeRunOwnerScope {
 
 function childActiveKey(sessionId: string, turnId: string): string {
   return `${sessionId}:${turnId}`;
-}
-
-function runtimeToolBoundaryProtocol(
-  deps: Pick<RuntimeKernelDeps, 'toolBoundaryProtocol'>,
-  header: Pick<SessionHeader, 'backend'>,
-): ToolBoundaryProtocol | undefined {
-  return header.backend === 'ai-sdk' ? deps.toolBoundaryProtocol : undefined;
 }
 
 function effectiveOrchestrationForRun(

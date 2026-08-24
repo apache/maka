@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
@@ -273,6 +292,10 @@ describe('file tools follow the execution boundary', () => {
       const secondKeyResolvedPromise = new Promise<void>((resolve) => {
         secondKeyResolved = resolve;
       });
+      const pinnedReadModifyWrite = host.readModifyWrite;
+      if (!pinnedReadModifyWrite) {
+        throw new Error('LocalWorkspaceExecutor must provide readModifyWrite');
+      }
       const tools = toolsFor({
         executor: Object.assign(Object.create(host) as typeof host, {
           writeLockKey: async (input: Parameters<typeof host.writeLockKey>[0]) => {
@@ -291,6 +314,23 @@ describe('file tools follow the execution boundary', () => {
             }
             try {
               return await host.readFile(input);
+            } finally {
+              active -= 1;
+            }
+          },
+          readModifyWrite: async (input: Parameters<typeof pinnedReadModifyWrite>[0]) => {
+            // The pinned read-modify-write is the mutation's read step now
+            // (#2600); the causal barrier lives here for the same reason it
+            // lived on readFile before.
+            active += 1;
+            overlapped ||= active > 1;
+            reads += 1;
+            if (reads === 1) {
+              firstReadStarted();
+              await secondKeyResolvedPromise;
+            }
+            try {
+              return await pinnedReadModifyWrite(input);
             } finally {
               active -= 1;
             }

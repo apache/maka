@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { OnboardingState } from '@maka/core/onboarding';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getOnboardingCopy } from './locales/onboarding-copy.js';
@@ -58,13 +77,17 @@ export function getOnboardingHeroCopy(
           target: { kind: 'connection', connectionSlug: state.connectionSlug },
         },
       };
-    case 'blocked':
-      acknowledgeBlockedReason(state.reason);
+    case 'blocked': {
+      // Retirement gets its own copy: the generic text tells the user to
+      // re-check credentials and sign-in, and for a retired provider both of
+      // those lead nowhere.
+      const blocked = copy.hero[`blocked:${state.reason}`];
       return {
         kind: state.kind,
-        ...copy.hero.blocked,
-        cta: { ...copy.hero.blocked.cta, target: { kind: 'models' } },
+        ...blocked,
+        cta: { ...blocked.cta, target: { kind: 'models' } },
       };
+    }
     case 'ready_empty':
     case 'ready_with_history':
       return null;
@@ -76,8 +99,4 @@ export function getOnboardingHeroCopy(
 function assertNever(state: never): never {
   void state;
   throw new Error('getOnboardingHeroCopy: unexhausted OnboardingState variant');
-}
-
-function acknowledgeBlockedReason(reason: 'all_connections_unhealthy') {
-  void reason;
 }

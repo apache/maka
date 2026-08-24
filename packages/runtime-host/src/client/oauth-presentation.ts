@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ClientCapabilityServiceCallFrame } from '../protocol/index.js';
 import {
   decodeOAuthPresentationRequest,
@@ -11,7 +30,6 @@ export { OAUTH_PRESENTATION_SERVICE_ID, OAUTH_PRESENTATION_SERVICE_VERSION };
 
 export interface OAuthPresentationBackend {
   openExternal(url: string, stateHint: string | undefined, signal: AbortSignal): Promise<void>;
-  requestAuthorizationCode(url: string, stateHint: string, signal: AbortSignal): Promise<string>;
 }
 
 /** A presentation-only provider. OAuth token exchange and storage stay in the Host. */
@@ -30,24 +48,9 @@ export function createOAuthPresentationClientProvider(
       assertOAuthPresentationContract(frame);
       const request = decodeOAuthPresentationRequest(frame.method, frame.input);
       const url = trustedPresentationUrl(request.url);
-      switch (request.method) {
-        case 'open_external':
-          await options.accept();
-          await backend.openExternal(url, request.stateHint, options.signal);
-          return decodeOAuthPresentationResult(request.method, { kind: 'presented' });
-        case 'request_authorization_code': {
-          await options.accept();
-          const authorizationCode = await backend.requestAuthorizationCode(
-            url,
-            request.stateHint,
-            options.signal,
-          );
-          return decodeOAuthPresentationResult(request.method, {
-            kind: 'authorization_code',
-            authorizationCode,
-          });
-        }
-      }
+      await options.accept();
+      await backend.openExternal(url, request.stateHint, options.signal);
+      return decodeOAuthPresentationResult(request.method, { kind: 'presented' });
     },
   };
 }

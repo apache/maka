@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { isDeepStrictEqual } from 'node:util';
 import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
@@ -320,8 +339,7 @@ export class RuntimeHostSessionProjector {
       return emptyUpdate(events);
     }
     if (frame.kind === 'subscription.session_event') {
-      const event = projectToolEvent(frame);
-      if (event) events.push(event);
+      events.push(projectToolEvent(frame));
       return emptyUpdate(events);
     }
     if (frame.kind !== 'subscription.session_projection') return emptyUpdate(events);
@@ -460,7 +478,7 @@ export function projectRuntimeHostInteractionRequest(
 
 function projectToolEvent(
   frame: Extract<SubscriptionFrame, { kind: 'subscription.session_event' }>,
-): SessionEvent | undefined {
+): SessionEvent {
   const event = frame.event;
   const base = {
     id: event.id,
@@ -478,6 +496,7 @@ function projectToolEvent(
       ...(event.activityKind ? { activityKind: event.activityKind } : {}),
       ...(event.displayName ? { displayName: event.displayName } : {}),
       ...(event.stepId ? { stepId: event.stepId } : {}),
+      ...(event.shellRunRef ? { shellRunRef: event.shellRunRef } : {}),
     };
   }
   if (event.type === 'tool_output_delta') {
@@ -505,8 +524,15 @@ function projectToolEvent(
   return {
     type: 'tool_result',
     ...base,
+    contentOmitted: true,
     isError: event.status === 'errored',
-    content: { kind: 'text', text: '' },
+    content: {
+      kind: 'text',
+      text: '',
+      ...(event.sandboxFailureReason
+        ? { sandboxFailure: { reason: event.sandboxFailureReason } }
+        : {}),
+    },
     ...(event.operationId ? { operationId: event.operationId } : {}),
     ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
   };
@@ -591,8 +617,23 @@ function projectQueueUpdate(
     id: `host-queue:${queue.hostEpoch}:${queue.queueRevision}`,
     turnId,
     ts: now,
+    queueRevision: queue.queueRevision,
     steering: queue.steering.map((entry) => entry.content.text),
     followup: queue.followup.map((entry) => entry.content.text),
+    steeringEntries: queue.steering.map((entry) => ({
+      entryId: entry.entryId,
+      messageId: entry.messageId,
+      content: structuredClone(entry.content),
+      placement: entry.placement,
+      state: entry.state,
+    })),
+    followupEntries: queue.followup.map((entry) => ({
+      entryId: entry.entryId,
+      messageId: entry.messageId,
+      content: structuredClone(entry.content),
+      placement: entry.placement,
+      state: entry.state,
+    })),
   };
 }
 

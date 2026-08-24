@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Renderer-side presentation rules that only Desktop has: which blocked reasons
  * are worth acting on, and what to offer after a turn fails.
@@ -64,36 +83,6 @@ export function normalizeSessionSummaryForDisplay<T extends SessionSummary>(sess
 }
 
 /**
- * Mutation responses describe persisted metadata and legitimately omit live
- * run state. Preserve the last authoritative state in that case; an explicit
- * empty or non-empty array from a catalog read always replaces it.
- */
-export function mergeSessionSummaryForDisplay<T extends SessionSummary>(
-  current: T | undefined,
-  incoming: T,
-): T {
-  const merged: T =
-    incoming.runningTurnIds === undefined && current?.runningTurnIds !== undefined
-      ? ({ ...incoming, runningTurnIds: [...current.runningTurnIds] } as T)
-      : incoming;
-  return normalizeSessionSummaryForDisplay(merged);
-}
-
-/**
- * Apply the same live-state preservation rule at the shared list state
- * boundary, so every metadata mutation path gets it even when a refresh fails.
- */
-export function mergeSessionSummaryListForDisplay<T extends SessionSummary>(
-  current: readonly T[],
-  incoming: readonly T[],
-): T[] {
-  const currentById = new Map(current.map((session) => [session.id, session]));
-  return incoming.map((session) =>
-    mergeSessionSummaryForDisplay(currentById.get(session.id), session),
-  );
-}
-
-/**
  * Generalized Chinese phrasing for a failed turn's `errorClass`
  * Mirrors `describeBlockedReason()` in `@maka/ui`, under the same rule: a UI
  * label must never display the raw enum identifier.
@@ -124,7 +113,12 @@ export function describeTurnErrorClass(errorClass: string | undefined, locale: U
   if (lower === 'network' || lower.includes('network') || lower.includes('fetch') || lower.includes('econn')) {
     return copy.network;
   }
-  if (lower === 'provider_unavailable' || /\b5\d\d\b/.test(lower)) return copy.provider;
+  if (
+    lower === 'provider_unavailable' ||
+    lower === 'server_error' ||
+    /\b5\d\d\b/.test(lower)
+  )
+    return copy.provider;
   if (lower === 'tool_step_cap_reached') return copy.stepCap;
   if (lower === 'tool_failed' || lower.includes('tool')) return copy.tool;
   if (lower === 'permission_required' || lower.includes('permission')) return copy.permission;
@@ -179,6 +173,12 @@ export function deriveFailedTurnRecovery(input: FailedTurnRecoveryInput, locale:
   }
   if (input.toolActivityCount > 0) {
     return { action: 'inspect_tool', label: copy.toolRecord };
+  }
+  if (lower === 'provider_capacity') {
+    return { action: 'retry', label: copy.capacity };
+  }
+  if (lower === 'context_overflow') {
+    return { action: 'continue', label: copy.contextOverflow };
   }
   return { action: 'retry', label: copy.retry };
 }

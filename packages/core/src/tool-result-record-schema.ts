@@ -1,8 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   decodeCanonicalShellToolResultContent,
   isSandboxDenialSignal,
 } from './shell-run-result.js';
-import { isPermissionMode } from './permission.js';
+import { decodePersistedPermissionMode, isPermissionMode } from './permission.js';
+import type { PersistedValue } from './persisted-value.js';
 import { isStorageRef, type ToolResultContent } from './events.js';
 import { validateSandboxBoundaryExpansion } from './sandbox-boundary.js';
 import {
@@ -26,7 +46,7 @@ const TEXT_SHAPE = defineObjectShape<Result<'text'>>()(
 );
 const SANDBOX_FAILURE_SHAPE = defineObjectShape<NonNullable<Result<'text'>['sandboxFailure']>>()(
   ['reason'],
-  ['requiredExpansion'],
+  ['requiredExpansion', 'source'],
 );
 const UNCERTAIN_OUTCOME_SHAPE = defineObjectShape<
   NonNullable<Result<'text'>['uncertainOutcome']>
@@ -199,6 +219,17 @@ export function decodeCanonicalToolResultContent(value: unknown): ToolResultCont
   return value;
 }
 
+export function decodePersistedToolResultContent(
+  persisted: PersistedValue<ToolResultContent>,
+): ToolResultContent {
+  const value = persisted as unknown;
+  if (!isRecord(value) || value.kind !== 'subagent') {
+    return decodeCanonicalToolResultContent(value);
+  }
+  const permissionMode = decodePersistedPermissionMode(value.permissionMode);
+  return decodeCanonicalToolResultContent({ ...value, permissionMode });
+}
+
 function isNonShellToolResultContent(value: unknown): value is ToolResultContent {
   if (!isRecord(value) || typeof value.kind !== 'string') return false;
   switch (value.kind) {
@@ -212,6 +243,9 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
             hasExactShape(value.sandboxFailure, SANDBOX_FAILURE_SHAPE) &&
             (value.sandboxFailure.reason === 'sandbox_boundary_required' ||
               value.sandboxFailure.reason === 'requires_bypass') &&
+            (value.sandboxFailure.source === undefined ||
+              (value.sandboxFailure.reason === 'requires_bypass' &&
+                value.sandboxFailure.source === 'client_capability')) &&
             (value.sandboxFailure.requiredExpansion === undefined ||
               validateSandboxBoundaryExpansion(value.sandboxFailure.requiredExpansion).ok))) &&
         (value.uncertainOutcome === undefined ||

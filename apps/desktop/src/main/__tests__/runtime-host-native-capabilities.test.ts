@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
@@ -29,6 +48,7 @@ test('publishes self-described session-affine Browser and Computer Use offers', 
       affinity: offer.affinity,
       toolNames: offer.tools.map((descriptor) => descriptor.name),
       serverIds: offer.tools.map((descriptor) => descriptor.serverId),
+      activityKinds: offer.tools.map((descriptor) => descriptor.activityKind),
     })),
     [
       {
@@ -37,6 +57,7 @@ test('publishes self-described session-affine Browser and Computer Use offers', 
         affinity: 'session',
         toolNames: ['browser_snapshot'],
         serverIds: ['desktop_browser'],
+        activityKinds: [undefined],
       },
       {
         offerId: 'desktop_computer_use',
@@ -44,6 +65,7 @@ test('publishes self-described session-affine Browser and Computer Use offers', 
         affinity: 'session',
         toolNames: ['maka_computer'],
         serverIds: ['desktop_computer_use'],
+        activityKinds: ['computer'],
       },
     ],
   );
@@ -547,6 +569,7 @@ function computerTools(
     ? [
         {
           ...tool('maka_computer', z.object({ wait: z.boolean().optional() }), impl),
+          activityKind: 'computer' as const,
           toModelOutput: ({ output }: { output: unknown }) => {
             const result = output as {
               text: string;

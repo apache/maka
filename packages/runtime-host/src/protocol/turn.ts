@@ -1,7 +1,27 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
   isCanonicalAttachmentRef,
+  type ContextCompactionOutcome,
   type MessageContent,
   type ProviderRetryReason,
 } from '@maka/core/events';
@@ -163,7 +183,11 @@ export type LiveTurnSnapshot = TurnSnapshotBase & {
 
 export type TurnSnapshot =
   | LiveTurnSnapshot
-  | (TurnSnapshotBase & { status: 'completed'; terminalEventId: string })
+  | (TurnSnapshotBase & {
+      status: 'completed';
+      terminalEventId: string;
+      contextCompactionOutcome?: ContextCompactionOutcome;
+    })
   | (TurnSnapshotBase & {
       status: 'failed';
       terminalEventId: string;
@@ -612,17 +636,23 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
   };
   const status = requireTurnRunStatus(record.status);
   if (status === 'completed') {
-    assertExactKeys(record, 'completed Turn snapshot', [
-      'sessionId',
-      'turnId',
-      'runId',
-      'status',
-      'terminalEventId',
-    ]);
+    requireShapedRecord(
+      record,
+      'completed Turn snapshot',
+      ['sessionId', 'turnId', 'runId', 'status', 'terminalEventId'],
+      ['contextCompactionOutcome'],
+    );
     return {
       ...base,
       status,
       terminalEventId: requireId(record.terminalEventId, 'terminalEventId'),
+      ...(record.contextCompactionOutcome !== undefined
+        ? {
+            contextCompactionOutcome: decodeContextCompactionOutcome(
+              record.contextCompactionOutcome,
+            ),
+          }
+        : {}),
     };
   }
   if (status === 'failed') {
@@ -680,6 +710,20 @@ export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
   };
 }
 
+export function decodeContextCompactionOutcome(value: unknown): ContextCompactionOutcome {
+  const record = requireRecord(value, 'Context compaction outcome');
+  const kind = requireString(record.kind, 'kind', 32);
+  if (kind === 'compacted') {
+    assertExactKeys(record, 'compacted context outcome', ['kind', 'checkpointId']);
+    return { kind, checkpointId: requireEntityId(record.checkpointId, 'checkpointId') };
+  }
+  if (kind === 'unchanged' || kind === 'failed') {
+    assertExactKeys(record, `${kind} context outcome`, ['kind', 'reason']);
+    return { kind, reason: requireString(record.reason, 'reason', 256) };
+  }
+  throw invalidProtocolFrame('Invalid context compaction outcome kind');
+}
+
 export function decodeTurnProviderRetry(value: unknown): TurnProviderRetry {
   const record = requireRecord(value, 'Turn provider retry');
   const phase = record.phase;
@@ -718,6 +762,7 @@ export function decodeTurnProviderRetry(value: unknown): TurnProviderRetry {
 function requireProviderRetryReason(value: unknown): ProviderRetryReason {
   if (
     value === 'network' ||
+    value === 'provider_capacity' ||
     value === 'provider_unavailable' ||
     value === 'rate_limit' ||
     value === 'timeout' ||

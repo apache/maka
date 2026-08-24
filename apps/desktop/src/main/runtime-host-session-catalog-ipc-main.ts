@@ -1,10 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
 import { isPermissionMode } from '@maka/core/permission';
 import { isThinkingLevel } from '@maka/core/model-thinking';
 import { type CreateSessionRequestInput, type SessionListFilter } from '@maka/core/runtime-inputs';
-import { type SessionChangedEvent, type SessionChangedReason, type SessionSummary } from '@maka/core/session';
+import { type SessionChangedEvent, type SessionChangedReason, type SessionCatalogSummary } from '@maka/core/session';
+import { projectSessionCatalogSummary } from '@maka/runtime-host/client';
 import type {
   SessionCatalogProjection,
   SessionCreateInput,
@@ -37,7 +57,7 @@ type RuntimeHostSessionCatalogClient = Pick<
   | 'updateSessionMetadata'
 >;
 
-export interface DesktopHostSessionSummary extends SessionSummary {
+export interface DesktopHostSessionSummary extends SessionCatalogSummary {
   labelsTruncated: boolean;
 }
 
@@ -51,7 +71,7 @@ export interface RuntimeHostSessionCatalogIpcDeps {
   emitSessionsChanged: (
     reason: SessionChangedReason,
     sessionId?: string,
-    extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
+    extra?: Pick<SessionChangedEvent, 'modelId' | 'turnId'>,
   ) => void;
   releaseSessionResources: (sessionId: string) => void | Promise<void>;
   sessionCopyCleanup: SessionCopyCleanupAuthority;
@@ -96,9 +116,6 @@ export function registerRuntimeHostSessionCatalogIpc(
     pendingCleanup.add(sessionId);
   });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
-    if (input?.backend !== undefined && input.backend !== 'ai-sdk') {
-      throw new Error('Unsupported Runtime Host Session backend');
-    }
     const request = resolveCreateSessionRequest(input);
     const workspace = await deps.resolveCreateProject({
       ...(input?.cwd === undefined ? {} : { cwd: input.cwd }),
@@ -157,6 +174,12 @@ export function registerRuntimeHostSessionCatalogIpc(
     if (!isPermissionMode(mode)) throw new Error(`Invalid permission mode: ${String(mode)}`);
     return updateConfiguration(deps, sessionId, { permissionMode: mode }, 'mode-change');
   });
+  // Two fields, two channels, one field each. Plan is a temporary
+  // collaboration excursion that Runtime ends by itself on approval or
+  // abandonment; orchestration is the Session's standing default for how a
+  // turn fans out. Runtime resolves the overlap by stripping the subagent and
+  // agent-graph tools while planning, and validates the two independently, so
+  // neither channel has any business writing the other's field.
   ipcMain.handle(
     'sessions:setCollaborationMode',
     async (_event, sessionId: string, mode: unknown) => {
@@ -177,13 +200,7 @@ export function registerRuntimeHostSessionCatalogIpc(
   );
   ipcMain.handle('sessions:setModel', async (_event, sessionId: string, input: unknown) => {
     const modelTarget = normalizeExplicitModel(input);
-    return updateConfiguration(
-      deps,
-      sessionId,
-      { modelTarget, thinkingLevel: null },
-      'updated',
-      { connectionSlug: modelTarget.connectionSlug, modelId: modelTarget.model },
-    );
+    return updateConfiguration(deps, sessionId, { modelTarget, thinkingLevel: null }, 'updated');
   });
   ipcMain.handle('sessions:setThinkingLevel', async (_event, sessionId: string, level: unknown) => {
     if (level !== undefined && level !== null && !isThinkingLevel(level)) {
@@ -241,7 +258,7 @@ async function updateConfiguration(
   sessionId: string,
   patch: DesktopSessionConfigurationPatch,
   reason: SessionChangedReason,
-  extra?: Pick<SessionChangedEvent, 'connectionSlug' | 'modelId' | 'turnId'>,
+  extra?: Pick<SessionChangedEvent, 'modelId' | 'turnId'>,
 ): Promise<DesktopHostSessionSummary> {
   const session = await deps.client.updateSessionConfiguration(sessionId, patch);
   deps.emitSessionsChanged(reason, sessionId, extra);
@@ -315,49 +332,8 @@ export function toDesktopHostSessionSummary(
   session: SessionCatalogProjection,
 ): DesktopHostSessionSummary {
   return {
-    id: session.id,
-    cwd: session.workspace.hostCwd,
-    ...(session.workspace.target.kind === 'project'
-      ? { projectId: session.workspace.target.projectId }
-      : {}),
-    name: session.name,
-    isFlagged: session.isFlagged,
-    isArchived: session.isArchived,
-    labels: [...session.labels],
+    ...projectSessionCatalogSummary(session),
     labelsTruncated: session.labelsTruncated,
-    hasUnread: session.hasUnread,
-    ...(session.lastMessageAt === undefined ? {} : { lastMessageAt: session.lastMessageAt }),
-    ...(session.lastMessagePreview === undefined
-      ? {}
-      : { lastMessagePreview: session.lastMessagePreview }),
-    status: session.status,
-    ...(session.liveRunState === undefined
-      ? {}
-      : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),
-    ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
-    ...(session.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: session.statusUpdatedAt }),
-    ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
-    ...(session.branchOfTurnId === undefined ? {} : { branchOfTurnId: session.branchOfTurnId }),
-    ...(session.subagent === undefined ? {} : { subagent: session.subagent }),
-    ...(session.revisionRootSessionId === undefined
-      ? {}
-      : { revisionRootSessionId: session.revisionRootSessionId }),
-    ...(session.revisionParentSessionId === undefined
-      ? {}
-      : { revisionParentSessionId: session.revisionParentSessionId }),
-    ...(session.revisionOfTurnId === undefined
-      ? {}
-      : { revisionOfTurnId: session.revisionOfTurnId }),
-    ...(session.revisionIndex === undefined ? {} : { revisionIndex: session.revisionIndex }),
-    ...(session.revisionState === undefined ? {} : { revisionState: session.revisionState }),
-    backend: session.backend,
-    llmConnectionSlug: session.llmConnectionSlug,
-    connectionLocked: session.connectionLocked,
-    model: session.model,
-    ...(session.thinkingLevel === undefined ? {} : { thinkingLevel: session.thinkingLevel }),
-    permissionMode: session.permissionMode,
-    collaborationMode: session.collaborationMode,
-    orchestrationMode: session.orchestrationMode,
   };
 }
 

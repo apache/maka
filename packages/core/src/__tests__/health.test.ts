@@ -1,9 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import { expect } from './test-helpers.js';
 import {
   buildHealthSnapshot,
   healthSignalFromCapability,
   healthSignalFromConnection,
+  workspaceHasDefaultModelTarget,
   healthSignalFromConnectionRuntime,
 } from '../health.js';
 import type { CapabilitySnapshot } from '../capabilities.js';
@@ -22,6 +42,80 @@ describe('HealthSignal contract', () => {
     expect(result.status).toBe('ok');
     expect(result.layer).toBe('validation');
     expect(result.source).toBe('connection_test');
+  });
+
+  test('a missing default model warns only when the workspace has no default target', () => {
+    // The catalog projects `defaultModel` onto exactly one connection (the
+    // default target). With a default configured elsewhere, an enabled
+    // connection with an empty `defaultModel` is the documented normal
+    // state — informational, never send-blocking, and never a prompt to
+    // find a per-connection setting that deliberately does not exist.
+    const nonDefault = healthSignalFromConnection(
+      connection({ defaultModel: '', enabledModelIds: ['glm-4.7'] }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    expect(nonDefault.status).toBe('info');
+    expect(nonDefault.blocksSend).toBe(false);
+
+    // With NO default anywhere, a new chat cannot start: that is the
+    // actionable, send-blocking configuration gap.
+    const noDefaultAnywhere = healthSignalFromConnection(connection({ defaultModel: '' }), 20, {
+      workspaceHasDefaultTarget: false,
+    });
+    expect(noDefaultAnywhere.status).toBe('warning');
+    expect(noDefaultAnywhere.blocksSend).toBe(true);
+
+    // The informational note must not paper over real per-connection
+    // blockers: failing validation still wins on a non-default connection…
+    const reauth = healthSignalFromConnection(
+      connection({
+        defaultModel: '',
+        enabledModelIds: ['glm-4.7'],
+        lastTestStatus: 'needs_reauth',
+      }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    expect(reauth.status).toBe('error');
+    expect(reauth.blocksSend).toBe(true);
+
+    // …and a connection with no enabled models cannot claim that explicit
+    // selection works — there is nothing to select.
+    const emptyInventory = healthSignalFromConnection(
+      connection({ defaultModel: '', enabledModelIds: [] }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    expect(emptyInventory.status).toBe('warning');
+    expect(emptyInventory.blocksSend).toBe(false);
+
+    // The default target itself keeps its validation-layer signals.
+    const configured = healthSignalFromConnection(
+      connection({ lastTestStatus: 'verified', lastTestAt: '2026-05-22T07:30:00.000Z' }),
+      20,
+      { workspaceHasDefaultTarget: true },
+    );
+    expect(configured.status).toBe('ok');
+  });
+
+  test('a disabled default holder does not count as a workspace default', () => {
+    // Disabling the connection that holds the default target (ordinary UI,
+    // nothing clears defaultTarget) leaves its projected defaultModel in
+    // place. Counting it would show an all-clear health page in exactly
+    // the state where sends fail with connection_disabled.
+    const disabledHolder = connection({ enabled: false }); // defaultModel: 'glm-4.7'
+    const other = connection({ slug: 'other', defaultModel: '', enabledModelIds: ['m'] });
+    expect(workspaceHasDefaultModelTarget([disabledHolder, other])).toBe(false);
+    expect(workspaceHasDefaultModelTarget([connection({}), other])).toBe(true);
+
+    // With the holder disabled, the OTHER enabled connections escalate back
+    // to the send-blocking warning — the workspace genuinely has no default.
+    const signal = healthSignalFromConnection(other, 20, {
+      workspaceHasDefaultTarget: workspaceHasDefaultModelTarget([disabledHolder, other]),
+    });
+    expect(signal.status).toBe('warning');
+    expect(signal.blocksSend).toBe(true);
   });
 
   test('LLM runtime probe is separate from credential validation', () => {

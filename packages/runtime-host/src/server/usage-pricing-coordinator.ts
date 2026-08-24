@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash } from 'node:crypto';
 import type {
   PricingConfig,
@@ -42,9 +61,7 @@ import {
 } from '../protocol/index.js';
 import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
-import { readCanonicalUsage, type RunEventReader } from './canonical-usage-reader.js';
-
-export type { RunEventReader } from './canonical-usage-reader.js';
+import { readCanonicalUsage } from './canonical-usage-reader.js';
 
 /** Root-scoped projection over the authentic lease-bound usage stores. */
 export class HostUsagePricingCoordinator {
@@ -55,7 +72,6 @@ export class HostUsagePricingCoordinator {
   };
 
   readonly #stores: InteractiveUsageStoresWriter;
-  readonly #readRunEvents: RunEventReader | undefined;
   readonly #requestDrain: () => void;
   readonly #activation: RuntimePolicyActivationGate;
   readonly #onCommittedPricingMutation: () => void;
@@ -66,10 +82,8 @@ export class HostUsagePricingCoordinator {
     requestDrain: () => void,
     activation: RuntimePolicyActivationGate,
     onCommittedPricingMutation: () => void = () => {},
-    readRunEvents?: RunEventReader,
   ) {
     this.#stores = authenticateInteractiveUsageStoresWriter(stores);
-    this.#readRunEvents = readRunEvents;
     this.#requestDrain = requestDrain;
     this.#activation = activation;
     this.#onCommittedPricingMutation = onCommittedPricingMutation;
@@ -80,7 +94,7 @@ export class HostUsagePricingCoordinator {
    * range is resolved once here so both sources answer the same window.
    */
   async #canonicalUsage(query: UsageQuery, now: number): Promise<CanonicalUsageSource> {
-    return readCanonicalUsage(this.#stores, query, now, this.#readRunEvents);
+    return readCanonicalUsage(this.#stores, query, now);
   }
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {

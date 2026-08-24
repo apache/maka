@@ -7,10 +7,28 @@ counterpart: ./runtime-core-architecture-draft.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-07-12
+last_verified: 2026-08-23
 owners:
   - maka-backend
 ---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
 
 # 第一章：Log Is the Runtime——Maka 如何回放 Agent 的状态空间
 
@@ -18,7 +36,7 @@ owners:
 
 本文面向第一次进入 Maka Runtime 的工程师，也面向需要修改运行主链的维护者。读完前半部分，你应该能说清一次运行经过哪些边界；读完整章，你应该能定位主链代码，并理解修改终止、工具或持久化逻辑时必须保护哪些不变量。
 
-本文描述的是截至 2026-07-12 已在生产主链中落地的实现。历史设计文档中的阶段性计划不作为当前事实。
+本文描述的是截至 2026-08-23 已在生产主链中落地的实现。历史设计文档中的阶段性计划不作为当前事实。
 
 ## 从一个看似简单的请求开始
 
@@ -97,7 +115,7 @@ flowchart TD
 - thinking 可以带 provider 需要的 signature；
 - tool call 与 tool result 通过稳定 ID 配对；
 - tool call 还能指向它所属的 assistant step；
-- permission request/decision 是 action，而不是一段伪装成聊天的文字；
+- sandbox boundary 请求与决定是 action，而不是一段伪装成聊天的文字；
 - terminal event 明确关闭一次 Invocation，而不是靠“最后一条消息看起来像回答”来猜测。
 
 因此，模型历史不需要从 UI transcript 反向解析。它可以从 RuntimeEvent 中选择 non-partial、model-visible 的事件，保持顺序，再根据 provider 能力物化成 text-only 或 provider-native messages。UI 同样不需要成为事实源，它只是另一种 projection。
@@ -252,7 +270,7 @@ Runner 已提供可注入的 preflight gate，但当前 `RuntimeKernel` 组装�
 7. 将工具结果交回下一步模型请求；
 8. 重复模型/工具 step，直到模型结束、达到上限、发生错误或被中止。
 
-默认 step 上限为 50。若模型在上限处仍要求继续调用工具，Runtime 会保留已经产生的工具结果，并在没有最终文本时补充一条确定性的提示，让用户可以在新 Turn 中继续，而不是留下一个没有收尾文本的界面。
+step 上限是可选的：`maxSteps` 为 `undefined` 时不设限，由模型自己决定何时收尾。若设置了上限而模型在上限处仍要求继续调用工具，Runtime 会保留已经产生的工具结果，并在没有最终文本时补充一条确定性的提示，让用户可以在新 Turn 中继续，而不是留下一个没有收尾文本的界面。
 
 `ModelAdapter` 隔离 provider 与 AI SDK 差异，包括模型创建、stream 启动、chunk 归一化、usage 归一化和错误分类。`ToolRuntime` 则隔离工具执行的高风险部分，包括工具可用性防守、权限、超时/中止传递、重复失败拦截、工具输出、遥测和 artifact 记录。
 
@@ -294,15 +312,13 @@ AI SDK 的 step 是这个循环的自然节拍。Maka 会按 step 持久化 assi
 
 ## 权限不是弹窗，而是 Runtime 控制流
 
-当模型请求一个可能产生副作用的工具时，`ToolRuntime` 先让 `PermissionEngine` 评估调用。结果有三类：
+当一次工具调用越过当前沙箱边界时，工具不会静默失败，Runtime 也不会由 UI 自行弹一个对话框把执行挂起。工具返回一个带 `sandbox_boundary_required` 与具体 `expansion` 的失败结果；模型据此调用 `request_sandbox_boundary` 发起一次**边界扩张请求**，运行停在一个有身份的位置上等待答复。
 
-- **allow**：直接执行工具；
-- **block**：写入拒绝决定和合成的工具错误，不执行真实实现；
-- **prompt**：发出权限请求，暂停 watchdog，并等待用户决定。
+等待期间，Session 投影为 `waiting_for_user`，但 Invocation 仍然保留自己的执行身份 —— 它没有结束，只是停住了。用户的决定通过 `RuntimeKernel.respondToSandboxBoundary()` 路由回当前 Backend；同一条路径上还有 `respondToUserQuestion()`，用于模型主动向用户提问的场景。两类请求在未答复期间都由 `RuntimeKernel` 登记为 active interaction，因此一个错过了实时事件的界面可以重新拉取待答项，而不会把运行晾在那里。
 
-等待期间，Session 会投影为 `waiting_for_user`，但调用本身仍保留运行身份。用户的决定通过 `RuntimeKernel.respondToPermission()` 路由回当前 Backend，再由 `ToolRuntime` 写入 permission decision，随后继续执行或返回拒绝结果。
+这个设计的关键是：权限不是 UI 自己暂停了一下。请求和决定都作为带类型的事实进入 Runtime 事实模型 —— 它们没有 `content`，而是带 `actions.stateDelta` 的系统事件。因此重放、诊断和恢复都能解释运行为什么停住，以及控制权如何回来。决定那条事实的 `role` 是 `system`、`author` 是 `user`：它在模型历史里属于系统泳道，但产生它的是人，这一对正交字段把这件事表达出来，而不需要把用户决定伪装成一条聊天消息。
 
-这个设计的关键是：权限不是 UI 自己暂停了一下。权限请求和决定都进入 Runtime 事实模型，因此重放、诊断和恢复能够知道运行为什么停住，以及控制权如何回来。
+`AiSdkFlow` 在映射入口就会拒绝 `permission_request` / `permission_answer_ack` / `permission_closure_ack` / `permission_decision_ack` 这组遗留事件并直接抛错：它们属于一套已被 sandbox boundary 取代的词汇，不能再成为活的运行时事实。
 
 ## 一份语义事实，两类辅助状态
 
@@ -311,32 +327,22 @@ Maka 当前同时维护三类持久数据。它们不是三个地位相同的“
 | 存储 | 主要内容 | 它最适合回答的问题 |
 |---|---|---|
 | `SessionStore` | 用户、assistant、工具和 turn-state 等 `StoredMessage` | UI 与兼容接口要展示什么？活跃流有哪些即时投影？ |
-| `AgentRunStore` | `run.json` 与 operational `events.jsonl` | 这次 Run 何时开始、当前状态、在哪个模型或工具阶段失败？ |
-| `RuntimeEventStore` | canonical `runtime-events.jsonl` 与有界 partial snapshots | Agent 交互发生过哪些语义事实，其他状态应如何重建？ |
+| `AgentRunStore` | Run header 与 operational Run events | 这次 Run 何时开始、当前状态、在哪个模型或工具阶段失败？ |
+| `RuntimeEventStore` | canonical RuntimeEvent 与有界 partial snapshots | Agent 交互发生过哪些语义事实，其他状态应如何重建？ |
 
-在文件存储实现中，它们围绕下面的目录组织：
+当前实现由 SQLite 承载，而不是每个 Run 一个目录：`AgentRunStore` 与 `RuntimeEventStore` 都建立在同一份 operational state 数据库之上，RuntimeEvent 落在 `runtime_events` 表。顺序由该表的 `event_seq` 承担，并以 `(invocation_id, event_seq)` 唯一约束保证一次 Invocation 内序号不重复——“有序日志”在存储层就是这条约束。四个身份各占一列，因此“这个 Session 的这次 Run 的这个 Turn 发生了什么”是一次索引查询。
 
-```text
-sessions/<sessionId>/
-  ... session projection ...
-  runs/<runId>/
-    run.json
-    events.jsonl
-    runtime-events.jsonl
-    runtime-partials/
-```
-
-`AgentRunStore` 的事件更像 operational index：model stream 开始、tool started、permission requested、usage recorded。它帮助快速诊断和管理 Run，但不替代模型交互日志。`RuntimeEventStore` 的事件才是可重建的语义事实：用户内容、模型内容、function call/response、permission action 和 terminal fact。
+`AgentRunStore` 的事件更像 operational index：model stream 开始、tool started、边界请求、usage recorded。它帮助快速诊断和管理 Run，但不替代模型交互日志。`RuntimeEventStore` 的事件才是可重建的语义事实：用户内容、模型内容、function call/response、边界与提问动作，以及 terminal fact。
 
 对于已经完成且 ledger 完整的 Run，读取与下一轮模型 replay 优先依赖 RuntimeEvent。`SessionStore` 仍然承担兼容投影和 in-flight 展示，不能简单删除；但它不再是 completed runtime 语义的唯一权威。
 
-流式 text/thinking partial 不会无限追加到 immutable JSONL。File RuntimeEventStore 会为可替换的流维护有界 partial snapshot，最终 non-partial 事件到达后覆盖其语义位置。这既保留崩溃时已经展示的部分输出，也避免 10,000 个 delta 变成 10,000 条长期账本记录。
+流式 text/thinking partial 不会被无限追加进账本。RuntimeEventStore 为可替换的流维护有界 partial snapshot，最终 non-partial 事件到达后覆盖其语义位置。这既保留崩溃时已经展示的部分输出，也避免 10,000 个 delta 变成 10,000 条长期账本记录。
 
 ## Log-first 的关键不变量：先有终止事实，再提交终止状态
 
 Runtime 最容易出现的一类故障，是不同存储对“是否结束”给出不同答案。例如：
 
-- `run.json` 写成 completed，但 RuntimeEvent ledger 没有 terminal event；
+- Run header 写成 completed，但 RuntimeEvent ledger 没有 terminal event；
 - 用户已经 stop，但迟到的 complete 又把 Session 写回 active；
 - Backend 流耗尽，却从未说明它是成功还是失败；
 - terminal event 已写入，但进程在更新 Run header 前崩溃。
@@ -355,7 +361,7 @@ Maka 当前保护的核心不变量是：
 
 ### 用户停止
 
-`RuntimeKernel.stopSession()` 会先把所有活跃 `AgentRun` 标记为 stopped，再调用 Backend 的 `stop()`。`AiSdkBackend` 会中止 provider stream、结束权限等待，并产生 abort/complete 事件。即使 provider 随后发送迟到的 complete 或 error，Flow 与 AgentRun 也不会允许它覆盖已经确定的 aborted 语义。停止来源，例如 renderer stop button，会进入 terminal fact 与 Run header，供诊断使用。
+`RuntimeKernel.stopSession()` 会先把所有活跃 `AgentRun` 标记为 stopped，再调用 Backend 的 `stop()`。`AiSdkBackend` 会中止 provider stream、结束正在等待的 sandbox boundary 或用户提问，并产生 abort/complete 事件。即使 provider 随后发送迟到的 complete 或 error，Flow 与 AgentRun 也不会允许它覆盖已经确定的 aborted 语义。停止来源，例如 renderer stop button，会进入 terminal fact 与 Run header，供诊断使用。
 
 ### Provider 或 Runtime 错误
 
@@ -363,9 +369,11 @@ Maka 当前保护的核心不变量是：
 
 ### 应用崩溃和启动恢复
 
-启动恢复不会重新执行模型请求或工具副作用。它扫描非终止 Run 与 RuntimeEvent ledger，识别 stale model stream、tool tail、permission wait、损坏的 operational event 等情况，然后保守地提交失败或取消状态，并修复 Session/Turn 投影。
+启动恢复不会重新执行模型请求或工具副作用。它扫描非终止 Run 与 RuntimeEvent ledger，识别 stale model stream、tool tail、未答复的 interaction、损坏的 operational event 等情况，然后保守地提交失败或取消状态，并修复 Session/Turn 投影。
 
-这是“状态修复”，不是 checkpoint resume。当前 Runtime 可以保留部分输出、恢复一致的最终状态，并为以后真正的中点恢复提供事实基础；它不会在进程重启后自动从某个工具调用的下一行继续执行。
+这是“状态修复”，不是 checkpoint resume：它保留已经产生的部分输出，把状态收敛到一个可解释的终态，但不会在进程重启后自动从某个工具调用的下一行继续执行。
+
+继续执行是另一条路径。`safe_boundary_continuation` 从一个经过校验的安全边界接着跑——边界之前的事实全部可信，边界之后的不予采信。它同样不从被打断的那一行开始，区别在于它有一个可验证的起点，而崩溃收敛只是给一次执行下结论。
 
 ## 这套设计换来了什么，又付出了什么
 
@@ -384,8 +392,8 @@ Maka 当前保护的核心不变量是：
 - `AiSdkBackend` 仍然很重，同时组织 history、context budget、tool availability、step loop、usage 与 telemetry；
 - `AiSdkFlow` 仍承担 legacy-to-canonical adapter 角色，而不是 Backend 原生产 canonical events；
 - `SessionStore` 与 RuntimeEvent projection 需要在 active/in-flight 场景中协同；
-- 当前 startup recovery 是确定性终结与修复，不是任意位置的 warm resume。
-- Runner 的 preflight seam 已存在，但生产 Kernel 还没有接入独立的 Runtime gate。
+- 启动恢复是确定性终结与修复，不是从任意位置热续跑。续跑走另一条路：`safe_boundary_continuation` 从一个经过校验的安全边界接着跑，Run header 上是 `continuationSource`，入口是 `RuntimeRunner.runAdmittedRuntimeContinuation`；两者的区别见[第八章](./runtime-resume-architecture.zh-CN.md)。
+- Runner 的 preflight seam 已存在，但生产 Kernel 装配 `RuntimeRunner` 时不传 gate，因此还没有独立的 Runtime 准入闸门。
 
 这些不是应该隐藏的实现细节，而是当前架构的真实边界。未来拆分 Backend 或加入 checkpoint 时，首要目标不是减少文件行数，而是保持 request shape、工具可见性、事件顺序和 terminal invariant 不变。
 
@@ -400,9 +408,9 @@ Maka 当前保护的核心不变量是：
 5. `packages/runtime/src/ai-sdk-flow.ts`：`SessionEvent → RuntimeEvent` 映射与单终态保证。
 6. `packages/runtime/src/ai-sdk-backend.ts`：AI SDK 模型/工具 step loop。
 7. `packages/runtime/src/model-adapter.ts`：provider stream 适配。
-8. `packages/runtime/src/tool-runtime.ts`：权限、工具执行和副作用边界。
+8. `packages/runtime/src/tool-runtime.ts`：沙箱边界、工具执行和副作用边界。
 9. `packages/core/src/runtime-event.ts`：canonical RuntimeEvent 契约。
-10. `packages/core/src/agent-run.ts` 与 `packages/storage/src/agent-run-store.ts`：Run 与 RuntimeEvent 的文件账本。
+10. `packages/core/src/agent-run.ts` 与 `packages/storage/src/agent-run-store.ts`：Run 与 RuntimeEvent 的账本契约与 SQLite 实现。
 
 对应的关键测试集中在：
 
@@ -410,7 +418,7 @@ Maka 当前保护的核心不变量是：
 - `packages/runtime/src/__tests__/ai-sdk-flow.test.ts`
 - `packages/runtime/src/__tests__/session-manager.test.ts`
 - `packages/runtime/src/__tests__/session-manager-terminal-ledger.test.ts`
-- `packages/storage/src/__tests__/agent-run-store.test.ts`
+- `packages/runtime/src/__tests__/runtime-ledger-repair.test.ts`
 
 ## 小结
 
@@ -425,7 +433,7 @@ model/tool stepping engine
 
 `SessionManager` 稳住入口，`RuntimeKernel` 管理活跃执行，`AgentRun` 提交耐久事实，`RuntimeRunner` 规定 Invocation 语义，`AiSdkFlow` 把 Backend 事件翻译成 canonical facts，而 `AiSdkBackend`、`ModelAdapter` 与 `ToolRuntime` 真正推进模型和工具循环。它们都围绕 Runtime Event Log 协作，而不是各自保存一份局部真相。
 
-这套结构最终保护的是一件很朴素的事：无论一次 Agent 工作经历多少模型 step、工具副作用、权限等待和异常，Maka 都要先忠实记录发生过什么。只要这份有序事实仍在，系统就能重新构造当时的交互状态，生成新的视图，并让下一轮从可信历史继续。
+这套结构最终保护的是一件很朴素的事：无论一次 Agent 工作经历多少模型 step、工具副作用、等待用户答复和异常，Maka 都要先忠实记录发生过什么。只要这份有序事实仍在，系统就能重新构造当时的交互状态，生成新的视图，并让下一轮从可信历史继续。
 
 ## 延伸阅读
 

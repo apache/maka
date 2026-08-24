@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -40,6 +59,7 @@ function createHarness(options: {
   confirm?: () => Promise<boolean>;
   connections?: LlmConnection[];
   messages?: StoredMessage[];
+  permissionModeResult?: 'ask' | 'bypass';
 } = {}) {
   const activeIdRef = { current: 'session-a' as string | undefined };
   const sessions = [session('session-a'), session('session-b')];
@@ -50,6 +70,7 @@ function createHarness(options: {
   const permissionCalls: string[] = [];
   const thinkingCalls: string[] = [];
   const errors: string[] = [];
+  const errorTargets: Array<{ sessionId: string } | undefined> = [];
   const successes: Array<{ title: string; description?: string }> = [];
   const newTaskPermissionModes: string[] = [];
   const modelResult = deferred<DesktopSessionSummary>();
@@ -62,7 +83,10 @@ function createHarness(options: {
         sessions: {
           setPermissionMode: async (sessionId: string, mode: 'ask' | 'bypass') => {
             permissionCalls.push(`${sessionId}:${mode}`);
-            return { ...session(sessionId), permissionMode: mode };
+            return {
+              ...session(sessionId),
+              permissionMode: options.permissionModeResult ?? mode,
+            };
           },
           setModel: async (sessionId: string) => {
             modelCalls.push(sessionId);
@@ -94,12 +118,12 @@ function createHarness(options: {
       for (const key of Object.keys(pendingBySession)) delete pendingBySession[key];
       Object.assign(pendingBySession, next);
     },
-    setSessions: (update) => {
-      sessionsRef.current = update(sessionsRef.current);
-    },
     toastApi: {
       success: (title, description) => successes.push({ title, description }),
-      error: (title) => errors.push(title),
+      error: (title, _description, _details, target) => {
+        errors.push(title);
+        errorTargets.push(target);
+      },
       confirm: options.confirm ?? (async () => true),
     },
   });
@@ -108,12 +132,14 @@ function createHarness(options: {
     actions,
     activeIdRef,
     errors,
+    errorTargets,
     modelCalls,
     modelResult,
     newTaskPermissionModes,
     pending,
     pendingBySession,
     permissionCalls,
+    sessionsRef,
     thinkingCalls,
     thinkingResult,
     successes,
@@ -125,8 +151,9 @@ describe('AppShell session settings actions', () => {
     const harness = createHarness();
     harness.activeIdRef.current = undefined;
 
-    await harness.actions.setPermissionMode('bypass');
+    const switched = await harness.actions.setPermissionMode('bypass');
 
+    assert.equal(switched, true);
     assert.deepEqual(harness.newTaskPermissionModes, ['bypass']);
     assert.deepEqual(harness.permissionCalls, []);
   });
@@ -140,9 +167,48 @@ describe('AppShell session settings actions', () => {
       },
     });
 
-    await harness.actions.setPermissionMode('bypass');
+    const switched = await harness.actions.setPermissionMode('bypass');
 
+    assert.equal(switched, false);
     assert.equal(confirmations, 1);
+    assert.deepEqual(harness.permissionCalls, []);
+  });
+
+  it('reports a confirmed bypass switch as successful', async () => {
+    const harness = createHarness();
+
+    const switched = await harness.actions.setPermissionMode('bypass');
+
+    assert.equal(switched, true);
+    assert.deepEqual(harness.permissionCalls, ['session-a:bypass']);
+  });
+
+  it('does not report success when the Host returns another permission mode', async () => {
+    const harness = createHarness({ permissionModeResult: 'ask' });
+
+    const switched = await harness.actions.setPermissionMode('bypass');
+
+    assert.equal(switched, false);
+    assert.deepEqual(harness.permissionCalls, ['session-a:bypass']);
+  });
+
+  it('treats an already-active permission mode as successful without prompting', async () => {
+    let confirmations = 0;
+    const harness = createHarness({
+      confirm: async () => {
+        confirmations += 1;
+        return true;
+      },
+    });
+    harness.sessionsRef.current = [{
+      ...session('session-a'),
+      permissionMode: 'bypass',
+    }];
+
+    const switched = await harness.actions.setPermissionMode('bypass');
+
+    assert.equal(switched, true);
+    assert.equal(confirmations, 0);
     assert.deepEqual(harness.permissionCalls, []);
   });
 
@@ -275,6 +341,7 @@ describe('AppShell session settings actions', () => {
     assert.equal(harness.pending.has('session-a'), false);
     assert.equal(harness.pendingBySession['session-a'], undefined);
     assert.equal(harness.errors.length, 1);
+    assert.deepEqual(harness.errorTargets, [{ sessionId: 'session-a' }]);
 
     const modelChange = harness.actions.setSessionModel({
       llmConnectionSlug: 'e2e',

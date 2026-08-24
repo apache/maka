@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { redactSecrets } from './redaction.js';
 
 export type DiagnosticLogLevel = 'debug' | 'info' | 'log' | 'warn' | 'error';
@@ -120,4 +139,25 @@ export function truncateUtf8(value: string, maximumBytes: number, marker = ''): 
     else high = middle - 1;
   }
   return `${codePoints.slice(0, low).join('')}${suffix}`;
+}
+
+export function collapseHomePath(value: string, homePath: string, platform: string): string {
+  if (!homePath) return value;
+  const normalized = platform === 'win32' ? homePath.replaceAll('\\', '/') : homePath;
+  const separator = platform === 'win32' ? '[\\\\/]' : '/';
+  const encoded = normalized
+    .split('/')
+    .map((part, index) =>
+      platform === 'win32' && index === 0 && /^[a-z]:$/i.test(part)
+        ? part
+        : encodeURIComponent(part),
+    )
+    .join('/');
+  const patterns = [...new Set([normalized, encoded])].map((candidate) =>
+    candidate
+      .split('/')
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join(separator),
+  );
+  return value.replace(new RegExp(patterns.join('|'), platform === 'win32' ? 'gi' : 'g'), '~');
 }

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
@@ -5,7 +24,11 @@ import type { IpcMain } from 'electron';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
-import type { ClientCapabilityProvider, RuntimeHostConnection } from '@maka/runtime-host/client';
+import type {
+  ClientCapabilityProvider,
+  ConnectOrSpawnRuntimeHostInput,
+  RuntimeHostConnection,
+} from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type ClientCapabilityCallFrame,
@@ -20,14 +43,96 @@ import { z } from 'zod';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 import {
   createDesktopRuntimeHostCandidate as createCandidate,
+  formatLocalRuntimeHostProcessExitDiagnostic,
+  startDesktopRuntimeHostCandidate,
   type DesktopRuntimeHostCandidateControls,
   type DesktopRuntimeHostCandidateDeps,
+  type DesktopRuntimeHostCandidateStartInput,
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
 
 const TEST_HOST_ID = 'a'.repeat(64);
 const TEST_TARGET_EPOCH = 'test-target-epoch';
+
+test('uses the manager-owned launch barrier for local candidate startup', async () => {
+  let connectedRoot: string | undefined;
+  const result = await startDesktopRuntimeHostCandidate({
+    rootPath: 'C:\\workspace',
+    candidateEntrypoint: 'candidate.js',
+    ipcMain: {
+      epoch: TEST_TARGET_EPOCH,
+      isActive: () => true,
+    },
+    candidateLaunchBarrier: {
+      connect: async (input: ConnectOrSpawnRuntimeHostInput) => {
+        connectedRoot = input.rootPath;
+        return { kind: 'failed', reason: 'startup_timeout' };
+      },
+      pause: () => undefined,
+      retireExcept: async () => undefined,
+      resume: () => undefined,
+      release: () => undefined,
+    },
+  } as unknown as DesktopRuntimeHostCandidateStartInput);
+
+  assert.deepEqual(result, { kind: 'failed', reason: 'startup_timeout' });
+  assert.equal(connectedRoot, 'C:\\workspace');
+});
+
+test('formats bounded local Host exit evidence without leaking stderr secrets', () => {
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 23,
+    signal: null,
+    stderr: 'partial record\nstartup failed: token=fixture-secret',
+    stderrTruncated: true,
+  });
+
+  assert.match(diagnostic, /pid=42 code=23 signal=none/);
+  assert.match(diagnostic, /token=\[redacted\]/);
+  assert.match(diagnostic, /stderr truncated; showing final 4096 bytes/);
+  assert.doesNotMatch(diagnostic, /fixture-secret/);
+});
+
+test('drops a partial secret record retained across the stderr tail boundary', () => {
+  const secret = 'boundary-secret-value';
+  const fullStderr = `apiKey=${secret}\n${'x'.repeat(4_079)}`;
+  const stderrTail = Buffer.from(fullStderr).subarray(-4 * 1024).toString('utf8');
+  assert.match(stderrTail, /secret-value/);
+
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 1,
+    signal: null,
+    stderr: stderrTail,
+    stderrTruncated: true,
+  });
+
+  assert.doesNotMatch(diagnostic, /secret-value/);
+  assert.match(diagnostic, /stderr truncated; showing final 4096 bytes/);
+});
+
+test('redacts a compact JSON secret embedded in local Host stderr', () => {
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 1,
+    signal: null,
+    stderr: 'provider failed: {"apiKey":12345}',
+    stderrTruncated: false,
+  });
+
+  assert.match(diagnostic, /"apiKey":"\[redacted\]"/);
+  assert.doesNotMatch(diagnostic, /12345/);
+});
+
+test('does not claim a blank local Host stderr tail was truncated', () => {
+  const diagnostic = formatLocalRuntimeHostProcessExitDiagnostic(42, {
+    code: 1,
+    signal: null,
+    stderr: ' \r\n\t',
+    stderrTruncated: true,
+  });
+
+  assert.doesNotMatch(diagnostic, /stderr:|stderr truncated/);
+});
 
 function createDesktopRuntimeHostCandidate(
   connection: RuntimeHostConnection,
@@ -995,7 +1100,6 @@ function continuitySnapshot(
       metadataRevision: 1,
       status: 'running',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     projectionRevision: 1,
@@ -1125,7 +1229,7 @@ function session(id: string): SessionCatalogProjection {
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: id,
     isFlagged: false,
     isArchived: false,

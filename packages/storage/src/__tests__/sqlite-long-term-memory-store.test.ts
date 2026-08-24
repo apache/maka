@@ -1,9 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { chmod, link, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import {
   MemoryItemStoreConflictError,
@@ -25,6 +44,14 @@ import {
   SqliteMemoryItemStore,
   type SqliteMemoryItemStoreFailpoint,
 } from '../sqlite-long-term-memory-store.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 const require = createRequire(import.meta.url);
 
@@ -1525,7 +1552,9 @@ describe('long-term memory Storage Root authority', () => {
 
   test('snapshots mutation input before crossing the authority boundary', async () => {
     await withTempRoot(async (root) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const capability = trackControlDirectory(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;
@@ -1564,7 +1593,9 @@ describe('long-term memory Storage Root authority', () => {
 
   test('rejects operations after the durable root identity changes', async () => {
     await withTempRoot(async (root) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const capability = trackControlDirectory(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;
@@ -1586,7 +1617,9 @@ describe('long-term memory Storage Root authority', () => {
 
   test('single-flights an Interactive writer and closes it explicitly', async () => {
     await withTempRoot(async (root) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const capability = trackControlDirectory(
+        await resolveStorageRoot({ path: root, kind: 'interactive' }),
+      );
       const owner = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(owner);
       if (!owner) return;

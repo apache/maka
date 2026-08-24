@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 name: CI
 
 on:
@@ -42,10 +59,39 @@ jobs:
           fi
 
       - name: Test CI planner
-        run: node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs
+        run: node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs scripts/verify-windows-harness.test.mjs
+
+      # Same shape and the same needs: a regenerate-and-diff contract that runs
+      # on Node alone, so it belongs beside the planner test rather than behind
+      # an install.
+      - name: Check Windows test inventory
+        run: npm run windows:inventory
+
+      # Runs on the PR merge result: after a sibling protocol change lands on
+      # main with the same epoch text, the silently merged tree still carries
+      # the current base parent's epoch and this fails instead of shipping two
+      # incompatible protocols under one number (#3313).
+      - name: Guard the protocol compatibility epoch
+        if: github.event_name == 'pull_request'
+        run: node scripts/protocol-epoch-check.mjs --base 'HEAD^1'
+
+      - name: Test the epoch guard
+        run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
+
+      - name: Test AX tree audit contract
+        run: node --test scripts/ax-tree-audit.test.mjs
+
+      - name: Verify ASF npm preflight policy
+        run: npm run check:asf-npm
+
+      # The source-header gate has to see every file that lands, not only the
+      # files an affected surface selects, so it runs unconditionally beside
+      # the other install-free checks.
+      - name: Check ASF source headers
+        run: npm run check:asf-headers
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         with:
           node-version: '24'
           cache: npm
@@ -79,8 +125,15 @@ jobs:
           fi
 
       - name: Install dependencies
-        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
+
+      # The header audit above remains install-free. The complete source gate
+      # also exercises generation and therefore runs after its pinned formatter
+      # dependency is installed, matching the source-candidate workflow.
+      - name: Verify ASF source release mechanics
+        if: steps.plan.outputs.asf_source == 'true'
+        run: npm run check:asf-source
 
       - name: Lint
         if: steps.plan.outputs.code == 'true'
@@ -90,21 +143,25 @@ jobs:
         if: steps.plan.outputs.code == 'true'
         run: npm run format:check
 
-      - name: Check Windows test inventory
-        continue-on-error: true
-        run: npm run windows:inventory
+      # This generated artifact describes the whole renderer/UI tree, so every
+      # code-validation run checks it even when the triggering diff is outside
+      # an Astryx surface. Keep it before Build so stale output is reported
+      # directly instead of being hidden behind an earlier compilation failure.
+      - name: Astryx surface inventory
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true'
+        run: npm run astryx:surface-inventory
 
       - name: Build
-        if: steps.plan.outputs.code == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm run build
+
+      - name: Release contracts
+        if: steps.plan.outputs.release_contract == 'true'
+        run: npm run check:release
 
       - name: Typecheck
         if: steps.plan.outputs.code == 'true'
         run: npm run typecheck
-
-      - name: Astryx surface inventory
-        if: steps.plan.outputs.astryx_surface == 'true'
-        run: npm run astryx:surface-inventory
 
       - name: Astryx theme drift
         if: steps.plan.outputs.code == 'true'
@@ -135,6 +192,18 @@ jobs:
           fi
           node scripts/run-workspace-tests-parallel.mjs --concurrency=3 --workspaces="$WORKSPACES"
 
+      - name: Run live Eval egress proxy test
+        if: contains(steps.plan.outputs.standard_workspaces, 'packages/eval')
+        env:
+          MAKA_EVAL_EGRESS_PROXY_TEST: '1'
+        run: |
+          docker pull python:3.12-slim
+          docker build \
+            --tag maka-eval-egress-proxy:12.2.3 \
+            --file packages/eval/harbor/egress-proxy/Dockerfile \
+            packages/eval/harbor
+          npm --workspace @maka/eval run test:egress-proxy:live
+
       - name: Run Runtime Host tests
         if: steps.plan.outputs.runtime_host == 'true'
         run: npm --workspace @maka/runtime-host run test:dist
@@ -146,6 +215,12 @@ jobs:
       - name: Desktop e2e
         if: steps.plan.outputs.e2e == 'true'
         run: xvfb-run -a npm exec -w @maka/desktop -- playwright test --config e2e/playwright.config.ts
+
+      - name: Browser WebContentsView semantic smoke
+        if: steps.plan.outputs.e2e == 'true'
+        # Hosted Linux runners cannot configure Electron's SUID helper. This
+        # smoke loads only its loopback fixture; production stays sandboxed.
+        run: xvfb-run -a npm exec --workspace @maka/desktop -- electron --no-sandbox scripts/browser-observe-act-smoke.mjs
 
       - name: Alignment audit
         if: steps.plan.outputs.e2e == 'true'

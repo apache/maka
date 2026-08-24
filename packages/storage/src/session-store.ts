@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -18,7 +37,7 @@ import {
 } from './operational-state-store.js';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
 import {
-  decodeStoredMessage,
+  decodeCanonicalMessage,
   deriveTurnRecords,
   isSessionBlockedReason,
   isSessionConversationCopy,
@@ -30,7 +49,8 @@ import {
 } from '@maka/core/session';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
-import { isPermissionMode } from '@maka/core/permission';
+import { decodePersistedPermissionMode, isPermissionMode } from '@maka/core/permission';
+import type { PersistedValue } from '@maka/core/persisted-value';
 import { isSubagentWorkspaceBinding } from '@maka/core/subagent-workspace';
 import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core/workspace-version-authority';
 import type {
@@ -107,6 +127,7 @@ export type ProbeSessionRemovalResult =
   | { readonly kind: 'absent' };
 
 export interface SessionCatalogRecord extends SessionHeaderSnapshot {
+  readonly activityAt: number;
   readonly summary: SessionSummary;
 }
 
@@ -428,7 +449,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       throw new Error('Subagent spawn metadata requires createSubagent()');
     }
     const canonicalMessages = messages.map((message) =>
-      decodeStoredMessage(JSON.parse(JSON.stringify(message)) as unknown),
+      decodeCanonicalMessage(JSON.parse(JSON.stringify(message)) as unknown),
     );
     const header: SessionHeader = {
       ...buildSessionHeader(this.workspaceRoot, input),
@@ -707,6 +728,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       revision,
       records: page.records.map((record) => ({
         ...projectHeaderSnapshot(record),
+        activityAt: record.activityAt,
         summary: toCatalogSummary(record.header, record.lastMessagePreview),
       })),
       hasMore: page.hasMore,
@@ -745,6 +767,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     const record = await this.metadata.readCatalogRecord(sessionId);
     return {
       ...projectHeaderSnapshot(record),
+      activityAt: record.activityAt,
       summary: toCatalogSummary(record.header, record.lastMessagePreview),
     };
   }
@@ -1012,7 +1035,6 @@ function buildSessionHeader(
     cwd: input.cwd,
     ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
     createdAt: now,
-    lastUsedAt: now,
     name,
     titleIsManual: false,
     isFlagged: false,
@@ -1036,7 +1058,7 @@ function buildSessionHeader(
     ...(input.revisionIndex !== undefined ? { revisionIndex: input.revisionIndex } : {}),
     ...(input.revisionState ? { revisionState: input.revisionState } : {}),
     hasUnread: false,
-    backend: input.backend,
+    backend: 'ai-sdk',
     llmConnectionSlug: input.llmConnectionSlug,
     connectionLocked: false,
     model: input.model ?? 'default',
@@ -1070,7 +1092,6 @@ export function normalizeSessionHeader(
       header.projectId === null ||
       (typeof header.projectId === 'string' && header.projectId.length > 0)) &&
     isFiniteNumber(header.createdAt) &&
-    isFiniteNumber(header.lastUsedAt) &&
     (header.lastMessageAt === undefined || isFiniteNumber(header.lastMessageAt)) &&
     typeof header.name === 'string' &&
     typeof header.titleIsManual === 'boolean' &&
@@ -1090,7 +1111,7 @@ export function normalizeSessionHeader(
     isValidSessionExternalOrigin(header.externalOrigin) &&
     (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
     typeof header.hasUnread === 'boolean' &&
-    isBackendKind(header.backend) &&
+    isPersistedBackendKind(header.backend) &&
     typeof header.llmConnectionSlug === 'string' &&
     typeof header.connectionLocked === 'boolean' &&
     typeof header.model === 'string' &&
@@ -1111,6 +1132,21 @@ export function normalizeSessionHeader(
     return { ...withoutBlockedReason, name: normalizedName };
   }
   return { ...header, name: normalizedName };
+}
+
+export function decodePersistedSessionHeader(
+  persisted: PersistedValue<SessionHeader>,
+  sessionId?: string,
+): SessionHeader {
+  const header = persisted as unknown as SessionHeader;
+  const permissionMode = decodePersistedPermissionMode(header.permissionMode);
+  if (permissionMode === undefined) {
+    return normalizeSessionHeader(header, sessionId ?? header.id);
+  }
+  return normalizeSessionHeader(
+    permissionMode === header.permissionMode ? header : { ...header, permissionMode },
+    sessionId ?? header.id,
+  );
 }
 
 function isValidSessionExternalOrigin(origin: SessionHeader['externalOrigin']): boolean {
@@ -1220,7 +1256,12 @@ function isValidSubagentSessionLineage(header: SessionHeader): boolean {
   );
 }
 
-function isBackendKind(value: unknown): value is SessionHeader['backend'] {
+/**
+ * Decode guard for a durable session header. `'fake'` stays accepted:
+ * narrowing it here would make every session written by a build that shipped
+ * FakeBackend fail `normalizeSessionHeader` and read back as malformed (#3211).
+ */
+function isPersistedBackendKind(value: unknown): value is SessionHeader['backend'] {
   return value === 'ai-sdk' || value === 'fake';
 }
 

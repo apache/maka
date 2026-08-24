@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -105,7 +124,79 @@ describe('workspace instructions prompt fragment', () => {
       assert.doesNotMatch(prompt, /PROJECT_SHOULD_BE_SQUEEZED/);
     });
   });
+
+  it('collapses a CLAUDE.md symlinked to AGENTS.md into one block', async () => {
+    // Sharing one instruction file across agent CLIs by symlinking the names
+    // each of them reads is the documented way to do it, so the same bytes
+    // arriving twice must not be injected twice.
+    await withWorkspaceAndHome(async ({ workspaceRoot, homeDir }) => {
+      await writeFile(join(workspaceRoot, 'AGENTS.md'), 'SHARED_RULE\n', 'utf8');
+      await symlink(join(workspaceRoot, 'AGENTS.md'), join(workspaceRoot, 'CLAUDE.md'));
+
+      const prompt = await buildWorkspaceInstructionsPromptFragment(workspaceRoot, { homeDir });
+
+      assert.ok(prompt);
+      assert.equal(countBlocks(prompt), 1);
+      assert.equal(occurrences(prompt, 'SHARED_RULE'), 1);
+      assert.match(prompt, /file="AGENTS\.md"/);
+    });
+  });
+
+  it('collapses byte-identical instruction files that are not links', async () => {
+    // Copying rather than linking is the other common way to share one set of
+    // rules; it is the same redundancy and deserves the same treatment.
+    await withWorkspaceAndHome(async ({ workspaceRoot, homeDir }) => {
+      await writeFile(join(workspaceRoot, 'AGENTS.md'), 'COPIED_RULE\n', 'utf8');
+      await writeFile(join(workspaceRoot, 'CLAUDE.md'), 'COPIED_RULE\n', 'utf8');
+
+      const prompt = await buildWorkspaceInstructionsPromptFragment(workspaceRoot, { homeDir });
+
+      assert.ok(prompt);
+      assert.equal(countBlocks(prompt), 1);
+      assert.equal(occurrences(prompt, 'COPIED_RULE'), 1);
+    });
+  });
+
+  it('keeps instruction files in one directory that genuinely differ', async () => {
+    await withWorkspaceAndHome(async ({ workspaceRoot, homeDir }) => {
+      await writeFile(join(workspaceRoot, 'AGENTS.md'), 'SHARED_RULE\n', 'utf8');
+      await writeFile(join(workspaceRoot, 'CLAUDE.md'), 'CLAUDE_ONLY_RULE\n', 'utf8');
+
+      const prompt = await buildWorkspaceInstructionsPromptFragment(workspaceRoot, { homeDir });
+
+      assert.ok(prompt);
+      assert.equal(countBlocks(prompt), 2);
+      assert.match(prompt, /SHARED_RULE/);
+      assert.match(prompt, /CLAUDE_ONLY_RULE/);
+    });
+  });
+
+  it('keeps identical instructions that live in different scopes', async () => {
+    // Global and project files are a deliberate layering. Identical bytes in
+    // both is a user saying the same thing at two scopes, not a duplicate.
+    await withWorkspaceAndHome(async ({ workspaceRoot, homeDir }) => {
+      const makaDir = join(homeDir, '.maka');
+      await mkdir(makaDir, { recursive: true });
+      await writeFile(join(makaDir, 'AGENTS.md'), 'SAME_TEXT\n', 'utf8');
+      await writeFile(join(workspaceRoot, 'AGENTS.md'), 'SAME_TEXT\n', 'utf8');
+
+      const prompt = await buildWorkspaceInstructionsPromptFragment(workspaceRoot, { homeDir });
+
+      assert.ok(prompt);
+      assert.equal(countBlocks(prompt), 2);
+      assert.match(prompt, /scope="global"/);
+      assert.match(prompt, /scope="project"/);
+    });
+  });
 });
+
+function countBlocks(prompt: string): number {
+  return occurrences(prompt, '<workspace-instructions ');
+}
+
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
 
 async function withWorkspaceAndHome(
   fn: (dirs: { workspaceRoot: string; homeDir: string }) => Promise<void>,

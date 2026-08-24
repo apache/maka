@@ -1,6 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 const DEFAULT_BACKOFF_MIN_MS = 100;
 const DEFAULT_BACKOFF_MAX_MS = 5_000;
 const DEFAULT_STABLE_CONNECTION_MS = 10_000;
+const DEFAULT_UNSTABLE_MAX_MS = 60_000;
 
 export interface RuntimeHostReconnectResource {
   readonly closed: Promise<void>;
@@ -11,6 +31,14 @@ export interface RuntimeHostReconnectBackoff {
   readonly minMs?: number;
   readonly maxMs?: number;
   readonly stableConnectionMs?: number;
+  /**
+   * Ceiling applied once a connection keeps failing without ever stabilizing.
+   * After the jittered delay has saturated at maxMs, the failure streak keeps
+   * doubling up to this bound so a persistently dying Host cannot force a
+   * regeneration attempt every maxMs indefinitely. Defaults to 60_000; set it
+   * equal to maxMs to keep the flat ceiling.
+   */
+  readonly unstableMaxMs?: number;
   readonly random?: () => number;
   readonly now?: () => number;
   readonly wait?: (delayMs: number, signal: AbortSignal) => Promise<void>;
@@ -69,6 +97,7 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   readonly #minMs: number;
   readonly #maxMs: number;
   readonly #stableConnectionMs: number;
+  readonly #unstableMaxMs: number;
   readonly #random: () => number;
   readonly #now: () => number;
   readonly #wait: (delayMs: number, signal: AbortSignal) => Promise<void>;
@@ -99,12 +128,19 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
     this.#onFatalError = input.onFatalError;
     this.#minMs = requireDelay(input.backoff?.minMs ?? DEFAULT_BACKOFF_MIN_MS, 'minMs');
     this.#maxMs = requireDelay(input.backoff?.maxMs ?? DEFAULT_BACKOFF_MAX_MS, 'maxMs');
-    if (this.#maxMs < this.#minMs)
-      throw new RangeError('maxMs must be greater than or equal to minMs');
     this.#stableConnectionMs = requireDelay(
       input.backoff?.stableConnectionMs ?? DEFAULT_STABLE_CONNECTION_MS,
       'stableConnectionMs',
     );
+    this.#unstableMaxMs = requireDelay(
+      input.backoff?.unstableMaxMs ?? Math.max(DEFAULT_UNSTABLE_MAX_MS, this.#maxMs),
+      'unstableMaxMs',
+    );
+    if (this.#maxMs < this.#minMs)
+      throw new RangeError('maxMs must be greater than or equal to minMs');
+    if (this.#unstableMaxMs < this.#maxMs) {
+      throw new RangeError('unstableMaxMs must be greater than or equal to maxMs');
+    }
     this.#random = input.backoff?.random ?? Math.random;
     this.#now = input.backoff?.now ?? Date.now;
     this.#wait = input.backoff?.wait ?? waitForDelay;
@@ -245,6 +281,7 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
         this.#minMs,
         this.#maxMs,
         this.#random,
+        this.#unstableMaxMs,
       );
       try {
         if (delayMs > 0) await this.#wait(delayMs, this.#abort.signal);
@@ -314,12 +351,17 @@ function reconnectDelayMs(
   minMs: number,
   maxMs: number,
   random: () => number,
+  unstableMaxMs: number,
 ): number {
   if (attempt <= 0 || minMs === 0) return 0;
-  const exponential = Math.min(maxMs, minMs * 2 ** Math.min(attempt - 1, 30));
+  const exponential = minMs * 2 ** Math.min(attempt - 1, 30);
+  // maxMs keeps binding until the natural doubling leaves the ceiling band;
+  // only a streak that saturates the regular ladder escalates toward
+  // unstableMaxMs.
+  const ceiling = exponential >= 2 * maxMs ? unstableMaxMs : maxMs;
   const sample = random();
   const bounded = Number.isFinite(sample) ? Math.min(1, Math.max(0, sample)) : 0.5;
-  return Math.min(maxMs, Math.max(1, Math.round(exponential * (0.8 + bounded * 0.4))));
+  return Math.min(ceiling, Math.max(1, Math.round(exponential * (0.8 + bounded * 0.4))));
 }
 
 function waitForDelay(delayMs: number, signal: AbortSignal): Promise<void> {

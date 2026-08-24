@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useRef, useState } from 'react';
 import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -14,7 +33,12 @@ type ReadyHost = Extract<
 >;
 
 type ToastApi = {
-  error(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { profileId: string },
+  ): void;
 };
 
 export function useNewTaskTarget(options: {
@@ -34,6 +58,7 @@ export function useNewTaskTarget(options: {
   const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState<string>();
   const [directoryHost, setDirectoryHost] = useState<ReadyHost>();
+  const directoryOpenerRef = useRef<HTMLElement | null>(null);
   const refreshSequence = useRef(0);
 
   async function refresh(): Promise<DesktopNewTaskCatalog> {
@@ -117,6 +142,8 @@ export function useNewTaskTarget(options: {
   async function addProject(host: ReadyHost): Promise<void> {
     if (pending) return;
     if (host.capabilities.chooseHostDirectory) {
+      directoryOpenerRef.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setDirectoryHost(host);
       return;
     }
@@ -137,10 +164,33 @@ export function useNewTaskTarget(options: {
       options.toastApi.error(
         copy.selectDirectoryFailedTitle,
         localizedShellErrorMessage(error, copy.readPathFailedFallback, options.uiLocale),
+        undefined,
+        { profileId: host.profile.id },
       );
     } finally {
       setPending(false);
     }
+  }
+
+  async function chooseProjectForProfile(profileId: string): Promise<void> {
+    const next = await refresh();
+    const host = next.hosts.find(
+      (candidate): candidate is ReadyHost =>
+        candidate.profile.id === profileId &&
+        candidate.readiness === 'ready' &&
+        candidate.state === 'available',
+    );
+    if (!host) {
+      options.toastApi.error(
+        copy.catalogUnavailable,
+        undefined,
+        undefined,
+        { profileId },
+      );
+      return;
+    }
+    setSelectedProfileId(profileId);
+    if (host.capabilities.chooseHostDirectory) setDirectoryHost(host);
   }
 
   async function acceptRegisteredProject(
@@ -177,6 +227,8 @@ export function useNewTaskTarget(options: {
       options.toastApi.error(
         copy.selectDirectoryFailedTitle,
         localizedShellErrorMessage(error, copy.readPathFailedFallback, options.uiLocale),
+        undefined,
+        { profileId: host.profile.id },
       );
     } finally {
       setPending(false);
@@ -196,10 +248,12 @@ export function useNewTaskTarget(options: {
     refreshing,
     error,
     directoryHost,
+    directoryOpener: directoryOpenerRef.current,
     refresh,
     selectProject,
     selectNoProject,
     addProject,
+    chooseProjectForProfile,
     closeDirectoryPicker: () => setDirectoryHost(undefined),
     acceptRegisteredProject,
     relinkProject,

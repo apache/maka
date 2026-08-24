@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
@@ -68,8 +87,8 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
   let host: ExecutionHostHandle | undefined;
   try {
     host = await startHost(root, capability.rootId);
-    const desktop = await connectClient(root, 'desktop');
-    const tui = await connectClient(root, 'tui');
+    const desktop = await connectClient(root);
+    const tui = await connectClient(root);
     try {
       const catalogChanged = new Promise<string>((resolve) => {
         tui.subscribeSessionCatalogChanges(({ sessionId }) => resolve(sessionId));
@@ -664,7 +683,7 @@ test('stable Session creation survives response loss and Host restart', {
       modelTarget: { kind: 'default' },
     };
     dropped = await sendCreateWithoutReadingResponse(host.endpoint, input);
-    const observer = await connectClient(root, 'tui');
+    const observer = await connectClient(root);
     const committed = await waitForSession(observer, input.sessionId);
     dropped.abort();
     dropped = undefined;
@@ -672,7 +691,7 @@ test('stable Session creation survives response loss and Host restart', {
 
     await terminateHost(host);
     host = await startHost(root, capability.rootId);
-    const retrying = await connectClient(root, 'desktop');
+    const retrying = await connectClient(root);
     try {
       const retried = requireSessionProjection(await retrying.request('session.create', input));
       const { liveRunState, ...persistedCommitted } = committed;
@@ -714,7 +733,6 @@ async function seedAuthority(
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const unread = await execution.sessionStore.create({
       cwd: root,
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -751,7 +769,6 @@ async function seedAuthority(
         'visible',
         ...Array.from({ length: 700 }, (_, index) => `label-${index}`),
       ],
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -759,7 +776,6 @@ async function seedAuthority(
     const oversized = await execution.sessionStore.create({
       cwd: root,
       projectId: 'p'.repeat(257),
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -767,7 +783,6 @@ async function seedAuthority(
     const retirement = await execution.sessionStore.create({
       cwd: root,
       name: 'Retirement sidecars',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -775,7 +790,6 @@ async function seedAuthority(
     const recovery = await execution.sessionStore.create({
       cwd: root,
       name: 'Retirement recovery',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1014,13 +1028,9 @@ async function terminateChild(child: ChildProcess): Promise<void> {
   );
 }
 
-async function connectClient(
-  rootPath: string,
-  surface: 'desktop' | 'tui',
-): Promise<RuntimeHostConnection> {
+async function connectClient(rootPath: string): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: CURRENT_PROTOCOL,
   });
   assert.equal(result.kind, 'connected');
@@ -1036,7 +1046,6 @@ async function sendCreateWithoutReadingResponse(
   await writeClientFrame(transport, {
     kind: 'hello',
     clientInstanceId: randomUUID(),
-    surface: 'desktop',
     protocolMin: CURRENT_PROTOCOL.min,
     protocolMax: CURRENT_PROTOCOL.max,
     compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm as remove, writeFile } from 'node:fs/promises';
@@ -260,17 +279,23 @@ test('registering a repository and its linked worktree creates one project with 
     const repository = join(base, 'repository');
     const linkedWorktree = join(base, 'linked');
     await createGitRepositoryWithWorktree(repository, linkedWorktree, 'catalog-linked');
+    let now = 1_000;
     const catalog = createProjectCatalog(join(base, 'storage'), {
-      now: () => 1_000,
+      now: () => now,
       createId: () => 'project-1',
     });
 
     const first = await catalog.register(repository);
+    now = 2_000;
     const second = await catalog.register(linkedWorktree);
-    const expectedPaths = [await realpath(linkedWorktree), await realpath(repository)].sort();
+    const repositoryPath = await realpath(repository);
+    const linkedWorktreePath = await realpath(linkedWorktree);
+    const expectedPaths = [linkedWorktreePath, repositoryPath].sort();
 
     assert.equal(first.id, 'project-1');
+    assert.equal(first.preferredPath, repositoryPath);
     assert.equal(second.id, first.id);
+    assert.equal(second.preferredPath, linkedWorktreePath);
     assert.deepEqual(
       (await catalog.list()).map((project) => ({
         id: project.id,
@@ -287,6 +312,40 @@ test('registering a repository and its linked worktree creates one project with 
         },
       ],
     );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('registering without preference preserves the preferred location until it is touched', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-catalog-not-preferred-'));
+  try {
+    const repository = join(base, 'repository');
+    const linkedWorktree = join(base, 'linked');
+    await createGitRepositoryWithWorktree(repository, linkedWorktree, 'catalog-not-preferred');
+    let now = 1_000;
+    const catalog = createProjectCatalog(join(base, 'storage'), {
+      now: () => now,
+      createId: () => 'project-1',
+    });
+    const doNotPrefer = { prefer: false } as const;
+    const repositoryPath = await realpath(repository);
+    const linkedWorktreePath = await realpath(linkedWorktree);
+
+    const first = await catalog.register(repository, doNotPrefer);
+    now = 2_000;
+    const added = await catalog.register(linkedWorktree, doNotPrefer);
+    assert.equal(added.id, first.id);
+    assert.equal(added.locations.length, 2);
+    assert.equal(added.preferredPath, repositoryPath);
+
+    now = 3_000;
+    const registeredAgain = await catalog.register(linkedWorktree, doNotPrefer);
+    assert.equal(registeredAgain.preferredPath, repositoryPath);
+
+    now = 4_000;
+    const touched = await catalog.touch(first.id, linkedWorktreePath);
+    assert.equal(touched.preferredPath, linkedWorktreePath);
   } finally {
     await rm(base, { recursive: true, force: true });
   }

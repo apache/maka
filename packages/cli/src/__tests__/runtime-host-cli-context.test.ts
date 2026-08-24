@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,7 +37,6 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
-  type ClientSurface,
   type HostIncompatible,
 } from '@maka/runtime-host/protocol';
 import {
@@ -26,6 +44,8 @@ import {
   RuntimeHostCliConflictError,
   shouldRetryRuntimeHostConflict,
 } from '../runtime-host-cli-context.js';
+
+const V0_1_11_HOST_COMPATIBILITY_EPOCH = 25;
 
 test('CLI Runtime Host bootstrap launches the execution composition', async () => {
   let candidateEntrypoint: string | URL | undefined;
@@ -50,7 +70,6 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
   const context = await connectRuntimeHostCli(
     {
       rootPath: '/runtime-host-root',
-      surface: 'activation',
     },
     {
       connectOrSpawn: async (input) => {
@@ -78,21 +97,22 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
 });
 
 test('non-interactive CLI reports how to retire an incompatible Runtime Host', async () => {
+  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > V0_1_11_HOST_COMPATIBILITY_EPOCH);
   await assert.rejects(
     connectRuntimeHostCli(
-      { rootPath: '/runtime-host-root', surface: 'run' },
+      { rootPath: '/runtime-host-root' },
       {
         connectOrSpawn: async () => ({
           kind: 'incompatible',
           registration: hostRegistration({
-            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+            compatibilityEpoch: V0_1_11_HOST_COMPATIBILITY_EPOCH,
           }),
           handshake: {
             kind: 'incompatible',
             hostEpoch: 'host-old',
             protocolMin: 0,
             protocolMax: 0,
-            compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+            compatibilityEpoch: V0_1_11_HOST_COMPATIBILITY_EPOCH,
             compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
             compositionRevision: 'legacy',
             state: 'ready',
@@ -107,7 +127,7 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
       assert.match(
         error.message,
         new RegExp(
-          `PID 42; lifecycle ephemeral; compatibility epoch ${RUNTIME_HOST_COMPATIBILITY_EPOCH - 1}`,
+          `PID 42; lifecycle ephemeral; compatibility epoch ${V0_1_11_HOST_COMPATIBILITY_EPOCH}`,
         ),
       );
       assert.match(
@@ -123,7 +143,7 @@ test('non-interactive CLI reports how to retire an incompatible Runtime Host', a
 test('CLI explains a service Host without inventing resident work', async () => {
   await assert.rejects(
     connectRuntimeHostCli(
-      { rootPath: '/runtime-host-root', surface: 'run' },
+      { rootPath: '/runtime-host-root' },
       {
         connectOrSpawn: async () => ({
           kind: 'incompatible',
@@ -166,7 +186,7 @@ test('Runtime Host conflict waits only after an explicit wait answer', () => {
 test('CLI reports an actionable stored-data startup failure', async () => {
   await assert.rejects(
     connectRuntimeHostCli(
-      { rootPath: '/runtime-host-root', surface: 'run' },
+      { rootPath: '/runtime-host-root' },
       {
         connectOrSpawn: async () => ({
           kind: 'failed',
@@ -200,7 +220,7 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
     close: async () => {},
   } as unknown as RuntimeHostConnection;
   const context = await connectRuntimeHostCli(
-    { rootPath: '/unused-local-root', surface: 'run', profileId: 'office' },
+    { rootPath: '/unused-local-root', profileId: 'office' },
     {
       connectOrSpawn: async () => {
         throw new Error('remote profile must not use local discovery');
@@ -242,6 +262,9 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
           throw new Error('unexpected write');
         },
         removeIfCurrent: async () => {
+          throw new Error('unexpected write');
+        },
+        rebindIfCurrent: async () => {
           throw new Error('unexpected write');
         },
       },
@@ -292,7 +315,6 @@ test('remote CLI profile state and Client identity use the explicit Client Data 
     {
       rootPath: '/unused-local-root',
       clientDataRoot,
-      surface: 'run',
       profileId: 'office',
     },
     {
@@ -316,26 +338,87 @@ test('remote CLI profile state and Client identity use the explicit Client Data 
   await context.close();
 });
 
-test('CLI and TUI remote profiles preserve shared compatibility errors', async () => {
+test('remote CLI enables SSH prompts only for an explicitly interactive TTY', async (t) => {
+  const stdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+  const stdoutIsTTY = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+  t.after(() => {
+    if (stdinIsTTY) Object.defineProperty(process.stdin, 'isTTY', stdinIsTTY);
+    else Reflect.deleteProperty(process.stdin, 'isTTY');
+    if (stdoutIsTTY) Object.defineProperty(process.stdout, 'isTTY', stdoutIsTTY);
+    else Reflect.deleteProperty(process.stdout, 'isTTY');
+  });
+  Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
+  Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+
+  const rootId = 'd'.repeat(64);
+  const profile: RemoteRuntimeHostProfile = {
+    id: 'office',
+    name: 'Office',
+    kind: 'remote',
+    transport: {
+      kind: 'ssh',
+      destination: 'operator@runtime.example.com',
+      remotePort: 7443,
+      websocketPath: '/runtime-host',
+    },
+    rootId,
+  };
+  const sshInteractions: string[] = [];
+  const connect = async (interactiveSsh?: boolean) =>
+    connectRuntimeHostCli(
+      {
+        rootPath: '/unused-local-root',
+        profileId: profile.id,
+        ...(interactiveSsh === undefined ? {} : { interactiveSsh }),
+      },
+      {
+        connectRemoteProfile: async (input) => {
+          assert.ok(input.sshInteraction);
+          sshInteractions.push(input.sshInteraction);
+          return {
+            rootId,
+            hostEpoch: 'host-remote',
+            connectionId: `connection-${sshInteractions.length}`,
+            selectedProtocol: 0,
+            closed: new Promise<void>(() => {}),
+            status: async () => ({ state: 'ready' }),
+            subscribeConfigurationChanges: () => () => {},
+            subscribeProjectCatalogChanges: () => () => {},
+            subscribeSessionCatalogChanges: () => () => {},
+            subscribeScheduledTaskChanges: () => () => {},
+            close: async () => {},
+          } as unknown as RuntimeHostConnection;
+        },
+        profileCatalog: singleRemoteProfileCatalog(profile),
+        loadClientInstanceId: async () => '44444444-4444-4444-8444-444444444444',
+        readConnectionCatalog: async () => ({ revision: 1, defaultTarget: null, connections: [] }),
+      },
+    );
+
+  const interactive = await connect(true);
+  await interactive.close();
+  const nonInteractive = await connect();
+  await nonInteractive.close();
+
+  assert.deepEqual(sshInteractions, ['inherit', 'batch']);
+});
+
+test('remote profiles preserve shared compatibility errors', async () => {
   const cases: readonly {
-    readonly surface: Extract<ClientSurface, 'run' | 'tui'>;
     readonly handshake: HostIncompatible;
   }[] = [
     {
-      surface: 'run',
       handshake: incompatibleRemoteHandshake({
         compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
       }),
     },
     {
-      surface: 'tui',
       handshake: incompatibleRemoteHandshake({
         protocolMin: RUNTIME_HOST_PROTOCOL_VERSION + 1,
         protocolMax: RUNTIME_HOST_PROTOCOL_VERSION + 2,
       }),
     },
     {
-      surface: 'run',
       handshake: incompatibleRemoteHandshake({
         compositionId: 'maka.other-composition',
         compositionRevision: 'other-revision',
@@ -343,9 +426,9 @@ test('CLI and TUI remote profiles preserve shared compatibility errors', async (
     },
   ];
 
-  for (const { surface, handshake } of cases) {
+  for (const [index, { handshake }] of cases.entries()) {
     const profile: RemoteRuntimeHostProfile = {
-      id: `office-${surface}-${handshake.compositionRevision}`,
+      id: `office-${index}-${handshake.compositionRevision}`,
       name: 'Office',
       kind: 'remote',
       transport: { kind: 'tls', url: 'wss://runtime.example.com/runtime-host' },
@@ -354,7 +437,7 @@ test('CLI and TUI remote profiles preserve shared compatibility errors', async (
     await assert.rejects(
       () =>
         connectRuntimeHostCli(
-          { rootPath: '/unused-local-root', surface, profileId: profile.id },
+          { rootPath: '/unused-local-root', profileId: profile.id },
           {
             connectRemoteProfile: (input) =>
               connectRemoteRuntimeHostProfile(input, {
@@ -444,5 +527,6 @@ function singleRemoteProfileCatalog(profile: RemoteRuntimeHostProfile): RuntimeH
     save: async () => assert.fail('unexpected write'),
     remove: async () => assert.fail('unexpected write'),
     removeIfCurrent: async () => assert.fail('unexpected write'),
+    rebindIfCurrent: async () => assert.fail('unexpected write'),
   };
 }

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { access, chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +40,6 @@ test('rejects an invalid tool mode before a durable AgentRun can be created', as
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -65,7 +83,6 @@ test('does not re-append atomically committed tool facts through the generic eve
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -140,7 +157,6 @@ test('acks a steering event whose canonical append preceded proof publication fa
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -218,7 +234,6 @@ test('materializes a durable steering event into the transcript exactly once', a
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -298,7 +313,6 @@ test('recovers a steering transcript message from the committed RuntimeEvent led
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -387,7 +401,6 @@ test('awaits canonical Run status persistence before accepting an interaction re
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -490,7 +503,6 @@ test('required interaction resume recovers a failed best-effort Run Store latch 
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -605,7 +617,6 @@ test('required interaction resume stays fail-closed until a later required write
     const store = createSessionStore(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
-      backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',

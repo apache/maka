@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { AGENT_RUN_STATUSES, type AgentRunHeader } from './agent-run.js';
 import { EXECUTION_LOG_LEDGERS, type ExecutionLogCoverage } from './execution-log-coverage.js';
 import { SESSION_STATUSES, type SessionHeader } from './session.js';
@@ -84,7 +103,6 @@ export interface SessionInspectSummary {
   name: string;
   status: SessionHeader['status'];
   createdAt: number;
-  lastUsedAt: number;
   lastMessageAt?: number;
   isArchived: boolean;
   parentSessionId?: string;
@@ -307,7 +325,7 @@ function isSessionSummary(value: unknown): value is SessionInspectSummary {
   return (
     hasShape(
       value,
-      ['sessionId', 'name', 'status', 'createdAt', 'lastUsedAt', 'isArchived'],
+      ['sessionId', 'name', 'status', 'createdAt', 'isArchived'],
       [
         'lastMessageAt',
         'parentSessionId',
@@ -323,7 +341,6 @@ function isSessionSummary(value: unknown): value is SessionInspectSummary {
     typeof value.name === 'string' &&
     SESSION_STATUSES.includes(value.status as (typeof SESSION_STATUSES)[number]) &&
     isCount(value.createdAt) &&
-    isCount(value.lastUsedAt) &&
     isOptionalCount(value.lastMessageAt) &&
     typeof value.isArchived === 'boolean' &&
     [

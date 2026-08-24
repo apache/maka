@@ -1,16 +1,38 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { app, BrowserWindow, dialog, nativeTheme, screen, shell } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { AppSettings } from '@maka/core/settings';
+import { readableAppIconPath } from './app-icon-surface.js';
 import { isExternalUrl } from './external-link-guard.js';
 import { readSavedBounds, writeSavedBounds, SAFE_MIN_HEIGHT, SAFE_MIN_WIDTH, type SavedBounds } from './window-state.js';
 import { BrowserViewController } from './browser/controller.js';
 import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
+import { observeMainRendererProcessGone } from './main-renderer-process-gone.js';
 import { isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
+import { createWindowsMaximizeRendererSync } from './windows-maximize-renderer-sync.js';
 import {
   parseDesktopSessionResourceKey,
 } from '../shared/runtime-host-identity.js';
@@ -65,6 +87,7 @@ interface MainWindowControllerDeps {
   // and the fake backend, so main-window.ts owns no env policy of its own.
   startHidden: boolean;
   onClose?: () => void;
+  onRendererProcessGone: (details: Electron.RenderProcessGoneDetails) => void | Promise<void>;
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -226,7 +249,8 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // pref. This guarantees the BrowserWindow backgroundColor matches the
     // theme variant we're about to screenshot, so the very first frame
     // doesn't capture a light-on-dark or dark-on-light flash.
-    const persistedTheme = (await settingsStore.get()).appearance?.theme ?? 'auto';
+    const persistedAppearance = (await settingsStore.get()).appearance;
+    const persistedTheme = persistedAppearance?.theme ?? 'auto';
     // Quit cleanup permanently closes process-scoped stores. Re-check after
     // asynchronous preparation so an in-flight request cannot attach a new
     // renderer to resources that teardown has already started closing.
@@ -263,12 +287,16 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       ...(bounds.x !== undefined && bounds.y !== undefined ? { x: bounds.x, y: bounds.y } : {}),
       title: 'Maka',
       // PR-GRAY-CARD-LIFT-0 (WAWQAQ msg `0eb99429` 2026-06-20): the
-      // app icon ships as a 1024px PNG under apps/desktop/assets/icon.png.
-      // BrowserWindow accepts a PNG path directly on macOS for the dock
-      // / window title bar; .icns / .ico packaging will come with the
-      // installer build pass. The asset path resolves from the built
-      // dist/main/main.js (two levels up to apps/desktop, then assets).
-      icon: join(import.meta.dirname, '..', '..', 'assets', 'icon.png'),
+      // app icon ships as a 1024px PNG under apps/desktop/assets/. BrowserWindow
+      // accepts a PNG path directly on macOS for the dock / window title bar;
+      // .icns / .ico packaging will come with the installer build pass. The
+      // asset path resolves from the built dist/main/main.js (two levels up to
+      // apps/desktop, then assets).
+      //
+      // Windows and Linux draw this icon per window, so a window opened after
+      // the user switched icons must be born with the chosen one — waiting for
+      // the client-settings effect to catch up would show the default first.
+      icon: readableAppIconPath(persistedAppearance?.appIcon),
       // PR-WINDOW-TITLEBAR-0: hide the native title bar so the renderer
       // chrome can extend to the top edge on every platform. macOS keeps
       // `hiddenInset` + traffic-light buttons (top-left); Windows uses
@@ -345,6 +373,21 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         sandbox: true,             // preload runs in the renderer sandbox
         webSecurity: true,         // enforce CSP / same-origin policy
         allowRunningInsecureContent: false,
+      },
+    });
+    observeMainRendererProcessGone({
+      source: mainWindow.webContents,
+      shutdownSignal: signal,
+      onUnexpectedExit: (details) => {
+        console.error(
+          `[renderer] main Renderer process exited unexpectedly: reason=${details.reason} exitCode=${details.exitCode}`,
+        );
+        void Promise.resolve()
+          .then(() => deps.onRendererProcessGone(details))
+          .catch((error) => {
+            console.error('[renderer] failed to handle main Renderer process exit:', error);
+            app.quit();
+          });
       },
     });
     installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntryUrl);
@@ -426,9 +469,14 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         void writeSavedBounds(workspaceRoot, next);
       }, 400);
     };
-    mainWindow.on('resize', scheduleSave);
+    const scheduleMaximizedRendererSync = createWindowsMaximizeRendererSync(mainWindow);
+    const handleWindowGeometryChange = (): void => {
+      scheduleSave();
+      scheduleMaximizedRendererSync();
+    };
+    mainWindow.on('resize', handleWindowGeometryChange);
     mainWindow.on('move', scheduleSave);
-    mainWindow.on('maximize', scheduleSave);
+    mainWindow.on('maximize', handleWindowGeometryChange);
     mainWindow.on('unmaximize', scheduleSave);
     mainWindow.on('close', () => {
       clearShowFallbackTimer();

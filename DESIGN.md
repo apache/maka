@@ -54,6 +54,24 @@ components:
   badge: { typography: "{typography.badge-label}", rounded: "{rounded.pill}", padding: "0 8px", height: "20px" }
   card-default: { rounded: "{rounded.container}", padding: "12px" }
 ---
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
 
 # Design System: Maka
 
@@ -126,11 +144,12 @@ Nothing interactive is square. One ladder, assigned monotonically by box height:
 | Radius | Maka tier | Astryx tier | Assign to |
 |---|---|---|---|
 | 6px | control | inner | chips, keycaps, nested inlays, and product-drawn compact controls |
-| 10px | card | element | cards, rows-as-cards, list containers, chat bubbles; Astryx `Button`, `Input`, `SegmentedControl` |
+| 10px | card | element | cards, rows-as-cards, list containers; Astryx `Button`, `Input`, `SegmentedControl` |
 | 12px | container | container | modals, panels, portal surfaces; Astryx `Card`, `Dialog`, `DropdownMenu` |
+| 28px | chat | chat | the conversation surface as one shape: user bubble, assistant bubble, composer dock. Sourced from Astryx's `--radius-chat` by `ChatMessageBubble` and `ChatComposer` themselves; product CSS never restates it |
 | full | pill (999px) | full (9999px) | badges, pills, circular controls |
 
-- **The Two-Name Rule.** These are one ladder under two vocabularies, and the names never line up: Maka's `control` is Astryx's `inner`, Maka's `card` is Astryx's `element`, Maka's `modal` is Astryx's `container`. Resolve a tier from the box, never from the token name that sounds right. The paired values agree *today* but are independent literals, not aliases — an Astryx upgrade can move one side silently, so a mismatch is a real failure mode rather than an impossibility. Astryx's `--radius-page` (28px) has no Maka tier and no product consumer; anything reaching for a page-level radius is inventing a rung.
+- **The Two-Name Rule.** These are one ladder under two vocabularies, and the names never line up: Maka's `control` is Astryx's `inner`, Maka's `card` is Astryx's `element`, Maka's `modal` is Astryx's `container`. Resolve a tier from the box, never from the token name that sounds right. The paired values agree *today* but are independent literals, not aliases — an Astryx upgrade can move one side silently, so a mismatch is a real failure mode rather than an impossibility. The chat rung is the one tier the product does not assign: `ChatMessageBubble` and `ChatComposer` both resolve `--radius-chat` on their own, which is why the bubble and the dock round together, and why setting a bubble radius or a non-default `density` in product code silently breaks the pair. Astryx's `--radius-page` carries the same 28px literal but is a different token with no Maka tier and no product consumer; reaching for it to match the chat surface is inventing a rung.
 - **The Full-Bleed Rule.** `border-radius: 0` is legal only on true full-bleed rows — an element flush with its container on both sides. Radius and gap move together: if it has breathing room, it has corners.
 - **Proportional marks.** Product-drawn icon plates use ratio-owned radius (~25–27% of the box edge), recorded in prose because Stitch accepts only absolute units.
 

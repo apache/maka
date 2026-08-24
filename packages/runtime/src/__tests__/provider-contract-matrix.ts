@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Provider conformance matrix — a registry-driven plan.
  *
@@ -54,7 +73,7 @@ export type ProviderContractWire =
 /** Runtime-adapter kinds whose request wire is provider-specific (auth, headers,
  * per-model protocol) and therefore cannot be generated from the declaration. */
 export const SUBSCRIPTION_WIRE_ADAPTER_KINDS: ReadonlySet<ProviderRuntimeAdapter['kind']> = new Set(
-  ['claude-subscription', 'openai-codex', 'github-copilot'],
+  ['openai-codex', 'github-copilot'],
 );
 
 /** Derived expectation for a generated `discovery` cell. */
@@ -333,6 +352,16 @@ function wireDimensionCell(
   providerType: ProviderType,
   def: ProviderDefaults,
 ): ProviderContractCell {
+  // Ahead of every generated branch: an unavailable adapter has no wire, so
+  // falling through would state an `anthropic-messages` contract for a provider
+  // that cannot send at all.
+  if (def.runtimeAdapter.kind === 'unavailable') {
+    return {
+      state: 'not-applicable',
+      dimension,
+      reason: `${providerType} has no Runtime adapter and cannot send`,
+    };
+  }
   if (SUBSCRIPTION_WIRE_ADAPTER_KINDS.has(def.runtimeAdapter.kind)) {
     return {
       state: 'override',
@@ -361,6 +390,13 @@ function reasoningReplayCell(
   def: ProviderDefaults,
 ): ProviderContractCell {
   const adapter = def.runtimeAdapter;
+  if (adapter.kind === 'unavailable') {
+    return {
+      state: 'not-applicable',
+      dimension: 'reasoning-replay',
+      reason: `${providerType} has no Runtime adapter and cannot send`,
+    };
+  }
   if (SUBSCRIPTION_WIRE_ADAPTER_KINDS.has(adapter.kind)) {
     return {
       state: 'override',

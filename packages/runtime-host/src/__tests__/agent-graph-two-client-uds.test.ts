@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -97,8 +116,8 @@ test('two Clients query and control one Agent graph through Session invalidation
   let tui: RuntimeHostConnection | undefined;
   let subscription: RuntimeHostSessionSubscription | undefined;
   try {
-    desktop = await connect(root, 'desktop');
-    tui = await connect(root, 'tui');
+    desktop = await connect(root);
+    tui = await connect(root);
     subscription = await desktop.openSessionSubscription({
       sessionId: ROOT_SESSION_ID,
       transcript: { kind: 'none' },
@@ -125,7 +144,7 @@ test('two Clients query and control one Agent graph through Session invalidation
       'active',
     );
 
-    tui = await connect(root, 'tui', onLivenessProbe);
+    tui = await connect(root, onLivenessProbe);
     const stopped = await tui.request('agent.graph.stop', {
       rootSessionId: ROOT_SESSION_ID,
       expectedGraphId: GRAPH_ID,
@@ -240,12 +259,10 @@ class FakeAgentGraphAuthority implements GraphAuthority {
 
 async function connect(
   rootPath: string,
-  surface: 'desktop' | 'tui',
   onLivenessProbe?: () => void,
 ): Promise<RuntimeHostConnection> {
   const result = await connectRuntimeHost({
     rootPath,
-    surface,
     protocol: PROTOCOL,
     livenessIntervalMs: LIVENESS_INTERVAL_MS,
     onLivenessProbe,
@@ -342,7 +359,6 @@ function canonical(hostEpoch: string): CanonicalSessionProjection {
       metadataRevision: 1,
       status: 'active',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     rootTurn: null,

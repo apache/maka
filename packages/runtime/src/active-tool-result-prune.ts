@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { JSONValue, ModelMessage } from './model-protocol.js';
 
 import {
@@ -103,14 +122,6 @@ export interface ActiveToolResultPruneDiagnosticPatch {
   activeDuplicateToolResults?: number;
   activeArchiveFailures?: number;
   activeEstimatedTokensSaved?: number;
-}
-
-export interface ActiveToolResultLineageIdentity {
-  toolCallId: string;
-  toolName: string;
-  bodySha256: string;
-  payloadField: 'output' | 'result';
-  outputKind?: string;
 }
 
 type ToolResultPartish = {
@@ -443,33 +454,6 @@ export function isActiveArchivedToolResultPlaceholder(
     candidate.reason === 'active_current_turn_tool_result_pruned_before_next_step' &&
     isValidSupersession(candidate.supersession)
   );
-}
-
-/**
- * Return the stable identity of a tool-result part across active pruning.
- * The raw payload and its archive placeholder intentionally share the hash of
- * the serialized raw result, so compaction lineage can treat pruning as a
- * representation change rather than a divergent source history.
- */
-export function activeToolResultLineageIdentity(
-  value: unknown,
-): ActiveToolResultLineageIdentity | undefined {
-  if (!isToolResultPartish(value)) return undefined;
-  if (typeof value.toolCallId !== 'string' || typeof value.toolName !== 'string') return undefined;
-  const payload = extractPayload(value);
-  if (!payload) return undefined;
-  const placeholder = isActiveArchivedToolResultPlaceholder(payload.value)
-    ? payload.value
-    : typeof payload.value === 'string' && isActiveArchivedToolResultPlaceholderText(payload.value)
-      ? (JSON.parse(payload.value) as ActiveArchivedToolResultPlaceholder)
-      : undefined;
-  return {
-    toolCallId: value.toolCallId,
-    toolName: value.toolName,
-    bodySha256: placeholder?.bodySha256 ?? sha256(serializeToolResultForArchive(payload.value)),
-    payloadField: payload.field,
-    ...(payload.field === 'output' ? { outputKind: payload.outputKind } : {}),
-  };
 }
 
 function isToolResultPartish(value: unknown): value is ToolResultPartish {

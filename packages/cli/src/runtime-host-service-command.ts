@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   installRuntimeHostLogCapture,
   runRuntimeHostProcessLifecycle,
@@ -54,19 +73,25 @@ export async function runRuntimeHostServiceCli(
       : {}),
     ...(websocket ? { websocket } : {}),
   });
-  await runRuntimeHostProcessLifecycle(host, {
-    onReady: () => {
-      if (options.json) {
-        process.stdout.write(`${JSON.stringify(createRuntimeHostServiceReadyEvent(host))}\n`);
-        return;
-      }
-      process.stdout.write(`Runtime Host service is ready at ${host.endpoint}\n`);
-      for (const endpoint of host.websocketEndpoints) {
-        process.stdout.write(`Runtime Host WebSocket is ready at ${endpoint}\n`);
-      }
-    },
-  });
-  return 0;
+  let lifecycleEnd: Awaited<ReturnType<typeof runRuntimeHostProcessLifecycle>> | undefined;
+  try {
+    lifecycleEnd = await runRuntimeHostProcessLifecycle(host, {
+      onReady: () => {
+        if (options.json) {
+          process.stdout.write(`${JSON.stringify(createRuntimeHostServiceReadyEvent(host))}\n`);
+          return;
+        }
+        process.stdout.write(`Runtime Host service is ready at ${host.endpoint}\n`);
+        for (const endpoint of host.websocketEndpoints) {
+          process.stdout.write(`Runtime Host WebSocket is ready at ${endpoint}\n`);
+        }
+      },
+    });
+  } catch (error) {
+    if (host.shutdownReason !== 'retirement') throw error;
+    console.error('[runtime-host] retirement shutdown did not complete cleanly:', error);
+  }
+  return lifecycleEnd === 'host_closed' && host.shutdownReason !== 'retirement' ? 1 : 0;
 }
 
 export interface RuntimeHostServiceReadyEvent {

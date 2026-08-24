@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act } from 'react';
@@ -150,6 +169,64 @@ test('gives each answer in a steered turn its own stable element', async () => {
   assert.equal(settledAnswers.length, 2);
   assert.equal(settledAnswers[0]?.isSameNode(answers[0]), true, 'the first answer keeps its element');
   assert.equal(settledAnswers[1]?.isSameNode(answers[1]), true, 'the second answer keeps its element');
+});
+
+test('uses human conversation context instead of raw ids in action names', async () => {
+  const { container, root } = domRoot();
+  const turn = {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'completed' as const,
+    turnId: '019f-secret-turn-id',
+    user: {
+      id: '019f-secret-message-id',
+      role: 'user' as const,
+      text: 'Summarize the accessibility findings',
+      ts: 1,
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView
+          turn={turn}
+          footerActions={[{ id: 'copy', label: 'Copy', enabled: true }]}
+          onEditUserMessage={() => undefined}
+        />
+      </LocaleProvider>,
+    );
+  });
+
+  const actionNames = [...container.querySelectorAll('[aria-label]')]
+    .map((element) => element.getAttribute('aria-label'))
+    .filter((label): label is string => label !== null);
+  assert.ok(actionNames.some((label) => label.startsWith(
+    'Copy message: Summarize the accessibility findings',
+  )));
+  assert.ok(actionNames.some((label) => label.startsWith(
+    'Edit & resend message: Summarize the accessibility findings',
+  )));
+  assert.ok(actionNames.some((label) => label.startsWith(
+    'Response actions: Summarize the accessibility findings',
+  )));
+  assert.ok(actionNames.some((label) => label.startsWith(
+    'Copy response: Summarize the accessibility findings',
+  )));
+  assert.equal(
+    container.querySelector('[data-message-id="019f-secret-message-id"]') !== null,
+    true,
+    'the real message identity remains available as machine data',
+  );
+  assert.equal(
+    actionNames.some((label) => label.includes('019f-secret')),
+    false,
+    'raw storage identities stay out of spoken action names',
+  );
+  assert.equal(
+    actionNames.some((label) => /\bmessage \d+\b/i.test(label)),
+    false,
+    'message actions do not claim a turn-local ordinal',
+  );
 });
 
 /**

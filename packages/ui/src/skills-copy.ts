@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 import type { ManagedSkillCategory, SkillEntry } from './module-panel-types.js';
 
@@ -26,6 +45,7 @@ export interface SkillsCopy {
   tabs: { ariaLabel: string; market: string; builtin: string; installed: string };
   install: {
     action: (name: string) => string;
+    installedAction: (name: string) => string;
     installedTitle: string;
     installed: string;
     notInstalled: string;
@@ -143,7 +163,7 @@ const SKILLS_COPY = {
     categories: { '内容创作': '内容创作', '数据与AI': '数据与 AI', '设计与UI': '设计与 UI', 'DevOps与部署': 'DevOps 与部署', '文档与写作': '文档与写作', '效率工具': '效率工具', '研究与分析': '研究与分析' },
     market: { categoryAll: '全部分类', sortName: '排序：名称', sortRecent: '排序：最近', controls: '市场筛选与排序', categoryFilter: '按分类筛选市场技能', sortAriaLabel: '市场技能排序方式', ariaLabel: '技能市场', importLocal: '导入本地 Skill', emptySearchTitle: '没有匹配的市场技能', emptyTitle: '来源库还是空的', emptySearchBody: '换一个关键词，或清空搜索查看全部来源。', emptyBody: '导入一个含 SKILL.md 的本地文件，它会作为可安装的来源出现在这里。', emptyFilterBody: '换一个分类或关键词，或清空筛选查看全部来源。', clearSearch: '清空搜索', clearFilters: '清空筛选', sourceFallback: '本地来源库 Skill。' },
     tabs: { ariaLabel: '技能视图', market: '市场', builtin: '内置', installed: '已安装' },
-    install: { action: (name) => `安装 ${name}`, installedTitle: '已安装到当前工作区', installed: '已安装', notInstalled: '未安装' },
+    install: { action: (name) => `安装 ${name}`, installedAction: (name) => `${name} 已安装到当前工作区`, installedTitle: '已安装到当前工作区', installed: '已安装', notInstalled: '未安装' },
     builtin: { ariaLabel: '内置技能', emptyTitle: '暂无内置技能', emptyBody: '应用自带的技能会出现在这里。', noMatchTitle: '没有匹配的内置技能', noMatchBody: '换一个关键词，或清空搜索查看全部内置技能。', fallback: '应用自带 Skill。', toolCount: (count: number) => `${count} 个工具` },
     installed: { emptySearchTitle: '没有匹配的 Skill', emptyTitle: '等待添加 Skill', emptySearchBody: '换一个关键词，或清空搜索查看全部本地技能。', emptyBodyBeforeCode: '把一个含', emptyBodyAfterCode: '的文件夹放到工作区的 skills/ 目录下，刷新后会出现在这里。', refreshPending: '刷新中…', refresh: '刷新技能', listAriaLabel: '技能列表' },
     context: { scope: { project: '项目', workspace: '工作区', user: '用户', custom: '自定义' }, decision: { advertised: '已进入上下文', disabled: '已停用', invalid: '元数据无效', host_incompatible: '主机不兼容', shadowed: '被高优先级覆盖', budget: '因预算省略' }, needsReview: '待确认', discoverySource: (scope, source) => `${scope}/${source} 发现源`, discoveryDiagnostic: { blocked_path: '路径被安全策略阻止', read_failed: '来源不可读取' } },
@@ -158,7 +178,7 @@ const SKILLS_COPY = {
     categories: { '内容创作': 'Content creation', '数据与AI': 'Data & AI', '设计与UI': 'Design & UI', 'DevOps与部署': 'DevOps & deployment', '文档与写作': 'Documents & writing', '效率工具': 'Productivity', '研究与分析': 'Research & analysis' },
     market: { categoryAll: 'All categories', sortName: 'Sort: Name', sortRecent: 'Sort: Recent', controls: 'Marketplace filters and sorting', categoryFilter: 'Filter marketplace skills by category', sortAriaLabel: 'Marketplace skill sort order', ariaLabel: 'Skill marketplace', importLocal: 'Import local Skill', emptySearchTitle: 'No matching marketplace skills', emptyTitle: 'The source library is empty', emptySearchBody: 'Try another keyword or clear search to see all sources.', emptyBody: 'Import a local file containing SKILL.md to make it available as an installable source.', emptyFilterBody: 'Try another category or keyword, or clear the filters.', clearSearch: 'Clear search', clearFilters: 'Clear filters', sourceFallback: 'Local source-library Skill.' },
     tabs: { ariaLabel: 'Skill views', market: 'Marketplace', builtin: 'Built in', installed: 'Installed' },
-    install: { action: (name) => `Install ${name}`, installedTitle: 'Installed in this workspace', installed: 'Installed', notInstalled: 'Not installed' },
+    install: { action: (name) => `Install ${name}`, installedAction: (name) => `${name} is installed in this workspace`, installedTitle: 'Installed in this workspace', installed: 'Installed', notInstalled: 'Not installed' },
     builtin: { ariaLabel: 'Built-in skills', emptyTitle: 'No built-in skills', emptyBody: 'Skills included with the app appear here.', noMatchTitle: 'No matching built-in skills', noMatchBody: 'Try another keyword or clear search to see all built-in skills.', fallback: 'Skill included with the app.', toolCount: (count: number) => (count === 1 ? '1 tool' : `${count} tools`) },
     installed: { emptySearchTitle: 'No matching Skills', emptyTitle: 'Waiting for a Skill', emptySearchBody: 'Try another keyword or clear search to see all local skills.', emptyBodyBeforeCode: 'Place a folder containing', emptyBodyAfterCode: 'in the workspace skills/ directory, then refresh to show it here.', refreshPending: 'Refreshing…', refresh: 'Refresh skills', listAriaLabel: 'Skill list' },
     context: { scope: { project: 'Project', workspace: 'Workspace', user: 'User', custom: 'Custom' }, decision: { advertised: 'In context', disabled: 'Disabled', invalid: 'Invalid metadata', host_incompatible: 'Host incompatible', shadowed: 'Shadowed', budget: 'Budget omitted' }, needsReview: 'Needs review', discoverySource: (scope, source) => `${scope}/${source} discovery source`, discoveryDiagnostic: { blocked_path: 'Path blocked by the safety policy', read_failed: 'Source could not be read' } },

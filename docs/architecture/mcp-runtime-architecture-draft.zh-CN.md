@@ -1,8 +1,27 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Maka MCP runtime architecture
 
 状态：remote dual-era V2 implemented（2026-08-11）
 
-跟踪：[MCP 2026-07-28 dual-era rollout #1650](https://github.com/Maka-Agent/maka-agent/issues/1650)
+跟踪：[MCP 2026-07-28 dual-era rollout #1650](https://github.com/apache/maka/issues/1650)
 
 ## 1. 目标与边界
 

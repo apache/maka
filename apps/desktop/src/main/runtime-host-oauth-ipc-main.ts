@@ -1,5 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
-import type { QuotaSnapshot } from '@maka/core/oauth-subscription';
 import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime/oauth-provider-contracts';
 import {
   OAUTH_LOGIN_PROVIDERS,
@@ -39,14 +57,12 @@ export const RUNTIME_HOST_OAUTH_IPC_CHANNELS = Object.freeze([
   ...OAUTH_LOGIN_PROVIDERS.flatMap((provider) => [
     ...(provider === 'xai-oauth' ? [] : [`${provider}:is-experimental-enabled`]),
     ...SHARED_OAUTH_IPC_OPERATIONS.map((operation) => `${provider}:${operation}`),
-    ...(provider === 'claude-subscription' ? [`${provider}:refresh-quota`] : []),
   ]),
 ]);
 
 type OAuthClient = RuntimeHostAccountConnectionClient & Pick<
   DesktopRuntimeHostClient,
   | 'cancelOAuthLogin'
-  | 'fetchOAuthAccountUsage'
   | 'queryOAuthLogin'
   | 'startOAuthLogin'
 >;
@@ -61,13 +77,11 @@ export interface RuntimeHostOAuthIpcDeps {
 
 interface ActiveOAuthAttempt {
   readonly provider: OAuthLoginProvider;
-  readonly presentationMethod: OAuthExternalPresentation['method'];
 }
 
 /** Adapts the existing Desktop OAuth UI to the Host's provider-neutral OAuth operations. */
 export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void {
   const activeAttempts = new Map<string, ActiveOAuthAttempt>();
-  const accountUsage = new Map<OAuthLoginProvider, QuotaSnapshot>();
   const providerEnabled = deps.isProviderEnabled ?? isOAuthEnrollmentProviderEnabled;
 
   for (const provider of OAUTH_LOGIN_PROVIDERS) {
@@ -92,7 +106,6 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
         const presented = await waitForPresentation(deps.client, attemptId, expectation.presented);
         activeAttempts.set(attemptId, {
           provider,
-          presentationMethod: presented.method,
         });
         return { authRequestId: attemptId, stateHint: presented.stateHint };
       } catch (error) {
@@ -114,21 +127,12 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
     });
     deps.ipcMain.handle(
       channel('complete-authorization'),
-      async (_event, attemptId: unknown, authorizationCode: unknown) => {
+      async (_event, attemptId: unknown) => {
         if (typeof attemptId !== 'string') {
           return actionFailure('OAuth authorization is not active', 'authorization_pending');
         }
-        const attempt = providerAttempt(activeAttempts, attemptId, provider);
-        if (!attempt) {
+        if (!providerAttempt(activeAttempts, attemptId, provider)) {
           return actionFailure('OAuth authorization is not active', 'authorization_pending');
-        }
-        if (attempt.presentationMethod === 'request_authorization_code') {
-          if (typeof authorizationCode !== 'string' || authorizationCode.length === 0) {
-            return actionFailure('OAuth authorization code is required', 'invalid_paste_code');
-          }
-          if (!deps.presentation.submitAuthorizationCode(attemptId, authorizationCode)) {
-            return actionFailure('OAuth authorization is not active', 'authorization_pending');
-          }
         }
         try {
           const terminal = await waitForTerminal(deps.client, attemptId);
@@ -168,7 +172,7 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
         runtimeHostAccountCredential(connection),
       );
       if (credential?.configured) {
-        return accountState(provider, 'authenticated', accountUsage.get(provider));
+        return accountState(provider, 'authenticated');
       }
       const authorizing = [...activeAttempts.values()].some(
         (attempt) => attempt.provider === provider,
@@ -192,21 +196,6 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
         ? { ok: true as const }
         : actionFailure('Unable to refresh OAuth account', 'refresh_failed');
     });
-    if (provider === 'claude-subscription') {
-      deps.ipcMain.handle(channel('refresh-quota'), async () => {
-        const connection = findRuntimeHostAccountConnection(
-          await deps.client.loadConnectionCatalog(),
-          provider,
-        );
-        if (!connection) return actionFailure('OAuth account is not connected');
-        const result = await deps.client.fetchOAuthAccountUsage(connection.connectionId);
-        if (result.kind !== 'available') {
-          return actionFailure(`OAuth account usage is unavailable: ${result.reason}`);
-        }
-        accountUsage.set(provider, result.quota);
-        return { ok: true as const };
-      });
-    }
     deps.ipcMain.handle(channel('logout'), async () => {
       await cancelProviderAttempts(deps, activeAttempts, provider);
       try {
@@ -214,7 +203,6 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
       } catch {
         return actionFailure('Unable to remove OAuth account');
       }
-      accountUsage.delete(provider);
       deps.emitConnectionListChanged();
       return { ok: true as const };
     });
@@ -304,9 +292,8 @@ function isProviderAttempt(
 function accountState(
   provider: OAuthLoginProvider,
   runtimeState: 'not_logged_in' | 'authorizing' | 'authenticated',
-  quota?: QuotaSnapshot,
 ) {
-  return { provider, runtimeState, ...(quota ? { quota } : {}) };
+  return { provider, runtimeState };
 }
 
 function providerDisabled() {
@@ -316,7 +303,6 @@ function providerDisabled() {
 function actionFailure(
   message: string,
   reason:
-    | 'invalid_paste_code'
     | 'authorization_pending'
     | 'authorization_cancelled'
     | 'authorization_denied'

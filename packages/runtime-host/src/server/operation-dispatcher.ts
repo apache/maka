@@ -1,6 +1,26 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   HOST_OPERATION_SPECS,
-  type ClientSurface,
   decodeOperationOutcome,
   type HostOperationErrorCode,
   type OperationInput,
@@ -17,8 +37,8 @@ import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.j
 export interface ConnectionContext {
   hostEpoch: string;
   connectionId: string;
-  surface: ClientSurface;
   principal: string;
+  credentialId?: string;
   acquireResidency(): OperationResidency;
 }
 
@@ -65,7 +85,13 @@ export type ConnectionEffectOperationKey = Extract<
 >;
 export type MessageOperationKey = Extract<
   OperationKey,
-  'turn.message.submit' | 'queue.retract' | 'turn.interrupt'
+  | 'turn.message.submit'
+  | 'queue.retract'
+  | 'queue.entry.retract'
+  | 'queue.entry.promote'
+  | 'queue.entry.update'
+  | 'queue.entries.reorder'
+  | 'turn.interrupt'
 >;
 export type InteractionOperationKey = Extract<OperationKey, `interaction.${string}`>;
 export type GoalOperationKey = Extract<OperationKey, `goal.${string}`>;
@@ -251,7 +277,35 @@ export function createUnavailableAccessAuthorityOperationHandlers(): AccessAutho
         message: 'Runtime Host access credentials are unavailable',
       },
     }),
+    'access.credential.prepare': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
     'access.credential.revoke': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
+    'access.credential.rotation.prepare': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
+    'access.credential.rotation.revoke': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
+    'access.credential.finalize': async () => ({
       ok: false,
       error: {
         code: 'operation_unavailable',
@@ -300,7 +354,10 @@ async function dispatchTypedOperation<K extends OperationKey>(
   let outcome: OperationOutcome<K>;
   try {
     outcome = decodeOperationOutcome(request.operation, await handler(request.input, context));
-  } catch {
+  } catch (error) {
+    console.error(
+      `[runtime-host] unexpected ${request.operation} failure: ${boundedUnexpectedFailure(error)}`,
+    );
     return operationFailureResponse(
       request as RequestFrame,
       'internal_failure',
@@ -320,4 +377,10 @@ async function dispatchTypedOperation<K extends OperationKey>(
         ok: false,
         error: outcome.error,
       };
+}
+
+function boundedUnexpectedFailure(error: unknown): string {
+  const details =
+    error instanceof Error ? error.stack || `${error.name}: ${error.message}` : String(error);
+  return truncateUtf8(redactSecrets(details), 8 * 1024, '\n<diagnostic truncated>');
 }

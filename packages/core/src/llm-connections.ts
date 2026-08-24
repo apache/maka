@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * LLM provider connection metadata.
  *
@@ -49,6 +68,12 @@ export type {
   ProviderType,
 };
 
+export function isRelayProviderType(
+  providerType: ProviderType,
+): providerType is 'openai-compatible' | 'openai-responses-compatible' {
+  return PROVIDER_REGISTRY[providerType].relayModelProfiles === true;
+}
+
 export type ConnectionAuth =
   | { kind: 'api_key'; apiKey: string }
   | { kind: 'optional_api_key'; apiKey?: string }
@@ -77,6 +102,8 @@ export interface ModelInfo {
     vision?: boolean;
     reasoning?: boolean;
     functionCalling?: boolean;
+    /** Whether one response may contain multiple independent tool calls. */
+    parallelToolCalls?: boolean;
     imageGeneration?: boolean;
     /** Provider-hosted live web search, using this exact model and connection. */
     webSearch?: boolean;
@@ -107,13 +134,13 @@ export interface RuntimeExecutionConnection {
   defaultModel: string;
   models?: ModelInfo[];
   /**
-   * Per-model user declarations for an `openai-compatible` relay: the facts
+   * Per-model user declarations for a custom OpenAI relay: the facts
    * (offered thinking levels, vision enable/disable, context window) that
    * neither the relay's /models report nor built-in metadata can decide
    * (see `RelayModelProfile` in `model-thinking.ts`). First-class and typed —
    * relay models are unknown to metadata and a catalog refresh rewrites
    * `models[]` rows, so declarations live next to the user-edited fields.
-   * Invariants enforced at store boundaries: only `openai-compatible`
+   * Invariants enforced at store boundaries: only custom OpenAI relay
    * connections carry profiles, and only for ids in `enabledModelIds`
    * (disabling a model deletes its profile).
    */
@@ -166,6 +193,93 @@ export function connectionEnabledModelIds(connection: {
     if (id) seen.add(id);
   }
   return [...seen];
+}
+
+/**
+ * What `connection.models` IS, which is not the same question as where it was
+ * written from. This describes a catalog for display; it never decides what a
+ * connection may run — see `authorizeConnectionModel`.
+ *
+ * `modelSource` records provenance: `'fallback'` for the array a connection was
+ * seeded with, `'fetched'` once a discovery run replaced it. For a provider
+ * whose `modelDiscovery.kind` is `'fallback'` that run replays the array this
+ * build shipped, so `'fetched'` is accurate and still describes a snapshot. The
+ * predicate for "a provider enumerated this account" is therefore a
+ * conjunction, and this is the only place it lives:
+ *
+ *   - `live` — a provider with a model-list endpoint enumerated this account.
+ *     A model missing from it is one this provider did not mention, which is
+ *     worth telling the user.
+ *   - `snapshot` — the array this build shipped, either as the seed a
+ *     connection was created with or replayed by a `kind: 'fallback'`
+ *     provider's discovery run. It describes the provider at release, not the
+ *     account, so absence from it means nothing at all (#1584).
+ *   - `absent` — no catalog, and none asked for. A connection can be created
+ *     and used before its first discovery run (#2896).
+ *
+ * The split is by authority, not by how full the array is: "the provider
+ * listed nothing" and "nobody has asked yet" are opposite facts, and an empty
+ * array alone cannot tell them apart. `modelSource` can — the codec keeps it
+ * present exactly when a run has written this row.
+ */
+export type ConnectionModelInventory = 'absent' | 'live' | 'snapshot';
+
+/** The `LlmConnection` fields that decide what a connection may run. */
+export interface ConnectionModelAuthorityInput {
+  readonly providerType: ProviderType;
+  readonly enabledModelIds?: readonly string[];
+  readonly defaultModel?: string;
+  readonly models?: readonly ModelInfo[];
+  readonly modelSource?: ModelDiscoverySource;
+}
+
+export function classifyConnectionModelInventory(
+  connection: ConnectionModelAuthorityInput,
+): ConnectionModelInventory {
+  if (connection.models === undefined || connection.modelSource === undefined) return 'absent';
+  if (!providerSupportsModelDiscovery(connection.providerType)) return 'snapshot';
+  return connection.modelSource === 'fetched' ? 'live' : 'snapshot';
+}
+
+/**
+ * The model this connection runs for this id, or `undefined` if the user never
+ * enabled it.
+ *
+ * `enabledModelIds` is the whole authorization. Only the user writes it, and
+ * only through connection settings, so it is the one input that speaks for the
+ * account. Everything else Maka holds is an observation: a `/models` response
+ * ages, arrives filtered, or — for a provider with no model-list endpoint —
+ * never arrives at all. An observation that cannot see a model is not evidence
+ * the account cannot run it.
+ *
+ * So no catalog vetoes the user here. A model the user enabled and no source
+ * describes resolves to a bare `ModelInfo`, the request goes out, and the
+ * provider answers for its own account. That answer is always more accurate
+ * than a refusal Maka synthesizes from a list it may not even have (#1584),
+ * and it is what lets a connection work before its first discovery run
+ * (#2896). Guessing wrong costs one failed request with the provider's own
+ * error on it.
+ *
+ * `classifyConnectionModelInventory` still says whether a catalog could have
+ * seen the model, and the picker uses that to annotate one the provider did
+ * not mention. Annotating is not vetoing.
+ */
+export function authorizeConnectionModel(
+  connection: ConnectionModelAuthorityInput,
+  modelId: string,
+): ModelInfo | undefined {
+  const model = modelId.trim();
+  if (!model || !connectionEnabledModelIds(connection).includes(model)) return undefined;
+  // The one veto: quarantined ids fail in a shape the send cannot surface
+  // (e.g. a billed 200 with an empty completion), so the request settling it
+  // is not available as the arbiter. See ProviderDefaults.brokenModelIds.
+  if (PROVIDER_DEFAULTS[connection.providerType]?.brokenModelIds?.includes(model)) {
+    return undefined;
+  }
+  // The observed row wins wherever it exists: it carries wire metadata such as
+  // `apiProtocol`, and capabilities, which a synthesized entry cannot. Absent
+  // capabilities already mean "unknown", not "unsupported".
+  return connection.models?.find((entry) => entry.id.trim() === model) ?? { id: model };
 }
 
 /**
@@ -291,42 +405,29 @@ export function reconcileConnectionAfterModelFetch(
     ),
   ];
 
-  if (liveIds.length === 0) {
-    const defaultModel = previousDefault;
-    return {
-      defaultModel,
-      enabledModelIds: connectionEnabledModelIds({
-        defaultModel,
-        enabledModelIds: previousEnabled,
-      }),
-    };
-  }
-
-  if (!previousDefault) {
-    // Nothing to repair. Seed one only for a connection that has never had a
-    // list to pick from; otherwise the absence is the user's answer.
-    if (connection.hasModelInventory || previousEnabled.length > 0) {
-      return {
-        defaultModel: '',
-        enabledModelIds: previousEnabled.filter((id) => live.has(id)),
-      };
-    }
+  // Seed a first choice only for a connection that has never had a list to
+  // pick from: four providers ship no `fallbackModels`, so for them discovery
+  // is the only place a first default can come from.
+  if (
+    !previousDefault &&
+    previousEnabled.length === 0 &&
+    !connection.hasModelInventory &&
+    liveIds.length > 0
+  ) {
     return { defaultModel: liveIds[0]!, enabledModelIds: [liveIds[0]!] };
   }
 
-  const defaultModel =
-    (live.has(previousDefault) ? previousDefault : undefined) ??
-    previousEnabled.find((id) => live.has(id)) ??
-    liveIds[0]!;
-
-  // Keep previously enabled ids that still exist live, plus the (possibly
-  // repaired) default. Do not auto-enable the entire discovered catalog.
-  const keptEnabled = previousEnabled.filter((id) => live.has(id) || id === defaultModel);
+  // Everything the user chose survives the fetch. A response that omits a
+  // model is one observation of an account that can change between requests,
+  // arrive filtered, or answer for a provider with no model-list endpoint at
+  // all — none of which is grounds for deleting a choice the user made. The
+  // picker marks an id the provider no longer mentions; unchecking it stays
+  // the user's decision (#1584).
   return {
-    defaultModel,
+    defaultModel: previousDefault,
     enabledModelIds: connectionEnabledModelIds({
-      defaultModel,
-      enabledModelIds: keptEnabled,
+      defaultModel: previousDefault,
+      enabledModelIds: previousEnabled,
     }),
   };
 }
@@ -349,6 +450,22 @@ export interface ConnectionTestResult {
 
 export const PROVIDER_DEFAULTS = PROVIDER_REGISTRY;
 
+/**
+ * The registry entry for a provider, or `undefined` when this build does not
+ * register one.
+ *
+ * Sole owner of the question "is this `providerType` one we know". Plain
+ * indexing cannot answer it: `PROVIDER_DEFAULTS` is an object literal, so
+ * `PROVIDER_DEFAULTS['__proto__']` and `['toString']` resolve to inherited
+ * members and read as registered providers. Every recognition site goes
+ * through here rather than repeating the own-property check.
+ */
+export function providerDefaultsOf(providerType: string): ProviderDefaults | undefined {
+  return Object.hasOwn(PROVIDER_DEFAULTS, providerType)
+    ? PROVIDER_DEFAULTS[providerType as ProviderType]
+    : undefined;
+}
+
 export function defaultEnabledModelIdsWhenOmitted(
   providerType: ProviderType,
 ): readonly string[] | undefined {
@@ -370,11 +487,21 @@ export function providerSupportsModelDiscovery(providerType: ProviderType): bool
   return discovery !== undefined && discovery.kind !== 'fallback';
 }
 
+/**
+ * The backend that runs a connection.
+ *
+ * Throws for an unknown `providerType` (a legacy seed, or a connection
+ * persisted on a branch that registers a provider this build doesn't know).
+ * It used to answer `'fake'` there, which was the last live producer of that
+ * value (#3211); there is no honest backend to name for a provider this build
+ * cannot describe. Callers that need a non-throwing answer are asking whether
+ * the connection is usable, not which backend runs it — use `isRealConnection`
+ * / `isConnectionReady` from `connection-readiness.ts`.
+ */
 export function backendKindOf(c: Pick<LlmConnection, 'providerType'>): BackendKind {
-  // Unknown providerType (legacy seed, or a connection persisted on a branch
-  // that registers a provider this build doesn't know) → treat as non-real,
-  // matching `isFakeBackend` in connection-readiness.ts.
-  return PROVIDER_DEFAULTS[c.providerType]?.backendKind ?? 'fake';
+  const defaults = providerDefaultsOf(c.providerType);
+  if (!defaults) throw new Error(`Unknown providerType: ${c.providerType}`);
+  return defaults.backendKind;
 }
 
 export function effectiveBaseUrl(c: Pick<LlmConnection, 'providerType' | 'baseUrl'>): string {
@@ -598,7 +725,7 @@ export interface UpdateConnectionInput {
   /**
    * Replace the whole relay profiles table: absent leaves it untouched,
    * `null` clears it outright, a table replaces it (with the usual rules —
-   * only `openai-compatible`, only for `enabledModelIds`).
+   * only custom OpenAI relays, only for `enabledModelIds`).
    */
   relayModelProfiles?: RelayModelProfiles | null;
   requestBodyOverlay?: JsonObject | null;

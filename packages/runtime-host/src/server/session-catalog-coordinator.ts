@@ -1,5 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { createHash } from 'node:crypto';
+import { authorizeConnectionModel } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
@@ -62,7 +82,6 @@ import {
 } from '../protocol/index.js';
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
-import { resolveAdmittedConnectionModel } from './connection-model-admission.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
 
@@ -161,7 +180,6 @@ export class HostSessionCatalogCoordinator {
       this.#readRuntimePolicy(),
     ]);
     return {
-      backend: 'ai-sdk',
       llmConnectionSlug: model.connectionSlug,
       model: model.model,
       permissionMode: policy.policy.chatDefaults.permissionMode,
@@ -346,7 +364,6 @@ export class HostSessionCatalogCoordinator {
               ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
               name: prepared.name,
               labels: [...prepared.labels],
-              backend: 'ai-sdk',
               llmConnectionSlug: model.connectionSlug,
               model: model.model,
               ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
@@ -670,6 +687,16 @@ export class HostSessionCatalogCoordinator {
         'Session model connection is not ready',
       );
     }
+    // Refused before the Session is committed, not when a backend is later
+    // built for it: an upgraded installation keeps the credential, so nothing
+    // downstream of here would notice on its own. Covers the default target and
+    // an explicit one alike, which is what reaches Bot, CLI and scheduled runs.
+    if (readiness.kind === 'provider_retired') {
+      throw new SessionOperationFailure(
+        'invalid_request',
+        'Session model connection uses a sign-in that was removed from Maka',
+      );
+    }
     if (
       selected.connectionId !== undefined &&
       readiness.connection.connectionId !== selected.connectionId
@@ -680,7 +707,7 @@ export class HostSessionCatalogCoordinator {
       );
     }
     const connection = readiness.connection;
-    const model = resolveAdmittedConnectionModel(connection, selected.modelId);
+    const model = authorizeConnectionModel(connection, selected.modelId);
     if (!model) {
       throw new SessionOperationFailure('invalid_request', 'Session model is not enabled');
     }
@@ -855,7 +882,7 @@ export function projectSessionCatalogRecord(
       hostCwd: header.cwd,
     },
     createdAt: header.createdAt,
-    lastUsedAt: header.lastUsedAt,
+    activityAt: record.activityAt,
     name: header.name,
     isFlagged: header.isFlagged,
     isArchived: header.isArchived,
@@ -998,7 +1025,7 @@ function encodeCursor(record: SessionCatalogRecord): string {
   return Buffer.from(
     JSON.stringify({
       version: 1,
-      activityAt: catalogActivityAt(record.header),
+      activityAt: record.activityAt,
       sessionId: record.header.id,
     }),
     'utf8',
@@ -1038,10 +1065,6 @@ function decodeCursor(cursor: string): DecodedSessionCatalogCursor | undefined {
   } catch {
     return undefined;
   }
-}
-
-function catalogActivityAt(header: SessionHeader): number {
-  return header.lastMessageAt ?? header.lastUsedAt ?? header.createdAt;
 }
 
 function normalizedSessionName(name: string): string {

@@ -1,3 +1,22 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # Session Task Ledger Lifecycle
 
 This document defines the lifecycle and persistence contract for the task ledger
@@ -130,10 +149,6 @@ work themselves. `task_create.tasks[].parent_id`, all task reference inputs,
 and `agent_spawn.task_id` accept UUIDs or short keys. `task_list` supports exact
 `status`, `include_terminal`, and `include_archived` filters; its no-argument
 behavior remains compatible with the original full-list behavior.
-
-`MAKA_TASK_LEDGER_TOOLS=false` disables registration. Legacy
-PascalCase aliases are not advertised and require an explicit compatibility
-flag in main-process wiring.
 
 ### Runtime Host Authority
 

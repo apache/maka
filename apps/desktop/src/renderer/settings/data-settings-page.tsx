@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useEffect, useState } from 'react';
 import type { ConfigCategory } from '@maka/storage';
 import {
@@ -38,6 +57,8 @@ function summarizeImportResult(result: ConfigImportResult, copy: DataSettingsCop
 
 export function DataSettingsPage(props: {
   runtimeHostStatus: 'loading' | 'ready' | 'unavailable' | 'error';
+  runtimeHostTargetVerified: boolean;
+  runtimeHostErrorMessage?: string;
   onRetryRuntimeHost(): Promise<void>;
 }) {
   const host = useOptionalRuntimeHostSettingsTarget();
@@ -55,10 +76,11 @@ export function DataSettingsPage(props: {
   );
   const [importStrategy, setImportStrategy] = useState<'skip' | 'overwrite'>('skip');
   const [configBusy, setConfigBusy] = useState<null | 'export' | 'import'>(null);
-  const runtimeHostAvailable = host !== undefined && props.runtimeHostStatus === 'ready';
+  const runtimeHostAvailable = host !== undefined;
+  const diagnosticTarget = host ? { profileId: host.profileId } : undefined;
 
   useEffect(() => {
-    if (!host) {
+    if (!host || !props.runtimeHostTargetVerified) {
       setInfo(null);
       setInfoError(null);
       return;
@@ -74,12 +96,12 @@ export function DataSettingsPage(props: {
       const message = settingsActionErrorMessage(error, locale);
       setInfo(null);
       setInfoError(message);
-      toast.error(copy.loadFailed, message);
+      toast.error(copy.loadFailed, message, undefined, diagnosticTarget);
     });
     return () => {
       cancelled = true;
     };
-  }, [host, locale, toast]);
+  }, [host, locale, props.runtimeHostTargetVerified, toast]);
 
   async function runDataAction(action: string, run: () => Promise<void>) {
     if (!dataActionGuard.begin(action)) return;
@@ -98,7 +120,7 @@ export function DataSettingsPage(props: {
   const dataActionDisabled = Boolean(pendingDataAction);
 
   async function openWorkspace() {
-    if (!info) return;
+    if (!props.runtimeHostTargetVerified || !info || !host) return;
     await runDataAction('workspace:open', async () => {
       try {
         const result = await window.maka.app.openPath('workspace', undefined, host);
@@ -107,18 +129,25 @@ export function DataSettingsPage(props: {
           toast.error(
             copy.openFailed(openPathActionLabel('workspace', locale)),
             openPathFailureCopy(result.reason, locale),
+            undefined,
+            diagnosticTarget,
           );
         }
       } catch (error) {
         if (dataPageMountedRef.current) {
-          toast.error(copy.openFailed(openPathActionLabel('workspace', locale)), settingsActionErrorMessage(error, locale));
+          toast.error(
+            copy.openFailed(openPathActionLabel('workspace', locale)),
+            settingsActionErrorMessage(error, locale),
+            undefined,
+            diagnosticTarget,
+          );
         }
       }
     });
   }
 
   async function copyPath() {
-    if (!info) return;
+    if (!props.runtimeHostTargetVerified || !info || !host) return;
     await runDataAction('workspace:path:copy', async () => {
       try {
         await navigator.clipboard.writeText(info.workspacePath);
@@ -152,7 +181,7 @@ export function DataSettingsPage(props: {
   }
 
   async function exportConfig() {
-    if (configBusy || !host) return;
+    if (!props.runtimeHostTargetVerified || configBusy || !host) return;
     const categories = [...selectedCategories];
     if (categories.length === 0) {
       toast.error(copy.selectCategory);
@@ -164,17 +193,27 @@ export function DataSettingsPage(props: {
       if (res.ok) {
         toast.success(copy.exported, copy.exportedDetail(res.includedData));
       } else if (res.reason !== 'canceled') {
-        toast.error(copy.exportFailed, res.reason === 'no_categories' ? copy.noCategories : copy.tryAgain);
+        toast.error(
+          copy.exportFailed,
+          res.reason === 'no_categories' ? copy.noCategories : copy.tryAgain,
+          undefined,
+          diagnosticTarget,
+        );
       }
     } catch (error) {
-      toast.error(copy.exportFailed, settingsActionErrorMessage(error, locale));
+      toast.error(
+        copy.exportFailed,
+        settingsActionErrorMessage(error, locale),
+        undefined,
+        diagnosticTarget,
+      );
     } finally {
       setConfigBusy(null);
     }
   }
 
   async function importConfig() {
-    if (configBusy || !host) return;
+    if (!props.runtimeHostTargetVerified || configBusy || !host) return;
     setConfigBusy('import');
     try {
       const res = await window.maka.config.import({ strategy: importStrategy }, host);
@@ -184,10 +223,15 @@ export function DataSettingsPage(props: {
         const detail = res.message && (locale === 'zh' || !/[\u3400-\u9fff]/u.test(res.message))
           ? res.message
           : copy.invalidFile;
-        toast.error(copy.importFailed, detail);
+        toast.error(copy.importFailed, detail, undefined, diagnosticTarget);
       }
     } catch (error) {
-      toast.error(copy.importFailed, settingsActionErrorMessage(error, locale));
+      toast.error(
+        copy.importFailed,
+        settingsActionErrorMessage(error, locale),
+        undefined,
+        diagnosticTarget,
+      );
     } finally {
       setConfigBusy(null);
     }
@@ -195,12 +239,16 @@ export function DataSettingsPage(props: {
 
   return (
     <SettingsPage>
-      {!runtimeHostAvailable ? (
+      {props.runtimeHostStatus === 'error' ||
+      (!runtimeHostAvailable && props.runtimeHostStatus === 'unavailable') ? (
         <Banner
           status={props.runtimeHostStatus === 'error' ? 'error' : 'warning'}
-          title={props.runtimeHostStatus === 'loading'
-            ? sharedCopy.loading
+          title={props.runtimeHostStatus === 'error'
+            ? sharedCopy.settingsLoadFailed
             : sharedCopy.runtimeHostUnavailable}
+          description={props.runtimeHostStatus === 'error'
+            ? props.runtimeHostErrorMessage
+            : undefined}
           endContent={props.runtimeHostStatus === 'error' ? (
             <Button
               variant="secondary"
@@ -242,13 +290,13 @@ export function DataSettingsPage(props: {
         <Button
           variant="secondary"
           onClick={() => void openWorkspace()}
-          isDisabled={!info || dataActionDisabled}
+          isDisabled={!props.runtimeHostTargetVerified || !info || dataActionDisabled}
           label={isDataActionPending('workspace:open') ? copy.opening : copy.openWorkspace}
         />
         <Button
           variant="secondary"
           onClick={() => void copyPath()}
-          isDisabled={!info || dataActionDisabled}
+          isDisabled={!props.runtimeHostTargetVerified || !info || dataActionDisabled}
           label={isDataActionPending('workspace:path:copy') ? copy.copying : copy.copyPath}
         />
         <Button
@@ -327,11 +375,21 @@ export function DataSettingsPage(props: {
               screen reader had to re-read the button to notice. `configBusy`
               stays because it is the *cross-button* rule (one config operation
               at a time), which is not a thing a single control can know. */}
-          <Button variant="primary" isDisabled={configBusy !== null} clickAction={() => exportConfig()} label={copy.exportConfig} />
+          <Button
+            variant="primary"
+            isDisabled={!props.runtimeHostTargetVerified || configBusy !== null}
+            clickAction={() => exportConfig()}
+            label={copy.exportConfig}
+          />
           {/* One primary per action row: export is the action this section
               is titled after; import is the inverse operation and reads
               secondary. Two filled buttons recommended neither. */}
-          <Button variant="secondary" isDisabled={configBusy !== null} clickAction={() => importConfig()} label={copy.importConfig} />
+          <Button
+            variant="secondary"
+            isDisabled={!props.runtimeHostTargetVerified || configBusy !== null}
+            clickAction={() => importConfig()}
+            label={copy.importConfig}
+          />
         </SettingsActions>
       </SettingsSection> : null}
     </SettingsPage>

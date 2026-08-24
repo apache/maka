@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   CombinedAutocompleteProvider,
   Editor,
@@ -21,7 +40,6 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { ModelChoice, OnboardingProviderEntry } from './pi-tui-contracts.js';
-import { skillInvocationPrefixAt } from './skill-token.js';
 import { ansi, editorTheme, selectListTheme, stripAnsi } from './tui-ansi.js';
 
 export class MakaAutocompleteProvider implements AutocompleteProvider {
@@ -251,7 +269,29 @@ export interface MakaSlashCommandMetadata {
   description: string;
 }
 
+/**
+ * How the TUI treats a slash command submitted while a turn is running:
+ * 'local' answers it immediately, 'refuse' rejects it with a notice, and
+ * 'intercepted' commands are claimed by dedicated checks ahead of generic
+ * slash routing (/exit, /swarm, /graph). Only an unrecognized form — e.g.
+ * /exit with arguments, which isExitPrompt does not match — can still reach
+ * the disposition, where it falls through to 'refuse'.
+ */
+export type SlashCommandMidTurnDisposition = 'local' | 'switch' | 'refuse' | 'intercepted';
+
 export interface MakaSlashCommand extends MakaSlashCommandMetadata {
+  /**
+   * Mid-turn disposition. 'local' requires the handler to be independent of
+   * the running turn — it must not enter runControl, whose busy gate would
+   * silently no-op. 'switch' is allowed mid-turn because it detaches this
+   * client's VIEW from the running Turn without touching it (Runtime Host
+   * mode keeps the Turn alive; #3380) — its handler must route through the
+   * detach path, not runControl, while a turn runs. 'refuse' is the safe
+   * default for anything that mutates session state or opens a picker the
+   * turn would race. Declared on every handler so a newly added command must
+   * state its answer instead of inheriting one from the routing call site.
+   */
+  midTurn: SlashCommandMidTurnDisposition;
   run(parts: string[], rawTail: string | undefined, context: { idleMs: number }): void;
   /** Alternate names that dispatch to this command without appearing in
    *  completion or the /help menu (e.g. /quit as an alias of /exit). */
@@ -264,6 +304,18 @@ function slashCommandPrefix(lines: string[], cursorLine: number, cursorCol: numb
   return textBeforeCursor.startsWith('/') && !textBeforeCursor.includes(' ')
     ? textBeforeCursor
     : null;
+}
+
+function skillInvocationPrefixAt(
+  lines: string[],
+  cursorLine: number,
+  cursorCol: number,
+): { prefix: string; query: string } | null {
+  const currentLine = lines[cursorLine] || '';
+  const beforeCursor = currentLine.slice(0, cursorCol);
+  const match = /(?:^|\s)(\/skill:([A-Za-z0-9._-]*))$/.exec(beforeCursor);
+  if (!match) return null;
+  return { prefix: match[1], query: match[2] };
 }
 
 // A `/`-token that begins mid-message (after whitespace) on the first line,
@@ -549,18 +601,22 @@ function modelChoicePickerItems(
     const tags = [choice.connectionName || choice.connectionSlug];
     if (isCurrent) tags.push('current');
     else if (choice.isDefaultConnection) tags.push('default');
-    return { value: String(index), label: choice.model, description: tags.join(' · ') };
+    return {
+      value: String(index),
+      label: choice.displayName?.trim() || choice.model,
+      description: tags.join(' · '),
+    };
   });
 }
 
 /**
  * Case-insensitive substring match for the `/model` search field, against every
  * criterion the issue names: model id, provider label/type, and connection
- * name/slug. `ModelChoice` carries no display name, so the model id is the only
- * model-side match target; a display-name enrichment would slot in here.
+ * name/slug. Model ids and display names are both model-side match targets.
  */
 function matchesModelChoice(choice: ModelChoice, query: string): boolean {
   if (choice.model.toLowerCase().includes(query)) return true;
+  if (choice.displayName?.toLowerCase().includes(query)) return true;
   if (choice.connectionName.toLowerCase().includes(query)) return true;
   if (choice.connectionSlug.toLowerCase().includes(query)) return true;
   if (choice.providerType.toLowerCase().includes(query)) return true;
@@ -698,11 +754,10 @@ export class ModelSearchOverlay implements Component {
  * #1611: `current` marks an option that is genuinely in force, so choosing it
  * is a no-op. A read-only session is neither of these options, and marking
  * Auto as current there turned "confirm what I already have" into a silent
- * widening of the boundary. Legacy `execute` has no boundary of its own and
- * really does resolve to Auto, so it still marks Auto.
+ * widening of the boundary.
  */
 export function permissionModePickerItems(currentMode: PermissionMode): SelectItem[] {
-  const autoIsCurrent = currentMode === 'ask' || currentMode === 'execute';
+  const autoIsCurrent = currentMode === 'ask';
   return [
     {
       value: 'auto',
@@ -786,7 +841,7 @@ function padLine(text: string, width: number): string {
   return `${trimmed}${' '.repeat(Math.max(0, safeWidth - visibleWidth(trimmed)))}`;
 }
 
-export type OnboardingWizardPhase = 'search' | 'key' | 'models' | 'success';
+export type OnboardingWizardPhase = 'search' | 'baseUrl' | 'key' | 'models' | 'success';
 
 export type OnboardingWizardStatus =
   | { kind: 'prompt' }
@@ -796,8 +851,14 @@ export type OnboardingWizardStatus =
 
 export interface OnboardingWizardInput {
   providers: readonly OnboardingProviderEntry[];
-  /** search→key: the user picked a provider. The runner records it for verify/save. */
-  onPickProvider: (providerType: ProviderType) => void;
+  /** search→key: the user picked a provider. The runner records it — and the
+   *   existing connection's identity, when the catalog resolved one — for
+   *   verify/save, so saving edits that connection in place. */
+  onPickProvider: (providerType: ProviderType, existingConnectionId: string | undefined) => void;
+  /** baseUrl submit (only for `requiresBaseUrl` providers). Empty means "reuse
+   *   the existing connection's persisted endpoint"; the wizard has already
+   *   rejected an empty value for a provider with no connection. */
+  onSubmitBaseUrl: (baseUrl: string) => void;
   /** key submit. The value may be empty — an existing connection reuses the stored
    *   secret, while a new required-key provider is rejected by verify. */
   onSubmitKey: (apiKey: string) => void;
@@ -827,6 +888,7 @@ export class OnboardingWizard implements Component {
   private picked: OnboardingProviderEntry | undefined;
   private status: OnboardingWizardStatus = { kind: 'prompt' };
   private readonly searchEditor: Editor;
+  private readonly baseUrlEditor: Editor;
   private readonly keyEditor: Editor;
   private readonly modelsSearchEditor: Editor;
   private filtered: readonly OnboardingProviderEntry[];
@@ -852,6 +914,14 @@ export class OnboardingWizard implements Component {
     // place. SelectList has no setItems, so rebuild it; the next render picks
     // the new instance up.
     this.searchEditor.onChange = (text) => this.applyQuery(text);
+    this.baseUrlEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
+    // A fixed typo should not keep showing the old failure.
+    this.baseUrlEditor.onChange = () => {
+      if (this.phase === 'baseUrl' && this.status.kind === 'error') {
+        this.status = { kind: 'prompt' };
+      }
+    };
+    this.baseUrlEditor.onSubmit = (value) => this.submitBaseUrl(value);
     this.keyEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
     // Allow a blank submit: an existing connection reuses the stored secret; the
     // host's verify rejects a blank key for a new required-key provider.
@@ -879,8 +949,11 @@ export class OnboardingWizard implements Component {
 
   private enterKeyPhase(provider: OnboardingProviderEntry): void {
     this.picked = provider;
-    this.phase = 'key';
+    // A relay has no registry endpoint, so the wizard must collect one
+    // before the key — the deferred phase-2 step from #1254 (#3405).
+    this.phase = provider.requiresBaseUrl ? 'baseUrl' : 'key';
     this.status = { kind: 'prompt' };
+    this.baseUrlEditor.setText('');
     this.keyEditor.setText('');
     this.keyEditor.disableSubmit = false;
     this.searchEditor.setText('');
@@ -892,7 +965,46 @@ export class OnboardingWizard implements Component {
     this.modelHighlight = 0;
     this.modelScroll = 0;
     this.modelsSearchEditor.setText('');
-    this.input.onPickProvider(provider.providerType);
+    this.input.onPickProvider(provider.providerType, provider.connectionId);
+  }
+
+  private submitBaseUrl(value: string): void {
+    if (!this.picked || this.phase !== 'baseUrl') return;
+    const trimmed = value.trim();
+    const error = this.validateBaseUrl(trimmed);
+    if (error) {
+      this.status = { kind: 'error', text: error };
+      return;
+    }
+    this.input.onSubmitBaseUrl(trimmed);
+    this.phase = 'key';
+    this.status = { kind: 'prompt' };
+  }
+
+  /**
+   * Mirrors the rules the Host's catalog normalizer enforces, so the common
+   * mistakes fail here with a readable message instead of surfacing as a
+   * protocol decode error after Enter on the key step.
+   */
+  private validateBaseUrl(trimmed: string): string | null {
+    if (!trimmed) {
+      return this.picked?.hasConnection ? null : '需要填写 Base URL';
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return 'Base URL 不是有效的 URL';
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return 'Base URL 必须使用 http 或 https';
+    }
+    if (parsed.username || parsed.password) return 'Base URL 不能包含账号密码';
+    if (trimmed.includes('?') || trimmed.includes('#')) return 'Base URL 不能包含查询串或片段';
+    if (new TextEncoder().encode(parsed.toString()).byteLength > 2_048) {
+      return 'Base URL 不能超过 2048 字节';
+    }
+    return null;
   }
 
   private applyQuery(text: string): void {
@@ -979,15 +1091,23 @@ export class OnboardingWizard implements Component {
 
   invalidate(): void {
     this.searchEditor.invalidate();
+    this.baseUrlEditor.invalidate();
     this.keyEditor.invalidate();
     this.modelsSearchEditor.invalidate();
     this.list.invalidate();
+  }
+
+  /** Step label: relays have four steps (the base-URL one), the rest three. */
+  private step(position: number): string {
+    return `${position}/${this.picked?.requiresBaseUrl ? 4 : 3}`;
   }
 
   handleInput(data: string): void {
     switch (this.phase) {
       case 'search':
         return this.handleSearchInput(data);
+      case 'baseUrl':
+        return this.handleBaseUrlInput(data);
       case 'key':
         return this.handleKeyInput(data);
       case 'models':
@@ -995,6 +1115,22 @@ export class OnboardingWizard implements Component {
       case 'success':
         return this.handleSuccessInput(data);
     }
+  }
+
+  private handleBaseUrlInput(data: string): void {
+    if (matchesKey(data, Key.ctrl('c'))) {
+      this.input.onCancel();
+      return;
+    }
+    if (matchesKey(data, Key.escape)) {
+      this.phase = 'search';
+      this.picked = undefined;
+      this.status = { kind: 'prompt' };
+      this.baseUrlEditor.setText('');
+      this.input.onBack();
+      return;
+    }
+    this.baseUrlEditor.handleInput(data);
   }
 
   private handleSearchInput(data: string): void {
@@ -1026,8 +1162,14 @@ export class OnboardingWizard implements Component {
       return;
     }
     if (matchesKey(data, Key.escape)) {
-      this.phase = 'search';
-      this.picked = undefined;
+      // One level back: a relay returns to its base-URL step, everything
+      // else to the provider search.
+      if (this.picked?.requiresBaseUrl) {
+        this.phase = 'baseUrl';
+      } else {
+        this.phase = 'search';
+        this.picked = undefined;
+      }
       this.status = { kind: 'prompt' };
       this.keyEditor.setText('');
       this.keyEditor.disableSubmit = false;
@@ -1124,6 +1266,8 @@ export class OnboardingWizard implements Component {
     switch (this.phase) {
       case 'search':
         return this.renderSearch(safeWidth);
+      case 'baseUrl':
+        return this.renderBaseUrl(safeWidth);
       case 'key':
         return this.renderKey(safeWidth);
       case 'models':
@@ -1133,13 +1277,37 @@ export class OnboardingWizard implements Component {
     }
   }
 
+  private renderBaseUrl(width: number): string[] {
+    this.searchEditor.focused = false;
+    this.baseUrlEditor.focused = true;
+    this.keyEditor.focused = false;
+    this.modelsSearchEditor.focused = false;
+    const label = this.picked?.label ?? '';
+    const hint = this.picked?.hasConnection
+      ? '留空复用已保存的 Base URL，或输入新地址替换 · Esc 返回选择服务商'
+      : '输入中转站的 Base URL（http/https）· Esc 返回选择服务商';
+    return [
+      padLine(`Set Up Provider ${ansi.dim(`· ${this.step(2)}`)} ${ansi.accent(label)}`, width),
+      padLine(ansi.dim(hint), width),
+      padLine('', width),
+      ...this.renderFieldRow(this.baseUrlEditor, 'Base URL', width),
+      padLine('', width),
+      padLine(
+        this.status.kind === 'error' ? ansi.red(`✗ ${this.status.text}`) : ansi.dim('Enter 继续'),
+        width,
+      ),
+      padLine(ansi.accent('-'.repeat(width)), width),
+    ];
+  }
+
   private renderSearch(width: number): string[] {
     this.searchEditor.focused = true;
+    this.baseUrlEditor.focused = false;
     this.keyEditor.focused = false;
     this.modelsSearchEditor.focused = false;
     return [
       padLine(
-        `Set Up Provider ${ansi.dim('· 1/3')} ${ansi.accent(String(this.filtered.length))}`,
+        `Set Up Provider ${ansi.dim(`· ${this.step(1)}`)} ${ansi.accent(String(this.filtered.length))}`,
         width,
       ),
       padLine(ansi.dim('搜索服务商，↑↓ 选择 · Enter 确认 · Esc 取消'), width),
@@ -1155,14 +1323,19 @@ export class OnboardingWizard implements Component {
 
   private renderKey(width: number): string[] {
     this.searchEditor.focused = false;
+    this.baseUrlEditor.focused = false;
     this.keyEditor.focused = this.status.kind === 'prompt' || this.status.kind === 'error';
     this.modelsSearchEditor.focused = false;
     const label = this.picked?.label ?? '';
+    const backTarget = this.picked?.requiresBaseUrl ? 'Esc 返回 Base URL' : 'Esc 返回选择服务商';
     const hint = this.picked?.hasConnection
-      ? '留空复用已保存的 key，或输入新 key 轮换 · Esc 返回选择服务商'
-      : '输入 API key · 仅本机存储 · Esc 返回选择服务商';
+      ? `留空复用已保存的 key，或输入新 key 轮换 · ${backTarget}`
+      : `输入 API key · 仅本机存储 · ${backTarget}`;
     return [
-      padLine(`Set Up Provider ${ansi.dim('· 2/3')} ${ansi.accent(label)}`, width),
+      padLine(
+        `Set Up Provider ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 3 : 2)}`)} ${ansi.accent(label)}`,
+        width,
+      ),
       padLine(ansi.dim(hint), width),
       padLine('', width),
       ...this.renderFieldRow(this.keyEditor, 'API key', width),
@@ -1187,11 +1360,15 @@ export class OnboardingWizard implements Component {
 
   private renderModels(width: number): string[] {
     this.searchEditor.focused = false;
+    this.baseUrlEditor.focused = false;
     this.keyEditor.focused = false;
     this.modelsSearchEditor.focused = this.status.kind !== 'saving';
     const label = this.picked?.label ?? '';
     const lines = [
-      padLine(`Set Up Provider ${ansi.dim('· 3/3')} ${ansi.accent(label)}`, width),
+      padLine(
+        `Set Up Provider ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 4 : 3)}`)} ${ansi.accent(label)}`,
+        width,
+      ),
       padLine(ansi.dim('搜索模型，↑↓ 选择 · Space 切换 · Enter 保存 · Esc 返回'), width),
       padLine('', width),
       ...this.renderFieldRow(this.modelsSearchEditor, '搜索', width),
@@ -1233,6 +1410,7 @@ export class OnboardingWizard implements Component {
 
   private renderSuccess(width: number): string[] {
     this.searchEditor.focused = false;
+    this.baseUrlEditor.focused = false;
     this.keyEditor.focused = false;
     this.modelsSearchEditor.focused = false;
     const label = this.picked?.label ?? '';

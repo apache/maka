@@ -1,6 +1,23 @@
-import { spawn } from 'node:child_process';
-import { constants } from 'node:fs';
-import { access, readFile, realpath, stat } from 'node:fs/promises';
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveXdgConfigHome } from '@maka/storage';
@@ -13,27 +30,36 @@ import {
   type RuntimeHostServiceDeployment,
   writeRuntimeHostServiceFile,
 } from './runtime-host-service-manager.js';
-
-const SERVICE_MANAGER_COMMAND_TIMEOUT_MS = 30_000;
-
-interface CommandResult {
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}
+import {
+  runtimeHostServiceLaunchArguments,
+  validateRuntimeHostServiceLaunch,
+} from './runtime-host-service-launch.js';
+import {
+  runRuntimeHostServiceManagerCommand,
+  type RuntimeHostServiceManagerCommandResult,
+} from './runtime-host-service-manager-process.js';
 
 interface SystemdUnitContext {
   readonly unitName: string;
   readonly unitPath: string;
-  readonly runSystemctl: (args: readonly string[]) => Promise<CommandResult>;
+  readonly runSystemctl: (
+    args: readonly string[],
+  ) => Promise<RuntimeHostServiceManagerCommandResult>;
 }
 
 export interface SystemdUserServiceOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly homeDir?: string;
   readonly uid?: number;
-  readonly runSystemctl?: (args: readonly string[]) => Promise<CommandResult>;
-  readonly runLoginctl?: (args: readonly string[]) => Promise<CommandResult>;
+  readonly runSystemctl?: (
+    args: readonly string[],
+  ) => Promise<RuntimeHostServiceManagerCommandResult>;
+  readonly runLoginctl?: (
+    args: readonly string[],
+  ) => Promise<RuntimeHostServiceManagerCommandResult>;
+  readonly runJournalctl?: (
+    args: readonly string[],
+  ) => Promise<RuntimeHostServiceManagerCommandResult>;
 }
 
 export function createSystemdUserRuntimeHostService(
@@ -49,6 +75,7 @@ export function createSystemdUserRuntimeHostService(
     runSystemctl,
   };
   const runLoginctl = options.runLoginctl ?? defaultRunLoginctl;
+  const runJournalctl = options.runJournalctl ?? defaultRunJournalctl;
   const uid = options.uid ?? process.getuid?.();
 
   const readStatus = async (): Promise<RuntimeHostServiceBackendStatus> => {
@@ -70,7 +97,7 @@ export function createSystemdUserRuntimeHostService(
       await assertUserLinger(uid, runLoginctl);
     },
     install: async (config) => {
-      await validateLaunchFiles(config);
+      await validateRuntimeHostServiceLaunch(config);
       const previous = await captureSystemdDeployment(context.unitPath, readStatus);
       try {
         await applySystemdDeployment(context, config);
@@ -86,10 +113,55 @@ export function createSystemdUserRuntimeHostService(
         },
       } satisfies RuntimeHostServiceDeployment;
     },
+    replace: async (config) => {
+      await validateRuntimeHostServiceLaunch(config);
+      await applySystemdDeployment(context, config);
+    },
+    verifyDeployment: async (config) => {
+      await validateRuntimeHostServiceLaunch(config);
+      const [status, unit] = await Promise.all([
+        readSystemdStatus(context),
+        readFile(context.unitPath, 'utf8').catch((error: unknown) => {
+          if (isNodeError(error, 'ENOENT')) return null;
+          throw error;
+        }),
+      ]);
+      if (
+        status.loadState !== 'loaded' ||
+        status.fragmentPath !== context.unitPath ||
+        status.needDaemonReload !== 'no' ||
+        Boolean(status.dropInPaths?.trim()) ||
+        unit !== renderSystemdUnit(config)
+      ) {
+        throw new RuntimeHostServiceManagerError(
+          'target_mismatch',
+          'The loaded Runtime Host service does not match its managed deployment',
+        );
+      }
+    },
     status: readStatus,
     start: () => runLifecycleAction(context, 'start'),
     stop: () => runLifecycleAction(context, 'stop'),
     restart: () => runLifecycleAction(context, 'restart'),
+    logs: async () => {
+      const result = await runJournalctl([
+        '--user-unit',
+        context.unitName,
+        '--no-pager',
+        '--lines=200',
+        '--output=short-iso',
+      ]).catch((error) => {
+        throw new RuntimeHostServiceManagerError(
+          'service_manager_unavailable',
+          'Unable to read Runtime Host service logs',
+          { cause: error },
+        );
+      });
+      if (result.exitCode !== 0) {
+        throw managerError('Reading Runtime Host service logs failed', result);
+      }
+      return result.stdout;
+    },
     uninstall: async () => {
       const before = await readSystemdStatus(context);
       if (before.loadState !== 'not-found') {
@@ -144,29 +216,13 @@ function resolveSystemdUserRuntimeHostServiceName(serviceId: string): string {
 }
 
 export function renderSystemdUnit(config: RuntimeHostManagedServiceConfig): string {
-  const args = [
-    config.launch.nodePath,
-    config.launch.cliPath,
-    'runtime-host',
-    'serve',
-    '--root',
-    config.rootPath,
-    ...config.projectDirectoryRoots.flatMap(({ label, path }) => [
-      '--project-root',
-      `${label}=${path}`,
-    ]),
-    '--websocket-host',
-    config.websocket.host,
-    '--websocket-port',
-    String(config.websocket.port),
-    '--websocket-path',
-    config.websocket.path,
-    '--json',
-  ];
+  const args = runtimeHostServiceLaunchArguments(config);
   return [
     '[Unit]',
     'Description=Maka Runtime Host',
     'After=network.target',
+    'StartLimitIntervalSec=60s',
+    'StartLimitBurst=5',
     '',
     '[Service]',
     'Type=simple',
@@ -187,6 +243,9 @@ interface SystemdStatus {
   readonly loadState: string;
   readonly activeState: string;
   readonly unitFileState: string;
+  readonly fragmentPath?: string;
+  readonly needDaemonReload?: string;
+  readonly dropInPaths?: string;
   readonly mainPid?: string;
   readonly execMainStatus?: string;
 }
@@ -221,6 +280,7 @@ async function applySystemdDeployment(
     ['enable', context.unitName],
     'Enabling the Runtime Host service failed',
   );
+  await context.runSystemctl(['reset-failed', context.unitName]);
   await requireSystemctl(
     context.runSystemctl,
     ['restart', context.unitName],
@@ -282,6 +342,9 @@ async function restoreSystemdDeployment(
     [snapshot.status.enabled ? 'enable' : 'disable', context.unitName],
     'Restoring the Runtime Host service enablement failed',
   );
+  if (snapshot.status.active) {
+    await context.runSystemctl(['reset-failed', context.unitName]);
+  }
   await requireSystemctl(
     context.runSystemctl,
     [snapshot.status.active ? 'restart' : 'stop', context.unitName],
@@ -290,12 +353,12 @@ async function restoreSystemdDeployment(
 }
 
 async function readSystemdStatus(context: SystemdUnitContext): Promise<SystemdStatus> {
-  let result: CommandResult;
+  let result: RuntimeHostServiceManagerCommandResult;
   try {
     result = await context.runSystemctl([
       'show',
       context.unitName,
-      '--property=LoadState,ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus',
+      '--property=LoadState,ActiveState,SubState,UnitFileState,FragmentPath,NeedDaemonReload,DropInPaths,MainPID,ExecMainStatus',
       '--no-pager',
     ]);
   } catch (error) {
@@ -314,33 +377,18 @@ async function readSystemdStatus(context: SystemdUnitContext): Promise<SystemdSt
     loadState,
     activeState: properties.get('ActiveState') ?? 'inactive',
     unitFileState: properties.get('UnitFileState') ?? 'disabled',
+    fragmentPath: properties.get('FragmentPath'),
+    needDaemonReload: properties.get('NeedDaemonReload'),
+    dropInPaths: properties.get('DropInPaths'),
     mainPid: properties.get('MainPID'),
     execMainStatus: properties.get('ExecMainStatus'),
   };
 }
 
-async function validateLaunchFiles(config: RuntimeHostManagedServiceConfig): Promise<void> {
-  try {
-    const [nodePath, cliPath] = await Promise.all([
-      realpath(config.launch.nodePath),
-      realpath(config.launch.cliPath),
-    ]);
-    const [node, cli] = await Promise.all([stat(nodePath), stat(cliPath)]);
-    if (!node.isFile() || !cli.isFile()) throw new Error('Launch path is not a file');
-    await Promise.all([access(nodePath, constants.X_OK), access(cliPath, constants.R_OK)]);
-  } catch (error) {
-    throw new RuntimeHostServiceManagerError(
-      'invalid_launch',
-      'The configured Node.js or Maka CLI installation is unavailable',
-      { cause: error },
-    );
-  }
-}
-
 async function assertUserSystemd(
-  runSystemctl: (args: readonly string[]) => Promise<CommandResult>,
+  runSystemctl: (args: readonly string[]) => Promise<RuntimeHostServiceManagerCommandResult>,
 ): Promise<void> {
-  let result: CommandResult;
+  let result: RuntimeHostServiceManagerCommandResult;
   try {
     result = await runSystemctl(['show-environment']);
   } catch (error) {
@@ -359,7 +407,7 @@ async function assertUserSystemd(
 
 async function assertUserLinger(
   uid: number | undefined,
-  runLoginctl: (args: readonly string[]) => Promise<CommandResult>,
+  runLoginctl: (args: readonly string[]) => Promise<RuntimeHostServiceManagerCommandResult>,
 ): Promise<void> {
   if (uid === undefined) {
     throw new RuntimeHostServiceManagerError(
@@ -367,7 +415,7 @@ async function assertUserLinger(
       'The current Linux user identity could not be determined',
     );
   }
-  let result: CommandResult;
+  let result: RuntimeHostServiceManagerCommandResult;
   try {
     result = await runLoginctl(['show-user', String(uid), '--property=Linger', '--value']);
   } catch (error) {
@@ -403,11 +451,11 @@ async function runLifecycleAction(
 }
 
 async function requireSystemctl(
-  runSystemctl: (args: readonly string[]) => Promise<CommandResult>,
+  runSystemctl: (args: readonly string[]) => Promise<RuntimeHostServiceManagerCommandResult>,
   args: readonly string[],
   message: string,
 ): Promise<void> {
-  let result: CommandResult;
+  let result: RuntimeHostServiceManagerCommandResult;
   try {
     result = await runSystemctl(args);
   } catch (error) {
@@ -418,7 +466,10 @@ async function requireSystemctl(
   if (result.exitCode !== 0) throw managerError(message, result);
 }
 
-function managerError(message: string, result: CommandResult): RuntimeHostServiceManagerError {
+function managerError(
+  message: string,
+  result: RuntimeHostServiceManagerCommandResult,
+): RuntimeHostServiceManagerError {
   const detail = result.stderr.trim() || result.stdout.trim();
   return new RuntimeHostServiceManagerError(
     'service_manager_operation_failed',
@@ -426,37 +477,29 @@ function managerError(message: string, result: CommandResult): RuntimeHostServic
   );
 }
 
-async function defaultRunSystemctl(args: readonly string[]): Promise<CommandResult> {
+async function defaultRunSystemctl(
+  args: readonly string[],
+): Promise<RuntimeHostServiceManagerCommandResult> {
   return runCommand('systemctl', ['--user', ...args]);
 }
 
-async function defaultRunLoginctl(args: readonly string[]): Promise<CommandResult> {
+async function defaultRunLoginctl(
+  args: readonly string[],
+): Promise<RuntimeHostServiceManagerCommandResult> {
   return runCommand('loginctl', args);
 }
 
-async function runCommand(command: string, args: readonly string[]): Promise<CommandResult> {
-  return new Promise((resolveResult, reject) => {
-    const child = spawn(command, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      timeout: SERVICE_MANAGER_COMMAND_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.once('error', reject);
-    child.once('close', (exitCode) => {
-      resolveResult({ exitCode: exitCode ?? 1, stdout, stderr });
-    });
-  });
+async function defaultRunJournalctl(
+  args: readonly string[],
+): Promise<RuntimeHostServiceManagerCommandResult> {
+  return runCommand('journalctl', args);
+}
+
+async function runCommand(
+  command: string,
+  args: readonly string[],
+): Promise<RuntimeHostServiceManagerCommandResult> {
+  return runRuntimeHostServiceManagerCommand(command, args);
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
@@ -498,7 +541,7 @@ function quoteSystemdArgument(value: string): string {
     .replaceAll('\\', '\\\\')
     .replaceAll('"', '\\"')
     .replaceAll('%', '%%')
-    .replaceAll('$', '$$$$')}"`;
+    .replaceAll('$', () => '$$')}"`;
 }
 
 function actionPresentParticiple(action: 'start' | 'stop' | 'restart'): string {

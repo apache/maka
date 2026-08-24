@@ -1,12 +1,40 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type {
   LlmConnection,
   ModelDiscoverySource,
   ModelInfo,
   ProviderType,
 } from './llm-connections.js';
-import { PROVIDER_DEFAULTS, providerSupportsModelDiscovery } from './llm-connections.js';
+import {
+  classifyConnectionModelInventory,
+  PROVIDER_DEFAULTS,
+  providerSupportsModelDiscovery,
+  type ConnectionModelInventory,
+} from './llm-connections.js';
 import type { PricingConfig } from './usage-stats/types.js';
-import { curatedCatalogFallbackModelsForProvider, lookupModelMetadata } from './model-metadata.js';
+import {
+  curatedCatalogFallbackModelsForProvider,
+  hasModelMetadata,
+  lookupModelMetadata,
+} from './model-metadata.js';
 import { pricingModelKey } from './usage-stats/pricing.js';
 
 export type ModelCapabilitySource = 'provider_api' | 'static_catalog' | 'user_override' | 'unknown';
@@ -33,6 +61,7 @@ export interface KnownModelCapabilities {
   vision?: true;
   reasoning?: true;
   functionCalling?: true;
+  parallelToolCalls?: true;
   imageGeneration?: true;
 }
 
@@ -99,7 +128,13 @@ export interface ModelCatalogEntry {
 export interface BuildConnectionModelCatalogInput {
   connection: Pick<
     LlmConnection,
-    'slug' | 'providerType' | 'defaultModel' | 'models' | 'modelSource' | 'modelsFetchedAt'
+    | 'slug'
+    | 'providerType'
+    | 'defaultModel'
+    | 'enabledModelIds'
+    | 'models'
+    | 'modelSource'
+    | 'modelsFetchedAt'
   >;
   savedModelIds?: Iterable<SavedModelChoice | undefined | null>;
   fallbackModels?: string[];
@@ -132,20 +167,30 @@ const DEFAULT_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCatalogEntry[] {
   const liveModels = input.models;
-  const modelSource = input.modelSource ?? (liveModels ? 'fetched' : 'fallback');
+  const modelSource =
+    input.modelSource ??
+    (liveModels !== undefined && liveModels.length > 0 ? 'fetched' : 'fallback');
+  // The RAW `modelSource`, not a source inferred from the array, distinguishes
+  // a failed discovery from an explicit empty provider response.
+  const inventory = classifyConnectionModelInventory({
+    providerType: input.providerType,
+    models: input.models,
+    modelSource: input.modelSource,
+  });
   const normalizedDefaultModel = input.defaultModel?.trim();
   const recommendedRanks = recommendedRanksForProvider(input.providerType, input.fallbackModels);
-  const source = liveModels
-    ? modelSource === 'fetched'
-      ? 'provider_api'
-      : 'static_catalog'
-    : 'static_catalog';
+  const source = inventory === 'live' ? 'provider_api' : 'static_catalog';
+  // An empty array without a successful discovery source is the persisted
+  // shape of a failed or not-yet-run discovery. It must not hide the static
+  // fallback catalog from the picker. An empty fetched array is different: it
+  // is an authoritative provider response and should remain empty.
   const rawModels =
-    liveModels ??
-    (input.fallbackModels ?? []).map((id) => ({
-      id,
-      ...displayNameForKnownModel(input.providerType, id),
-    }));
+    liveModels !== undefined && (liveModels.length > 0 || modelSource === 'fetched')
+      ? liveModels
+      : (input.fallbackModels ?? []).map((id) => ({
+          id,
+          ...displayNameForKnownModel(input.providerType, id),
+        }));
   const savedChoiceSources = savedChoiceSourcesById(input.savedModelIds);
   const seen = new Set<string>();
   const entries = rawModels
@@ -173,6 +218,7 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
         input,
         normalizedDefaultModel,
         modelSource,
+        inventory,
         savedChoiceSources,
         normalizedDefaultModel,
         recommendedRanks,
@@ -189,6 +235,7 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
         input,
         id,
         modelSource,
+        inventory,
         savedChoiceSources,
         normalizedDefaultModel,
         recommendedRanks,
@@ -206,28 +253,47 @@ export function buildConnectionModelCatalogEntries(
   const defaults = PROVIDER_DEFAULTS[connection.providerType];
   // Unknown providerType (legacy seed, or a connection persisted on a branch
   // that registers a provider this build doesn't know) → no catalog entries.
-  // Mirrors `isFakeBackend` in connection-readiness.ts.
+  // Mirrors `isRealConnection` in connection-readiness.ts.
   if (!defaults) return [];
   const supportsModelDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const catalogFallbackModels = curatedCatalogFallbackModelsForProvider(connection.providerType);
-  const fallbackModels = [...(catalogFallbackModels ?? defaults.fallbackModels)];
+  // Quarantined ids never surface as offerable entries — from any source,
+  // including inventories stored or selections made before the quarantine —
+  // mirroring the `authorizeConnectionModel` veto.
+  const broken = new Set(defaults.brokenModelIds ?? []);
+  const fallbackModels = [...(catalogFallbackModels ?? defaults.fallbackModels)].filter(
+    (id) => !broken.has(id),
+  );
   return buildModelCatalogEntries({
     providerType: connection.providerType,
     connectionSlug: connection.slug,
     defaultModel: connection.defaultModel,
-    models: supportsModelDiscovery ? connection.models : undefined,
-    modelSource: supportsModelDiscovery ? connection.modelSource : 'fallback',
-    modelsFetchedAt: supportsModelDiscovery ? connection.modelsFetchedAt : undefined,
+    models: connection.models?.filter(({ id }) => !broken.has(id)),
+    modelSource: connection.modelSource,
+    modelsFetchedAt: connection.modelsFetchedAt,
     fallbackModels: supportsModelDiscovery
       ? (input.fallbackModels ?? fallbackModels)
       : fallbackModels,
     now: input.now,
     staleAfterMs: input.staleAfterMs,
-    providerAvailable: input.providerAvailable,
+    // A retired provider's models stay listed so an existing connection still
+    // renders, but they resolve to `provider_removed` and stop being selectable.
+    // Without this the pickers would keep offering models that can no longer
+    // send — `runtimeAdapter: 'unavailable'` blocks the send, not the choice.
+    providerAvailable: defaults.retired === true ? false : input.providerAvailable,
     authOk: input.authOk,
     pricing: input.pricing,
     pricingSource: input.pricingSource,
-    savedModelIds: input.savedModelIds,
+    // Enabling a model IS a user choice — the raw array is written only by the
+    // user, in connection settings — so it projects an entry even when no
+    // catalog describes the id. Without this a model the user enabled on a
+    // provider whose `models` is a release snapshot vanished from every picker
+    // (#1584), and fixing it at one call site left the others broken. The raw
+    // array, not `connectionEnabledModelIds`: that one folds in `defaultModel`,
+    // which `provenanceSources` already reports as `connection_default`.
+    savedModelIds: [...(connection.enabledModelIds ?? []), ...(input.savedModelIds ?? [])].filter(
+      (choice) => !broken.has(typeof choice === 'string' ? choice : (choice?.id ?? '')),
+    ),
   });
 }
 
@@ -339,6 +405,8 @@ function mergeCapabilities(
     vision: providerCapabilities.vision ?? metadataCapabilities.vision,
     reasoning: providerCapabilities.reasoning ?? metadataCapabilities.reasoning,
     functionCalling: providerCapabilities.functionCalling ?? metadataCapabilities.functionCalling,
+    parallelToolCalls:
+      providerCapabilities.parallelToolCalls ?? metadataCapabilities.parallelToolCalls,
     imageGeneration: providerCapabilities.imageGeneration ?? metadataCapabilities.imageGeneration,
   };
 }
@@ -347,11 +415,12 @@ function makeMissingDefaultEntry(
   input: BuildModelCatalogInput,
   id: string,
   modelSource: ModelDiscoverySource,
+  inventory: ConnectionModelInventory,
   savedChoiceSources: ReadonlyMap<string, ModelCatalogUserChoiceSource[]>,
   normalizedDefaultModel: string | undefined,
   recommendedRanks: ReadonlyMap<string, number>,
 ): ModelCatalogEntry {
-  const unavailableReason = missingEntryUnavailableReason(input, modelSource);
+  const unavailableReason = missingEntryUnavailableReason(input, inventory);
   const metadata = lookupModelMetadata(input.providerType, id);
   const recommendedRank = recommendedRanks.get(id);
   return {
@@ -395,11 +464,12 @@ function makeMissingUserChoiceEntry(
   input: BuildModelCatalogInput,
   id: string,
   modelSource: ModelDiscoverySource,
+  inventory: ConnectionModelInventory,
   savedChoiceSources: ReadonlyMap<string, ModelCatalogUserChoiceSource[]>,
   normalizedDefaultModel: string | undefined,
   recommendedRanks: ReadonlyMap<string, number>,
 ): ModelCatalogEntry {
-  const unavailableReason = missingEntryUnavailableReason(input, modelSource);
+  const unavailableReason = missingEntryUnavailableReason(input, inventory);
   const metadata = lookupModelMetadata(input.providerType, id);
   const recommendedRank = recommendedRanks.get(id);
   return {
@@ -467,15 +537,11 @@ function provenanceSources(
   const userChoice = userChoiceSources(id, savedChoiceSources, normalizedDefaultModel);
   return {
     ...(source === 'provider_api' ? { providerInventory: true as const } : {}),
-    ...(source === 'static_catalog' || hasStaticModelMetadata(input.providerType, id)
+    ...(source === 'static_catalog' || hasModelMetadata(input.providerType, id)
       ? { staticCatalog: true as const }
       : {}),
     ...(userChoice.length > 0 ? { userChoice } : {}),
   };
-}
-
-function hasStaticModelMetadata(providerType: ProviderType, id: string): boolean {
-  return Object.keys(lookupModelMetadata(providerType, id)).length > 0;
 }
 
 function recommendedRanksForProvider(
@@ -508,7 +574,14 @@ function userChoiceSources(
 function deriveModelUnavailableReason(
   input: Pick<
     BuildModelCatalogInput,
-    'providerAvailable' | 'authOk' | 'modelSource' | 'modelsFetchedAt' | 'now' | 'staleAfterMs'
+    | 'providerType'
+    | 'providerAvailable'
+    | 'authOk'
+    | 'models'
+    | 'modelSource'
+    | 'modelsFetchedAt'
+    | 'now'
+    | 'staleAfterMs'
   >,
   model: ModelInfo,
 ): ModelUnavailableReason {
@@ -529,17 +602,25 @@ function providerOrAuthUnavailableReason(
 
 function missingEntryUnavailableReason(
   input: Pick<BuildModelCatalogInput, 'providerAvailable' | 'authOk' | 'models'>,
-  modelSource: ModelDiscoverySource,
+  inventory: ConnectionModelInventory,
 ): ModelUnavailableReason {
   const providerOrAuthReason = providerOrAuthUnavailableReason(input);
   if (providerOrAuthReason) return providerOrAuthReason;
-  return modelSource === 'fetched' || input.models ? 'not_in_live_list' : 'none';
+  // Only a live list can say a model is absent. A snapshot describes the
+  // provider at release, so a model missing from it is simply one Maka has
+  // never heard of — not one this account cannot run (#1584).
+  return inventory === 'live' ? 'not_in_live_list' : 'none';
 }
 
 function isStale(
-  input: Pick<BuildModelCatalogInput, 'modelSource' | 'modelsFetchedAt' | 'now' | 'staleAfterMs'>,
+  input: Pick<
+    BuildModelCatalogInput,
+    'providerType' | 'models' | 'modelSource' | 'modelsFetchedAt' | 'now' | 'staleAfterMs'
+  >,
 ): boolean {
-  if (input.modelSource !== 'fetched' || input.modelsFetchedAt === undefined) return false;
+  if (input.modelsFetchedAt === undefined) return false;
+  // Only a live list can go stale. A snapshot is as current as the build.
+  if (classifyConnectionModelInventory(input) !== 'live') return false;
   const now = input.now ?? Date.now();
   const staleAfterMs = input.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
   return now - input.modelsFetchedAt > staleAfterMs;
@@ -564,18 +645,23 @@ function normalizeCapabilities(caps: ModelInfo['capabilities']): KnownModelCapab
     ...(caps.vision === true ? { vision: true as const } : {}),
     ...(caps.reasoning === true ? { reasoning: true as const } : {}),
     ...(caps.functionCalling === true ? { functionCalling: true as const } : {}),
+    ...(caps.parallelToolCalls === true ? { parallelToolCalls: true as const } : {}),
     ...(caps.imageGeneration === true ? { imageGeneration: true as const } : {}),
   };
 }
 
 function availabilityOf(reason: ModelUnavailableReason): ModelCatalogAvailability {
   if (reason === 'none') return 'available';
-  if (reason === 'stale') return 'warning';
+  // `stale` and `not_in_live_list` are both things worth saying and neither is
+  // a fact about what the account can run. A provider that did not mention a
+  // model in its last response has not refused it; only the provider itself
+  // can do that, when the request goes out (#1584).
+  if (reason === 'stale' || reason === 'not_in_live_list') return 'warning';
   return 'blocked';
 }
 
 function canUseUnavailableReasonAsDefault(reason: ModelUnavailableReason): boolean {
-  return reason === 'none' || reason === 'stale';
+  return reason === 'none' || reason === 'stale' || reason === 'not_in_live_list';
 }
 
 function savedChoiceSourcesById(

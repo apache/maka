@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,6 +37,7 @@ import {
 import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
+  collectConversationCopyLinkedChildReferences,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
   rewriteConversationCopyMessage,
@@ -27,7 +47,7 @@ import {
   matchHistoryCompactCheckpointPrefix,
   validateHistoryCompactCheckpointShape,
 } from '../history-compact-checkpoint.js';
-import { isHistoryCompactContentEvent } from '../history-compact.js';
+import { isHistoryCompactContentEvent } from '../history-compaction.js';
 import { RuntimeReadModel, type RuntimeReadModelSessionView } from '../runtime-read-model.js';
 import { buildToolOperationId } from '../runtime-commit-sink.js';
 import { buildToolResultArchiveResourceRef } from '../tool-result-archive-resource.js';
@@ -51,6 +71,22 @@ test('archived tool-result copy preflight detects conversation-owned references'
           sessionId: 'session-source',
           relativePath: 'session-source/image.png',
         },
+      }),
+      'session-source',
+    ),
+    true,
+  );
+  assert.equal(
+    archivedToolResultContainsConversationOwnedReferences(
+      serialized({
+        kind: 'subagent',
+        agentName: 'Researcher',
+        turnId: 'retired-turn',
+        runId: 'retired-run',
+        status: 'completed',
+        permissionMode: 'execute',
+        summary: 'done',
+        artifactIds: [],
       }),
       'session-source',
     ),
@@ -137,6 +173,61 @@ test('archived tool-result copy preflight detects conversation-owned references'
       'session-source',
     ),
     true,
+  );
+});
+
+test('conversation copy discovers linked children in persisted retired tool results', () => {
+  const result = {
+    kind: 'subagent',
+    childSessionId: 'child-session',
+    agentName: 'Researcher',
+    turnId: 'child-turn',
+    runId: 'child-run',
+    status: 'completed',
+    permissionMode: 'execute',
+    summary: 'done',
+    artifactIds: ['child-artifact'],
+  };
+  const runtimeEvent = {
+    id: 'event-retired-result',
+    invocationId: 'invocation-source',
+    runId: 'run-source',
+    sessionId: 'session-source',
+    turnId: 'turn-source',
+    ts: 1,
+    partial: false,
+    role: 'tool',
+    author: 'tool',
+    content: {
+      kind: 'function_response',
+      id: 'tool-1',
+      name: 'subagent',
+      result,
+    },
+  } as RuntimeEvent;
+
+  assert.deepEqual(
+    collectConversationCopyLinkedChildReferences({
+      messages: [],
+      runtimeEvents: [runtimeEvent],
+      archivedResults: [JSON.stringify(result)],
+    }),
+    [
+      {
+        childSessionId: 'child-session',
+        runId: 'child-run',
+        turnId: 'child-turn',
+        artifactIds: ['child-artifact'],
+        status: 'completed',
+      },
+      {
+        childSessionId: 'child-session',
+        runId: 'child-run',
+        turnId: 'child-turn',
+        artifactIds: ['child-artifact'],
+        status: 'completed',
+      },
+    ],
   );
 });
 
@@ -954,7 +1045,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
             turnId: 'turn-1',
             runId: 'run-source',
             status: 'completed',
-            permissionMode: 'ask',
+            permissionMode: 'execute' as never,
             summary: 'done',
             artifactIds: ['artifact-deleted'],
           },
@@ -1058,7 +1149,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       turnId: 'turn-1',
       ts: 2.7,
       data: { blockId: 'semantic-source', block: { sourceOwnedHash: true } },
-    });
+    } as unknown as EmittedAgentRunEvent);
     await runStore.appendEvent('session-source', 'run-source', {
       type: 'history_compact_checkpoint_recorded',
       id: 'checkpoint-source',
@@ -1223,6 +1314,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         ? targetEvents[4].content.result
         : undefined;
     const typedResult = decodeCanonicalToolResultContent(typedResultValue);
+    assert.equal(typedResult.kind === 'subagent' ? typedResult.permissionMode : undefined, 'ask');
     assert.deepEqual(typedResult.kind === 'subagent' ? typedResult.artifactIds : undefined, [
       'artifact-target-deleted',
     ]);

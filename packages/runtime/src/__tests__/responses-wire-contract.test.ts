@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -40,6 +59,39 @@ describe('responses wire contract', () => {
         providerType,
       );
     }
+  });
+
+  test('keeps Qwen3.8 Max on Alibaba (China) Chat until the provider adapter supports Responses', () => {
+    assert.equal(
+      resolveModelRuntime({ providerType: 'alibaba-cn' }, 'qwen3.8-max').wire,
+      'openai-chat',
+    );
+  });
+
+  test('routes OpenCode Go Muse Spark through the Responses endpoint', async () => {
+    const urls: string[] = [];
+    const fetch = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return Response.json({
+        id: 'r',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as typeof globalThis.fetch;
+    const model = getAIModel({
+      connection: conn('opencode-go'),
+      apiKey: '[redacted]',
+      modelId: 'muse-spark-1.2-contributor',
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+    });
+
+    assert.deepEqual(urls, ['https://opencode.ai/zen/go/v1/responses']);
   });
 
   test('normalizes the upstream Open Responses endpoint exactly once', () => {
@@ -110,6 +162,37 @@ describe('responses wire contract', () => {
       kind: 'responses',
       contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     });
+  });
+
+  test('resolves parallel tool calls from model facts before native wire defaults', () => {
+    assert.equal(
+      resolveModelRuntime({ providerType: 'openai' }, 'gpt-5.5').parallelToolCalls,
+      true,
+    );
+    assert.equal(
+      resolveModelRuntime(
+        {
+          providerType: 'openai',
+          models: [{ id: 'gpt-5.5', capabilities: { parallelToolCalls: false } }],
+        },
+        'gpt-5.5',
+      ).parallelToolCalls,
+      false,
+    );
+    assert.equal(
+      resolveModelRuntime({ providerType: 'openai-compatible' }, 'relay-model').parallelToolCalls,
+      undefined,
+    );
+    assert.equal(
+      resolveModelRuntime(
+        {
+          providerType: 'openai-compatible',
+          models: [{ id: 'relay-model', capabilities: { parallelToolCalls: true } }],
+        },
+        'relay-model',
+      ).parallelToolCalls,
+      true,
+    );
   });
 
   test('enables Responses only through an explicit supported contract', () => {

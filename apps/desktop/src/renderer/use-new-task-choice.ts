@@ -1,7 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useCallback, useEffect, useState } from 'react';
 import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from './new-task-reload-intent.js';
 
-export function useNewTaskChoice<T>(targetKey: string): [T | undefined, (value: T) => void] {
+export function useNewTaskChoice<T>(
+  targetKey: string,
+): [T | undefined, (value: T) => void, () => void] {
   const [choices, setChoices] = useState(() => new Map<string, T>());
   const pendingTargetKey =
     targetKey !== UNRESOLVED_NEW_TASK_DRAFT_KEY &&
@@ -30,5 +51,23 @@ export function useNewTaskChoice<T>(targetKey: string): [T | undefined, (value: 
     });
   }, [targetKey]);
 
-  return [choices.get(pendingTargetKey), setChoice];
+  /**
+   * Drop the choice for the current draft.
+   *
+   * The key is the Host/project target, not one draft, so a choice made for
+   * one task would otherwise still be attached to the next task on the same
+   * target. Callers whose choice has been consumed — sent on a created Session
+   * — clear it so the next draft starts from the configured default again.
+   */
+  const clearChoice = useCallback(() => {
+    setChoices((current) => {
+      if (!current.has(targetKey) && !current.has(UNRESOLVED_NEW_TASK_DRAFT_KEY)) return current;
+      const next = new Map(current);
+      next.delete(targetKey);
+      next.delete(UNRESOLVED_NEW_TASK_DRAFT_KEY);
+      return next;
+    });
+  }, [targetKey]);
+
+  return [choices.get(pendingTargetKey), setChoice, clearChoice];
 }

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { StoredMessage } from '@maka/core/session';
@@ -174,6 +193,31 @@ describe("steering timeline", () => {
 });
 
 describe("materializeChat message metadata", () => {
+  test("localizes visible system notes", () => {
+    const messages: StoredMessage[] = [
+      {
+        type: "system_note",
+        id: "note-1",
+        turnId: "t1",
+        ts: 1,
+        kind: "context_compacted",
+      },
+    ];
+
+    assert.equal(
+      materializeChat(messages, "en")[0]?.text,
+      "Context compacted to keep this session within the model window.",
+    );
+    assert.equal(
+      materializeChat(messages, "zh")[0]?.text,
+      "已压缩较早的对话内容，以适应模型上下文窗口。",
+    );
+    assert.equal(
+      materializeTurns(messages, "zh")[0]?.notes[0]?.text,
+      "已压缩较早的对话内容，以适应模型上下文窗口。",
+    );
+  });
+
   test("preserves an explicit empty reference projection as the new-format marker", () => {
     const messages: StoredMessage[] = [
       {
@@ -574,26 +618,16 @@ describe("live tool status over persisted", () => {
       },
     ]);
 
-    const turns = overlayLiveTurn(settled, {
+    const live = applyLiveTurnEvent(undefined, {
+      type: "tool_start",
+      id: "start-1",
       turnId: "t1",
-      phase: "streamed",
-      steps: [
-        {
-          stepId: "tool:computer-1",
-          tools: [
-            {
-              toolUseId: "computer-1",
-              toolName: "maka_computer",
-              status: "running",
-              args: undefined,
-              // Runtime Host live events carry lifecycle but not the durable
-              // result payload.
-              result: { kind: "text", text: "" },
-            },
-          ],
-        },
-      ],
+      toolUseId: "computer-1",
+      toolName: "maka_computer",
+      args: undefined,
+      ts: 5,
     });
+    const turns = overlayLiveTurn(settled, live);
 
     const toolGroup = turns
       .find((turn) => turn.turnId === "t1")

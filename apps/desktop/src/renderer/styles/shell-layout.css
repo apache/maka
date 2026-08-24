@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /* Shell layout — app frame, panels, topbar rail, main column, workspace top actions. */
 .appFrame {
   font: var(--maka-text-body);
@@ -298,10 +317,15 @@ dialog:modal {
 
 .maka-shell-topbar-rail {
   grid-column: 1;
-  justify-self: start;
+  /* These controls operate on the sidebar, so their anchor is its trailing
+     edge — not the platform-safe area's leading edge beside the traffic
+     lights. The first titlebar grid track already ends one gap before the
+     sidebar seam and follows the user-resized sidebar width. */
+  justify-self: end;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  /* Astryx Toolbar spaces independent actions by spacing-1 (4px). */
+  gap: var(--space-1);
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0);

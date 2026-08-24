@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export type BrowserCopy = {
@@ -7,6 +26,8 @@ export type BrowserCopy = {
   navigationFailed: string;
   navigationFailedDetail: string;
   panelAria: string;
+  panelAriaWithTitle: (title: string) => string;
+  insecure: string;
   backAria: string;
   back: string;
   forwardAria: string;
@@ -31,6 +52,8 @@ const BROWSER_COPY = {
     navigationFailed: '浏览器导航失败',
     navigationFailedDetail: '页面暂时无法打开，请稍后重试。',
     panelAria: '嵌入式浏览器',
+    panelAriaWithTitle: (title) => `嵌入式浏览器：${title}`,
+    insecure: '这个站点用 HTTP 传输，连接未加密。',
     backAria: '浏览器后退',
     back: '后退',
     forwardAria: '浏览器前进',
@@ -53,6 +76,8 @@ const BROWSER_COPY = {
     navigationFailed: 'Browser navigation failed',
     navigationFailedDetail: 'The page could not be opened. Try again later.',
     panelAria: 'Embedded browser',
+    panelAriaWithTitle: (title) => `Embedded browser: ${title}`,
+    insecure: 'This site is served over HTTP, so the connection is not encrypted.',
     backAria: 'Go back in browser',
     back: 'Back',
     forwardAria: 'Go forward in browser',

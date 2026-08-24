@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
@@ -71,7 +90,11 @@ describe('McpClientManager Streamable HTTP fallback contract', () => {
 
       await manager.sync(remoteConfig(fixture.url, 'auto'));
 
-      assert.equal(manager.status('remote')?.state, 'error', `HTTP ${status}`);
+      // A 401 is an authorization demand, not a dead transport: the manager
+      // surfaces needs-auth so the UI can offer a login instead of an error.
+      // Either way the probe must not fall back to legacy SSE.
+      const expectedState = status === 401 ? 'needs-auth' : 'error';
+      assert.equal(manager.status('remote')?.state, expectedState, `HTTP ${status}`);
       assert.equal(fixture.streamableMethods[0], 'server/discover', `HTTP ${status}`);
       assert.ok(fixture.streamablePosts >= 1, `HTTP ${status}`);
       assert.equal(fixture.sseGets, 0, `HTTP ${status}`);
@@ -226,9 +249,17 @@ describe('McpClientManager Streamable HTTP fallback contract', () => {
         rejection.message,
         'MCP server "remote" connection failed: Streamable HTTP and legacy SSE connection attempts failed',
       );
-      assert.ok(rejection.cause instanceof AggregateError);
-      assert.equal(rejection.cause.errors.length, 2);
-      assert.ok(rejection.cause.errors.every((error) => error instanceof Error));
+      // The rejection leaves the manager (reconnect → IPC → renderer): its
+      // cause survives as a SANITIZED copy — the per-transport aggregate
+      // shape is preserved for diagnosability, but each member is rebuilt
+      // with a scrubbed message and no deeper chain or payload fields.
+      const cause = (rejection as Error & { cause?: unknown }).cause;
+      assert.ok(cause instanceof AggregateError);
+      assert.equal(cause.errors.length, 2);
+      for (const member of cause.errors) {
+        assert.ok(member instanceof Error);
+        assert.equal((member as Error & { cause?: unknown }).cause, undefined);
+      }
       assert.equal(fixture.streamablePosts, postsBefore + 2);
       assert.equal(fixture.sseGets, getsBefore + 1);
 

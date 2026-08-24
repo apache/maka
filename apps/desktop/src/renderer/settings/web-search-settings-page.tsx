@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { useRef, useState } from 'react';
 import { Banner, EmptyState, Link } from '@astryxdesign/core';
 import type { AppSettings, UpdateAppSettingsResult } from '@maka/core/settings';
@@ -12,7 +31,10 @@ import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { dotForStatus, type StatusSemantic } from '@maka/ui';
 import { useKeyedActionGuard } from './use-action-guard';
-import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsTarget,
+} from './runtime-host-settings-target.js';
 
 /**
  * PR-WEB-SEARCH-TAVILY-0: Settings → Web search.
@@ -53,6 +75,7 @@ export function WebSearchSettingsPage(props: {
   const webSearchActionGuard = useKeyedActionGuard<'set-enabled' | 'credential' | 'test' | 'live-query'>();
   const liveQueryInputRef = useRef(liveQuery);
   const toast = useToast();
+  const reportHostError = useRuntimeHostSettingsErrorReporter();
 
   function updateLiveQuery(next: string) {
     liveQueryInputRef.current = next;
@@ -89,7 +112,10 @@ export function WebSearchSettingsPage(props: {
       return true;
     } catch (error) {
       if (webSearchMountedRef.current) {
-        toast.error(failureTitle, settingsActionErrorMessage(error, locale));
+        reportHostError(
+          failureTitle,
+          settingsActionErrorMessage(error, locale),
+        );
       }
       return false;
     }
@@ -164,11 +190,17 @@ export function WebSearchSettingsPage(props: {
       if (result.ok) {
         toast.success(copy.credentialValid, copy.resultCount(result.results.length));
       } else {
-        toast.error(copy.testFailed, copy.errors[result.reason]);
+        reportHostError(
+          copy.testFailed,
+          copy.errors[result.reason],
+        );
       }
     } catch (err) {
       if (webSearchMountedRef.current) {
-        toast.error(copy.testError, settingsActionErrorMessage(err, locale));
+        reportHostError(
+          copy.testError,
+          settingsActionErrorMessage(err, locale),
+        );
       }
     } finally {
       releaseTest();

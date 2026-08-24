@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { createSqliteSessionMetadataStore } from '@maka/storage';
@@ -13,8 +32,8 @@ import type { AgentGraphClientSnapshot } from '../stream-graph-read-model.js';
 import type { AgentGraphScheduleReconciliationResult } from '../stream-graph-schedule-reconcile.js';
 
 describe('Agent Graph supervisor wake delivery', () => {
-  test('uses the shared aggressive compaction adapter for overflow recovery', async () => {
-    const calls: Array<{ sessionId: string; turnId: string; minRecentTurns: number }> = [];
+  test('uses the shared compaction transaction for overflow recovery', async () => {
+    const calls: Array<{ sessionId: string; turnId: string }> = [];
     const recovery = await recoverAgentGraphSupervisorContextOverflow({
       rootSessionId: 'root-session',
       compactTurnId: 'compact-turn',
@@ -36,23 +55,27 @@ describe('Agent Graph supervisor wake delivery', () => {
             droppedTurns: 20,
             keptEvents: 4,
             droppedEvents: 80,
-            historyCompactedEvents: 75,
-            historyCompactBlocksWritten: 1,
+            compactionDecisions: [
+              {
+                stage: 'priorReplay',
+                sourceKind: 'runtimeEvents',
+                decision: 'replaced',
+                boundaryKind: 'historyCompact',
+                boundaryIds: ['checkpoint-1'],
+              },
+            ],
           },
         };
       },
     });
 
-    assert.deepEqual(calls, [
-      { sessionId: 'root-session', turnId: 'compact-turn', minRecentTurns: 0 },
-    ]);
+    assert.deepEqual(calls, [{ sessionId: 'root-session', turnId: 'compact-turn' }]);
     assert.deepEqual(recovery, {
       estimatedTokensBefore: 700_000,
       estimatedTokensAfter: 12_000,
       droppedTurns: 20,
       droppedEvents: 80,
-      historyCompactedEvents: 75,
-      historyCompactBlocksWritten: 1,
+      outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
     });
   });
 
@@ -178,8 +201,7 @@ describe('Agent Graph supervisor wake delivery', () => {
           estimatedTokensBefore: 700_000,
           estimatedTokensAfter: 12_000,
           droppedEvents: 80,
-          historyCompactedEvents: 75,
-          historyCompactBlocksWritten: 1,
+          outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
         };
       },
       newId: sequentialIds(),
@@ -208,8 +230,7 @@ describe('Agent Graph supervisor wake delivery', () => {
           estimatedTokensBefore: 700_000,
           estimatedTokensAfter: 12_000,
           droppedEvents: 80,
-          historyCompactedEvents: 75,
-          historyCompactBlocksWritten: 1,
+          outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
         },
       });
     } finally {

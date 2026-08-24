@@ -1,9 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { Dirent } from 'node:fs';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import type { StoredMessage } from '@maka/core/session';
 import { sanitizeForeignTitle } from '@maka/core/foreign-session';
+import { externalSessionMatchesQuery } from '@maka/core/external-session';
 import type {
   ExternalMakaSession,
   ExternalSessionAdapter,
@@ -53,10 +73,11 @@ type JsonRecord = Record<string, unknown>;
  * Read-only adapter for Codex rollout JSONL.
  *
  * Codex persists presentation history as `event_msg` records and provider
- * protocol facts as `response_item` records. User, assistant, and reasoning
- * messages come from `event_msg` to avoid importing their response-item
- * mirrors twice. Tool calls/results come from response items because they own
- * the stable call identity and raw arguments/output.
+ * protocol facts as `response_item` records. Presentation messages use either
+ * the legacy `user_message` / `agent_*` events or the newer `item_completed`
+ * event. Reading both shapes from `event_msg` avoids importing their
+ * response-item mirrors twice. Tool calls/results come from response items
+ * because they own the stable call identity and raw arguments/output.
  */
 export class CodexSessionAdapter implements ExternalSessionAdapter {
   readonly id = CODEX_SESSION_ADAPTER_ID;
@@ -273,6 +294,71 @@ function convertCodexRollout(
           activeTurnIsExplicit = true;
         }
         continue;
+      }
+
+      if (eventType === 'item_completed') {
+        const item = asRecord(payload.item);
+        const itemType = stringField(item, 'type')?.toLowerCase();
+        const eventTurnId = stringField(payload, 'turn_id');
+        if (eventTurnId) {
+          activeTurnId = eventTurnId;
+          activeTurnIsExplicit = true;
+        }
+
+        if (itemType === 'usermessage') {
+          if (!activeTurnIsExplicit) {
+            activeTurnId = generatedCodexId(expectedSessionId, 'turn', record.line);
+          }
+          const text = codexCompletedItemText(item) || codexCompletedItemMediaText(item);
+          if (text.length === 0) continue;
+          firstUserText ??= text;
+          messages.push({
+            type: 'user',
+            id:
+              stringField(item, 'client_id') ??
+              stringField(item, 'id') ??
+              generatedCodexId(expectedSessionId, 'user', record.line),
+            turnId: ensureTurnId(record.line),
+            ts: timestampFor(record),
+            text,
+          });
+          continue;
+        }
+
+        if (itemType === 'agentmessage') {
+          const text = codexCompletedItemText(item);
+          if (text.length === 0) continue;
+          messages.push({
+            type: 'assistant',
+            id:
+              stringField(item, 'id') ??
+              generatedCodexId(expectedSessionId, 'assistant', record.line),
+            turnId: ensureTurnId(record.line),
+            ts: timestampFor(record),
+            text,
+            modelId: activeModel,
+            contentOrder: ['text'],
+          });
+          continue;
+        }
+
+        if (itemType === 'reasoning') {
+          const reasoning = codexCompletedReasoningText(item);
+          if (reasoning.length === 0) continue;
+          messages.push({
+            type: 'assistant',
+            id:
+              stringField(item, 'id') ??
+              generatedCodexId(expectedSessionId, 'reasoning', record.line),
+            turnId: ensureTurnId(record.line),
+            ts: timestampFor(record),
+            text: '',
+            thinking: { text: reasoning },
+            contentOrder: ['thinking'],
+            modelId: activeModel,
+          });
+          continue;
+        }
       }
 
       if (eventType === 'user_message') {
@@ -494,12 +580,15 @@ function catalogEntryFromRolloutHead(
       cwd = safeCodexCwd(payload.cwd) || cwd;
       createdAt =
         normalizeEpochMs(record.timestamp) ?? normalizeEpochMs(payload.timestamp) ?? createdAt;
-    } else if (
-      record.type === 'event_msg' &&
-      payload.type === 'user_message' &&
-      firstUserText === undefined
-    ) {
-      firstUserText = stringField(payload, 'message');
+    } else if (record.type === 'event_msg' && firstUserText === undefined) {
+      if (payload.type === 'user_message') {
+        firstUserText = stringField(payload, 'message');
+      } else if (payload.type === 'item_completed') {
+        const item = asRecord(payload.item);
+        if (stringField(item, 'type')?.toLowerCase() === 'usermessage') {
+          firstUserText = codexCompletedItemText(item) || codexCompletedItemMediaText(item);
+        }
+      }
     }
     if (id && firstUserText !== undefined) break;
   }
@@ -554,11 +643,17 @@ async function readCodexThreadRows(
       if (!query.includeArchived && columns.has('archived')) {
         where.push('(archived IS NULL OR archived = 0)');
       }
-      if (query.cwd !== undefined && columns.has('cwd')) {
-        const variants = cwdSqlVariants(query.cwd);
-        where.push(`cwd IN (${variants.map(() => '?').join(', ')})`);
-        params.push(...variants);
-      }
+      // No cwd clause. `cwd IN (...)` enumerated spelling variants of the
+      // query, but SQLite compares them exactly: a row stored `C:\\Repo\\App`
+      // was discarded before `matchesQuery` could see that `c:/repo/app` names
+      // the same project. A prefilter that cannot express the matcher's own
+      // equivalence is not an optimization, it is a second, weaker rule — so
+      // the shared matcher below is the only authority on which project a row
+      // belongs to. The archived clause stays: that one is an exact boolean
+      // and agrees with the matcher by construction.
+      //
+      // The statement has no LIMIT, so dropping the clause widens the read
+      // rather than truncating it.
       const orderColumn = columns.has('updated_at_ms')
         ? 'updated_at_ms'
         : columns.has('updated_at')
@@ -733,25 +828,11 @@ function normalizeEpochMs(value: unknown): number | undefined {
   return undefined;
 }
 
-function normalizePath(value: string): string {
-  const normalized = value.replaceAll('\\', '/').replace(/\/+$/, '');
-  return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
-}
-
-function cwdSqlVariants(cwd: string): string[] {
-  const normalized = normalizePath(cwd);
-  const variants = new Set([cwd, normalized]);
-  if (/^[A-Za-z]:\//.test(normalized)) variants.add(normalized.replaceAll('/', '\\'));
-  if (normalized !== '/') {
-    variants.add(`${normalized}/`);
-    if (/^[A-Za-z]:\//.test(normalized)) variants.add(`${normalized.replaceAll('/', '\\')}\\`);
-  }
-  return [...variants];
-}
-
 function matchesQuery(entry: ExternalSessionSummary, query: ExternalSessionQuery): boolean {
-  if (!query.includeArchived && entry.archived) return false;
-  return query.cwd === undefined || normalizePath(entry.cwd) === normalizePath(query.cwd);
+  // The single authority on whether a row answers a query, shared with every
+  // other adapter. The local path helpers this file used to keep were only
+  // reachable from the SQL prefilter that has been removed.
+  return externalSessionMatchesQuery(entry, query);
 }
 
 function compareCatalogEntries(a: CodexCatalogEntry, b: CodexCatalogEntry): number {
@@ -800,6 +881,50 @@ function codexToolOutputText(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function codexCompletedItemText(item: JsonRecord | undefined): string {
+  if (!item) return '';
+  const direct = stringField(item, 'content');
+  if (direct) return direct;
+  if (!Array.isArray(item.content)) return '';
+  return item.content
+    .flatMap((part) => {
+      const record = asRecord(part);
+      const type = stringField(record, 'type')?.toLowerCase();
+      return type === 'text' || type === 'input_text' || type === 'output_text'
+        ? [stringField(record, 'text') ?? '']
+        : [];
+    })
+    .filter((text) => text.length > 0)
+    .join('');
+}
+
+function codexCompletedReasoningText(item: JsonRecord | undefined): string {
+  if (!item) return '';
+  const summary = codexTextFragments(item.summary_text);
+  if (summary.length > 0) return summary.join('\n');
+  return codexCompletedItemText(item);
+}
+
+function codexTextFragments(value: unknown): string[] {
+  if (typeof value === 'string') return value.length > 0 ? [value] : [];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((part) => {
+    if (typeof part === 'string') return part.length > 0 ? [part] : [];
+    const text = stringField(asRecord(part), 'text');
+    return text ? [text] : [];
+  });
+}
+
+function codexCompletedItemMediaText(item: JsonRecord | undefined): string {
+  if (!item || !Array.isArray(item.content)) return '';
+  const contentTypes = item.content.flatMap((part) => {
+    const type = stringField(asRecord(part), 'type')?.toLowerCase();
+    return type ? [type] : [];
+  });
+  if (contentTypes.some((type) => type.includes('image'))) return '[Image]';
+  return contentTypes.some((type) => type.includes('audio')) ? '[Audio]' : '';
 }
 
 function mediaOnlyUserText(payload: JsonRecord): string {

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import { expect } from './test-helpers.js';
 import { deriveProviderAuthContract } from '../provider-auth.js';
@@ -59,7 +78,7 @@ describe('ProviderAuth contract', () => {
 
   test('OAuth subscription providers expose validation actions after login', () => {
     const contract = deriveProviderAuthContract({
-      providerType: 'claude-subscription',
+      providerType: 'xai-oauth',
       hasSecret: true,
       lastTestStatus: 'verified',
     });
@@ -71,7 +90,6 @@ describe('ProviderAuth contract', () => {
     expect(contract.sendMayUseWithoutSecret).toBe(false);
     expect(contract.actionAvailability.save_secret).toBe('hidden');
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
     expect(contract.actionAvailability.start_oauth).toBe('hidden');
     expect(contract.actionAvailability.refresh_oauth).toBe('available');
     expect(contract.actionAvailability.revoke_auth).toBe('available');
@@ -149,7 +167,7 @@ describe('ProviderAuth contract', () => {
 
   test('disabled providers hide actions regardless of stored credential state', () => {
     const contract = deriveProviderAuthContract({
-      providerType: 'claude-subscription',
+      providerType: 'openai-codex',
       enabled: false,
       hasSecret: true,
       lastTestStatus: 'verified',

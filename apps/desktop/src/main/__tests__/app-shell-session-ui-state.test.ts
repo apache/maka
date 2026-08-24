@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
@@ -5,11 +24,7 @@ import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health
 import type { SessionSummary } from '@maka/core/session';
 import { armLiveTurn, confirmLiveTurn } from '@maka/ui';
 import { settledSessionTransientIds } from '../../renderer/settled-session-transients.js';
-import {
-  mergeSessionSummaryListForDisplay,
-  mergeSessionSummaryForDisplay,
-  normalizeSessionSummaryForDisplay,
-} from '../../renderer/session-status-presentation.js';
+import { normalizeSessionSummaryForDisplay } from '../../renderer/session-status-presentation.js';
 import {
   clearAppShellSessionUiStateForSession,
   createAppShellSessionUiStateController,
@@ -61,36 +76,6 @@ function seededState(): AppShellSessionUiState {
 }
 
 describe('session live run display state', () => {
-  it('preserves known live state when a mutation response omits it', () => {
-    const current = {
-      id: 'session-1',
-      status: 'running',
-      runningTurnIds: ['turn-live'],
-    } as SessionSummary;
-    const mutation = { id: 'session-1', status: 'running' } as SessionSummary;
-
-    assert.deepEqual(mergeSessionSummaryForDisplay(current, mutation).runningTurnIds, [
-      'turn-live',
-    ]);
-  });
-
-  it('lets known-empty replace prior running state and clear a stale running status', () => {
-    const current = {
-      id: 'session-1',
-      status: 'running',
-      runningTurnIds: ['turn-live'],
-    } as SessionSummary;
-    const catalog = {
-      id: 'session-1',
-      status: 'running',
-      runningTurnIds: [],
-    } as unknown as SessionSummary;
-
-    const merged = mergeSessionSummaryForDisplay(current, catalog);
-    assert.deepEqual(merged.runningTurnIds, []);
-    assert.equal(merged.status, 'active');
-  });
-
   it('keeps persisted running as a fallback only while live state is unknown', () => {
     const unknown = { id: 'unknown', status: 'running' } as SessionSummary;
     const knownEmpty = {
@@ -103,22 +88,6 @@ describe('session live run display state', () => {
     assert.equal(normalizeSessionSummaryForDisplay(knownEmpty).status, 'active');
   });
 
-  it('preserves live authority when the list state boundary accepts a metadata replacement', () => {
-    const current = {
-      id: 'session-live',
-      status: 'running',
-      runningTurnIds: ['turn-live'],
-    } as SessionSummary;
-    const mutation = {
-      id: 'session-live',
-      status: 'running',
-      permissionMode: 'bypass',
-    } as SessionSummary;
-
-    assert.deepEqual(mergeSessionSummaryListForDisplay([current], [mutation]), [
-      { ...mutation, runningTurnIds: ['turn-live'] },
-    ]);
-  });
 });
 
 describe('app shell session UI state controller', () => {

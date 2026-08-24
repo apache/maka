@@ -1,10 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Inputs to runtime APIs (create session, send message, list/filter).
  */
 
 import type { MessageContent } from './events.js';
 import type {
-  BackendKind,
   SessionBlockedReason,
   SessionStatus,
   SessionToolProfile,
@@ -35,7 +53,14 @@ export interface CreateSessionInput {
   projectId?: string | null;
   /** If omitted, runtime auto-derives a placeholder; users may rename later. */
   name?: string;
-  backend: BackendKind;
+  /**
+   * No `backend`: a live build has exactly one, so the field carried no choice
+   * — only the chance of writing the retired `'fake'` into a new row (#3211).
+   * The store stamps every new header instead. Sessions derived from an older
+   * one (branch, revision, subagent) no longer inherit its backend; a copy of a
+   * legacy row is a real session whose connection slug resolves to nothing,
+   * which is what the readiness projection already says about it.
+   */
   llmConnectionSlug: string;
   /** Falls back to the connection's defaultModel if omitted. */
   model?: string;

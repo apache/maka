@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -21,7 +40,11 @@ import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
-import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
+import {
+  decodeStoredMessage as decodePersistedStoredMessage,
+  type StoredMessage,
+} from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 import type { Task } from '@maka/core/task-ledger';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
@@ -97,13 +120,16 @@ import {
   withTimeout,
 } from './fixtures/execution-host-suite.js';
 
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
+
 test('production Host resumes a Session through the ScheduledTask authority', {
   timeout: 30_000,
 }, async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const desktop = await connectClient(fixture.root, 'desktop');
-    const tui = await connectClient(fixture.root, 'tui');
+    const desktop = await connectClient(fixture.root);
+    const tui = await connectClient(fixture.root);
     try {
       const heartbeat = await desktop.request('scheduled-task.mutate', {
         kind: 'create',
@@ -206,8 +232,8 @@ test('dual UDS Clients query persisted Task Ledger tool-port mutations across Ho
     });
 
     const host = await fixture.startHost();
-    const desktop = await connectClient(fixture.root, 'desktop');
-    const tui = await connectClient(fixture.root, 'tui');
+    const desktop = await connectClient(fixture.root);
+    const tui = await connectClient(fixture.root);
     let staleContinuation:
       | {
           revision: TaskLedgerRevision;
@@ -270,7 +296,7 @@ test('dual UDS Clients query persisted Task Ledger tool-port mutations across Ho
     });
 
     const successorHost = await fixture.startHost();
-    const successor = await connectClient(fixture.root, 'desktop');
+    const successor = await connectClient(fixture.root);
     try {
       const continued = await successor.request('task.ledger.query', {
         kind: 'list_continue',
@@ -380,8 +406,8 @@ async function seedDispatchedClientCapability(
 test('two UDS Clients share one Runtime Policy authority and CAS winner', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     try {
       const initial = await first.request('runtime.policy.query', {});
       assert.deepEqual(await second.request('runtime.policy.query', {}), initial);
@@ -423,8 +449,8 @@ test('two UDS Clients await slow connection effects against one canonical catalo
       const secret = 'connection-effect-secret';
       const connection = await fixture.seedConnectionEffect(provider.baseUrl, secret);
       const host = await fixture.startHost();
-      const desktop = await connectClient(fixture.root, 'desktop');
-      const tui = await connectClient(fixture.root, 'tui');
+      const desktop = await connectClient(fixture.root);
+      const tui = await connectClient(fixture.root);
       try {
         assert.equal(desktop.hostEpoch, tui.hostEpoch);
         assert.notEqual(desktop.connectionId, tui.connectionId);
@@ -529,8 +555,8 @@ test('two UDS Clients await slow connection effects against one canonical catalo
 test('two Clients share one execution after the starting Client disconnects', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const turnId = randomUUID();
 
     const started = requireStartedTurn(
@@ -689,7 +715,7 @@ test('two Clients share one execution after the starting Client disconnects', as
 test('regenerate replays the durable source content with one recoverable root identity', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const client = await connectClient(fixture.root, 'tui');
+    const client = await connectClient(fixture.root);
     const sourceTurnId = randomUUID();
     const regeneratedTurnId = randomUUID();
     try {
@@ -744,7 +770,7 @@ test('regenerate replays the durable source content with one recoverable root id
 test('regenerate rejects self-source and legacy target collisions without draining Host', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
     const sourceTurnId = randomUUID();
     await first.startTurn({
       sessionId: fixture.sessionId,
@@ -765,7 +791,7 @@ test('regenerate rejects self-source and legacy target collisions without draini
 
     const legacy = await fixture.seedSafeBoundaryContinuationSource();
     const secondHost = await fixture.startHost();
-    const second = await connectClient(fixture.root, 'desktop');
+    const second = await connectClient(fixture.root);
     try {
       await assert.rejects(
         second.regenerateTurn({
@@ -800,8 +826,8 @@ test('regenerate rejects self-source and legacy target collisions without draini
 test('context actions share root admission and expose backend capability honestly', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
-    const second = await connectClient(fixture.root, 'tui');
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const turnId = randomUUID();
     const unavailableTurnId = randomUUID();
     try {
@@ -855,7 +881,7 @@ test('context actions share root admission and expose backend capability honestl
 test('a disconnected Client leaves a durable Interaction that another Client can answer', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
-    const first = await connectClient(fixture.root, 'desktop');
+    const first = await connectClient(fixture.root);
     const turnId = randomUUID();
     const started = requireStartedTurn(
       await first.startTurn({
@@ -866,7 +892,7 @@ test('a disconnected Client leaves a durable Interaction that another Client can
     );
     await first.close();
 
-    const second = await connectClient(fixture.root, 'tui');
+    const second = await connectClient(fixture.root);
     const subscription = await second.openSessionSubscription({
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
@@ -936,7 +962,7 @@ test('a disconnected Client leaves a durable Interaction that another Client can
     await fixture.stopHost(firstHost);
 
     const secondHost = await fixture.startHost();
-    const observer = await connectClient(fixture.root, 'run');
+    const observer = await connectClient(fixture.root);
     assert.deepEqual(
       await observer.request('interaction.query', {
         sessionId: fixture.sessionId,
@@ -961,9 +987,9 @@ test('a disconnected Client leaves a durable Interaction that another Client can
 test('two UDS Clients settle one hosted sandbox boundary and resume its exact Run', async () => {
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
-    const starter = await connectClient(fixture.root, 'desktop');
-    const first = await connectClient(fixture.root, 'tui');
-    const second = await connectClient(fixture.root, 'run');
+    const starter = await connectClient(fixture.root);
+    const first = await connectClient(fixture.root);
+    const second = await connectClient(fixture.root);
     const subscription = await first.openSessionSubscription({
       sessionId: fixture.sessionId,
       transcript: { kind: 'none' },
@@ -1028,7 +1054,7 @@ test('two UDS Clients settle one hosted sandbox boundary and resume its exact Ru
     await fixture.stopHost(firstHost);
 
     const secondHost = await fixture.startHost();
-    const observer = await connectClient(fixture.root, 'desktop');
+    const observer = await connectClient(fixture.root);
     assert.deepEqual(
       await observer.request('interaction.query', {
         sessionId: fixture.sessionId,

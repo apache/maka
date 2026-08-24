@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { isCollaborationMode, type CollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode, type OrchestrationMode } from '@maka/core/orchestration';
 import { isPermissionMode, type PermissionMode } from '@maka/core/permission';
@@ -5,6 +24,7 @@ import { isSessionStartMode, type SessionStartMode } from '@maka/core/explore-ag
 import {
   isSessionBlockedReason,
   isSessionToolProfile,
+  type PersistedBackendKind,
   type SessionBlockedReason,
   type SessionStatus,
   type SessionSubagentProjection,
@@ -72,7 +92,7 @@ const PROJECTION_REQUIRED_FIELDS = [
   'revision',
   'workspace',
   'createdAt',
-  'lastUsedAt',
+  'activityAt',
   'name',
   'isFlagged',
   'isArchived',
@@ -191,7 +211,7 @@ export interface SessionCatalogProjection {
   readonly revision: number;
   readonly workspace: WorkspaceProjection;
   readonly createdAt: number;
-  readonly lastUsedAt: number;
+  readonly activityAt: number;
   readonly name: string;
   readonly isFlagged: boolean;
   readonly isArchived: boolean;
@@ -213,7 +233,7 @@ export interface SessionCatalogProjection {
   readonly revisionOfTurnId?: string;
   readonly revisionIndex?: number;
   readonly revisionState?: 'preparing' | 'committed';
-  readonly backend: 'ai-sdk' | 'fake';
+  readonly backend: PersistedBackendKind;
   readonly llmConnectionSlug: string;
   readonly connectionLocked: boolean;
   readonly model: string;
@@ -626,7 +646,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     revision: positiveRevision(record.revision, 'Session revision'),
     workspace: decodeWorkspaceProjection(record.workspace),
     createdAt: timestamp(record.createdAt, 'Session createdAt'),
-    lastUsedAt: timestamp(record.lastUsedAt, 'Session lastUsedAt'),
+    activityAt: timestamp(record.activityAt, 'Session activityAt'),
     name: sessionName(record.name),
     isFlagged: boolean(record.isFlagged, 'Session flagged state'),
     isArchived: boolean(record.isArchived, 'Session archived state'),
@@ -866,6 +886,9 @@ function optionalThinkingLevel(
   return { thinkingLevel: thinkingLevel(record.thinkingLevel) };
 }
 
+// `'fake'` stays accepted on decode: the projection carries the session
+// header's durable backend, and rows written by builds that shipped
+// FakeBackend still hold it (#3211).
 function backend(value: unknown): SessionCatalogProjection['backend'] {
   if (value !== 'ai-sdk' && value !== 'fake') {
     throw invalidProtocolFrame('Invalid Session backend');

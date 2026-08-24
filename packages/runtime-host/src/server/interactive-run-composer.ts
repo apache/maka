@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   buildSideConversationSystemPromptFragment,
   isSideConversationSession,
@@ -98,7 +117,6 @@ export interface InteractiveRunComposerInput {
   readonly childInstruction?: string;
   readonly sideConversation?: boolean;
   readonly boundTools?: readonly MakaTool[];
-  readonly boundToolNames?: readonly string[];
   readonly toolProfile?: SessionToolProfile;
   readonly skillBudget?: SkillCatalogBudgetOptions;
   readonly platform?: NodeJS.Platform;
@@ -136,9 +154,6 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const inventorySnapshotFor = createTurnSkillInventorySnapshotResolver(input.skills);
   const inventoryFor: SkillInventoryResolver = async (context) =>
     (await inventorySnapshotFor(context)).inventory;
-  if (input.boundTools && input.boundToolNames) {
-    throw new Error('Interactive tool bindings are ambiguous');
-  }
   const defaultTools = input.boundTools
     ? input.boundTools
     : buildDefaultHostTools(
@@ -152,16 +167,13 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
         input.plan,
         input.deepResearch?.tools,
       );
-  const clientCapabilityTools =
-    input.boundTools || input.boundToolNames ? [] : (input.clientCapabilities?.tools ?? []);
+  const hasToolCeiling = input.boundTools !== undefined || input.toolProfile !== undefined;
+  const clientCapabilityTools = hasToolCeiling ? [] : (input.clientCapabilities?.tools ?? []);
   const unscopedCandidateTools = [...defaultTools, ...clientCapabilityTools];
   const routedCandidateTools = input.deepResearch
     ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
     : unscopedCandidateTools;
-  const boundCandidateTools = input.boundToolNames
-    ? bindToolsByName(routedCandidateTools, input.boundToolNames)
-    : routedCandidateTools;
-  const candidateTools = projectHostedExecutionTools(boundCandidateTools, input.toolProfile);
+  const candidateTools = projectHostedExecutionTools(routedCandidateTools, input.toolProfile);
   const activeExecution = input.plan ? activePlanExecution(input.plan.state) : undefined;
   const selectedTools = input.plan
     ? selectCollaborationTools({
@@ -175,8 +187,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     host: 'runtime-host',
     tools: selectedTools,
     policy: {
-      economy:
-        input.boundTools || input.boundToolNames ? false : !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
+      economy: hasToolCeiling ? false : !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
     },
   });
   // A bound tool list is an exact child/local activation ceiling. Dynamic
@@ -185,7 +196,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   assertUniqueToolNames(tools);
   const toolAvailability = mergeToolAvailability(
     productSurface.toolAvailability,
-    input.boundTools
+    hasToolCeiling
       ? []
       : filterToolGroups(
           input.clientCapabilities?.groups ?? [],
@@ -310,26 +321,10 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   });
 }
 
-function bindToolsByName(
-  tools: readonly MakaTool[],
-  names: readonly string[],
-): readonly MakaTool[] {
-  if (new Set(names).size !== names.length) {
-    throw new Error('Hosted tool profile contains duplicate tool names');
-  }
-  const byName = new Map(tools.map((tool) => [tool.name, tool]));
-  const selected = names.map((name) => byName.get(name));
-  const missing = names.filter((_name, index) => selected[index] === undefined);
-  if (missing.length > 0) {
-    throw new Error(`Hosted tool profile is unavailable: ${missing.join(', ')}`);
-  }
-  return selected as MakaTool[];
-}
-
 export interface InteractiveRunComposerFactoryInput
   extends Omit<
     InteractiveRunComposerInput,
-    'runtimePolicy' | 'boundTools' | 'boundToolNames' | 'clientCapabilities' | 'plan'
+    'runtimePolicy' | 'boundTools' | 'clientCapabilities' | 'plan'
   > {
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly resolveTavilyWebSearchReadiness: () => Promise<boolean>;
@@ -456,11 +451,7 @@ export function createInteractiveRunComposerFactory(
           : {}),
         ...(boundTools ? { boundTools } : {}),
         ...(!boundTools && backendContext.header.toolProfile
-          ? {
-              boundToolNames: hostedExecutionRunProfile(backendContext.header.toolProfile)!
-                .toolNames,
-              toolProfile: backendContext.header.toolProfile,
-            }
+          ? { toolProfile: backendContext.header.toolProfile }
           : {}),
         ...(clientCapabilities ? { clientCapabilities } : {}),
         ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),

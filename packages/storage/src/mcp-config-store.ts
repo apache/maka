@@ -1,9 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   MCP_CONFIG_VERSION,
   createDefaultMcpConfig,
+  isNonLoopbackCleartextHttp,
   type McpConfigFile,
   type McpOAuthConfig,
   type McpProtocolPreference,
@@ -28,6 +48,16 @@ export interface McpConfigStore {
   transform(apply: (current: McpConfigFile) => McpConfigFile): Promise<McpConfigFile>;
   upsert(serverId: string, config: McpServerConfig): Promise<McpConfigFile>;
   remove(serverId: string): Promise<McpConfigFile>;
+}
+
+/** Thrown by insert when the id is taken. Same-process callers (the IPC
+ * layer) match on instanceof and answer the renderer with a typed
+ * envelope; the message never has to carry a machine-readable code. */
+export class McpServerExistsError extends Error {
+  constructor(readonly serverId: string) {
+    super(`MCP server "${serverId}" already exists`);
+    this.name = 'McpServerExistsError';
+  }
 }
 
 export function createMcpConfigStore(workspaceRoot: string): McpConfigStore {
@@ -66,6 +96,7 @@ class FileMcpConfigStore implements McpConfigStore {
     const normalized = normalizeMcpConfig(config);
     return this.serial(async () => {
       await this.assertCurrentVersionCanBeReplaced();
+      enforceEndpointPolicyOnChanges(await this.tryRead(), normalized);
       await this.write(normalized);
       return normalized;
     });
@@ -75,6 +106,7 @@ class FileMcpConfigStore implements McpConfigStore {
     return this.serial(async () => {
       const current = await this.readOrCreate();
       const next = normalizeMcpConfig(apply(current));
+      enforceEndpointPolicyOnChanges(current, next);
       await this.write(next);
       return next;
     });
@@ -88,6 +120,7 @@ class FileMcpConfigStore implements McpConfigStore {
         version: MCP_CONFIG_VERSION,
         mcpServers: { ...current.mcpServers, [serverId]: config },
       });
+      enforceEndpointPolicyOnChanges(current, next);
       await this.write(next);
       return next;
     });
@@ -102,6 +135,16 @@ class FileMcpConfigStore implements McpConfigStore {
       await this.write(next);
       return next;
     });
+  }
+
+  private async tryRead(): Promise<McpConfigFile | undefined> {
+    try {
+      return await this.readOrCreate();
+    } catch {
+      // A malformed file is recovered by full replacement; policy then
+      // applies to every server in the replacement.
+      return undefined;
+    }
   }
 
   private async readOrCreate(): Promise<McpConfigFile> {
@@ -173,6 +216,39 @@ class FileMcpConfigStore implements McpConfigStore {
   }
 }
 
+/** Endpoint security policy, enforced at the WRITE boundary for new or
+ * repointed endpoints only. Reads grandfather whatever earlier releases
+ * accepted: a single legacy `http://` entry must not make the whole file —
+ * and every other server in it — unreadable and unrepairable from the app.
+ * The transport layer still refuses to CONNECT such an endpoint, so a
+ * grandfathered entry surfaces as a per-server error, not a working
+ * cleartext channel. */
+export function assertMcpEndpointPolicy(server: McpServerConfig, serverId: string): void {
+  if (!('url' in server)) return;
+  const parsed = new URL(server.url);
+  if (isNonLoopbackCleartextHttp(parsed)) {
+    // A remote MCP endpoint carries bearer tokens and tool payloads.
+    throw new Error(`${serverId}.url must use https for non-loopback hosts`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error(`${serverId}.url must not contain embedded credentials; use headers instead`);
+  }
+}
+
+function enforceEndpointPolicyOnChanges(
+  previous: McpConfigFile | undefined,
+  next: McpConfigFile,
+): void {
+  for (const [serverId, server] of Object.entries(next.mcpServers)) {
+    if (!('url' in server)) continue;
+    const before = previous?.mcpServers[serverId];
+    const beforeUrl = before && 'url' in before ? before.url : undefined;
+    // Enabling/disabling or editing headers on a grandfathered entry stays
+    // possible; introducing or repointing an endpoint takes the policy.
+    if (server.url !== beforeUrl) assertMcpEndpointPolicy(server, serverId);
+  }
+}
+
 function normalizeServer(
   value: unknown,
   serverId: string,
@@ -208,9 +284,6 @@ function normalizeServer(
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`${serverId}.url must use http or https`);
-  }
-  if (parsed.username || parsed.password) {
-    throw new Error(`${serverId}.url must not contain embedded credentials; use headers instead`);
   }
   const transport = value.transport ?? 'auto';
   if (transport !== 'auto' && transport !== 'streamable-http' && transport !== 'sse') {
@@ -255,7 +328,16 @@ function normalizeOAuth(value: unknown, serverId: string): McpOAuthConfig {
     throw new Error(`${serverId}.oauth.clientId is required when clientSecret is configured`);
   }
   if (value.scopes !== undefined) {
-    result.scopes = stringArray(value.scopes, `${serverId}.oauth.scopes`);
+    result.scopes = stringArray(value.scopes, `${serverId}.oauth.scopes`).map((scope, index) => {
+      // RFC 6749 §3.3 scope-token: printable ASCII except space, quote and
+      // backslash. The list joins space-delimited on the wire, so an entry
+      // outside the grammar would silently change the requested grant or be
+      // rejected as invalid_scope far from the config mistake.
+      if (!/^[\x21\x23-\x5B\x5D-\x7E]+$/u.test(scope)) {
+        throw new Error(`${serverId}.oauth.scopes[${index}] must be a non-empty scope token`);
+      }
+      return scope;
+    });
   }
   if (value.callbackPort !== undefined) {
     if (

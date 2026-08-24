@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 export * from './artifact-preview-registry.js';
 export * from './assistant-stream.js';
 export * from './chat-empty-hero.js';
@@ -56,11 +75,6 @@ export { Card, type CardProps, type CardVariant } from '@astryxdesign/core';
 // cross-package consumer — `apps/desktop`'s `artifact-preview.tsx` — which is the
 // promotion condition the off-barrel convention named, so the export is the rule.
 export { previewVariants } from './primitives/chat.js';
-// `diffLineKind` rides the same seam for the same reason: it decides the
-// `data-line` values those parts are selected by, so a second copy of it is a
-// second answer to "what colour is this line". `apps/desktop` had one, and the
-// two had already diverged on `diff --git` / `index` headers.
-export { diffLineKind } from './tool-activity/tool-result-preview.js';
 export { DiffCodePreview } from './tool-activity/diff-code-preview.js';
 export { syntaxLanguageForPath } from './tool-activity/diff-syntax.js';
 export { MarkdownBody } from './markdown-body.js';

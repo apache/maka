@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { TOOL_ACTIVITY_KINDS, type ToolActivityKind } from '@maka/core/events';
 import {
   assertExactKeys,
   requireCount,
@@ -23,6 +43,7 @@ export interface ClientCapabilityToolDescriptor {
   readonly description?: string;
   readonly inputSchema: Record<string, unknown>;
   readonly annotations?: ClientCapabilityToolAnnotations;
+  readonly activityKind?: ToolActivityKind;
 }
 
 export type ClientCapabilityContentBlock =
@@ -60,6 +81,7 @@ export const CLIENT_CAPABILITY_MAX_TOOLS = 256;
 export const CLIENT_CAPABILITY_MAX_MANIFEST_BYTES = 56 * 1024;
 export const CLIENT_CAPABILITY_MAX_RESULT_BYTES = 24 * 1024 * 1024;
 export const CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES = 36 * 1024;
+export const CLIENT_CAPABILITY_MAX_PROGRESS_TOTAL = 1_024;
 export const CLIENT_CAPABILITY_MAX_RESULT_CHUNKS = Math.ceil(
   CLIENT_CAPABILITY_MAX_RESULT_BYTES / CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
 );
@@ -180,6 +202,13 @@ export interface ClientCapabilityFailedFrame {
   readonly message: string;
 }
 
+export interface ClientCapabilityProgressFrame {
+  readonly kind: 'client.capability.progress';
+  readonly invocationId: string;
+  readonly current: number;
+  readonly total: number;
+}
+
 export interface ClientCapabilityResultFrame {
   readonly kind: 'client.capability.result';
   readonly invocationId: string;
@@ -204,6 +233,7 @@ export type ClientCapabilityClientFrame =
   | ClientCapabilityAcceptedFrame
   | ClientCapabilityRejectedFrame
   | ClientCapabilityFailedFrame
+  | ClientCapabilityProgressFrame
   | ClientCapabilityResultFrame
   | ClientCapabilityResultStartFrame
   | ClientCapabilityResultChunkFrame;
@@ -369,6 +399,25 @@ export function decodeClientCapabilityClientFrame(value: unknown): ClientCapabil
         invocationId: requireEntityId(frame.invocationId, 'invocationId'),
         message: requireString(frame.message, 'message', 4_096),
       };
+    case 'client.capability.progress': {
+      assertExactKeys(frame, 'Client Capability progress frame', [
+        'kind',
+        'invocationId',
+        'current',
+        'total',
+      ]);
+      const current = requireCount(frame.current, 'current');
+      const total = requireCount(frame.total, 'total');
+      if (total === 0 || total > CLIENT_CAPABILITY_MAX_PROGRESS_TOTAL || current > total) {
+        throw invalidProtocolFrame('Invalid Client Capability progress bounds');
+      }
+      return {
+        kind: frame.kind,
+        invocationId: requireEntityId(frame.invocationId, 'invocationId'),
+        current,
+        total,
+      };
+    }
     case 'client.capability.result':
       assertExactKeys(frame, 'Client Capability result frame', ['kind', 'invocationId', 'result']);
       if (jsonByteLength(frame.result) > CLIENT_CAPABILITY_INLINE_RESULT_MAX_BYTES) {
@@ -593,7 +642,7 @@ function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {
     record,
     'Client Capability tool',
     ['serverId', 'name', 'inputSchema'],
-    ['description', 'annotations'],
+    ['description', 'annotations', 'activityKind'],
   );
   const inputSchema = decodeJsonRecord(record.inputSchema, 'inputSchema');
   if (jsonByteLength(inputSchema) > 32 * 1024) {
@@ -613,10 +662,20 @@ function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {
           ),
         }),
     inputSchema,
+    ...(record.activityKind === undefined
+      ? {}
+      : { activityKind: decodeToolActivityKind(record.activityKind) }),
     ...(record.annotations === undefined
       ? {}
       : { annotations: decodeToolAnnotations(record.annotations) }),
   };
+}
+
+function decodeToolActivityKind(value: unknown): ToolActivityKind {
+  if (typeof value === 'string' && (TOOL_ACTIVITY_KINDS as readonly string[]).includes(value)) {
+    return value as ToolActivityKind;
+  }
+  throw invalidProtocolFrame('Invalid Client Capability tool activity kind');
 }
 
 const CLIENT_CAPABILITY_SCHEMA_TYPES = new Set([
@@ -1039,6 +1098,7 @@ const CLIENT_CAPABILITY_CLIENT_FRAME_KINDS = new Set<ClientCapabilityClientFrame
   'client.capability.accepted',
   'client.capability.rejected',
   'client.capability.failed',
+  'client.capability.progress',
   'client.capability.result',
   'client.capability.result_start',
   'client.capability.result_chunk',

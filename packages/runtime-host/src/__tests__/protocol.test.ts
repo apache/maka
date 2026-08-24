@@ -1,9 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import {
+  decodeClientCapabilityReplaceInput,
   decodeClientFrame,
   decodeHostFrame,
   decodeHostRegistration,
@@ -14,8 +34,8 @@ import {
   MESSAGE_OPERATION_RESULT_MAX_BYTES,
   MESSAGE_QUEUE_MAX_ENTRIES,
   negotiateProtocol,
-  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_MAX_MESSAGE_BYTES,
   RUNTIME_HOST_PROTOCOL_VERSION,
   SESSION_CONTINUITY_SCHEMA_VERSION,
   SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES,
@@ -29,7 +49,10 @@ import {
 } from '../protocol/index.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
 import { composeOperationSpecMaps } from '../protocol/operation-spec.js';
-import { runtimeHostLogBuffer } from '../process-diagnostics.js';
+import {
+  RUNTIME_HOST_DIAGNOSTIC_LOG_MAX_BYTES,
+  runtimeHostLogBuffer,
+} from '../process-diagnostics.js';
 import {
   TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH,
   TURN_MESSAGE_QUOTE_MAX_COUNT,
@@ -40,6 +63,34 @@ import {
 } from '../protocol/turn.js';
 
 describe('Runtime Host bootstrap protocol', () => {
+  test('decodes a Client hello without a surface identity', () => {
+    const hello = {
+      kind: 'hello',
+      clientInstanceId: 'client-without-surface',
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+    } as const;
+
+    assert.deepEqual(decodeClientFrame(hello), hello);
+  });
+
+  test('ignores a legacy surface identity while decoding a Client hello', () => {
+    const hello = {
+      kind: 'hello',
+      clientInstanceId: 'legacy-surface-client',
+      surface: 'tui',
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+    } as const;
+
+    const { surface: _legacySurface, ...expected } = hello;
+    assert.deepEqual(decodeClientFrame(hello), expected);
+  });
+
   test('publishes a new compatibility epoch for Session catalog live-run state', () => {
     // Epoch 22 predates the live-run projection and rejects its added catalog
     // field, so mixed-version peers must fail during the handshake instead.
@@ -68,6 +119,120 @@ describe('Runtime Host bootstrap protocol', () => {
     // and Hosts from epoch 25 must fail the handshake instead of decoding each
     // other's catalog responses asymmetrically.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 25);
+  });
+
+  test('publishes a new compatibility epoch for sandbox failure results', () => {
+    // Epoch 32 rejects the bounded sandbox failure reason on live tool results,
+    // so mixed-version peers must fail the handshake. Asserted as a floor, like
+    // the epochs above: pinning an exact value breaks on every later bump.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 32);
+  });
+
+  test('publishes a new compatibility epoch for backend-free ScheduledTask templates', () => {
+    // Epoch 33 Clients require the `backend` field these templates no longer
+    // emit. Also a floor, for the same reason as above.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 33);
+  });
+
+  test('publishes a new compatibility epoch for Session trace pagination', () => {
+    // Epoch 34 peers cannot exchange the paged trace and usage frames. Also a
+    // floor, for the same reason as above.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 34);
+  });
+
+  test('publishes a new compatibility epoch for TraceTotals removal', () => {
+    // Epoch 35 peers still transport aggregate TraceTotals. Also a floor, for
+    // the same reason as above.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 35);
+  });
+
+  test('publishes a new compatibility epoch for the catalog search term', () => {
+    // Epoch 36 cannot carry the search term. Also a floor, for the same reason
+    // as above.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 36);
+  });
+
+  test('publishes a new compatibility epoch for the retired execute permission mode', () => {
+    // Epoch 37 still speaks `execute`. Frame decoders now reject it, so such a
+    // peer would fail mid-Session rather than at connect.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 37);
+  });
+
+  test('publishes a new compatibility epoch for Client Capability progress', () => {
+    // Epoch 38 peers reject the additional tool descriptor field and progress
+    // frame, so the capability must be negotiated at a newer epoch.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 38);
+  });
+
+  test('publishes a new compatibility epoch for onboarding endpoint overrides', () => {
+    // Epoch 44 peers reject the required `baseUrl` and `connectionId` on
+    // onboarding inputs, and the `base_url_not_configured` /
+    // `connection_not_found` rejections on their results. Both landed in one
+    // epoch because neither shape was ever published separately.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 44);
+  });
+
+  test('publishes a new compatibility epoch for queued message editing', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 45);
+  });
+
+  test('publishes a new compatibility epoch for the project registration preference', () => {
+    // Epoch 46 Hosts reject the optional preference field on the closed register
+    // input, so mixed-version peers must fail during the handshake instead.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 46);
+  });
+
+  test('adds credential rotation without changing existing credential inputs', () => {
+    const issueInput = {
+      principalKind: 'remote_owner',
+      principalId: 'desktop:test',
+      operationGrants: ['host.status'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    };
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput(issueInput),
+      issueInput,
+    );
+    assert.throws(() =>
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput({
+        replacementOfCredentialId: 'credential-current',
+      }),
+    );
+    assert.throws(() =>
+      HOST_OPERATION_SPECS['access.credential.revoke'].decodeInput({
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      }),
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.rotation.prepare'].decodeInput({
+        replacementOfCredentialId: 'credential-current',
+      }),
+      { replacementOfCredentialId: 'credential-current' },
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.rotation.revoke'].decodeInput({
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      }),
+      {
+        credentialId: 'credential-target',
+        requiredActiveCredentialId: 'credential-current',
+      },
+    );
+  });
+
+  test('publishes a new compatibility epoch for provider capacity retry progress', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 41);
+  });
+
+  test('publishes a new compatibility epoch for shell-run poll correlation', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 42);
+  });
+
+  test('publishes a new compatibility epoch for the retired Session timestamp', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 43);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -227,6 +392,12 @@ describe('Runtime Host bootstrap protocol', () => {
       { ...identity, type: 'tool_result', status: 'completed', durationMs: 3 },
       {
         ...identity,
+        type: 'tool_result',
+        status: 'errored',
+        sandboxFailureReason: 'sandbox_boundary_required',
+      },
+      {
+        ...identity,
         type: 'tool_result_preview',
         isError: false,
         content: {
@@ -259,6 +430,18 @@ describe('Runtime Host bootstrap protocol', () => {
         type: 'tool_result',
         status: 'errored',
         error: 'raw provider error',
+      },
+      {
+        ...identity,
+        type: 'tool_result',
+        status: 'errored',
+        sandboxFailureReason: 'raw provider error',
+      },
+      {
+        ...identity,
+        type: 'tool_result',
+        status: 'completed',
+        sandboxFailureReason: 'requires_bypass',
       },
       {
         ...identity,
@@ -809,6 +992,92 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(decodeClientFrame(submit), submit);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);
+    const entryRetract = {
+      requestId: 'entry-retract-request-1',
+      operation: 'queue.entry.retract' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        retractId: 'retract-2',
+      },
+    };
+    const entryPromote = {
+      requestId: 'entry-promote-request-1',
+      operation: 'queue.entry.promote' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        promoteId: 'promote-1',
+      },
+    };
+    const entryUpdate = {
+      requestId: 'entry-update-request-1',
+      operation: 'queue.entry.update' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        updateId: 'update-1',
+        expectedQueueRevision: 7,
+        text: 'updated message',
+      },
+    };
+    const entriesReorder = {
+      requestId: 'entries-reorder-request-1',
+      operation: 'queue.entries.reorder' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        reorderId: 'reorder-1',
+        entryIds: ['entry-2', 'entry-1'],
+      },
+    };
+    assert.deepEqual(decodeClientFrame(entryRetract), entryRetract);
+    assert.deepEqual(decodeClientFrame(entryPromote), entryPromote);
+    assert.deepEqual(decodeClientFrame(entryUpdate), entryUpdate);
+    assert.deepEqual(decodeClientFrame(entriesReorder), entriesReorder);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entryUpdate,
+          input: { ...entryUpdate.input, text: '   ' },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entriesReorder,
+          input: { ...entriesReorder.input, entryIds: ['entry-1', 'entry-1'] },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entriesReorder,
+          input: { ...entriesReorder.input, entryIds: ['not/a/semantic/id'] },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entryRetract,
+          input: { ...entryRetract.input, generation: 1 },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entryPromote,
+          input: { ...entryPromote.input, entryId: 'not/a/semantic/id' },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeClientFrame({ ...submit, input: { ...submit.input, originHostEpoch: undefined } }),
@@ -1118,6 +1387,31 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+    for (const [operation, requestId] of [
+      ['queue.entry.retract', 'entry-retract-response'],
+      ['queue.entry.promote', 'entry-promote-response'],
+      ['queue.entry.update', 'entry-update-response'],
+      ['queue.entries.reorder', 'entries-reorder-response'],
+    ] as const) {
+      assert.doesNotThrow(() =>
+        decodeHostFrame({
+          requestId,
+          operation,
+          ok: true,
+          result: { queueRevision: 8 },
+        }),
+      );
+      assert.throws(
+        () =>
+          decodeHostFrame({
+            requestId,
+            operation,
+            ok: true,
+            result: { queueRevision: 8, retracted: [] },
+          }),
+        isInvalidFrame,
+      );
+    }
     const retracted = [retractedMessage()];
     assert.doesNotThrow(() =>
       decodeHostFrame({
@@ -1233,9 +1527,18 @@ describe('Runtime Host bootstrap protocol', () => {
       runtimeHostLogBuffer.append('info', `entry ${index}`);
     }
     runtimeHostLogBuffer.append('error', '🚀'.repeat(3_000));
-    const logs = runtimeHostLogBuffer.snapshot();
+    const entryBoundedLogs = runtimeHostLogBuffer.snapshot();
 
-    assert.equal(logs.length, 256);
+    assert.equal(entryBoundedLogs.length, 256);
+
+    for (let index = 0; index < 256; index += 1) {
+      runtimeHostLogBuffer.append('info', `retained detail ${index} ${'x'.repeat(256)}`);
+    }
+    const logs = runtimeHostLogBuffer.snapshot();
+    const encodedLogBytes = Buffer.byteLength(JSON.stringify(logs));
+
+    assert.ok(encodedLogBytes > 48 * 1024);
+    assert.ok(encodedLogBytes <= RUNTIME_HOST_DIAGNOSTIC_LOG_MAX_BYTES);
     assert.doesNotThrow(() =>
       HOST_BOOTSTRAP_OPERATION_SPECS['host.diagnostics.query'].decodeOutput({
         hostEpoch: 'epoch-1',
@@ -1334,6 +1637,84 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 });
 
+test('Client Capability tool descriptors preserve only known activity kinds', () => {
+  const input = {
+    registrationId: 'registration-1',
+    offers: [
+      {
+        offerId: 'desktop_computer_use',
+        version: '0',
+        affinity: 'session',
+        hostPathAccess: 'cwd',
+        label: 'Computer Use',
+        tools: [
+          {
+            serverId: 'desktop_computer_use',
+            name: 'maka_computer',
+            inputSchema: { type: 'object' },
+            activityKind: 'computer',
+          },
+        ],
+      },
+    ],
+  };
+
+  assert.equal(
+    decodeClientCapabilityReplaceInput(input).offers[0]?.tools[0]?.activityKind,
+    'computer',
+  );
+  assert.throws(
+    () =>
+      decodeClientCapabilityReplaceInput({
+        ...input,
+        offers: [
+          {
+            ...input.offers[0],
+            tools: [{ ...input.offers[0]!.tools[0], activityKind: 'desktop' }],
+          },
+        ],
+      }),
+    isInvalidFrame,
+  );
+});
+
+test('Client Capability progress frames require bounded monotonic coordinates', () => {
+  assert.deepEqual(
+    decodeClientFrame({
+      kind: 'client.capability.progress',
+      invocationId: 'invocation-1',
+      current: 7,
+      total: 11,
+    }),
+    {
+      kind: 'client.capability.progress',
+      invocationId: 'invocation-1',
+      current: 7,
+      total: 11,
+    },
+  );
+  assert.throws(
+    () =>
+      decodeClientFrame({
+        kind: 'client.capability.progress',
+        invocationId: 'invocation-1',
+        current: 12,
+        total: 11,
+      }),
+    isInvalidFrame,
+  );
+  assert.throws(
+    () =>
+      decodeClientFrame({
+        kind: 'client.capability.progress',
+        invocationId: 'invocation-1',
+        current: 1,
+        total: 1_025,
+      }),
+    isInvalidFrame,
+  );
+});
+
 function isInvalidFrame(error: unknown): boolean {
   return error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame';
 }
@@ -1391,7 +1772,6 @@ function continuitySnapshot(hostEpoch: string) {
       metadataRevision: 1,
       status: 'running' as const,
       createdAt: 1,
-      lastUsedAt: 2,
       isArchived: false,
     },
     projectionRevision: 1,

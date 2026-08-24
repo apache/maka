@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * SessionManager — the public Runtime API.
  *
@@ -39,7 +58,7 @@ import type {
   UserMessage,
   PermissionDecisionMessage,
   SystemNoteMessage,
-  BackendKind,
+  PersistedBackendKind,
 } from '@maka/core/session';
 import type {
   AgentSpec,
@@ -159,7 +178,6 @@ import type {
 import { readLatestContextDiagnostics, type ContextDiagnostics } from './context-diagnostics.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
-import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { AgentRunLineage, RuntimeContinuationFailpoint } from './agent-run.js';
 import type { RuntimeCommitResult, RuntimeCommitSink } from './runtime-commit-sink.js';
@@ -257,27 +275,18 @@ export interface StopSessionInput {
   mode?: BackendStopMode;
 }
 
-interface CompactSessionOptions {
-  /**
-   * Override the configured recent-turn tail. Supervisor overflow recovery
-   * uses zero because the failed wake turn itself can contain the oversized
-   * tool result that must be folded.
-   */
-  minRecentTurns?: number;
-}
-
 export type CompactSessionInput =
-  | (CompactSessionOptions & {
+  | {
       turnId?: string;
       hostedRoot?: never;
-    })
-  | (CompactSessionOptions & {
+    }
+  | {
       turnId: string;
       hostedRoot: {
         runId: string;
         onRunStarted?: () => void | Promise<void>;
       };
-    });
+    };
 
 export type PlanSafeBoundaryContinuationInput = Omit<RuntimeContinuationPlannerInput, 'sessionId'>;
 
@@ -700,7 +709,7 @@ export interface StrictRecoveryStores {
 }
 
 // ============================================================================
-// BackendRegistry — factory dispatch by BackendKind
+// BackendRegistry — factory dispatch by the session header's durable backend
 // ============================================================================
 
 export interface BackendFactoryContext {
@@ -765,26 +774,25 @@ export interface BackendFactoryContext {
   loadTurnRuntimeEvents?: (turnId: string) => Promise<RuntimeEvent[]>;
   /** Whether this activation may fold its run ledger into session-scoped history. */
   allowMidTurnHistoryCompaction?: boolean;
-  recordSemanticCompactBlock?: (block: SemanticCompactBlock) => void;
   shellRunContextSummary?: () => Promise<string | undefined>;
 }
 
 export type BackendFactory = (ctx: BackendFactoryContext) => AgentBackend | Promise<AgentBackend>;
 
 export class BackendRegistry {
-  private readonly factories = new Map<BackendKind, BackendFactory>();
+  private readonly factories = new Map<PersistedBackendKind, BackendFactory>();
 
-  register(kind: BackendKind, factory: BackendFactory): void {
+  register(kind: PersistedBackendKind, factory: BackendFactory): void {
     this.factories.set(kind, factory);
   }
 
-  async build(kind: BackendKind, ctx: BackendFactoryContext): Promise<AgentBackend> {
+  async build(kind: PersistedBackendKind, ctx: BackendFactoryContext): Promise<AgentBackend> {
     const f = this.factories.get(kind);
     if (!f) throw new Error(`No backend factory registered for kind="${kind}"`);
     return await f(ctx);
   }
 
-  has(kind: BackendKind): boolean {
+  has(kind: PersistedBackendKind): boolean {
     return this.factories.has(kind);
   }
 }
@@ -2550,7 +2558,6 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: resolvedPreset?.name ?? definition.name,
-        backend: parentHeader.backend,
         llmConnectionSlug: resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
         model: resolvedPreset?.model ?? parentHeader.model,
         ...(resolvedPreset
@@ -3089,7 +3096,6 @@ export class SessionManager {
         cwd: workspace?.worktreePath ?? parentHeader.cwd,
         ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
         name: input.name ?? input.resolvedPreset?.name ?? definition.name,
-        backend: parentHeader.backend,
         llmConnectionSlug: input.resolvedPreset?.connectionSlug ?? parentHeader.llmConnectionSlug,
         model: input.resolvedPreset?.model ?? parentHeader.model,
         ...(input.resolvedPreset
@@ -4368,7 +4374,7 @@ export class SessionManager {
           status: run?.status ?? (child.status === 'aborted' ? 'cancelled' : 'created'),
           permissionMode: run?.permissionMode ?? child.permissionMode,
           createdAt: run?.createdAt ?? child.createdAt,
-          updatedAt: run?.updatedAt ?? child.lastUsedAt,
+          updatedAt: run?.updatedAt ?? child.lastMessageAt ?? child.createdAt,
           ...(run?.completedAt !== undefined ? { completedAt: run.completedAt } : {}),
           ...(run?.completedAt !== undefined
             ? { durationMs: Math.max(0, run.completedAt - run.createdAt) }
@@ -4953,7 +4959,6 @@ export class SessionManager {
       {
         cwd: header.cwd,
         ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        backend: header.backend,
         llmConnectionSlug: header.llmConnectionSlug,
         model: header.model,
         thinkingLevel: header.thinkingLevel,
@@ -5016,7 +5021,6 @@ export class SessionManager {
       {
         cwd: header.cwd,
         ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        backend: header.backend,
         llmConnectionSlug: header.llmConnectionSlug,
         model: header.model,
         thinkingLevel: header.thinkingLevel,

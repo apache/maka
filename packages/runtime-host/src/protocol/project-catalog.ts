@@ -1,9 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   requireCount,
   requireEncodedByteLimit,
   requireEntityId,
   requireExactRecord,
   requireRecord,
+  requireShapedRecord,
   requireUtf8String,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
@@ -117,7 +137,7 @@ type ProjectCatalogListQueryResult =
     };
 
 export type ProjectCatalogMutateInput =
-  | { readonly kind: 'register'; readonly path: string }
+  | { readonly kind: 'register'; readonly path: string; readonly prefer?: boolean }
   | ({ readonly kind: 'register_directory' } & ProjectDirectoryRegisterInput)
   | { readonly kind: 'relink'; readonly projectId: string; readonly path: string }
   | { readonly kind: 'rename'; readonly projectId: string; readonly name: string }
@@ -404,8 +424,19 @@ export function decodeProjectCatalogMutateInput(value: unknown): ProjectCatalogM
   const record = requireRecord(value, 'project catalog mutation input');
   switch (record.kind) {
     case 'register': {
-      const input = requireExactRecord(record, 'project register input', ['kind', 'path']);
-      return { kind: 'register', path: absolutePath(input.path, 'project path') };
+      const input = requireShapedRecord(
+        record,
+        'project register input',
+        ['kind', 'path'],
+        ['prefer'],
+      );
+      return {
+        kind: 'register',
+        path: absolutePath(input.path, 'project path'),
+        ...(Object.hasOwn(input, 'prefer')
+          ? { prefer: boolean(input.prefer, 'project preference') }
+          : {}),
+      };
     }
     case 'register_directory': {
       return {

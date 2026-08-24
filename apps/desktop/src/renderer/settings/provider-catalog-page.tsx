@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   Banner,
   EmptyState,
@@ -8,7 +27,7 @@ import {
   Selector,
   VStack,
 } from '@astryxdesign/core';
-import { ICON_SIZE, ChevronRight, Search } from '@maka/ui/icons';
+import { ICON_SIZE, Check, ChevronRight, Search } from '@maka/ui/icons';
 import {
   CATALOG_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
@@ -144,7 +163,17 @@ export function ProviderCatalogPage(props: {
               startContent={<ProviderLogo type={card.providerType} />}
               label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={providerCopy.oauthSection.cardAria(card.name, card.status, card.description)}>{card.name}</span>}
               description={card.description}
-              endContent={<ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />}
+              endContent={(
+                <HStack gap={2} vAlign="center">
+                  {card.isLoggedIn && (
+                    <span className="settingsStatus" aria-hidden="true">
+                      <Check size={ICON_SIZE.chrome} />
+                      <span>{providerCopy.oauthSection.signedIn}</span>
+                    </span>
+                  )}
+                  <ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />
+                </HStack>
+              )}
               onClick={() => props.onPick({
                 method: 'account',
                 cardId: card.id,

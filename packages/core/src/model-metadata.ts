@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ModelInfo, ProviderType } from './llm-connections.js';
 import type { ThinkingOptions } from './model-thinking.js';
 import {
@@ -16,6 +35,12 @@ export interface ModelMetadata {
   knowledgeCutoff?: string;
   structuredOutput?: boolean;
   lastUpdated?: string;
+  /**
+   * models.dev prices the model at zero input cost. Marks free-tier
+   * candidates (e.g. opencode-free); display names are not a contract for
+   * this, several free models carry no "Free" suffix.
+   */
+  isFree?: boolean;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
   /**
@@ -40,6 +65,15 @@ const GENERATED_METADATA_PROVIDER_ALIASES: Partial<Record<ProviderType, Provider
 
 function generatedMetadataProviderType(providerType: ProviderType): ProviderType {
   return GENERATED_METADATA_PROVIDER_ALIASES[providerType] ?? providerType;
+}
+
+/**
+ * Whether the bundled metadata describes this model at all. `lookupModelMetadata`
+ * answers "no" with an empty object, and callers were reading that sentinel by
+ * hand; the question they mean to ask is this one.
+ */
+export function hasModelMetadata(providerType: ProviderType, modelId: string): boolean {
+  return Object.keys(lookupModelMetadata(providerType, modelId)).length > 0;
 }
 
 export function lookupModelMetadata(providerType: ProviderType, modelId: string): ModelMetadata {
@@ -103,6 +137,7 @@ export function openAiAdapterApiProtocol(
 ): 'openai-responses' | 'openai-chat' {
   const id = modelId.trim();
   return (providerType === 'deepseek' && deepSeekModelSupportsResponses(id)) ||
+    (providerType === 'opencode-go' && id === 'muse-spark-1.2-contributor') ||
     /^gpt-5/i.test(id) ||
     ((providerType === 'xai' || providerType === 'xai-oauth') && id === 'grok-4.5')
     ? 'openai-responses'
@@ -254,6 +289,9 @@ const VOLCENGINE_CODING_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
 };
 const VOLCENGINE_AGENT_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'ark-code-latest': agentPlanModel('Ark Code Latest', 256_000, 32_000, { vision: true }),
+  // Agent Plan currently exposes GLM-5.3 in its ark-code-latest routing catalog.
+  // The underlying model's published limits are 1M context and 128K output.
+  'glm-5.3': agentPlanModel('GLM-5.3', 1_000_000, 131_072),
   'doubao-seed-2.0-mini': agentPlanModel('Doubao Seed 2.0 Mini', 256_000, 128_000, {
     vision: true,
   }),

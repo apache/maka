@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 name: Stage CLI npm release
 
 on:
@@ -17,27 +34,57 @@ concurrency:
 
 jobs:
   authorize:
-    name: Require main
+    name: Resolve product release
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    outputs:
+      source_commit: ${{ steps.product.outputs.source_commit }}
+      product_tag: ${{ steps.product.outputs.product_tag }}
     steps:
-      - name: Reject non-main dispatches
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: v${{ inputs.version }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the exact product tag
         env:
           RELEASE_REF: ${{ github.ref }}
+          PRODUCT_TAG: v${{ inputs.version }}
         run: |
-          if [[ "$RELEASE_REF" != "refs/heads/main" ]]; then
-            echo "CLI releases must be dispatched from main; found $RELEASE_REF" >&2
+          if [[ "$RELEASE_REF" != "refs/tags/$PRODUCT_TAG" ]]; then
+            echo "CLI releases must be dispatched from $PRODUCT_TAG; found $RELEASE_REF" >&2
             exit 1
           fi
+
+      - name: Resolve the exact product release
+        id: product
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT_TAG: v${{ inputs.version }}
+        run: |
+          source_commit="$(git rev-parse HEAD)"
+          test "$source_commit" = "$GITHUB_SHA"
+          node scripts/product-release-authority.mjs verify-draft \
+            "$PRODUCT_TAG" "$source_commit" "$GITHUB_REPOSITORY"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "product_tag=$PRODUCT_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the product release identity
+        env:
+          GITHUB_SHA: ${{ steps.product.outputs.source_commit }}
+          EXPECTED_PRODUCT_VERSION: ${{ inputs.version }}
+        run: node scripts/product-release-identity.mjs
 
   validate:
     name: Validate immutable candidate
     needs: authorize
     uses: ./.github/workflows/cli-package-validation.yml
+    with:
+      source_commit: ${{ needs.authorize.outputs.source_commit }}
 
   stage:
     name: Stage maka-agent on npm
-    needs: validate
+    needs: [authorize, validate]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
@@ -49,6 +96,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.authorize.outputs.source_commit }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -66,6 +115,7 @@ jobs:
         id: release
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
+          PRODUCT_TAG: ${{ needs.authorize.outputs.product_tag }}
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -75,6 +125,7 @@ jobs:
           node scripts/release-cli-publication.mjs prepare-stage \
             packages/cli/release \
             "$EXPECTED_VERSION" \
+            "$PRODUCT_TAG" \
             "$RELEASE_SHA" \
             "$RELEASE_RUN_ID" \
             "$RELEASE_RUN_ATTEMPT" \
@@ -104,7 +155,7 @@ jobs:
             echo "## maka-agent@$RELEASE_VERSION staging"
             echo
             echo "After this workflow succeeds, review and approve the staged package with 2FA on npmjs.com."
-            echo "After the package becomes public, run **Finalize CLI npm release** with:"
+            echo "After the package becomes public, run **Finalize CLI npm channel** with:"
             echo
             echo "- stage run ID: \`$RELEASE_RUN_ID\`"
             echo "- stage run attempt: \`$RELEASE_RUN_ATTEMPT\`"
@@ -118,10 +169,16 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Submit the candidate to npm staging
         env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT_SOURCE_COMMIT: ${{ needs.authorize.outputs.source_commit }}
+          PRODUCT_TAG: ${{ needs.authorize.outputs.product_tag }}
           RELEASE_DIST_TAG: ${{ steps.release.outputs.dist_tag }}
           RELEASE_TARBALL: ${{ steps.release.outputs.tarball }}
-        run: >-
-          npm stage publish "$RELEASE_TARBALL"
-          --tag "$RELEASE_DIST_TAG"
-          --registry https://registry.npmjs.org/
-          --provenance
+        run: |
+          node scripts/product-release-authority.mjs verify-draft \
+            "$PRODUCT_TAG" "$PRODUCT_SOURCE_COMMIT" "$GITHUB_REPOSITORY"
+
+          npm stage publish "$RELEASE_TARBALL" \
+            --tag "$RELEASE_DIST_TAG" \
+            --registry https://registry.npmjs.org/ \
+            --provenance

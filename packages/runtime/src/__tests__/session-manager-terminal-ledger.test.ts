@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as timerDelay } from 'node:timers/promises';
@@ -220,7 +239,7 @@ describe('SessionManager terminal ledger invariants', () => {
     const runStore = new TinyAgentRunStore();
     const backends = new BackendRegistry();
     let backend: StopDuringSendBackend | undefined;
-    backends.register('fake', (ctx) => {
+    backends.register('ai-sdk', (ctx) => {
       backend = new StopDuringSendBackend(ctx);
       return backend;
     });
@@ -264,7 +283,7 @@ describe('SessionManager terminal ledger invariants', () => {
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore();
     const backends = new BackendRegistry();
-    backends.register('fake', (ctx) => new NeverEndingBackend(ctx));
+    backends.register('ai-sdk', (ctx) => new NeverEndingBackend(ctx));
     const manager = new SessionManager({
       store,
       runStore,
@@ -305,7 +324,7 @@ describe('SessionManager terminal ledger invariants', () => {
       },
     });
     const backends = new BackendRegistry();
-    backends.register('fake', (ctx) => new NeverEndingBackend(ctx));
+    backends.register('ai-sdk', (ctx) => new NeverEndingBackend(ctx));
     const manager = new SessionManager({
       store,
       runStore,
@@ -338,7 +357,7 @@ describe('SessionManager terminal ledger invariants', () => {
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore();
     const backends = new BackendRegistry();
-    backends.register('fake', (ctx) => new NeverEndingBackend(ctx));
+    backends.register('ai-sdk', (ctx) => new NeverEndingBackend(ctx));
     const manager = new SessionManager({
       store,
       runStore,
@@ -378,7 +397,7 @@ describe('SessionManager terminal ledger invariants', () => {
     });
     const backends = new BackendRegistry();
     backends.register(
-      'fake',
+      'ai-sdk',
       (ctx) => new ScriptBackend(ctx, [{ type: 'complete', stopReason: 'step_limit' }]),
     );
     const manager = new SessionManager({
@@ -1064,7 +1083,6 @@ describe('SessionManager terminal ledger invariants', () => {
             workspaceRoot: '/tmp/workspace',
             cwd: '/tmp/cwd',
             createdAt: 1,
-            lastUsedAt: 1,
             name: 'Session',
             titleIsManual: true,
             isFlagged: false,
@@ -2137,7 +2155,7 @@ async function makeHarness(
   const store = options.store ?? new TinySessionStore();
   const runStore = new TinyAgentRunStore();
   const backends = new BackendRegistry();
-  backends.register('fake', (ctx) => new ScriptBackend(ctx, events));
+  backends.register('ai-sdk', (ctx) => new ScriptBackend(ctx, events));
   const manager = new SessionManager({
     store,
     runStore,
@@ -2152,7 +2170,7 @@ async function makeHarness(
 }
 
 class ScriptBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly sessionId: string;
 
   constructor(
@@ -2181,7 +2199,7 @@ class ScriptBackend implements AgentBackend {
 }
 
 class StopDuringSendBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly sessionId: string;
   private readonly stopStarted = deferred<void>();
   private readonly stopReturned = deferred<void>();
@@ -2228,7 +2246,7 @@ class StopDuringSendBackend implements AgentBackend {
  * can finalize the run.
  */
 class NeverEndingBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
+  readonly kind = 'ai-sdk' as const;
   readonly sessionId: string;
 
   constructor(ctx: BackendFactoryContext) {
@@ -2270,7 +2288,6 @@ class TinySessionStore implements SessionStore {
       workspaceRoot: '/tmp/workspace',
       cwd: input.cwd,
       createdAt: 1,
-      lastUsedAt: 1,
       name: input.name ?? 'Session',
       titleIsManual: true,
       isFlagged: false,
@@ -2282,7 +2299,7 @@ class TinySessionStore implements SessionStore {
       ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
       ...(input.branchOfTurnId ? { branchOfTurnId: input.branchOfTurnId } : {}),
       hasUnread: false,
-      backend: input.backend,
+      backend: 'ai-sdk',
       llmConnectionSlug: input.llmConnectionSlug,
       connectionLocked: false,
       model: input.model ?? 'fake-model',
@@ -2565,7 +2582,6 @@ class BatchingRuntimeEventStore implements RuntimeEventStore {
 function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {
   return {
     cwd: '/tmp/cwd',
-    backend: 'fake',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',

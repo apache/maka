@@ -1,8 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import {
   compareScheduledTasksForList,
   computeNextFireAt,
+  decodePersistedScheduledTask,
   isScheduledTaskDue,
   nextScheduledTaskStateAfterFire,
   normalizeCreateScheduledTaskInput,
@@ -14,6 +34,7 @@ import {
   type ScheduledTaskRun,
   type ScheduledTaskSchedule,
 } from '@maka/core/scheduled-task';
+import { markPersisted } from '@maka/core/persisted-value';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
@@ -577,7 +598,9 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
       if (typeof row.record_json !== 'string') {
         throw new Error(`Invalid scheduled task at row ${index + 1}`);
       }
-      return JSON.parse(row.record_json) as ScheduledTask;
+      return decodePersistedScheduledTask(
+        markPersisted<ScheduledTask>(JSON.parse(row.record_json)),
+      );
     });
     const claimRows = this.#lease.database
       .prepare(`
@@ -590,7 +613,11 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
       if (typeof row.record_json !== 'string') {
         throw new Error(`Invalid scheduled task fire claim at row ${index + 1}`);
       }
-      return JSON.parse(row.record_json) as ScheduledTaskFireClaim;
+      const claim = JSON.parse(row.record_json) as ScheduledTaskFireClaim;
+      return {
+        ...claim,
+        task: decodePersistedScheduledTask(markPersisted<ScheduledTask>(claim.task)),
+      };
     });
     return { tasks, claims };
   }

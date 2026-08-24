@@ -1,5 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
@@ -61,6 +80,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(await readFile(sourceFile, 'utf8'), 'export const healthSignal = true;\n');
 
@@ -68,12 +88,17 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       operation: { kind: 'read', path: sourceFile },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
     assert.deepEqual(read, {
       kind: 'read',
       content: 'export const healthSignal = true;\n',
     });
 
+    // Capture the identity at T0 (the boundary executor does this in
+    // production): a write mutation on an existing target must carry the
+    // inode, or the worker refuses to skip CAS.
+    const editMeta = await stat(sourceFile, { bigint: true });
     const edit = await client.execute({
       operation: {
         kind: 'edit',
@@ -83,6 +108,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: { dev: String(editMeta.dev), ino: String(editMeta.ino) },
     });
     assert.equal(edit.kind, 'edit');
     assert.equal(await readFile(sourceFile, 'utf8'), 'export const healthSignal = "healthy";\n');
@@ -96,6 +122,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
     assert.deepEqual(glob, { kind: 'glob', files: ['health.ts'] });
 
@@ -110,6 +137,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
     assert.equal(grep.kind, 'grep');
     if (grep.kind === 'grep') {
@@ -130,6 +158,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       },
       cwd: workspace,
       mode: 'ask',
+      expectedIdentity: 'unchecked',
     });
 
     assert.equal(await readFile(target, 'utf8'), 'created');
@@ -145,6 +174,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
         operation: { kind: 'write', path: allowedPath, content: 'blocked' },
         cwd: workspace,
         mode: 'ask',
+        expectedIdentity: 'unchecked',
       }),
       isPathDenied,
     );
@@ -154,6 +184,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
         cwd: workspace,
         mode: 'ask',
         executionBoundary,
+        expectedIdentity: 'unchecked',
       }),
       (error: unknown) => {
         assert.ok(error instanceof FilesystemWorkerClientError);
@@ -172,6 +203,7 @@ describe('Linux filesystem worker smoke', { skip }, () => {
       cwd: workspace,
       mode: 'ask',
       executionBoundary,
+      expectedIdentity: 'unchecked',
     });
     assert.equal(await readFile(allowedPath, 'utf8'), 'outside-ok');
   });

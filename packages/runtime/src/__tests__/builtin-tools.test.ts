@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -472,7 +491,7 @@ describe('builtin Bash streaming output', () => {
         turnId: 'turn-1',
         toolCallId: 'tool-1',
         cwd: '/workspace',
-        permissionMode: 'execute',
+        permissionMode: 'ask',
         abortSignal: new AbortController().signal,
         emitOutput: () => {},
       },
@@ -607,7 +626,7 @@ describe('builtin Bash streaming output', () => {
           turnId: 'turn-1',
           toolCallId: 'tool-1',
           cwd: workspace,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           abortSignal: new AbortController().signal,
           emitOutput: () => {},
           executionBoundary: {
@@ -810,7 +829,7 @@ describe('builtin Bash streaming output', () => {
           turnId: 'turn-1',
           toolCallId: 'tool-1',
           cwd,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           executionBoundary: {
             kind: 'managed',
             revision: 1,
@@ -867,7 +886,7 @@ describe('builtin Bash streaming output', () => {
           turnId: 'turn-1',
           toolCallId: 'tool-1',
           cwd: '/workspace',
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           abortSignal: new AbortController().signal,
           emitOutput: () => {},
           executionBoundary: {
@@ -886,7 +905,7 @@ describe('builtin Bash streaming output', () => {
       turnId: 'turn-1',
       toolCallId: 'tool-2',
       cwd: '/workspace',
-      permissionMode: 'execute',
+      permissionMode: 'ask',
       abortSignal: new AbortController().signal,
       emitOutput: () => {},
       executionBoundary: { kind: 'bypass', revision: 1 },
@@ -1012,7 +1031,7 @@ describe('builtin Bash streaming output', () => {
           turnId: 'turn-1',
           toolCallId: 'tool-1',
           cwd: '/workspace',
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           abortSignal: new AbortController().signal,
           emitOutput: () => {},
         },
@@ -1109,7 +1128,7 @@ describe('builtin Bash streaming output', () => {
         turnId: 'turn-1',
         toolCallId: 'tool-1',
         cwd: canonicalWorkspace,
-        permissionMode: 'execute',
+        permissionMode: 'ask',
         abortSignal: new AbortController().signal,
         emitOutput: () => {},
         executionBoundary: {
@@ -1187,7 +1206,7 @@ describe('builtin Bash streaming output', () => {
               turnId: 'turn-1',
               toolCallId: 'tool-1',
               cwd,
-              permissionMode: 'execute',
+              permissionMode: 'ask',
               abortSignal: new AbortController().signal,
               emitOutput: () => {},
               executionBoundary: {
@@ -1237,7 +1256,7 @@ describe('builtin Bash streaming output', () => {
           turnId: 'turn-1',
           toolCallId: 'tool-1',
           cwd,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           abortSignal: new AbortController().signal,
           emitOutput: () => {},
           executionBoundary: {
@@ -1303,7 +1322,7 @@ describe('builtin Bash streaming output', () => {
           turnId: 'turn-1',
           toolCallId: 'tool-1',
           cwd: workspaceAlias,
-          permissionMode: 'execute',
+          permissionMode: 'ask',
           abortSignal: new AbortController().signal,
           emitOutput: () => {},
         },
@@ -2167,6 +2186,24 @@ describe('builtin write tools path containment', () => {
     expect(await readFile(join(root, 'inside.txt'), 'utf8')).toBe('hello Maka');
   });
 
+  test('Edit returns a file diff for a localized change in a large file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-edit-large-diff-'));
+    const content = Array.from({ length: 900 }, (_, index) => `const v${index} = ${index};`).join(
+      '\n',
+    );
+    await writeFile(join(root, 'large.ts'), `${content}\n`, 'utf8');
+
+    const result = await runTool(
+      tool('Edit'),
+      { path: 'large.ts', old_string: 'const v500 = 500;', new_string: 'const v500 = -1;' },
+      root,
+    );
+
+    expect(result).toMatchObject({ kind: 'file_diff' });
+    assert.match((result as { diff: string }).diff, /-const v500 = 500;/);
+    assert.match((result as { diff: string }).diff, /\+const v500 = -1;/);
+  });
+
   test('file tools stay usable when the session cwd is reached through a symlink', async () => {
     // The session cwd itself sits under a symlink (macOS hands out `/var/...`
     // tmpdirs whose realpath is `/private/var/...`, and workspace roots are often
@@ -2445,7 +2482,7 @@ async function linuxMissingExactWriteFixture() {
     turnId: 'turn-1',
     toolCallId: 'tool-1',
     cwd: canonicalWorkspace,
-    permissionMode: 'execute' as const,
+    permissionMode: 'ask' as const,
     abortSignal: new AbortController().signal,
     emitOutput: () => {},
     executionBoundary: {

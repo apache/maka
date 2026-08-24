@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { randomUUID } from 'node:crypto';
 
 import type { ProviderType } from '@maka/core/llm-connections';
@@ -14,7 +33,7 @@ import {
 
 export type OAuthSubscriptionProvider = Extract<
   ProviderType,
-  'claude-subscription' | 'openai-codex' | 'github-copilot' | 'xai-oauth'
+  'openai-codex' | 'github-copilot' | 'xai-oauth'
 >;
 
 export interface OAuthSubscriptionTokens {
@@ -33,7 +52,6 @@ export function isOAuthSubscriptionProvider(
   providerType: ProviderType,
 ): providerType is OAuthSubscriptionProvider {
   return (
-    providerType === 'claude-subscription' ||
     providerType === 'openai-codex' ||
     providerType === 'github-copilot' ||
     providerType === 'xai-oauth'
@@ -121,7 +139,6 @@ export type RefreshAndPersistOAuthSubscriptionTokensInput = {
 export type ResolveAndPersistOAuthSubscriptionTokensInput =
   RefreshAndPersistOAuthSubscriptionTokensInput & { refreshSkewMs?: number };
 
-const CLAUDE = OAUTH_PROVIDER_CONTRACTS['claude-subscription'];
 const CODEX = OAUTH_PROVIDER_CONTRACTS['openai-codex'];
 const XAI = OAUTH_PROVIDER_CONTRACTS['xai-oauth'];
 
@@ -444,8 +461,6 @@ export async function refreshOAuthSubscriptionTokens(input: {
   const now = input.now ?? (() => Date.now());
   const fetchFn = input.fetchFn ?? fetch;
   switch (input.providerType) {
-    case 'claude-subscription':
-      return refreshClaudeSubscriptionTokens(input.tokens, now, fetchFn, input.signal);
     case 'openai-codex':
       return refreshOpenAiCodexTokens(input.tokens, now, fetchFn, input.signal);
     case 'github-copilot':
@@ -501,45 +516,6 @@ function requireRefreshedTokenFields(payload: unknown): {
 function nextRefreshToken(candidate: unknown, previous: string): string {
   if (candidate === undefined || candidate === '') return previous;
   return requireOAuthBoundedString(candidate, OAUTH_MAX_TOKEN_CHARS);
-}
-
-async function refreshClaudeSubscriptionTokens(
-  tokens: OAuthSubscriptionTokens,
-  now: () => number,
-  fetchFn: typeof fetch,
-  signal?: AbortSignal,
-): Promise<OAuthSubscriptionTokens> {
-  const response = await fetchFn(CLAUDE.tokenEndpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': CLAUDE.tokenUserAgent,
-    },
-    body: JSON.stringify({
-      grant_type: 'refresh_token',
-      refresh_token: tokens.refresh_token,
-      client_id: CLAUDE.clientId,
-    }),
-    signal,
-  });
-  if (!response.ok) throw new Error(`Claude OAuth token refresh failed (${response.status}).`);
-  const {
-    record: payload,
-    accessToken,
-    expiresInSeconds,
-  } = requireRefreshedTokenFields(await response.json());
-  const account =
-    payload.account === undefined ? undefined : requireOAuthDataRecord(payload.account);
-  return {
-    access_token: accessToken,
-    refresh_token: nextRefreshToken(payload.refresh_token, tokens.refresh_token),
-    expires_at: oauthExpiresAt(now(), expiresInSeconds),
-    token_type: optionalOAuthBoundedString(payload.token_type, 256) ?? tokens.token_type,
-    scope: optionalOAuthBoundedString(payload.scope, 4 * 1024) ?? tokens.scope,
-    account_uuid:
-      (account ? optionalOAuthBoundedString(account.uuid, 1_024) : undefined) ??
-      tokens.account_uuid,
-  };
 }
 
 async function refreshOpenAiCodexTokens(

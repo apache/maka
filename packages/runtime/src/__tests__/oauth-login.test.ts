@@ -1,19 +1,34 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   OAUTH_LOGIN_MAX_RESPONSE_BYTES,
   OAUTH_LOGIN_MAX_TOKEN_CHARS,
-  OAUTH_LOGIN_PROVIDER_CONFIG,
   OAuthTokenEndpointError,
-  buildOAuthLoginAuthorization,
   decodeOAuthInitialTokenPayload,
-  exchangeOAuthAuthorizationCode,
+  requestOAuthTokenEndpointJson,
   isDeterministicOAuthCredentialRejection,
 } from '../oauth-login.js';
 import { isOAuthEnrollmentProviderEnabled } from '../oauth-provider-contracts.js';
 
-const VERIFIER = 'v'.repeat(43);
-const STATE = 's'.repeat(43);
 const NOW = 1_800_000_000_000;
 
 function assertEndpointError(
@@ -28,93 +43,7 @@ function assertEndpointError(
   return true;
 }
 
-describe('OAuth login authorization', () => {
-  it('builds Claude paste presentation with independent verifier and state', () => {
-    const result = buildOAuthLoginAuthorization({
-      provider: 'claude-subscription',
-      verifier: VERIFIER,
-      state: STATE,
-    });
-    const url = new URL(result.authorizationUrl);
-    assert.equal(result.presentation, 'paste-code');
-    assert.equal(
-      url.origin + url.pathname,
-      OAUTH_LOGIN_PROVIDER_CONFIG['claude-subscription'].authorizationEndpoint,
-    );
-    assert.equal(url.searchParams.get('state'), STATE);
-    assert.notEqual(url.searchParams.get('state'), VERIFIER);
-    assert.equal(url.searchParams.get('code'), 'true');
-    assert.match(url.searchParams.get('code_challenge') ?? '', /^[A-Za-z0-9_-]{43}$/);
-  });
-
-  it('pins xAI PKCE authorization to the allowlisted Grok CLI redirect', () => {
-    const redirectUri = 'http://127.0.0.1:56121/callback';
-    const result = buildOAuthLoginAuthorization({
-      provider: 'xai-oauth',
-      verifier: VERIFIER,
-      state: STATE,
-      redirectUri,
-    });
-    const url = new URL(result.authorizationUrl);
-    assert.equal(result.presentation, 'loopback');
-    assert.equal(url.origin + url.pathname, 'https://auth.x.ai/oauth2/authorize');
-    assert.equal(url.searchParams.get('redirect_uri'), redirectUri);
-    assert.equal(url.searchParams.get('plan'), 'generic');
-    assert.equal(
-      url.searchParams.get('scope'),
-      'openid profile email offline_access grok-cli:access api:access',
-    );
-    assert.throws(
-      () =>
-        buildOAuthLoginAuthorization({
-          provider: 'xai-oauth',
-          verifier: VERIFIER,
-          state: STATE,
-          redirectUri: 'http://127.0.0.1:56122/callback',
-        }),
-      (error) => assertEndpointError(error, 'invalid_response'),
-    );
-  });
-
-  it('rejects low-entropy state and non-loopback redirects', () => {
-    assert.throws(
-      () =>
-        buildOAuthLoginAuthorization({
-          provider: 'claude-subscription',
-          verifier: VERIFIER,
-          state: 'short',
-        }),
-      (error) => assertEndpointError(error, 'invalid_response'),
-    );
-  });
-});
-
 describe('OAuth initial token decoder', () => {
-  it('accepts a closed Claude token record and computes a finite expiry', () => {
-    assert.deepEqual(
-      decodeOAuthInitialTokenPayload(
-        'claude-subscription',
-        {
-          access_token: 'access',
-          refresh_token: 'refresh',
-          expires_in: 3600,
-          token_type: 'Bearer',
-          scope: 'user:sessions:claude_code',
-          account: { uuid: 'account-1' },
-        },
-        NOW,
-      ),
-      {
-        access_token: 'access',
-        refresh_token: 'refresh',
-        expires_at: NOW + 3_600_000,
-        token_type: 'Bearer',
-        scope: 'user:sessions:claude_code',
-        account_uuid: 'account-1',
-      },
-    );
-  });
-
   it('ignores additive provider fields while validating bounded token fields', () => {
     const base = { access_token: 'access', refresh_token: 'refresh', expires_in: 3600 };
     assert.deepEqual(
@@ -144,20 +73,22 @@ describe('OAuth initial token decoder', () => {
 });
 
 describe('OAuth enrollment policy', () => {
-  it('honors Claude and Codex opt-out flags while keeping xAI enabled', () => {
-    const environment = {
-      MAKA_CLAUDE_SUBSCRIPTION_EXPERIMENTAL: '0',
-      MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL: '0',
-    };
-    assert.equal(isOAuthEnrollmentProviderEnabled('claude-subscription', environment), false);
+  it('honors the Codex opt-out flag while keeping xAI enabled', () => {
+    const environment = { MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL: '0' };
     assert.equal(isOAuthEnrollmentProviderEnabled('openai-codex', environment), false);
     assert.equal(isOAuthEnrollmentProviderEnabled('xai-oauth', environment), true);
-    assert.equal(isOAuthEnrollmentProviderEnabled('claude-subscription', {}), true);
     assert.equal(isOAuthEnrollmentProviderEnabled('openai-codex', {}), true);
   });
 });
 
-describe('OAuth initial code exchange', () => {
+const TOKEN_ENDPOINT = 'https://auth.example/oauth/token';
+const TOKEN_REQUEST_INIT: RequestInit = {
+  method: 'POST',
+  headers: { 'content-type': 'application/x-www-form-urlencoded' },
+  body: 'grant_type=refresh_token',
+};
+
+describe('OAuth token endpoint transport', () => {
   it('bounds a streamed response even without content-length', async () => {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -167,11 +98,9 @@ describe('OAuth initial code exchange', () => {
       },
     });
     await assert.rejects(
-      exchangeOAuthAuthorizationCode({
-        provider: 'claude-subscription',
-        code: 'authorization-code',
-        verifier: VERIFIER,
-        state: STATE,
+      requestOAuthTokenEndpointJson({
+        endpoint: TOKEN_ENDPOINT,
+        init: TOKEN_REQUEST_INIT,
         signal: new AbortController().signal,
         fetchFn: async () => new Response(stream),
       }),
@@ -192,11 +121,9 @@ describe('OAuth initial code exchange', () => {
       },
     });
     await assert.rejects(
-      exchangeOAuthAuthorizationCode({
-        provider: 'claude-subscription',
-        code: 'authorization-code',
-        verifier: VERIFIER,
-        state: STATE,
+      requestOAuthTokenEndpointJson({
+        endpoint: TOKEN_ENDPOINT,
+        init: TOKEN_REQUEST_INIT,
         signal: new AbortController().signal,
         fetchFn: async () => new Response(stream),
       }),
@@ -206,11 +133,9 @@ describe('OAuth initial code exchange', () => {
 
   it('classifies invalid JSON received through EOF as an invalid response', async () => {
     await assert.rejects(
-      exchangeOAuthAuthorizationCode({
-        provider: 'claude-subscription',
-        code: 'authorization-code',
-        verifier: VERIFIER,
-        state: STATE,
+      requestOAuthTokenEndpointJson({
+        endpoint: TOKEN_ENDPOINT,
+        init: TOKEN_REQUEST_INIT,
         signal: new AbortController().signal,
         fetchFn: async () => new Response('{not-json'),
       }),
@@ -237,11 +162,9 @@ describe('OAuth initial code exchange', () => {
       },
     });
     await assert.rejects(
-      exchangeOAuthAuthorizationCode({
-        provider: 'claude-subscription',
-        code: 'authorization-code',
-        verifier: VERIFIER,
-        state: STATE,
+      requestOAuthTokenEndpointJson({
+        endpoint: TOKEN_ENDPOINT,
+        init: TOKEN_REQUEST_INIT,
         signal: new AbortController().signal,
         fetchFn: async () => new Response(stream),
       }),
@@ -253,11 +176,9 @@ describe('OAuth initial code exchange', () => {
 
   it('classifies invalid_grant without retaining provider response text', async () => {
     await assert.rejects(
-      exchangeOAuthAuthorizationCode({
-        provider: 'claude-subscription',
-        code: 'authorization-code',
-        verifier: VERIFIER,
-        state: STATE,
+      requestOAuthTokenEndpointJson({
+        endpoint: TOKEN_ENDPOINT,
+        init: TOKEN_REQUEST_INIT,
         signal: new AbortController().signal,
         fetchFn: async () =>
           new Response(
@@ -279,11 +200,9 @@ describe('OAuth initial code exchange', () => {
 
   it('marks reply loss after dispatch as outcome unknown', async () => {
     await assert.rejects(
-      exchangeOAuthAuthorizationCode({
-        provider: 'claude-subscription',
-        code: 'authorization-code',
-        verifier: VERIFIER,
-        state: STATE,
+      requestOAuthTokenEndpointJson({
+        endpoint: TOKEN_ENDPOINT,
+        init: TOKEN_REQUEST_INIT,
         signal: new AbortController().signal,
         fetchFn: async () => {
           throw new TypeError('socket closed after write');
@@ -309,11 +228,9 @@ describe('OAuth initial code exchange', () => {
       },
     });
     await assert.rejects(
-      exchangeOAuthAuthorizationCode({
-        provider: 'claude-subscription',
-        code: 'authorization-code',
-        verifier: VERIFIER,
-        state: STATE,
+      requestOAuthTokenEndpointJson({
+        endpoint: TOKEN_ENDPOINT,
+        init: TOKEN_REQUEST_INIT,
         signal: new AbortController().signal,
         fetchFn: async () => new Response(stream),
         timeoutMs: 5,

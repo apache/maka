@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
@@ -46,6 +65,7 @@ function installWindow(
   harness: SweepHarness,
   options: {
     rejectIds?: readonly string[];
+    rejectWithUndefinedIds?: readonly string[];
     surviving?: readonly SessionSummary[];
     /** Runs after each accepted removal, to model what another client did meanwhile. */
     onRemove?: (sessionId: string) => void;
@@ -67,6 +87,9 @@ function installWindow(
         sessions: {
           remove: async (id: string, removeOptions?: { requireArchived?: boolean }) => {
             harness.removeOptions.push([id, removeOptions?.requireArchived === true]);
+            if (options.rejectWithUndefinedIds?.includes(id)) {
+              return Promise.reject(undefined);
+            }
             if (options.rejectIds?.includes(id)) throw new Error(`busy:${id}`);
             const target = options.catalog?.find((session) => session.id === id);
             if (removeOptions?.requireArchived && target && !target.isArchived) return 'restored';
@@ -151,7 +174,7 @@ describe('purgeSessions', () => {
       remaining: [],
       restored: [],
       verified: true,
-      firstError: undefined,
+      firstFailure: undefined,
     });
     // Every delete in a sweep carries the archived premise the confirm named.
     assert.deepEqual(h.removeOptions, [
@@ -226,7 +249,7 @@ describe('purgeSessions', () => {
     const outcome = await actions.purgeSessions(['first', 'rescued']).finally(restore);
 
     assert.deepEqual(outcome.restored, ['rescued']);
-    assert.equal(outcome.firstError, undefined);
+    assert.equal(outcome.firstFailure, undefined);
     // A task that is still there keeps its renderer state, including being the
     // open one.
     assert.deepEqual(h.cleared, ['first']);
@@ -296,7 +319,26 @@ describe('purgeSessions', () => {
     assert.equal(h.listCalls, 1);
     assert.deepEqual(outcome.remaining, ['survivor']);
     assert.equal(outcome.removed, 1);
-    assert.equal((outcome.firstError as Error).message, 'busy:committed');
+    assert.ok(outcome.firstFailure);
+    assert.equal((outcome.firstFailure.error as Error).message, 'busy:committed');
+    assert.equal(outcome.firstFailure.sessionId, 'committed');
+  });
+
+  it('retains the first failing Session even when the rejection value is undefined', async () => {
+    const h = harness();
+    const sessions = [summary('first'), summary('second')];
+    const restore = installWindow(h, {
+      rejectWithUndefinedIds: ['first'],
+      rejectIds: ['second'],
+      surviving: sessions,
+    });
+    const actions = createActions({ harness: h, sessions, activeIdRef: { current: undefined } });
+
+    const outcome = await actions.purgeSessions(['first', 'second']).finally(restore);
+
+    assert.ok(outcome.firstFailure);
+    assert.equal(outcome.firstFailure.sessionId, 'first');
+    assert.equal(outcome.firstFailure.error, undefined);
   });
 
   it('claims nothing when the catalog cannot be read back', async () => {

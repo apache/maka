@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Map a tool_result onto the UI activity status used by cards/trows.
  * Cancel / abort are user-or-system stops, not tool failures.
@@ -7,12 +26,8 @@ import type { TurnStatus } from './session.js';
 
 export type SettledToolActivityStatus = 'completed' | 'errored' | 'interrupted';
 
-/**
- * A call that has not settled. `pending` is where `tool_start` opens one; it
- * only reaches `running` once output arrives, so a tool that never streams
- * stays `pending` for its whole life and both must read as in flight.
- */
-export type InFlightToolActivityStatus = 'pending' | 'running';
+/** A call that has started and has not settled. */
+export type InFlightToolActivityStatus = 'running';
 
 /** The whole tool-row status vocabulary, owned here so it is spelled once. */
 export type ToolActivityStatus = InFlightToolActivityStatus | SettledToolActivityStatus;
@@ -20,7 +35,7 @@ export type ToolActivityStatus = InFlightToolActivityStatus | SettledToolActivit
 export function isInFlightToolStatus(
   status: ToolActivityStatus,
 ): status is InFlightToolActivityStatus {
-  return status === 'pending' || status === 'running';
+  return status === 'running';
 }
 
 /**

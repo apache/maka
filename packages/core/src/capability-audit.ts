@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ScheduledTask, ScheduledTaskRunOutcome } from './scheduled-task.js';
 
 export const SOURCE_RECORD_TYPES = ['mcp', 'api', 'local'] as const;
@@ -9,7 +28,7 @@ export type SourceAuthType = (typeof SOURCE_AUTH_TYPES)[number];
 export const SOURCE_RECORD_STATUSES = ['ready', 'needs_auth', 'error', 'disabled'] as const;
 export type SourceRecordStatus = (typeof SOURCE_RECORD_STATUSES)[number];
 
-export const CAPABILITY_AUDIT_PERMISSION_MODES = ['explore', 'ask', 'execute'] as const;
+export const CAPABILITY_AUDIT_PERMISSION_MODES = ['explore', 'ask'] as const;
 export type CapabilityAuditPermissionMode = (typeof CAPABILITY_AUDIT_PERMISSION_MODES)[number];
 
 export const SCHEDULED_TASK_LAST_RUN_STATUSES = ['ok', 'error', 'skipped'] as const;
@@ -45,7 +64,7 @@ export interface SkillAuditRecord {
   declaredTools: string[];
   enabled: boolean;
   sourceSlug: string;
-  permissionMode: Exclude<CapabilityAuditPermissionMode, 'execute'>;
+  permissionMode: CapabilityAuditPermissionMode;
 }
 
 export interface ScheduledTaskAuditRecord {
@@ -182,8 +201,9 @@ function scheduledTaskToAuditRecord(task: ScheduledTask): ScheduledTaskAuditReco
 
 function scheduledTaskPermissionMode(task: ScheduledTask): CapabilityAuditPermissionMode {
   if (task.status === 'completed' || task.status === 'expired') return 'explore';
-  if (task.status === 'paused') return 'ask';
-  return 'execute';
+  // Active tasks run with `ask` approval — the retired `execute` mode folded to
+  // `ask` identically, so this preserves the historical behaviour.
+  return 'ask';
 }
 
 function mapScheduledTaskRunOutcome(outcome: ScheduledTaskRunOutcome): ScheduledTaskLastRunStatus {
@@ -209,8 +229,9 @@ function summarizeCapabilityAudit(
     declaredToolKindCount: distinctDeclaredToolKinds(skills).length,
     scheduledTaskCount: scheduledTasks.length,
     enabledScheduledTaskCount: scheduledTasks.filter((task) => task.enabled).length,
-    executableScheduledTaskCount: scheduledTasks.filter((task) => task.permissionMode === 'execute')
-      .length,
+    executableScheduledTaskCount: scheduledTasks.filter(
+      (task) => task.enabled && task.permissionMode !== 'explore',
+    ).length,
     failedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'error')
       .length,
     skippedScheduledTaskCount: scheduledTasks.filter((task) => task.lastRunStatus === 'skipped')

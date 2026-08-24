@@ -1,14 +1,34 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { decodeStoredMessage } from '@maka/core/session';
+import { decodeCanonicalMessage } from '@maka/core/session';
 import { CodexSessionAdapter } from '../codex-session-adapter.js';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
 
 const CURRENT_FIXTURE = fixturePath('codex-rollout-v0.144.jsonl');
+const ITEM_COMPLETED_FIXTURE = fixturePath('codex-rollout-v0.149-item-completed.jsonl');
 
 describe('CodexSessionAdapter', () => {
   test('lists active and archived root Sessions from the newest Codex state database', async () => {
@@ -70,6 +90,29 @@ describe('CodexSessionAdapter', () => {
         (await adapter.listSessions({ includeArchived: true })).map((session) => session.id),
         ['codex-session-1', 'codex-session-archived'],
       );
+
+      // The same text query the Claude Code adapter honours. A catalog filter
+      // that silently worked for one source and not the other would be worse
+      // than none — the user cannot see which source dropped their term.
+      assert.deepEqual(
+        (await adapter.listSessions({ text: 'named' })).map((session) => session.id),
+        ['codex-session-1'],
+      );
+      assert.deepEqual(
+        (await adapter.listSessions({ text: '/workspace/project' })).map((session) => session.id),
+        ['codex-session-1'],
+      );
+      assert.equal((await adapter.listSessions({ text: 'kubernetes' })).length, 0);
+      // A blank box selects nothing, so it must not filter.
+      assert.equal((await adapter.listSessions({ text: '  ' })).length, 1);
+      // Text does not override the archived gate.
+      assert.equal((await adapter.listSessions({ text: 'archived' })).length, 0);
+      assert.deepEqual(
+        (await adapter.listSessions({ includeArchived: true, text: 'archived' })).map(
+          (session) => session.id,
+        ),
+        ['codex-session-archived'],
+      );
       assert.deepEqual(
         await adapter.listSessions({ includeArchived: true, cwd: '/workspace/archive/' }),
         [
@@ -83,6 +126,45 @@ describe('CodexSessionAdapter', () => {
           },
         ],
       );
+    });
+  });
+
+  test('a Windows path spelling reaches the matcher instead of being lost in SQL', async () => {
+    // The SQL used to prefilter with `cwd IN (<spelling variants>)`, and
+    // SQLite compares those exactly — a row stored `C:\\Repo\\App` was
+    // discarded before the shared matcher could see that `c:/repo/app` names
+    // the same project. This drives the real state-database path, not the
+    // matcher in isolation, because that is where the row was being dropped.
+    await withCodexHome(async (codexHome) => {
+      const rolloutPath = await seedMinimalRollout(
+        codexHome,
+        'codex-win',
+        false,
+        'C:\\Repo\\App',
+        'hello',
+      );
+      await seedStateDatabase(codexHome, [
+        {
+          id: 'codex-win',
+          rolloutPath,
+          cwd: 'C:\\Repo\\App',
+          name: 'Windows-shaped path',
+          createdAtMs: 1_000,
+          updatedAtMs: 2_000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+      const adapter = new CodexSessionAdapter({ codexHome });
+      for (const cwd of ['C:\\Repo\\App', 'C:/Repo/App', 'c:/repo/app', 'c:\\repo\\app\\']) {
+        assert.deepEqual(
+          (await adapter.listSessions({ cwd })).map((session) => session.id),
+          ['codex-win'],
+          `cwd=${cwd}`,
+        );
+      }
+      // A genuinely different project is still excluded.
+      assert.equal((await adapter.listSessions({ cwd: 'C:/Repo/Other' })).length, 0);
     });
   });
 
@@ -109,7 +191,7 @@ describe('CodexSessionAdapter', () => {
       });
       assert.equal(session.messages.length, 9);
       for (const message of session.messages) {
-        assert.deepEqual(decodeStoredMessage(message), message);
+        assert.deepEqual(decodeCanonicalMessage(message), message);
       }
 
       assert.deepEqual(session.messages[0], {
@@ -157,6 +239,62 @@ describe('CodexSessionAdapter', () => {
       assert.equal(session.messages[7]?.type, 'system_note');
       assert.equal(session.messages[8]?.type, 'turn_state');
       assert.equal(session.messages[8]?.status, 'completed');
+    });
+  });
+
+  test('converts Codex Desktop completed items without importing response mirrors', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-item-completed';
+      await seedRawRollout(codexHome, sessionId, await readFile(ITEM_COMPLETED_FIXTURE, 'utf8'));
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await adapter.listSessions()).map(({ id, name }) => ({ id, name })),
+        [{ id: sessionId, name: 'Analyze the image. Use OpenCV.js.' }],
+      );
+      const session = await adapter.readSession(sessionId);
+
+      assert.deepEqual(session.metadata, {
+        name: 'Analyze the image. Use OpenCV.js.',
+        cwd: '/workspace/opencv',
+      });
+      assert.equal(session.messages.length, 4);
+      assert.deepEqual(
+        session.messages.map((message) => message.type),
+        ['user', 'assistant', 'assistant', 'turn_state'],
+      );
+      for (const message of session.messages) {
+        assert.deepEqual(decodeCanonicalMessage(message), message);
+      }
+
+      assert.deepEqual(session.messages[0], {
+        type: 'user',
+        id: 'user-client-1',
+        turnId: 'codex-turn-item-completed',
+        ts: Date.parse('2026-08-22T00:00:02.100Z'),
+        text: 'Analyze the image. Use OpenCV.js.',
+      });
+      assert.deepEqual(session.messages[1], {
+        type: 'assistant',
+        id: 'reasoning-item-1',
+        turnId: 'codex-turn-item-completed',
+        ts: Date.parse('2026-08-22T00:00:03.000Z'),
+        text: '',
+        thinking: { text: 'Inspect the pixels.\nDraft the solution.' },
+        contentOrder: ['thinking'],
+        modelId: 'gpt-codex-item-test',
+      });
+      assert.deepEqual(session.messages[2], {
+        type: 'assistant',
+        id: 'assistant-item-1',
+        turnId: 'codex-turn-item-completed',
+        ts: Date.parse('2026-08-22T00:00:04.000Z'),
+        text: 'Use canvas. Then process the pixels.',
+        modelId: 'gpt-codex-item-test',
+        contentOrder: ['text'],
+      });
+      assert.equal(session.messages[3]?.type, 'turn_state');
+      assert.equal(session.messages[3]?.status, 'completed');
     });
   });
 

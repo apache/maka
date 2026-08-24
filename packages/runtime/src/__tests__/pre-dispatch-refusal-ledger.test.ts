@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -328,6 +347,29 @@ for (const path of REFUSAL_PATHS) {
   });
 }
 
+test('client-capability refusal carries actionable bypass metadata', async () => {
+  const h = harness();
+  const tool: MakaTool = {
+    name: 'browser_click',
+    description: 'test',
+    categoryHint: 'client_capability',
+    parameters: z.object({}),
+    impl: async () => ({ ok: true }),
+  };
+
+  await settle(h, tool, {}, { toolCallId: 'call_boundary_metadata' });
+
+  const result = h.events.find(
+    (event) => event.type === 'tool_result' && event.toolUseId === 'call_boundary_metadata',
+  );
+  assert.deepEqual(
+    result?.type === 'tool_result' && result.content.kind === 'text'
+      ? result.content.sandboxFailure
+      : undefined,
+    { reason: 'requires_bypass', source: 'client_capability' },
+  );
+});
+
 test('arguments the schema rejects leave a matched call/response pair on the generic lane', async () => {
   const h = harness();
 
@@ -415,7 +457,6 @@ function header(): SessionHeader {
     workspaceRoot: '/workspace',
     cwd: '/workspace',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,

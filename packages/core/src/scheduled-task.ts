@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * ScheduledTask — the single product noun for "定时任务".
  *
@@ -9,9 +28,13 @@ import { compileCronExpression } from './cron-expression.js';
 import { isCollaborationMode, type CollaborationMode } from './collaboration.js';
 import { isOrchestrationMode, type OrchestrationMode } from './orchestration.js';
 import { isThinkingLevel, type ThinkingLevel } from './model-thinking.js';
-import { isPermissionMode, type PermissionMode } from './permission.js';
+import {
+  decodePersistedPermissionMode,
+  isPermissionMode,
+  type PermissionMode,
+} from './permission.js';
 import { isBotDeliveryProvider, type BotProvider } from './bot-chat-settings.js';
-import type { BackendKind } from './session.js';
+import type { PersistedValue } from './persisted-value.js';
 
 export const SCHEDULED_TASK_TITLE_MAX_CHARS = 120;
 export const SCHEDULED_TASK_INTENT_MAX_CHARS = 8_000;
@@ -52,7 +75,6 @@ export type ScheduledTaskEffect =
 export interface ScheduledTaskExecutionTemplate {
   readonly cwd: string;
   readonly projectId?: string | null;
-  readonly backend: BackendKind;
   readonly llmConnectionSlug: string;
   readonly model: string;
   readonly thinkingLevel?: ThinkingLevel;
@@ -488,10 +510,6 @@ function normalizeExecution(
 ): ScheduledTaskNormalizeResult<ScheduledTaskExecutionTemplate> {
   if (!isObject(value)) return fail('agent_run requires execution template');
   if (typeof value.cwd !== 'string' || !value.cwd.trim()) return fail('execution.cwd is required');
-  if (typeof value.backend !== 'string') return fail('execution.backend is required');
-  if (value.backend !== 'ai-sdk' && value.backend !== 'fake') {
-    return fail('execution.backend is invalid');
-  }
   if (typeof value.llmConnectionSlug !== 'string' || !value.llmConnectionSlug.trim()) {
     return fail('execution.llmConnectionSlug is required');
   }
@@ -523,7 +541,6 @@ function normalizeExecution(
     value: {
       cwd: value.cwd.trim(),
       ...(projectId === undefined ? {} : { projectId }),
-      backend: value.backend,
       llmConnectionSlug: value.llmConnectionSlug.trim(),
       model: value.model.trim(),
       ...(value.thinkingLevel === undefined ? {} : { thinkingLevel: value.thinkingLevel }),
@@ -639,4 +656,47 @@ function addMonthsClamped(anchor: Date, base: Date, offset: number): number {
 
 function fail(message: string): { ok: false; message: string } {
   return { ok: false, message };
+}
+
+/**
+ * Fold retired representations in a stored ScheduledTask to their live
+ * equivalents.
+ *
+ * Stored tasks are read back with `JSON.parse` and never pass through
+ * `normalizeCreateScheduledTaskInput`, which validates *new* input and is
+ * deliberately strict. Without this fold a task written before a value was
+ * retired would carry that value straight into execution, where nothing
+ * recognizes it any more. This decoder also rejects unknown effect kinds and
+ * invalid execution permission modes instead of admitting them as domain data;
+ * validation of new task input remains the normalizers' responsibility.
+ */
+export function decodePersistedScheduledTask(
+  persisted: PersistedValue<ScheduledTask>,
+): ScheduledTask {
+  const value = persisted as unknown;
+  if (!isObject(value) || !isObject(value.effect) || typeof value.effect.kind !== 'string') {
+    throw new Error('Invalid persisted ScheduledTask effect');
+  }
+  const task = value as ScheduledTask;
+  const { effect } = task;
+  if (effect.kind === 'notify' || effect.kind === 'session_resume') {
+    return task;
+  }
+  if (effect.kind !== 'agent_run') {
+    throw new Error('Invalid persisted ScheduledTask effect');
+  }
+  if (!isObject(effect.execution)) {
+    throw new Error('Invalid persisted ScheduledTask execution template');
+  }
+  const permissionMode = decodePersistedPermissionMode(effect.execution.permissionMode);
+  if (permissionMode === undefined) {
+    throw new Error('Invalid persisted ScheduledTask permission mode');
+  }
+  if (permissionMode === effect.execution.permissionMode) {
+    return task;
+  }
+  return {
+    ...task,
+    effect: { ...effect, execution: { ...effect.execution, permissionMode } },
+  };
 }

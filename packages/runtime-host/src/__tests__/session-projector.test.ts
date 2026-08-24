@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { StoredMessage } from '@maka/core/session';
@@ -243,6 +262,74 @@ test('does not replay settled transcript steps when the active step reaches term
   );
 });
 
+test('marks Runtime Host tool results whose durable content is omitted', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const projected = projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'tool_result',
+      id: 'result-1',
+      turnId: 'turn-1',
+      ts: 10,
+      toolUseId: 'tool-1',
+      status: 'completed',
+    },
+  }).events[0];
+
+  assert.equal(projected?.type, 'tool_result');
+  assert.equal(
+    projected?.type === 'tool_result' && 'contentOmitted' in projected
+      ? projected.contentOmitted
+      : undefined,
+    true,
+  );
+});
+
+test('preserves the bounded shell-run correlation on a tool start', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+  const ref = 'maka://runtime/background-tasks/bg-1';
+
+  const projected = projector.accept({
+    kind: 'subscription.session_event',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    sessionId: 'session-1',
+    runId: 'run-1',
+    event: {
+      type: 'tool_start',
+      id: 'start-1',
+      turnId: 'turn-1',
+      ts: 10,
+      toolUseId: 'tool-1',
+      toolName: 'Read',
+      shellRunRef: ref,
+    },
+  } as SubscriptionFrame).events[0];
+
+  assert.equal(projected?.type, 'tool_start');
+  assert.equal(
+    projected?.type === 'tool_start' && 'shellRunRef' in projected
+      ? projected.shellRunRef
+      : undefined,
+    ref,
+  );
+});
+
 function deltaFrame(
   sequence: number,
   startOffset: number,
@@ -275,7 +362,6 @@ function snapshot(overrides: Partial<SessionContinuitySnapshot> = {}): SessionCo
       metadataRevision: 1,
       status: 'running',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     projectionRevision: 1,

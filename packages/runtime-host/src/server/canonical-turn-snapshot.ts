@@ -1,4 +1,24 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { ContextCompactionOutcome } from '@maka/core/events';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime/terminal-run-commit';
@@ -36,12 +56,16 @@ export async function readCanonicalTurnSnapshot(
   if (terminal.kind === 'fact') {
     const fact = terminal.fact;
     if (fact.runStatus === 'completed') {
+      const contextCompactionOutcome = readContextCompactionOutcome(
+        fact.terminalEvent.actions?.stateDelta?.contextCompactionOutcome,
+      );
       return {
         sessionId,
         turnId,
         runId,
         status: 'completed',
         terminalEventId: fact.terminalEvent.id,
+        ...(contextCompactionOutcome ? { contextCompactionOutcome } : {}),
       };
     }
     if (fact.runStatus === 'failed') {
@@ -84,6 +108,21 @@ export async function readCanonicalTurnSnapshot(
     throw new Error('Non-created Run has no durable start fact');
   }
   return { sessionId, turnId, runId, status: run.status };
+}
+
+function readContextCompactionOutcome(value: unknown): ContextCompactionOutcome | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const outcome = value as Record<string, unknown>;
+  if (outcome.kind === 'compacted' && typeof outcome.checkpointId === 'string') {
+    return { kind: 'compacted', checkpointId: outcome.checkpointId };
+  }
+  if (
+    (outcome.kind === 'unchanged' || outcome.kind === 'failed') &&
+    typeof outcome.reason === 'string'
+  ) {
+    return { kind: outcome.kind, reason: outcome.reason };
+  }
+  return undefined;
 }
 
 /** Maximizes the encoded size of a protocol-valid failed Turn snapshot. */

@@ -1,8 +1,28 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
   type AgentGraphSupervisorWakeRecord,
   type AgentGraphSupervisorWakeStore,
 } from '@maka/core/agent-graph-supervisor-wake';
+import type { ContextCompactionOutcome } from '@maka/core/events';
 import { type AgentRunHeader } from '@maka/core/agent-run';
 import { type SessionEvent } from '@maka/core/events';
 import { type UserMessageInput } from '@maka/core/runtime-inputs';
@@ -72,8 +92,7 @@ export interface AgentGraphSupervisorContextRecoveryDiagnostic {
   estimatedTokensAfter?: number;
   droppedTurns?: number;
   droppedEvents?: number;
-  historyCompactedEvents?: number;
-  historyCompactBlocksWritten?: number;
+  outcome?: ContextCompactionOutcome;
 }
 
 export type AgentGraphSupervisorTurnOutcome =
@@ -85,31 +104,31 @@ export async function recoverAgentGraphSupervisorContextOverflow(input: {
   rootSessionId: string;
   compactTurnId: string;
   abortSignal: AbortSignal;
-  compactSession(
-    sessionId: string,
-    input: { turnId: string; minRecentTurns: number },
-  ): AsyncIterable<SessionEvent>;
+  compactSession(sessionId: string, input: { turnId: string }): AsyncIterable<SessionEvent>;
 }): Promise<AgentGraphSupervisorContextRecoveryDiagnostic | undefined> {
   input.abortSignal.throwIfAborted();
   let recovery: AgentGraphSupervisorContextRecoveryDiagnostic | undefined;
   for await (const event of input.compactSession(input.rootSessionId, {
     turnId: input.compactTurnId,
-    minRecentTurns: 0,
   })) {
     input.abortSignal.throwIfAborted();
     if (event.type !== 'token_usage' || !event.contextBudget) continue;
     const diagnostic = event.contextBudget;
+    const decision = diagnostic.compactionDecisions?.at(-1);
+    const outcome: ContextCompactionOutcome | undefined =
+      decision?.decision === 'replaced' && decision.boundaryIds?.[0]
+        ? { kind: 'compacted', checkpointId: decision.boundaryIds[0] }
+        : decision?.decision === 'unchanged'
+          ? { kind: 'unchanged', reason: decision.reason ?? 'unchanged' }
+          : decision?.decision === 'failedOpen'
+            ? { kind: 'failed', reason: decision.failOpenReason ?? 'failed' }
+            : undefined;
     recovery = {
       estimatedTokensBefore: diagnostic.estimatedTokensBefore,
       estimatedTokensAfter: diagnostic.estimatedTokensAfter,
       droppedTurns: diagnostic.droppedTurns,
       droppedEvents: diagnostic.droppedEvents,
-      ...(diagnostic.historyCompactedEvents !== undefined
-        ? { historyCompactedEvents: diagnostic.historyCompactedEvents }
-        : {}),
-      ...(diagnostic.historyCompactBlocksWritten !== undefined
-        ? { historyCompactBlocksWritten: diagnostic.historyCompactBlocksWritten }
-        : {}),
+      ...(outcome ? { outcome } : {}),
     };
   }
   input.abortSignal.throwIfAborted();

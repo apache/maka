@@ -1,12 +1,33 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { createHash, randomUUID } from "node:crypto";
 import type { AttachmentRef, ShellRunUpdate } from "@maka/core/events";
 import type { PlanSessionState, PlanUserControlInput } from "@maka/core/plan";
 import {
-  decodeStoredMessage,
+  decodeStoredMessage as decodePersistedStoredMessage,
   type StoredMessage,
   type TurnRecord,
 } from "@maka/core/session";
+import { markPersisted } from "@maka/core/persisted-value";
 import type { Task } from "@maka/core/task-ledger";
+
 import type {
   ConnectionCatalogSnapshot,
   ConnectionVersionBasis,
@@ -70,8 +91,11 @@ import {
   PROJECT_DIRECTORY_MAX_ENTRIES,
   type ProjectDirectoryEntry,
   type ProjectDirectoryRoot,
-  type QueueRetractInput,
-  type QueueRetractResult,
+  type QueueEntriesReorderInput,
+  type QueueEntryPromoteInput,
+  type QueueEntryRetractInput,
+  type QueueEntryUpdateInput,
+  type QueueMutationResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
@@ -110,6 +134,8 @@ import {
   type WorkspaceProjection,
 } from "@maka/runtime-host/protocol";
 
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
 const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
@@ -234,6 +260,12 @@ export class DesktopRuntimeHostClient {
 
   get lifecycleState(): 'ready' | 'unavailable' {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
+  }
+
+  finalizeAccessCredential(
+    timeoutMs?: number,
+  ): Promise<OperationOutput<'access.credential.finalize'>> {
+    return this.request('access.credential.finalize', {}, timeoutMs);
   }
 
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
@@ -398,12 +430,6 @@ export class DesktopRuntimeHostClient {
     attemptId: string,
   ): Promise<OperationOutput<"oauth.login.cancel">> {
     return this.request("oauth.login.cancel", { attemptId });
-  }
-
-  fetchOAuthAccountUsage(
-    connectionId: string,
-  ): Promise<OperationOutput<"oauth.account.usage.fetch">> {
-    return this.request("oauth.account.usage.fetch", { connectionId });
   }
 
   async loadSkillCatalog(
@@ -1039,10 +1065,37 @@ export class DesktopRuntimeHostClient {
     });
   }
 
-  retractQueue(
-    input: Omit<QueueRetractInput, "originHostEpoch">,
-  ): Promise<QueueRetractResult> {
-    return this.request("queue.retract", {
+  retractQueueEntry(
+    input: Omit<QueueEntryRetractInput, "originHostEpoch">,
+  ): Promise<QueueMutationResult> {
+    return this.request("queue.entry.retract", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  promoteQueueEntry(
+    input: Omit<QueueEntryPromoteInput, "originHostEpoch">,
+  ): Promise<QueueMutationResult> {
+    return this.request("queue.entry.promote", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  updateQueueEntry(
+    input: Omit<QueueEntryUpdateInput, "originHostEpoch">,
+  ): Promise<QueueMutationResult> {
+    return this.request("queue.entry.update", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  reorderQueueEntries(
+    input: Omit<QueueEntriesReorderInput, "originHostEpoch">,
+  ): Promise<QueueMutationResult> {
+    return this.request("queue.entries.reorder", {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
     });
@@ -1181,6 +1234,16 @@ export class DesktopRuntimeHostClient {
 
   queryGoal(sessionId: string): Promise<OperationOutput<"goal.query">> {
     return this.request("goal.query", { sessionId });
+  }
+
+  /**
+   * Arm a Goal the user asked for. No optimistic retry loop like `clearGoal`:
+   * arming names no revision, so there is no stale one to refresh — a Session
+   * that already has an unfinished Goal fails with `operation_conflict`, and
+   * that is an answer for the user, not a race to re-run.
+   */
+  armGoal(input: OperationInput<"goal.arm">): Promise<OperationOutput<"goal.arm">> {
+    return this.request("goal.arm", input);
   }
 
   controlGoal(
@@ -1553,9 +1616,10 @@ export class DesktopRuntimeHostClient {
   request<K extends DirectRequestOperationKey>(
     operation: K,
     input: OperationInput<K>,
+    timeoutMs?: number,
   ): Promise<OperationOutput<K>> {
     this.#assertOpen();
-    return this.connection.request(operation, input);
+    return this.connection.request(operation, input, timeoutMs);
   }
 
   #assertOpen(): void {

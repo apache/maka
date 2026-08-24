@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
@@ -18,7 +37,6 @@ import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 const context: ConnectionContext = {
   hostEpoch: 'external-session-test-epoch',
   connectionId: 'external-session-test-client',
-  surface: 'desktop',
   principal: 'local_os_user',
   acquireResidency: () => ({ release: () => undefined }),
 };
@@ -240,7 +258,6 @@ test('imports through the generic importer and treats repeats as independent cop
     fixture.creates.map(({ input, messages, externalOrigin }) => ({
       cwd: input.cwd,
       name: input.name,
-      backend: input.backend,
       messageTypes: messages.map(({ type }) => type),
       externalOrigin,
     })),
@@ -248,14 +265,12 @@ test('imports through the generic importer and treats repeats as independent cop
       {
         cwd: '/external',
         name: 'Source 0',
-        backend: 'ai-sdk',
         messageTypes: ['user'],
         externalOrigin: { adapterId: 'codex', sourceSessionId: 'source-0' },
       },
       {
         cwd: '/external',
         name: 'Source 0',
-        backend: 'ai-sdk',
         messageTypes: ['user'],
         externalOrigin: { adapterId: 'codex', sourceSessionId: 'source-0' },
       },
@@ -485,6 +500,7 @@ function coordinatorFixture(
       header,
       revision: 1,
       committedAt: 1,
+      activityAt: header.lastMessageAt ?? header.createdAt,
       summary: headerToSummary(header),
     });
     return header;
@@ -567,7 +583,6 @@ function coordinatorFixture(
       defaultCreate(
         {
           cwd: '/external',
-          backend: 'ai-sdk',
           llmConnectionSlug: 'default',
           model: 'gpt-5',
           permissionMode: 'ask',
@@ -626,7 +641,6 @@ function sessionHeader(id: string, cwd: string, name: string): SessionHeader {
     workspaceRoot: '/workspace',
     cwd,
     createdAt: 1,
-    lastUsedAt: 1,
     name,
     titleIsManual: false,
     isFlagged: false,

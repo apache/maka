@@ -4,3 +4,9 @@
 # bytes differ from the macOS build of the same release. Nothing in this
 # repository needs CRLF, so the working tree stays LF everywhere.
 * text=auto eol=lf
+
+# Repository-local agent configuration, visual review evidence, and incubation
+# working notes are not source-release inputs.
+/.claude export-ignore
+/.maka-shots export-ignore
+/maka-proposal-zh-review.txt export-ignore

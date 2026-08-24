@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -122,8 +141,6 @@ async function validateInstalledProduct(root) {
       : join(prefix, 'lib/node_modules/maka-agent');
   const baseEnvironment = isolatedEnvironment(join(root, 'home'));
   const maka = process.platform === 'win32' ? join(prefix, 'maka.cmd') : join(prefix, 'bin/maka');
-  const makaAgent =
-    process.platform === 'win32' ? join(prefix, 'maka-agent.cmd') : join(prefix, 'bin/maka-agent');
   const cliEntrypoint = join(packageRoot, 'dist/cli.js');
   const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
   const crossSpawnModule = await importInstalled(packageRoot, 'node_modules/cross-spawn/index.js');
@@ -138,10 +155,6 @@ async function validateInstalledProduct(root) {
     throw new Error(`Installed CLI reports ${version}; package manifest is ${manifest.version}`);
   }
   assertOutput(runSync(crossSpawn.sync, maka, ['--help'], baseEnvironment, root), 'Usage: maka');
-  assertOutput(
-    runSync(crossSpawn.sync, makaAgent, ['--help'], baseEnvironment, root),
-    'Usage: maka',
-  );
   assertOutput(
     runSync(crossSpawn.sync, maka, ['eval', '--help'], baseEnvironment, root),
     'usage: maka eval run',

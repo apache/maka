@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import {
@@ -15,7 +34,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import {
   openInteractiveArtifactStoreForWrite as openInteractiveArtifactStoreForWriteRaw,
@@ -34,6 +53,14 @@ import {
 } from '../root-authority.js';
 import { exportSessionBundleState } from '../session-bundle-policy.js';
 import { createSessionStore } from '../session-store.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 const TEST_TIMEOUT_MS = 15_000;
 const OPERATION_TIMEOUT_MS = 5_000;
@@ -149,7 +176,9 @@ test('public Store mutations share the rootId writer lock used by lease-bound au
   await withTemporaryDirectory(async (root) => {
     const stateRoot = join(root, 'state');
     await mkdir(stateRoot);
-    const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: stateRoot, kind: 'interactive' }),
+    );
     const holder = await spawnAuthorityLockHolder(stateRoot, capability.rootId);
     try {
       const mutation = createArtifactStore(stateRoot).create(artifactInput('public-marked-root'));
@@ -185,7 +214,7 @@ test('mutations spanning initial root marking remain serialized by the bootstrap
       );
       await assertPending(firstMutation, 'public mutation started before root marking');
 
-      await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+      trackControlDirectory(await resolveStorageRoot({ path: stateRoot, kind: 'interactive' }));
       const secondMutation = createArtifactStore(stateRoot).create(
         artifactInput('after-root-marking', undefined, 2),
       );
@@ -256,7 +285,9 @@ test('public mutation through a retargeted alias stays bound to its verified can
     const alias = join(root, 'state-alias');
     await Promise.all([mkdir(stateRoot), mkdir(replacementRoot)]);
     await writeFile(join(replacementRoot, 'replacement-sentinel'), 'replacement');
-    const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: stateRoot, kind: 'interactive' }),
+    );
     await createArtifactStore(stateRoot).create(artifactInput('seed'));
     await symlink(stateRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
     const store = createArtifactStore(alias);
@@ -294,7 +325,9 @@ test('admitted lease-bound mutations reject a replacement root without modifying
   await withTemporaryDirectory(async (root) => {
     const stateRoot = join(root, 'state');
     await mkdir(stateRoot);
-    const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: stateRoot, kind: 'interactive' }),
+    );
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     const firstStore = await openInteractiveArtifactStoreForWrite(owner.lease);
@@ -337,7 +370,9 @@ test('lease-bound mutation does not rebuild a root deleted while waiting for the
   await withTemporaryDirectory(async (root) => {
     const stateRoot = join(root, 'state');
     await mkdir(stateRoot);
-    const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: stateRoot, kind: 'interactive' }),
+    );
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     const store = await openInteractiveArtifactStoreForWrite(owner.lease);
@@ -489,7 +524,7 @@ function sessionInput() {
     backend: 'fake' as const,
     llmConnectionSlug: 'fixture',
     model: 'fixture-model',
-    permissionMode: 'execute' as const,
+    permissionMode: 'ask' as const,
     name: 'Selected',
   };
 }

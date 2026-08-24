@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Official provider brand marks.
 //
 // Most SVG paths are vendored from `@lobehub/icons-static-svg` (MIT-licensed,
@@ -20,7 +39,6 @@ import cohereBrandMark from '../assets/provider-brands/cohere.svg';
 import cloudflareMarkUrl from '../assets/provider-brands/cloudflare.svg';
 import deepinfraBrandMark from '../assets/provider-brands/deepinfra.svg';
 import fireworksMarkUrl from '../assets/provider-brands/fireworks.svg';
-import githubCopilotBrandMark from '../assets/provider-brands/github-copilot.svg';
 import groqBrandMark from '../assets/provider-brands/groq.svg';
 import huggingfaceBrandMark from '../assets/provider-brands/huggingface.svg';
 import hunyuanBrandMark from '../assets/provider-brands/hunyuan.svg';
@@ -48,14 +66,6 @@ import zenmuxBrandMark from '../assets/provider-brands/zenmux.svg';
 // - variant: monochrome; no upstream color variant exists in this release
 // - license: MIT (repository LICENSE); ZenMux trademark remains its owner's
 // - SHA-256: 1f9fab4e48601ca583e44ff06f22040a8b40f8952bc6bd67e67b065bef00b4b5
-
-// GitHub Copilot mark vendored byte-for-byte from the official Primer Octicons repository:
-// - repository: https://github.com/primer/octicons
-// - commit: 2ed936e7759451e80ae38b8147cbe2c89de6cc7a
-// - path: icons/copilot-24.svg
-// - SHA-256: eeafb3c2f333e04ccf7d031ae215f7adafaed4c6352556b0bf79496e048bcdd7
-// - governance: GitHub Copilot name and logo remain GitHub trademarks; the Octicons MIT grant
-//   does not grant trademark rights. Used unmodified only to identify the connected service.
 
 // Real xAI/Grok mark vendored byte-for-byte from Lobe Icons:
 // - repository: https://github.com/lobehub/lobe-icons
@@ -322,7 +332,8 @@ function ZAI(): ReactElement {
   return <ProviderAssetMask src={zaiMarkUrl} />;
 }
 
-// MiniMax mark from simple-icons@15.22.0 (CC0-1.0).
+// MiniMax mark from the simple-icons package (CC0-1.0); the bundled version
+// is whatever package-lock.json pins, so no version is repeated here.
 function MiniMaxMark(): ReactElement {
   return (
     <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
@@ -373,6 +384,7 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
     case 'openrouter':
       return <img src={openrouterBrandMark} alt="" />;
     case 'alibaba':
+    case 'alibaba-cn':
     case 'alibaba-coding-plan-cn':
     case 'alibaba-coding-plan':
     case 'alibaba-token-plan-cn':
@@ -400,7 +412,9 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
     case 'openai-responses-compatible':
       return <OpenAI />;
     case 'github-copilot':
-      return <ProviderAssetMask src={githubCopilotBrandMark} />;
+      // Primer Octicons does not license GitHub logos under its MIT terms.
+      // Keep the provider identifiable by name without redistributing the mark.
+      return <GenericProviderMark />;
     case 'google':
       return <Gemini />;
     case 'deepseek':

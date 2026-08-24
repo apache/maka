@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import type { ErrorEvent, CompleteEvent } from '@maka/core/events';
 import { openai } from '@ai-sdk/openai';
 import { anthropic } from '@ai-sdk/anthropic';
@@ -43,10 +62,7 @@ import {
   providerFailureSummary,
   providerRetryMetadata,
 } from './provider-error-classification.js';
-import {
-  withProviderGenerateTracking,
-  type ProviderRequestTracker,
-} from './provider-request-telemetry.js';
+import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import type { ContextDiagnosticsCompaction } from './context-diagnostics.js';
 import {
   createOpenAiChatReasoningTransportState,
@@ -96,27 +112,6 @@ export interface ModelAdapterInput {
   now: () => number;
   /** Test seam; production adapters own one state instance for their lifetime. */
   openAiResponsesTransportState?: OpenAiResponsesTransportState;
-}
-
-export interface CompactSummaryRequest {
-  model: unknown;
-  system: string;
-  messages: readonly ModelMessage[];
-  maxOutputTokens: number;
-  abortSignal?: AbortSignal;
-  /**
-   * Physical provider-call tracking for this summarization. Attaching it here
-   * rather than at the call site keeps "wrap a model with a tracker" in the one
-   * place that already owns it for streams.
-   */
-  providerRequestTracker?: ProviderRequestTracker;
-}
-
-export interface CompactSummaryResult {
-  text: string;
-  usage?: NormalizedAiSdkUsage;
-  finishReason?: string;
-  providerRequestId?: string;
 }
 
 export interface ModelAdapterStreamInput {
@@ -417,54 +412,6 @@ export class ModelAdapter {
 
   dispose(): void {
     this.openAiResponsesTransportState.close();
-  }
-
-  async generateCompactSummary(input: CompactSummaryRequest): Promise<CompactSummaryResult> {
-    const ai = await import('ai').catch((err) => {
-      throw new Error(
-        `Failed to load 'ai' package. Run \`npm install ai\`. Inner: ${(err as Error).message}`,
-      );
-    });
-    const { generateText, wrapLanguageModel } = ai as unknown as {
-      generateText: (opts: Record<string, unknown>) => Promise<{
-        text?: string;
-        usage?: AiSdkUsageLike;
-        finishReason?: unknown;
-        providerMetadata?: unknown;
-        finalStep?: { response?: { id?: string } };
-      }>;
-      wrapLanguageModel: (input: Record<string, unknown>) => unknown;
-    };
-
-    const trackedModel = input.providerRequestTracker
-      ? withProviderGenerateTracking({
-          model: input.model,
-          wrapLanguageModel,
-          tracker: input.providerRequestTracker,
-          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-        })
-      : input.model;
-
-    const result = await generateText({
-      model: trackedModel,
-      instructions: input.system,
-      messages: input.messages,
-      maxOutputTokens: input.maxOutputTokens,
-      abortSignal: input.abortSignal,
-    });
-    const usage = normalizeAiSdkUsage(result.usage, {
-      rawFinishReason: result.finishReason,
-    });
-    return {
-      text: result.text ?? '',
-      ...(usage ? { usage } : {}),
-      ...(result.finishReason !== undefined
-        ? { finishReason: rawFinishReasonString(result.finishReason) }
-        : {}),
-      ...(typeof result.finalStep?.response?.id === 'string'
-        ? { providerRequestId: result.finalStep.response.id }
-        : {}),
-    };
   }
 
   /**
@@ -980,6 +927,8 @@ function modelFailureKind(errorClass: string): ModelFailureKind {
       return 'network';
     case 'ProviderBilling':
       return 'provider_billing';
+    case 'ProviderCapacity':
+      return 'provider_capacity';
     case 'ProviderUnavailable':
       return 'provider_unavailable';
     case 'RateLimit':
@@ -1003,6 +952,8 @@ function errorClassFromFailureKind(kind: ModelFailureKind): string {
       return 'Network';
     case 'provider_billing':
       return 'ProviderBilling';
+    case 'provider_capacity':
+      return 'ProviderCapacity';
     case 'provider_unavailable':
       return 'ProviderUnavailable';
     case 'rate_limit':

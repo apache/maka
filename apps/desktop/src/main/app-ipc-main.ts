@@ -1,7 +1,25 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import { join } from 'node:path';
 import { arch as osArch, homedir, release as osRelease } from 'node:os';
 import { app, ipcMain, shell } from 'electron';
-import { resolveOperationalStateDatabasePath } from '@maka/storage';
 import { resolveProjectGitInfo } from '@maka/runtime/system-prompt/project-context';
 import type { createMainWindowController } from './main-window.js';
 import type { ProjectRootController } from './project-root-controller.js';
@@ -95,12 +113,6 @@ export function registerAppIpc(
       // Lets the renderer collapse a home prefix to `~` in displayed paths;
       // it has no other way to learn this.
       homePath: homedir(),
-      // The exact on-disk path of the workspace's operational-state database,
-      // resolved in main (node:path) — the one authority the renderer's
-      // inspector row and the data-settings row both read. The renderer must
-      // not reconstruct this (it cannot import @maka/storage, and guessing a
-      // separator is wrong for POSIX paths containing a backslash).
-      operationalStateDatabasePath: resolveOperationalStateDatabasePath(workspaceRoot),
       projectId: selection.projectId,
       projectPath,
       projectGit: allowLocalProjectPaths

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 import {
   requireEntityId,
   requireExactRecord,
@@ -5,16 +24,14 @@ import {
   requireShapedRecord,
   requireString,
 } from './codec.js';
-import type { QuotaSnapshot, QuotaWindow } from '@maka/core/oauth-subscription';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
 export const OAUTH_PRESENTATION_SERVICE_ID = 'oauth_presentation';
 export const OAUTH_PRESENTATION_SERVICE_VERSION = '1';
-export const OAUTH_PRESENTATION_AUTHORIZATION_CODE_MAX_LENGTH = 16_384;
 export const OAUTH_PRESENTATION_URL_MAX_LENGTH = 8_192;
 export const OAUTH_PRESENTATION_STATE_HINT_MAX_LENGTH = 1_024;
-export const OAUTH_LOGIN_PROVIDERS = ['claude-subscription', 'openai-codex', 'xai-oauth'] as const;
+export const OAUTH_LOGIN_PROVIDERS = ['openai-codex', 'xai-oauth'] as const;
 export const OAUTH_LOGIN_PHASES = [
   'awaiting_authorization',
   'exchanging',
@@ -47,33 +64,22 @@ const START_ERRORS = [
   'persistence_failed',
 ] as const;
 const ATTEMPT_ERRORS = [...COMMON_ERRORS, 'not_found'] as const;
-const ACCOUNT_USAGE_ERRORS = [...COMMON_ERRORS, 'not_found', 'persistence_failed'] as const;
 
 export type OAuthLoginProvider = (typeof OAUTH_LOGIN_PROVIDERS)[number];
 export type OAuthLoginPhase = (typeof OAUTH_LOGIN_PHASES)[number];
 export type OAuthLoginFailureCode = (typeof OAUTH_LOGIN_FAILURE_CODES)[number];
-export type OAuthPresentationMethod = 'open_external' | 'request_authorization_code';
+// One member today: every live enrolment is a device flow that opens a browser.
+// The method still travels on the wire and is still validated on arrival, so a
+// peer that offers anything else is refused rather than silently presented.
+export type OAuthPresentationMethod = 'open_external';
 
-export type OAuthPresentationRequest =
-  | {
-      readonly method: 'open_external';
-      readonly url: string;
-      readonly stateHint?: string;
-    }
-  | {
-      readonly method: 'request_authorization_code';
-      readonly url: string;
-      readonly stateHint: string;
-    };
+export type OAuthPresentationRequest = {
+  readonly method: 'open_external';
+  readonly url: string;
+  readonly stateHint?: string;
+};
 
-export type OAuthPresentationResult =
-  | { readonly kind: 'presented' }
-  | { readonly kind: 'authorization_code'; readonly authorizationCode: string };
-
-export type OAuthPresentationResultForMethod<Method extends OAuthPresentationMethod> =
-  Method extends 'open_external'
-    ? Extract<OAuthPresentationResult, { readonly kind: 'presented' }>
-    : Extract<OAuthPresentationResult, { readonly kind: 'authorization_code' }>;
+export type OAuthPresentationResult = { readonly kind: 'presented' };
 
 export interface OAuthLoginProjection {
   readonly attemptId: string;
@@ -91,27 +97,6 @@ export interface OAuthLoginStartInput {
 export interface OAuthLoginAttemptInput {
   readonly attemptId: string;
 }
-
-export interface OAuthAccountUsageFetchInput {
-  readonly connectionId: string;
-}
-
-export type OAuthAccountUsageUnavailableReason =
-  | 'unsupported_provider'
-  | 'credential_unavailable'
-  | 'provider_unavailable'
-  | 'invalid_response';
-
-export type OAuthAccountUsageFetchResult =
-  | {
-      readonly kind: 'available';
-      readonly provider: OAuthLoginProvider;
-      readonly quota: QuotaSnapshot;
-    }
-  | {
-      readonly kind: 'unavailable';
-      readonly reason: OAuthAccountUsageUnavailableReason;
-    };
 
 export const OAUTH_OPERATION_SPECS = {
   'oauth.login.start': defineOperation<
@@ -147,17 +132,6 @@ export const OAUTH_OPERATION_SPECS = {
     decodeInput: decodeOAuthLoginAttemptInput,
     decodeOutput: decodeOAuthLoginProjection,
   }),
-  'oauth.account.usage.fetch': defineOperation<
-    OAuthAccountUsageFetchInput,
-    OAuthAccountUsageFetchResult,
-    (typeof ACCOUNT_USAGE_ERRORS)[number]
-  >({
-    mode: 'command',
-    availability: 'ready',
-    errors: ACCOUNT_USAGE_ERRORS,
-    decodeInput: decodeOAuthAccountUsageFetchInput,
-    decodeOutput: decodeOAuthAccountUsageFetchResult,
-  }),
 } as const;
 
 export function decodeOAuthLoginStartInput(value: unknown): OAuthLoginStartInput {
@@ -171,32 +145,6 @@ export function decodeOAuthLoginStartInput(value: unknown): OAuthLoginStartInput
 export function decodeOAuthLoginAttemptInput(value: unknown): OAuthLoginAttemptInput {
   const input = requireExactRecord(value, 'OAuth login attempt input', ['attemptId']);
   return { attemptId: requireEntityId(input.attemptId, 'attemptId') };
-}
-
-export function decodeOAuthAccountUsageFetchInput(value: unknown): OAuthAccountUsageFetchInput {
-  const input = requireExactRecord(value, 'OAuth account usage input', ['connectionId']);
-  return { connectionId: requireEntityId(input.connectionId, 'connectionId') };
-}
-
-export function decodeOAuthAccountUsageFetchResult(value: unknown): OAuthAccountUsageFetchResult {
-  const result = requireRecord(value, 'OAuth account usage result');
-  if (result.kind === 'available') {
-    const available = requireExactRecord(result, 'OAuth account usage result', [
-      'kind',
-      'provider',
-      'quota',
-    ]);
-    return {
-      kind: 'available',
-      provider: oauthLoginProvider(available.provider),
-      quota: quotaSnapshot(available.quota),
-    };
-  }
-  const unavailable = requireExactRecord(result, 'OAuth account usage result', ['kind', 'reason']);
-  if (unavailable.kind !== 'unavailable') {
-    throw invalidProtocolFrame('Invalid OAuth account usage result');
-  }
-  return { kind: 'unavailable', reason: accountUsageUnavailableReason(unavailable.reason) };
 }
 
 export function decodeOAuthLoginProjection(value: unknown): OAuthLoginProjection {
@@ -238,59 +186,21 @@ export function decodeOAuthPresentationRequest(
           }),
     };
   }
-  if (method === 'request_authorization_code') {
-    const input = requireExactRecord(value, 'OAuth presentation input', ['url', 'stateHint']);
-    return {
-      method,
-      url: requireString(input.url, 'OAuth presentation URL', OAUTH_PRESENTATION_URL_MAX_LENGTH),
-      stateHint: requireString(
-        input.stateHint,
-        'OAuth presentation state hint',
-        OAUTH_PRESENTATION_STATE_HINT_MAX_LENGTH,
-      ),
-    };
-  }
   throw invalidProtocolFrame('Invalid OAuth presentation method');
 }
 
 export function decodeOAuthPresentationResult(
-  method: 'open_external',
-  value: unknown,
-): OAuthPresentationResultForMethod<'open_external'>;
-export function decodeOAuthPresentationResult(
-  method: 'request_authorization_code',
-  value: unknown,
-): OAuthPresentationResultForMethod<'request_authorization_code'>;
-export function decodeOAuthPresentationResult(
-  method: OAuthPresentationMethod,
-  value: unknown,
-): OAuthPresentationResult;
-export function decodeOAuthPresentationResult(
   method: OAuthPresentationMethod,
   value: unknown,
 ): OAuthPresentationResult {
-  if (method === 'open_external') {
-    const result = requireExactRecord(value, 'OAuth presentation result', ['kind']);
-    if (result.kind !== 'presented') {
-      throw invalidProtocolFrame('Invalid OAuth presentation result');
-    }
-    return { kind: result.kind };
+  if (method !== 'open_external') {
+    throw invalidProtocolFrame('Invalid OAuth presentation method');
   }
-  const result = requireExactRecord(value, 'OAuth presentation result', [
-    'kind',
-    'authorizationCode',
-  ]);
-  if (result.kind !== 'authorization_code') {
+  const result = requireExactRecord(value, 'OAuth presentation result', ['kind']);
+  if (result.kind !== 'presented') {
     throw invalidProtocolFrame('Invalid OAuth presentation result');
   }
-  return {
-    kind: result.kind,
-    authorizationCode: requireString(
-      result.authorizationCode,
-      'OAuth presentation authorization code',
-      OAUTH_PRESENTATION_AUTHORIZATION_CODE_MAX_LENGTH,
-    ),
-  };
+  return { kind: result.kind };
 }
 
 function oauthLoginProvider(value: unknown): OAuthLoginProvider {
@@ -315,50 +225,4 @@ function oauthLoginFailure(value: unknown): OAuthLoginFailureCode {
     throw invalidProtocolFrame('Invalid OAuth login failure');
   }
   return value as OAuthLoginFailureCode;
-}
-
-function accountUsageUnavailableReason(value: unknown): OAuthAccountUsageUnavailableReason {
-  if (
-    value !== 'unsupported_provider' &&
-    value !== 'credential_unavailable' &&
-    value !== 'provider_unavailable' &&
-    value !== 'invalid_response'
-  ) {
-    throw invalidProtocolFrame('Invalid OAuth account usage unavailability reason');
-  }
-  return value;
-}
-
-function quotaSnapshot(value: unknown): QuotaSnapshot {
-  const record = requireShapedRecord(
-    value,
-    'OAuth account quota',
-    ['fetchedAt'],
-    ['fiveHour', 'sevenDay'],
-  );
-  return {
-    ...(record.fiveHour === undefined ? {} : { fiveHour: quotaWindow(record.fiveHour) }),
-    ...(record.sevenDay === undefined ? {} : { sevenDay: quotaWindow(record.sevenDay) }),
-    fetchedAt: safeInteger(record.fetchedAt, 'quota fetchedAt'),
-  };
-}
-
-function quotaWindow(value: unknown): QuotaWindow {
-  const record = requireExactRecord(value, 'OAuth account quota window', [
-    'utilization',
-    'resetsAt',
-  ]);
-  const utilization = safeInteger(record.utilization, 'quota utilization');
-  if (utilization > 100) throw invalidProtocolFrame('Invalid quota utilization');
-  return {
-    utilization,
-    resetsAt: requireString(record.resetsAt, 'quota reset timestamp', 128),
-  };
-}
-
-function safeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  return value as number;
 }

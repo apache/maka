@@ -1,3 +1,12 @@
+# Portions derived from DeepSeek Harness:
+#   Copyright (c) 2026 DeepSeek
+#   Licensed under the MIT License.
+#
+# Apache Maka changed the plugin composition, provider configuration,
+# reasoning strength, and command lifetime. Those modifications are licensed
+# under the Apache License, Version 2.0. See LICENSE, THIRD-PARTY COMPONENTS,
+# for both license texts and the pinned upstream revision.
+
 # The DeepSeek Harness arm's complete plugin composition.
 #
 # `package.json` declares no bundles, so the harness composes this tree over an

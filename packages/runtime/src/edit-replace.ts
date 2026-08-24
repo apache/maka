@@ -18,14 +18,52 @@
 // function operates on a string — binary-*file* byte safety is the caller's I/O
 // concern.
 //
-// Strategies are adapted from opencode's edit.ts (sourced from cline diff-apply
-// + gemini-cli editCorrector). We keep the three distinctly-reachable full-span
-// matchers (line-trimmed, whitespace-normalized, escape-normalized) and omit:
+// ATTRIBUTION: the fuzzy matching strategies below are adapted material under
+// more than one license. Maka took them from opencode's edit.ts
+// (packages/opencode/src/tool/edit.ts), which credits cline diff-apply and the
+// gemini-cli editCorrector upstream of itself; those two upstreams are
+// Apache-2.0, so this region is not uniformly MIT. Each piece is listed with
+// the license that governs it. All three are modified here: see below.
+//
+//   `lineTrimmedSpans` — adapted from cline's `lineTrimmedFallbackMatch`.
+//     Source:    https://github.com/cline/cline
+//     Revision:  50b43c0559a9658a4fda79645b2cfe66cfa2f133
+//     Path:      evals/diff-edits/diff-apply/diff-06-23-25.ts
+//     License:   Apache-2.0
+//     Copyright: Copyright 2025 Cline Bot Inc.
+//     Modified:  returns every matching span instead of the first, and rejects
+//                a match at EOF when old_string ended with a newline.
+//
+//   `escapeNormalizedSpans` unescape — the regular expression and the first
+//   eight branches (n, t, r, ', ", `, \, newline), in order, are from
+//   gemini-cli's `unescapeStringForGeminiBug`.
+//     Source:    https://github.com/google-gemini/gemini-cli
+//     Revision:  93909a2dd3bf901e8f98a9fd41e1300faa585a84
+//     Path:      packages/core/src/utils/editCorrector.ts
+//     License:   Apache-2.0
+//     Copyright: Copyright 2025 Google LLC
+//     Modified:  opencode added a ninth branch ($) and changed the pattern;
+//                Maka carries opencode's result and collects spans rather than
+//                rewriting the string in place.
+//
+//   Everything else in the cascade — the whitespace-normalized matcher, the
+//   strategy ordering, and the surrounding structure.
+//     Source:    https://github.com/anomalyco/opencode
+//     Revision:  fc80874f45a595ff6874a4d36b1090f6a64424d2
+//     License:   MIT
+//     Copyright: Copyright (c) 2025 opencode
+//
+// Maka keeps the three distinctly-reachable full-span matchers (line-trimmed,
+// whitespace-normalized, escape-normalized) and omits:
 //   - indentation-flexible and trimmed-boundary, which are strictly shadowed by
 //     line-trimmed / whitespace-normalized here (they add no reachable match);
 //   - block-anchor and context-aware, which match on partial signal (first/last
 //     line + similarity) and need a tuned similarity threshold — deliberately
 //     deferred to keep wrong-location risk out.
+//
+// Scope: the adapted material only. The rest of this file is Maka source under
+// the repository Apache-2.0 license, so there is no whole-file SPDX identifier.
+// See LICENSE, THIRD-PARTY COMPONENTS for the notices.
 
 export type EditMatchStrategy = 'exact' | 'line-trimmed' | 'whitespace' | 'escape';
 

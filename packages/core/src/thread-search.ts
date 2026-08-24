@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /**
  * Local thread / session search — bounded scan, no FTS5.
  *
@@ -13,7 +32,9 @@
  *       UserMessage / AssistantMessage / ToolCallMessage / ToolResultMessage.
  *     Excluded: SystemNoteMessage / TokenUsageMessage / TurnStateMessage /
  *     PermissionDecisionMessage.
- *   - Excludes sessions with `backend === 'fake'` (e2e-fixture fixtures).
+ *   - Excludes sessions with `backend === 'fake'` (retired local simulation,
+ *     plus the e2e fixtures that still seed it). Desktop also excludes archived
+ *     sessions; Agent global history opts in to them explicitly.
  *   - Snippets are redacted via `@maka/core/redaction.redactSecrets()`.
  *   - `ToolResultMessage.content` is JSON-serialized for scan and capped to
  *     the first `TOOL_RESULT_SCAN_CAP_BYTES` bytes (worst-case bound).
@@ -204,8 +225,11 @@ export async function runThreadSearch(
     await deps.listSessions(),
     options.activeSessionId,
   )
-    // Exclude fake-backend sessions — e2e-fixture fixtures and
-    // similar dev-only state should not surface as real chat hits.
+    // Exclude fake-backend sessions. The rail still shows them (marked stale)
+    // because they are task records, but their transcripts are simulator output;
+    // returning fabricated text as a hit on the user's own history is worse than
+    // returning nothing. Retiring the backend (#3211) did not make that content
+    // real, so the filter stays.
     .filter(
       (session) =>
         session.backend !== 'fake' &&
