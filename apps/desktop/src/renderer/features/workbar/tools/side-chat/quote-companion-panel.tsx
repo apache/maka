@@ -208,6 +208,7 @@ export function QuoteCompanionPanel(props: {
     >
       <ChatSurfaceLayout
         conversationKey={companion.companionSession?.id ?? props.sourceSession?.id}
+        scrollToBottomLabel={copy.scrollToBottom}
         composer={
           <>
             {companion.error && (
@@ -270,6 +271,8 @@ export function QuoteCompanionPanel(props: {
               mentionSkills={props.mentionSkills}
               onSearchMentionFiles={props.onSearchMentionFiles}
               pendingQuotes={props.quotes.map((quote) => quote.value)}
+              mentionSkillsUnavailable={props.mentionSkillsUnavailable}
+              mentionSkillsLoading={props.mentionSkillsLoading}
               contextDrawerDefaultCollapsed
               showStaticModelUnavailableStatus={false}
               onRemoveQuote={(index) => {

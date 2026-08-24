@@ -143,4 +143,32 @@ describe('Workbar feature boundary', () => {
       true,
     );
   });
+
+  it('keeps Quote Companion catalog state and localized scroll copy at the seam', () => {
+    const quotePanel = readFileSync(
+      join(
+        featureRoot,
+        'tools',
+        'side-chat',
+        'quote-companion-panel.tsx',
+      ),
+      'utf8',
+    );
+    assert.equal(
+      quotePanel.includes(
+        'scrollToBottomLabel={copy.scrollToBottom}',
+      ),
+      true,
+    );
+    assert.equal(
+      quotePanel.includes(
+        'mentionSkillsUnavailable={props.mentionSkillsUnavailable}',
+      ),
+      true,
+    );
+    assert.equal(
+      quotePanel.includes('mentionSkillsLoading={props.mentionSkillsLoading}'),
+      true,
+    );
+  });
 });

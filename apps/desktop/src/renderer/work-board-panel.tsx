@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Banner, EmptyState, Spinner } from '@astryxdesign/core';
 import { Button } from '@astryxdesign/core/Button';
 import { TextInput } from '@astryxdesign/core/TextInput';
@@ -159,6 +159,8 @@ export function WorkBoardPanel(props: {
   const [renamingTitle, setRenamingTitle] = useState('');
   const [renamingRevision, setRenamingRevision] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | undefined>();
+  const createPendingRef = useRef(false);
+  const [createPending, setCreatePending] = useState(false);
 
   useEffect(() => {
     if (props.projectId === null) setFilter('inbox');
@@ -180,15 +182,22 @@ export function WorkBoardPanel(props: {
 
   const create = async (): Promise<void> => {
     const title = newTitle.trim();
-    if (!title) return;
+    if (!title || createPendingRef.current) return;
+    createPendingRef.current = true;
+    setCreatePending(true);
     const input: CreateWorkBoardItemInput = {
       scope: query.scope ?? { kind: 'inbox' },
       title,
       creator: { kind: 'user' },
       provenance: { kind: 'manual' },
     };
-    if (await runAction(() => board.create(input))) {
-      setNewTitle('');
+    try {
+      if (await runAction(() => board.create(input))) {
+        setNewTitle('');
+      }
+    } finally {
+      createPendingRef.current = false;
+      setCreatePending(false);
     }
   };
 
@@ -250,6 +259,7 @@ export function WorkBoardPanel(props: {
           isLabelHidden
           value={newTitle}
           onChange={setNewTitle}
+          isDisabled={createPending}
           onKeyDown={(event) => {
             event.stopPropagation();
             if (event.nativeEvent.isComposing || event.key === 'Process') return;
@@ -264,7 +274,7 @@ export function WorkBoardPanel(props: {
           size="sm"
           label={copy.create}
           onClick={() => void create()}
-          isDisabled={newTitle.trim().length === 0}
+          isDisabled={createPending || newTitle.trim().length === 0}
         />
       </div>
       {board.error && board.items.length === 0 ? (
