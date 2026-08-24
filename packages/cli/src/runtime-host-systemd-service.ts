@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -35,28 +34,32 @@ import {
   runtimeHostServiceLaunchArguments,
   validateRuntimeHostServiceLaunch,
 } from './runtime-host-service-launch.js';
-
-const SERVICE_MANAGER_COMMAND_TIMEOUT_MS = 30_000;
-
-interface CommandResult {
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}
+import {
+  runRuntimeHostServiceManagerCommand,
+  type RuntimeHostServiceManagerCommandResult,
+} from './runtime-host-service-manager-process.js';
 
 interface SystemdUnitContext {
   readonly unitName: string;
   readonly unitPath: string;
-  readonly runSystemctl: (args: readonly string[]) => Promise<CommandResult>;
+  readonly runSystemctl: (
+    args: readonly string[],
+  ) => Promise<RuntimeHostServiceManagerCommandResult>;
 }
 
 export interface SystemdUserServiceOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly homeDir?: string;
   readonly uid?: number;
-  readonly runSystemctl?: (args: readonly string[]) => Promise<CommandResult>;
-  readonly runLoginctl?: (args: readonly string[]) => Promise<CommandResult>;
-  readonly runJournalctl?: (args: readonly string[]) => Promise<CommandResult>;
+  readonly runSystemctl?: (
+    args: readonly string[],
+  ) => Promise<RuntimeHostServiceManagerCommandResult>;
+  readonly runLoginctl?: (
+    args: readonly string[],
+  ) => Promise<RuntimeHostServiceManagerCommandResult>;
+  readonly runJournalctl?: (
+    args: readonly string[],
+  ) => Promise<RuntimeHostServiceManagerCommandResult>;
 }
 
 export function createSystemdUserRuntimeHostService(
@@ -350,7 +353,7 @@ async function restoreSystemdDeployment(
 }
 
 async function readSystemdStatus(context: SystemdUnitContext): Promise<SystemdStatus> {
-  let result: CommandResult;
+  let result: RuntimeHostServiceManagerCommandResult;
   try {
     result = await context.runSystemctl([
       'show',
@@ -383,9 +386,9 @@ async function readSystemdStatus(context: SystemdUnitContext): Promise<SystemdSt
 }
 
 async function assertUserSystemd(
-  runSystemctl: (args: readonly string[]) => Promise<CommandResult>,
+  runSystemctl: (args: readonly string[]) => Promise<RuntimeHostServiceManagerCommandResult>,
 ): Promise<void> {
-  let result: CommandResult;
+  let result: RuntimeHostServiceManagerCommandResult;
   try {
     result = await runSystemctl(['show-environment']);
   } catch (error) {
@@ -404,7 +407,7 @@ async function assertUserSystemd(
 
 async function assertUserLinger(
   uid: number | undefined,
-  runLoginctl: (args: readonly string[]) => Promise<CommandResult>,
+  runLoginctl: (args: readonly string[]) => Promise<RuntimeHostServiceManagerCommandResult>,
 ): Promise<void> {
   if (uid === undefined) {
     throw new RuntimeHostServiceManagerError(
@@ -412,7 +415,7 @@ async function assertUserLinger(
       'The current Linux user identity could not be determined',
     );
   }
-  let result: CommandResult;
+  let result: RuntimeHostServiceManagerCommandResult;
   try {
     result = await runLoginctl(['show-user', String(uid), '--property=Linger', '--value']);
   } catch (error) {
@@ -448,11 +451,11 @@ async function runLifecycleAction(
 }
 
 async function requireSystemctl(
-  runSystemctl: (args: readonly string[]) => Promise<CommandResult>,
+  runSystemctl: (args: readonly string[]) => Promise<RuntimeHostServiceManagerCommandResult>,
   args: readonly string[],
   message: string,
 ): Promise<void> {
-  let result: CommandResult;
+  let result: RuntimeHostServiceManagerCommandResult;
   try {
     result = await runSystemctl(args);
   } catch (error) {
@@ -463,7 +466,10 @@ async function requireSystemctl(
   if (result.exitCode !== 0) throw managerError(message, result);
 }
 
-function managerError(message: string, result: CommandResult): RuntimeHostServiceManagerError {
+function managerError(
+  message: string,
+  result: RuntimeHostServiceManagerCommandResult,
+): RuntimeHostServiceManagerError {
   const detail = result.stderr.trim() || result.stdout.trim();
   return new RuntimeHostServiceManagerError(
     'service_manager_operation_failed',
@@ -471,41 +477,29 @@ function managerError(message: string, result: CommandResult): RuntimeHostServic
   );
 }
 
-async function defaultRunSystemctl(args: readonly string[]): Promise<CommandResult> {
+async function defaultRunSystemctl(
+  args: readonly string[],
+): Promise<RuntimeHostServiceManagerCommandResult> {
   return runCommand('systemctl', ['--user', ...args]);
 }
 
-async function defaultRunLoginctl(args: readonly string[]): Promise<CommandResult> {
+async function defaultRunLoginctl(
+  args: readonly string[],
+): Promise<RuntimeHostServiceManagerCommandResult> {
   return runCommand('loginctl', args);
 }
 
-async function defaultRunJournalctl(args: readonly string[]): Promise<CommandResult> {
+async function defaultRunJournalctl(
+  args: readonly string[],
+): Promise<RuntimeHostServiceManagerCommandResult> {
   return runCommand('journalctl', args);
 }
 
-async function runCommand(command: string, args: readonly string[]): Promise<CommandResult> {
-  return new Promise((resolveResult, reject) => {
-    const child = spawn(command, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      timeout: SERVICE_MANAGER_COMMAND_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.once('error', reject);
-    child.once('close', (exitCode) => {
-      resolveResult({ exitCode: exitCode ?? 1, stdout, stderr });
-    });
-  });
+async function runCommand(
+  command: string,
+  args: readonly string[],
+): Promise<RuntimeHostServiceManagerCommandResult> {
+  return runRuntimeHostServiceManagerCommand(command, args);
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {

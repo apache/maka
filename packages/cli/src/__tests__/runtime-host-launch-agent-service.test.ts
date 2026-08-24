@@ -88,7 +88,6 @@ test('maps install, stop, start, restart, and uninstall onto one LaunchAgent ser
     });
     launchctl.running = true;
 
-    launchctl.bootoutPrintsRemaining = 2;
     await backend.stop();
     assert.equal((await backend.status()).state, 'stopped');
     await backend.start();
@@ -102,10 +101,10 @@ test('maps install, stop, start, restart, and uninstall onto one LaunchAgent ser
       launchctl.calls.filter(([command]) => command !== 'print'),
       [
         ['bootstrap', DOMAIN, resolveLaunchAgentPath(SERVICE_ID, homeDir)],
-        ['bootout', TARGET],
+        ['bootout', '--wait', TARGET],
         ['bootstrap', DOMAIN, resolveLaunchAgentPath(SERVICE_ID, homeDir)],
         ['kickstart', '-k', TARGET],
-        ['bootout', TARGET],
+        ['bootout', '--wait', TARGET],
       ],
     );
   });
@@ -137,7 +136,6 @@ interface FakeLaunchctl {
   loaded: boolean;
   running: boolean;
   failNextBootstrap: boolean;
-  bootoutPrintsRemaining: number;
   readonly calls: string[][];
   readonly run: (args: readonly string[]) => Promise<{
     exitCode: number;
@@ -152,7 +150,6 @@ function createFakeLaunchctl(): FakeLaunchctl {
     loaded: false,
     running: false,
     failNextBootstrap: false,
-    bootoutPrintsRemaining: 0,
     calls: [],
     run: async (args) => {
       fake.calls.push([...args]);
@@ -160,15 +157,6 @@ function createFakeLaunchctl(): FakeLaunchctl {
         return { exitCode: 0, stdout: 'domain = gui\n', stderr: '' };
       }
       if (args[0] === 'print' && args[1] === TARGET) {
-        if (fake.bootoutPrintsRemaining > 0) {
-          fake.bootoutPrintsRemaining -= 1;
-          if (fake.bootoutPrintsRemaining === 0) fake.loaded = false;
-          return {
-            exitCode: 0,
-            stdout: `state = not running\npid = ${String(pid)}\nlast exit code = 0\n`,
-            stderr: '',
-          };
-        }
         return fake.loaded
           ? {
               exitCode: 0,
@@ -191,7 +179,7 @@ function createFakeLaunchctl(): FakeLaunchctl {
       }
       if (args[0] === 'bootout') {
         fake.running = false;
-        if (fake.bootoutPrintsRemaining === 0) fake.loaded = false;
+        fake.loaded = false;
         return { exitCode: 0, stdout: '', stderr: '' };
       }
       if (args[0] === 'kickstart') {

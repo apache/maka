@@ -27,11 +27,13 @@ export interface RuntimeHostProcessLifecycleOptions {
   onReady?: () => void;
 }
 
+export type RuntimeHostProcessLifecycleEnd = 'host_closed' | 'termination_requested';
+
 export async function runRuntimeHostProcessLifecycle(
   host: Pick<RuntimeHostKernel, 'close' | 'closed'> &
     Partial<Pick<RuntimeHostKernel, 'shutdownReason'>>,
   options: RuntimeHostProcessLifecycleOptions = {},
-): Promise<void> {
+): Promise<RuntimeHostProcessLifecycleEnd> {
   let closing = false;
   const close = () => {
     if (closing) return;
@@ -45,6 +47,7 @@ export async function runRuntimeHostProcessLifecycle(
   try {
     options.onReady?.();
     await host.closed;
+    return closing ? 'termination_requested' : 'host_closed';
   } catch (error) {
     if (error instanceof RuntimeHostProcessTerminationRequiredError) {
       process.exit(host.shutdownReason === 'retirement' ? 0 : 1);
