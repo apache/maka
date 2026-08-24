@@ -19,10 +19,5 @@
 
 export { GoalHost } from './ui/goal-host';
 export { GoalServicesProvider } from './services-context';
-export {
-  useGoalController,
-  type GoalController,
-  type GoalControllerCommands,
-  type GoalControllerSelectors,
-} from './controller/use-goal-controller';
-export type { GoalArmInput, GoalServices } from './ports';
+export { useGoalController } from './controller/use-goal-controller';
+export type { GoalServices } from './ports';

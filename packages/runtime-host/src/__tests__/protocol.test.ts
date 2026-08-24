@@ -213,10 +213,14 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 42);
   });
 
-  test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
-    // Epoch 43 does not offer `github-copilot`, so such a Host rejects a login
-    // start for it rather than failing the pair at connect.
+  test('publishes a new compatibility epoch for the retired Session timestamp', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 43);
+  });
+
+  test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
+    // Epoch 44 does not offer `github-copilot`, so such a Host rejects a login
+    // start for it rather than failing the pair at connect.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 44);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -1734,7 +1738,6 @@ function continuitySnapshot(hostEpoch: string) {
       metadataRevision: 1,
       status: 'running' as const,
       createdAt: 1,
-      lastUsedAt: 2,
       isArchived: false,
     },
     projectionRevision: 1,

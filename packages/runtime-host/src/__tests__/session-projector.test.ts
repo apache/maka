@@ -362,7 +362,6 @@ function snapshot(overrides: Partial<SessionContinuitySnapshot> = {}): SessionCo
       metadataRevision: 1,
       status: 'running',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     projectionRevision: 1,

@@ -39,6 +39,7 @@ import {
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
 } from '@maka/runtime-host/protocol';
+import { projectSessionCatalogSummary } from '@maka/runtime-host/client';
 import {
   createRuntimeHostMakaSessionDriver,
   type RuntimeHostMakaSessionDriverInput,
@@ -47,6 +48,34 @@ import { SkillInvocationBlockedError, type MakaAttachedSessionTurn } from '../se
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
+  test('maps authoritative Catalog activity into Session summaries', () => {
+    assert.equal(
+      projectSessionCatalogSummary(sessionProjection({ activityAt: 42 })).activityAt,
+      42,
+    );
+  });
+
+  test('maps authoritative live Turn ids into Session summaries', () => {
+    assert.deepEqual(
+      projectSessionCatalogSummary(
+        sessionProjection({
+          status: 'running',
+          liveRunState: { schemaVersion: 1, runningTurnIds: ['turn-1', 'turn-2'] },
+        }),
+      ).runningTurnIds,
+      ['turn-1', 'turn-2'],
+    );
+    const knownEmpty = projectSessionCatalogSummary(
+      sessionProjection({ liveRunState: { schemaVersion: 1, runningTurnIds: [] } }),
+    );
+    assert.equal(Object.hasOwn(knownEmpty, 'runningTurnIds'), true);
+    assert.deepEqual(knownEmpty.runningTurnIds, []);
+    assert.equal(
+      Object.hasOwn(projectSessionCatalogSummary(sessionProjection()), 'runningTurnIds'),
+      false,
+    );
+  });
+
   test('keeps remote Session paths out of Client filesystem policy', async () => {
     const driver = createRuntimeHostMakaSessionDriver({
       connection: new FakeConnection([]).value,
@@ -357,7 +386,6 @@ describe('Runtime Host Maka Session driver', () => {
             metadataRevision: 1,
             status: 'running',
             createdAt: 1,
-            lastUsedAt: 1,
             isArchived: false,
           },
           rootTurn: null,
@@ -1788,7 +1816,6 @@ function continuitySnapshot(
       metadataRevision: 1,
       status: 'running',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     projectionRevision: 1,
@@ -1847,7 +1874,7 @@ function sessionProjection(
       hostCwd: '/tmp',
     },
     createdAt: 1,
-    lastUsedAt: 2,
+    activityAt: 2,
     name: 'Session',
     isFlagged: false,
     isArchived: false,

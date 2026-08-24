@@ -21,11 +21,13 @@ import { createHash, randomUUID } from "node:crypto";
 import type { AttachmentRef, ShellRunUpdate } from "@maka/core/events";
 import type { PlanSessionState, PlanUserControlInput } from "@maka/core/plan";
 import {
-  decodeStoredMessage,
+  decodeStoredMessage as decodePersistedStoredMessage,
   type StoredMessage,
   type TurnRecord,
 } from "@maka/core/session";
+import { markPersisted } from "@maka/core/persisted-value";
 import type { Task } from "@maka/core/task-ledger";
+
 import type {
   ConnectionCatalogSnapshot,
   ConnectionVersionBasis,
@@ -131,6 +133,8 @@ import {
   type WorkspaceProjection,
 } from "@maka/runtime-host/protocol";
 
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_OPTIMISTIC_ATTEMPTS = 3;
 const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;

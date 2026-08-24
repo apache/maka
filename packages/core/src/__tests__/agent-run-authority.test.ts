@@ -19,7 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { decodeAgentRunHeader, type AgentRunHeader } from '../agent-run.js';
+import {
+  decodeAgentRunHeader,
+  decodePersistedAgentRunHeader,
+  type AgentRunHeader,
+} from '../agent-run.js';
+import { markPersisted } from '../persisted-value.js';
 
 test('rejects a Run header with multiple hosted root authorities', () => {
   assert.throws(
@@ -34,12 +39,36 @@ test('rejects a Run header with multiple hosted root authorities', () => {
 });
 
 test('decodes a released Automation Run as read-only legacy provenance', () => {
-  const decoded = decodeAgentRunHeader({
-    ...runHeader(),
-    automationId: 'automation-1',
-  });
+  const decoded = decodePersistedAgentRunHeader(
+    markPersisted<AgentRunHeader>({
+      ...runHeader(),
+      automationId: 'automation-1',
+    }),
+  );
   assert.equal(decoded.legacyAutomationId, 'automation-1');
   assert.equal(Object.hasOwn(decoded, 'automationId'), false);
+});
+
+test('folds all retired AgentRun values only at the persistence boundary', () => {
+  const persisted = {
+    ...runHeader(),
+    status: 'waiting_permission',
+    permissionMode: 'execute',
+  };
+
+  const decoded = decodePersistedAgentRunHeader(markPersisted<AgentRunHeader>(persisted));
+  assert.equal(decoded.status, 'waiting_for_user');
+  assert.equal(decoded.permissionMode, 'ask');
+
+  assert.throws(() => decodeAgentRunHeader(persisted), /Invalid AgentRun header schema/);
+  assert.throws(
+    () => decodeAgentRunHeader({ ...runHeader(), automationId: 'automation-1' }),
+    /Invalid AgentRun header schema/,
+  );
+  assert.throws(
+    () => decodeAgentRunHeader({ ...runHeader(), permissionMode: 'execute' }),
+    /Invalid AgentRun header schema/,
+  );
 });
 
 function runHeader(): AgentRunHeader {

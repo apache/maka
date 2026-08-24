@@ -25,6 +25,7 @@ export {
   assertSafeSessionId,
   createSessionStore,
   createUserMessage,
+  decodePersistedSessionHeader,
   isSafeSessionId,
   isSessionNotFoundError,
   normalizeSessionHeader,

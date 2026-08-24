@@ -26,8 +26,9 @@ import type {
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { StorageRef, ToolResultContent } from '@maka/core/events';
+import { markPersisted } from '@maka/core/persisted-value';
 import type { StoredMessage } from '@maka/core/session';
-import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { decodePersistedToolResultContent } from '@maka/core/tool-result-record-schema';
 import { isEmittedAgentRunEventType, isSessionInlineRun } from '@maka/core/agent-run';
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
 import {
@@ -496,7 +497,7 @@ export function archivedToolResultContainsConversationOwnedReferences(
 
   let content: ToolResultContent;
   try {
-    content = decodeCanonicalToolResultContent(value);
+    content = decodePersistedToolResultContent(markPersisted<ToolResultContent>(value));
   } catch {
     return false;
   }
@@ -575,7 +576,9 @@ export function collectConversationCopyLinkedChildReferences(input: {
     if (isArchivedToolResultPlaceholder(value)) return;
     try {
       references.push(
-        ...conversationCopyLinkedChildReferences(decodeCanonicalToolResultContent(value)),
+        ...conversationCopyLinkedChildReferences(
+          decodePersistedToolResultContent(markPersisted<ToolResultContent>(value)),
+        ),
       );
     } catch {
       // Opaque tool results have no typed linked-child references.
@@ -1184,7 +1187,7 @@ function rewriteRuntimeToolResult(
   }
   let content: ToolResultContent;
   try {
-    content = decodeCanonicalToolResultContent(value);
+    content = decodePersistedToolResultContent(markPersisted<ToolResultContent>(value));
   } catch {
     return value;
   }

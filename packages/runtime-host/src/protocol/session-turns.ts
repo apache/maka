@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { decodeStoredMessage, type TurnRecord, type TurnStateMessage } from '@maka/core/session';
+import { decodeCanonicalMessage, type TurnRecord, type TurnStateMessage } from '@maka/core/session';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   requireCount,
@@ -406,7 +406,7 @@ function decodeSessionTurnContribution(value: unknown): SessionTurnContribution 
       'sequence',
       'message',
     ]);
-    const message = decodeStoredMessage(state.message);
+    const message = decodeCanonicalMessage(state.message);
     if (message.type !== 'turn_state') {
       throw invalidProtocolFrame('Invalid Session turn state contribution');
     }

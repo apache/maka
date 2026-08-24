@@ -34,6 +34,7 @@ import {
   type ScheduledTaskRun,
   type ScheduledTaskSchedule,
 } from '@maka/core/scheduled-task';
+import { markPersisted } from '@maka/core/persisted-value';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
@@ -597,7 +598,9 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
       if (typeof row.record_json !== 'string') {
         throw new Error(`Invalid scheduled task at row ${index + 1}`);
       }
-      return decodePersistedScheduledTask(JSON.parse(row.record_json) as ScheduledTask);
+      return decodePersistedScheduledTask(
+        markPersisted<ScheduledTask>(JSON.parse(row.record_json)),
+      );
     });
     const claimRows = this.#lease.database
       .prepare(`
@@ -611,7 +614,10 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
         throw new Error(`Invalid scheduled task fire claim at row ${index + 1}`);
       }
       const claim = JSON.parse(row.record_json) as ScheduledTaskFireClaim;
-      return { ...claim, task: decodePersistedScheduledTask(claim.task) };
+      return {
+        ...claim,
+        task: decodePersistedScheduledTask(markPersisted<ScheduledTask>(claim.task)),
+      };
     });
     return { tasks, claims };
   }

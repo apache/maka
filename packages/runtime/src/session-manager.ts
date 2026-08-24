@@ -4374,7 +4374,7 @@ export class SessionManager {
           status: run?.status ?? (child.status === 'aborted' ? 'cancelled' : 'created'),
           permissionMode: run?.permissionMode ?? child.permissionMode,
           createdAt: run?.createdAt ?? child.createdAt,
-          updatedAt: run?.updatedAt ?? child.lastUsedAt,
+          updatedAt: run?.updatedAt ?? child.lastMessageAt ?? child.createdAt,
           ...(run?.completedAt !== undefined ? { completedAt: run.completedAt } : {}),
           ...(run?.completedAt !== undefined
             ? { durationMs: Math.max(0, run.completedAt - run.createdAt) }

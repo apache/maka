@@ -618,6 +618,43 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(replay.diagnostics).toEqual([]);
   });
 
+  test('folds retired permission modes while projecting persisted tool results', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-persisted-subagent-result',
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'tool-subagent',
+            name: 'subagent',
+            result: {
+              kind: 'subagent',
+              agentName: 'Researcher',
+              turnId: 'child-turn',
+              runId: 'child-run',
+              status: 'completed',
+              permissionMode: 'execute',
+              summary: 'done',
+              artifactIds: [],
+            } as never,
+          },
+          refs: { toolCallId: 'tool-subagent' },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    const projected = out.messages.find((message) => message.type === 'tool_result');
+    expect(
+      projected?.type === 'tool_result' && projected.content.kind === 'subagent'
+        ? projected.content.permissionMode
+        : undefined,
+    ).toEqual('ask');
+    expect(out.diagnostics).toEqual([]);
+  });
+
   test('restores a settled Agent Swarm function response', () => {
     const result = {
       kind: 'agent_swarm' as const,
@@ -1969,7 +2006,6 @@ function makeHeader(id: string): SessionHeader {
     workspaceRoot: '/tmp/work',
     cwd: '/tmp/work',
     createdAt: ts,
-    lastUsedAt: ts,
     name: 'Session',
     titleIsManual: true,
     isFlagged: false,

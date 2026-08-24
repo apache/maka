@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
+import {
+  decodeStoredMessage as decodePersistedStoredMessage,
+  type StoredMessage,
+} from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 import { type SessionEvent } from '@maka/core/events';
 import {
   createRuntimeHostSessionProjectionSeed,
@@ -33,6 +37,7 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
+
 import {
   InteractionAnsweredSnapshot,
   InteractionPendingSnapshot,
@@ -43,6 +48,8 @@ import {
 } from '@maka/runtime-host/protocol';
 import type { MakaPreparedSessionTurn } from './session-driver.js';
 
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_PENDING_FRAMES = 512;
 const MAX_PENDING_EVENTS_PER_TURN = 1_024;
 const LAG_REARM_PENDING_EVENTS = MAX_PENDING_EVENTS_PER_TURN / 2;

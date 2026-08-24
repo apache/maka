@@ -1317,7 +1317,6 @@ function sessionHeader(sessionId: string, labels: readonly string[]): SessionHea
     workspaceRoot: '/workspace',
     cwd: '/workspace',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Session',
     titleIsManual: false,
     isFlagged: false,
@@ -1344,6 +1343,7 @@ function headerSnapshot(header: SessionHeader, revision: number) {
 function catalogRecord(header: SessionHeader, revision: number): SessionCatalogRecord {
   return {
     ...headerSnapshot(header, revision),
+    activityAt: header.lastMessageAt ?? header.createdAt,
     summary: headerToSummary(header),
   };
 }

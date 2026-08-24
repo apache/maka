@@ -85,6 +85,7 @@
     "./model-metadata": "./dist/model-metadata.js",
     "./model-web-search": "./dist/model-web-search.js",
     "./model-thinking": "./dist/model-thinking.js",
+    "./persisted-value": "./dist/persisted-value.js",
     "./chat-model-choice": "./dist/chat-model-choice.js",
     "./connection-readiness": "./dist/connection-readiness.js",
     "./provider-auth": "./dist/provider-auth.js",

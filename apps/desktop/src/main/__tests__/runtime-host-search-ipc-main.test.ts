@@ -161,7 +161,7 @@ function catalogSession(id: string, name: string): SessionCatalogProjection {
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     lastMessageAt: 1,
     name,
     isFlagged: false,

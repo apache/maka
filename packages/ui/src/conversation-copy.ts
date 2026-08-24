@@ -437,7 +437,8 @@ const CONVERSATION_COPY = {
     model: {
       thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '默认',
       // Short single-token labels — trigger + popout size to content.
-      // Canonical ladder: 默认 / 关 / 低 / 中 / 高 / 超高 (minimal/max when offered).
+      // Canonical per-chat ladder: 默认 (model default, overriding Settings) / 关 / 低 / 中 / 高 / 超高
+      // (minimal/max when offered).
       level: { off: '关', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
       switching: '切换中', model: '模型', switchAriaLabel: '切换当前任务模型',
       switchWarning: '切换模型可能需要重建服务商提示缓存，使下一次请求更慢或成本更高。',

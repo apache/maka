@@ -32,6 +32,12 @@ import {
 } from '../protocol/index.js';
 
 describe('Session catalog protocol', () => {
+  test('publishes canonical catalog activity without the redundant last-used timestamp', () => {
+    const catalog = projection();
+
+    assert.deepEqual(decodeSessionCatalogItem(catalog), catalog);
+  });
+
   test('decodes versioned live run state without collapsing absent and known-empty', () => {
     const unknown = projection();
     const knownEmpty = {
@@ -576,7 +582,7 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 2,
+    activityAt: 2,
     name: 'Session',
     isFlagged: false,
     isArchived: false,

@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 28;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 29;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1055,6 +1055,71 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
         AND external_source_session_id IS NOT NULL;
   `,
   ],
+  [
+    29,
+    `
+    DROP TRIGGER session_catalog_after_insert;
+    DROP TRIGGER session_catalog_after_update;
+    DROP INDEX IF EXISTS session_metadata_by_recency;
+
+    UPDATE session_metadata
+    SET
+      payload_json = json_remove(payload_json, '$.lastUsedAt'),
+      metadata_version = metadata_version + 1,
+      committed_at = MAX(
+        committed_at,
+        CAST(unixepoch('now', 'subsec') * 1000 AS INTEGER)
+      )
+    WHERE json_type(payload_json, '$.lastUsedAt') IS NOT NULL;
+
+    CREATE TRIGGER session_catalog_after_insert
+    AFTER INSERT ON session_metadata
+    BEGIN
+      INSERT INTO session_catalog_projection(
+        session_id,
+        activity_at,
+        last_message_at,
+        last_message_preview,
+        is_archived,
+        is_flagged,
+        subagent_parent_session_id
+      ) VALUES (
+        NEW.session_id,
+        COALESCE(NEW.last_message_at, NEW.created_at),
+        NEW.last_message_at,
+        NULL,
+        NEW.is_archived,
+        NEW.is_flagged,
+        NEW.subagent_parent_session_id
+      );
+
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
+
+    CREATE TRIGGER session_catalog_after_update
+    AFTER UPDATE ON session_metadata
+    BEGIN
+      UPDATE session_catalog_projection
+      SET
+        activity_at = CASE
+          WHEN NEW.last_message_at IS NOT OLD.last_message_at
+            THEN COALESCE(NEW.last_message_at, OLD.created_at)
+          ELSE activity_at
+        END,
+        last_message_at = NEW.last_message_at,
+        is_archived = NEW.is_archived,
+        is_flagged = NEW.is_flagged,
+        subagent_parent_session_id = NEW.subagent_parent_session_id
+      WHERE session_id = NEW.session_id;
+
+      UPDATE session_catalog_state
+      SET generation = generation + 1
+      WHERE scope = 'catalog';
+    END;
+  `,
+  ],
 ]);
 
 export function configureSqliteSessionMetadataDatabase(db: DatabaseSync): void {
@@ -1078,6 +1143,19 @@ export function migrateSqliteSessionMetadataDatabase(
   if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
   try {
     const current = readSqliteSessionMetadataSchemaVersion(db);
+    if (
+      current > 0 &&
+      current < 29 &&
+      hasColumn(db, 'session_metadata', 'session_id') &&
+      !hasColumn(db, 'session_metadata', 'last_used_at')
+    ) {
+      db.exec(`
+        ALTER TABLE session_metadata
+          ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0;
+        UPDATE session_metadata
+        SET last_used_at = COALESCE(last_message_at, created_at);
+      `);
+    }
     if (current > SQLITE_SESSION_METADATA_SCHEMA_VERSION) {
       throw new Error(
         `SQLite session metadata schema ${current} is newer than supported version ${SQLITE_SESSION_METADATA_SCHEMA_VERSION}`,
@@ -1091,6 +1169,9 @@ export function migrateSqliteSessionMetadataDatabase(
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
       db.exec(sql);
+      if (version === 29 && hasColumn(db, 'session_metadata', 'last_used_at')) {
+        db.exec('ALTER TABLE session_metadata DROP COLUMN last_used_at');
+      }
       db.prepare(`
         INSERT INTO session_metadata_schema(scope, version)
         VALUES ('session_metadata', ?)
@@ -1102,6 +1183,11 @@ export function migrateSqliteSessionMetadataDatabase(
     if (ownsTransaction) rollback(db);
     throw error;
   }
+}
+
+function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>;
+  return rows.some((row) => row.name === column);
 }
 
 export function readSqliteSessionMetadataSchemaVersion(db: DatabaseSync): number {

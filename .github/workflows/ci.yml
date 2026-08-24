@@ -143,6 +143,14 @@ jobs:
         if: steps.plan.outputs.code == 'true'
         run: npm run format:check
 
+      # This generated artifact describes the whole renderer/UI tree, so every
+      # code-validation run checks it even when the triggering diff is outside
+      # an Astryx surface. Keep it before Build so stale output is reported
+      # directly instead of being hidden behind an earlier compilation failure.
+      - name: Astryx surface inventory
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true'
+        run: npm run astryx:surface-inventory
+
       - name: Build
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm run build
@@ -154,10 +162,6 @@ jobs:
       - name: Typecheck
         if: steps.plan.outputs.code == 'true'
         run: npm run typecheck
-
-      - name: Astryx surface inventory
-        if: steps.plan.outputs.astryx_surface == 'true'
-        run: npm run astryx:surface-inventory
 
       - name: Astryx theme drift
         if: steps.plan.outputs.code == 'true'
