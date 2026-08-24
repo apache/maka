@@ -933,6 +933,7 @@ const withGeneralCachedRevalidationBridge = withScopedMakaBridge({
 
 let generationStoryCatalogPending = false;
 let generationStoryRuntimeHostProfiles = runtimeHostProfiles;
+let generationStoryConnectionsPending = false;
 let generationStoryCodexEmail = 'old-generation@example.com';
 let generationStoryCodexAccountReads = 0;
 let generationStoryOpenedAuthIds: string[] = [];
@@ -951,6 +952,7 @@ function resetGenerationStoryBridge(
 ): void {
   generationStoryCatalogPending = false;
   generationStoryRuntimeHostProfiles = snapshot;
+  generationStoryConnectionsPending = false;
   generationStoryCodexEmail = 'old-generation@example.com';
   generationStoryCodexAccountReads = 0;
   generationStoryOpenedAuthIds = [];
@@ -1002,6 +1004,17 @@ const withModelsOAuthGenerationRevalidationBridge = withScopedMakaBridge({
         plan: 'Plus',
       };
     },
+  },
+} satisfies Record<string, unknown>);
+
+const withModelsConnectionsGenerationRevalidationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
+  connections: {
+    ...connectionsBridge,
+    getSnapshot: () => generationStoryConnectionsPending
+      ? pendingForever()
+      : connectionsBridge.getSnapshot(),
   },
 } satisfies Record<string, unknown>);
 
@@ -2111,6 +2124,55 @@ export const ModelsCachedHostRevalidation: Story = {
     }
     await expect(Number.parseFloat(getComputedStyle(mutedPage).opacity)).toBeLessThan(1);
     await expect(within(canvasElement).queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+
+// A same-key Host replacement can verify the profile catalog before its
+// connection catalog has arrived. Keep the last-ready rows visible, but do not
+// let Models make them writable until the new generation verifies connections.
+export const ModelsConnectionsHostGenerationRevalidation: Story = {
+  decorators: [withModelsConnectionsGenerationRevalidationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return (
+      <SettingsStory
+        section="models"
+        seedSnapshotCache={seedGeneralSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const oldConnection = await canvas.findByText('Z.AI Live');
+    const boundary = canvasElement.querySelector<HTMLElement>(
+      '.settingsRuntimeHostInteractionBoundary',
+    );
+    if (!boundary) throw new Error('Runtime Host interaction boundary did not render');
+    await waitForStoryCondition(
+      () => !boundary.hasAttribute('inert'),
+      'Initial Runtime Host generation did not become interactive',
+    );
+
+    generationStoryConnectionsPending = true;
+    generationStoryRuntimeHostProfiles = runtimeHostProfilesWithRemote;
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+    listener({
+      epoch: 'storybook-generation-2',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+      readiness: 'ready',
+      hostId: 'storybook-local-host',
+      isDefault: true,
+    });
+
+    await userEvent.click(canvas.getByRole('combobox', { name: 'Runtime Host' }));
+    await within(document.body).findByRole('option', { name: 'Remote' });
+    await userEvent.keyboard('{Escape}');
+    await expect(boundary).toHaveAttribute('inert');
+    await expect(oldConnection).toBeInTheDocument();
+    await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
   },
 };
 

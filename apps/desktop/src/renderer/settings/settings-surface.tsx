@@ -395,7 +395,7 @@ export function SettingsSurface(props: {
     return () => props.onSelectedRuntimeHostProfileIdChange(undefined);
   }, [props.onSelectedRuntimeHostProfileIdChange, selectedProfileId, showsRuntimeHost]);
   const sectionNeedsSettings = ['general', 'subagents', 'memory', 'search'].includes(section);
-  const sectionNeedsConnections = ['general', 'subagents', 'daily-review'].includes(section);
+  const sectionNeedsConnections = ['general', 'models', 'subagents', 'daily-review'].includes(section);
   const runtimeHostAvailabilityStatus: RuntimeHostAvailabilityStatus =
     selectedRuntimeHost
       ? 'ready'
