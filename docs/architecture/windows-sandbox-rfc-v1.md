@@ -488,7 +488,7 @@ For the W1 preview, the packaged verifier maps the supported attack surface to e
 | Filesystem aliases | outside denial plus recursive junction and multi-hard-link admission refusal |
 | Network channels | TCP connect and UDP send denial without network capabilities |
 | IPC | host named-pipe denial and an explicit inherited-handle list |
-| Descendants | child-created descendant retains the AppContainer token and kill-on-close Job |
+| Descendants | child creation is denied fail-closed, or a created descendant retains the AppContainer token and kill-on-close Job |
 | Environment/credentials | ambient host secret and outside credential file are unavailable |
 | Registry/parent | host HKCU value and parent process token are unavailable |
 | Lifecycle | timeout, cancellation, Runtime Host death, broker death, 64-launch soak, quarantine non-reuse |

@@ -114,6 +114,7 @@ it('pins every Phase 4 adversarial category to executable evidence', async () =>
     'parentTokenDenied',
     'descendantAppContainer',
     'descendantInJob',
+    'descendantSpawnDenied',
   ]) {
     assert.match(adversarialProbe, new RegExp(`"${field}":true`));
   }

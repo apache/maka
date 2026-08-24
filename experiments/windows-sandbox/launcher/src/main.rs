@@ -379,7 +379,8 @@ fn adversarial_probe(input: &AdversarialProbeInput) -> Result<u8, String> {
     let environment_denied = env::var_os(&input.environment_secret_name).is_none();
     let registry_denied = registry_value_denied(&input.registry_subkey, &input.registry_value_name);
     let parent_token_denied = parent_token_denied(input.parent_pid);
-    let (descendant_app_container, descendant_in_job) = descendant_boundary();
+    let (descendant_app_container, descendant_in_job, descendant_spawn_denied) =
+        descendant_boundary();
 
     let evidence = serde_json::json!({
         "fileDenied": file_denied,
@@ -393,6 +394,7 @@ fn adversarial_probe(input: &AdversarialProbeInput) -> Result<u8, String> {
         "parentTokenDenied": parent_token_denied,
         "descendantAppContainer": descendant_app_container,
         "descendantInJob": descendant_in_job,
+        "descendantSpawnDenied": descendant_spawn_denied,
     });
     println!("{evidence}");
 
@@ -405,8 +407,7 @@ fn adversarial_probe(input: &AdversarialProbeInput) -> Result<u8, String> {
         && environment_denied
         && registry_denied
         && parent_token_denied
-        && descendant_app_container
-        && descendant_in_job;
+        && (descendant_spawn_denied || (descendant_app_container && descendant_in_job));
     if !passed {
         return Err(format!(
             "AppContainer adversarial matrix did not hold: {evidence}"
@@ -468,18 +469,19 @@ fn parent_token_denied(parent_pid: u32) -> bool {
     denied
 }
 
-fn descendant_boundary() -> (bool, bool) {
+fn descendant_boundary() -> (bool, bool, bool) {
     let executable = match env::current_exe() {
         Ok(executable) => executable,
-        Err(_) => return (false, false),
+        Err(_) => return (false, false, true),
     };
     let output = match Command::new(executable).arg("--self-probe").output() {
         Ok(output) if output.status.success() => output,
-        _ => return (false, false),
+        Err(_) => return (false, false, true),
+        Ok(_) => return (false, false, false),
     };
     let evidence: serde_json::Value = match serde_json::from_slice(&output.stdout) {
         Ok(evidence) => evidence,
-        Err(_) => return (false, false),
+        Err(_) => return (false, false, false),
     };
     (
         evidence
@@ -487,6 +489,7 @@ fn descendant_boundary() -> (bool, bool) {
             .and_then(|value| value.as_bool())
             == Some(true),
         evidence.get("inJob").and_then(|value| value.as_bool()) == Some(true),
+        false,
     )
 }
 

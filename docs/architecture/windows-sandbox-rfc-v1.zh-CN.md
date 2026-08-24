@@ -331,7 +331,7 @@ Windows sandbox job 必须运行真实 child-process 正反测试：
 | 文件别名 | outside 拒绝，加递归 junction 与多硬链接准入拒绝 |
 | 网络通道 | 无网络 capability 时拒绝 TCP connect 与 UDP send |
 | IPC | 拒绝宿主 named pipe，并只继承显式 handle 列表 |
-| descendant | child 创建的 descendant 仍持有 AppContainer token 与 kill-on-close Job |
+| descendant | child 创建被 fail-closed 拒绝，或已创建 descendant 仍持有 AppContainer token 与 kill-on-close Job |
 | 环境/credential | ambient host secret 与 outside credential 文件均不可用 |
 | registry/父进程 | 宿主 HKCU 值与父进程 token 均不可用 |
 | 生命周期 | timeout、cancel、Runtime Host 死亡、broker 死亡、64 次 soak、quarantine 不复用 |

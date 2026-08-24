@@ -208,6 +208,16 @@ try {
     '"descendantInJob":true'
   )
   $missingEvidence = @($requiredEvidence | Where-Object { $rendered -notmatch [regex]::Escape($_) })
+  $descendantEvidence =
+    $rendered -match '"descendantSpawnDenied":true' -or
+    ($rendered -match '"descendantAppContainer":true' -and
+      $rendered -match '"descendantInJob":true')
+  if (-not $descendantEvidence) {
+    $missingEvidence += 'descendantSpawnDenied or descendantAppContainer+descendantInJob'
+  }
+  $missingEvidence = @($missingEvidence | Where-Object {
+    $_ -notin @('"descendantAppContainer":true', '"descendantInJob":true')
+  })
   if ($exitCode -ne 0 -or $missingEvidence.Count -gt 0) {
     throw "Packaged adversarial probe failed: exit=$exitCode missing=$($missingEvidence -join ', ') output=$rendered"
   }

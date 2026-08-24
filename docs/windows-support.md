@@ -227,7 +227,7 @@ The root test timeout is tracked separately from individual test failures. Phase
 - The packaged filesystem-worker gate covers client cancellation, Runtime Host parent death,
   repeated concurrent launches, ACL quarantine isolation, filesystem aliases, restricted outbound network,
   host named pipes, ambient environment, host registry values, parent tokens, and descendant
-  AppContainer/Job inheritance. It does not claim local inbound-listener enforcement, the deferred
+  denial or AppContainer/Job inheritance. It does not claim local inbound-listener enforcement, the deferred
   no-Win32k/window-station tier, or direct Credential Manager/DPAPI isolation.
 - Computer-use has no Windows backend.
 - The Windows x64 NSIS installer is unsigned. The in-app automatic-update path (electron-updater →

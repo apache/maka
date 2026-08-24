@@ -41,7 +41,10 @@ export const WINDOWS_SANDBOX_PHASE4_MATRIX = Object.freeze([
   { category: 'ipc', evidence: ['host named-pipe denial', 'bounded inherited handle list'] },
   {
     category: 'descendants',
-    evidence: ['descendant AppContainer token', 'descendant kill-on-close Job membership'],
+    evidence: [
+      'descendant creation denied or AppContainer token retained',
+      'kill-on-close Job membership',
+    ],
   },
   {
     category: 'environment',
