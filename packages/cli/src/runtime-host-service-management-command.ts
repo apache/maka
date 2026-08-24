@@ -42,6 +42,7 @@ import {
   type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
+import { createLaunchAgentRuntimeHostService } from './runtime-host-launch-agent-service.js';
 import { createSystemdUserRuntimeHostService } from './runtime-host-systemd-service.js';
 
 export interface RuntimeHostServiceManagementCliOptions
@@ -214,11 +215,13 @@ export function runtimeHostServiceSummary(
 
 export function createPlatformRuntimeHostServiceBackend(
   serviceId: string,
+  platform: NodeJS.Platform = process.platform,
 ): RuntimeHostServiceBackend {
-  if (process.platform === 'linux') return createSystemdUserRuntimeHostService(serviceId);
+  if (platform === 'linux') return createSystemdUserRuntimeHostService(serviceId);
+  if (platform === 'darwin') return createLaunchAgentRuntimeHostService(serviceId);
   throw new RuntimeHostServiceManagerError(
     'unsupported_platform',
-    'Managed Runtime Host services currently require Linux',
+    'Managed Runtime Host services currently require Linux or macOS',
   );
 }
 

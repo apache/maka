@@ -305,28 +305,6 @@ function PtyControlPreview(props: {
 }
 
 /**
- * Which tint a unified-diff line takes. Deliberately shallow: it reads the
- * line's first character, not the hunk semantics, which is all the colouring
- * needs and all a preview should promise.
- *
- * `+++`/`---` are file markers, not an addition and a deletion — they have to
- * be tested before the single-character cases or every diff opens with one
- * green and one red line that mean nothing.
- */
-export function diffLineKind(line: string): 'add' | 'del' | 'hunk' | 'meta' | 'ctx' {
-  // The trailing space is what separates a file marker from content: unified
-  // diff writes `--- a/path`, never a bare `---`. Without it, deleting a YAML
-  // document separator or an SQL `--` comment paints the removal as a header —
-  // the one line the reader most needs to see as red.
-  if (line.startsWith('--- ') || line.startsWith('+++ ')) return 'meta';
-  if (line.startsWith('@@')) return 'hunk';
-  if (line.startsWith('+')) return 'add';
-  if (line.startsWith('-')) return 'del';
-  if (line.startsWith('diff ') || line.startsWith('index ')) return 'meta';
-  return 'ctx';
-}
-
-/**
  * Line-level diff colouring — green additions, red deletions, a tinted hunk
  * header — in the same surface a command uses, with the changed paths as its
  * heading.
