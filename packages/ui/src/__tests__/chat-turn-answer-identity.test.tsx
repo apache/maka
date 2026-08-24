@@ -140,6 +140,23 @@ test('keeps the assistant answer element as a turn settles around it', async () 
   );
 });
 
+test('redacts secrets before rendering a settled collapsed reasoning preview', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, turnWith([
+    {
+      kind: 'thinking',
+      text: 'Authorization: Bearer sk-live-1234567890abcdef\n\nSafe detail',
+      messageId: 'thinking-1',
+      live: false,
+    },
+  ]));
+
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  assert.match(header.textContent ?? '', /<redacted>/);
+  assert.doesNotMatch(header.textContent ?? '', /sk-live-1234567890abcdef/);
+});
+
 /**
  * Extends the regression above to a steered turn: both segments exist side by
  * side and each keeps its own element across the settle. It does not pin the

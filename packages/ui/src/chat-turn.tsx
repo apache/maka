@@ -72,6 +72,7 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
+import { redactSecrets } from './redact.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -1304,7 +1305,8 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
 }
 
 function reasoningPreviewText(text: string): string {
-  const firstLine = text.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
+  const safeText = redactSecrets(text);
+  const firstLine = safeText.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
   return firstLine
     .replace(/^#{1,6}\s+/, '')
     .replace(/\\([()[\]])/g, '')

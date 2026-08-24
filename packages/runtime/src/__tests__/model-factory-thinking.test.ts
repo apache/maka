@@ -117,6 +117,18 @@ describe('buildProviderOptions: thinking level', () => {
         thinking: { type: 'enabled', budgetTokens: 1_024 },
       },
     });
+    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-sonnet-4-5-20250929'), {
+      anthropic: {
+        cacheControl: { type: 'ephemeral' },
+        thinking: { type: 'enabled', budgetTokens: 1_024 },
+      },
+    });
+    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-1-20250805'), {
+      anthropic: {
+        cacheControl: { type: 'ephemeral' },
+        thinking: { type: 'enabled', budgetTokens: 1_024 },
+      },
+    });
   });
 
   test('anthropic effort model without toggle (opus-4-8) drops off (cannot disable)', () => {
@@ -508,6 +520,8 @@ describe('buildProviderOptions: thinking level', () => {
       myRelay: { reasoningEffort: 'medium' },
     });
     assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol', 'minimal'), {});
+    assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol', 'off'), {});
+    assert.deepEqual(buildProviderOptions(openaiRelay, 'gpt-5.6-sol', 'high'), {});
 
     assert.deepEqual(buildProviderOptions(conn('anthropic-compatible'), 'claude-opus-4-8'), {
       anthropic: {

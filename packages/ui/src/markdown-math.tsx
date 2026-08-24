@@ -139,7 +139,12 @@ function readDollarMath(
   if (close < 0) return undefined;
   const formula = line.slice(index + 1, close);
   if (!formula || /^\s|\s$/.test(formula)) return undefined;
+  if (isPairedCurrencyRange(line, index, close)) return undefined;
   return { formula, displayMode: false, end: close + 1 };
+}
+
+function isPairedCurrencyRange(line: string, opening: number, closing: number): boolean {
+  return /\d/.test(line[opening + 1] ?? '') && /\d/.test(line[closing + 1] ?? '');
 }
 
 function findClosingDollar(line: string, start: number): number {

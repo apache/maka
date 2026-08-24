@@ -71,12 +71,13 @@ it('leaves LaTeX delimiters untouched inside inline and fenced code', () => {
 
 it('renders display math while leaving ordinary currency alone', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: 'Budget: $5 and $10.\n\n\\[ x^2 + y^2 = z^2 \\]',
+    text: 'Budget: $5 and $10. Range: $5–$10.\n\n\\[ x^2 + y^2 = z^2 \\]',
   }));
 
-  assert.match(markup, /Budget: \$5 and \$10/);
+  assert.match(markup, /Budget: \$5 and \$10\. Range: \$5–\$10/);
   assert.match(markup, /class="maka-math maka-math-display"/);
   assert.match(markup, /class="katex-display"/);
+  assert.doesNotMatch(markup, /class="maka-math maka-math-inline"/);
 });
 
 it('keeps the copy control in a toolbar above a one-line code scroll viewport', () => {
