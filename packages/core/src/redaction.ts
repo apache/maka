@@ -89,11 +89,11 @@ function redactTextSecrets(value: string): string {
     isAssignmentSensitiveKey(key) ? `${prefix}[redacted]` : match,
   );
   for (const pattern of SECRET_PATTERNS) {
-    next = next.replace(pattern, (_match, prefixOrSecret: string) => {
-      if (prefixOrSecret.includes(':') || prefixOrSecret.includes('='))
-        return `${prefixOrSecret}[redacted]`;
-      return '[redacted]';
-    });
+    // Each pattern's single capture group matches only the secret token, so the
+    // replacement is always the full redaction marker. Never echo any part of
+    // the match back — a future pattern whose group could hold a separator
+    // would otherwise leak the secret it was meant to hide.
+    next = next.replace(pattern, () => '[redacted]');
   }
   return next;
 }
