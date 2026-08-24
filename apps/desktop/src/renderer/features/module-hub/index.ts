@@ -17,11 +17,6 @@
  * under the License.
  */
 
-export type {
-  ModuleHubController,
-  ModuleHubHostModel,
-  UseModuleHubControllerInput,
-} from './controller/use-module-hub-controller.js';
 export { useModuleHubController } from './controller/use-module-hub-controller.js';
 export { ModuleHubServicesProvider } from './services-context.js';
 export type {
