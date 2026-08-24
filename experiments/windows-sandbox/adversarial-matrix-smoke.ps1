@@ -35,7 +35,7 @@ $pipeShortName = "maka-phase4-host-$PID"
 $pipeName = "\\.\pipe\$pipeShortName"
 $hostSecretName = 'MAKA_PHASE4_HOST_SECRET'
 $listener = $null
-$udpListener = $null
+$udpJob = $null
 $pipe = $null
 $quarantinedSid = $null
 $quarantineRoot = $null
@@ -144,20 +144,33 @@ try {
   $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
   $listener.Start()
   $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
-  $udpListener = [Net.Sockets.UdpClient]::new(0)
-  $udpPort = ([Net.IPEndPoint]$udpListener.Client.LocalEndPoint).Port
-  $udpCallback = [AsyncCallback]{
-    param($asyncResult)
+  $udpPortProbe = [Net.Sockets.UdpClient]::new(0)
+  $udpPort = ([Net.IPEndPoint]$udpPortProbe.Client.LocalEndPoint).Port
+  $udpPortProbe.Dispose()
+  $udpJob = Start-Job -ScriptBlock {
+    param([int]$Port)
+    $listener = [Net.Sockets.UdpClient]::new($Port)
     try {
+      Write-Output 'ready'
       $remote = [Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)
-      [void]$udpListener.EndReceive($asyncResult, [ref]$remote)
+      [void]$listener.Receive([ref]$remote)
       $reply = [Text.Encoding]::UTF8.GetBytes('phase4-udp-ok')
-      [void]$udpListener.Send($reply, $reply.Length, $remote)
-    } catch {
-      # The probe is already fail-closed if no response arrives.
+      [void]$listener.Send($reply, $reply.Length, $remote)
+    } finally {
+      $listener.Dispose()
     }
+  } -ArgumentList $udpPort
+  $udpReady = $false
+  $udpDeadline = [DateTime]::UtcNow.AddSeconds(10)
+  while (-not $udpReady -and [DateTime]::UtcNow -lt $udpDeadline) {
+    $udpReady = @(
+      Receive-Job -Job $udpJob -Keep -ErrorAction SilentlyContinue
+    ) -contains 'ready'
+    if (-not $udpReady) { Start-Sleep -Milliseconds 100 }
   }
-  $udpListener.BeginReceive($udpCallback, $null) | Out-Null
+  if (-not $udpReady) {
+    throw 'UDP responder job did not become ready'
+  }
   $pipe = [IO.Pipes.NamedPipeServerStream]::new(
     $pipeShortName,
     [IO.Pipes.PipeDirection]::InOut,
@@ -292,7 +305,10 @@ try {
   Write-Host "Phase 4 adversarial matrix verified: $rendered"
 } finally {
   if ($listener) { $listener.Stop() }
-  if ($udpListener) { $udpListener.Dispose() }
+  if ($udpJob) {
+    Stop-Job -Job $udpJob -ErrorAction SilentlyContinue | Out-Null
+    Remove-Job -Job $udpJob -Force -ErrorAction SilentlyContinue
+  }
   if ($pipe) { $pipe.Dispose() }
   [Environment]::SetEnvironmentVariable($hostSecretName, $null, 'Process')
   Remove-Item -LiteralPath $registryPath -Recurse -Force -ErrorAction SilentlyContinue
