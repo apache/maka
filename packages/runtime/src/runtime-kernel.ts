@@ -286,7 +286,7 @@ interface SessionSteeringState {
    */
   inFlight: LeasedSteeringMessage[];
   /** Messages waiting to open the next turn. */
-  followup: string[];
+  followup: PendingSteeringMessage[];
   /** Pushes a `queue_update` into the active turn's stream; unset when idle. */
   sink?: (event: QueueUpdateEvent) => void;
   activeTurnId?: string;
@@ -1617,7 +1617,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           // queue is its only safe home — the same direction a release-time
           // fold takes.
           current.followup = [
-            ...returned.map((message) => message.content.text),
+            ...returned.map(({ id, messageId, content }) => ({ id, messageId, content })),
             ...current.followup,
           ];
         }
@@ -2421,7 +2421,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     this.assertEmbeddedMessageQueue('queueMessage');
     const state = this.liveSteeringState(sessionId);
     if (!state) return { kind: 'fallback' };
-    state.followup.push(text);
+    const messageId = this.deps.newId();
+    state.followup.push({ id: messageId, messageId, content: { text } });
     this.emitQueueUpdate(sessionId, state);
     return { kind: 'queued' };
   }
@@ -2432,7 +2433,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (!state || state.followup.length === 0) return null;
     const drained = state.followup.splice(0);
     this.emitQueueUpdate(sessionId, state);
-    return drained.join('\n\n');
+    return drained.map((message) => message.content.text).join('\n\n');
   }
 
   retractQueue(sessionId: string): string {
@@ -2445,7 +2446,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // handing its text back to the user here would refill AND execute the
     // same directive. An in-flight lease settles only by the persistence
     // fact (ack when the ledger owns it, nack back to a queue otherwise).
-    const all = [...state.steering.map((message) => message.content.text), ...state.followup];
+    const all = [
+      ...state.steering.map((message) => message.content.text),
+      ...state.followup.map((message) => message.content.text),
+    ];
     state.steering = [];
     state.followup = [];
     this.emitQueueUpdate(sessionId, state);
@@ -2489,7 +2493,30 @@ export class RuntimeKernel implements RuntimeKernelLike {
         ...state.inFlight.map((message) => message.content.text),
         ...state.steering.map((message) => message.content.text),
       ],
-      followup: [...state.followup],
+      followup: state.followup.map((message) => message.content.text),
+      steeringEntries: [
+        ...state.inFlight.map((message) => ({
+          entryId: message.id,
+          messageId: message.messageId,
+          content: message.content,
+          placement: 'current_turn' as const,
+          state: 'in_flight' as const,
+        })),
+        ...state.steering.map((message) => ({
+          entryId: message.id,
+          messageId: message.messageId,
+          content: message.content,
+          placement: 'current_turn' as const,
+          state: 'queued' as const,
+        })),
+      ],
+      followupEntries: state.followup.map((message) => ({
+        entryId: message.id,
+        messageId: message.messageId,
+        content: message.content,
+        placement: 'next_turn' as const,
+        state: 'queued' as const,
+      })),
     });
   }
 
@@ -2518,7 +2545,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       // backstop that keeps a never-settled lease from stranding invisibly.
       if (own.length === 0) return;
       state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
-      state.followup = [...own.map((message) => message.content.text), ...state.followup];
+      state.followup = [...own, ...state.followup];
       this.emitQueueUpdate(sessionId, state);
       return;
     }
@@ -2528,11 +2555,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // migration is a queue change, so emit the final snapshot BEFORE the sink
     // is cleared; otherwise observers stay on the stale pre-fold snapshot.
     if (state.steering.length > 0 || own.length > 0) {
-      state.followup = [
-        ...own.map((message) => message.content.text),
-        ...state.steering.map((message) => message.content.text),
-        ...state.followup,
-      ];
+      state.followup = [...own, ...state.steering, ...state.followup];
       state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
       state.steering = [];
       this.emitQueueUpdate(sessionId, state);

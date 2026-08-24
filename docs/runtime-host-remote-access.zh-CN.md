@@ -23,16 +23,16 @@
 
 Maka Desktop、TUI 和 CLI 可以通过 TLS、SSH 或明确启用的明文 WebSocket 连接 Runtime Host。
 
-## 设置 Linux Host
+## 设置 Linux 或 macOS Host
 
-在具备 Node.js 22.19 或更新版本以及可用 systemd user manager 的 Linux 机器上，发布版 CLI 可以用一个命令安装并验证持久 Runtime Host：
+在具备 Node.js 22.19 或更新版本的机器上，发布版 CLI 可以用一个命令安装并验证持久 Runtime Host。Linux 使用 systemd user service；macOS 使用 LaunchAgent，并要求该用户存在活跃的 GUI 登录会话：
 
 ```sh
 npx --yes --package maka-agent@next maka runtime-host setup \
   --principal my-desktop \
   --preset desktop-client \
-  --root /srv/maka \
-  --project-root projects=/srv/projects
+  --root "$HOME/.maka/runtime-host" \
+  --project-root "projects=$HOME/Projects"
 ```
 
 `--principal` 应使用稳定标识；重复执行会替换该 Client 的 credential，不会不断累积 credential。命令会把当前精确版本的 Maka 安装到托管目录，启动仅监听 loopback 的服务，验证新 credential，然后只显示一次连接信息。TUI 或 CLI 使用 `terminal-client`。
@@ -72,8 +72,7 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
 
 TUI 或 CLI 使用 `terminal-client`。命令只显示 credential 一次。
 
-在使用 systemd user manager 的 Linux 上，持久安装的 CLI 可以让 loopback Host 在 SSH 会话结束后
-继续运行：
+在 Linux 或 macOS 上，持久安装的 CLI 可以让 loopback Host 在 SSH 会话结束后继续运行：
 
 ```sh
 maka runtime-host service install \
@@ -82,12 +81,12 @@ maka runtime-host service install \
 maka runtime-host service status --json
 ```
 
-安装命令会持久保存当前精确的 Node 与 Maka CLI 路径。重复执行会更新同一个 service；未指定
-WebSocket port 时会保留现有端口。卸载 npm 包前，应先执行
-`maka runtime-host service uninstall`。卸载 service 会保留 State Root 与 Project 数据。如果
-systemd user lingering 未启用，安装会给出可操作的错误，不会声称服务能够持久运行。Service
-必须从持久的全局 Maka 安装中安装，不能使用 `npx`。替换操作只会在新的 Runtime Host ready
-之后提交；失败时会恢复之前的 service。
+安装命令会持久保存当前精确的 Node 与 Maka CLI 路径。重复执行会更新同一个 OS-managed
+service；未指定 WebSocket port 时会保留现有端口。卸载 npm 包前，应先执行
+`maka runtime-host service uninstall`。卸载 service 会保留 State Root 与 Project 数据。Linux
+要求启用 systemd user lingering，macOS 要求存在活跃的 GUI 登录会话；条件不满足时安装会给出
+可操作的错误，不会声称服务能够持久运行。Service 必须从持久的全局 Maka 安装中安装，不能使用
+`npx`。替换操作只会在新的 Runtime Host ready 之后提交；失败时会恢复之前的 service。
 
 ## 选择连接方式
 

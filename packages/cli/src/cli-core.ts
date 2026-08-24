@@ -122,6 +122,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service install [options]`,
     `  ${cliCommand} runtime-host service status|start|stop|restart|logs|uninstall [--json]`,
     `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
+    `  ${cliCommand} runtime-host service check-update --target <latest|next|version> [--json]`,
     `  ${cliCommand} runtime-host service update --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
@@ -129,7 +130,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
     `  ${cliCommand} runtime-host access revoke --credential <id>`,
     `  ${cliCommand} runtime-host project list [--root <path>]`,
-    `  ${cliCommand} runtime-host project add <path> [--root <path>]`,
+    `  ${cliCommand} runtime-host project add <path> [--prefer] [--root <path>]`,
     `  ${cliCommand} runtime-host profile list`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]`,
@@ -158,14 +159,14 @@ function helpText(cliCommand: string): string {
     '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
     '  --json                        Emit one machine-readable ready event',
     '',
-    'Managed Runtime Host service install options (Linux):',
+    'Managed Runtime Host service install options (Linux or macOS):',
     '  --root <path>                 Select the canonical data root',
     '  --project-root <label>=<path> Publish an absolute directory root (repeatable)',
     '  --websocket-port <port>       Persist a loopback port (chosen automatically by default)',
     '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
     '  --json                        Emit a machine-readable result',
     '',
-    'Managed Runtime Host setup options (Linux):',
+    'Managed Runtime Host setup options (Linux or macOS):',
     '  --principal <id>              Stable Client pairing identity',
     '  --preset <name>               Pair a desktop-client or terminal-client',
     '  --root <path>                 Select the canonical data root',
@@ -292,6 +293,22 @@ export async function runMakaCli(
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
       });
     }
+    case 'runtime-host-service-check-update': {
+      const { runManagedRuntimeHostUpdateCheckCli } = await import(
+        './runtime-host-update-discovery.js'
+      );
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
+      return runManagedRuntimeHostUpdateCheckCli({
+        json: command.json,
+        framed: command.framed ?? false,
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        defaultRootPath: serviceDataRoots.workspaceRoot,
+        selector: command.selector,
+        ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+      });
+    }
     case 'runtime-host-managed-deployment-cleanup': {
       const { runManagedRuntimeHostDeploymentCleanupCli } = await import(
         './runtime-host-service-management-command.js'
@@ -356,7 +373,12 @@ export async function runMakaCli(
       const rootPath = command.rootPath ?? dataRoots.workspaceRoot;
       return command.kind === 'runtime-host-project-list'
         ? runRuntimeHostProjectCli({ kind: 'list', rootPath })
-        : runRuntimeHostProjectCli({ kind: 'add', rootPath, path: command.path });
+        : runRuntimeHostProjectCli({
+            kind: 'add',
+            rootPath,
+            path: command.path,
+            prefer: command.prefer,
+          });
     }
     case 'runtime-host-capability-provider-serve': {
       const { runRuntimeHostCapabilityProviderCli } = await import(

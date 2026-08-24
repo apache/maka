@@ -50,6 +50,23 @@ describe('Runtime Host operator commands', () => {
         kind: 'runtime-host-project-add',
         rootPath: '/srv/maka',
         path: '/work/project',
+        prefer: false,
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'project',
+        'add',
+        '/work/project',
+        '--prefer',
+        '--root',
+        '/srv/maka',
+      ]),
+      {
+        kind: 'runtime-host-project-add',
+        rootPath: '/srv/maka',
+        path: '/work/project',
+        prefer: true,
       },
     );
     assert.deepEqual(
@@ -248,12 +265,12 @@ describe('Runtime Host operator commands', () => {
     assert.equal(JSON.stringify(event).includes('credential'), false);
   });
 
-  test('registers a Project through the local owner connection', async () => {
-    let closed = false;
-    let request: unknown;
+  test('registers a Project without preferring it unless explicitly requested', async () => {
+    let closeCount = 0;
+    const requests: unknown[] = [];
     const connection = {
       request: async (operation: string, input: unknown) => {
-        request = { operation, input };
+        requests.push({ operation, input });
         return {
           kind: 'project',
           project: {
@@ -267,29 +284,38 @@ describe('Runtime Host operator commands', () => {
         };
       },
       close: async () => {
-        closed = true;
+        closeCount += 1;
       },
     } as unknown as RuntimeHostConnection;
     const output: string[] = [];
+    const commands = [
+      { kind: 'add' as const, rootPath: '/srv/maka', path: 'project', prefer: false },
+      { kind: 'add' as const, rootPath: '/srv/maka', path: 'project', prefer: true },
+    ];
 
-    assert.equal(
-      await runRuntimeHostProjectCli(
-        { kind: 'add', rootPath: '/srv/maka', path: 'project' },
-        {
+    for (const command of commands) {
+      assert.equal(
+        await runRuntimeHostProjectCli(command, {
           connect: async () => connection,
           write: (value) => output.push(value),
-        },
-      ),
-      0,
-    );
-    assert.deepEqual(request, {
-      operation: 'project.catalog.mutate',
-      input: { kind: 'register', path: resolve('project') },
-    });
-    assert.equal(closed, true);
-    assert.equal(
-      (JSON.parse(output.join('')) as { project: { id: string } }).project.id,
-      'project-1',
+        }),
+        0,
+      );
+    }
+    assert.deepEqual(requests, [
+      {
+        operation: 'project.catalog.mutate',
+        input: { kind: 'register', path: resolve('project'), prefer: false },
+      },
+      {
+        operation: 'project.catalog.mutate',
+        input: { kind: 'register', path: resolve('project'), prefer: true },
+      },
+    ]);
+    assert.equal(closeCount, 2);
+    assert.deepEqual(
+      output.map((value) => (JSON.parse(value) as { project: { id: string } }).project.id),
+      ['project-1', 'project-1'],
     );
   });
 });

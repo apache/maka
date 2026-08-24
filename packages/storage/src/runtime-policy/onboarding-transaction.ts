@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import {
   decodeProviderType,
   decodeRuntimePolicyEntityId,
+  normalizeCatalogConnectionBaseUrl,
   normalizeConnectionCatalogEntryUpdateForProvider,
   normalizeConnectionModelDiscoveryResult,
   normalizeCredentialSecret,
@@ -51,6 +52,7 @@ export interface ConnectionOnboardingTransactionInput {
   readonly connectionId: unknown;
   readonly providerType: unknown;
   readonly suppliedSecret: unknown;
+  readonly baseUrl: unknown;
   readonly enabledModelIds: unknown;
   readonly discovery: unknown;
   readonly invalidateLastTest: unknown;
@@ -61,6 +63,7 @@ export interface ConnectionOnboardingIntent {
   readonly connectionId: string;
   readonly providerType: ProviderType;
   readonly suppliedSecret: string | null;
+  readonly baseUrl: string | null;
   readonly enabledModelIds: readonly string[];
   readonly discovery: ConnectionModelDiscoveryResult;
   readonly invalidateLastTest: boolean;
@@ -90,11 +93,17 @@ export function prepareConnectionOnboardingIntent(
       'Onboarding requires a non-empty model inventory',
     );
   }
+  // Legacy intents predate the field (`undefined` when replayed) and mean
+  // the same thing as an explicit null: no endpoint override.
+  const baseUrl =
+    input.baseUrl === null || input.baseUrl === undefined
+      ? null
+      : (decode(() => normalizeCatalogConnectionBaseUrl(input.baseUrl, providerType)) ?? null);
   const normalized = decode(() =>
     normalizeConnectionCatalogEntryUpdateForProvider(
       {
         name: definition.label,
-        ...(definition.baseUrl ? { baseUrl: definition.baseUrl } : {}),
+        ...((baseUrl ?? definition.baseUrl) ? { baseUrl: baseUrl ?? definition.baseUrl } : {}),
         enabled: true,
         enabledModelIds: input.enabledModelIds,
       },
@@ -128,6 +137,7 @@ export function prepareConnectionOnboardingIntent(
     connectionId: decode(() => decodeRuntimePolicyEntityId(input.connectionId)),
     providerType,
     suppliedSecret,
+    baseUrl,
     enabledModelIds: normalized.enabledModelIds,
     discovery,
     invalidateLastTest: input.invalidateLastTest,
@@ -139,15 +149,32 @@ export async function readConnectionOnboardingIntent(
 ): Promise<ConnectionOnboardingIntent | undefined> {
   const value = await readBoundedJsonDocument(root, FILE, MAX_BYTES);
   if (value === undefined) return undefined;
-  const raw = record(value, FILE, 'invalid_document', [
-    'schemaVersion',
-    'connectionId',
-    'providerType',
-    'suppliedSecret',
-    'enabledModelIds',
-    'discovery',
-    'invalidateLastTest',
-  ]);
+  // `baseUrl` is allowed but not required: an intent journaled by a build
+  // that predates the field must still replay.
+  const raw = record(
+    value,
+    FILE,
+    'invalid_document',
+    [
+      'schemaVersion',
+      'connectionId',
+      'providerType',
+      'suppliedSecret',
+      'baseUrl',
+      'enabledModelIds',
+      'discovery',
+      'invalidateLastTest',
+    ],
+    [
+      'schemaVersion',
+      'connectionId',
+      'providerType',
+      'suppliedSecret',
+      'enabledModelIds',
+      'discovery',
+      'invalidateLastTest',
+    ],
+  );
   if (raw.schemaVersion !== SCHEMA_VERSION) {
     throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
   }
@@ -156,6 +183,7 @@ export async function readConnectionOnboardingIntent(
       providerType: raw.providerType,
       connectionId: raw.connectionId,
       suppliedSecret: raw.suppliedSecret,
+      baseUrl: raw.baseUrl,
       enabledModelIds: raw.enabledModelIds,
       discovery: raw.discovery,
       invalidateLastTest: raw.invalidateLastTest,

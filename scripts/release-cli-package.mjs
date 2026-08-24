@@ -464,6 +464,12 @@ function writeReleaseManifest(cli, publishable) {
   }
   const undici = findDependency(cli, 'undici', '8.10.0');
   const dependencies = { ...source.dependencies, undici: undici.version };
+  const updateCompatibility = source.maka?.managedRuntimeHostUpdateCompatibility;
+  if (!Number.isSafeInteger(updateCompatibility) || updateCompatibility < 1) {
+    throw new Error(
+      'CLI manifest must define a positive managed Runtime Host update compatibility',
+    );
+  }
   const manifest = {
     name: source.name,
     version: source.version,
@@ -472,6 +478,7 @@ function writeReleaseManifest(cli, publishable) {
     type: source.type,
     exports: {},
     bin: source.bin,
+    maka: { managedRuntimeHostUpdateCompatibility: updateCompatibility },
     engines: root.engines,
     repository: {
       type: 'git',

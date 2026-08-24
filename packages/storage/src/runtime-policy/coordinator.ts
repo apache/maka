@@ -58,6 +58,7 @@ import {
   deriveConnectionSlug,
   effectiveBaseUrl,
   PROVIDER_DEFAULTS,
+  providerAuthSupportsApiKey,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { deepFreeze } from './codec.js';
@@ -98,8 +99,11 @@ import {
   type CompareAndSetOAuthCredentialInput,
   type ConnectionEffectChangedDomain,
   type ConnectionEffectCompletionResult,
+  type BeginConnectionOnboardingInput,
+  type BeginConnectionOnboardingResult,
   type CommitConnectionOnboardingInput,
   type CommitConnectionOnboardingResult,
+  type ConnectionOnboardingTicket,
   type ConnectionTestTicket,
   type InteractiveOAuthLoginCompletionResult,
   type InteractiveOAuthLoginProvider,
@@ -181,6 +185,28 @@ interface ConnectionTicketRecord {
   state: TicketState;
 }
 
+/**
+ * What onboarding discovery observed. Unlike the model-fetch/test bases, the
+ * target may not exist yet (first-time creation at the canonical slug), and
+ * the connection revision stands in for every catalog-visible property of an
+ * existing target — a swapped endpoint bumps it.
+ */
+interface ConnectionOnboardingBasis {
+  readonly providerType: ProviderType;
+  readonly slug: string;
+  readonly target: { readonly connectionId: string; readonly revision: number } | null;
+  readonly credential: CredentialStatus | null;
+  readonly requestHeadersCredential: CredentialStatus | null;
+  readonly effectiveProxy: EffectiveProxyConfigurationBasis;
+  readonly proxyCredential: CredentialStatus | null;
+}
+
+interface ConnectionOnboardingTicketRecord {
+  readonly kind: 'connection_onboarding';
+  readonly basis: ConnectionOnboardingBasis;
+  state: TicketState;
+}
+
 interface InteractiveOAuthLoginTicketRecord {
   readonly kind: 'interactive_oauth_login';
   readonly connectionBasis: ConnectionVersionBasis;
@@ -189,7 +215,10 @@ interface InteractiveOAuthLoginTicketRecord {
   state: TicketState;
 }
 
-type OperationTicketRecord = ConnectionTicketRecord | InteractiveOAuthLoginTicketRecord;
+type OperationTicketRecord =
+  | ConnectionTicketRecord
+  | ConnectionOnboardingTicketRecord
+  | InteractiveOAuthLoginTicketRecord;
 
 export class RuntimePolicyCoordinator {
   private readonly lane: SerializedOperationLane<string>;
@@ -926,79 +955,254 @@ export class RuntimePolicyCoordinator {
     );
   }
 
-  commitConnectionOnboarding(
-    input: CommitConnectionOnboardingInput,
-  ): Promise<CommitConnectionOnboardingResult> {
+  beginConnectionOnboarding(
+    input: BeginConnectionOnboardingInput,
+  ): Promise<BeginConnectionOnboardingResult> {
     return this.inLane(async (root) => {
-      const catalog = await this.catalog.read(root);
-      const slug = deriveConnectionSlug(input.providerType);
-      const existing = catalog.connections.find((connection) => connection.slug === slug);
-      if (existing && existing.providerType !== input.providerType) {
-        return deepFreeze({ kind: 'slug_conflict' as const });
-      }
-      const connectionId = existing?.connectionId ?? randomUUID();
-      let invalidateLastTest = false;
-      if (input.suppliedSecret !== null) {
-        const locator = {
-          scope: 'connection',
-          connectionId,
-          kind: 'api_key',
-        } as const;
-        const vault = await this.vault.read(root);
-        const credential = findCredential(vault, locator);
-        if (credential?.secret !== input.suppliedSecret) {
-          invalidateLastTest = true;
-          const prepared = this.vault.prepareSet(vault, {
-            locator,
-            expected: credential
-              ? { credentialId: credential.credentialId, revision: credential.revision }
-              : null,
-            secret: input.suppliedSecret,
-          });
-          if (prepared.kind !== 'ready') {
-            throw codecError(
-              'invalid_document',
-              `Onboarding credential preflight returned ${prepared.kind}`,
-            );
-          }
-        }
-      }
-      const intent = prepareConnectionOnboardingIntent({
-        ...input,
-        connectionId,
-        invalidateLastTest,
-      });
-      const catalogPreflight = this.catalog.prepareOnboardingUpsert(
-        catalog,
-        intent.connectionId,
-        intent.providerType,
-        intent.enabledModelIds,
-        intent.discovery,
-        intent.invalidateLastTest,
-      );
-      if (catalogPreflight.kind === 'slug_conflict') {
-        return deepFreeze({ kind: 'slug_conflict' as const });
-      }
-      try {
-        await writeConnectionOnboardingIntent(root, intent);
-      } catch (error) {
-        if (isCommitOutcomeUnknown(error)) this.onboardingRecoveryRequired = true;
-        throw error;
-      }
-      try {
-        const result = await this.applyConnectionOnboarding(root, intent);
-        await clearConnectionOnboardingIntent(root);
-        this.onboardingRecoveryRequired = false;
-        return deepFreeze({ kind: 'committed' as const, ...result });
-      } catch (error) {
-        this.onboardingRecoveryRequired = true;
-        if (isCommitOutcomeUnknown(error)) throw error;
-        throw commitOutcomeUnknown(
-          'Connection onboarding has a durable intent and must recover before retrying',
-          error,
+      // Onboarding guards the api_key credential slot; a provider whose auth
+      // never uses one has no business here (the Host gates on the same
+      // predicate, this keeps the storage API honest on its own).
+      if (!providerAuthSupportsApiKey(input.providerType)) {
+        throw codecError(
+          'invalid_connection_input',
+          'Connection onboarding requires an API-key provider',
         );
       }
+      const catalog = await this.catalog.read(root);
+      const located = locateOnboardingTarget(catalog, input.providerType, input.connectionId);
+      if (located.kind !== 'ready') return deepFreeze({ kind: located.kind });
+      const existing = located.existing;
+      const policy = await this.policy.read(root);
+      const networkProxy = structuredClone(policy.policy.networkProxy);
+      const vault = await this.vault.read(root);
+      let credential: CredentialStatus | null = null;
+      let storedSecret: string | null = null;
+      let requestHeadersCredential: CredentialStatus | null = null;
+      let requestHeadersSecret: string | null = null;
+      if (existing) {
+        const locator = connectionCredentialLocator(
+          existing.connectionId,
+          PROVIDER_DEFAULTS[existing.providerType].authKind,
+        );
+        if (locator) {
+          credential = credentialStatus(vault, locator);
+          storedSecret = findCredential(vault, locator)?.secret ?? null;
+        }
+        // Discovery must probe with the same header customization the models
+        // path applies, so the secret is pinned for the probe and its status
+        // joins the basis the commit revalidates.
+        const headersLocator = connectionRequestHeadersLocator(existing.connectionId);
+        requestHeadersCredential = credentialStatus(vault, headersLocator);
+        requestHeadersSecret = findCredential(vault, headersLocator)?.secret ?? null;
+      }
+      // The proxy discovery will run through is pinned HERE, like
+      // beginModelFetch pins it — re-resolving it later would let an A→B→A
+      // proxy flip commit an inventory fetched through egress this basis
+      // never saw.
+      const proxyLocator = requiresNetworkProxyCredential(networkProxy)
+        ? networkProxyCredentialLocator()
+        : null;
+      const proxyCredential = proxyLocator ? credentialStatus(vault, proxyLocator) : null;
+      const proxySecret = proxyLocator
+        ? (findCredential(vault, proxyLocator)?.secret ?? null)
+        : null;
+      const ticket = Object.freeze(Object.create(null)) as object;
+      this.tickets.set(ticket, {
+        kind: 'connection_onboarding',
+        basis: {
+          providerType: input.providerType,
+          slug: deriveConnectionSlug(input.providerType),
+          target: existing
+            ? { connectionId: existing.connectionId, revision: existing.revision }
+            : null,
+          credential,
+          requestHeadersCredential,
+          effectiveProxy: effectiveProxyConfigurationBasis(networkProxy),
+          proxyCredential,
+        },
+        state: 'available',
+      });
+      return deepFreeze({
+        kind: 'ready' as const,
+        ticket: ticket as ConnectionOnboardingTicket,
+        connection: existing ? structuredClone(existing) : null,
+        storedSecret,
+        requestHeadersSecret,
+        networkProxy,
+        proxySecret,
+        proxyCredentialMissing: proxyLocator !== null && proxySecret === null,
+      });
     });
+  }
+
+  async completeConnectionOnboarding(
+    ticket: ConnectionOnboardingTicket,
+    input: CommitConnectionOnboardingInput,
+  ): Promise<CommitConnectionOnboardingResult> {
+    const record = ticket && typeof ticket === 'object' ? this.tickets.get(ticket) : undefined;
+    if (!record || record.kind !== 'connection_onboarding' || record.state !== 'available') {
+      throw codecError(
+        'invalid_connection_input',
+        'Expected an authentic available connection onboarding ticket',
+      );
+    }
+    record.state = 'in_flight';
+    return this.completeClaimedTicket(record, () =>
+      this.inLane(async (root) => {
+        const catalog = await this.catalog.read(root);
+        // Revalidate the discovery basis under the write lane: the committed
+        // inventory must describe the connection state it was discovered
+        // from, not whatever a concurrent policy update left behind.
+        const checked = await this.checkOnboardingBasis(root, catalog, record.basis);
+        if (checked.kind !== 'unchanged') {
+          return deepFreeze(
+            checked.kind === 'target_missing'
+              ? { kind: 'target_missing' as const }
+              : { kind: 'superseded' as const, changed: checked.changed },
+          );
+        }
+        return this.commitConnectionOnboardingInLane(root, catalog, input);
+      }),
+    );
+  }
+
+  private async checkOnboardingBasis(
+    root: string,
+    catalog: Awaited<ReturnType<ConnectionCatalogDocumentOwner['read']>>,
+    basis: ConnectionOnboardingBasis,
+  ): Promise<
+    | { readonly kind: 'unchanged' }
+    | { readonly kind: 'target_missing' }
+    | { readonly kind: 'superseded'; readonly changed: ConnectionEffectChangedDomain[] }
+  > {
+    const changed: ConnectionEffectChangedDomain[] = [];
+    // One vault read serves every credential-status compare below.
+    const vault = await this.vault.read(root);
+    if (basis.target) {
+      const connection = findConnection(catalog, { connectionId: basis.target.connectionId });
+      // A vanished target is its own answer — "the connection is gone" beats
+      // "the connection changed" — while a survived one is compared by
+      // revision, which covers every catalog-visible property, endpoint
+      // included.
+      if (!connection) return { kind: 'target_missing' };
+      if (connection.revision !== basis.target.revision) {
+        changed.push('connection');
+      } else if (
+        basis.credential &&
+        !sameCredentialStatus(credentialStatus(vault, basis.credential.locator), basis.credential)
+      ) {
+        changed.push('credential');
+      }
+    } else if (catalog.connections.some((connection) => connection.slug === basis.slug)) {
+      // Discovery ran for a first-time creation; any connection that appeared
+      // at the canonical slug since supersedes it.
+      changed.push('connection');
+    }
+    if (
+      basis.requestHeadersCredential &&
+      // The probe went out with these custom headers; a rotation since means
+      // the inventory no longer describes what the connection would fetch.
+      !sameCredentialStatus(
+        credentialStatus(vault, basis.requestHeadersCredential.locator),
+        basis.requestHeadersCredential,
+      ) &&
+      !changed.includes('credential')
+    ) {
+      changed.push('credential');
+    }
+    const policy = await this.policy.read(root);
+    if (
+      !sameEffectiveProxyConfiguration(
+        effectiveProxyConfigurationBasis(policy.policy.networkProxy),
+        basis.effectiveProxy,
+      )
+    ) {
+      changed.push('network_proxy');
+    }
+    if (
+      basis.proxyCredential &&
+      !sameCredentialStatus(
+        credentialStatus(vault, basis.proxyCredential.locator),
+        basis.proxyCredential,
+      ) &&
+      !changed.includes('credential')
+    ) {
+      changed.push('credential');
+    }
+    return changed.length > 0 ? { kind: 'superseded', changed } : { kind: 'unchanged' };
+  }
+
+  private async commitConnectionOnboardingInLane(
+    root: string,
+    catalog: Awaited<ReturnType<ConnectionCatalogDocumentOwner['read']>>,
+    input: CommitConnectionOnboardingInput,
+  ): Promise<CommitConnectionOnboardingResult> {
+    const located = locateOnboardingTarget(catalog, input.providerType, input.connectionId);
+    if (located.kind !== 'ready') return deepFreeze({ kind: located.kind });
+    const existing = located.existing;
+    const connectionId = existing?.connectionId ?? randomUUID();
+    let invalidateLastTest = false;
+    if (input.suppliedSecret !== null) {
+      const locator = {
+        scope: 'connection',
+        connectionId,
+        kind: 'api_key',
+      } as const;
+      const vault = await this.vault.read(root);
+      const credential = findCredential(vault, locator);
+      if (credential?.secret !== input.suppliedSecret) {
+        invalidateLastTest = true;
+        const prepared = this.vault.prepareSet(vault, {
+          locator,
+          expected: credential
+            ? { credentialId: credential.credentialId, revision: credential.revision }
+            : null,
+          secret: input.suppliedSecret,
+        });
+        if (prepared.kind !== 'ready') {
+          throw codecError(
+            'invalid_document',
+            `Onboarding credential preflight returned ${prepared.kind}`,
+          );
+        }
+      }
+    }
+    const intent = prepareConnectionOnboardingIntent({
+      ...input,
+      connectionId,
+      invalidateLastTest,
+    });
+    const catalogPreflight = this.catalog.prepareOnboardingUpsert(
+      catalog,
+      intent.connectionId,
+      intent.providerType,
+      intent.baseUrl,
+      intent.enabledModelIds,
+      intent.discovery,
+      intent.invalidateLastTest,
+    );
+    if (catalogPreflight.kind === 'slug_conflict') {
+      return deepFreeze({ kind: 'slug_conflict' as const });
+    }
+    try {
+      await writeConnectionOnboardingIntent(root, intent);
+    } catch (error) {
+      if (isCommitOutcomeUnknown(error)) this.onboardingRecoveryRequired = true;
+      throw error;
+    }
+    try {
+      const result = await this.applyConnectionOnboarding(root, intent);
+      await clearConnectionOnboardingIntent(root);
+      this.onboardingRecoveryRequired = false;
+      return deepFreeze({ kind: 'committed' as const, ...result });
+    } catch (error) {
+      this.onboardingRecoveryRequired = true;
+      if (isCommitOutcomeUnknown(error)) throw error;
+      throw commitOutcomeUnknown(
+        'Connection onboarding has a durable intent and must recover before retrying',
+        error,
+      );
+    }
   }
 
   beginConnectionTest(
@@ -1373,6 +1577,7 @@ export class RuntimePolicyCoordinator {
       catalog,
       intent.connectionId,
       intent.providerType,
+      intent.baseUrl,
       intent.enabledModelIds,
       intent.discovery,
       intent.invalidateLastTest,
@@ -1402,6 +1607,36 @@ function isObsoleteConnectionOnboardingIntent(error: unknown): boolean {
     error.code === 'invalid_document' &&
     error.message === 'Onboarding intent conflicts with the connection id'
   );
+}
+
+/**
+ * The single target-location rule onboarding begin and commit share: an
+ * explicit connectionId names the connection to edit in place (any slug);
+ * null targets the canonical slug, creating there when free.
+ */
+function locateOnboardingTarget(
+  catalog: { readonly connections: readonly ConnectionCatalogEntry[] },
+  providerType: ProviderType,
+  connectionId: string | null,
+):
+  | { readonly kind: 'target_missing' }
+  | { readonly kind: 'slug_conflict' }
+  | { readonly kind: 'ready'; readonly existing: ConnectionCatalogEntry | undefined } {
+  if (connectionId) {
+    const existing = catalog.connections.find(
+      (connection) => connection.connectionId === connectionId,
+    );
+    if (!existing || existing.providerType !== providerType) {
+      return { kind: 'target_missing' };
+    }
+    return { kind: 'ready', existing };
+  }
+  const slug = deriveConnectionSlug(providerType);
+  const existing = catalog.connections.find((connection) => connection.slug === slug);
+  if (existing && existing.providerType !== providerType) {
+    return { kind: 'slug_conflict' };
+  }
+  return { kind: 'ready', existing };
 }
 
 function commonSemanticConnectionBasis(

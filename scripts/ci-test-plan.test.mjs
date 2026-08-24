@@ -383,6 +383,26 @@ test('workflows never persist the job credential into the checkout', () => {
   }
 });
 
+test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
+  const workflow = readWorkflow('ci.yml');
+  const evalPackage = JSON.parse(
+    readFileSync(new URL('../packages/eval/package.json', import.meta.url), 'utf8'),
+  );
+
+  assert.match(
+    workflow,
+    /if: contains\(steps\.plan\.outputs\.standard_workspaces, 'packages\/eval'\)/u,
+  );
+  assert.match(workflow, /MAKA_EVAL_EGRESS_PROXY_TEST: '1'/u);
+  assert.match(workflow, /docker build[\s\S]*maka-eval-egress-proxy:12\.2\.3/u);
+  assert.match(workflow, /npm --workspace @maka\/eval run test:egress-proxy:live/u);
+  assert.equal(
+    evalPackage.scripts['test:egress-proxy:live'],
+    'python3 harbor/test_egress_filter_live.py',
+  );
+  assert.doesNotMatch(evalPackage.scripts['test:dist'], /test_egress_filter_live\.py/u);
+});
+
 const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);
 
 function readWorkflow(name) {

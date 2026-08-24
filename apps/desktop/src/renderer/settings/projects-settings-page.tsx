@@ -43,6 +43,7 @@ import { useKeyedActionGuard } from './use-action-guard';
 import { useOptionalRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { RemoteProjectDirectoryDialog } from '../remote-project-directory-dialog.js';
+import { RuntimeHostInteractionBoundary } from './runtime-host-interaction-boundary.js';
 
 const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
   chooseClientDirectory: false,
@@ -69,6 +70,8 @@ const NO_PROJECT_CAPABILITIES: DesktopProjectCapabilities = {
 export function ProjectsSettingsPage(props: {
   settings: AppSettings;
   runtimeHostStatus: 'loading' | 'ready' | 'unavailable' | 'error';
+  runtimeHostTargetVerified: boolean;
+  runtimeHostErrorMessage?: string;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
@@ -93,17 +96,18 @@ export function ProjectsSettingsPage(props: {
   const reloadGeneration = useRef(0);
 
   const reload = useCallback(async () => {
-    if (!host) return;
+    if (!host || !props.runtimeHostTargetVerified) return;
     const generation = ++reloadGeneration.current;
     const snapshot = await window.maka.projects.getSnapshot(undefined, host);
     if (mountedRef.current && generation === reloadGeneration.current) {
       setProjects([...snapshot.projects]);
       setCapabilities(snapshot.capabilities);
     }
-  }, [host, mountedRef]);
+  }, [host, mountedRef, props.runtimeHostTargetVerified]);
 
   useEffect(() => {
-    if (!host) {
+    if (!host || !props.runtimeHostTargetVerified) {
+      reloadGeneration.current += 1;
       setProjects([]);
       setCapabilities(NO_PROJECT_CAPABILITIES);
       setHomePath(undefined);
@@ -151,6 +155,7 @@ export function ProjectsSettingsPage(props: {
     action: () => Promise<void>,
     failure: string,
   ) {
+    if (!props.runtimeHostTargetVerified) return;
     const release = actionGuard.begin(key);
     if (!release) return;
     try {
@@ -185,58 +190,89 @@ export function ProjectsSettingsPage(props: {
   }
 
   async function setDefault(projectId: string | undefined) {
+    if (!props.runtimeHostTargetVerified) return;
     await props.onUpdate({ projects: { defaultProjectId: projectId } });
   }
 
+  // `runtimeHostStatus` describes the selected target's current read/feedback
+  // state; it is not the write-authority predicate. A same-generation refresh
+  // may fail while the already verified target remains safe to use. Every
+  // project read and mutation is therefore fenced by
+  // `runtimeHostTargetVerified`, with the Host-owned subtree below providing
+  // the matching inert, busy, and muted presentation while authority is absent.
   if (!host) {
     return (
       <SettingsPage as="section" aria-label={copy.section}>
         <RuntimeHostProfilesSection onRemoteHostAdded={props.onRemoteHostAdded} />
-        <Banner
-          status={props.runtimeHostStatus === 'error' ? 'error' : 'warning'}
-          title={props.runtimeHostStatus === 'loading'
-            ? sharedCopy.loading
-            : sharedCopy.runtimeHostUnavailable}
-          endContent={props.runtimeHostStatus === 'error' ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              label={sharedCopy.retry}
-              onClick={() => void props.onRetryRuntimeHost()}
-            />
-          ) : undefined}
-        />
+        {props.runtimeHostStatus !== 'loading' ? (
+          <Banner
+            status={props.runtimeHostStatus === 'error' ? 'error' : 'warning'}
+            title={props.runtimeHostStatus === 'error'
+              ? sharedCopy.settingsLoadFailed
+              : sharedCopy.runtimeHostUnavailable}
+            description={props.runtimeHostStatus === 'error'
+              ? props.runtimeHostErrorMessage
+              : undefined}
+            endContent={props.runtimeHostStatus === 'error' ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                label={sharedCopy.retry}
+                onClick={() => void props.onRetryRuntimeHost()}
+              />
+            ) : undefined}
+          />
+        ) : null}
       </SettingsPage>
     );
   }
   return (
     <SettingsPage as="section" aria-label={copy.section}>
       <RuntimeHostProfilesSection onRemoteHostAdded={props.onRemoteHostAdded} />
-      {/* No section title: the page header already says 项目, and repeating it
-          straight above the rows is the same duplicate-heading noise we
-          removed from the skills page. The rule this page exists for lives in
-          the page subtitle; the section keeps only its action. */}
-      <SettingsSection
-        description={
-          defaultProjectId !== undefined && !defaultResolves
-            ? `${copy.sectionHelp} ${copy.defaultUnavailable}`
-            : copy.sectionHelp
-        }
-        action={capabilities.chooseClientDirectory || capabilities.chooseHostDirectory ? (
-          <Button
-            ref={directoryPickerTriggerRef}
-            variant="secondary"
-            size="sm"
-            label={copy.addProject}
-            clickAction={capabilities.chooseHostDirectory
-              ? () => setDirectoryPickerOpen(true)
-              : async () => {
-                  const result = await window.maka.projects.add(host);
-                  if (result.ok) await reload();
-                }}
-          />
-        ) : undefined}
-      >
+      {props.runtimeHostStatus === 'error' ? (
+        <Banner
+          status="error"
+          title={sharedCopy.settingsLoadFailed}
+          description={props.runtimeHostErrorMessage}
+          endContent={(
+            <Button
+              variant="secondary"
+              size="sm"
+              label={sharedCopy.retry}
+              onClick={() => void props.onRetryRuntimeHost()}
+            />
+          )}
+        />
+      ) : null}
+      <RuntimeHostInteractionBoundary isInteractive={props.runtimeHostTargetVerified}>
+        {/* No section title: the page header already says 项目, and repeating it
+            straight above the rows is the same duplicate-heading noise we
+            removed from the skills page. The rule this page exists for lives in
+            the page subtitle; the section keeps only its action. */}
+        <SettingsSection
+          description={
+            defaultProjectId !== undefined && !defaultResolves
+              ? `${copy.sectionHelp} ${copy.defaultUnavailable}`
+              : copy.sectionHelp
+          }
+          action={capabilities.chooseClientDirectory || capabilities.chooseHostDirectory ? (
+            <Button
+              ref={directoryPickerTriggerRef}
+              variant="secondary"
+              size="sm"
+              label={copy.addProject}
+              clickAction={capabilities.chooseHostDirectory
+                ? () => {
+                    if (props.runtimeHostTargetVerified) setDirectoryPickerOpen(true);
+                  }
+                : async () => {
+                    if (!props.runtimeHostTargetVerified) return;
+                    const result = await window.maka.projects.add(host);
+                    if (result.ok) await reload();
+                  }}
+            />
+          ) : undefined}
+        >
         {listed.length === 0 ? (
           <EmptyState icon={<FolderOpen size={ICON_SIZE.empty} />} title={copy.emptyTitle} description={copy.emptyBody} />
         ) : (
@@ -334,7 +370,7 @@ export function ProjectsSettingsPage(props: {
                                     cancelLabel: copy.removeCancel,
                                     destructive: true,
                                   });
-                                  if (!ok) return;
+                                  if (!ok || !mountedRef.current) return;
                                   await window.maka.projects.archive(project.id, host);
                                   // Removing the default leaves the preference
                                   // pointing at nothing; clear it in the same
@@ -447,16 +483,17 @@ export function ProjectsSettingsPage(props: {
             })}
           </List>)
         )}
-      </SettingsSection>
-      <RemoteProjectDirectoryDialog
-        host={directoryPickerOpen ? host : undefined}
-        returnFocusTo={directoryPickerTriggerRef.current}
-        onClose={() => setDirectoryPickerOpen(false)}
-        onRegistered={() => {
-          setDirectoryPickerOpen(false);
-          void reload();
-        }}
-      />
+        </SettingsSection>
+        <RemoteProjectDirectoryDialog
+          host={directoryPickerOpen && props.runtimeHostTargetVerified ? host : undefined}
+          returnFocusTo={directoryPickerTriggerRef.current}
+          onClose={() => setDirectoryPickerOpen(false)}
+          onRegistered={() => {
+            setDirectoryPickerOpen(false);
+            void reload();
+          }}
+        />
+      </RuntimeHostInteractionBoundary>
     </SettingsPage>
   );
 }

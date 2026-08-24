@@ -443,7 +443,7 @@ export class RuntimeHostKernel {
       hello.generation !== undefined &&
       hello.generation !== this.#options.generation;
     if (generationMismatch && hello.takeover?.expectedHostEpoch === this.hostEpoch) {
-      if (authority.principalKind === 'local_owner' && this.#acceptedTransports.size === 0) {
+      if (authority.principalKind === 'local_owner' && this.#isTrueIdle()) {
         this.#requestDrain();
         return {
           kind: 'draining',

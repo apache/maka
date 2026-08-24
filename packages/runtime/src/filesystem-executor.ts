@@ -36,7 +36,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { PermissionProfile } from '@maka/core/permission-profile';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
 import { computeEditedSource } from './edit-replace.js';
-import { createUnifiedDiff } from './unified-diff.js';
+import { createEditUnifiedDiff, createUnifiedDiff } from './unified-diff.js';
 import {
   classifyFailedMutationOutcome,
   type FilesystemTargetIdentity,
@@ -501,15 +501,17 @@ function createWorkspaceFilesystemExecutor(
           if (isSupportedImagePath(path)) throw new Error('Edit does not support image files.');
           if (workspace.readModifyWrite) {
             let edited!: ReturnType<typeof computeEditedSource>;
-            const result = await workspace.readModifyWrite({
+            let originalContent = '';
+            await workspace.readModifyWrite({
               cwd,
               path,
               label: 'Edit',
               scope,
               approvedIdentity: expectedIdentity,
               transform: (ctx) => {
+                originalContent = ctx.content ?? '';
                 edited = computeEditedSource(
-                  ctx.content ?? '',
+                  originalContent,
                   operation.oldString,
                   operation.newString,
                   operation.path,
@@ -517,11 +519,7 @@ function createWorkspaceFilesystemExecutor(
                 return edited.content;
               },
             });
-            const diff = createUnifiedDiff(
-              path,
-              result.previous === 'unknown' || result.previous === 'new' ? '' : result.previous,
-              result.finalContent ?? '',
-            );
+            const diff = createEditUnifiedDiff(path, originalContent, edited.content, edited);
             return {
               kind: 'edit',
               ok: true,
@@ -542,7 +540,7 @@ function createWorkspaceFilesystemExecutor(
             operation.path,
           );
           await workspace.writeFile({ cwd, path, content: edited.content });
-          const diff = createUnifiedDiff(path, read.content, edited.content);
+          const diff = createEditUnifiedDiff(path, read.content, edited.content, edited);
           return {
             kind: 'edit',
             ok: true,

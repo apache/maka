@@ -89,6 +89,7 @@ export type MessageOperationKey = Extract<
   | 'queue.retract'
   | 'queue.entry.retract'
   | 'queue.entry.promote'
+  | 'queue.entry.update'
   | 'queue.entries.reorder'
   | 'turn.interrupt'
 >;

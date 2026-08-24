@@ -157,7 +157,9 @@ export class HostProjectCatalogCoordinator {
   ): Promise<ProjectCatalogMutateResult> {
     switch (input.kind) {
       case 'register':
-        return projectResult(await this.catalog.register(input.path));
+        return projectResult(
+          await this.catalog.register(input.path, { prefer: input.prefer ?? true }),
+        );
       case 'register_directory': {
         if (!directoryRegistration) throw new TypeError('Project directory was not resolved');
         return projectResult(

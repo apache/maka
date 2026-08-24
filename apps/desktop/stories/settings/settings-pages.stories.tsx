@@ -19,7 +19,7 @@
 
 import { useRef, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, waitFor, within } from 'storybook/test';
+import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { ToastProvider, useToast } from '@maka/ui';
 import type {
   AppSettings,
@@ -49,15 +49,21 @@ import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
 import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
+import {
+  createSettingsSnapshotCache,
+  type SettingsSnapshotCache,
+} from '../../src/renderer/settings/settings-snapshot-cache';
 import type { ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import type { ProjectRecord } from '@maka/core/project';
 import type { ArchivedTasksBridge } from '../../src/renderer/settings/tasks-settings-page';
 import type {
+  DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostProfileSnapshot,
   DesktopSessionSummary,
 } from '../../src/preload/bridge-contract.js';
 import { withScopedMakaBridge } from '../maka-bridge';
 import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-daily-review-copy';
+import { getUsageSettingsCopy } from '../../src/renderer/locales/settings-usage-copy';
 
 /**
  * Read from the copy table, not typed out again. This selector matched a
@@ -114,6 +120,16 @@ const connections: LlmConnection[] = [
   makeConnection({ slug: 'zai-live', name: 'Z.AI Live', providerType: 'zai-coding-plan' }),
   makeConnection({ slug: 'openai-review', name: 'OpenAI Review', providerType: 'openai' }),
   makeConnection({ slug: 'ollama-local', name: 'Ollama Local', providerType: 'ollama' }),
+];
+
+const generationStoryCopilotConnection = makeConnection({
+  slug: 'github-copilot-generation',
+  name: 'GitHub Copilot',
+  providerType: 'github-copilot',
+});
+const generationStoryConnections = [
+  ...connections,
+  generationStoryCopilotConnection,
 ];
 
 const connectionsBridge: ConnectionsBridge = {
@@ -615,6 +631,70 @@ const runtimeHostProfiles: DesktopRuntimeHostProfileSnapshot = {
   ],
 };
 
+const runtimeHostProfilesWithRemote: DesktopRuntimeHostProfileSnapshot = {
+  defaultProfileId: 'local',
+  entries: [
+    ...runtimeHostProfiles.entries,
+    {
+      profile: {
+        id: 'remote',
+        name: 'Remote',
+        kind: 'remote',
+        rootId: 'storybook-remote-root',
+        transport: {
+          kind: 'ssh',
+          destination: 'storybook.example.test',
+          remotePort: 43123,
+          websocketPath: '/runtime-host',
+        },
+      },
+      enabled: true,
+      isDefault: false,
+      readiness: 'ready',
+      hostId: 'storybook-remote-host',
+    },
+  ],
+};
+
+const unavailableRuntimeHostProfiles: DesktopRuntimeHostProfileSnapshot = {
+  defaultProfileId: 'local',
+  entries: [
+    {
+      profile: { id: 'local', name: 'Local', kind: 'local' },
+      enabled: true,
+      isDefault: true,
+      readiness: 'unavailable',
+      message: 'Runtime Host is offline in this story.',
+    },
+  ],
+};
+
+const STORY_RUNTIME_HOST_KEY = 'local:storybook-local-host';
+
+function seedGeneralSnapshotCache(cache: SettingsSnapshotCache): void {
+  const settings = createDefaultSettings();
+  cache.commitClientRead(settings);
+  cache.commitRuntimeHostCatalogRead(runtimeHostProfiles);
+  cache.commitRuntimeHostSettingsRead(STORY_RUNTIME_HOST_KEY, settings);
+  cache.commitRuntimeHostConnectionsRead(STORY_RUNTIME_HOST_KEY, {
+    connections,
+    defaultSlug: 'zai-live',
+  });
+}
+
+function seedCopilotGenerationSnapshotCache(cache: SettingsSnapshotCache): void {
+  seedGeneralSnapshotCache(cache);
+  cache.commitRuntimeHostConnectionsRead(STORY_RUNTIME_HOST_KEY, {
+    connections: generationStoryConnections,
+    defaultSlug: 'zai-live',
+  });
+}
+
+function seedGeneralTwoHostSnapshotCache(cache: SettingsSnapshotCache): void {
+  seedGeneralSnapshotCache(cache);
+  cache.commitRuntimeHostCatalogRead(runtimeHostProfilesWithRemote);
+}
+
 let storyClientSettings = createDefaultSettings();
 let storyRuntimeHostSettings = createDefaultSettings();
 
@@ -627,6 +707,30 @@ const makaBridge = {
     setEnabled: async () => runtimeHostProfiles,
     setDefault: async () => runtimeHostProfiles,
     subscribeChanges: () => () => undefined,
+  },
+  // Projects always mounts the Runtime Host management dialog shell, even
+  // before a remote profile is selected. Keep the shared Settings fixture in
+  // sync with the full preload surface so mount-time subscriptions stay real.
+  runtimeHostManagement: {
+    run: async (
+      _profileId: string,
+      action: Parameters<typeof window.maka.runtimeHostManagement.run>[1],
+    ) => ({
+      schemaVersion: 1 as const,
+      kind: 'error' as const,
+      action,
+      error: { code: 'storybook_unavailable', message: 'Not configured in this story.' },
+    }),
+    update: async () => ({
+      schemaVersion: 1 as const,
+      kind: 'error' as const,
+      action: 'update' as const,
+      error: { code: 'storybook_unavailable', message: 'Not configured in this story.' },
+    }),
+    subscribeProgress: () => () => undefined,
+    listCredentials: async () => ({ canRotate: false, credentials: [] }),
+    rotateCredential: async () => ({ canRotate: false, credentials: [] }),
+    revokeCredential: async () => ({ canRotate: false, credentials: [] }),
   },
   settings: {
     getClient: async () => storyClientSettings,
@@ -791,6 +895,245 @@ const makaBridge = {
 } satisfies Record<string, unknown>;
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
+
+function pendingForever<T>(): Promise<T> {
+  return new Promise(() => undefined);
+}
+
+const withGeneralHostSettingsLoadingBridge = withScopedMakaBridge({
+  ...makaBridge,
+  settings: {
+    ...makaBridge.settings,
+    get: () => pendingForever(),
+  },
+} satisfies Record<string, unknown>);
+
+const withGeneralConnectionsLoadingBridge = withScopedMakaBridge({
+  ...makaBridge,
+  connections: {
+    ...connectionsBridge,
+    getSnapshot: () => pendingForever(),
+  },
+} satisfies Record<string, unknown>);
+
+const withGeneralCachedRevalidationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: {
+    ...makaBridge.runtimeHostProfiles,
+    getSnapshot: () => pendingForever(),
+  },
+  settings: {
+    ...makaBridge.settings,
+    get: () => pendingForever(),
+  },
+  connections: {
+    ...connectionsBridge,
+    getSnapshot: () => pendingForever(),
+  },
+} satisfies Record<string, unknown>);
+
+let generationStoryCatalogPending = false;
+let generationStoryRuntimeHostProfiles = runtimeHostProfiles;
+let generationStoryConnectionsPending = false;
+let generationStoryCodexEmail = 'old-generation@example.com';
+let generationStoryCodexAccountReads = 0;
+let generationStoryOpenedAuthIds: string[] = [];
+let generationStoryCancelledAuthIds: string[] = [];
+let generationStoryCopilotImportAttempts = 0;
+let generationStoryCopilotSecretReads = 0;
+let generationStoryCopilotImportResolve:
+  | ((result: { ok: true }) => void)
+  | undefined;
+let generationStoryProfileListener:
+  | ((event: DesktopRuntimeHostProfileChangedEvent) => void)
+  | undefined;
+
+function resetGenerationStoryBridge(
+  snapshot: DesktopRuntimeHostProfileSnapshot = runtimeHostProfiles,
+): void {
+  generationStoryCatalogPending = false;
+  generationStoryRuntimeHostProfiles = snapshot;
+  generationStoryConnectionsPending = false;
+  generationStoryCodexEmail = 'old-generation@example.com';
+  generationStoryCodexAccountReads = 0;
+  generationStoryOpenedAuthIds = [];
+  generationStoryCancelledAuthIds = [];
+  generationStoryCopilotImportAttempts = 0;
+  generationStoryCopilotSecretReads = 0;
+  generationStoryCopilotImportResolve = undefined;
+  generationStoryProfileListener = undefined;
+}
+
+const generationStoryRuntimeHostProfilesBridge = {
+  ...makaBridge.runtimeHostProfiles,
+  getSnapshot: () => {
+    return generationStoryCatalogPending
+      ? pendingForever()
+      : Promise.resolve({
+          ...generationStoryRuntimeHostProfiles,
+          // IPC returns a fresh structured clone. Reusing the cache's exact
+          // object identity would suppress the selected-Host effect after
+          // catalog hydration and make this fake less faithful than Desktop.
+          entries: [...generationStoryRuntimeHostProfiles.entries],
+        });
+  },
+  subscribeChanges: (handler: (event: DesktopRuntimeHostProfileChangedEvent) => void) => {
+    generationStoryProfileListener = handler;
+    return () => {
+      if (generationStoryProfileListener === handler) {
+        generationStoryProfileListener = undefined;
+      }
+    };
+  },
+};
+
+const withGeneralHostGenerationRevalidationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
+} satisfies Record<string, unknown>);
+
+const withModelsOAuthGenerationRevalidationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
+  openAiCodex: {
+    ...makaBridge.openAiCodex,
+    getAccountState: async () => {
+      generationStoryCodexAccountReads += 1;
+      return {
+        runtimeState: 'authenticated' as const,
+        email: generationStoryCodexEmail,
+        plan: 'Plus',
+      };
+    },
+  },
+} satisfies Record<string, unknown>);
+
+const withModelsConnectionsGenerationRevalidationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
+  connections: {
+    ...connectionsBridge,
+    getSnapshot: () => generationStoryConnectionsPending
+      ? pendingForever()
+      : connectionsBridge.getSnapshot(),
+  },
+} satisfies Record<string, unknown>);
+
+const withModelsOAuthAuthorizationGenerationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
+  openAiCodex: {
+    ...makaBridge.openAiCodex,
+    getAccountState: async () => ({ runtimeState: 'not_logged_in' as const }),
+    getAuthUrl: async () => ({
+      authRequestId: 'authorization-from-generation-1',
+      stateHint: 'GEN1-CODE',
+    }),
+    openAuthUrl: async (authRequestId: string) => {
+      generationStoryOpenedAuthIds.push(authRequestId);
+      return pendingForever<{ ok: true }>();
+    },
+    completeAuthorization: () => pendingForever<{ ok: true }>(),
+    cancelAuthorization: async (authRequestId?: string) => {
+      if (authRequestId) generationStoryCancelledAuthIds.push(authRequestId);
+      return { ok: true as const };
+    },
+    logout: async () => ({ ok: true as const }),
+  },
+} satisfies Record<string, unknown>);
+
+const withModelsCopilotReimportGenerationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
+  connections: {
+    ...connectionsBridge,
+    getSnapshot: async () => ({
+      connections: generationStoryConnections,
+      defaultConnection: 'zai-live',
+      chatModelChoices: buildChatModelChoices(generationStoryConnections),
+    }),
+    hasSecret: async () => {
+      generationStoryCopilotSecretReads += 1;
+      return true;
+    },
+  },
+  githubCopilotSubscription: {
+    ...makaBridge.githubCopilotSubscription,
+    connectExistingLogin: () => {
+      generationStoryCopilotImportAttempts += 1;
+      if (generationStoryCopilotImportAttempts > 1) {
+        return Promise.resolve({ ok: true as const });
+      }
+      return new Promise<{ ok: true }>((resolve) => {
+        generationStoryCopilotImportResolve = resolve;
+      });
+    },
+  },
+} satisfies Record<string, unknown>);
+
+const withProviderCatalogIntentRevalidationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: {
+    ...makaBridge.runtimeHostProfiles,
+    getSnapshot: () => pendingForever(),
+  },
+  settings: {
+    ...makaBridge.settings,
+    get: () => pendingForever(),
+  },
+  connections: {
+    ...connectionsBridge,
+    getSnapshot: async () => {
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+      return {
+        connections,
+        defaultConnection: 'zai-live',
+        chatModelChoices: buildChatModelChoices(connections),
+      };
+    },
+  },
+} satisfies Record<string, unknown>);
+
+const cachedProjectsSnapshotRead = fn(async () => ({
+  projects: [],
+  capabilities: {
+    chooseClientDirectory: false,
+    chooseHostDirectory: false,
+    selectNoProject: false,
+    setLocalDefault: false,
+    viewClientPath: false,
+  },
+}));
+
+const withProjectsCachedRevalidationBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: {
+    ...makaBridge.runtimeHostProfiles,
+    getSnapshot: () => pendingForever(),
+  },
+  projects: {
+    getSnapshot: cachedProjectsSnapshotRead,
+    subscribeChanges: () => () => undefined,
+  },
+} satisfies Record<string, unknown>);
+
+const withGeneralHostSettingsErrorBridge = withScopedMakaBridge({
+  ...makaBridge,
+  settings: {
+    ...makaBridge.settings,
+    get: async () => {
+      throw new Error('Runtime Host settings read failed in this story.');
+    },
+  },
+} satisfies Record<string, unknown>);
+
+const withGeneralUnavailableBridge = withScopedMakaBridge({
+  ...makaBridge,
+  runtimeHostProfiles: {
+    ...makaBridge.runtimeHostProfiles,
+    getSnapshot: async () => unavailableRuntimeHostProfiles,
+  },
+} satisfies Record<string, unknown>);
 
 // 已归档任务 renders the shell's catalog, so its fixture is sessions +
 // projects rather than a settings patch. The set is chosen to exercise the
@@ -1179,8 +1522,11 @@ type SettingsStoryProps = {
   section: SettingsSection;
   connections?: LlmConnection[];
   defaultSlug?: string | null;
+  openProviderCatalog?: boolean;
+  initialConnectionSlug?: string;
   /** Seeds 已归档任务. Empty for every story that is not about that page. */
   archivedTaskSessions?: readonly SessionSummary[];
+  seedSnapshotCache?(cache: SettingsSnapshotCache): void;
 };
 
 /**
@@ -1200,6 +1546,11 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
   const archivedTasks = useArchivedTasksStoryBridge(props.archivedTaskSessions ?? []);
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
+  const [snapshotCache] = useState(() => {
+    const cache = createSettingsSnapshotCache();
+    props.seedSnapshotCache?.(cache);
+    return cache;
+  });
   // Fidelity: the theme and palette pickers are the 外观 page's whole content,
   // and with static props + noop handlers the selection could never move — the
   // story showed a picker that looked interactive and wasn't. The real app
@@ -1233,6 +1584,8 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           uiLocaleUpdateGate={uiLocaleUpdateGate}
           onDefaultPermissionModeChange={noop}
           requestedSection={props.section}
+          openProviderCatalog={props.openProviderCatalog}
+          initialConnectionSlug={props.initialConnectionSlug}
           initialFocusRef={initialFocusRef}
           onOpenDailyReview={noop}
           onOpenSession={noop}
@@ -1240,6 +1593,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           onTaskImported={noop}
           onRemoteHostAdded={noop}
           onSelectedRuntimeHostProfileIdChange={noop}
+          snapshotCache={snapshotCache}
         />
       </div>
     </>
@@ -1316,6 +1670,258 @@ export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
+// Cold path: Desktop-owned preferences are ready while the selected Runtime
+// Host settings read is still pending. The complete page topology stays
+// visible as neutral row placeholders, without treating hydration as a warning.
+export const GeneralHostSettingsLoading: Story = {
+  decorators: [withGeneralHostSettingsLoadingBridge],
+  render: () => <SettingsStory section="general" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('显示名称');
+    await canvas.findByRole('switch', { name: '完成时发送系统通知' });
+    await expect(
+      await canvas.findByRole('button', { name: '默认模型' }),
+    ).toBeEnabled();
+    await expect(
+      canvas.queryByRole('textbox', { name: '助手语气偏好' }),
+    ).not.toBeInTheDocument();
+    await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+// Independent resource path: Host settings are usable, but the model
+// connection catalog is still loading. Only 默认模型 remains a placeholder.
+export const GeneralConnectionsLoading: Story = {
+  decorators: [withGeneralConnectionsLoadingBridge],
+  render: () => <SettingsStory section="general" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    await expect(tone).toBeEnabled();
+    await canvas.findByText('默认模型');
+    await expect(
+      canvas.queryByRole('button', { name: '默认模型' }),
+    ).not.toBeInTheDocument();
+    await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+// Warm path: renderer-memory snapshots render the complete General page on
+// the first commit, but Host-owned mutations remain fenced until this modal
+// verifies the catalog and both resource authorities.
+export const GeneralCachedRevalidation: Story = {
+  decorators: [withGeneralCachedRevalidationBridge],
+  render: () => (
+    <SettingsStory
+      section="general"
+      seedSnapshotCache={seedGeneralSnapshotCache}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    const defaultModel = await canvas.findByRole('button', { name: '默认模型' });
+    await expect(tone).toBeDisabled();
+    await expect(defaultModel).toBeDisabled();
+    await expect(
+      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+    ).toBeEnabled();
+    await expect(canvas.getByRole('radio', { name: '中文' })).toBeEnabled();
+    const mixedBoundary = canvasElement.querySelector<HTMLElement>(
+      '.settingsRuntimeHostInteractionBoundary',
+    );
+    if (!mixedBoundary) throw new Error('General mixed-ownership boundary did not render');
+    await expect(mixedBoundary).not.toHaveAttribute('inert');
+    await canvas.findByText('正在加载设置');
+    await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+// A Runtime Host can be replaced without changing its renderer-facing
+// profileId:hostId key. The lifecycle epoch is the generation boundary: keep
+// cached Host values visible, revoke their write authority immediately, and
+// leave Desktop-owned controls usable while the new generation verifies.
+export const GeneralHostGenerationRevalidation: Story = {
+  decorators: [withGeneralHostGenerationRevalidationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return (
+      <SettingsStory
+        section="general"
+        seedSnapshotCache={seedGeneralSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    const defaultModel = await canvas.findByRole('button', { name: '默认模型' });
+    await waitForStoryCondition(
+      () => !tone.matches(':disabled') && !defaultModel.matches(':disabled'),
+      'Initial Runtime Host generation did not become interactive',
+    );
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+
+    generationStoryCatalogPending = true;
+    listener({
+      epoch: 'storybook-generation-2',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+      readiness: 'ready',
+      hostId: 'storybook-local-host',
+      isDefault: true,
+    });
+
+    await waitForStoryCondition(
+      () => tone.matches(':disabled') && defaultModel.matches(':disabled'),
+      'Previous Runtime Host generation remained writable',
+    );
+    await expect(tone).toBeDisabled();
+    await expect(defaultModel).toBeDisabled();
+    await expect(
+      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+    ).toBeEnabled();
+    await expect(canvas.getByRole('radio', { name: '中文' })).toBeEnabled();
+    const mixedBoundary = canvasElement.querySelector<HTMLElement>(
+      '.settingsRuntimeHostInteractionBoundary',
+    );
+    if (!mixedBoundary) throw new Error('General mixed-ownership boundary did not render');
+    await expect(mixedBoundary).not.toHaveAttribute('inert');
+  },
+};
+// A lifecycle event is newer than the cached catalog even when its profile is
+// not selected yet. Switching to that profile must respect the event's
+// reconnecting tombstone instead of reviving the catalog's last-ready Host.
+export const GeneralBackgroundHostReconnectThenSelect: Story = {
+  decorators: [withGeneralHostGenerationRevalidationBridge],
+  render: () => {
+    resetGenerationStoryBridge(runtimeHostProfilesWithRemote);
+    return (
+      <SettingsStory
+        section="general"
+        seedSnapshotCache={seedGeneralTwoHostSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tone = await canvas.findByRole('textbox', { name: '助手语气偏好' });
+    await waitForStoryCondition(
+      () => !tone.matches(':disabled'),
+      'Initial Runtime Host did not become interactive',
+    );
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+
+    generationStoryCatalogPending = true;
+    listener({
+      epoch: 'storybook-remote-generation-2',
+      profileId: 'remote',
+      profileName: 'Remote',
+      profileKind: 'remote',
+      readiness: 'reconnecting',
+      hostId: 'storybook-remote-host',
+      isDefault: false,
+    });
+
+    await userEvent.click(canvas.getByRole('combobox', { name: 'Runtime Host' }));
+    await userEvent.click(
+      await within(document.body).findByRole('option', { name: 'Remote' }),
+    );
+    await waitForStoryCondition(
+      () => {
+        const currentTone = canvas.queryByRole('textbox', {
+          name: '助手语气偏好',
+        });
+        return currentTone === null || currentTone.matches(':disabled');
+      },
+      'The reconnecting background Host was revived from the stale catalog',
+    );
+    await expect(canvas.getByRole('combobox', { name: 'Runtime Host' }))
+      .toHaveTextContent('Remote');
+    await canvas.findByText('助手语气偏好');
+    const currentTone = canvas.queryByRole('textbox', { name: '助手语气偏好' });
+    if (currentTone) await expect(currentTone).toBeDisabled();
+    await expect(
+      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+    ).toBeEnabled();
+    await expect(canvas.getByRole('radio', { name: '中文' })).toBeEnabled();
+  },
+};
+// Error is a real signal rather than a loading state. Desktop-owned controls
+// and independently loaded connections remain usable; unknown Host settings
+// are not represented as a perpetual shimmer.
+export const GeneralHostSettingsError: Story = {
+  decorators: [withGeneralHostSettingsErrorBridge],
+  render: () => <SettingsStory section="general" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const alert = await canvas.findByRole('alert');
+    await expect(alert).toHaveTextContent('载入设置失败');
+    await canvas.findByRole('button', { name: '重试' });
+    await expect(
+      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+    ).toBeEnabled();
+    await expect(canvas.getByRole('button', { name: '默认模型' })).toBeEnabled();
+    await expect(canvas.queryByText('显示名称')).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByRole('textbox', { name: '助手语气偏好' }),
+    ).not.toBeInTheDocument();
+  },
+};
+// An unavailable Host is not still loading: keep Client preferences usable,
+// show one warning, and omit Host controls/placeholders until a target exists.
+export const GeneralRuntimeHostUnavailable: Story = {
+  decorators: [withGeneralUnavailableBridge],
+  render: () => <SettingsStory section="general" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const alert = await canvas.findByRole('alert');
+    await expect(alert).toHaveTextContent('Runtime Host');
+    await expect(
+      canvas.getByRole('switch', { name: '完成时发送系统通知' }),
+    ).toBeEnabled();
+    await expect(
+      Array.from(canvasElement.querySelectorAll('[role="status"]')).some(
+        (status) => status.textContent?.includes('正在加载设置') === true,
+      ),
+    ).toBe(false);
+    await expect(canvas.queryByText('显示名称')).not.toBeInTheDocument();
+    await expect(canvas.queryByText('默认模型')).not.toBeInTheDocument();
+  },
+};
+// Mixed authority path: Runtime Host profile management remains available,
+// while project-catalog reads and writes wait for this modal to confirm the
+// cached selected Host.
+export const ProjectsCachedHostRevalidation: Story = {
+  decorators: [withProjectsCachedRevalidationBridge],
+  render: () => (
+    <SettingsStory
+      section="projects"
+      seedSnapshotCache={seedGeneralSnapshotCache}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole('button', { name: '添加电脑' })).toBeEnabled();
+    await waitForStoryCondition(
+      () => canvasElement.querySelector(
+        '.settingsRuntimeHostInteractionBoundary[inert][aria-busy="true"]',
+      ) !== null,
+      'Project Host interaction boundary did not remain inert',
+    );
+    const boundary = canvasElement.querySelector<HTMLElement>(
+      '.settingsRuntimeHostInteractionBoundary[inert][aria-busy="true"]',
+    );
+    const mutedProjectContent = boundary?.firstElementChild;
+    if (!(mutedProjectContent instanceof HTMLElement)) {
+      throw new Error('Project Host interaction boundary did not contain visible content');
+    }
+    await expect(getComputedStyle(mutedProjectContent).opacity).toBe('0.5');
+    await expect(cachedProjectsSnapshotRead).not.toHaveBeenCalled();
+    await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
 // Real path: 设置 → 通用, after selecting Git Bash for the current Runtime Host.
 export const GeneralGitBash: Story = {
   decorators: [withGitBashSettingsBridge],
@@ -1346,6 +1952,43 @@ export const UsageMultiModel: Story = {
 export const UsageLongTail: Story = {
   decorators: [withUsageLongTailBridge],
   render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement, globals }) => {
+    const canvas = within(canvasElement);
+    const usageCopy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : 'zh');
+    await waitForStoryCondition(
+      () => canvas.queryByRole('table', { name: usageCopy.tables.requestsAria }) !== null
+        || canvas.queryByRole('button', { name: usageCopy.showDetails }) !== null,
+      'Usage request details did not become available',
+    );
+    const showDetails = canvas.queryByRole('button', { name: usageCopy.showDetails });
+    if (showDetails) await userEvent.click(showDetails);
+
+    const table = await canvas.findByRole('table', { name: usageCopy.tables.requestsAria });
+    const timeCell = table.querySelector<HTMLTableCellElement>('tbody tr td:first-child');
+    expect(timeCell).not.toBeNull();
+    const timeText = timeCell?.firstElementChild;
+    expect(timeText).toBeInstanceOf(HTMLElement);
+    const timeRange = document.createRange();
+    timeRange.selectNodeContents(timeText!);
+    const timeCellStyle = getComputedStyle(timeCell!);
+    const requiredWidth = timeRange.getBoundingClientRect().width
+      + Number.parseFloat(timeCellStyle.paddingLeft)
+      + Number.parseFloat(timeCellStyle.paddingRight);
+    expect(requiredWidth).toBeLessThanOrEqual(timeCell!.clientWidth);
+
+    const longTarget = 'anthropic/claude-sonnet-4-5-20250929-preview-extended-thinking';
+    const targetCellText = within(table).getByText(longTarget);
+    await waitFor(() => expect(targetCellText).toHaveAttribute('title', longTarget));
+    await userEvent.hover(targetCellText);
+    await waitFor(() => {
+      const tooltipId = targetCellText.getAttribute('aria-describedby');
+      expect(tooltipId).toBeTruthy();
+      const tooltip = document.getElementById(tooltipId!);
+      expect(tooltip).toHaveAttribute('role', 'tooltip');
+      expect(tooltip).toHaveTextContent(longTarget);
+    });
+    await userEvent.unhover(targetCellText);
+  },
 };
 // Real path: the same long-content Usage page at the minimum supported window width.
 export const UsageNarrow: Story = {
@@ -1468,6 +2111,299 @@ export const DailyReviewModelSelectorOpen: Story = {
 export const Data: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="data" />,
+};
+// Mixed authority path: local input-history and export-draft controls remain
+// available, but operations that address the cached Host are disabled until
+// the fresh catalog confirms that target.
+export const DataCachedHostRevalidation: Story = {
+  decorators: [withGeneralCachedRevalidationBridge],
+  render: () => (
+    <SettingsStory
+      section="data"
+      seedSnapshotCache={seedGeneralSnapshotCache}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole('button', { name: '清空输入历史' })).toBeEnabled();
+    await expect(canvas.getByRole('button', { name: '打开工作区文件夹' })).toBeDisabled();
+    await expect(canvas.getByRole('button', { name: '复制路径' })).toBeDisabled();
+    await expect(canvas.getByRole('button', { name: '导出配置…' })).toBeDisabled();
+    await expect(canvas.getByRole('button', { name: '导入配置…' })).toBeDisabled();
+    await expect(canvas.getByRole('switch', { name: '模型连接' })).toBeEnabled();
+    await expect(
+      canvas.getByRole('combobox', { name: '导入时同名连接的处理方式' }),
+    ).toBeEnabled();
+    await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+// Runtime-Host-only pages share one mutation fence while a cached Host target
+// is being confirmed. The wrapper is layout-transparent but interaction-inert.
+export const ModelsCachedHostRevalidation: Story = {
+  decorators: [withGeneralCachedRevalidationBridge],
+  render: () => (
+    <SettingsStory
+      section="models"
+      seedSnapshotCache={seedGeneralSnapshotCache}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitForStoryCondition(
+      () => canvasElement.querySelector('.settingsRuntimeHostInteractionBoundary') !== null,
+      'Runtime Host interaction boundary did not render',
+    );
+    const boundary = canvasElement.querySelector<HTMLElement>(
+      '.settingsRuntimeHostInteractionBoundary',
+    );
+    await expect(boundary).toHaveAttribute('inert');
+    const mutedPage = boundary?.firstElementChild;
+    if (!(mutedPage instanceof HTMLElement)) {
+      throw new Error('Runtime Host interaction boundary did not contain a visible page');
+    }
+    await expect(Number.parseFloat(getComputedStyle(mutedPage).opacity)).toBeLessThan(1);
+    await expect(within(canvasElement).queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+
+// A same-key Host replacement can verify the profile catalog before its
+// connection catalog has arrived. Keep the last-ready rows visible, but do not
+// let Models make them writable until the new generation verifies connections.
+export const ModelsConnectionsHostGenerationRevalidation: Story = {
+  decorators: [withModelsConnectionsGenerationRevalidationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return (
+      <SettingsStory
+        section="models"
+        seedSnapshotCache={seedGeneralSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const oldConnection = await canvas.findByText('Z.AI Live');
+    const boundary = canvasElement.querySelector<HTMLElement>(
+      '.settingsRuntimeHostInteractionBoundary',
+    );
+    if (!boundary) throw new Error('Runtime Host interaction boundary did not render');
+    await waitForStoryCondition(
+      () => !boundary.hasAttribute('inert'),
+      'Initial Runtime Host generation did not become interactive',
+    );
+
+    generationStoryConnectionsPending = true;
+    generationStoryRuntimeHostProfiles = runtimeHostProfilesWithRemote;
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+    listener({
+      epoch: 'storybook-generation-2',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+      readiness: 'ready',
+      hostId: 'storybook-local-host',
+      isDefault: true,
+    });
+
+    await userEvent.click(canvas.getByRole('combobox', { name: 'Runtime Host' }));
+    await within(document.body).findByRole('option', { name: 'Remote' });
+    await userEvent.keyboard('{Escape}');
+    await expect(boundary).toHaveAttribute('inert');
+    await expect(oldConnection).toBeInTheDocument();
+    await expect(canvas.queryByRole('alert')).not.toBeInTheDocument();
+  },
+};
+
+// A ready event can replace the Runtime Host without changing
+// profileId:hostId. The catalog route stays mounted, but its OAuth account
+// snapshot belongs to the Host generation and must be read again before the
+// previous account can be presented as current.
+export const ModelsOAuthHostGenerationRevalidation: Story = {
+  decorators: [withModelsOAuthGenerationRevalidationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return (
+      <SettingsStory
+        section="models"
+        openProviderCatalog
+        seedSnapshotCache={seedGeneralSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('old-generation@example.com');
+    const readsBeforeReplacement = generationStoryCodexAccountReads;
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+
+    generationStoryCodexEmail = 'new-generation@example.com';
+    listener({
+      epoch: 'storybook-generation-2',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+      readiness: 'ready',
+      hostId: 'storybook-local-host',
+      isDefault: true,
+    });
+
+    await canvas.findByText('new-generation@example.com');
+    await expect(canvas.queryByText('old-generation@example.com')).not.toBeInTheDocument();
+    await expect(generationStoryCodexAccountReads).toBeGreaterThan(readsBeforeReplacement);
+    await expect(
+      canvasElement.querySelector('[data-maka-contract="provider-catalog"]'),
+    ).toBeInTheDocument();
+  },
+};
+
+// Browser authorization is an active Host-owned controller, not durable
+// Settings route state. Replacing a same-key Host cancels the old generation's
+// request while leaving the user on the same provider setup route.
+export const ModelsOAuthAuthorizationHostGenerationRevalidation: Story = {
+  decorators: [withModelsOAuthAuthorizationGenerationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return (
+      <SettingsStory
+        section="models"
+        openProviderCatalog
+        seedSnapshotCache={seedGeneralSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', {
+      name: /打开 OAuth 登录：OpenAI Codex/,
+    }));
+    await userEvent.click(await canvas.findByRole('button', { name: '登录 Codex' }));
+    await waitForStoryCondition(
+      () => generationStoryOpenedAuthIds.includes('authorization-from-generation-1'),
+      'OAuth authorization did not reach the browser handoff',
+    );
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+
+    listener({
+      epoch: 'storybook-generation-2',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+      readiness: 'ready',
+      hostId: 'storybook-local-host',
+      isDefault: true,
+    });
+
+    await waitForStoryCondition(
+      () => generationStoryCancelledAuthIds.includes('authorization-from-generation-1'),
+      'Previous Runtime Host generation authorization was not cancelled',
+    );
+    await expect(
+      canvasElement.querySelector('[data-maka-contract="provider-setup"]'),
+    ).toBeInTheDocument();
+    await expect(await canvas.findByRole('button', { name: '登录 Codex' })).toBeEnabled();
+    await expect(generationStoryCancelledAuthIds).toEqual([
+      'authorization-from-generation-1',
+    ]);
+  },
+};
+
+// The connection-detail Copilot import owns an action guard and a late
+// success callback independently of the catalog login panel. A same-key Host
+// replacement retires that controller without throwing away the detail route
+// or its surrounding Settings state.
+export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
+  decorators: [withModelsCopilotReimportGenerationBridge],
+  render: () => {
+    resetGenerationStoryBridge();
+    return (
+      <SettingsStory
+        section="models"
+        initialConnectionSlug="github-copilot-generation"
+        seedSnapshotCache={seedCopilotGenerationSnapshotCache}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const firstImport = await canvas.findByRole('button', { name: '重新导入' });
+    await userEvent.click(firstImport);
+    await waitForStoryCondition(
+      () => generationStoryCopilotImportAttempts === 1,
+      'GitHub Copilot reimport did not start',
+    );
+
+    const listener = generationStoryProfileListener;
+    if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
+    listener({
+      epoch: 'storybook-generation-2',
+      profileId: 'local',
+      profileName: 'Local',
+      profileKind: 'local',
+      readiness: 'ready',
+      hostId: 'storybook-local-host',
+      isDefault: true,
+    });
+
+    await waitForStoryCondition(
+      () => canvas.queryByRole('button', { name: '重新导入' })?.hasAttribute('disabled') === false,
+      'Replacement Host kept the previous generation import guard',
+    );
+    const readsAfterReplacement = generationStoryCopilotSecretReads;
+    generationStoryCopilotImportResolve?.({ ok: true });
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+    await expect(generationStoryCopilotSecretReads).toBe(readsAfterReplacement);
+
+    await userEvent.click(canvas.getByRole('button', { name: '重新导入' }));
+    await waitForStoryCondition(
+      () => generationStoryCopilotImportAttempts === 2,
+      'Replacement Host could not start a fresh GitHub Copilot reimport',
+    );
+    await waitForStoryCondition(
+      () => generationStoryCopilotSecretReads > readsAfterReplacement,
+      'Replacement Host reimport did not refresh the current credential state',
+    );
+    await expect(
+      canvasElement.querySelector('[data-maka-contract="connection-detail"]'),
+    ).toBeInTheDocument();
+  },
+};
+
+// Warm cache makes SettingsSurface ready before ProvidersPanel finishes its
+// own connection read. The catalog landing intent belongs to the child and is
+// retired only after that child has actually entered the catalog route.
+export const ModelsCatalogIntentDuringWarmRevalidation: Story = {
+  decorators: [withProviderCatalogIntentRevalidationBridge],
+  render: () => (
+    <SettingsStory
+      section="models"
+      openProviderCatalog
+      seedSnapshotCache={seedGeneralSnapshotCache}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitForStoryCondition(
+      () => canvasElement.querySelector('[data-maka-contract="provider-catalog"]') !== null,
+      'Provider catalog intent was retired before ProvidersPanel consumed it',
+    );
+
+    await userEvent.click(canvas.getByRole('button', { name: /^外观$/ }));
+    await userEvent.click(canvas.getByRole('button', { name: /^模型$/ }));
+    await waitForStoryCondition(
+      () => canvasElement.querySelector(
+        '[data-maka-contract="providers-panel"]:not([aria-busy="true"])',
+      ) !== null,
+      'ProvidersPanel did not finish loading after remount',
+    );
+    await expect(
+      canvasElement.querySelector('[data-maka-contract="provider-catalog"]'),
+    ).not.toBeInTheDocument();
+    await expect(
+      canvasElement.querySelector('button[data-maka-contract="add-connection"]'),
+    ).toBeInTheDocument();
+  },
 };
 /**
  * The expanded state, not the collapsed one the page opens in: the capability layers grid

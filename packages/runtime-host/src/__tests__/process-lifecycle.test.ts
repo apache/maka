@@ -37,7 +37,7 @@ test('process lifecycle owns termination signals before publishing readiness', a
     },
   };
 
-  await runRuntimeHostProcessLifecycle(host, {
+  const lifecycleEnd = await runRuntimeHostProcessLifecycle(host, {
     onReady: () => {
       const terminationHandler = process
         .listeners('SIGTERM')
@@ -48,5 +48,21 @@ test('process lifecycle owns termination signals before publishing readiness', a
   });
 
   assert.equal(closeCalls, 1);
+  assert.equal(lifecycleEnd, 'termination_requested');
   assert.deepEqual(new Set(process.listeners('SIGTERM')), signalListeners);
+});
+
+test('process lifecycle distinguishes a Host-initiated shutdown', async () => {
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  const host = {
+    closed,
+    close: () => closed,
+  };
+
+  const lifecycle = runRuntimeHostProcessLifecycle(host, { onReady: resolveClosed });
+
+  assert.equal(await lifecycle, 'host_closed');
 });

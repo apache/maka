@@ -424,12 +424,15 @@ export type DesktopRuntimeHostManagementResult = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result' }
 > & {
+  readonly action: DesktopRuntimeHostManagementAction | 'update';
   readonly accessManagementAvailable: boolean;
 };
 
 export type DesktopRuntimeHostManagementResponse =
   | DesktopRuntimeHostManagementResult
-  | Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }>
+  | (Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> & {
+      readonly action: DesktopRuntimeHostManagementAction | 'update';
+    })
   | {
       readonly kind: 'uninstalled';
       readonly retainedStateRoot: string;
@@ -746,6 +749,12 @@ export interface MakaBridge {
     }>;
     retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
+    updateQueueEntry(
+      sessionId: string,
+      entryId: string,
+      expectedQueueRevision: number,
+      text: string,
+    ): Promise<void>;
     reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel>;
     listActiveInteractions(sessionId: string): Promise<ActiveInteractionRequestEvent[]>;

@@ -150,10 +150,6 @@ and `agent_spawn.task_id` accept UUIDs or short keys. `task_list` supports exact
 `status`, `include_terminal`, and `include_archived` filters; its no-argument
 behavior remains compatible with the original full-list behavior.
 
-`MAKA_TASK_LEDGER_TOOLS=false` disables registration. Legacy
-PascalCase aliases are not advertised and require an explicit compatibility
-flag in main-process wiring.
-
 ### Runtime Host Authority
 
 The non-serving Runtime Host composition opens the interactive Task Ledger

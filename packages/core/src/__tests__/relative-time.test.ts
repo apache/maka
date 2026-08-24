@@ -22,7 +22,9 @@ import { describe, it } from 'node:test';
 import {
   formatCompactTimestamp,
   formatRelativeTimestamp,
+  formatSidebarTimestamp,
   nextRelativeRefreshDelay,
+  nextSidebarRefreshDelay,
   resetRelativeTimeFormatters,
 } from '../relative-time.js';
 
@@ -37,6 +39,7 @@ describe('relative timestamp labels', () => {
       assert.equal(formatRelativeTimestamp(NOW - ageMs, NOW, 'zh'), '刚刚');
       assert.equal(formatRelativeTimestamp(NOW - ageMs, NOW, 'en'), 'just now');
       assert.equal(formatCompactTimestamp(NOW - ageMs, NOW, 'zh'), '刚刚');
+      assert.equal(formatSidebarTimestamp(NOW - ageMs, NOW, 'zh'), '刚刚');
     }
 
     assert.equal(formatRelativeTimestamp(NOW - 60_000, NOW, 'zh'), '1分钟前');
@@ -49,6 +52,44 @@ describe('relative timestamp labels', () => {
     assert.equal(nextRelativeRefreshDelay(NOW - 60_000, NOW), 60_000);
   });
 
+  it('uses scan-friendly units for sidebar timestamps', () => {
+    for (const locale of ['zh', 'en'] as const) {
+      for (const [ageMs, expected] of [
+        [60_000, '1min'],
+        [46 * 60_000, '46min'],
+        [13 * 60 * 60_000, '13h'],
+        [3 * 24 * 60 * 60_000, '3d'],
+        [17 * 24 * 60 * 60_000, '17d'],
+        [29 * 24 * 60 * 60_000, '29d'],
+        [30 * 24 * 60 * 60_000, '1mo'],
+        [60 * 24 * 60 * 60_000, '2mo'],
+        [365 * 24 * 60 * 60_000, '1y'],
+      ] as const) {
+        assert.equal(formatSidebarTimestamp(NOW - ageMs, NOW, locale), expected);
+      }
+    }
+  });
+
+  it('keeps the existing compact date fallback outside the sidebar', () => {
+    const ts = NOW - 17 * 24 * 60 * 60_000;
+    const expected = new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+    }).format(new Date(ts));
+
+    assert.equal(formatCompactTimestamp(ts, NOW, 'en'), expected);
+  });
+
+  it('refreshes sidebar timestamps at the next visible bucket', () => {
+    const nearRoundedDayBucketBoundary = NOW - (17 * 24 * 60 + 11 * 60 + 58) * 60_000;
+
+    assert.equal(formatSidebarTimestamp(nearRoundedDayBucketBoundary, NOW, 'en'), '17d');
+    assert.equal(nextSidebarRefreshDelay(nearRoundedDayBucketBoundary, NOW), 2 * 60_000);
+    assert.equal(nextSidebarRefreshDelay(NOW - 17 * 24 * 60 * 60_000, NOW), 12 * 60 * 60_000);
+    assert.equal(nextSidebarRefreshDelay(NOW - THIRTY_DAYS_MS, NOW), 15 * 24 * 60 * 60_000);
+    assert.equal(nextSidebarRefreshDelay(NOW - 365 * 24 * 60 * 60_000, NOW), 24 * 24 * 60 * 60_000);
+  });
+
   it('treats a finite future timestamp as just now and schedules recovery', () => {
     const futureTs = NOW + THIRTY_DAYS_MS;
     const delay = nextRelativeRefreshDelay(futureTs, NOW);
@@ -56,6 +97,7 @@ describe('relative timestamp labels', () => {
     assert.equal(delay, 60_000);
     assert.equal(formatRelativeTimestamp(futureTs, NOW, 'en'), 'just now');
     assert.equal(formatCompactTimestamp(futureTs, NOW, 'en'), 'just now');
+    assert.equal(formatSidebarTimestamp(futureTs, NOW, 'en'), 'just now');
   });
 
   it('keeps timestamp refresh delays within the scheduler bound', () => {

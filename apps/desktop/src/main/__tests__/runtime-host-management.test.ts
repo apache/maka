@@ -577,7 +577,10 @@ test('rechecks uninstall intent before retrying the remote service', async () =>
 function serviceResult(
   action: DesktopRuntimeHostSshManagementInput['action'],
   operatorAccess = false,
-): Extract<RuntimeHostServiceManagementFrame, { kind: 'result' }> {
+): Exclude<
+  Extract<RuntimeHostServiceManagementFrame, { kind: 'result' }>,
+  { action: 'check_update' | 'update' }
+> {
   const result = {
     schemaVersion: 1 as const,
     kind: 'result' as const,

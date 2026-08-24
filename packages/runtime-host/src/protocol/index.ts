@@ -91,9 +91,15 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 45 as const;
-// 45: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`. An older Host rejects a
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 48 as const;
+// 48: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`. An older Host rejects a
 // login start for it, so the pair must be refused rather than fail mid-flow.
+// 47: Project registration can carry an explicit location preference. Epoch-46
+// hosts reject that optional field on the closed registration input.
+// 46: Queued message content can be edited in place (queue.entry.update).
+// 45: Connection onboarding inputs require `baseUrl` and `connectionId`, and
+// results can carry the `base_url_not_configured` / `connection_not_found`
+// rejections. Older peers reject all of these shapes.
 // 44: Session continuity and inspection stop carrying the retired Session
 // last-used timestamp. Older peers reject those strict projection shapes.
 // 43: Session tool-start events correlate hidden shell polls with `shellRunRef`.

@@ -75,6 +75,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "regenerateTurn"
   | "retractQueueEntry"
   | "promoteQueueEntry"
+  | "updateQueueEntry"
   | "reorderQueueEntries"
   | "setSessionReadMarker"
   | "startTurn"
@@ -468,6 +469,25 @@ export function registerRuntimeHostSessionExecutionIpc(
     },
   );
   ipcMain.handle(
+    "sessions:updateQueueEntry",
+    async (
+      _event,
+      sessionId: unknown,
+      entryId: unknown,
+      expectedQueueRevision: unknown,
+      text: unknown,
+    ) => {
+      const normalizedText = requiredText(text, "Queued message").trim();
+      await deps.client.updateQueueEntry({
+        sessionId: requiredId(sessionId, "Session"),
+        entryId: requiredId(entryId, "Queue entry"),
+        updateId: newId(),
+        expectedQueueRevision: requiredSequence(expectedQueueRevision, "Queue"),
+        text: normalizedText,
+      });
+    },
+  );
+  ipcMain.handle(
     "sessions:reorderQueueEntries",
     async (_event, sessionId: string, entryIds: unknown) => {
       if (
@@ -745,6 +765,17 @@ async function requireInteraction(
 function requiredId(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 256) {
     throw new Error(`Invalid ${label} identity`);
+  }
+  return value;
+}
+
+function requiredText(value: unknown, label: string): string {
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    Buffer.byteLength(value, "utf8") > 48 * 1024
+  ) {
+    throw new Error(`Invalid ${label} text`);
   }
   return value;
 }

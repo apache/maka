@@ -277,6 +277,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'queue.entries.reorder',
   'queue.entry.promote',
   'queue.entry.retract',
+  'queue.entry.update',
   'queue.retract',
   'runtime.policy.mutate',
   'runtime.policy.query',

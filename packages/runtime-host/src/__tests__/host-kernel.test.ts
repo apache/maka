@@ -1135,6 +1135,98 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('does not take over an idle-looking Host with a residency acquired after discovery', async () => {
+    await withHostPaths(async (paths) => {
+      let context: RuntimeHostCompositionContext | undefined;
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const host = await RuntimeHostKernel.start({
+        owner,
+        generation: 'desktop-old',
+        idleGraceMs: 10_000,
+        composition: defineInteractiveRuntimeHostComposition(async (value) => {
+          context = value;
+          return testComposition();
+        }),
+      });
+
+      const discovered = await connectRuntimeHost({
+        rootPath: paths.root,
+        protocol: CURRENT_PROTOCOL,
+        generation: 'desktop-new',
+      });
+      assert.equal(discovered.kind, 'upgrade_required');
+      if (discovered.kind !== 'upgrade_required') return;
+      assert.equal(discovered.restartable, true);
+
+      const residency = context?.acquireResidency('late-activity');
+      assert.ok(residency);
+      const takeover = await connectRuntimeHost({
+        rootPath: paths.root,
+        protocol: CURRENT_PROTOCOL,
+        generation: 'desktop-new',
+        takeoverHostEpoch: host.hostEpoch,
+      });
+      assert.equal(takeover.kind, 'upgrade_required');
+      if (takeover.kind === 'upgrade_required') {
+        assert.equal(takeover.restartable, false);
+        assert.equal(takeover.handshake?.activity?.residencies.length, 1);
+      }
+      assert.equal(host.state, 'ready');
+      residency?.release();
+      await host.close();
+    });
+  });
+
+  test('does not take over a generation-mismatched Host before it is ready', async () => {
+    await withHostPaths(async (paths) => {
+      let releaseRecovery!: () => void;
+      const recovery = new Promise<void>((resolve) => {
+        releaseRecovery = resolve;
+      });
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const hostPromise = RuntimeHostKernel.start({
+        owner,
+        generation: 'desktop-old',
+        idleGraceMs: 10_000,
+        composition: defineInteractiveRuntimeHostComposition(async () => ({
+          ...testComposition(),
+          async recover() {
+            await recovery;
+          },
+        })),
+      });
+
+      let takeover = await connectRuntimeHost({
+        rootPath: paths.root,
+        protocol: CURRENT_PROTOCOL,
+        generation: 'desktop-new',
+      });
+      while (takeover.kind === 'unavailable' && takeover.reason === 'not_registered') {
+        await sleep(10);
+        takeover = await connectRuntimeHost({
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          generation: 'desktop-new',
+        });
+      }
+      assert.equal(takeover.kind, 'upgrade_required');
+      if (takeover.kind === 'upgrade_required') {
+        assert.equal(takeover.restartable, false);
+        assert.equal(takeover.handshake?.state, 'recovering');
+      }
+      releaseRecovery();
+      const host = await hostPromise;
+      await host.close();
+      await sleep(100);
+    });
+  });
+
   test('process-exit retention closes admission before requiring termination without releasing ownership', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });

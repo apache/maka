@@ -84,12 +84,20 @@ function followUpEntry(entryId: string, text: string): MessageQueueEntryProjecti
 
 /**
  * Local stand-in for the Runtime Host queue projection: promote hands an
- * entry to the active Turn (it leaves the plate), retract drops it, reorder
- * applies the drag order. The component contract (projection in, mutations
+ * entry to the active Turn (it leaves the plate), update edits it in place,
+ * retract drops it, and reorder applies the drag order. The component contract
+ * (projection in, mutations
  * out) is the real one; only the authority is simulated.
  */
 function QueuedComposer() {
   const [followup, setFollowup] = useState<MessageQueueEntryProjection[]>([
+    {
+      entryId: 'entry-steer',
+      messageId: 'message-steer',
+      content: { text: '先把刚才的判断改成只检查当前工作树。' },
+      placement: 'current_turn',
+      state: 'queued',
+    },
     followUpEntry('entry-1', '先不要改协议。'),
     followUpEntry('entry-2', '查一下 PR #3526 相关的 session 及其 compaction 诊断记录。'),
     followUpEntry('entry-3', '把 runtime.sqlite 里的 compaction 日志也带上。'),
@@ -114,11 +122,21 @@ function QueuedComposer() {
     <Composer
       {...base}
       queuedMessages={followup}
+      queuedMessageRevision={1}
       onPromoteQueuedEntry={(entryId) => {
         setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
       }}
-      onRetractQueuedEntry={(entry) => {
-        setFollowup((current) => current.filter((candidate) => candidate.entryId !== entry.entryId));
+      onUpdateQueuedEntry={(entryId, _expectedQueueRevision, text) => {
+        setFollowup((current) =>
+          current.map((candidate) =>
+            candidate.entryId === entryId
+              ? { ...candidate, content: { ...candidate.content, text, displayText: text } }
+              : candidate,
+          ),
+        );
+      }}
+      onDeleteQueuedEntry={(entryId) => {
+        setFollowup((current) => current.filter((candidate) => candidate.entryId !== entryId));
       }}
       onReorderQueuedEntries={(entryIds) => {
         setFollowup((current) =>
@@ -131,9 +149,8 @@ function QueuedComposer() {
   );
 }
 
-// Real path: mid-turn sends queue above the composer card (Enter queues;
-// Shift+Enter steers and leaves the plate). Drag the hover grip to reorder,
-// 立即发送 hands an entry to the active Turn, 收回草稿 restores the draft.
+// Real path: mid-turn sends stay visible above the composer until consumed.
+// Drag follow-ups to reorder; 调整方向 promotes one, 编辑 updates it in place.
 export const PendingPlate: Story = {
   render: () => (
     <div style={{ padding: '24px 24px 48px', maxWidth: 840 }}>

@@ -115,7 +115,7 @@ with `npm install --global maka-agent@latest`.
 
 ## Remote Runtime Host setup
 
-To set up a persistent remote Runtime Host from an exact released package on Linux:
+To set up a persistent remote Runtime Host from an exact released package on Linux or macOS:
 
 ```sh
 npx --yes --package maka-agent@next maka runtime-host setup \
@@ -126,19 +126,30 @@ npx --yes --package maka-agent@next maka runtime-host setup \
 Rerunning setup replaces that Client credential. The service no longer depends on the temporary
 `npx` cache after setup succeeds.
 
+Check a managed service against a release channel without changing the running Host:
+
+```sh
+maka runtime-host service check-update --target next --json
+```
+
+The result pins the selected channel to an exact version and package integrity. It also reports
+whether the package carries enough compatibility evidence for a future unattended update; this
+command never installs or switches a package. An updater must still verify the downloaded archive
+against that integrity and confirm the compatibility value from its extracted package manifest.
+
 ## Uninstall
 
 ```sh
-# Linux only, when a managed Runtime Host service was installed
+# When a managed Runtime Host service was installed on Linux or macOS
 npx --yes --package maka-agent@next maka runtime-host service uninstall
 
 # If Maka was installed globally
 npm uninstall --global maka-agent
 ```
 
-Remove the managed service before removing a global package so systemd does not retain a unit
-pointing to the deleted CLI. Neither command deletes model connections, credentials, sessions, or
-artifacts.
+Remove the managed service before removing a global package so the OS service manager does not
+retain a service pointing to the deleted CLI. Neither command deletes model connections,
+credentials, sessions, or artifacts.
 Those remain in the profile shared by the released CLI and Desktop app:
 
 | Platform | Profile directory |

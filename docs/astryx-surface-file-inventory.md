@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 206 files — blocker 0, polish 0, aligned 206.
+**Totals:** 207 files — blocker 0, polish 1, aligned 206.
 
 ## Exclusions (explicit)
 
@@ -94,6 +94,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/provider-oauth-section.tsx` | settings-module | Banner, Button, HStack, Text, VStack | aligned — uses Astryx (Banner, Button, HStack, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/providers-panel.tsx` | settings-module | Badge, Banner, Button, EmptyState, HStack, Heading, List, ListItem, Text, VStack | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, Heading, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/request-customization-editor.tsx` | settings-module | Button, HStack, IconButton, Text, VStack | aligned — uses Astryx (Button, HStack, IconButton, Text, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/runtime-host-interaction-boundary.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx` | settings-module | Badge, Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner, Text | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx` | settings-module | Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner, Text | aligned — uses Astryx (Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, Spinner, Text) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx` | settings-module | Badge, Banner, Button, HStack, List, ListItem, SegmentedControl, SegmentedControlItem, Selector, Switch | aligned — uses Astryx (Badge, Banner, Button, HStack, List, ListItem, SegmentedControl, SegmentedControlItem) | aligned |
@@ -186,7 +187,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/chat-turn.tsx` | shell-chrome-or-panel | Badge, Banner, Button, HStack, IconButton, Spinner, Token, Tooltip | aligned — uses Astryx (Badge, Banner, Button, HStack, IconButton, Spinner, Token, Tooltip) | aligned |
 | `packages/ui/src/chat-view.tsx` | shell-chrome-or-panel | Button, EmptyState, Spinner | aligned — uses Astryx (Button, EmptyState, Spinner) | aligned |
 | `packages/ui/src/components.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `packages/ui/src/composer-message-queue.tsx` | shell-chrome-or-panel | IconButton, List, ListItem | aligned — uses Astryx (IconButton, List, ListItem) | aligned |
+| `packages/ui/src/composer-message-queue.tsx` | shell-chrome-or-panel | Button, IconButton, List, ListItem | raw `<textarea` (API Use-the-System) | polish |
 | `packages/ui/src/composer.tsx` | shell-chrome-or-panel | Button, ChatComposer, IconButton, Lightbox, Token, Tooltip | aligned — uses Astryx (Button, ChatComposer, IconButton, Lightbox, Token, Tooltip) | aligned |
 | `packages/ui/src/daily-review-panel.tsx` | module-hub | Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem, SegmentedControl, SegmentedControlItem, Text, Toolbar, VStack | aligned — uses Astryx (Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem) | aligned |
 | `packages/ui/src/icons.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |

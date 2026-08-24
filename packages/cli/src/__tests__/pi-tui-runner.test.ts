@@ -186,10 +186,12 @@ interface FakeOnboardingOpts {
   verify?: (input: {
     providerType: ProviderType;
     apiKey?: string;
+    baseUrl?: string;
   }) => Promise<OnboardingVerifyResult>;
   save?: (input: {
     providerType: ProviderType;
     apiKey?: string;
+    baseUrl?: string;
     enabledModelIds: readonly string[];
     models: readonly ModelInfo[];
   }) => Promise<OnboardingSaveResult>;
@@ -874,6 +876,81 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('sk-z');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('sk-z'));
     assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /已启用/);
+
+    process.emit('SIGTERM');
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close after SIGTERM');
+      }),
+    ]);
+  });
+
+  test('wizard collects a base URL for a custom relay and threads it through verify and save', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const verifyCalls: Array<{ baseUrl?: string }> = [];
+    const saveCalls: Array<{ baseUrl?: string }> = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        verify: async (input) => {
+          verifyCalls.push(input);
+          return { kind: 'ok', models: [{ id: 'relay/model' }] };
+        },
+        save: async (input) => {
+          saveCalls.push(input);
+          return { kind: 'ok', modelChoices: [] };
+        },
+      }),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/setup');
+    terminal.input('\r');
+    await waitFor(() => {
+      try {
+        return latestPlainLineContaining(terminal.writes.join(''), 'Set Up Provider') !== null;
+      } catch {
+        return false;
+      }
+    });
+    // Filter down to the relay entries and pick the first (OpenAI Chat).
+    terminal.input('relay');
+    terminal.input('\r');
+    // The relay flow inserts the base-URL step (2/4) before the key.
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Base URL'));
+    assert.ok(plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+    // A malformed endpoint is rejected in place, before any host call.
+    terminal.input('not a url');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('不是有效的 URL'));
+    for (let i = 0; i < 'not a url'.length; i++) terminal.input('\x7f'); // clear the field
+    terminal.input('https://relay.example.test/v1');
+    terminal.input('\r');
+    await waitFor(() => {
+      try {
+        return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
+      } catch {
+        return false;
+      }
+    });
+    terminal.input('sk-relay');
+    terminal.input('\r');
+    await waitFor(() => verifyCalls.length === 1);
+    assert.equal(verifyCalls[0]?.baseUrl, 'https://relay.example.test/v1');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
+    terminal.input(' '); // toggle the discovered model on
+    terminal.input('\r'); // save
+    await waitFor(() => saveCalls.length === 1);
+    assert.equal(saveCalls[0]?.baseUrl, 'https://relay.example.test/v1');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('已启用'));
 
     process.emit('SIGTERM');
     await Promise.race([

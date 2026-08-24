@@ -69,17 +69,19 @@ export function hostedExecutionRunProfile(
   throw new Error('Unknown Session tool profile');
 }
 
-export function hostedExecutionToolNames(profile: SessionToolProfile): readonly string[] {
-  return hostedExecutionRunProfile(profile)!.toolNames;
-}
-
 export function projectHostedExecutionTools(
   tools: readonly MakaTool[],
   profile: SessionToolProfile | undefined,
 ): readonly MakaTool[] {
   if (profile === undefined) return tools;
-  hostedExecutionRunProfile(profile);
-  return tools.map((tool) =>
+  const toolNames = hostedExecutionRunProfile(profile)!.toolNames;
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const selected = toolNames.map((name) => byName.get(name));
+  const missing = toolNames.filter((_name, index) => selected[index] === undefined);
+  if (missing.length > 0) {
+    throw new Error(`Hosted tool profile is unavailable: ${missing.join(', ')}`);
+  }
+  return (selected as MakaTool[]).map((tool) =>
     tool.name === 'Bash'
       ? {
           ...tool,

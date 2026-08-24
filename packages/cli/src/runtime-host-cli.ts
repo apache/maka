@@ -18,6 +18,7 @@
  */
 
 import { isAbsolute } from 'node:path';
+import { isProductReleaseVersion } from '@maka/runtime-host/operator';
 import {
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
@@ -26,6 +27,10 @@ import {
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
 
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };
+
+export type RuntimeHostUpdateSelector =
+  | { readonly kind: 'channel'; readonly channel: 'latest' | 'next' }
+  | { readonly kind: 'exact'; readonly version: string };
 
 export type RuntimeHostCliCommand =
   | {
@@ -68,6 +73,14 @@ export type RuntimeHostCliCommand =
       expectedTarget?: RuntimeHostManagedServiceTarget;
       retainManagedDeployment?: true;
       allowInterruptActiveTasks?: true;
+    }
+  | {
+      kind: 'runtime-host-service-check-update';
+      json: boolean;
+      framed?: true;
+      clientDataRoot?: string;
+      selector: RuntimeHostUpdateSelector;
+      expectedTarget?: RuntimeHostManagedServiceTarget;
     }
   | {
       kind: 'runtime-host-service-update';
@@ -114,7 +127,7 @@ export type RuntimeHostCliCommand =
       framed: boolean;
     }
   | { kind: 'runtime-host-project-list'; rootPath?: string }
-  | { kind: 'runtime-host-project-add'; rootPath?: string; path: string }
+  | { kind: 'runtime-host-project-add'; rootPath?: string; path: string; prefer: boolean }
   | {
       kind: 'runtime-host-capability-provider-serve';
       url: string;
@@ -235,6 +248,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     action !== 'stop' &&
     action !== 'restart' &&
     action !== 'retire' &&
+    action !== 'check-update' &&
     action !== 'update' &&
     action !== 'logs' &&
     action !== 'uninstall'
@@ -242,13 +256,14 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     return error(
       action
         ? `Unexpected runtime-host service command: ${action}`
-        : 'runtime-host service requires install, status, start, stop, restart, retire, update, logs, or uninstall',
+        : 'runtime-host service requires install, status, start, stop, restart, retire, check-update, update, logs, or uninstall',
     );
   }
 
   let retainManagedDeployment = false;
   let allowInterruptActiveTasks = false;
   let clientDataRoot: string | undefined;
+  let updateTarget: string | undefined;
   const flagOptions: Readonly<Record<string, () => void | RuntimeHostCliError>> =
     action === 'uninstall'
       ? {
@@ -276,12 +291,32 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
         if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
         clientDataRoot = value;
       },
+      ...(action === 'check-update'
+        ? {
+            '--target': (value: string) => {
+              if (updateTarget !== undefined) return error('Duplicate --target');
+              updateTarget = value;
+            },
+          }
+        : {}),
     },
     flagOptions,
   });
   if ('kind' in options) return options;
   if ((action === 'retire' || action === 'update') && !options.expectedTarget) {
     return error(`runtime-host service ${action} requires an expected target`);
+  }
+  if (action === 'check-update') {
+    const selector = parseUpdateSelector(updateTarget);
+    if ('kind' in selector && selector.kind === 'error') return selector;
+    return {
+      kind: 'runtime-host-service-check-update',
+      json: options.json,
+      ...(options.framed ? { framed: true } : {}),
+      ...(clientDataRoot ? { clientDataRoot } : {}),
+      selector,
+      ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+    };
   }
   if (action === 'update') {
     return {
@@ -301,6 +336,19 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     ...(retainManagedDeployment ? { retainManagedDeployment: true } : {}),
     ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
   };
+}
+
+function parseUpdateSelector(
+  value: string | undefined,
+): RuntimeHostUpdateSelector | RuntimeHostCliError {
+  if (!value) return error('runtime-host service check-update requires --target');
+  if (value === 'latest' || value === 'next') {
+    return { kind: 'channel', channel: value };
+  }
+  if (!isProductReleaseVersion(value)) {
+    return error('--target must be latest, next, or an exact Maka version');
+  }
+  return { kind: 'exact', version: value };
 }
 
 interface ManagedServiceOptions {
@@ -464,6 +512,7 @@ function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {
   }
   let rootPath: string | undefined;
   let path: string | undefined;
+  let prefer = false;
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--root') {
@@ -471,6 +520,10 @@ function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {
       if (typeof parsed !== 'string') return parsed;
       rootPath = parsed;
       index += 1;
+      continue;
+    }
+    if (action === 'add' && argument === '--prefer') {
+      prefer = true;
       continue;
     }
     if (action === 'add' && path === undefined) {
@@ -483,7 +536,12 @@ function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {
     return { kind: 'runtime-host-project-list', ...(rootPath ? { rootPath } : {}) };
   }
   if (!path) return error('runtime-host project add requires a path');
-  return { kind: 'runtime-host-project-add', path, ...(rootPath ? { rootPath } : {}) };
+  return {
+    kind: 'runtime-host-project-add',
+    path,
+    prefer,
+    ...(rootPath ? { rootPath } : {}),
+  };
 }
 
 function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {

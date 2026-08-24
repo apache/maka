@@ -213,9 +213,64 @@ export type ConnectionEffectCompletionResult =
       readonly changed: readonly ConnectionEffectChangedDomain[];
     };
 
+export interface ConnectionOnboardingTicket {
+  readonly [operationTicketBrand]: 'connection_onboarding';
+}
+
+export interface BeginConnectionOnboardingInput {
+  readonly providerType: ConnectionCatalogEntry['providerType'];
+  /**
+   * The existing connection to edit in place (any slug); null targets the
+   * canonical-slug connection, creating it when absent.
+   */
+  readonly connectionId: string | null;
+}
+
+/**
+ * Discovery-basis handoff for onboarding: `begin` snapshots the connection
+ * revision, credential status, and effective proxy the caller will discover
+ * against and issues a one-shot ticket; `complete` revalidates that exact
+ * basis under the write lane before committing, so a model inventory can
+ * never be persisted onto an endpoint or credential it was not discovered
+ * from (#3467 review).
+ */
+export type BeginConnectionOnboardingResult =
+  // The explicitly targeted connection does not exist or changed provider type.
+  | { readonly kind: 'target_missing' }
+  | { readonly kind: 'slug_conflict' }
+  | {
+      readonly kind: 'ready';
+      readonly ticket: ConnectionOnboardingTicket;
+      /** The targeted connection, or null when onboarding creates one. */
+      readonly connection: ConnectionCatalogEntry | null;
+      /** The target's stored API key, for blank-key reuse during discovery. */
+      readonly storedSecret: string | null;
+      /**
+       * The target's custom request-headers secret, so the discovery probe
+       * carries the same header customization the models path applies.
+       */
+      readonly requestHeadersSecret: string | null;
+      /**
+       * The proxy discovery must run through — pinned here, like
+       * beginModelFetch pins it, so the basis certifies the egress the
+       * inventory actually travelled.
+       */
+      readonly networkProxy: RuntimePolicy['networkProxy'];
+      readonly proxySecret: string | null;
+      /** The proxy requires a credential the vault does not hold. */
+      readonly proxyCredentialMissing: boolean;
+    };
+
 export interface CommitConnectionOnboardingInput {
   readonly providerType: ConnectionCatalogEntry['providerType'];
+  /**
+   * The existing connection to edit in place (any slug); null targets the
+   * canonical-slug connection, creating it when absent.
+   */
+  readonly connectionId: string | null;
   readonly suppliedSecret: string | null;
+  /** Endpoint override; null keeps the existing entry's persisted URL or the registry default. */
+  readonly baseUrl: string | null;
   readonly enabledModelIds: readonly string[];
   readonly discovery: ConnectionModelDiscoveryResult;
 }
@@ -226,7 +281,17 @@ export type CommitConnectionOnboardingResult =
       readonly snapshot: ConnectionCatalogSnapshot;
       readonly changed: boolean;
     }
-  | { readonly kind: 'slug_conflict' };
+  | { readonly kind: 'slug_conflict' }
+  // The explicitly targeted connection no longer exists (or changed provider
+  // type) between the caller's snapshot and this commit.
+  | { readonly kind: 'target_missing' }
+  // The discovery basis (connection revision, credential, or proxy) changed
+  // between begin and complete: committing would bind another endpoint or
+  // credential to a model inventory it never produced.
+  | {
+      readonly kind: 'superseded';
+      readonly changed: readonly ConnectionEffectChangedDomain[];
+    };
 
 export type ResolveExecutionConnectionResult =
   | { readonly kind: 'not_found' }
@@ -280,7 +345,11 @@ export interface RuntimePolicyOperationCoordinator {
     ticket: ModelFetchTicket,
     result: ConnectionModelDiscoveryResult,
   ): Promise<ConnectionEffectCompletionResult>;
-  commitConnectionOnboarding(
+  beginConnectionOnboarding(
+    input: BeginConnectionOnboardingInput,
+  ): Promise<BeginConnectionOnboardingResult>;
+  completeConnectionOnboarding(
+    ticket: ConnectionOnboardingTicket,
     input: CommitConnectionOnboardingInput,
   ): Promise<CommitConnectionOnboardingResult>;
   beginConnectionTest(

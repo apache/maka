@@ -164,6 +164,31 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 38);
   });
 
+  test('publishes a new compatibility epoch for onboarding endpoint overrides', () => {
+    // Epoch 44 peers reject the required `baseUrl` and `connectionId` on
+    // onboarding inputs, and the `base_url_not_configured` /
+    // `connection_not_found` rejections on their results. Both landed in one
+    // epoch because neither shape was ever published separately.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 44);
+  });
+
+  test('publishes a new compatibility epoch for queued message editing', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 45);
+  });
+
+  test('publishes a new compatibility epoch for the project registration preference', () => {
+    // Epoch 46 Hosts reject the optional preference field on the closed register
+    // input, so mixed-version peers must fail during the handshake instead.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 46);
+  });
+
+  test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
+    // Epoch 47 does not offer `github-copilot`, so such a Host rejects a login
+    // start at its strict provider decoder rather than refusing the pair at
+    // connect. The floor is current main's epoch, not a preselected number.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 47);
+  });
+
   test('adds credential rotation without changing existing credential inputs', () => {
     const issueInput = {
       principalKind: 'remote_owner',
@@ -215,12 +240,6 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('publishes a new compatibility epoch for the retired Session timestamp', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 43);
-  });
-
-  test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
-    // Epoch 44 does not offer `github-copilot`, so such a Host rejects a login
-    // start for it rather than failing the pair at connect.
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 44);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -1000,6 +1019,18 @@ describe('Runtime Host bootstrap protocol', () => {
         promoteId: 'promote-1',
       },
     };
+    const entryUpdate = {
+      requestId: 'entry-update-request-1',
+      operation: 'queue.entry.update' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        updateId: 'update-1',
+        expectedQueueRevision: 7,
+        text: 'updated message',
+      },
+    };
     const entriesReorder = {
       requestId: 'entries-reorder-request-1',
       operation: 'queue.entries.reorder' as const,
@@ -1012,7 +1043,16 @@ describe('Runtime Host bootstrap protocol', () => {
     };
     assert.deepEqual(decodeClientFrame(entryRetract), entryRetract);
     assert.deepEqual(decodeClientFrame(entryPromote), entryPromote);
+    assert.deepEqual(decodeClientFrame(entryUpdate), entryUpdate);
     assert.deepEqual(decodeClientFrame(entriesReorder), entriesReorder);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entryUpdate,
+          input: { ...entryUpdate.input, text: '   ' },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeClientFrame({
@@ -1357,6 +1397,7 @@ describe('Runtime Host bootstrap protocol', () => {
     for (const [operation, requestId] of [
       ['queue.entry.retract', 'entry-retract-response'],
       ['queue.entry.promote', 'entry-promote-response'],
+      ['queue.entry.update', 'entry-update-response'],
       ['queue.entries.reorder', 'entries-reorder-response'],
     ] as const) {
       assert.doesNotThrow(() =>

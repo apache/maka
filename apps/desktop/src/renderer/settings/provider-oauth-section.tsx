@@ -35,7 +35,9 @@ import {
   type SubscriptionSnapshot,
 } from './use-oauth-login-flow';
 import {
+  RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
+  useRuntimeHostSettingsGenerationKey,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
 import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
@@ -53,6 +55,14 @@ export interface OAuthCard {
   isLoggedIn: boolean;
 }
 
+function emptyOAuthCardStates(): Record<OAuthCardId, SubscriptionSnapshot | null> {
+  return {
+    codex: null,
+    'github-copilot': null,
+    xai: null,
+  };
+}
+
 /**
  * Account sign-in rows for the provider catalog, plus the refresh that keeps
  * their badges live.
@@ -68,6 +78,7 @@ export interface OAuthCard {
  */
 export function useOAuthCards(props: { query?: string }) {
   const host = useRuntimeHostSettingsTarget();
+  const generationKey = useRuntimeHostSettingsGenerationKey();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
   const cards = modelOAuthCards(copy);
@@ -79,11 +90,7 @@ export function useOAuthCards(props: { query?: string }) {
   // carries a runtimeState + email so its row can show the account email inline,
   // re-fetched whenever a login step closes (success OR
   // cancel — the user may have signed out from inside it).
-  const [cardStates, setCardStates] = useState<Record<OAuthCardId, SubscriptionSnapshot | null>>({
-    codex: null,
-    'github-copilot': null,
-    xai: null,
-  });
+  const [cardStates, setCardStates] = useState(emptyOAuthCardStates);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const normalizedQuery = props.query?.trim().toLocaleLowerCase() ?? '';
 
@@ -132,11 +139,17 @@ export function useOAuthCards(props: { query?: string }) {
   }
 
   useEffect(() => {
+    // A same-key Host replacement keeps the catalog mounted to preserve its
+    // route, query, scroll, and focus. Retire only the account snapshots: the
+    // outer Settings fence may lift before these independent OAuth reads do,
+    // so the previous generation must never remain visible as current state.
+    setCardStates(emptyOAuthCardStates());
+    setRefreshError(null);
     void refreshAllCards();
     return () => {
       refreshTicketRef.current += 1;
     };
-  }, []);
+  }, [generationKey]);
 
   const visibleCards: OAuthCard[] = cards
     .filter(matchesQuery)
@@ -167,6 +180,17 @@ export function useOAuthCards(props: { query?: string }) {
  * level, the same ones the catalog and the connection detail use.
  */
 export function OAuthLoginPanel(props: { cardId: OAuthCardId; onLoginSuccess(): void | Promise<void> }) {
+  return (
+    <RuntimeHostSettingsGenerationBoundary>
+      <OAuthLoginPanelForCurrentGeneration {...props} />
+    </RuntimeHostSettingsGenerationBoundary>
+  );
+}
+
+function OAuthLoginPanelForCurrentGeneration(props: {
+  cardId: OAuthCardId;
+  onLoginSuccess(): void | Promise<void>;
+}) {
   if (props.cardId === 'github-copilot') {
     return <GitHubCopilotLoginPanel onLoginSuccess={props.onLoginSuccess} />;
   }

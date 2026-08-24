@@ -15665,6 +15665,11 @@ describe('SessionManager steering and followup queues', () => {
     );
     expect(updates.at(-1)?.steering).toEqual([]);
     expect(updates.at(-1)?.followup).toEqual(['late']);
+    expect(updates.at(-1)?.steeringEntries).toEqual([]);
+    expect(updates.at(-1)?.followupEntries).toHaveLength(1);
+    expect(updates.at(-1)?.followupEntries?.[0]?.content).toEqual({ text: 'late' });
+    expect(updates.at(-1)?.followupEntries?.[0]?.placement).toBe('next_turn');
+    expect(updates.at(-1)?.followupEntries?.[0]?.state).toBe('queued');
     // And the followup queue is the authoritative owner of the text.
     expect(manager.drainFollowup(session.id)).toBe('late');
   });

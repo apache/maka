@@ -94,6 +94,7 @@ import {
   type QueueEntriesReorderInput,
   type QueueEntryPromoteInput,
   type QueueEntryRetractInput,
+  type QueueEntryUpdateInput,
   type QueueMutationResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
@@ -1077,6 +1078,15 @@ export class DesktopRuntimeHostClient {
     input: Omit<QueueEntryPromoteInput, "originHostEpoch">,
   ): Promise<QueueMutationResult> {
     return this.request("queue.entry.promote", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  updateQueueEntry(
+    input: Omit<QueueEntryUpdateInput, "originHostEpoch">,
+  ): Promise<QueueMutationResult> {
+    return this.request("queue.entry.update", {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
     });

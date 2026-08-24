@@ -657,7 +657,7 @@ test('stops reconnecting when the replacement Host is incompatible', async () =>
   await owner.close();
 });
 
-test('restarts a generation-aware Host through its exact takeover handshake', async () => {
+test('restarts an idle generation-aware Host without prompting', async () => {
   const replacement = candidateHarness();
   const starts: DesktopRuntimeHostCandidateStartInput[] = [];
   const conflict = upgradeRequired(true);
@@ -667,13 +667,93 @@ test('restarts a generation-aware Host through its exact takeover handshake', as
       return starts.length === 1 ? conflict : ready(replacement.candidate);
     },
     upgradePrompts: {
-      restartable: async () => 'restart',
+      restartable: async () => assert.fail('idle Host must not prompt before restart'),
       waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
     },
   });
 
   assert.equal(starts.length, 2);
   assert.equal(starts[1]?.takeoverHostEpoch, conflict.registration.hostEpoch);
+  await owner.close();
+});
+
+test('prompts before restarting a generation-aware Host with active work', async () => {
+  const replacement = candidateHarness();
+  const conflict = upgradeRequired(true, 1);
+  let prompts = 0;
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) =>
+      input.takeoverHostEpoch ? ready(replacement.candidate) : conflict,
+    upgradePrompts: {
+      restartable: async () => {
+        prompts += 1;
+        return 'restart';
+      },
+      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+    },
+  });
+
+  assert.equal(prompts, 1);
+  await owner.close();
+});
+
+test('prompts before restarting a generation-aware Host with a residency', async () => {
+  const replacement = candidateHarness();
+  const conflict = upgradeRequired(true, 0, [{ label: 'goal', count: 1 }]);
+  let prompts = 0;
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) =>
+      input.takeoverHostEpoch ? ready(replacement.candidate) : conflict,
+    upgradePrompts: {
+      restartable: async () => {
+        prompts += 1;
+        return 'restart';
+      },
+      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+    },
+  });
+
+  assert.equal(prompts, 1);
+  await owner.close();
+});
+
+test('prompts before restarting a generation-aware Host with connections', async () => {
+  const replacement = candidateHarness();
+  const conflict = upgradeRequired(true, 0, [], 1);
+  let prompts = 0;
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) =>
+      input.takeoverHostEpoch ? ready(replacement.candidate) : conflict,
+    upgradePrompts: {
+      restartable: async () => {
+        prompts += 1;
+        return 'restart';
+      },
+      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+    },
+  });
+
+  assert.equal(prompts, 1);
+  await owner.close();
+});
+
+test('prompts when a restartable Host has no activity snapshot', async () => {
+  const replacement = candidateHarness();
+  const conflict = upgradeRequired(true, 0, [], 0, false);
+  let prompts = 0;
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async (input) =>
+      input.takeoverHostEpoch ? ready(replacement.candidate) : conflict,
+    upgradePrompts: {
+      restartable: async () => {
+        prompts += 1;
+        return 'restart';
+      },
+      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+    },
+  });
+
+  assert.equal(prompts, 1);
   await owner.close();
 });
 
@@ -753,6 +833,10 @@ function incompatibleHost(
 
 function upgradeRequired(
   restartable: boolean,
+  activeOperations = 0,
+  residencies: readonly { readonly label: string; readonly count: number }[] = [],
+  connections = 0,
+  includeActivity = true,
 ): Extract<DesktopRuntimeHostCandidateStartResult, { kind: 'upgrade_required' }> {
   const registration = hostRegistration(
     restartable ? { lifecycleMode: 'ephemeral' } : {},
@@ -775,12 +859,16 @@ function upgradeRequired(
       generation: 'desktop-old',
       state: 'ready',
       replacement: 'blocked_by_residency',
-      activity: {
-        connections: 0,
-        activeOperations: 0,
-        processUptimeSeconds: 60,
-        residencies: [],
-      },
+      ...(includeActivity
+        ? {
+            activity: {
+              connections,
+              activeOperations,
+              processUptimeSeconds: 60,
+              residencies,
+            },
+          }
+        : {}),
     },
   };
 }
