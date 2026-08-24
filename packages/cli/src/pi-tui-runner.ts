@@ -1266,9 +1266,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         const admissionEntries = takePendingAdmission();
         if (admissionEntries.length > 0) {
           if (outcome.kind !== 'completed') {
-            refillEditorFromQueues(
-              admissionEntries.map((entry) => entry.text).join('\n\n'),
-            );
+            refillEditorFromQueues(admissionEntries.map((entry) => entry.text).join('\n\n'));
           } else {
             const undelivered: string[] = [];
             for (const entry of admissionEntries) {

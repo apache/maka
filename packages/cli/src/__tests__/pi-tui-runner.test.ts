@@ -1923,9 +1923,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x1b\r');
     await waitFor(() => {
       const screen = plainTerminalOutput(terminal.screenOutput());
-      return (
-        screen.includes('Steering: must survive') && screen.includes('Queued: and afterwards')
-      );
+      return screen.includes('Steering: must survive') && screen.includes('Queued: and afterwards');
     });
     // The first prepare is still parked on session.create, and nothing is
     // delivered while the session id is missing.
