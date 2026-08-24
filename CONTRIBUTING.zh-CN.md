@@ -23,7 +23,7 @@
 
 ## 从哪里开始
 
-缺陷修复、模型供应商支持、测试、性能优化和文档最容易被合并。想找活干，从 [`help wanted`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) · [`good first issue`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [`bug`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3Abug) · [`enhancement`](https://github.com/maka-agent/maka-agent/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) 里挑一个，留言认领。提 issue 走 **Bug report** 或 **Feature request** 模板；安全问题走 [SECURITY.md](./SECURITY.md) 的私密流程，不要开公开 issue。提问、想法和还不成熟的提案发到 [Discussions](https://github.com/maka-agent/maka-agent/discussions)——它会自动进到大家的邮箱，比 issue 更容易被看到。
+缺陷修复、模型供应商支持、测试、性能优化和文档最容易被合并。想找活干，从 [`help wanted`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) · [`good first issue`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [`bug`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Abug) · [`enhancement`](https://github.com/apache/maka/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) 里挑一个，留言认领。提 issue 走 **Bug report** 或 **Feature request** 模板；安全问题走 [SECURITY.md](./SECURITY.md) 的私密流程，不要开公开 issue。提问、想法和还不成熟的提案发到 [Discussions](https://github.com/apache/maka/discussions)——它会自动进到大家的邮箱，比 issue 更容易被看到。
 
 项目方向、治理和重大产品决策在实施前于开发邮件列表 [`dev@maka.apache.org`](https://lists.apache.org/list.html?dev@maka.apache.org) 上公开讨论；实现层面的技术决策可以在 PR 中讨论。
 
@@ -46,8 +46,8 @@
 需要 Node `>=22.19.0` 和 npm `11.19.0`（见根 `package.json`）；桌面端开发需要 macOS Apple Silicon。
 
 ```sh
-git clone https://github.com/maka-agent/maka-agent.git
-cd maka-agent
+git clone https://github.com/apache/maka.git
+cd maka
 npm install                 # 只在根目录装 —— 不要在某个 workspace 里跑
 npm run build               # 按依赖顺序构建全部 workspace
 npm --workspace @maka/core test
