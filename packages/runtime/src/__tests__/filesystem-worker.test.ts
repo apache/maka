@@ -243,6 +243,40 @@ describe('filesystem worker operations', () => {
     });
   });
 
+  test('ends Grep options before the pattern so an option-like pattern still searches', async () => {
+    const root = await temporaryDirectory('maka-worker-grep-separator-');
+    const target = join(root, 'style.css');
+    await writeFile(target, 'a { display: -webkit-box; }', 'utf8');
+    let grepArgs: readonly string[] | undefined;
+
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        {
+          kind: 'grep',
+          cwd: root,
+          path: target,
+          pattern: '-webkit-box',
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 1_000,
+        },
+        { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'file' },
+      ),
+      {
+        grepExecutable: '/usr/bin/rg',
+        runGrep: async (input) => {
+          grepArgs = input.args;
+          return { exitCode: 0, stdout: '1:a { display: -webkit-box; }\n', stderrTail: '' };
+        },
+      },
+    );
+
+    // Without the separator ripgrep reads `-webkit-box` as flags: it exits 1,
+    // which this worker reports as "no matches" for a string that is present.
+    assert.deepEqual(grepArgs?.slice(-3), ['--', '-webkit-box', target]);
+    assert.equal(response.ok, true);
+  });
+
   test('returns no Grep matches for exit code 1 and surfaces bounded stderr for failures', async () => {
     const root = await temporaryDirectory('maka-worker-grep-result-');
     const target = join(root, 'file.ts');
