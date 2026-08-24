@@ -838,7 +838,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     void (async () => {
       await settlePendingEnqueues();
       const retracted = (await input.driver.retractQueued?.()) ?? '';
-      refillEditorFromQueues(retracted);
+      const held = pendingAdmissionText();
+      refillEditorFromQueues([held, retracted].filter(Boolean).join('\n\n'));
       requestRender();
       await input.driver.stop();
     })().catch((error) => {
@@ -889,6 +890,30 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     });
   };
 
+  // First-session admission handoff. The production driver's `#enqueue`
+  // returns `fallback` while `session.create` has not yet assigned a session
+  // id, and `runAgentTurn` sets `turnRunning` before `preparePrompt` awaits
+  // `#ensureSession()` — so Enter / Alt+Enter inside that window produce a
+  // `fallback` even though a turn is running. Hold that text durably (no
+  // retry loop: the window is bounded by the first turn) and re-enqueue it at
+  // the turn boundary; anything still undelivered returns to the editor, so
+  // user input is never dropped.
+  const holdForAdmission = (text: string, enqueue: 'steer' | 'queue') => {
+    state.pendingAdmission.push({ text, enqueue });
+    requestRender();
+  };
+
+  const takePendingAdmission = (): Array<{ text: string; enqueue: 'steer' | 'queue' }> => {
+    const entries = state.pendingAdmission;
+    state.pendingAdmission = [];
+    return entries;
+  };
+
+  const pendingAdmissionText = (): string =>
+    takePendingAdmission()
+      .map((entry) => entry.text)
+      .join('\n\n');
+
   // Enter during a turn steers it (inject at the next step boundary).
   const steerRunningTurn = (text: string) => {
     if (!text.trim()) {
@@ -900,7 +925,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (!enqueue) return;
     const task = enqueue
       .call(input.driver, text)
-      .then(() => {
+      .then((outcome) => {
+        if (outcome.kind === 'fallback') {
+          if (turnRunning || busy) holdForAdmission(text, 'steer');
+          else submitPrompt(text);
+          return;
+        }
         // The runtime's `queue_update` event refreshes the mirror.
         requestRender();
       })
@@ -933,7 +963,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (!enqueue) return;
     const task = enqueue
       .call(input.driver, text)
-      .then(() => {
+      .then((outcome) => {
+        if (outcome.kind === 'fallback') {
+          if (turnRunning || busy) holdForAdmission(text, 'queue');
+          else submitPrompt(text);
+          return;
+        }
         // The runtime's `queue_update` event refreshes the mirror.
         requestRender();
       })
@@ -950,7 +985,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     void (async () => {
       await settlePendingEnqueues();
       const retracted = (await input.driver.retractQueued?.()) ?? '';
-      refillEditorFromQueues(retracted);
+      const held = pendingAdmissionText();
+      refillEditorFromQueues([held, retracted].filter(Boolean).join('\n\n'));
       requestRender();
     })().catch(reportError);
   };
@@ -1221,6 +1257,38 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
         // Wait for enqueue calls already in flight before releasing this turn.
         await settlePendingEnqueues();
+        // Deliver CLI-held admission texts (first-session window) now that the
+        // turn has settled: re-enqueue via the original steer/queue intent —
+        // the session id exists by this point, so a queued outcome hands the
+        // text to the runtime; anything still falling back (or a turn that
+        // aborted or errored, where auto-opening would defeat the interrupt)
+        // returns to the editor as an editable draft instead of being dropped.
+        const admissionEntries = takePendingAdmission();
+        if (admissionEntries.length > 0) {
+          if (outcome.kind !== 'completed') {
+            refillEditorFromQueues(
+              admissionEntries.map((entry) => entry.text).join('\n\n'),
+            );
+          } else {
+            const undelivered: string[] = [];
+            for (const entry of admissionEntries) {
+              const enqueue =
+                entry.enqueue === 'steer' ? input.driver.steer : input.driver.queueMessage;
+              try {
+                if (
+                  !enqueue ||
+                  (await enqueue.call(input.driver, entry.text)).kind === 'fallback'
+                ) {
+                  undelivered.push(entry.text);
+                }
+              } catch {
+                undelivered.push(entry.text);
+              }
+            }
+            if (undelivered.length > 0) refillEditorFromQueues(undelivered.join('\n\n'));
+            requestRender();
+          }
+        }
         if (outcome.kind === 'completed' && pendingAttachedTurn) {
           const attached = pendingAttachedTurn;
           pendingAttachedTurn = undefined;

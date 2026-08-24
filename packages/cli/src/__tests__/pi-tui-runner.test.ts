@@ -1896,6 +1896,53 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('input during the first-session admission window survives to the next turn', async () => {
+    const terminal = new FakeTerminal();
+    // `session.create` is delayed, so the first turn runs before a session id
+    // exists and enqueues inside the window report `fallback`.
+    const driver = new AdmissionWindowDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('start');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    // Enter and Alt+Enter inside the admission window: both fall back and the
+    // CLI holds them; nothing is delivered while the session id is missing.
+    terminal.input('must survive');
+    terminal.input('\r');
+    terminal.input('and afterwards');
+    terminal.input('\x1b\r');
+    await waitFor(() => {
+      const screen = plainTerminalOutput(terminal.screenOutput());
+      return (
+        screen.includes('Steering: must survive') && screen.includes('Queued: and afterwards')
+      );
+    });
+    // The first prepare is still parked on session.create, and nothing is
+    // delivered while the session id is missing.
+    assert.deepEqual(driver.prompts, []);
+
+    // session.create resolves and the first turn completes: the turn boundary
+    // re-enqueues the held texts, and each opens its follow-up turn.
+    driver.admit();
+    await waitFor(() => driver.prompts.length === 3);
+    assert.deepEqual(driver.prompts, ['start', 'must survive', 'and afterwards']);
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
   test('opens /transcript during a running turn instead of steering it', async () => {
     const terminal = new FakeTerminal();
     const driver = new SteeringTurnDriver();
@@ -6481,6 +6528,100 @@ class SteeringTurnDriver implements MakaSessionDriver {
   startNewSession(): void {}
   getSessionId(): string {
     return 'session-1';
+  }
+}
+
+/**
+ * First-session admission window: `session.create` is slow, so the first turn
+ * is already running before a session id exists. Enqueues inside the window
+ * report `fallback` (the production `#enqueue` early-return on a missing
+ * session id). Once admitted, an enqueue onto an idle session starts the next
+ * Turn — the same resolution the Host gives `turn.message.submit` on an idle
+ * session — which this double records as a new prompt.
+ */
+class AdmissionWindowDriver implements MakaSessionDriver {
+  stopCalls = 0;
+  admitted = false;
+  readonly prompts: string[] = [];
+  private releaseAdmission: (() => void) | null = null;
+  private readonly admission: Promise<void> = new Promise((resolve) => {
+    this.releaseAdmission = resolve;
+  });
+
+  async listSessions(): Promise<SessionSummary[]> {
+    return [];
+  }
+
+  async preparePrompt(
+    prompt: string,
+    options: MakaPreparePromptOptions = {},
+  ): Promise<MakaPreparedSessionTurn> {
+    // The first turn's prepare awaits the delayed `session.create`.
+    if (this.prompts.length === 0) await this.admission;
+    this.prompts.push(options.modelText ?? prompt);
+    return {
+      sessionId: this.getSessionId() ?? 'session-1',
+      turnId: options.turnId ?? `turn-${this.prompts.length}`,
+      events: this.promptEvents(),
+    };
+  }
+
+  // Once admitted the turn completes as soon as it opens.
+  async *promptEvents(): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'complete',
+      id: 'complete-1',
+      turnId: `turn-${this.prompts.length}`,
+      ts: 1,
+      stopReason: 'end_turn',
+    };
+  }
+
+  async *compactSession(): AsyncIterable<never> {}
+
+  /** Resolve the delayed `session.create`. */
+  admit(): void {
+    this.admitted = true;
+    this.releaseAdmission?.();
+    this.releaseAdmission = null;
+  }
+
+  async steer(text: string): Promise<QueueEnqueueOutcome> {
+    return this.enqueue(text);
+  }
+
+  async queueMessage(text: string): Promise<QueueEnqueueOutcome> {
+    return this.enqueue(text);
+  }
+
+  private enqueue(text: string): QueueEnqueueOutcome {
+    if (!this.admitted) return { kind: 'fallback' };
+    // Session exists and no Turn is running: the Host starts the next Turn.
+    this.prompts.push(text);
+    return { kind: 'queued' };
+  }
+
+  async stop(): Promise<void> {
+    this.stopCalls += 1;
+  }
+
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): void {}
+  getSessionId(): string | null {
+    return this.admitted ? 'session-1' : null;
   }
 }
 
