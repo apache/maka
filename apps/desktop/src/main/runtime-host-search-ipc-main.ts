@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { runThreadSearch } from './search/thread-search.js';
+import type { SearchResult } from '@maka/core/search';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
 import {
@@ -25,6 +25,7 @@ import {
   readWithFallback,
   type ReconnectableReadIpcMain,
 } from './ipc-reconnect-policy.js';
+import { runThreadSearch } from './search/thread-search.js';
 
 interface RuntimeHostSearchIpcDeps {
   readonly ipcMain: ReconnectableReadIpcMain;
@@ -37,8 +38,8 @@ interface RuntimeHostSearchIpcDeps {
 export function registerRuntimeHostSearchIpc(
   deps: RuntimeHostSearchIpcDeps,
 ): void {
-  handleReconnectableRead(deps.ipcMain, 'search:thread', (_event, request: unknown) =>
-    runThreadSearch(request, {
+  handleReconnectableRead(deps.ipcMain, 'search:thread', async (_event, request: unknown) => {
+    const result = await runThreadSearch(request, {
       listSessions: async () =>
         (await deps.client.listSessions()).map(toDesktopHostSessionSummary),
       readMessages: (sessionId) =>
@@ -54,6 +55,20 @@ export function registerRuntimeHostSearchIpc(
         incognitoActive: (await deps.client.queryRuntimePolicy()).policy.privacy
           .incognitoActive,
       }),
-    }),
-  );
+    });
+    return result.ok ? result.results.map(projectDesktopSearchResult) : result;
+  });
+}
+
+function projectDesktopSearchResult(result: SearchResult): SearchResult {
+  if (!result.target) return result;
+  return {
+    ...result,
+    target: {
+      kind: result.target.kind,
+      sessionId: result.target.sessionId,
+      ...(result.target.turnId !== undefined ? { turnId: result.target.turnId } : {}),
+      ...(result.target.sequence !== undefined ? { sequence: result.target.sequence } : {}),
+    },
+  };
 }
