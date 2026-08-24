@@ -51,6 +51,20 @@ test('uses a bounded import deadline distinct from repository inspection', () =>
   });
 });
 
+test('waits for helper process identity by elapsed time instead of scheduler turns', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-gitoxide-marker-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const markerPath = join(root, 'processes.txt');
+  const publication = new Promise<void>((resolve, reject) => {
+    setTimeout(() => {
+      void writeFile(markerPath, '123 456').then(resolve, reject);
+    }, 1_000);
+  });
+
+  assert.deepEqual(await waitForProcessMarker(markerPath, 2_000), [123, 456]);
+  await publication;
+});
+
 test('applies the import deadline and terminates the helper process tree', {
   skip: process.platform === 'win32',
 }, async (t) => {
@@ -343,8 +357,12 @@ async function admitHelperPath(configuredHelperPath: string): Promise<AdmittedHe
   return { invocationOwnerToken, capability };
 }
 
-async function waitForProcessMarker(path: string): Promise<readonly [number, number]> {
-  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+async function waitForProcessMarker(
+  path: string,
+  timeoutMs = 10_000,
+): Promise<readonly [number, number]> {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
     try {
       const [helperPid, descendantPid, ...extra] = (await readFile(path, 'utf8'))
         .trim()

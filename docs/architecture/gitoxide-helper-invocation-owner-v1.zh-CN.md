@@ -61,7 +61,7 @@ caller 不能提供 executable path、argv、environment、protocol version、ti
 | repository/helper failure | exit 1 + allowlisted stable helper reason |
 | timeout | inspect 为 5 秒、source import 为 10 分钟；到期后 force-kill process tree，`gitoxide_helper_invocation_timed_out` |
 | cancellation | preflight 或运行中 fail closed，`gitoxide_helper_invocation_aborted` |
-| resource failure | stdout 64 KiB、stderr 16 KiB，超限 force-kill |
+| resource failure | repository open 前的本地 metadata 总量 1 MiB、Gitoxide object allocation 64 MiB、stdout 64 KiB、stderr 16 KiB；超限 fail closed 或 force-kill |
 | malformed protocol | exit code、JSON shape、OID 或字段不一致均拒绝 |
 | rollback | inspect 无 durable side effect；import 只允许 fresh destination，但 partial artifact cleanup 留给未来 storage owner |
 
@@ -73,13 +73,16 @@ output overflow，不允许常驻或 detached helper。
 - argv 固定为空，禁止 caller 注入 helper option；
 - `shell: false`，不会经过 shell parsing；
 - child `PATH` 为空，只保留 Windows loader 与临时目录所需的最少环境变量；
-- Rust 侧仍使用 `gix::open::Options::isolated()` 与 `strict_config(true)`；
+- Rust 侧在 `gix::open()` 前先有界解析 `.git`/`commondir` 路径文件并统计实际会读取的
+  `config`/`config.worktree`，总量超过 1 MiB 时返回
+  `repository_metadata_limit_exceeded`；随后使用 `gix::open::Options::isolated()`、
+  `lossy_config(true)` 与 `strict_config(true)`；
 - request 最大 64 KiB；stdout 最大 64 KiB；stderr 最大 16 KiB；
 - SHA-1 OID 必须是 40 位小写十六进制；SHA-256/未知格式只返回 rejection，禁止 fallback。
 
 ## 5. 平台证据
 
-同一个 workflow 在 Linux、macOS、Windows 上：
+同一个 workflow 使用 release toolchain 的 Node 24.18.1，在 Linux、macOS、Windows 上：
 
 1. 编译并测试 Rust helper；
 2. 构建 Runtime Host；

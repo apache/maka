@@ -27,6 +27,7 @@ use std::{
 };
 
 const HELPER: &str = env!("CARGO_BIN_EXE_maka-gitoxide-helper");
+const MAX_REPOSITORY_METADATA_BYTES: usize = 1024 * 1024;
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
@@ -53,6 +54,30 @@ fn inspects_a_sha1_repository_without_invoking_system_git() {
             "headTreeOid": expected_tree,
         })
     );
+}
+
+#[test]
+fn rejects_oversized_repository_metadata_before_opening_or_importing() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("oversized-metadata.git");
+    let config_path = fixture.root.join(".git").join("config");
+    let mut config = fs::OpenOptions::new()
+        .append(true)
+        .open(config_path)
+        .unwrap();
+    config.write_all(b"\n#").unwrap();
+    config
+        .write_all(&vec![b'x'; MAX_REPOSITORY_METADATA_BYTES])
+        .unwrap();
+    drop(config);
+
+    let inspection = invoke_helper(&fixture.root);
+    assert_helper_error(&inspection, "repository_metadata_limit_exceeded");
+
+    let import = invoke_import(&fixture.root, &source_head, &destination);
+    assert_helper_error(&import, "repository_metadata_limit_exceeded");
+    assert!(!destination.exists());
 }
 
 #[test]

@@ -32,6 +32,7 @@ use unicode_normalization::UnicodeNormalization;
 const PROTOCOL_VERSION: u8 = 1;
 const MANAGED_TREE_POLICY_VERSION: u8 = 1;
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+const MAX_REPOSITORY_METADATA_BYTES: u64 = 1024 * 1024;
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMPORT_FILES: u64 = 200_000;
@@ -61,6 +62,7 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "request_too_large",
     "invalid_request",
     "unsupported_protocol_version",
+    "repository_metadata_limit_exceeded",
     "repository_open_failed",
     "head_commit_unavailable",
     "head_commit_identity_mismatch",
@@ -225,6 +227,7 @@ fn assert_protocol_version(protocol_version: u8) -> Result<(), &'static str> {
 }
 
 fn inspect_repository(repository_path: PathBuf) -> Result<ExitCode, &'static str> {
+    assert_repository_metadata_budget(&repository_path)?;
     let repository = match managed_open_options().open(repository_path) {
         Ok(repository) => repository.to_thread_local(),
         Err(gix::open::Error::Config(gix::config::Error::ConfigTypedString(error)))
@@ -276,6 +279,7 @@ fn inspect_repository(repository_path: PathBuf) -> Result<ExitCode, &'static str
 }
 
 fn open_repository(repository_path: PathBuf) -> Result<gix::Repository, &'static str> {
+    assert_repository_metadata_budget(&repository_path)?;
     Ok(managed_open_options()
         .open(repository_path)
         .map_err(|_| "repository_open_failed")?
@@ -284,8 +288,81 @@ fn open_repository(repository_path: PathBuf) -> Result<gix::Repository, &'static
 
 fn managed_open_options() -> gix::open::Options {
     gix::open::Options::isolated()
+        .lossy_config(true)
         .strict_config(true)
         .config_overrides([MAX_GITOXIDE_OBJECT_ALLOCATION_BYTES])
+}
+
+fn assert_repository_metadata_budget(repository_path: &Path) -> Result<(), &'static str> {
+    let mut observed_bytes = 0_u64;
+    let dot_git_path = repository_path.join(".git");
+    let git_dir = match fs::metadata(&dot_git_path) {
+        Ok(metadata) if metadata.is_dir() => dot_git_path,
+        Ok(metadata) if metadata.is_file() => {
+            add_repository_metadata_bytes(metadata.len(), &mut observed_bytes)?;
+            gix::discover::path::from_gitdir_file(&dot_git_path)
+                .map_err(|_| "repository_open_failed")?
+        }
+        Ok(_) => return Err("repository_open_failed"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            match fs::metadata(repository_path) {
+                Ok(metadata) if metadata.is_file() => {
+                    add_repository_metadata_bytes(metadata.len(), &mut observed_bytes)?;
+                    gix::discover::path::from_gitdir_file(repository_path)
+                        .map_err(|_| "repository_open_failed")?
+                }
+                Ok(metadata) if metadata.is_dir() => repository_path.to_path_buf(),
+                Ok(_) => return Err("repository_open_failed"),
+                Err(_) => return Err("repository_open_failed"),
+            }
+        }
+        Err(_) => return Err("repository_open_failed"),
+    };
+
+    let common_dir_path_file = git_dir.join("commondir");
+    let common_dir = match fs::metadata(&common_dir_path_file) {
+        Ok(metadata) if metadata.is_file() => {
+            add_repository_metadata_bytes(metadata.len(), &mut observed_bytes)?;
+            let relative_or_absolute = gix::discover::path::from_plain_file(&common_dir_path_file)
+                .ok_or("repository_open_failed")?
+                .map_err(|_| "repository_open_failed")?;
+            git_dir.join(relative_or_absolute)
+        }
+        Ok(_) => return Err("repository_open_failed"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => git_dir.clone(),
+        Err(_) => return Err("repository_open_failed"),
+    };
+
+    add_repository_metadata_file(&common_dir.join("config"), &mut observed_bytes)?;
+    add_repository_metadata_file(&git_dir.join("config.worktree"), &mut observed_bytes)?;
+    Ok(())
+}
+
+fn add_repository_metadata_file(
+    path: &Path,
+    observed_bytes: &mut u64,
+) -> Result<(), &'static str> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => {
+            add_repository_metadata_bytes(metadata.len(), observed_bytes)
+        }
+        Ok(_) => Err("repository_open_failed"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("repository_open_failed"),
+    }
+}
+
+fn add_repository_metadata_bytes(
+    bytes: u64,
+    observed_bytes: &mut u64,
+) -> Result<(), &'static str> {
+    *observed_bytes = observed_bytes
+        .checked_add(bytes)
+        .ok_or("repository_metadata_limit_exceeded")?;
+    if *observed_bytes > MAX_REPOSITORY_METADATA_BYTES {
+        return Err("repository_metadata_limit_exceeded");
+    }
+    Ok(())
 }
 
 fn import_source_head(

@@ -57,7 +57,7 @@ process exit
 | --- | --- |
 | operation owner | 单次 `maka-gitoxide-helper` 子进程 |
 | 输入 | `inspect_repository` strict JSON，最大 64 KiB |
-| 配置边界 | `gix::open::Options::isolated()` + `strict_config(true)` |
+| 配置边界 | open 前 1 MiB repository metadata budget；`gix::open::Options::isolated()` + `lossy_config(true)` + `strict_config(true)` |
 | 成功 | exit 0；SHA-1 + exact HEAD commit/tree OID |
 | policy rejection | exit 2；`unsupported_object_format` |
 | operational failure | exit 1；稳定 `helper_error.reason` |
