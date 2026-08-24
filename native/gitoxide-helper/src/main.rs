@@ -605,23 +605,12 @@ fn is_windows_reserved_device_name(component: &str) -> bool {
     matches!(
         folded.as_str(),
         "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-    )
-        || folded
-            .strip_prefix("COM")
-            .is_some_and(|suffix| {
-                matches!(
-                    suffix,
-                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
-                )
-            })
-        || folded
-            .strip_prefix("LPT")
-            .is_some_and(|suffix| {
-                matches!(
-                    suffix,
-                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
-                )
-            })
+    ) || folded
+        .strip_prefix("COM")
+        .is_some_and(|suffix| matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+        || folded.strip_prefix("LPT").is_some_and(|suffix| {
+            matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        })
         || matches!(stem, "COM¹" | "COM²" | "COM³" | "LPT¹" | "LPT²" | "LPT³")
 }
 

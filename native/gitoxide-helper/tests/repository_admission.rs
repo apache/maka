@@ -664,7 +664,11 @@ impl RepositoryFixture {
         let claimed_head = fixture.git_output(["rev-parse", "HEAD"]);
         let claimed_tree = fixture.git_output(["rev-parse", "HEAD^{tree}"]);
 
-        fs::write(fixture.root.join("hello.txt"), b"replacement tree content\n").unwrap();
+        fs::write(
+            fixture.root.join("hello.txt"),
+            b"replacement tree content\n",
+        )
+        .unwrap();
         fixture.git(["add", "hello.txt"]);
         fixture.git([
             "-c",
