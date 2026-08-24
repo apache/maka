@@ -74,13 +74,29 @@ function Invoke-ExpectedAdmissionFailure {
     [string]$Pattern,
     [string]$Description
   )
-  $output = & $launcher --appcontainer $RequestPath 2>&1
-  $exitCode = $LASTEXITCODE
+  $result = Invoke-Launcher @('--appcontainer', $RequestPath)
+  $output = $result.Output
+  $exitCode = $result.ExitCode
   $rendered = $output -join "`n"
   if ($exitCode -eq 0 -or $rendered -notmatch $Pattern) {
     throw "$Description did not fail closed: exit=$exitCode output=$rendered"
   }
   $global:LASTEXITCODE = 0
+}
+
+function Invoke-Launcher {
+  param([string[]]$Arguments)
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $output = & $launcher @Arguments 2>&1
+    return [pscustomobject]@{
+      ExitCode = $LASTEXITCODE
+      Output = @($output)
+    }
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
 }
 
 function Get-AppContainerSid {
@@ -157,8 +173,9 @@ try {
     -WriteRoots @($allowedWritePath) `
     -ExactReadRoots @($probeInputPath, $allowedReadPath) `
     -ExactWriteRoots @($allowedWritePath)
-  $output = & $launcher --appcontainer $probeRequest 2>&1
-  $exitCode = $LASTEXITCODE
+  $result = Invoke-Launcher @('--appcontainer', $probeRequest)
+  $output = $result.Output
+  $exitCode = $result.ExitCode
   $rendered = $output -join "`n"
   $requiredEvidence = @(
     '"fileDenied":true',
@@ -235,9 +252,9 @@ try {
   $recoveryRequest = Write-LaunchRequest -Name $recoveryRequestId `
     -Arguments @('--self-probe') -ReadRoots @($allowedReadPath) -WriteRoots @() `
     -ExactReadRoots @($allowedReadPath) -ExactWriteRoots @()
-  $recoveryOutput = & $launcher --appcontainer $recoveryRequest 2>&1
-  if ($LASTEXITCODE -ne 0) {
-    throw "Launch after quarantined state failed: $($recoveryOutput -join "`n")"
+  $recoveryResult = Invoke-Launcher @('--appcontainer', $recoveryRequest)
+  if ($recoveryResult.ExitCode -ne 0) {
+    throw "Launch after quarantined state failed: $($recoveryResult.Output -join "`n")"
   }
   if (-not (Test-Path -LiteralPath $quarantinePath)) {
     throw 'A later launch interpreted or deleted quarantined recovery evidence'
