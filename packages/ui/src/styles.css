@@ -697,12 +697,16 @@
    Ellipsize it inside the title slot the header already sizes (flex: 1,
    min-width: 0). display: block because a flex container will not ellipsize
    its anonymous text; tool wells never render the collapsible chevron that
-   the flex display exists for. */
+   the flex display exists for. white-space stays `pre`, not nowrap: both
+   satisfy text-overflow's no-wrap requirement, but nowrap would collapse
+   runs of spaces — and a title is often a literal path or command where
+   `report  final.txt` and `report final.txt` are different names, with the
+   title as their only display (the copy button copies the body). */
 .maka-tool-call-detail .astryx-codeblock-header .astryx-codeblock-title {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre;
 }
 .maka-tool-output-chunk { display: contents; }
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
