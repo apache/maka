@@ -34,7 +34,6 @@ export const GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL = Object.freeze({
   importSourceHeadMs: 10 * 60_000,
 });
 const SHA1_OID_PATTERN = /^[0-9a-f]{40}$/;
-const OBJECT_FORMAT_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const MAKA_REF_PATTERN = /^refs\/maka\/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/;
 export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'internal_error_reason_invalid',
@@ -44,6 +43,7 @@ export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'unsupported_protocol_version',
   'repository_open_failed',
   'head_commit_unavailable',
+  'head_commit_identity_mismatch',
   'head_tree_unavailable',
   'commit_object_limit_exceeded',
   'baseline_commit_write_failed',
@@ -64,6 +64,7 @@ export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
   'source_byte_limit_exceeded',
   'source_file_limit_exceeded',
   'source_head_commit_mismatch',
+  'source_head_commit_identity_mismatch',
   'source_head_commit_unavailable',
   'source_head_tree_unavailable',
   'source_path_collision',
@@ -97,7 +98,7 @@ export interface GitoxideRepositoryRejectionV1 {
   readonly kind: 'repository_rejected';
   readonly protocolVersion: 1;
   readonly reason: 'unsupported_object_format';
-  readonly objectFormat: string;
+  readonly objectFormat: 'sha256' | 'unknown';
   readonly supportedObjectFormats: readonly ['sha1'];
 }
 
@@ -506,8 +507,7 @@ function isRepositoryRejection(value: unknown): value is GitoxideRepositoryRejec
     value.protocolVersion === 1 &&
     value.kind === 'repository_rejected' &&
     value.reason === 'unsupported_object_format' &&
-    typeof value.objectFormat === 'string' &&
-    OBJECT_FORMAT_PATTERN.test(value.objectFormat) &&
+    (value.objectFormat === 'sha256' || value.objectFormat === 'unknown') &&
     Array.isArray(value.supportedObjectFormats) &&
     value.supportedObjectFormats.length === 1 &&
     value.supportedObjectFormats[0] === 'sha1'

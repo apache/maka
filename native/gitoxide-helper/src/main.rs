@@ -60,6 +60,7 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "unsupported_protocol_version",
     "repository_open_failed",
     "head_commit_unavailable",
+    "head_commit_identity_mismatch",
     "head_tree_unavailable",
     "commit_object_limit_exceeded",
     "baseline_commit_write_failed",
@@ -80,6 +81,7 @@ const HELPER_ERROR_REASONS_V1: &[&str] = &[
     "source_byte_limit_exceeded",
     "source_file_limit_exceeded",
     "source_head_commit_mismatch",
+    "source_head_commit_identity_mismatch",
     "source_head_commit_unavailable",
     "source_head_tree_unavailable",
     "source_path_collision",
@@ -220,16 +222,10 @@ fn inspect_repository(repository_path: PathBuf) -> Result<ExitCode, &'static str
         Err(gix::open::Error::Config(gix::config::Error::ConfigTypedString(error)))
             if error.key.as_slice() == b"extensions.objectFormat" =>
         {
-            let object_format = error
-                .value
-                .as_ref()
-                .map(|value| String::from_utf8_lossy(value.as_slice()).into_owned())
-                .unwrap_or_else(|| "unknown".to_owned());
-            return Ok(reject_unsupported_object_format(object_format));
+            return Ok(reject_unsupported_object_format("unknown".to_owned()));
         }
-        Err(gix::open::Error::Config(gix::config::Error::UnsupportedObjectFormat { name })) => {
-            let object_format = String::from_utf8_lossy(name.as_slice()).into_owned();
-            return Ok(reject_unsupported_object_format(object_format));
+        Err(gix::open::Error::Config(gix::config::Error::UnsupportedObjectFormat { .. })) => {
+            return Ok(reject_unsupported_object_format("unknown".to_owned()));
         }
         Err(_) => return Err("repository_open_failed"),
     };
@@ -240,17 +236,18 @@ fn inspect_repository(repository_path: PathBuf) -> Result<ExitCode, &'static str
                 .head_id()
                 .map_err(|_| "head_commit_unavailable")?
                 .detach();
-            assert_object_header(
+            let head = load_verified_object(
                 &repository,
                 head_id,
                 gix::objs::Kind::Commit,
                 MAX_COMMIT_OBJECT_BYTES,
                 "head_commit_unavailable",
+                "head_commit_unavailable",
                 "commit_object_limit_exceeded",
-            )?;
-            let head = repository
-                .find_commit(head_id)
-                .map_err(|_| "head_commit_unavailable")?;
+                "head_commit_identity_mismatch",
+            )?
+            .try_into_commit()
+            .map_err(|_| "head_commit_unavailable")?;
             let head_commit_oid = head.id().detach().to_string();
             let head_tree_oid = head
                 .tree_id()
@@ -315,25 +312,27 @@ fn import_source_head(
     if source_head_id.detach() != expected_source_head {
         return Err("source_head_commit_mismatch");
     }
-    assert_object_header(
+    let source_head = load_verified_object(
         &source,
         expected_source_head,
         gix::objs::Kind::Commit,
         MANAGED_TREE_POLICY_V1.max_commit_object_bytes,
         "source_head_commit_unavailable",
+        "source_head_commit_unavailable",
         "commit_object_limit_exceeded",
-    )?;
-    let source_head = source
-        .find_commit(expected_source_head)
-        .map_err(|_| "source_head_commit_unavailable")?;
+        "source_head_commit_identity_mismatch",
+    )?
+    .try_into_commit()
+    .map_err(|_| "source_head_commit_unavailable")?;
     let source_tree = source_head
         .tree_id()
         .map_err(|_| "source_head_tree_unavailable")?
         .detach();
 
     let mut stats = ManagedTreeStats::default();
-    validate_source_tree(
+    walk_verified_source_tree(
         &source,
+        None,
         source_tree,
         "",
         0,
@@ -352,7 +351,16 @@ fn import_source_head(
     fs::create_dir(destination_repository_path.join("hooks"))
         .map_err(|_| "import_hooks_cleanup_failed")?;
 
-    copy_source_tree(&source, &destination, source_tree)?;
+    let mut copy_stats = ManagedTreeStats::default();
+    walk_verified_source_tree(
+        &source,
+        Some(&destination),
+        source_tree,
+        "",
+        0,
+        MANAGED_TREE_POLICY_V1,
+        &mut copy_stats,
+    )?;
 
     let signature = gix::actor::SignatureRef {
         name: b"Maka Workspace Service".as_bstr(),
@@ -416,25 +424,38 @@ fn claim_fresh_import_destination(path: &Path) -> Result<gix::Repository, &'stat
     .map(|repository| repository.to_thread_local())
 }
 
-fn assert_object_header(
-    repository: &gix::Repository,
+fn load_verified_object<'repo>(
+    repository: &'repo gix::Repository,
     object_id: gix::hash::ObjectId,
     expected_kind: gix::objs::Kind,
     max_bytes: u64,
     unavailable_reason: &'static str,
+    invalid_reason: &'static str,
     limit_reason: &'static str,
-) -> Result<u64, &'static str> {
+    identity_reason: &'static str,
+) -> Result<gix::Object<'repo>, &'static str> {
     let header = repository
         .find_header(object_id)
         .map_err(|_| unavailable_reason)?;
     if header.kind() != expected_kind {
-        return Err(unavailable_reason);
+        return Err(invalid_reason);
     }
-    let size = header.size();
-    if size > max_bytes {
+    if header.size() > max_bytes {
         return Err(limit_reason);
     }
-    Ok(size)
+    let object = repository
+        .find_object(object_id)
+        .map_err(|_| unavailable_reason)?;
+    if object.kind != expected_kind {
+        return Err(invalid_reason);
+    }
+    if object.data.len() as u64 > max_bytes {
+        return Err(limit_reason);
+    }
+    gix::objs::Data::new(&object.data, object.kind, object.id.kind())
+        .verify_checksum(object_id.as_ref())
+        .map_err(|_| identity_reason)?;
+    Ok(object)
 }
 
 fn assert_import_destination_parent(destination: &Path) -> Result<(), &'static str> {
@@ -472,26 +493,28 @@ fn is_windows_reparse_point(_metadata: &fs::Metadata) -> bool {
     false
 }
 
-fn validate_source_tree(
+fn walk_verified_source_tree(
     source: &gix::Repository,
+    destination: Option<&gix::Repository>,
     tree_oid: gix::hash::ObjectId,
     prefix: &str,
     depth: u64,
     policy: ManagedTreePolicy,
     stats: &mut ManagedTreeStats,
 ) -> Result<(), &'static str> {
-    let size = assert_object_header(
+    let tree = load_verified_object(
         source,
         tree_oid,
         gix::objs::Kind::Tree,
         policy.max_single_tree_object_bytes,
         "source_tree_unavailable",
+        "source_tree_invalid",
         "source_tree_object_limit_exceeded",
-    )?;
-    stats.enter_tree(depth, size, policy)?;
-    let tree = source
-        .find_tree(tree_oid)
-        .map_err(|_| "source_tree_unavailable")?;
+        "source_tree_identity_mismatch",
+    )?
+    .try_into_tree()
+    .map_err(|_| "source_tree_invalid")?;
+    stats.enter_tree(depth, tree.data.len() as u64, policy)?;
     for entry in tree.iter() {
         let entry = entry.map_err(|_| "source_tree_invalid")?;
         let component =
@@ -509,8 +532,9 @@ fn validate_source_tree(
         stats.observe_entry(&relative_path, policy)?;
         match entry.mode().kind() {
             gix::objs::tree::EntryKind::Tree => {
-                validate_source_tree(
+                walk_verified_source_tree(
                     source,
+                    destination,
                     entry.object_id(),
                     &relative_path,
                     depth.checked_add(1).ok_or("source_tree_depth_exceeded")?,
@@ -519,55 +543,41 @@ fn validate_source_tree(
                 )?;
             }
             gix::objs::tree::EntryKind::Blob | gix::objs::tree::EntryKind::BlobExecutable => {
-                let header = entry.id().header().map_err(|_| "source_blob_unavailable")?;
-                if header.kind() != gix::objs::Kind::Blob {
-                    return Err("source_blob_invalid");
-                }
-                stats.observe_blob(header.size(), policy)?;
-            }
-            _ => return Err("unsupported_source_entry_kind"),
-        }
-    }
-    Ok(())
-}
-
-fn copy_source_tree(
-    source: &gix::Repository,
-    destination: &gix::Repository,
-    tree_oid: gix::hash::ObjectId,
-) -> Result<(), &'static str> {
-    let tree = source
-        .find_tree(tree_oid)
-        .map_err(|_| "source_tree_unavailable")?;
-    for entry in tree.iter() {
-        let entry = entry.map_err(|_| "source_tree_invalid")?;
-        match entry.mode().kind() {
-            gix::objs::tree::EntryKind::Tree => {
-                copy_source_tree(source, destination, entry.object_id())?;
-            }
-            gix::objs::tree::EntryKind::Blob | gix::objs::tree::EntryKind::BlobExecutable => {
-                let blob = entry
-                    .object()
-                    .map_err(|_| "source_blob_unavailable")?
-                    .try_into_blob()
-                    .map_err(|_| "source_blob_invalid")?;
-                let copied_blob = destination
-                    .write_blob(&blob.data)
-                    .map_err(|_| "source_blob_copy_failed")?
-                    .detach();
-                if copied_blob != entry.object_id() {
-                    return Err("source_blob_identity_mismatch");
+                let blob_oid = entry.object_id();
+                let blob = load_verified_object(
+                    source,
+                    blob_oid,
+                    gix::objs::Kind::Blob,
+                    policy.max_file_bytes,
+                    "source_blob_unavailable",
+                    "source_blob_invalid",
+                    "source_file_limit_exceeded",
+                    "source_blob_identity_mismatch",
+                )?
+                .try_into_blob()
+                .map_err(|_| "source_blob_invalid")?;
+                stats.observe_blob(blob.data.len() as u64, policy)?;
+                if let Some(destination) = destination {
+                    let copied_blob = destination
+                        .write_blob(&blob.data)
+                        .map_err(|_| "source_blob_copy_failed")?
+                        .detach();
+                    if copied_blob != blob_oid {
+                        return Err("source_blob_identity_mismatch");
+                    }
                 }
             }
             _ => return Err("unsupported_source_entry_kind"),
         }
     }
-    let copied_tree = destination
-        .write_object(tree.decode().map_err(|_| "source_tree_invalid")?)
-        .map_err(|_| "source_tree_copy_failed")?
-        .detach();
-    if copied_tree != tree_oid {
-        return Err("source_tree_identity_mismatch");
+    if let Some(destination) = destination {
+        let copied_tree = destination
+            .write_object(tree.decode().map_err(|_| "source_tree_invalid")?)
+            .map_err(|_| "source_tree_copy_failed")?
+            .detach();
+        if copied_tree != tree_oid {
+            return Err("source_tree_identity_mismatch");
+        }
     }
     Ok(())
 }
@@ -579,8 +589,40 @@ fn is_supported_source_component(component: &str) -> bool {
         && !component.contains('/')
         && !component.contains('\\')
         && !component.contains('\0')
+        && !component
+            .chars()
+            .any(|character| character <= '\u{001f}' || "<>:\"|?*".contains(character))
+        && !component.ends_with('.')
+        && !component.ends_with(' ')
+        && !is_windows_reserved_device_name(component)
         && !component.eq_ignore_ascii_case(".git")
         && !component.eq_ignore_ascii_case(".gitattributes")
+}
+
+fn is_windows_reserved_device_name(component: &str) -> bool {
+    let stem = component.split('.').next().unwrap_or_default();
+    let folded = stem.to_ascii_uppercase();
+    matches!(
+        folded.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    )
+        || folded
+            .strip_prefix("COM")
+            .is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+                )
+            })
+        || folded
+            .strip_prefix("LPT")
+            .is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+                )
+            })
+        || matches!(stem, "COM¹" | "COM²" | "COM³" | "LPT¹" | "LPT²" | "LPT³")
 }
 
 #[derive(Clone, Copy)]
@@ -757,6 +799,27 @@ mod tests {
             stats.observe_blob(1, policy),
             Err("source_file_limit_exceeded")
         );
+    }
+
+    #[test]
+    fn managed_tree_policy_rejects_non_portable_components() {
+        for component in [
+            "CON",
+            "NUL.txt",
+            "COM1.log",
+            "LPT9",
+            "a:b",
+            "control\u{001f}",
+            "trailing.",
+            "trailing ",
+            ".git.",
+            ".git ",
+        ] {
+            assert!(
+                !is_supported_source_component(component),
+                "component must be rejected by portable policy: {component:?}"
+            );
+        }
     }
 }
 

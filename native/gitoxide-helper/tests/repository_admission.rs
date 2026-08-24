@@ -89,7 +89,7 @@ fn rejects_an_unknown_object_format_during_repository_open() {
             "protocolVersion": 1,
             "kind": "repository_rejected",
             "reason": "unsupported_object_format",
-            "objectFormat": "sha512",
+            "objectFormat": "unknown",
             "supportedObjectFormats": ["sha1"],
         })
     );
@@ -105,6 +105,32 @@ fn observes_raw_head_identity_instead_of_replacement_ref_semantics() {
     let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(response["headCommitOid"], expected_commit);
     assert_eq!(response["headTreeOid"], expected_tree);
+}
+
+#[test]
+fn rejects_a_head_commit_whose_storage_key_does_not_match_its_bytes() {
+    let (fixture, claimed_head) = RepositoryFixture::sha1_with_mismatched_head_storage();
+
+    let inspection = invoke_helper(&fixture.root);
+
+    assert_helper_error(&inspection, "head_commit_identity_mismatch");
+
+    let destination = fixture.root.join("mismatched-head.git");
+    let import = invoke_import(&fixture.root, &claimed_head, &destination);
+
+    assert_helper_error(&import, "source_head_commit_identity_mismatch");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn rejects_a_source_tree_whose_storage_key_does_not_match_its_bytes() {
+    let (fixture, claimed_head) = RepositoryFixture::sha1_with_mismatched_tree_storage();
+    let destination = fixture.root.join("mismatched-tree.git");
+
+    let import = invoke_import(&fixture.root, &claimed_head, &destination);
+
+    assert_helper_error(&import, "source_tree_identity_mismatch");
+    assert!(!destination.exists());
 }
 
 #[test]
@@ -605,6 +631,66 @@ impl RepositoryFixture {
         fixture.git(["checkout", "--detach", &raw_commit]);
 
         (fixture, raw_commit, raw_tree)
+    }
+
+    fn sha1_with_mismatched_head_storage() -> (Self, String) {
+        let fixture = Self::sha1_with_commit_content(b"claimed content\n");
+        let claimed_head = fixture.git_output(["rev-parse", "HEAD"]);
+
+        fs::write(fixture.root.join("hello.txt"), b"replacement content\n").unwrap();
+        fixture.git(["add", "hello.txt"]);
+        fixture.git([
+            "-c",
+            "user.name=Maka Test",
+            "-c",
+            "user.email=maka@example.invalid",
+            "commit",
+            "-m",
+            "replacement object bytes",
+        ]);
+        let replacement_head = fixture.git_output(["rev-parse", "HEAD"]);
+        fixture.git(["update-ref", "HEAD", &claimed_head]);
+
+        fs::copy(
+            fixture.loose_object_path(&replacement_head),
+            fixture.loose_object_path(&claimed_head),
+        )
+        .unwrap();
+        (fixture, claimed_head)
+    }
+
+    fn sha1_with_mismatched_tree_storage() -> (Self, String) {
+        let fixture = Self::sha1_with_commit_content(b"claimed tree content\n");
+        let claimed_head = fixture.git_output(["rev-parse", "HEAD"]);
+        let claimed_tree = fixture.git_output(["rev-parse", "HEAD^{tree}"]);
+
+        fs::write(fixture.root.join("hello.txt"), b"replacement tree content\n").unwrap();
+        fixture.git(["add", "hello.txt"]);
+        fixture.git([
+            "-c",
+            "user.name=Maka Test",
+            "-c",
+            "user.email=maka@example.invalid",
+            "commit",
+            "-m",
+            "replacement tree bytes",
+        ]);
+        let replacement_tree = fixture.git_output(["rev-parse", "HEAD^{tree}"]);
+        fixture.git(["update-ref", "HEAD", &claimed_head]);
+
+        fs::copy(
+            fixture.loose_object_path(&replacement_tree),
+            fixture.loose_object_path(&claimed_tree),
+        )
+        .unwrap();
+        (fixture, claimed_head)
+    }
+
+    fn loose_object_path(&self, oid: &str) -> PathBuf {
+        self.root
+            .join(".git/objects")
+            .join(&oid[..2])
+            .join(&oid[2..])
     }
 
     fn init(object_format: &str) -> Self {

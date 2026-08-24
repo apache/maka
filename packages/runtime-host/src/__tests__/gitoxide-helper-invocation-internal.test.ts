@@ -198,6 +198,28 @@ test('returns SHA-256 as a policy rejection from the admitted helper', async (t)
   );
 });
 
+test('normalizes an unknown object format before crossing the helper protocol', async (t) => {
+  const helper = await admittedHelper();
+  if (!helper) {
+    t.skip('MAKA_GITOXIDE_HELPER_PATH is required for the real helper contract test');
+    return;
+  }
+  const repositoryPath = await createRepository(t, 'sha1');
+  git(repositoryPath, ['config', 'core.repositoryFormatVersion', '1']);
+  git(repositoryPath, ['config', 'extensions.objectFormat', 'SHA512']);
+
+  assert.deepEqual(
+    await inspectRepositoryWithGitoxideHelperInternal({ ...helper, repositoryPath }),
+    {
+      kind: 'repository_rejected',
+      protocolVersion: 1,
+      reason: 'unsupported_object_format',
+      objectFormat: 'unknown',
+      supportedObjectFormats: ['sha1'],
+    },
+  );
+});
+
 test('reports an unborn SHA-1 repository as a stable helper operation failure', async (t) => {
   const helper = await admittedHelper();
   if (!helper) {

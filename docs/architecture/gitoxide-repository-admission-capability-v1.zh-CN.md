@@ -19,7 +19,8 @@
 
 # Gitoxide repository admission capability v1
 
-状态：Gitoxide control-plane admission Draft；source import data plane 作为下一独立切片消费该 capability。
+状态：Gitoxide repository admission / source-import consolidated Draft；source import data plane 作为同一
+PR 内的独立 authority layer 消费该 capability。
 
 ## 1. 主要不变量
 
@@ -42,8 +43,10 @@ repository admission authority
   └─ exact HEAD tree OID
        ↓ private WeakMap
 opaque GitoxideRepositoryAdmissionCapability
-       ↓ only the designated admission owner may resolve
+       ↓ only the designated import owner may resolve
 immutable admission state
+       ↓ exact verified commit/tree graph
+fresh SHA-1 bare baseline repository
 ```
 
 认证元数据与可返回 observation state 分开存储；解析 capability 不会泄漏 owner token。相关 API 不从
@@ -55,13 +58,19 @@ immutable admission state
 | --- | --- |
 | observation owner | short-lived invocation owner |
 | capability owner | repository admission authority |
-| 原子性边界 | 一次 canonical path observation + 一次 exact helper response + 进程内 capability 签发 |
+| admission 原子性边界 | 一次 canonical path observation + 一次 exact helper response + 进程内 capability 签发 |
+| import 原子性边界 | 完整 preflight 后用 `create_dir()` 领取 fresh destination；baseline ref 只允许 `MustNotExist` |
 | accepted | SHA-1 exact commit/tree，签发 opaque capability |
 | policy rejected | SHA-256/未知 format，返回 rejection，不签发 capability |
 | helper/路径失败 | 沿用 invocation owner 的稳定 fail-closed error |
 | forged/wrong-owner capability | `gitoxide_repository_admission_capability_invalid` |
-| durable state | 无；该 capability 必须在 T1 前消费 |
-| rollback | 只读 observation，无副作用 |
+| durable state | admission capability 仅在进程内；import 会创建 bare repository、objects 与 baseline ref |
+| rollback | observation 无副作用；import 失败留下的 claimed destination 由后续 recovery owner 处理，本层不删除或接管 |
+
+source import 的原子边界是“先完成 source/ref/policy/object graph preflight，再以 `create_dir()` 原子领取
+此前不存在的 destination”。destination 一旦存在就拒绝接管；本层不修复、不删除 partial 或 foreign
+artifact。每个 commit/tree/blob 都在解析或递归前重新计算 SHA-1 并与 claimed OID 比较，validate 与
+copy 共用同一个 bounded verified walker。
 
 ## 4. Freshness 与未来 T1
 
@@ -81,12 +90,20 @@ capability 表示一次明确线性化点上的 immutable Git commit/tree snapsh
 3. bounded short-lived process owner 与 strict response decoder；
 4. exact repository observation → opaque admission capability；
 5. Linux、macOS、Windows 的真实 helper contract workflow。
+6. exact commit/tree/blob checksum verification、atomic destination claim 与 deterministic zero-parent
+   baseline publication。
+
+`managedTreePolicyVersion: 1` 是 portable materialization policy，而不只是 Git object import policy。
+它在所有平台统一拒绝 Windows reserved characters/control characters、device names（含 extension）、
+trailing dot/space、`.git`/`.gitattributes` 及其大小写或尾部别名，并用 NFC + case-fold collision 检查
+约束跨平台投影。后续 candidate、projection 与 tree read 必须消费同一 policy version，不能另行放宽。
 
 仍未完成、也没有伪装完成：
 
 - signed packaged-release trust root 与受保护安装路径；
 - Desktop/CLI 消费者；
-- T1 durable admission、projection、candidate 与 ref CAS；source import 由后续独立 Draft 实现。
+- T1 durable admission、projection、candidate 与 ref CAS；
+- state-root-bound destination capability、partial artifact receipt/quarantine/recovery owner。
 
 因此这些 PR 可以作为 Gitoxide backend 的验证栈审查，但在正式 release owner 和生产消费者接入前
 继续保持 Draft。
