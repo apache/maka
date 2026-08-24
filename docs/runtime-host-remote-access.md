@@ -23,17 +23,18 @@
 
 Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or explicitly enabled plaintext WebSocket.
 
-## Set up a Linux Host
+## Set up a Linux or macOS Host
 
-On a Linux machine with Node.js 22.19 or newer and a working systemd user manager, the released CLI
-can install and verify a persistent Runtime Host in one command:
+On a machine with Node.js 22.19 or newer, the released CLI can install and verify a persistent
+Runtime Host in one command. Linux uses a systemd user service; macOS uses a LaunchAgent and
+requires an active GUI login session for that user.
 
 ```sh
 npx --yes --package maka-agent@next maka runtime-host setup \
   --principal my-desktop \
   --preset desktop-client \
-  --root /srv/maka \
-  --project-root projects=/srv/projects
+  --root "$HOME/.maka/runtime-host" \
+  --project-root "projects=$HOME/Projects"
 ```
 
 Use a stable identifier for `--principal`; rerunning the command replaces that Client's credential
@@ -77,8 +78,8 @@ npm --workspace maka-agent exec -- maka runtime-host access issue \
 
 Use `terminal-client` for TUI or CLI. The command prints the credential once.
 
-On Linux with a systemd user manager, a persistent CLI installation can keep the loopback Host running after the
-SSH session ends:
+On Linux or macOS, a persistent CLI installation can keep the loopback Host running after the SSH
+session ends:
 
 ```sh
 maka runtime-host service install \
@@ -88,13 +89,12 @@ maka runtime-host service status --json
 ```
 
 The install command persists the current exact Node and Maka CLI paths. Re-running it updates the
-same systemd-supervised service; repeated startup failures stop automatic restarts and remain visible
-in `maka runtime-host service status`. An omitted WebSocket port preserves the existing port. Before uninstalling the npm
-package, remove the service with `maka runtime-host service uninstall`. Service uninstall keeps the
-State Root and Project data. Installation reports an actionable error instead of claiming persistence
-when systemd user lingering is disabled. Run service installation from a persistent global Maka
-installation, not `npx`. A replacement is committed only after the new Runtime Host is ready; failure
-restores the previous service.
+same OS-managed service, and an omitted WebSocket port preserves the existing port. Before
+uninstalling the npm package, remove the service with `maka runtime-host service uninstall`. Service
+uninstall keeps the State Root and Project data. Linux installation requires systemd user lingering;
+macOS installation requires an active GUI login session. Run service installation from a persistent
+global Maka installation, not `npx`. A replacement is committed only after the new Runtime Host is
+ready; failure restores the previous service.
 
 ## Choose a connection method
 

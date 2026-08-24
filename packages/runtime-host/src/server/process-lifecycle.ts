@@ -22,8 +22,6 @@ import {
   type RuntimeHostKernel,
 } from './host-kernel.js';
 
-export const RUNTIME_HOST_RETIREMENT_EXIT_CODE = 3;
-
 export interface RuntimeHostProcessLifecycleOptions {
   closeOnDisconnect?: boolean;
   onReady?: () => void;
@@ -49,7 +47,7 @@ export async function runRuntimeHostProcessLifecycle(
     await host.closed;
   } catch (error) {
     if (error instanceof RuntimeHostProcessTerminationRequiredError) {
-      process.exit(host.shutdownReason === 'retirement' ? RUNTIME_HOST_RETIREMENT_EXIT_CODE : 1);
+      process.exit(host.shutdownReason === 'retirement' ? 0 : 1);
     }
     throw error;
   } finally {

@@ -40,7 +40,6 @@ import {
   type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
-import { RUNTIME_HOST_RETIREMENT_EXIT_CODE } from '@maka/runtime-host/server';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
 import {
@@ -67,7 +66,7 @@ import {
 } from '../runtime-host-systemd-service.js';
 
 describe('managed Runtime Host service', () => {
-  it('parses the bounded Linux service command surface', () => {
+  it('parses the bounded managed service command surface', () => {
     assert.deepEqual(
       parseRuntimeHostCommand([
         'service',
@@ -601,11 +600,7 @@ describe('managed Runtime Host service', () => {
     assert.match(unit, /"Cash\$\$=\/home\/\$\$ada\/My Projects"/u);
     assert.match(unit, /"\/opt\/\$\$Node 24\/bin\/node"/u);
     assert.match(unit, /"\/opt\/Maka\/\$\$current\/cli\.js"/u);
-    assert.ok(unit.includes(`SuccessExitStatus=${String(RUNTIME_HOST_RETIREMENT_EXIT_CODE)}\n`));
-    assert.ok(
-      unit.includes(`RestartPreventExitStatus=${String(RUNTIME_HOST_RETIREMENT_EXIT_CODE)}\n`),
-    );
-    assert.match(unit, /^Restart=always$/mu);
+    assert.match(unit, /^Restart=on-failure$/mu);
     assert.match(unit, /^StartLimitIntervalSec=60s$/mu);
     assert.match(unit, /^StartLimitBurst=5$/mu);
   });

@@ -18,12 +18,10 @@
  */
 
 import { spawn } from 'node:child_process';
-import { constants } from 'node:fs';
-import { access, readFile, realpath, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveXdgConfigHome } from '@maka/storage';
-import { RUNTIME_HOST_RETIREMENT_EXIT_CODE } from '@maka/runtime-host/server';
 import {
   removeRuntimeHostServiceFile,
   RuntimeHostServiceManagerError,
@@ -33,6 +31,10 @@ import {
   type RuntimeHostServiceDeployment,
   writeRuntimeHostServiceFile,
 } from './runtime-host-service-manager.js';
+import {
+  runtimeHostServiceLaunchArguments,
+  validateRuntimeHostServiceLaunch,
+} from './runtime-host-service-launch.js';
 
 const SERVICE_MANAGER_COMMAND_TIMEOUT_MS = 30_000;
 
@@ -92,7 +94,7 @@ export function createSystemdUserRuntimeHostService(
       await assertUserLinger(uid, runLoginctl);
     },
     install: async (config) => {
-      await validateLaunchFiles(config);
+      await validateRuntimeHostServiceLaunch(config);
       const previous = await captureSystemdDeployment(context.unitPath, readStatus);
       try {
         await applySystemdDeployment(context, config);
@@ -109,11 +111,11 @@ export function createSystemdUserRuntimeHostService(
       } satisfies RuntimeHostServiceDeployment;
     },
     replace: async (config) => {
-      await validateLaunchFiles(config);
+      await validateRuntimeHostServiceLaunch(config);
       await applySystemdDeployment(context, config);
     },
     verifyDeployment: async (config) => {
-      await validateLaunchFiles(config);
+      await validateRuntimeHostServiceLaunch(config);
       const [status, unit] = await Promise.all([
         readSystemdStatus(context),
         readFile(context.unitPath, 'utf8').catch((error: unknown) => {
@@ -211,25 +213,7 @@ function resolveSystemdUserRuntimeHostServiceName(serviceId: string): string {
 }
 
 export function renderSystemdUnit(config: RuntimeHostManagedServiceConfig): string {
-  const args = [
-    config.launch.nodePath,
-    config.launch.cliPath,
-    'runtime-host',
-    'serve',
-    '--root',
-    config.rootPath,
-    ...config.projectDirectoryRoots.flatMap(({ label, path }) => [
-      '--project-root',
-      `${label}=${path}`,
-    ]),
-    '--websocket-host',
-    config.websocket.host,
-    '--websocket-port',
-    String(config.websocket.port),
-    '--websocket-path',
-    config.websocket.path,
-    '--json',
-  ];
+  const args = runtimeHostServiceLaunchArguments(config);
   return [
     '[Unit]',
     'Description=Maka Runtime Host',
@@ -240,10 +224,7 @@ export function renderSystemdUnit(config: RuntimeHostManagedServiceConfig): stri
     '[Service]',
     'Type=simple',
     `ExecStart=${args.map(quoteSystemdArgument).join(' ')}`,
-    `SuccessExitStatus=${String(RUNTIME_HOST_RETIREMENT_EXIT_CODE)}`,
-    `RestartPreventExitStatus=${String(RUNTIME_HOST_RETIREMENT_EXIT_CODE)}`,
-    // A clean idle exit must not silently remove a configured remote Host.
-    'Restart=always',
+    'Restart=on-failure',
     'RestartSec=2s',
     'KillMode=mixed',
     'TimeoutStopSec=45s',
@@ -399,24 +380,6 @@ async function readSystemdStatus(context: SystemdUnitContext): Promise<SystemdSt
     mainPid: properties.get('MainPID'),
     execMainStatus: properties.get('ExecMainStatus'),
   };
-}
-
-async function validateLaunchFiles(config: RuntimeHostManagedServiceConfig): Promise<void> {
-  try {
-    const [nodePath, cliPath] = await Promise.all([
-      realpath(config.launch.nodePath),
-      realpath(config.launch.cliPath),
-    ]);
-    const [node, cli] = await Promise.all([stat(nodePath), stat(cliPath)]);
-    if (!node.isFile() || !cli.isFile()) throw new Error('Launch path is not a file');
-    await Promise.all([access(nodePath, constants.X_OK), access(cliPath, constants.R_OK)]);
-  } catch (error) {
-    throw new RuntimeHostServiceManagerError(
-      'invalid_launch',
-      'The configured Node.js or Maka CLI installation is unavailable',
-      { cause: error },
-    );
-  }
 }
 
 async function assertUserSystemd(
