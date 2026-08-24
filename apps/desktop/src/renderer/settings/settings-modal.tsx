@@ -17,8 +17,7 @@
  * under the License.
  */
 
-import { useRef } from 'react';
-import { useHotkeys } from '@astryxdesign/core/hooks';
+import { useLayoutEffect, useRef } from 'react';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
@@ -87,20 +86,27 @@ export function SettingsModal(props: {
   // happens per streamed token), and a focus side effect keyed on it yanks
   // focus away from anything open inside Settings while a session streams.
   const activeNavRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(props.onClose);
+  useLayoutEffect(() => {
+    onCloseRef.current = props.onClose;
+  });
 
-  // useHotkeys keeps its entries in a ref it refreshes every render, so Escape
-  // always calls the current `onClose` without the listener churning on that
-  // prop's identity (it is recreated on every AppShell render, i.e. per
-  // streamed token). It also skips defaultPrevented events, which is what the
-  // old `!event.defaultPrevented` check bought: a nested dialog that already
-  // consumed Escape closes itself, not the whole Settings surface.
-  //
-  // `allowInInputs` because Escape must close Settings from inside its own
-  // fields — the hook's default would have made Escape dead in every text box
-  // on the page.
-  useHotkeys([
-    { keys: 'escape', allowInInputs: true, onPress: () => props.onClose() },
-  ]);
+  // Settings owns Escape from the same committed frame that makes its surface
+  // observable. A passive-effect subscription leaves a window where the DOM
+  // is visible but the first Escape has no owner; Playwright can reach that
+  // window, and so can an input event already queued during the transition.
+  // Keep the listener stable across streamed-token renders while reading the
+  // current close callback from the render-updated ref.
+  useLayoutEffect(() => {
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      onCloseRef.current();
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   return (
     <div
