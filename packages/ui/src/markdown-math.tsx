@@ -59,54 +59,65 @@ export function prepareMarkdownMath(source: string): PreparedMarkdownMath {
 function protectMathOutsideCode(source: string): string {
   const lines = source.split('\n');
   let fence: { character: string; length: number } | undefined;
+  let proseLines: string[] = [];
+  const protectedParts: string[] = [];
 
-  return lines
-    .map((line) => {
-      const opening = /^( {0,3})(`{3,}|~{3,})/.exec(line);
-      if (opening) {
-        const marker = opening[2] ?? '';
-        const character = marker[0] ?? '';
-        if (!fence) {
-          fence = { character, length: marker.length };
-          return line;
-        }
-        if (character === fence.character && marker.length >= fence.length) {
-          fence = undefined;
-        }
-        return line;
+  const flushProse = () => {
+    if (proseLines.length === 0) return;
+    protectedParts.push(protectMathInProse(proseLines.join('\n')));
+    proseLines = [];
+  };
+
+  for (const line of lines) {
+    const opening = /^( {0,3})(`{3,}|~{3,})/.exec(line);
+    if (opening) {
+      flushProse();
+      const marker = opening[2] ?? '';
+      const character = marker[0] ?? '';
+      if (!fence) {
+        fence = { character, length: marker.length };
+      } else if (character === fence.character && marker.length >= fence.length) {
+        fence = undefined;
       }
-      return fence ? line : protectMathInLine(line);
-    })
-    .join('\n');
+      protectedParts.push(line);
+    } else if (fence) {
+      protectedParts.push(line);
+    } else {
+      proseLines.push(line);
+    }
+  }
+  flushProse();
+
+  return protectedParts.join('\n');
 }
 
-function protectMathInLine(line: string): string {
+function protectMathInProse(source: string): string {
   let output = '';
   let index = 0;
 
-  while (index < line.length) {
-    if (line[index] === '`') {
-      const run = /^`+/.exec(line.slice(index))?.[0] ?? '`';
-      const close = line.indexOf(run, index + run.length);
+  while (index < source.length) {
+    if (source[index] === '`') {
+      const run = /^`+/.exec(source.slice(index))?.[0] ?? '`';
+      const close = source.indexOf(run, index + run.length);
       if (close >= 0) {
-        output += line.slice(index, close + run.length);
+        output += source.slice(index, close + run.length);
         index = close + run.length;
         continue;
       }
     }
 
     const delimited =
-      readDelimitedMath(line, index, '\\(', '\\)', false)
-      ?? readDelimitedMath(line, index, '\\[', '\\]', true)
-      ?? readDelimitedMath(line, index, '$$', '$$', true)
-      ?? readDollarMath(line, index);
+      readDelimitedMath(source, index, '\\(', '\\)', false, false)
+      ?? readDelimitedMath(source, index, '\\[', '\\]', true, true)
+      ?? readDelimitedMath(source, index, '$$', '$$', true, true)
+      ?? readDollarMath(source, index);
     if (delimited) {
       output += mathToken(delimited.formula, delimited.displayMode);
       index = delimited.end;
       continue;
     }
 
-    output += line[index];
+    output += source[index];
     index += 1;
   }
 
@@ -119,11 +130,14 @@ function readDelimitedMath(
   opening: string,
   closing: string,
   displayMode: boolean,
+  allowNewlines: boolean,
 ): { formula: string; displayMode: boolean; end: number } | undefined {
   if (!line.startsWith(opening, index)) return undefined;
-  const close = line.indexOf(closing, index + opening.length);
+  const contentStart = index + opening.length;
+  const close = line.indexOf(closing, contentStart);
   if (close < 0) return undefined;
-  const formula = line.slice(index + opening.length, close).trim();
+  if (!allowNewlines && line.slice(contentStart, close).includes('\n')) return undefined;
+  const formula = line.slice(contentStart, close).trim();
   if (!formula) return undefined;
   return { formula, displayMode, end: close + closing.length };
 }
@@ -135,7 +149,8 @@ function readDollarMath(
   if (line[index] !== '$' || line[index - 1] === '\\' || line[index + 1] === '$') {
     return undefined;
   }
-  const close = findClosingDollar(line, index + 1);
+  const lineEnd = line.indexOf('\n', index + 1);
+  const close = findClosingDollar(line, index + 1, lineEnd < 0 ? line.length : lineEnd);
   if (close < 0) return undefined;
   const formula = line.slice(index + 1, close);
   if (!formula || /^\s|\s$/.test(formula)) return undefined;
@@ -147,8 +162,8 @@ function isPairedCurrencyRange(line: string, opening: number, closing: number): 
   return /\d/.test(line[opening + 1] ?? '') && /\d/.test(line[closing + 1] ?? '');
 }
 
-function findClosingDollar(line: string, start: number): number {
-  for (let index = start; index < line.length; index += 1) {
+function findClosingDollar(line: string, start: number, end: number): number {
+  for (let index = start; index < end; index += 1) {
     if (line[index] !== '$' || line[index - 1] === '\\' || line[index + 1] === '$') continue;
     return index;
   }

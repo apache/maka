@@ -252,7 +252,7 @@
   margin-inline-start: 22px;
   padding: 2px 0 4px 12px;
   border-inline-start: 2px solid color-mix(in oklch, var(--link) 32%, var(--border));
-  white-space: normal;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 .maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown {

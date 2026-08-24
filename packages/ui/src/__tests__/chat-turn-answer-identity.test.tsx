@@ -18,6 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { afterEach, test } from 'node:test';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -155,6 +157,31 @@ test('redacts secrets before rendering a settled collapsed reasoning preview', a
   assert.ok(header);
   assert.match(header.textContent ?? '', /<redacted>/);
   assert.doesNotMatch(header.textContent ?? '', /sk-live-1234567890abcdef/);
+});
+
+test('preserves a model-authored single newline in plain reasoning', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, turnWith([
+    {
+      kind: 'thinking',
+      text: 'First observation\nSecond observation',
+      messageId: 'thinking-1',
+      live: false,
+    },
+  ]));
+
+  const body = container.querySelector('.maka-chat-reasoning-content');
+  assert.ok(body);
+  assert.match(body.textContent ?? '', /First observation\nSecond observation/);
+
+  const css = await readFile(resolve(import.meta.dirname, '..', '..', 'src', 'styles.css'), 'utf8');
+  const rule = /\.maka-chat-reasoning-content\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, 'the reasoning body style contract is missing');
+  assert.match(
+    rule[1] ?? '',
+    /white-space\s*:\s*pre-wrap/,
+    'single model-authored newlines must remain visible after Markdown renders a soft break',
+  );
 });
 
 /**

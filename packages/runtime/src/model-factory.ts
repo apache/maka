@@ -18,6 +18,8 @@
  */
 
 import { createAnthropic } from '@ai-sdk/anthropic';
+// Load-bearing until the public Anthropic API exposes model thinking mode:
+// replace this capability lookup when upgrading if the exported internal path disappears.
 import { getModelCapabilities as getAnthropicModelCapabilities } from '@ai-sdk/anthropic/internal';
 import { createCohere } from '@ai-sdk/cohere';
 import { createGoogle } from '@ai-sdk/google';

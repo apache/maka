@@ -80,6 +80,34 @@ it('renders display math while leaving ordinary currency alone', () => {
   assert.doesNotMatch(markup, /class="maka-math maka-math-inline"/);
 });
 
+it('renders multiline display math outside code for both supported delimiters', () => {
+  for (const [text, mathNode] of [
+    [['Before', '', '$$', 'E = mc^2', '$$', '', 'After'].join('\n'), '<msup>'],
+    [['Before', '', '\\[', 'x_1 + x_2 = y', '\\]', '', 'After'].join('\n'), '<msub>'],
+  ]) {
+    const markup = renderToStaticMarkup(createElement(MarkdownBody, { text }));
+
+    assert.match(markup, /Before/);
+    assert.match(markup, /After/);
+    assert.match(markup, /class="maka-math maka-math-display"/);
+    assert.match(markup, /class="katex-display"/);
+    assert.doesNotMatch(markup, /\$\$/);
+    assert.doesNotMatch(markup, /\\\[/);
+    assert.match(markup, new RegExp(mathNode));
+    assert.doesNotMatch(markup, /<em[^>]*>1<\/em>/);
+  }
+});
+
+it('does not let multiline display math cross a fenced code block', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: ['$$', 'outside', '```tex', 'inside', '```', '$$'].join('\n'),
+  }));
+
+  assert.doesNotMatch(markup, /class="maka-math/);
+  assert.match(markup, /\$\$/);
+  assert.match(markup, /inside/);
+});
+
 it('keeps the copy control in a toolbar above a one-line code scroll viewport', () => {
   const markup = renderToStaticMarkup(createElement(LocaleProvider, {
     locale: 'en',
