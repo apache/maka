@@ -410,11 +410,7 @@ struct ManagedTreeStats {
 }
 
 impl ManagedTreeStats {
-    fn enter_tree(
-        &mut self,
-        depth: u64,
-        policy: ManagedTreePolicy,
-    ) -> Result<(), &'static str> {
+    fn enter_tree(&mut self, depth: u64, policy: ManagedTreePolicy) -> Result<(), &'static str> {
         if depth > policy.max_depth {
             return Err("source_tree_depth_exceeded");
         }
@@ -452,11 +448,7 @@ impl ManagedTreeStats {
         Ok(())
     }
 
-    fn observe_blob(
-        &mut self,
-        size: u64,
-        policy: ManagedTreePolicy,
-    ) -> Result<(), &'static str> {
+    fn observe_blob(&mut self, size: u64, policy: ManagedTreePolicy) -> Result<(), &'static str> {
         if size > policy.max_file_bytes {
             return Err("source_file_limit_exceeded");
         }
