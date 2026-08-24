@@ -21,6 +21,7 @@ import { useEffect, useState } from 'react';
 import type {
   HealthSignal,
   HealthSignalLayer,
+  HealthSignalStatus,
   HealthSnapshot,
 } from '@maka/core/health';
 import { HEALTH_SIGNAL_LAYERS } from '@maka/core/health';
@@ -32,6 +33,10 @@ import { SettingsPage, SettingsRow, SettingsSection } from './settings-section';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { dotForStatus } from '@maka/ui';
 import { useRuntimeHostSettingsTarget } from './runtime-host-settings-target.js';
+import {
+  SettingsStatusSummaryFilter,
+  type SettingsStatusSummaryOption,
+} from './settings-status-summary-filter';
 
 /**
  * PR-UI-9 — Health Center read-only page. Consumes `window.maka.health.getSnapshot()`
@@ -56,6 +61,7 @@ export function HealthCenterPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [signalFilter, setSignalFilter] = useState<HealthSignalStatus | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -78,6 +84,14 @@ export function HealthCenterPage() {
     };
   }, [host, locale, refreshTick]);
 
+  useEffect(() => {
+    if (!snapshot) return;
+    setSignalFilter((current) => {
+      if (!current) return current;
+      return snapshot.signals.some((signal) => signal.status === current) ? current : null;
+    });
+  }, [snapshot]);
+
   if (loading) {
     return (
       <SettingsSkeletonStack label={copy.loading} />
@@ -97,15 +111,18 @@ export function HealthCenterPage() {
   }
 
   const healthCheckedAtMs = snapshot.checkedAt;
-  const signalsByLayer = groupSignalsByLayer(snapshot.signals);
+  const visibleSignals = signalFilter
+    ? snapshot.signals.filter((signal) => signal.status === signalFilter)
+    : snapshot.signals;
+  const signalsByLayer = groupSignalsByLayer(visibleSignals);
   const blocksSendCount = snapshot.signals.filter((signal) => signal.blocksSend).length;
   const blocksCapabilityCount = snapshot.signals.filter((signal) => signal.blocksCapability).length;
-  const summaryParts: Array<{ key: string; label: string; count: number; tone: 'neutral' | 'warning' | 'destructive' }> = [
-    { key: 'ok', label: copy.statuses.ok.label, count: snapshot.summary.ok, tone: 'neutral' },
-    { key: 'info', label: copy.statuses.info.label, count: snapshot.summary.info, tone: 'neutral' },
-    { key: 'warning', label: copy.statuses.warning.label, count: snapshot.summary.warning, tone: 'warning' },
-    { key: 'error', label: copy.statuses.error.label, count: snapshot.summary.error, tone: 'destructive' },
-    { key: 'unknown', label: copy.statuses.unknown.label, count: snapshot.summary.unknown, tone: 'neutral' },
+  const summaryParts: Array<SettingsStatusSummaryOption<HealthSignalStatus>> = [
+    { value: 'ok', label: copy.statuses.ok.label, count: snapshot.summary.ok, tone: 'neutral' },
+    { value: 'info', label: copy.statuses.info.label, count: snapshot.summary.info, tone: 'neutral' },
+    { value: 'warning', label: copy.statuses.warning.label, count: snapshot.summary.warning, tone: 'warning' },
+    { value: 'error', label: copy.statuses.error.label, count: snapshot.summary.error, tone: 'destructive' },
+    { value: 'unknown', label: copy.statuses.unknown.label, count: snapshot.summary.unknown, tone: 'neutral' },
   ];
 
   return (
@@ -132,28 +149,30 @@ export function HealthCenterPage() {
           </div>
         )}
       >
-        <p className="settingsHealthSummaryLine" role="group" aria-label={copy.summaryAria}>
-          {summaryParts.map((part) => (
-            <span key={part.key} data-tone={part.count > 0 ? part.tone : 'neutral'}>
-              {part.label} {part.count}
-            </span>
-          ))}
-        </p>
+        <SettingsStatusSummaryFilter<HealthSignalStatus>
+          value={signalFilter}
+          options={summaryParts}
+          label={copy.summaryAria}
+          optionLabel={(option, selected) => copy.summaryFilterAria(option.label, option.count, selected)}
+          onChange={setSignalFilter}
+        />
       </SettingsSection>
 
       {blocksSendCount > 0 && (
         <Banner
           status="error"
           role="status"
-          title={copy.blockers.send(blocksSendCount)}
-          description={blocksCapabilityCount > 0 ? copy.blockers.capability(blocksCapabilityCount) : undefined}
+          title={copy.blockers.send(blocksSendCount, snapshot.signals.length)}
+          description={blocksCapabilityCount > 0
+            ? copy.blockers.capability(blocksCapabilityCount, snapshot.signals.length)
+            : undefined}
         />
       )}
       {blocksSendCount === 0 && blocksCapabilityCount > 0 && (
         <Banner
           status="warning"
           role="status"
-          title={copy.blockers.capability(blocksCapabilityCount)}
+          title={copy.blockers.capability(blocksCapabilityCount, snapshot.signals.length)}
         />
       )}
 

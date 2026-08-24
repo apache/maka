@@ -43,6 +43,7 @@ test('context compaction waits for terminal execution cleanup before preparing',
     runId: 'run-compact',
     status: 'completed' as const,
     terminalEventId: 'event-compact',
+    contextCompactionOutcome: { kind: 'compacted' as const, checkpointId: 'checkpoint-1' },
   };
   const prepare = (): HostedExecutionPreparation => {
     prepareCalls += 1;
@@ -100,6 +101,65 @@ test('context compaction waits for terminal execution cleanup before preparing',
   releaseCleanup();
   const outcome = await compaction;
   assert.equal(outcome.ok, true);
-  if (outcome.ok) assert.deepEqual(outcome.result, compacted);
+  if (outcome.ok) {
+    assert.deepEqual(outcome.result, {
+      kind: 'finished',
+      turn: compacted,
+      outcome: compacted.contextCompactionOutcome,
+    });
+  }
   assert.equal(prepareCalls, 2);
+});
+
+test('completed legacy compaction without an outcome returns a typed failure without draining', async () => {
+  const completed = {
+    sessionId: 'session-context',
+    turnId: 'turn-compact',
+    runId: 'run-compact',
+    status: 'completed' as const,
+    terminalEventId: 'event-compact',
+  };
+  let drainRequests = 0;
+  const coordinator = new HostContextCoordinator({
+    runtime: {
+      compactSession: async function* () {},
+      getContextDiagnostics: async () => ({}) as never,
+      listTurns: async () => [],
+      preflightContextCompaction: async () => {},
+    },
+    executions: {
+      lookup: async () => ({
+        sessionId: completed.sessionId,
+        turnId: completed.turnId,
+        runId: completed.runId,
+        userMessageId: null,
+        descriptor: { kind: 'context_compact' as const },
+      }),
+      prepare: () => assert.fail('existing execution must not prepare another root'),
+      reconcile: async () => assert.fail('existing execution must not reconcile'),
+      admit: async () => completedHostedExecutionAdmission(completed),
+    },
+    sessions: {
+      readHeaderSnapshot: async () =>
+        ({ status: 'active', isArchived: false }) as unknown as SessionHeader,
+    },
+    requestDrain: () => {
+      drainRequests += 1;
+    },
+  });
+
+  const outcome = await coordinator.handlers['context.compact'](
+    { sessionId: completed.sessionId, turnId: completed.turnId },
+    {} as never,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: true,
+    result: {
+      kind: 'finished',
+      turn: completed,
+      outcome: { kind: 'failed', reason: 'missing_durable_outcome' },
+    },
+  });
+  assert.equal(drainRequests, 0);
 });

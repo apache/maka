@@ -29,6 +29,7 @@
 
 import type {
   AttachmentRef,
+  ContextCompactionOutcome,
   MessageContent,
   QuoteRef,
   SessionEvent,
@@ -166,11 +167,10 @@ export interface BackendCompactHistoryInput {
    */
   runId: string;
   runtimeContext: readonly RuntimeEvent[];
-  /** Override the configured recent-turn tail for an explicit recovery compaction. */
-  minRecentTurns?: number;
 }
 
 export interface BackendCompactHistoryResult {
+  outcome: ContextCompactionOutcome;
   contextBudget?: ContextBudgetDiagnostic;
 }
 

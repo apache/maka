@@ -84,7 +84,7 @@ describe('SqliteSessionMetadataStore', () => {
 
     const migrated = createSqliteSessionMetadataStore(path);
     try {
-      assert.equal(migrated.schemaVersion(), 28);
+      assert.equal(migrated.schemaVersion(), 29);
       assert.equal((await migrated.read(legacyHeader.id)).header.externalOrigin, undefined);
     } finally {
       migrated.close();
@@ -103,6 +103,10 @@ describe('SqliteSessionMetadataStore', () => {
       assert.equal(
         columns.some(({ name }) => name === 'external_source_session_id'),
         true,
+      );
+      assert.equal(
+        columns.some(({ name }) => name === 'last_used_at'),
+        false,
       );
       const externalOriginIndex = schema
         .prepare(
@@ -1800,7 +1804,6 @@ describe('SqliteSessionMetadataStore', () => {
         fullHeader({
           id: 'older',
           name: 'Older',
-          lastUsedAt: 10,
           lastMessageAt: 20,
           labels: ['alpha', 'shared'],
           isFlagged: true,
@@ -1810,7 +1813,6 @@ describe('SqliteSessionMetadataStore', () => {
         fullHeader({
           id: 'newer',
           name: 'Newer',
-          lastUsedAt: 30,
           lastMessageAt: 40,
           labels: ['shared'],
           isFlagged: true,
@@ -2983,7 +2985,6 @@ function fullHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
     workspaceRoot: '/workspace',
     cwd: '/workspace/repo',
     createdAt: 1,
-    lastUsedAt: 2,
     lastMessageAt: 3,
     name: 'Session',
     titleIsManual: true,

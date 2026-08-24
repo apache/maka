@@ -2293,9 +2293,61 @@ function descriptorFromTool(serverId: string, tool: Tool): McpToolDescriptor {
     serverId,
     name: tool.name,
     description: tool.description,
-    inputSchema: structuredClone(tool.inputSchema),
+    inputSchema: normalizeToolInputSchema(tool.inputSchema),
     annotations: tool.annotations ? { ...tool.annotations } : undefined,
   };
+}
+
+function normalizeToolInputSchema(
+  inputSchema: Tool['inputSchema'],
+): McpToolDescriptor['inputSchema'] {
+  const root = structuredClone(inputSchema);
+  function visitSchemaOrSchemas(value: unknown): void {
+    if (Array.isArray(value)) {
+      for (const nested of value) visit(nested);
+    } else {
+      visit(value);
+    }
+  }
+  function visit(value: unknown): void {
+    if (!isRecord(value)) return;
+    delete value.$schema;
+    delete value.$comment;
+
+    for (const key of [
+      'properties',
+      'patternProperties',
+      'dependentSchemas',
+      '$defs',
+      'definitions',
+      'dependencies',
+    ] as const) {
+      const entries = value[key];
+      if (!isRecord(entries)) continue;
+      for (const nested of Object.values(entries)) visit(nested);
+    }
+    for (const key of [
+      'items',
+      'prefixItems',
+      'additionalItems',
+      'unevaluatedItems',
+      'additionalProperties',
+      'unevaluatedProperties',
+      'propertyNames',
+      'contains',
+      'not',
+      'if',
+      'then',
+      'else',
+      'allOf',
+      'anyOf',
+      'oneOf',
+    ] as const) {
+      visitSchemaOrSchemas(value[key]);
+    }
+  }
+  visit(root);
+  return root;
 }
 
 function normalizeContent(value: unknown): McpContentBlock {

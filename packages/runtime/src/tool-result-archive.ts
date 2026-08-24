@@ -19,15 +19,9 @@
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createHash } from 'node:crypto';
-import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
-import type {
-  ArchivedToolResultSourceRef,
-  ArchivedToolResultReason,
-} from './context-source-ref.js';
 import {
   estimateTokens,
   finitePositive,
-  increment,
   sha256,
   stableJsonLength,
   turnKey,
@@ -42,7 +36,7 @@ export interface StaleToolResultPrunePolicy {
   enabled: boolean;
   /** Tool result payloads above this estimate are replaced with archive placeholders. Defaults to 2048. */
   maxResultEstimatedTokens?: number;
-  /** Keep this many newest turns' tool results full. Defaults to ContextBudgetPolicy.minRecentTurns, then 1. */
+  /** Keep this many newest turns' tool results full. Defaults to 1. */
   minRecentTurnsFull?: number;
   /**
    * Archive refs keyed by RuntimeEvent id. Rewrites only happen when a
@@ -51,20 +45,7 @@ export interface StaleToolResultPrunePolicy {
   archiveRefs?: readonly ToolResultArchiveRef[] | Readonly<Record<string, ToolResultArchiveRef>>;
 }
 
-export interface ArchiveRetrievalPolicy {
-  enabled: boolean;
-  /**
-   * Defaults to `eager` for Phase 6 compatibility. `history_search_gated`
-   * only hydrates placeholders whose turn was selected by history search.
-   */
-  mode?: ArchiveRetrievalMode;
-  maxResults?: number;
-  maxEstimatedTokens?: number;
-  maxBytes?: number;
-  order?: 'newest_first';
-}
-
-export type ArchiveRetrievalMode = 'eager' | 'history_search_gated';
+export type ArchivedToolResultReason = 'stale_tool_result_pruned_before_compact';
 
 export const ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND = 'maka.archived_tool_result';
 
@@ -161,137 +142,6 @@ export function stableToolResultArchiveArtifactId(event: {
     .slice(0, 32)}`;
 }
 
-export interface ArchiveRetrievalResult {
-  events: RuntimeEvent[];
-  diagnosticPatch: Partial<ContextBudgetDiagnostic>;
-  retrievedSourceRefs?: ArchivedToolResultSourceRef[];
-}
-
-export async function retrieveArchivedToolResultsForReplay(
-  events: readonly RuntimeEvent[],
-  policy: ArchiveRetrievalPolicy | undefined,
-  reader: ToolResultArchiveReader | undefined,
-  options: {
-    sessionId: string;
-    charsPerToken?: number;
-    allowedTurnIds?: ReadonlySet<string> | readonly string[];
-  },
-): Promise<ArchiveRetrievalResult> {
-  if (policy?.enabled !== true || !reader) {
-    return { events: [...events], diagnosticPatch: {} };
-  }
-
-  const charsPerToken = options.charsPerToken ?? 4;
-  const mode = policy.mode ?? 'eager';
-  const allowedTurnIds = normalizeAllowedTurnIds(options.allowedTurnIds);
-  const maxResults = finitePositive(policy.maxResults) ?? 3;
-  const maxEstimatedTokens = finitePositive(policy.maxEstimatedTokens) ?? 8_192;
-  const maxBytes = finitePositive(policy.maxBytes) ?? 1024 * 1024;
-  const candidates = collectArchiveRetrievalCandidates(events, policy.order ?? 'newest_first');
-
-  let retrieved = 0;
-  let retrievedTokens = 0;
-  let skipped = 0;
-  let failures = 0;
-  const skippedReasonCounts: Record<string, number> = {};
-  const failureReasonCounts: Record<string, number> = {};
-  const replacements = new Map<string, unknown>();
-  const retrievedSourceRefs: ArchivedToolResultSourceRef[] = [];
-
-  for (const candidate of candidates) {
-    if (retrieved >= maxResults) break;
-    if (mode === 'history_search_gated' && !allowedTurnIds.has(turnKey(candidate.event))) {
-      skipped += 1;
-      increment(skippedReasonCounts, 'history_search_gate');
-      continue;
-    }
-    if (candidate.placeholder.originalBytes > maxBytes) {
-      skipped += 1;
-      increment(skippedReasonCounts, 'max_bytes');
-      continue;
-    }
-    if (candidate.placeholder.originalEstimatedTokens > maxEstimatedTokens) {
-      skipped += 1;
-      increment(skippedReasonCounts, 'max_candidate_tokens');
-      continue;
-    }
-    if (retrievedTokens + candidate.placeholder.originalEstimatedTokens > maxEstimatedTokens) {
-      skipped += 1;
-      increment(skippedReasonCounts, 'max_total_tokens');
-      continue;
-    }
-
-    const readResult = await Promise.resolve(
-      reader({
-        ...candidate.placeholder,
-        sessionId: options.sessionId,
-        maxBytes,
-      }),
-    ).catch((): ToolResultArchiveReadResult => ({ ok: false, reason: 'read_failed' }));
-    if (!readResult.ok) {
-      failures += 1;
-      increment(failureReasonCounts, readResult.reason);
-      continue;
-    }
-    const actualHash = sha256(readResult.serializedResult);
-    if (actualHash !== candidate.placeholder.bodySha256) {
-      failures += 1;
-      increment(failureReasonCounts, 'corrupt');
-      continue;
-    }
-
-    replacements.set(candidate.event.id, deserializeToolResultArchive(readResult.serializedResult));
-    retrievedSourceRefs.push({
-      kind: 'archived_tool_result',
-      sessionId: options.sessionId,
-      turnId: turnKey(candidate.event),
-      runtimeEventId: candidate.event.id,
-      toolCallId: candidate.placeholder.toolCallId,
-      toolName: candidate.placeholder.toolName,
-      artifactId: candidate.placeholder.artifactId,
-      bodySha256: candidate.placeholder.bodySha256,
-      originalEstimatedTokens: candidate.placeholder.originalEstimatedTokens,
-      originalBytes: candidate.placeholder.originalBytes,
-      placeholderReason: candidate.placeholder.reason,
-    });
-    retrieved += 1;
-    retrievedTokens += candidate.placeholder.originalEstimatedTokens;
-  }
-
-  const hydratedEvents = events.map((event) => {
-    const replacement = replacements.get(event.id);
-    if (!replacements.has(event.id) || event.content?.kind !== 'function_response') return event;
-    return {
-      ...event,
-      content: {
-        ...event.content,
-        result: replacement,
-      },
-    };
-  });
-
-  return {
-    events: hydratedEvents,
-    ...(retrievedSourceRefs.length > 0 ? { retrievedSourceRefs } : {}),
-    diagnosticPatch: {
-      archiveRetrievalMode: mode,
-      ...(mode === 'history_search_gated'
-        ? { archiveRetrievalEligibleTurns: allowedTurnIds.size }
-        : {}),
-      retrievedArchiveToolResults: retrieved,
-      retrievedArchiveEstimatedTokens: retrievedTokens,
-      archiveRetrievalSkipped: skipped,
-      archiveRetrievalFailures: failures,
-      ...(Object.keys(skippedReasonCounts).length > 0
-        ? { archiveRetrievalSkippedReasonCounts: skippedReasonCounts }
-        : {}),
-      ...(Object.keys(failureReasonCounts).length > 0
-        ? { archiveRetrievalFailureReasonCounts: failureReasonCounts }
-        : {}),
-    },
-  };
-}
-
 export function deserializeToolResultArchive(serialized: string): unknown {
   if (serialized === 'undefined') return undefined;
   try {
@@ -305,7 +155,6 @@ export function pruneStaleToolResultsBeforeCompact(
   events: readonly RuntimeEvent[],
   prunePolicy: StaleToolResultPrunePolicy | undefined,
   charsPerToken: number,
-  minRecentTurns: number | undefined,
 ): {
   events: RuntimeEvent[];
   prunedToolResults: number;
@@ -326,10 +175,7 @@ export function pruneStaleToolResultsBeforeCompact(
   const maxResultEstimatedTokens =
     finitePositive(prunePolicy.maxResultEstimatedTokens) ??
     DEFAULT_MAX_TOOL_RESULT_ESTIMATED_TOKENS;
-  const minRecentTurnsFull = Math.max(
-    0,
-    Math.floor(prunePolicy.minRecentTurnsFull ?? minRecentTurns ?? 1),
-  );
+  const minRecentTurnsFull = Math.max(0, Math.floor(prunePolicy.minRecentTurnsFull ?? 1));
   const protectedTurnIds = recentTurnIds(events, minRecentTurnsFull);
   const archiveRefs = normalizeArchiveRefs(prunePolicy.archiveRefs);
 
@@ -416,16 +262,12 @@ export function collectStaleToolResultArchiveCandidates(
   events: readonly RuntimeEvent[],
   prunePolicy: StaleToolResultPrunePolicy | undefined,
   charsPerToken: number,
-  minRecentTurns: number | undefined,
 ): StaleToolResultArchiveCandidate[] {
   if (prunePolicy?.enabled !== true) return [];
   const maxResultEstimatedTokens =
     finitePositive(prunePolicy.maxResultEstimatedTokens) ??
     DEFAULT_MAX_TOOL_RESULT_ESTIMATED_TOKENS;
-  const minRecentTurnsFull = Math.max(
-    0,
-    Math.floor(prunePolicy.minRecentTurnsFull ?? minRecentTurns ?? 1),
-  );
+  const minRecentTurnsFull = Math.max(0, Math.floor(prunePolicy.minRecentTurnsFull ?? 1));
   const protectedTurnIds = recentTurnIds(events, minRecentTurnsFull);
   const candidates: StaleToolResultArchiveCandidate[] = [];
   for (const event of events) {
@@ -497,6 +339,20 @@ export function isArchivedToolResultPlaceholder(
   );
 }
 
+/** Add the canonical ArchiveRead address to persisted v1 placeholders. */
+export function withToolResultArchiveResourceRef(value: unknown): unknown {
+  if (!isArchivedToolResultPlaceholder(value)) return value;
+  return {
+    ...value,
+    resourceRef: buildToolResultArchiveResourceRef({
+      artifactId: value.artifactId,
+      bodySha256: value.bodySha256,
+      originalBytes: value.originalBytes,
+    }),
+    readInstructions: TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS,
+  } satisfies ArchivedToolResultPlaceholder;
+}
+
 function normalizeArchiveRefs(
   refs: StaleToolResultPrunePolicy['archiveRefs'],
 ): Map<string, ToolResultArchiveRef> {
@@ -550,28 +406,4 @@ function recentTurnIds(events: readonly RuntimeEvent[], count: number): Set<stri
     order.push(key);
   }
   return new Set(order.slice(Math.max(0, order.length - count)));
-}
-
-function collectArchiveRetrievalCandidates(
-  events: readonly RuntimeEvent[],
-  order: NonNullable<ArchiveRetrievalPolicy['order']>,
-): Array<{
-  event: RuntimeEvent;
-  placeholder: ArchivedToolResultPlaceholder;
-}> {
-  const candidates: Array<{ event: RuntimeEvent; placeholder: ArchivedToolResultPlaceholder }> = [];
-  for (const event of events) {
-    if (event.content?.kind !== 'function_response') continue;
-    if (!isArchivedToolResultPlaceholder(event.content.result)) continue;
-    candidates.push({ event, placeholder: event.content.result });
-  }
-  return order === 'newest_first' ? candidates.reverse() : candidates;
-}
-
-function normalizeAllowedTurnIds(
-  turnIds: ReadonlySet<string> | readonly string[] | undefined,
-): ReadonlySet<string> {
-  if (!turnIds) return new Set();
-  if (turnIds instanceof Set) return turnIds;
-  return new Set(turnIds);
 }

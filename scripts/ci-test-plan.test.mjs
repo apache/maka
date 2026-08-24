@@ -107,7 +107,24 @@ test('release metadata selects only the gate that consumes it', () => {
     const plan = planTests([path], { graph });
     assert.equal(plan.cliPackage, true, path);
     assert.equal(plan.releaseContract, true, path);
-    assert.equal(plan.asfSource, false, path);
+    assert.equal(plan.asfSource, true, path);
+  }
+});
+
+test('source legal authority and generated provenance select the ASF source gate', () => {
+  for (const path of [
+    'DISCLAIMER-WIP',
+    'biome.jsonc',
+    'patches/node-pty+1.2.0-beta.15.patch',
+    'apps/desktop/src/renderer/assets/provider-brands/example.svg',
+    'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
+    'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
+    'packages/core/src/model-metadata.generated.ts',
+    'packages/runtime/src/telemetry/model-pricing.generated.ts',
+    'scripts/model-metadata/models-dev-api.snapshot.json',
+    'scripts/sync-model-metadata.mjs',
+  ]) {
+    assert.equal(planTests([path], { graph }).asfSource, true, path);
   }
 });
 
@@ -268,6 +285,23 @@ test('contract checks run before dependency setup and can fail the job', () => {
     assert.doesNotMatch(step, /\n\s+if:/u, name);
     assert.doesNotMatch(step, /continue-on-error/u, name);
   }
+});
+
+test('core CI checks the Astryx inventory for every code change before building', () => {
+  const workflow = readWorkflow('ci.yml');
+  const inventoryStart = workflow.indexOf('      - name: Astryx surface inventory\n');
+  const inventoryEnd = workflow.indexOf('\n      - ', inventoryStart + 1);
+  const buildStart = workflow.indexOf('      - name: Build\n');
+
+  assert.ok(inventoryStart >= 0);
+  assert.ok(inventoryStart < buildStart);
+
+  const inventoryStep = workflow.slice(inventoryStart, inventoryEnd);
+  assert.match(
+    inventoryStep,
+    /if: steps\.plan\.outputs\.code == 'true' \|\| steps\.plan\.outputs\.astryx_surface == 'true'/u,
+  );
+  assert.doesNotMatch(inventoryStep, /continue-on-error/u);
 });
 
 test('core CI validates affected installed CLI packages on its existing runner', () => {

@@ -19,6 +19,23 @@
 
 import { test, expect, COMPOSER_INPUT } from './fixtures';
 
+async function choiceContentGeometry(card: import('@playwright/test').Locator) {
+  return card.evaluate((element) => {
+    const content = Array.from(element.children).find((child) => child.tagName !== 'INPUT');
+    if (!(content instanceof HTMLElement)) {
+      throw new Error('SelectableCard content is missing');
+    }
+    const cardRect = element.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    return {
+      cardHeight: cardRect.height,
+      contentHeight: contentRect.height,
+      topGap: contentRect.top - cardRect.top,
+      bottomGap: cardRect.bottom - contentRect.bottom,
+    };
+  });
+}
+
 test('opening settings commits an active titlebar rename', async ({ window: page }) => {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('create a session for settings rename');
@@ -103,4 +120,24 @@ test('wide settings gutters scroll the whole main pane', async ({ window: page }
   await page.mouse.wheel(0, 600);
   await expect.poll(() => pane.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await expect(content).toBeVisible();
+});
+
+test('appearance choice content stays vertically centered in stretched grid rows', async ({ window: page }) => {
+  await page.evaluate(async () => {
+    await window.maka.settings.update({ personalization: { uiLocale: 'en' } });
+  });
+  await page.reload();
+  await page.waitForSelector(COMPOSER_INPUT);
+  await page.setViewportSize({ width: 1650, height: 992 });
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'App icon' })).toBeVisible();
+
+  for (const name of ['Azure', 'Classic']) {
+    const card = page.getByRole('checkbox', { name, exact: true }).locator('..');
+    await expect(card).toBeVisible();
+    const geometry = await choiceContentGeometry(card);
+    expect(geometry.cardHeight).toBeGreaterThan(geometry.contentHeight);
+    expect(Math.abs(geometry.topGap - geometry.bottomGap)).toBeLessThanOrEqual(1);
+  }
 });

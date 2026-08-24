@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import {
   authenticateInteractiveTaskLedgerWriter,
   openInteractiveTaskLedgerStoreForWrite,
@@ -33,6 +33,14 @@ import {
   tryAcquireInteractiveRootOwner,
   type StorageRootLease,
 } from '../root-authority.js';
+import {
+  removeTrackedControlDirectories,
+  trackControlDirectory,
+} from './fixtures/control-directory-hygiene.js';
+
+// The control directory of each resolved root lives outside that root, so a
+// temporary root's removal leaves it behind; reclaim the recorded rootIds here.
+after(removeTrackedControlDirectories);
 
 const SESSION_ID = 'authority-session';
 
@@ -135,7 +143,9 @@ async function withInteractiveRoot(
 ): Promise<void> {
   await withTempDir(async (base) => {
     const root = join(base, 'interactive');
-    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: root, kind: 'interactive' }),
+    );
     await run({ root, capability });
   });
 }

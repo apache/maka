@@ -23,7 +23,7 @@ import {
   Key,
   ProcessTerminal,
   SelectList,
-  TUI,
+  TuiMainScreen,
   isKeyRelease,
   isKeyRepeat,
   matchesKey,
@@ -48,7 +48,7 @@ import {
 } from '@maka/core/slash-command-catalog';
 import { type QueueEnqueueOutcome, type ShellRunUpdate } from '@maka/core/events';
 import {
-  deriveModelSwitchTranscript,
+  latestAssistantModelId,
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
@@ -96,7 +96,7 @@ import {
   applyShellRunViewUpdateToTranscript,
   permissionModeLabel,
   replaceTranscriptWithStoredMessages,
-  reconcileToolsWithStoredMessages,
+  hydrateToolsWithStoredMessages,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
@@ -108,6 +108,7 @@ import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
+import { sessionStatusBadge } from './tui-session-status.js';
 import {
   AttentionController,
   DISABLE_FOCUS_REPORTING,
@@ -277,11 +278,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const setTaskbarProgress = (active: boolean): void => {
     if (taskbarProgress) terminal.setProgress(active);
   };
-  const tui = new TUI(terminal);
+  const tui = new TuiMainScreen(terminal);
   const state = createMakaPiTranscriptState();
-  let transcriptMessages: readonly StoredMessage[] = [];
+  let transcriptLastUsedModel: string | undefined;
+  const rememberTranscriptModel = (messages: readonly StoredMessage[]): void => {
+    transcriptLastUsedModel = latestAssistantModelId(messages);
+  };
   const replaceTranscript = (messages: readonly StoredMessage[]): void => {
-    transcriptMessages = messages;
+    rememberTranscriptModel(messages);
     replaceTranscriptWithStoredMessages(state, messages);
   };
   let cwd = input.cwd;
@@ -536,8 +540,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
         return;
       }
-      transcriptMessages = messages;
-      if (reconcileToolsWithStoredMessages(state, turnId, messages)) {
+      rememberTranscriptModel(messages);
+      if (hydrateToolsWithStoredMessages(state, turnId, messages)) {
         shellRunElapsedTicker.sync();
         requestRender();
       }
@@ -1461,7 +1465,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const setModel = async (nextModel: string) => {
     if (nextModel === model) return;
-    const previousModel = deriveModelSwitchTranscript(transcriptMessages).lastUsedModel ?? model;
+    const previousModel = transcriptLastUsedModel ?? model;
     await input.driver.setModel(nextModel);
     model = nextModel;
     // Same-connection switch: scope the choice lookup to the live connection
@@ -1487,7 +1491,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Updates the provider (and thus the thinking variants) and the status line.
   const setModelChoice = async (choice: ModelChoice) => {
     if (choice.model === model && choice.connectionSlug === connectionSlug) return;
-    const previousModel = deriveModelSwitchTranscript(transcriptMessages).lastUsedModel ?? model;
+    const previousModel = transcriptLastUsedModel ?? model;
     const previousConnectionSlug = connectionSlug;
     const previousChoice = modelChoices?.find(
       (candidate) =>
@@ -2209,18 +2213,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           : projectedSessions;
       const items: SelectItem[] = visibleSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
+        const statusBadge = sessionStatusBadge(session, locale);
+        const statusDetail = statusBadge ? ` · ${statusBadge}` : '';
         const location =
           sessionListScope === 'all' && session.cwd ? ` ${basename(session.cwd)}` : '';
         const childDetail = session.subagentRuntime
-          ? ` subagent:${session.subagentRuntime.profile} ${session.status}`
+          ? ` subagent:${session.subagentRuntime.profile}`
           : '';
         return {
           value: session.id,
           label: `${depth > 0 ? `${'  '.repeat(depth - 1)}↳ ` : ''}${session.name || session.id}`,
           description:
             state?.available === false
-              ? `${shortSessionId(session.id)} ${state.reason}`
-              : `${shortSessionId(session.id)}${location}${childDetail} ${session.llmConnectionSlug} ${session.model}`,
+              ? `${shortSessionId(session.id)}${statusDetail} ${state.reason}`
+              : `${shortSessionId(session.id)}${statusDetail}${location}${childDetail} ${session.llmConnectionSlug} ${session.model}`,
         };
       });
       // Foreign sessions are cwd-scoped; show them in both scope views (they

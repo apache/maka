@@ -237,9 +237,8 @@ export function useComposerAttachments(options: {
     void loadPreviewsSequentially(staged);
   }
 
-  function restoreAttachments(attachments: readonly AttachmentRef[]): void {
+  function restoreAttachments(ownerKey: string, attachments: readonly AttachmentRef[]): void {
     if (attachments.length === 0) return;
-    const ownerKey = options.draftKey;
     const staged = attachments.map(retainedToPending);
     setPendingByKey((map) => appendPending(map, ownerKey, staged));
     for (const item of staged) stagedKeysRef.current.add(item.stagingKey);

@@ -437,6 +437,12 @@ type ShellCopy = {
     loadingWorkbar: string;
     useSkillPrompt(skillName: string): string;
     newConversation: string;
+    compactSuccessTitle: string;
+    compactSuccessDescription: string;
+    compactStartedTitle: string;
+    compactStartedDescription: string;
+    compactUnchangedTitle: string;
+    compactUnchangedDescription: string;
     compactErrorTitle: string;
     compactErrorFallback: string;
     slashCommands: Record<SlashCommandIdForSurface<'desktop'>, {
@@ -1175,6 +1181,12 @@ const SHELL_COPY_BY_LOCALE = {
       loadingWorkbar: '正在加载任务工作栏…',
       useSkillPrompt: (skillName: string) => `使用 ${skillName} 技能：`,
       newConversation: '新建任务',
+      compactSuccessTitle: '上下文已压缩',
+      compactSuccessDescription: '较早的上下文已替换为检查点摘要。',
+      compactStartedTitle: '正在压缩上下文',
+      compactStartedDescription: '正在将较早的上下文整理为检查点摘要。',
+      compactUnchangedTitle: '无需压缩',
+      compactUnchangedDescription: '任务已使用最新的检查点。',
       compactErrorTitle: '压缩失败',
       compactErrorFallback: '任务暂时无法压缩，请稍后重试。',
       slashCommands: {
@@ -1734,6 +1746,12 @@ const SHELL_COPY_BY_LOCALE = {
       loadingWorkbar: 'Loading task workbar…',
       useSkillPrompt: (skillName: string) => `Use the ${skillName} skill: `,
       newConversation: 'New task',
+      compactSuccessTitle: 'Context compacted',
+      compactSuccessDescription: 'Older context was replaced with a checkpoint summary.',
+      compactStartedTitle: 'Compacting context',
+      compactStartedDescription: 'Summarizing older context into a checkpoint.',
+      compactUnchangedTitle: 'Nothing to compact',
+      compactUnchangedDescription: 'The task already uses the latest checkpoint.',
       compactErrorTitle: 'Compaction failed',
       compactErrorFallback: 'The task could not be compacted. Try again later.',
       slashCommands: {

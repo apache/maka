@@ -19,6 +19,7 @@
 
 import type { CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
+import { expect, waitFor } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { GitReviewSnapshot } from '@maka/core/git-review';
@@ -113,15 +114,6 @@ const SIDE_CHAT_SESSION: SessionSummary = {
 };
 const TERMINAL_REF = 'shell-run:storybook-terminal';
 const SIDE_CHAT_PANEL_ID = 'storybook-side-chat';
-
-// The record-file row reads `app:info`'s operationalStateDatabasePath (the
-// exact path main resolves). The short one is what a default workspace looks
-// like; the long one proves the row truncates the directory while the
-// filename stays (the path is hover/focus-copy reachable, the copy button is
-// not pushed out) even at the panel's 320px minimum width.
-const DEFAULT_RECORD_FILE_PATH = 'C:\\Users\\reviewer\\Maka\\workspaces\\default\\runtime.sqlite';
-const LONG_RECORD_FILE_PATH =
-  'C:\\Users\\reviewer\\Maka\\workspaces\\default\\projects\\trace-record-file-truncation-\\with-a-very-long-owner\\runtime.sqlite';
 
 // ---- ledgers -------------------------------------------------------------
 
@@ -433,6 +425,18 @@ const populatedTrace: SessionTrace = {
   },
 };
 
+const narrowTrace: SessionTrace = {
+  ...populatedTrace,
+  turns: populatedTrace.turns.map((turn) =>
+    turn.turnId === 'turn-2'
+      ? {
+          ...turn,
+          failure: { code: 'turn_aborted', message: 'turn was aborted' },
+        }
+      : turn,
+  ),
+};
+
 const populatedContext: ContextDiagnosticsResult = {
   status: 'available',
   providerId: 'zai',
@@ -605,7 +609,6 @@ function bridge(options: {
   traceFail?: boolean;
   /** The context snapshot the composition block reads (#2323). */
   context?: ContextDiagnosticsResult;
-  recordFilePath?: string;
   browserState?: BrowserState;
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
@@ -655,7 +658,6 @@ function bridge(options: {
         data: options.context ?? { status: 'unavailable', reason: 'no_completed_request' },
       }),
       subscribeSessionEvents: unsubscribe,
-      getRecordFile: async () => options.recordFilePath ?? DEFAULT_RECORD_FILE_PATH,
     },
     review: {
       read: async () => ({
@@ -933,6 +935,39 @@ export const Trace: Story = {
   render: () => <Workbar tab="inspector" />,
 };
 
+// Real path: resize the right workbar to its 320px floor while a failed turn
+// is visible. The timestamp owns the first row; the failure and measurement
+// share the second without squeezing the failure into a vertical word.
+export const TraceMinimumWidth: Story = {
+  decorators: [bridge({ trace: narrowTrace, context: populatedContext })],
+  render: () => <Workbar tab="inspector" width={320} />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      const failure = canvasElement.querySelector<HTMLElement>(
+        '[data-maka-contract="session-inspector-turn-failed"]',
+      );
+      const turn = failure?.closest<HTMLElement>(
+        '[data-maka-contract="session-inspector-turn"]',
+      );
+      const label = turn?.querySelector<HTMLElement>('.maka-inspector-turn-label');
+      const meta = turn?.querySelector<HTMLElement>('.maka-inspector-turn-meta');
+      expect(failure).not.toBeNull();
+      expect(turn).not.toBeNull();
+      expect(label).not.toBeNull();
+      expect(meta).not.toBeNull();
+      if (!failure || !turn || !label || !meta) return;
+
+      const failureRect = failure.getBoundingClientRect();
+      const labelRect = label.getBoundingClientRect();
+      const metaRect = meta.getBoundingClientRect();
+      expect(failureRect.top).toBeGreaterThan(labelRect.top);
+      expect(Math.abs(failureRect.top - metaRect.top)).toBeLessThanOrEqual(1);
+      expect(failureRect.height).toBeLessThanOrEqual(metaRect.height + 1);
+      expect(turn.scrollWidth).toBeLessThanOrEqual(turn.clientWidth);
+    });
+  },
+};
+
 // Real path: the first bounded page of a longer trace. The continuation control
 // sits before the ascending timeline because earlier records are inserted at
 // that edge, not after the newest turn.
@@ -986,14 +1021,5 @@ export const TraceEmpty: Story = {
 // unreadable or partially written run ledger); retry lives on the banner.
 export const TraceReadFailed: Story = {
   decorators: [bridge({ traceFail: true })],
-  render: () => <Workbar tab="inspector" />,
-};
-
-// Real path: 任务工作栏 → 追踪 on a workspace whose path overflows the panel
-// — the record-file row keeps its label and copy button, and the path alone
-// truncates. (The default stories above already show the row with a short
-// path; this variant pins the truncation contract.)
-export const TraceRecordFile: Story = {
-  decorators: [bridge({ trace: populatedTrace, recordFilePath: LONG_RECORD_FILE_PATH })],
   render: () => <Workbar tab="inspector" />,
 };

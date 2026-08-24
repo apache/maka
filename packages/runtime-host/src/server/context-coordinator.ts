@@ -28,6 +28,7 @@ import { type SessionManager } from '@maka/runtime/session-manager';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import type {
   ContextCompactInput,
+  ContextCompactResult,
   ContextDiagnosticsQueryInput,
   OperationOutcome,
 } from '../protocol/index.js';
@@ -108,7 +109,7 @@ export class HostContextCoordinator {
         const admitted = await this.#executions.admit(this.#admission(input, existing));
         return {
           ok: true,
-          result: admitted.snapshot,
+          result: this.#compactResult(admitted.snapshot),
         };
       }
 
@@ -141,7 +142,7 @@ export class HostContextCoordinator {
       const admitted = await prepared.admit(this.#admission(input, identity));
       return {
         ok: true,
-        result: admitted.snapshot,
+        result: this.#compactResult(admitted.snapshot),
       };
     } catch (error) {
       if (error instanceof RuntimeHostedRootConflictError) {
@@ -155,6 +156,34 @@ export class HostContextCoordinator {
     } finally {
       prepared?.release();
     }
+  }
+
+  #compactResult(turn: import('../protocol/index.js').TurnSnapshot): ContextCompactResult {
+    if (turn.status === 'completed') {
+      if (!turn.contextCompactionOutcome) {
+        return {
+          kind: 'finished',
+          turn,
+          outcome: { kind: 'failed', reason: 'missing_durable_outcome' },
+        };
+      }
+      return {
+        kind: 'finished',
+        turn,
+        outcome: turn.contextCompactionOutcome,
+      };
+    }
+    if (turn.status === 'failed' || turn.status === 'cancelled') {
+      return {
+        kind: 'finished',
+        turn,
+        outcome: {
+          kind: 'failed',
+          reason: turn.status === 'failed' ? turn.failureClass : turn.abortSource,
+        },
+      };
+    }
+    return { kind: 'started', turn };
   }
 
   async #preflight(

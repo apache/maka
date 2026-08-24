@@ -21,17 +21,19 @@ import { randomUUID } from 'node:crypto';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
-  decodeStoredMessage,
+  decodeStoredMessage as decodePersistedStoredMessage,
   userFacingText,
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 import {
   type ActiveInteractionRequestEvent,
   type QueueEnqueueOutcome,
   type SessionEvent,
   type ShellRunUpdate,
 } from '@maka/core/events';
+
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 
@@ -41,12 +43,10 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
-import {
-  isRuntimeHostTerminalTurn as isTerminalTurn,
-  type RuntimeHostTerminalTurn as TerminalTurnSnapshot,
-} from '@maka/runtime-host/adapter';
+import { isRuntimeHostTerminalTurn as isTerminalTurn } from '@maka/runtime-host/adapter';
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
 import {
+  projectSessionCatalogSummary,
   readRuntimeHostResources,
   readRuntimeHostSessions,
   RuntimeHostOperationError,
@@ -89,6 +89,8 @@ import {
   inspectGitCwdChanges,
   resolveMoveCwd,
 } from './session-driver-policy.js';
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 const MAX_CATALOG_ATTEMPTS = 3;
 
 /** Optimistic-control retries for goal pause/resume/clear (mirrors the desktop client). */
@@ -133,7 +135,7 @@ export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
     listener: (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void;
@@ -176,7 +178,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   readonly #startedTurnReattachTails = new Map<number, Promise<void>>();
   #sessionGeneration = 0;
   #channelGeneration = 0;
-  #liveTranscriptRefreshSequence = 0;
+  #transcriptRefreshSequence = 0;
   readonly #startedTurnListeners = new Set<(turn: MakaAttachedSessionTurn) => void>();
   readonly #goalListeners = new Set<(goal: GoalProjection | null) => void>();
   readonly #pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
@@ -189,7 +191,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void
   >();
@@ -235,13 +237,13 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     // over the starting boundary and silently override that default.
     this.#permissionMode = input.permissionMode;
     const session = await this.#createSession(input.name ?? DEFAULT_SESSION_NAME);
-    return runtimeHostSessionSummary(session);
+    return projectSessionCatalogSummary(session);
   }
 
   async listSessions(): Promise<SessionSummary[]> {
     const sessions = (await readRuntimeHostSessions(this.#connection))
       .flatMap(representableSession)
-      .map(runtimeHostSessionSummary);
+      .map(projectSessionCatalogSummary);
     if (this.#executionLocation.kind === 'host') return sessions;
     return sessions
       .map((session, index) => ({ session, index }))
@@ -298,7 +300,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         turnId,
         runId: started.runId,
         events,
-        summary: runtimeHostSessionSummary(configuration.session),
+        summary: projectSessionCatalogSummary(configuration.session),
         ...(skillInvocation ? { skillInvocation } : {}),
       };
     } catch (error) {
@@ -477,7 +479,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     }
     let session = await getRuntimeHostSession(this.#connection, sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
-    let summary = runtimeHostSessionSummary(session);
+    let summary = projectSessionCatalogSummary(session);
     if (options.relocateCwd === undefined) {
       await assertSessionResumeAvailable(summary, this.#executionLocation);
     }
@@ -503,7 +505,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           oldCwdDirty,
         };
       }
-      summary = runtimeHostSessionSummary(session);
+      summary = projectSessionCatalogSummary(session);
       await assertSessionResumeAvailable(summary, this.#executionLocation);
     }
     const expectedChannelGeneration = this.#channelGeneration;
@@ -634,7 +636,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     listener: (
       sessionId: string,
       turnId: string,
-      messages: StoredMessage[],
+      messages: readonly StoredMessage[],
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void {
@@ -1007,7 +1009,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         : {}),
       events: opened.channel.eventsForTurn(turnId),
       messages: opened.messages,
-      summary: runtimeHostSessionSummary(configuration.session),
+      summary: projectSessionCatalogSummary(configuration.session),
     } satisfies MakaAttachedSessionTurn;
     for (const listener of this.#startedTurnListeners) listener(turn);
     opened.channel.activate(turnId);
@@ -1028,10 +1030,16 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         for (const listener of this.#pendingInteractionListeners) listener(pending);
       },
       onInteractionResolved: (pending) => this.#resolveExternalInteraction(pending),
-      onTurnTerminal: (turn) => this.#refreshTerminalTranscript(turn),
-      onToolResult: (turnId) => this.#refreshLiveTranscript(sessionId, sessionGeneration, turnId),
+      onTranscriptSettlement: (turnId) =>
+        this.#refreshTranscript(sessionId, sessionGeneration, turnId),
       onTranscriptReplaced: (turnId, messages) =>
-        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'reconnect'),
+        this.#publishTranscriptReplacement(
+          sessionId,
+          sessionGeneration,
+          turnId,
+          messages,
+          'reconnect',
+        ),
       onGoalChanged: (goal) => {
         // A closing channel from a previous session can still be draining a
         // frame when the swap happens; only the live session may publish.
@@ -1072,45 +1080,39 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       .catch(() => undefined);
   }
 
-  #refreshTerminalTranscript(turn: TerminalTurnSnapshot): void {
-    void loadCurrentMessages(this.#connection, turn.sessionId)
-      .then((messages) => {
-        if (this.#sessionId !== turn.sessionId) return;
-        this.#publishTranscriptReplacement(turn.sessionId, turn.turnId, messages, 'terminal');
-      })
-      .catch(() => undefined);
-  }
-
-  #refreshLiveTranscript(sessionId: string, sessionGeneration: number, turnId: string): void {
-    const refreshSequence = ++this.#liveTranscriptRefreshSequence;
+  #refreshTranscript(sessionId: string, sessionGeneration: number, turnId: string): void {
+    const refreshSequence = ++this.#transcriptRefreshSequence;
     void loadCurrentMessages(this.#connection, sessionId)
       .then((messages) => {
         if (
           this.#sessionId !== sessionId ||
           this.#sessionGeneration !== sessionGeneration ||
-          refreshSequence !== this.#liveTranscriptRefreshSequence
+          refreshSequence !== this.#transcriptRefreshSequence
         ) {
           return;
         }
-        this.#publishTranscriptReplacement(sessionId, turnId, messages, 'tool_result');
+        this.#publishTranscriptReplacement(
+          sessionId,
+          sessionGeneration,
+          turnId,
+          messages,
+          'reconcile',
+        );
       })
       .catch(() => undefined);
   }
 
   #publishTranscriptReplacement(
     sessionId: string,
+    sessionGeneration: number,
     turnId: string,
     messages: readonly StoredMessage[],
     reason: MakaTranscriptReplacementReason,
   ): void {
-    if (this.#sessionId !== sessionId) return;
+    if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
+    this.#transcriptRefreshSequence += 1;
     for (const listener of this.#transcriptListeners) {
-      listener(
-        sessionId,
-        turnId,
-        messages.map((message) => structuredClone(message)),
-        reason,
-      );
+      listener(sessionId, turnId, messages, reason);
     }
   }
 
@@ -1232,48 +1234,4 @@ async function loadCurrentMessages(
     await subscription.close().catch(() => undefined);
     await draining.catch(() => undefined);
   }
-}
-
-export function runtimeHostSessionSummary(session: SessionCatalogProjection): SessionSummary {
-  return {
-    id: session.id,
-    cwd: session.workspace.hostCwd,
-    ...(session.workspace.target.kind === 'project'
-      ? { projectId: session.workspace.target.projectId }
-      : {}),
-    name: session.name,
-    isFlagged: session.isFlagged,
-    isArchived: session.isArchived,
-    labels: [...session.labels],
-    hasUnread: session.hasUnread,
-    ...(session.lastMessageAt === undefined ? {} : { lastMessageAt: session.lastMessageAt }),
-    ...(session.lastMessagePreview === undefined
-      ? {}
-      : { lastMessagePreview: session.lastMessagePreview }),
-    status: session.status,
-    ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
-    ...(session.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: session.statusUpdatedAt }),
-    ...(session.parentSessionId === undefined ? {} : { parentSessionId: session.parentSessionId }),
-    ...(session.branchOfTurnId === undefined ? {} : { branchOfTurnId: session.branchOfTurnId }),
-    ...(session.subagent === undefined ? {} : { subagent: session.subagent }),
-    ...(session.revisionRootSessionId === undefined
-      ? {}
-      : { revisionRootSessionId: session.revisionRootSessionId }),
-    ...(session.revisionParentSessionId === undefined
-      ? {}
-      : { revisionParentSessionId: session.revisionParentSessionId }),
-    ...(session.revisionOfTurnId === undefined
-      ? {}
-      : { revisionOfTurnId: session.revisionOfTurnId }),
-    ...(session.revisionIndex === undefined ? {} : { revisionIndex: session.revisionIndex }),
-    ...(session.revisionState === undefined ? {} : { revisionState: session.revisionState }),
-    backend: session.backend,
-    llmConnectionSlug: session.llmConnectionSlug,
-    connectionLocked: session.connectionLocked,
-    model: session.model,
-    ...(session.thinkingLevel === undefined ? {} : { thinkingLevel: session.thinkingLevel }),
-    permissionMode: session.permissionMode,
-    collaborationMode: session.collaborationMode,
-    orchestrationMode: session.orchestrationMode,
-  };
 }

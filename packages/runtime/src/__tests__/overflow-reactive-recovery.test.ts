@@ -602,10 +602,8 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     contextBudget: {
       name: 'reactive-test',
       maxHistoryEstimatedTokens: 100_000,
-      minRecentTurns: 1,
       historyCompact: {
         enabled: true,
-        mode: 'read_write',
         ...(midTurnEnabled ? { midTurn: { enabled: true, reserveTokens } } : {}),
       },
       ...(options.activeToolResultPrune
@@ -1819,7 +1817,6 @@ function header(): SessionHeader {
     workspaceRoot: '/tmp/maka',
     cwd: '/tmp/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,

@@ -27,6 +27,7 @@ import type { RemoteRuntimeHostProfile } from '@maka/runtime-host/client';
 import type {
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostManagementResult,
+  DesktopRuntimeHostManagementProgress,
   DesktopRuntimeHostAccessCredential,
   DesktopRuntimeHostAccessSnapshot,
 } from '../../preload/bridge-contract.js';
@@ -35,6 +36,7 @@ import { settingsActionErrorMessage } from './settings-error-copy.js';
 
 type RuntimeHostManagementConfirmation =
   | { readonly kind: 'uninstall' }
+  | { readonly kind: 'update' }
   | { readonly kind: 'rotate' }
   | {
       readonly kind: 'revoke';
@@ -54,6 +56,7 @@ export function RuntimeHostManagementDialog(props: {
   const [uninstalledRoot, setUninstalledRoot] = useState<string>();
   const [access, setAccess] = useState<DesktopRuntimeHostAccessSnapshot>();
   const [confirmation, setConfirmation] = useState<RuntimeHostManagementConfirmation>();
+  const [updatePhase, setUpdatePhase] = useState<DesktopRuntimeHostManagementProgress['phase']>();
   const logsRef = useRef<HTMLPreElement>(null);
 
   const profile = props.profile;
@@ -65,6 +68,7 @@ export function RuntimeHostManagementDialog(props: {
     setUninstalledRoot(undefined);
     setAccess(undefined);
     setConfirmation(undefined);
+    setUpdatePhase(undefined);
     setLoading(true);
     void window.maka.runtimeHostManagement.run(profile.id, 'status').then(
       (response) => {
@@ -83,6 +87,10 @@ export function RuntimeHostManagementDialog(props: {
       disposed = true;
     };
   }, [locale, profile]);
+
+  useEffect(() => window.maka.runtimeHostManagement.subscribeProgress((progress) => {
+    if (progress.profileId === profile?.id) setUpdatePhase(progress.phase);
+  }), [profile?.id]);
 
   useLayoutEffect(() => {
     if (result?.action !== 'logs') return;
@@ -128,6 +136,40 @@ export function RuntimeHostManagementDialog(props: {
       toast.error(copy.accessActionFailed, message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function update(allowInterruptActiveTasks: boolean): Promise<void> {
+    if (!profile) return;
+    setLoading(true);
+    setError(undefined);
+    setUpdatePhase('checking');
+    try {
+      const response = await window.maka.runtimeHostManagement.update(
+        profile.id,
+        allowInterruptActiveTasks,
+      );
+      if (response.kind === 'error') {
+        setError(response.error.message);
+        toast.error(copy.managementActionFailed, response.error.message);
+        return;
+      }
+      if (response.kind === 'uninstalled') {
+        throw new Error('Runtime Host update returned an uninstall result');
+      }
+      setResult(response);
+      setConfirmation(
+        response.action === 'update' && response.update.kind === 'active_tasks'
+          ? { kind: 'update' }
+          : undefined,
+      );
+    } catch (failure) {
+      const message = settingsActionErrorMessage(failure, locale);
+      setError(message);
+      toast.error(copy.managementActionFailed, message);
+    } finally {
+      setLoading(false);
+      setUpdatePhase(undefined);
     }
   }
 
@@ -200,6 +242,7 @@ export function RuntimeHostManagementDialog(props: {
               {loading ? (
                 <div className="settingsRuntimeHostSetupProgress" role="status">
                   <Spinner size="sm" />
+                  {updatePhase ? <Text type="supporting">{copy.updatePhase[updatePhase]}</Text> : null}
                 </div>
               ) : null}
               {error ? <Banner status="error" title={error} /> : null}
@@ -208,6 +251,13 @@ export function RuntimeHostManagementDialog(props: {
                   status="warning"
                   title={copy.uninstallConfirmTitle}
                   description={copy.uninstallConfirmBody}
+                />
+              ) : null}
+              {confirmation?.kind === 'update' ? (
+                <Banner
+                  status="warning"
+                  title={copy.updateBlockedTitle}
+                  description={copy.updateBlockedBody}
                 />
               ) : null}
               {confirmation?.kind === 'rotate' ? (
@@ -222,6 +272,24 @@ export function RuntimeHostManagementDialog(props: {
                   status="success"
                   title={copy.uninstallRetained(uninstalledRoot)}
                 />
+              ) : null}
+              {result?.action === 'update' && result.update.kind === 'updated' ? (
+                <Banner
+                  status="success"
+                  title={copy.updateComplete(
+                    result.update.previousVersion,
+                    result.update.targetVersion,
+                  )}
+                />
+              ) : null}
+              {result?.action === 'update' && result.update.kind === 'already_current' ? (
+                <Banner
+                  status="info"
+                  title={copy.updateAlreadyCurrent(result.update.version)}
+                />
+              ) : null}
+              {result?.action === 'update' && result.update.kind === 'repaired' ? (
+                <Banner status="success" title={copy.updateRepaired(result.update.version)} />
               ) : null}
               {!access && service ? (
                 <>
@@ -366,6 +434,21 @@ export function RuntimeHostManagementDialog(props: {
                     onClick={() => void revokeCredential()}
                   />
                 </>
+              ) : confirmation?.kind === 'update' ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    label={copy.cancel}
+                    isDisabled={loading}
+                    onClick={() => setConfirmation(undefined)}
+                  />
+                  <Button
+                    variant="destructive"
+                    label={copy.updateInterrupt}
+                    isDisabled={loading}
+                    onClick={() => void update(true)}
+                  />
+                </>
               ) : confirmation?.kind === 'uninstall' ? (
                 <>
                   <Button
@@ -447,6 +530,14 @@ export function RuntimeHostManagementDialog(props: {
                         isDisabled={loading}
                         onClick={() => void run('status')}
                       />
+                      {serviceInstalled ? (
+                        <Button
+                          variant="secondary"
+                          label={copy.updateService}
+                          isDisabled={loading}
+                          onClick={() => void update(false)}
+                        />
+                      ) : null}
                       {serviceInstalled ? (
                         <Button
                           variant="secondary"

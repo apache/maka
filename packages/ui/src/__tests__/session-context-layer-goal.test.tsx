@@ -50,6 +50,10 @@ test('a running goal reads as running and offers pause, with elapsed and tokens'
     onClear: () => undefined,
   });
   assert.ok(markup.includes('Goal 3 of 50'));
+  assert.ok(markup.includes('Ship the feature'));
+  // Astryx lazily mounts tooltip layers after the trigger is shown. The
+  // condition remains visible in the goal chip and the controls below retain
+  // their explicit action labels in server output.
   assert.ok(markup.includes('12m'));
   assert.ok(markup.includes('12k / 100k'));
   assert.ok(markup.includes('Autonomous goal running'));
@@ -58,6 +62,7 @@ test('a running goal reads as running and offers pause, with elapsed and tokens'
   assert.ok(!markup.includes('Resume autonomous goal'));
   // The clear kill switch stays.
   assert.ok(markup.includes('Clear autonomous goal after 3/50 iterations'));
+  assert.ok(markup.includes('data-has-goal="true"'));
 });
 
 test('a paused goal reads as paused and offers resume, not pause', () => {

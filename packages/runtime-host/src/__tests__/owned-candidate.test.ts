@@ -331,7 +331,12 @@ test('owned candidate settlement requires a clean process exit', async () => {
   assert.ok(candidate.exited);
   const exited = candidate.exited;
   assert.equal(await candidate.settle(2_000), false);
-  assert.deepEqual(await exited, { code: 1, signal: null });
+  assert.deepEqual(await exited, {
+    code: 1,
+    signal: null,
+    stderr: '',
+    stderrTruncated: false,
+  });
 });
 
 test('reports unexpected candidate exit through the caller-provided onExit sink', async () => {

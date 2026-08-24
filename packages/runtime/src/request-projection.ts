@@ -44,12 +44,9 @@ export type RequestProjectionStage = (
 /**
  * Deterministic request-projection pipeline over ONE provider-visible request.
  * Order is a contract: mid-turn capacity compaction runs first among the
- * message-shaping hooks so every later mechanism operates on (and re-converges
- * onto) its projection — active tool-result pruning re-archives large tool
- * results in the rebuilt tail, and semantic compaction sees the
- * already-compacted messages. On a step where the capacity hook replaced the
- * request, semantic compaction yields (see AiSdkBackend.send) so
- * two summarizers never run for one step.
+ * message-shaping hooks so every later mechanism operates on its projection —
+ * active tool-result pruning re-archives large tool results in the rebuilt
+ * tail.
  *
  * Every hook here only SHAPES the projection. The pass/terminate capacity
  * verdict is issued once, after the whole pipeline, by the final-request
@@ -61,14 +58,10 @@ export function composeRequestProjection(
   toolAvailability: RequestProjectionStage | undefined,
   midTurnCapacityCompact: RequestProjectionStage | undefined,
   activeToolResultPrune: RequestProjectionStage | undefined,
-  activeCompaction?: RequestProjectionStage | undefined,
 ): RequestProjectionStage | undefined {
-  const hooks = [
-    toolAvailability,
-    midTurnCapacityCompact,
-    activeToolResultPrune,
-    activeCompaction,
-  ].filter(Boolean) as RequestProjectionStage[];
+  const hooks = [toolAvailability, midTurnCapacityCompact, activeToolResultPrune].filter(
+    Boolean,
+  ) as RequestProjectionStage[];
   if (hooks.length === 0) return undefined;
   return async (context: RequestProjectionContext): Promise<RequestProjection | undefined> => {
     let result: RequestProjection | undefined;

@@ -25,11 +25,17 @@ import type {
   StorageRef,
   ToolResultContent,
 } from '@maka/core/events';
-import type { SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type {
+  SessionSummary,
+  StoredMessage,
+  TurnRecord,
+} from '@maka/core/session';
 import type { UsageStats } from '@maka/core/settings';
 import { desktopSessionKey, type DesktopHostRef } from './runtime-host-identity.js';
 
 export interface DesktopSessionSummary extends SessionSummary {
+  /** Present on authoritative Session Catalog snapshots, absent from command responses. */
+  readonly activityAt?: number;
   readonly runtimeHostId: string;
   readonly profileId: string;
   readonly profileName: string;
@@ -138,8 +144,6 @@ export function projectDesktopSessionEvent(
           childSessionId: projectSessionId(host, event.content.childSessionId),
         },
       };
-    case 'tool_result':
-      return { ...event, content: projectDesktopToolResultContent(host, event.content) };
     case 'steering_message':
       return { ...event, content: projectMessageContent(host, event.content) };
     case 'queue_update':

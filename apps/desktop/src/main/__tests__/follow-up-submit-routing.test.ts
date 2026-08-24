@@ -49,7 +49,6 @@ describe('follow-up submit routing', () => {
   it('routes burst input through the selected follow-up lane', () => {
     assert.equal(
       resolveFollowUpModeAtSubmit({
-        defaultMode: 'queue',
         hasActiveTurn: true,
       }),
       'queue',
@@ -57,7 +56,6 @@ describe('follow-up submit routing', () => {
     assert.equal(
       resolveFollowUpModeAtSubmit({
         requestedMode: 'steer',
-        defaultMode: 'queue',
         hasActiveTurn: true,
       }),
       'steer',
@@ -67,7 +65,6 @@ describe('follow-up submit routing', () => {
   it('starts a normal turn only when no active-turn witness exists', () => {
     assert.equal(
       resolveFollowUpModeAtSubmit({
-        defaultMode: 'queue',
         hasActiveTurn: false,
       }),
       undefined,

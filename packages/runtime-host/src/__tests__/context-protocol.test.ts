@@ -105,10 +105,13 @@ test('context operations preserve bounded exact wire values', () => {
       operation: 'context.compact',
       ok: true,
       result: {
-        sessionId: 'session-1',
-        turnId: 'compact-1',
-        runId: 'run-compact-1',
-        status: 'running',
+        kind: 'started',
+        turn: {
+          sessionId: 'session-1',
+          turnId: 'compact-1',
+          runId: 'run-compact-1',
+          status: 'running',
+        },
       },
     }),
     {
@@ -116,10 +119,49 @@ test('context operations preserve bounded exact wire values', () => {
       operation: 'context.compact',
       ok: true,
       result: {
-        sessionId: 'session-1',
-        turnId: 'compact-1',
-        runId: 'run-compact-1',
-        status: 'running',
+        kind: 'started',
+        turn: {
+          sessionId: 'session-1',
+          turnId: 'compact-1',
+          runId: 'run-compact-1',
+          status: 'running',
+        },
+      },
+    },
+  );
+  assert.deepEqual(
+    decodeHostFrame({
+      requestId: 'request-compact-finished',
+      operation: 'context.compact',
+      ok: true,
+      result: {
+        kind: 'finished',
+        turn: {
+          sessionId: 'session-1',
+          turnId: 'compact-1',
+          runId: 'run-compact-1',
+          status: 'completed',
+          terminalEventId: 'event-compact-1',
+          contextCompactionOutcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
+        },
+        outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
+      },
+    }),
+    {
+      requestId: 'request-compact-finished',
+      operation: 'context.compact',
+      ok: true,
+      result: {
+        kind: 'finished',
+        turn: {
+          sessionId: 'session-1',
+          turnId: 'compact-1',
+          runId: 'run-compact-1',
+          status: 'completed',
+          terminalEventId: 'event-compact-1',
+          contextCompactionOutcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
+        },
+        outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
       },
     },
   );

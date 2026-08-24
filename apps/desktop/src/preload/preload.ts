@@ -45,6 +45,7 @@ import type {
   DesktopRuntimeHostOnboardingSnapshot,
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostManagementResponse,
+  DesktopRuntimeHostManagementProgress,
   DesktopRuntimeHostAccessSnapshot,
   DesktopNewTaskCatalog,
   DesktopNewTaskHost,
@@ -106,6 +107,7 @@ import type {
 import type { BotProvider } from '@maka/core/bot-chat-settings';
 import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/bot-onboarding';
 import type { HealthSnapshot } from '@maka/core/health';
+import { collectRuntimeHostSessionCatalogs } from './runtime-host-session-catalog.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   ActiveInteractionRequestEvent,
@@ -123,7 +125,12 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { TurnOrchestration, SessionListFilter, RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { PlanSessionState } from '@maka/core/plan';
 import type { SearchErrorReason, SearchRequest, SearchResult } from '@maka/core/search';
-import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
+import type {
+  SessionCatalogSummary,
+  SessionChangedEvent,
+  SessionSummary,
+  TurnRecord,
+} from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { E2eFixtureState } from '@maka/core/e2e-fixture';
 import type {
@@ -230,7 +237,6 @@ const runtimeHostMetadata = new Map<
   string,
   { readonly profileId: string; readonly profileName: string; readonly profileKind: 'local' | 'remote' }
 >();
-const runtimeHostSessionCache = new Map<string, DesktopSessionSummary[]>();
 const newTaskChangeListeners = new Set<() => void>();
 
 type RuntimeHostProfileWireEvent = DesktopRuntimeHostProfileChangedEvent;
@@ -246,7 +252,6 @@ ipcRenderer.on(
       runtimeHostScopes.delete(previousHostId);
       if (change.removed) {
         runtimeHostMetadata.delete(previousHostId);
-        runtimeHostSessionCache.delete(previousHostId);
         runtimeHostProfiles.delete(change.profileId);
       }
     }
@@ -322,10 +327,6 @@ async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
     for (const hostId of runtimeHostScopes.keys()) {
       if (authoritativeHostIds.has(hostId)) continue;
       runtimeHostScopes.delete(hostId);
-    }
-    for (const hostId of runtimeHostSessionCache.keys()) {
-      if (authoritativeHostIds.has(hostId)) continue;
-      runtimeHostSessionCache.delete(hostId);
     }
     return readyScopes;
   }
@@ -776,28 +777,19 @@ async function listDesktopSessions(
       'sessions:list',
       parent.scope,
       { ...filter, subagentParentSessionId: parent.sessionId },
-    ) as SessionSummary[];
+    ) as SessionCatalogSummary[];
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
   const scopes = await runtimeHostScopeList();
-  const settled = await Promise.allSettled(
+  return collectRuntimeHostSessionCatalogs(
     scopes.map(async (scope) => {
-      const sessions = await ipcRenderer.invoke('sessions:list', scope, filter) as SessionSummary[];
-      const projected = sessions.map((session) => projectSessionSummary(scope, session));
-      if (!filter) runtimeHostSessionCache.set(scope.hostId, projected);
-      return projected;
+      const sessions = await ipcRenderer.invoke(
+        'sessions:list',
+        scope,
+        filter,
+      ) as SessionCatalogSummary[];
+      return sessions.map((session) => projectSessionSummary(scope, session));
     }),
-  );
-  const groups = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-  if (groups.length === 0) {
-    throw settled.find((result) => result.status === 'rejected')?.reason ??
-      new Error('No Runtime Host is available');
-  }
-  const sessions = filter
-    ? groups.flat()
-    : [...runtimeHostSessionCache.values()].flat();
-  return sessions.sort(
-    (left, right) => (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0),
   );
 }
 
@@ -1203,6 +1195,24 @@ const makaBridge = {
     ): Promise<DesktopRuntimeHostManagementResponse> {
       return ipcRenderer.invoke('runtime-host-management:run', profileId, action);
     },
+    update(
+      profileId: string,
+      allowInterruptActiveTasks: boolean,
+    ): Promise<DesktopRuntimeHostManagementResponse> {
+      return ipcRenderer.invoke(
+        'runtime-host-management:update',
+        profileId,
+        allowInterruptActiveTasks,
+      );
+    },
+    subscribeProgress(handler: (progress: DesktopRuntimeHostManagementProgress) => void) {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        progress: DesktopRuntimeHostManagementProgress,
+      ) => handler(progress);
+      ipcRenderer.on('runtime-host-management:progress', listener);
+      return () => ipcRenderer.off('runtime-host-management:progress', listener);
+    },
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot> {
       return ipcRenderer.invoke('runtime-host-management:list-credentials', profileId);
     },
@@ -1495,7 +1505,7 @@ const makaBridge = {
       }
       return send(command);
     },
-    compact(sessionId: string): Promise<void> {
+    compact(sessionId: string): Promise<OperationOutput<'context.compact'>> {
       return invokeSessionRuntimeHost('sessions:compact', sessionId);
     },
     resumeLatest(sessionId: string): Promise<
@@ -1504,7 +1514,10 @@ const makaBridge = {
     > {
       return invokeSessionRuntimeHost('sessions:resumeLatest', sessionId);
     },
-    stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {
+    stop(
+      sessionId: string,
+      input?: { source?: 'stop_button'; expectedTurnId?: string },
+    ): Promise<void> {
       return invokeSessionRuntimeHost('sessions:stop', sessionId, input);
     },
     steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {
@@ -1551,8 +1564,14 @@ const makaBridge = {
         attachments: projectDesktopAttachmentRefs(session.scope, result.attachments),
       };
     },
-    retractQueue(sessionId: string): Promise<MessageContent> {
-      return invokeSessionRuntimeHost('sessions:retractQueue', sessionId);
+    retractQueueEntry(sessionId: string, entryId: string): Promise<void> {
+      return invokeSessionRuntimeHost('sessions:retractQueueEntry', sessionId, entryId);
+    },
+    promoteQueueEntry(sessionId: string, entryId: string): Promise<void> {
+      return invokeSessionRuntimeHost('sessions:promoteQueueEntry', sessionId, entryId);
+    },
+    reorderQueueEntries(sessionId: string, entryIds: readonly string[]): Promise<void> {
+      return invokeSessionRuntimeHost('sessions:reorderQueueEntries', sessionId, [...entryIds]);
     },
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundaryReadModel> {
       return invokeSessionRuntimeHost('sessions:readExecutionBoundary', sessionId);
@@ -3083,7 +3102,7 @@ const makaBridge = {
 if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list';
   const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
-  const releases = new Map<LatchKey, () => void>();
+  const releases = new Map<LatchKey, { resolve: () => void; reject: (error: Error) => void }>();
   const wrapLatched = <Args extends unknown[], Result>(
     call: (...args: Args) => Promise<Result>,
     key: LatchKey,
@@ -3105,15 +3124,22 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   );
   contextBridge.exposeInMainWorld('makaE2eLatch', {
     arm(key: LatchKey, options?: { oneShot?: boolean }) {
-      let release: () => void = () => {};
-      const promise = new Promise<void>((resolve) => {
-        release = resolve;
+      let resolve: () => void = () => {};
+      let reject: (error: Error) => void = () => {};
+      const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
       });
       gates.set(key, { promise, oneShot: options?.oneShot === true });
-      releases.set(key, release);
+      releases.set(key, { resolve, reject });
     },
     release(key: LatchKey) {
-      releases.get(key)?.();
+      releases.get(key)?.resolve();
+      releases.delete(key);
+      gates.delete(key);
+    },
+    reject(key: LatchKey, message: string) {
+      releases.get(key)?.reject(new Error(message));
       releases.delete(key);
       gates.delete(key);
     },

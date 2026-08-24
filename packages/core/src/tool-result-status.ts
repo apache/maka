@@ -26,12 +26,8 @@ import type { TurnStatus } from './session.js';
 
 export type SettledToolActivityStatus = 'completed' | 'errored' | 'interrupted';
 
-/**
- * A call that has not settled. `pending` is where `tool_start` opens one; it
- * only reaches `running` once output arrives, so a tool that never streams
- * stays `pending` for its whole life and both must read as in flight.
- */
-export type InFlightToolActivityStatus = 'pending' | 'running';
+/** A call that has started and has not settled. */
+export type InFlightToolActivityStatus = 'running';
 
 /** The whole tool-row status vocabulary, owned here so it is spelled once. */
 export type ToolActivityStatus = InFlightToolActivityStatus | SettledToolActivityStatus;
@@ -39,7 +35,7 @@ export type ToolActivityStatus = InFlightToolActivityStatus | SettledToolActivit
 export function isInFlightToolStatus(
   status: ToolActivityStatus,
 ): status is InFlightToolActivityStatus {
-  return status === 'pending' || status === 'running';
+  return status === 'running';
 }
 
 /**

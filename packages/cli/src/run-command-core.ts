@@ -397,6 +397,7 @@ export async function runMakaTextCliCore(
     for await (const event of context.runtime.sendMessage(session.id, {
       turnId: deps.newId(),
       text: prompt,
+      ...(parsed.options.maxSteps !== undefined ? { maxSteps: parsed.options.maxSteps } : {}),
       ...(parsed.options.graph
         ? { turnOrchestration: { mode: 'graph' as const, source: 'host_api' as const } }
         : {}),

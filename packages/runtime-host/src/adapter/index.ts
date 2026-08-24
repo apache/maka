@@ -21,6 +21,7 @@ export {
   createRuntimeHostSessionProjectionSeed,
   RuntimeHostSessionProjector,
   isRuntimeHostTerminalTurn,
+  sameRuntimeHostTerminalTurn,
   foldRuntimeHostAssistantDelta,
   projectRuntimeHostInteractionRequest,
   type RuntimeHostSessionProjectionSeed,

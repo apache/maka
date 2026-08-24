@@ -99,6 +99,7 @@ export {
   GitMerge,
   Globe,
   Grid3X3,
+  GripVertical,
   HelpCircle,
   History,
   Hourglass,

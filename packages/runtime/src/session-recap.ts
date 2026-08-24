@@ -19,11 +19,10 @@
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import { applyRuntimeEventContextBudget } from './context-budget.js';
-import {
-  buildDefaultContextBudgetPolicy,
-  resolveSelectedModelContextWindow,
-} from './context-budget-policy.js';
+import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
+import { groupEventsByTurn, stableJsonLength } from './context-budget-helpers.js';
+import { HistoryCompactSummarizerError } from './history-compact-error.js';
+import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
 import { replayPlanItemsToModelMessages } from './history-compact-summarizer.js';
 import { buildRuntimeEventModelReplayPlan } from './model-history.js';
 import type { ModelMessage } from './model-protocol.js';
@@ -38,19 +37,99 @@ export function buildSessionRecapMessages(input: {
 }): ModelMessage[] {
   const contextWindow = resolveSelectedModelContextWindow(input.connection, input.modelId);
   let events = input.events;
+  let maxEstimatedTokens: number | undefined;
   if (contextWindow !== undefined) {
-    const budget = buildDefaultContextBudgetPolicy(input.connection, {
-      name: 'session-recap-history-budget',
-      modelId: input.modelId,
-    });
-    if (budget?.maxHistoryEstimatedTokens !== undefined) {
-      budget.maxHistoryEstimatedTokens = Math.max(0, Math.floor(contextWindow * 0.85) - 4_096);
-    }
-    events = applyRuntimeEventContextBudget(events, budget)?.events ?? events;
+    maxEstimatedTokens = Math.max(0, Math.floor(contextWindow * 0.85) - 4_096);
+    events = recentTurnsWithinBudget(events, maxEstimatedTokens);
   }
-  const messages = replayPlanItemsToModelMessages(buildRuntimeEventModelReplayPlan(events).items);
+  let messages = replayPlanItemsToModelMessages(buildRuntimeEventModelReplayPlan(events).items);
+  if (
+    messages.length === 0 &&
+    input.events.length > 0 &&
+    maxEstimatedTokens !== undefined &&
+    maxEstimatedTokens > 0
+  ) {
+    const latestTurn = groupEventsByTurn(input.events, 4).at(-1)?.events ?? [];
+    messages = boundedOversizedTurnMessages(latestTurn, maxEstimatedTokens);
+  }
   messages.push({ role: 'user', content: SESSION_RECAP_INSTRUCTION });
   return messages;
+}
+
+/** Request-only recap projection; never mutates or replaces canonical history. */
+function recentTurnsWithinBudget(
+  events: readonly RuntimeEvent[],
+  maxEstimatedTokens: number,
+  charsPerToken = 4,
+): RuntimeEvent[] {
+  const groups = groupEventsByTurn(events, charsPerToken);
+  const selected: RuntimeEvent[][] = [];
+  let selectedTokens = 0;
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index]!;
+    if (selectedTokens + group.estimatedTokens > maxEstimatedTokens) break;
+    selected.unshift(group.events);
+    selectedTokens += group.estimatedTokens;
+  }
+  return selected.flat();
+}
+
+function boundedOversizedTurnMessages(
+  events: readonly RuntimeEvent[],
+  maxEstimatedTokens: number,
+  charsPerToken = 4,
+): ModelMessage[] {
+  const messages = replayPlanItemsToModelMessages(buildRuntimeEventModelReplayPlan(events).items);
+  try {
+    return fitHistoryCompactMessages(messages, {
+      maxInputEstimatedTokens: maxEstimatedTokens,
+      charsPerToken,
+    });
+  } catch (error) {
+    if (!(error instanceof HistoryCompactSummarizerError) || error.reason !== 'input_too_large') {
+      throw error;
+    }
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== 'user' && message.role !== 'assistant') continue;
+    const text =
+      typeof message.content === 'string'
+        ? message.content
+        : message.content
+            .filter((part) => part.type === 'text')
+            .map((part) => part.text)
+            .join('\n');
+    if (!text) continue;
+    return [boundedTextMessage(message.role, text, maxEstimatedTokens * charsPerToken)];
+  }
+  return [];
+}
+
+function boundedTextMessage(
+  role: 'user' | 'assistant',
+  text: string,
+  maxEstimatedChars: number,
+): ModelMessage {
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate: ModelMessage = { role, content: boundedText(text, middle) };
+    if (stableJsonLength([candidate]) <= maxEstimatedChars) low = middle;
+    else high = middle - 1;
+  }
+  return { role, content: boundedText(text, low) };
+}
+
+function boundedText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const marker = '\n[… earlier recap evidence omitted …]\n';
+  if (maxChars <= marker.length) return text.slice(0, maxChars);
+  const remaining = maxChars - marker.length;
+  const head = Math.ceil(remaining / 2);
+  return `${text.slice(0, head)}${marker}${text.slice(text.length - (remaining - head))}`;
 }
 
 export function cleanSessionRecapText(raw: string): string {

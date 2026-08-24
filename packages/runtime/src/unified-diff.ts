@@ -27,6 +27,7 @@
 
 const MAX_DIFF_SOURCE_LINES = 800;
 const MAX_DIFF_SOURCE_BYTES = 32 * 1024;
+const MAX_DIFF_OUTPUT_BYTES = 32 * 1024;
 const CONTEXT_LINES = 3;
 
 /**
@@ -57,8 +58,54 @@ export function createUnifiedDiff(
   return [...header, ...formatHunks(ops)].join('\n');
 }
 
+/**
+ * Localized unified diff for Edit's one known replacement span. Unlike the
+ * generic full-file diff, its cost depends on the changed hunk rather than the
+ * file size; the final output remains bounded for huge lines or replacements.
+ */
+export function createEditUnifiedDiff(
+  path: string,
+  oldContent: string,
+  newContent: string,
+  match: { startLine: number; endLine: number },
+): string | undefined {
+  if (oldContent.includes('\0') || newContent.includes('\0')) return undefined;
+  const oldLines = splitLines(oldContent);
+  const newLines = splitLines(newContent);
+  const startIndex = match.startLine - 1;
+  const oldEndIndex = match.endLine - 1;
+  if (startIndex < 0 || oldEndIndex < startIndex || oldEndIndex >= oldLines.length) {
+    return undefined;
+  }
+
+  const windowStart = Math.max(0, startIndex - CONTEXT_LINES);
+  const oldAfterStart = oldEndIndex + 1;
+  const newAfterStart = oldAfterStart + newLines.length - oldLines.length;
+  const oldWindow = oldLines.slice(
+    windowStart,
+    Math.min(oldLines.length, oldAfterStart + CONTEXT_LINES),
+  );
+  const newWindow = newLines.slice(
+    windowStart,
+    Math.min(newLines.length, Math.max(windowStart, newAfterStart) + CONTEXT_LINES),
+  );
+  if (isDiffWindowTooLarge(oldWindow) || isDiffWindowTooLarge(newWindow)) return undefined;
+  const ops = diffLines(oldWindow, newWindow);
+  if (ops.every((op) => op.kind === 'keep')) return undefined;
+  const diff = [
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    ...formatHunks(ops, windowStart, windowStart),
+  ].join('\n');
+  return Buffer.byteLength(diff, 'utf8') <= MAX_DIFF_OUTPUT_BYTES ? diff : undefined;
+}
+
 function isUndiffable(content: string): boolean {
   return content.includes('\0') || Buffer.byteLength(content, 'utf8') > MAX_DIFF_SOURCE_BYTES;
+}
+
+function isDiffWindowTooLarge(lines: string[]): boolean {
+  return lines.length > MAX_DIFF_SOURCE_LINES || isUndiffable(lines.join('\n'));
 }
 
 function splitLines(content: string): string[] {
@@ -113,7 +160,7 @@ function diffLines(oldLines: string[], newLines: string[]): DiffOp[] {
 }
 
 /** Group the edit script into hunks with CONTEXT_LINES of surrounding context. */
-function formatHunks(ops: DiffOp[]): string[] {
+function formatHunks(ops: DiffOp[], oldLineOffset = 0, newLineOffset = 0): string[] {
   const changed = ops.flatMap((op, index) => (op.kind === 'keep' ? [] : [index]));
   if (changed.length === 0) return [];
 
@@ -133,8 +180,8 @@ function formatHunks(ops: DiffOp[]): string[] {
   const out: string[] = [];
   for (const group of groups) {
     const slice = ops.slice(group.start, group.end + 1);
-    const oldStart = slice[0].oldIndex + 1;
-    const newStart = slice[0].newIndex + 1;
+    const oldStart = slice[0].oldIndex + oldLineOffset + 1;
+    const newStart = slice[0].newIndex + newLineOffset + 1;
     const oldCount = slice.filter((op) => op.kind !== 'add').length;
     const newCount = slice.filter((op) => op.kind !== 'del').length;
     out.push(

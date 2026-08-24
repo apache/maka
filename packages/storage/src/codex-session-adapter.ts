@@ -73,10 +73,11 @@ type JsonRecord = Record<string, unknown>;
  * Read-only adapter for Codex rollout JSONL.
  *
  * Codex persists presentation history as `event_msg` records and provider
- * protocol facts as `response_item` records. User, assistant, and reasoning
- * messages come from `event_msg` to avoid importing their response-item
- * mirrors twice. Tool calls/results come from response items because they own
- * the stable call identity and raw arguments/output.
+ * protocol facts as `response_item` records. Presentation messages use either
+ * the legacy `user_message` / `agent_*` events or the newer `item_completed`
+ * event. Reading both shapes from `event_msg` avoids importing their
+ * response-item mirrors twice. Tool calls/results come from response items
+ * because they own the stable call identity and raw arguments/output.
  */
 export class CodexSessionAdapter implements ExternalSessionAdapter {
   readonly id = CODEX_SESSION_ADAPTER_ID;
@@ -293,6 +294,71 @@ function convertCodexRollout(
           activeTurnIsExplicit = true;
         }
         continue;
+      }
+
+      if (eventType === 'item_completed') {
+        const item = asRecord(payload.item);
+        const itemType = stringField(item, 'type')?.toLowerCase();
+        const eventTurnId = stringField(payload, 'turn_id');
+        if (eventTurnId) {
+          activeTurnId = eventTurnId;
+          activeTurnIsExplicit = true;
+        }
+
+        if (itemType === 'usermessage') {
+          if (!activeTurnIsExplicit) {
+            activeTurnId = generatedCodexId(expectedSessionId, 'turn', record.line);
+          }
+          const text = codexCompletedItemText(item) || codexCompletedItemMediaText(item);
+          if (text.length === 0) continue;
+          firstUserText ??= text;
+          messages.push({
+            type: 'user',
+            id:
+              stringField(item, 'client_id') ??
+              stringField(item, 'id') ??
+              generatedCodexId(expectedSessionId, 'user', record.line),
+            turnId: ensureTurnId(record.line),
+            ts: timestampFor(record),
+            text,
+          });
+          continue;
+        }
+
+        if (itemType === 'agentmessage') {
+          const text = codexCompletedItemText(item);
+          if (text.length === 0) continue;
+          messages.push({
+            type: 'assistant',
+            id:
+              stringField(item, 'id') ??
+              generatedCodexId(expectedSessionId, 'assistant', record.line),
+            turnId: ensureTurnId(record.line),
+            ts: timestampFor(record),
+            text,
+            modelId: activeModel,
+            contentOrder: ['text'],
+          });
+          continue;
+        }
+
+        if (itemType === 'reasoning') {
+          const reasoning = codexCompletedReasoningText(item);
+          if (reasoning.length === 0) continue;
+          messages.push({
+            type: 'assistant',
+            id:
+              stringField(item, 'id') ??
+              generatedCodexId(expectedSessionId, 'reasoning', record.line),
+            turnId: ensureTurnId(record.line),
+            ts: timestampFor(record),
+            text: '',
+            thinking: { text: reasoning },
+            contentOrder: ['thinking'],
+            modelId: activeModel,
+          });
+          continue;
+        }
       }
 
       if (eventType === 'user_message') {
@@ -514,12 +580,15 @@ function catalogEntryFromRolloutHead(
       cwd = safeCodexCwd(payload.cwd) || cwd;
       createdAt =
         normalizeEpochMs(record.timestamp) ?? normalizeEpochMs(payload.timestamp) ?? createdAt;
-    } else if (
-      record.type === 'event_msg' &&
-      payload.type === 'user_message' &&
-      firstUserText === undefined
-    ) {
-      firstUserText = stringField(payload, 'message');
+    } else if (record.type === 'event_msg' && firstUserText === undefined) {
+      if (payload.type === 'user_message') {
+        firstUserText = stringField(payload, 'message');
+      } else if (payload.type === 'item_completed') {
+        const item = asRecord(payload.item);
+        if (stringField(item, 'type')?.toLowerCase() === 'usermessage') {
+          firstUserText = codexCompletedItemText(item) || codexCompletedItemMediaText(item);
+        }
+      }
     }
     if (id && firstUserText !== undefined) break;
   }
@@ -812,6 +881,50 @@ function codexToolOutputText(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function codexCompletedItemText(item: JsonRecord | undefined): string {
+  if (!item) return '';
+  const direct = stringField(item, 'content');
+  if (direct) return direct;
+  if (!Array.isArray(item.content)) return '';
+  return item.content
+    .flatMap((part) => {
+      const record = asRecord(part);
+      const type = stringField(record, 'type')?.toLowerCase();
+      return type === 'text' || type === 'input_text' || type === 'output_text'
+        ? [stringField(record, 'text') ?? '']
+        : [];
+    })
+    .filter((text) => text.length > 0)
+    .join('');
+}
+
+function codexCompletedReasoningText(item: JsonRecord | undefined): string {
+  if (!item) return '';
+  const summary = codexTextFragments(item.summary_text);
+  if (summary.length > 0) return summary.join('\n');
+  return codexCompletedItemText(item);
+}
+
+function codexTextFragments(value: unknown): string[] {
+  if (typeof value === 'string') return value.length > 0 ? [value] : [];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((part) => {
+    if (typeof part === 'string') return part.length > 0 ? [part] : [];
+    const text = stringField(asRecord(part), 'text');
+    return text ? [text] : [];
+  });
+}
+
+function codexCompletedItemMediaText(item: JsonRecord | undefined): string {
+  if (!item || !Array.isArray(item.content)) return '';
+  const contentTypes = item.content.flatMap((part) => {
+    const type = stringField(asRecord(part), 'type')?.toLowerCase();
+    return type ? [type] : [];
+  });
+  if (contentTypes.some((type) => type.includes('image'))) return '[Image]';
+  return contentTypes.some((type) => type.includes('audio')) ? '[Audio]' : '';
 }
 
 function mediaOnlyUserText(payload: JsonRecord): string {

@@ -49,13 +49,42 @@ running, discovers a newer build through its packaged electron-updater against a
 downloads it in the background, hands off to the NSIS installer, relaunches as the new version, and
 passes the full packaged smoke — with the feed requests (including the differential-download probe),
 the `downloaded` state and its exact version pair, and the final installed version asserted
-individually; transient states such as `checking` and `downloading` are not individually asserted. What is still not proven: update signature verification (no Authenticode
-certificate yet — the feed configuration for the production GitHub channel is pinned by unit tests
-and exercised routinely on real releases instead), persisted business-data migration, and rollback
-after a mid-install failure.
+individually; transient states such as `checking` and `downloading` are not individually asserted.
+
+A third gate exercises **Abort-path rollback with backup retention**. Before anything destructive
+runs, an upgrade backs up the existing installation to a same-volume sibling
+(`<install dir>.pre-upgrade-backup`), verifies the copy, and persists the registry snapshot; a
+backup failure, missing uninstall registration, backup marker that does not match the current
+snapshot, or backup without an executable witness refuses the upgrade with the old install untouched
+(exit 101). On the NSIS **Abort path**
+the installer restores the backup with a two-step same-volume swap — at every intermediate point at
+least one complete installation exists on disk — and writes and verifies the required registration
+values (exit 102). A registry read-back mismatch keeps recovery evidence and returns 103. The gate
+arms a deterministic test-only failpoint at
+the worst moment — new files extracted, old files gone, the new uninstaller and registry not yet
+written — and asserts the previous installation comes back byte-identical (per-file SHA-256 over
+the whole tree; file contents, not ACLs or timestamps), registered, and launchable at its old
+version, forces and recovers from a registry read-back mismatch, refuses stale-version and incomplete
+backups without changing the current install, then asserts a normal upgrade succeeds with no backup
+residue.
+
+Be precise about the boundary: the template's own failure branches (the old uninstaller failing,
+extraction retry exhaustion or cancellation) exit via `Quit`, which NSIS gives no hook for — **no
+automatic rollback runs on those paths**. The gate pins that gap deliberately: after a `Quit` at
+the worst moment, the verified backup and a `RECOVERY-README.txt` inside it are retained. Rerunning
+the installer adopts the backup only when its version marker matches the persisted snapshot and
+then completes the upgrade — that rerun is the supported recovery, and the gate proves it. Manual
+recovery, if ever needed: close Maka, delete the
+installation directory, rename `<install dir>.pre-upgrade-backup` to the installation directory,
+and remove the two marker files inside it. Also not covered: a hard kill of the installer process
+or power loss (the backup copy is not forced through volatile device caches, in line with the
+durability boundary below). What is still not proven overall: update signature verification (no
+Authenticode certificate yet — the feed configuration for the production GitHub channel is pinned
+by unit tests and exercised routinely on real releases instead) and persisted business-data
+migration.
 
 To uninstall, use **Settings → Apps → Installed apps → Maka → Uninstall**. Back up any important
-workspace data first; the preview does not yet claim installer rollback or migration guarantees.
+workspace data first; the preview does not yet claim business-data migration guarantees.
 
 ## 安装 Windows x64 预览版
 
@@ -80,11 +109,28 @@ workspace data first; the preview does not yet claim installer rollback or migra
 进程退出，并运行真实卸载器。另一个门禁证明**运行中的自动更新路径**：已安装且正在运行的候选版本通过打包的
 electron-updater 从 loopback 测试 feed 发现新版本、后台下载、交接给 NSIS 安装器、以新版本自动重启并通过
 完整打包 smoke——feed 请求（含差量下载探测）、`downloaded` 状态及其精确版本对、最终安装版本均逐项断言；
-`checking`/`downloading` 等瞬态不逐项断言。仍未证明的是：更新签名校验（尚无
-Authenticode 证书；生产 GitHub 通道的 feed 配置由单测钉死，并在每次真实 release 中例行使用）、业务数据
-迁移，以及安装中途失败后的 rollback。
+`checking`/`downloading` 等瞬态不逐项断言。
 
-卸载入口为 **设置 → 应用 → 已安装的应用 → Maka → 卸载**。预览版尚未承诺安装器 rollback 或数据迁移，
+第三个门禁验证 **Abort 路径 rollback 与备份保留**。升级在任何破坏性步骤之前先把现有安装备份到同卷同级
+目录（`<安装目录>.pre-upgrade-backup`），校验副本并持久化注册表快照；备份失败、卸载注册信息缺失、备份
+版本标记与当前快照不匹配，或备份缺少可执行文件见证时直接拒绝升级，旧安装分毫未动（退出码 101）。在
+NSIS **Abort 路径**上，安装器
+用同卷两步换名恢复备份——任意中间时刻磁盘上都至少存在一份完整安装——并回写、回读校验必需的注册信息
+（退出码 102）；注册表回读不一致时保留恢复证据并返回 103。门禁在最坏时点——新文件已抽取、
+旧文件已删、新卸载器与注册表尚未写入——注入确定性的测试专用失败点，断言先前安装**逐文件 SHA-256 字节
+一致**地恢复（文件内容字节，不含 ACL/时间戳）、注册信息恢复、且能以旧版本启动；还会强制制造并恢复
+注册表回读不一致，验证旧版本或不完整备份不会被当前安装误接管，并断言正常升级成功且无备份残留。
+
+边界必须说清楚：模板自身的失败分支（旧卸载器失败、抽取重试耗尽或被取消）经 `Quit` 退出，NSIS 对此没有
+任何回调——**这些路径上不会发生自动 rollback**。门禁刻意钉住这一缺口：在最坏时点 `Quit` 之后，已校验的
+备份和其中的 `RECOVERY-README.txt` 会被保留。仅当备份版本标记与持久化快照一致时，重新运行安装器才会
+接管该备份并完成升级——这次重跑就是受支持的恢复方式，门禁对其有断言。如需手工恢复：关闭 Maka、删除
+安装目录、把 `<安装目录>.pre-upgrade-backup`
+重命名为安装目录、删除其中的两个标记文件。同样不覆盖：安装器进程被硬杀或断电（备份拷贝不经强制介质
+刷盘，与下方耐久性边界同一口径）。整体仍未证明的是：更新签名校验（尚无 Authenticode 证书；生产 GitHub
+通道的 feed 配置由单测钉死，并在每次真实 release 中例行使用）与业务数据迁移。
+
+卸载入口为 **设置 → 应用 → 已安装的应用 → Maka → 卸载**。预览版尚未承诺业务数据迁移，
 请先备份重要 workspace 数据。
 
 ## Phase 0 development target

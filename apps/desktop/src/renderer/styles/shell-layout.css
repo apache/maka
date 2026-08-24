@@ -317,10 +317,15 @@ dialog:modal {
 
 .maka-shell-topbar-rail {
   grid-column: 1;
-  justify-self: start;
+  /* These controls operate on the sidebar, so their anchor is its trailing
+     edge — not the platform-safe area's leading edge beside the traffic
+     lights. The first titlebar grid track already ends one gap before the
+     sidebar seam and follows the user-resized sidebar width. */
+  justify-self: end;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  /* Astryx Toolbar spaces independent actions by spacing-1 (4px). */
+  gap: var(--space-1);
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0);

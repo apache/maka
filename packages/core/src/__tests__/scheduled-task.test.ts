@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { markPersisted } from '../persisted-value.js';
 import {
   computeNextFireAt,
   decodePersistedScheduledTask,
@@ -263,7 +264,7 @@ describe('decodePersistedScheduledTask', () => {
     const stored = JSON.parse(
       JSON.stringify(base).replace('"permissionMode":"ask"', '"permissionMode":"execute"'),
     ) as ScheduledTask;
-    const decoded = decodePersistedScheduledTask(stored);
+    const decoded = decodePersistedScheduledTask(markPersisted<ScheduledTask>(stored));
     assert.equal(
       decoded.effect.kind === 'agent_run' ? decoded.effect.execution.permissionMode : undefined,
       'ask',
@@ -271,11 +272,40 @@ describe('decodePersistedScheduledTask', () => {
   });
 
   it('returns the same task when nothing needs folding', () => {
-    assert.equal(decodePersistedScheduledTask(base), base);
+    assert.equal(decodePersistedScheduledTask(markPersisted<ScheduledTask>(base)), base);
   });
 
   it('leaves effects without an execution template alone', () => {
     const notify: ScheduledTask = { ...base, effect: { kind: 'notify', channel: 'local' } };
-    assert.equal(decodePersistedScheduledTask(notify), notify);
+    assert.equal(decodePersistedScheduledTask(markPersisted<ScheduledTask>(notify)), notify);
+  });
+
+  it('rejects unknown permission modes in persisted execution templates', () => {
+    assert.throws(
+      () =>
+        decodePersistedScheduledTask(
+          markPersisted<ScheduledTask>({
+            ...base,
+            effect: {
+              ...base.effect,
+              execution: {
+                ...(base.effect.kind === 'agent_run' ? base.effect.execution : {}),
+                permissionMode: 'future-mode',
+              },
+            },
+          }),
+        ),
+      /Invalid persisted ScheduledTask permission mode/,
+    );
+  });
+
+  it('rejects unknown effect kinds in persisted records', () => {
+    assert.throws(
+      () =>
+        decodePersistedScheduledTask(
+          markPersisted<ScheduledTask>({ ...base, effect: { kind: 'future-effect' } }),
+        ),
+      /Invalid persisted ScheduledTask effect/,
+    );
   });
 });

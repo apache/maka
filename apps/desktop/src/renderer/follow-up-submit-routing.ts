@@ -34,11 +34,12 @@ export function hasActiveTurnAtSubmit(input: {
 
 export function resolveFollowUpModeAtSubmit(input: {
   requestedMode?: FollowUpMode;
-  defaultMode: FollowUpMode;
   hasActiveTurn: boolean;
 }): FollowUpMode | undefined {
   if (input.requestedMode) return input.requestedMode;
-  return input.hasActiveTurn ? input.defaultMode : undefined;
+  // Mid-turn submits always queue; Shift+Enter carries the one-shot steer as
+  // the requested mode.
+  return input.hasActiveTurn ? 'queue' : undefined;
 }
 
 export function mergeWorkspaceReferences(

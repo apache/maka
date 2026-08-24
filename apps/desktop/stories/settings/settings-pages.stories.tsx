@@ -1483,6 +1483,21 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="permissions" />,
   play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const grantedFilter = await canvas.findByRole('button', { name: /^仅显示已授权权限/ });
+    expect(grantedFilter).toHaveAttribute('aria-pressed', 'false');
+    await userEvent.click(grantedFilter);
+    await waitFor(() => {
+      expect(grantedFilter).toHaveAttribute('aria-pressed', 'true');
+      expect(canvasElement.querySelectorAll('[data-permission-id]')).toHaveLength(2);
+      expect(canvasElement.querySelector('[data-permission-id="screen_recording"]')).not.toBeInTheDocument();
+    });
+    await userEvent.click(grantedFilter);
+    await waitFor(() => {
+      expect(grantedFilter).toHaveAttribute('aria-pressed', 'false');
+      expect(canvasElement.querySelectorAll('[data-permission-id]')).toHaveLength(4);
+    });
+
     // Scoped through `data-readiness` — the capability rows' own attribute — so
     // the story cannot latch onto some other expandable button on the page.
     const trigger = await waitForStoryButton(
@@ -1504,6 +1519,24 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
 export const HealthCenter: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="health" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const errorFilter = await canvas.findByRole('button', { name: /^仅显示错误健康信号/ });
+    expect(errorFilter).toHaveAttribute('aria-pressed', 'false');
+    await userEvent.click(errorFilter);
+    await waitFor(() => {
+      expect(errorFilter).toHaveAttribute('aria-pressed', 'true');
+      expect(canvas.getByText('OpenAI Review')).toBeInTheDocument();
+      expect(canvas.queryByText('Z.AI Live')).not.toBeInTheDocument();
+      expect(canvas.getByText('全部健康信号中，1/6 条会阻塞发送')).toBeInTheDocument();
+      expect(canvas.getByText('全部健康信号中，1/6 条会阻塞能力')).toBeInTheDocument();
+    });
+    await userEvent.click(errorFilter);
+    await waitFor(() => {
+      expect(errorFilter).toHaveAttribute('aria-pressed', 'false');
+      expect(canvas.getByText('Z.AI Live')).toBeInTheDocument();
+    });
+  },
 };
 // Real path: 设置 → 关于 (also reachable from 反馈 in the topbar).
 export const About: Story = {

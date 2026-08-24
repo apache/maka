@@ -199,6 +199,7 @@ export class RuntimeHostKernel {
   #initialConnectionDeadline: NodeJS.Timeout | undefined;
   #initialConnectionDeadlineDeferrals = 0;
   #shutdownRequested = false;
+  #shutdownReason: 'retirement' | undefined;
   #shutdownTask: Promise<void> | undefined;
   #shutdownDeadlineTimer: NodeJS.Timeout | undefined;
   #terminationRequired: RuntimeHostProcessTerminationRequiredError | undefined;
@@ -263,6 +264,10 @@ export class RuntimeHostKernel {
 
   get state(): HostLifecycleState {
     return this.#state;
+  }
+
+  get shutdownReason(): 'retirement' | undefined {
+    return this.#shutdownReason;
   }
 
   get endpoint(): string {
@@ -438,7 +443,7 @@ export class RuntimeHostKernel {
       hello.generation !== undefined &&
       hello.generation !== this.#options.generation;
     if (generationMismatch && hello.takeover?.expectedHostEpoch === this.hostEpoch) {
-      if (authority.principalKind === 'local_owner' && this.#acceptedTransports.size === 0) {
+      if (authority.principalKind === 'local_owner' && this.#isTrueIdle()) {
         this.#requestDrain();
         return {
           kind: 'draining',
@@ -623,15 +628,6 @@ export class RuntimeHostKernel {
           },
         }),
         'host.upgrade.prepare': async (input) => {
-          if (this.#lifecycle.kind !== 'ephemeral') {
-            return {
-              ok: false,
-              error: {
-                code: 'operation_unavailable',
-                message: 'Runtime Host service lifecycle cannot be replaced by a Client',
-              },
-            };
-          }
           if (input.expectedHostEpoch !== this.hostEpoch) {
             return {
               ok: false,
@@ -644,6 +640,7 @@ export class RuntimeHostKernel {
           if (!input.allowInterruptActiveTasks && this.#hasUpgradeBlockingActivity()) {
             return { ok: true, result: { kind: 'active_tasks' } };
           }
+          this.#shutdownReason = 'retirement';
           this.#requestDrain();
           return { ok: true, result: { kind: 'prepared', pid: process.pid } };
         },

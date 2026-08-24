@@ -1326,6 +1326,11 @@ export class RuntimePolicyCoordinator {
       await clearConnectionOnboardingIntent(root);
       this.onboardingRecoveryRequired = false;
     } catch (error) {
+      if (isObsoleteConnectionOnboardingIntent(error)) {
+        await clearConnectionOnboardingIntent(root);
+        this.onboardingRecoveryRequired = false;
+        return;
+      }
       if (isCommitOutcomeUnknown(error)) throw error;
       throw commitOutcomeUnknown('Connection onboarding recovery did not converge', error);
     }
@@ -1389,6 +1394,14 @@ export class RuntimePolicyCoordinator {
 
 function isCommitOutcomeUnknown(error: unknown): error is RuntimePolicyStoreError {
   return error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown';
+}
+
+function isObsoleteConnectionOnboardingIntent(error: unknown): boolean {
+  return (
+    error instanceof RuntimePolicyStoreError &&
+    error.code === 'invalid_document' &&
+    error.message === 'Onboarding intent conflicts with the connection id'
+  );
 }
 
 function commonSemanticConnectionBasis(

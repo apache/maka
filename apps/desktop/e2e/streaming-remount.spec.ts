@@ -22,18 +22,18 @@ import {
   FAKE_HOLD_OPEN_REWRITE_PROMPT,
   FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
 } from '@maka/runtime/test-only/fake-backend';
-import type { Locator, Page } from '@playwright/test';
+import type { Locator } from '@playwright/test';
 import { expect, COMPOSER_INPUT, test } from './fixtures';
 
 function sessionRow(sidebar: Locator, sessionId: string): Locator {
   return sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`);
 }
 
-async function selectSteerMode(page: Page): Promise<void> {
-  const steerMode = page.getByRole('radio', { name: '插入消息' });
-  await expect(steerMode).toBeVisible();
-  await steerMode.click();
-  await expect(steerMode).toBeChecked();
+async function steerActiveTurn(composer: Locator, text: string): Promise<void> {
+  // Mid-turn steering is Shift+Enter: the one Send stays Send, and the shifted
+  // submit hands the draft to the active Turn once.
+  await composer.fill(text);
+  await composer.press('Shift+Enter');
 }
 
 test('remounting a live surface leaves accumulated output settled', async ({
@@ -87,9 +87,7 @@ test('remounting a live surface leaves accumulated output settled', async ({
   });
 
   const steering = 'trigger rewrite after returning to this conversation';
-  await selectSteerMode(page);
-  await composer.fill(steering);
-  await composer.press('Enter');
+  await steerActiveTurn(composer, steering);
   const finalText = 'prefix <redacted> NEW streamed after the remount';
   await expect(liveBubble).toContainText(finalText);
 
@@ -164,9 +162,7 @@ test('keeps a completed reply after an interrupted turn and conversation remount
   });
   const steering = 'use the detailed response';
   const completedReply = 'Large response complete.';
-  await selectSteerMode(page);
-  await composer.fill(steering);
-  await composer.press('Enter');
+  await steerActiveTurn(composer, steering);
   await expect(page.getByRole('log')).toContainText(completedReply);
   await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, {
     timeout: 20_000,

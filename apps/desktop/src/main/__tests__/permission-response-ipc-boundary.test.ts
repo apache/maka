@@ -247,10 +247,19 @@ describe('permission response IPC boundary', () => {
 
   it('accepts only the supported stop source', () => {
     assert.deepEqual(normalizeStopSessionInput(undefined), {});
-    assert.deepEqual(normalizeStopSessionInput({ source: 'stop_button', extra: true }), {
-      source: 'stop_button',
-    });
+    assert.deepEqual(
+      normalizeStopSessionInput({
+        source: 'stop_button',
+        expectedTurnId: 'turn-workhub',
+        extra: true,
+      }),
+      { source: 'stop_button', expectedTurnId: 'turn-workhub' },
+    );
     assert.throws(() => normalizeStopSessionInput(null), /stop session input/);
     assert.throws(() => normalizeStopSessionInput({ source: 'toolbar' }), /stop session source/);
+    assert.throws(
+      () => normalizeStopSessionInput({ expectedTurnId: '' }),
+      /expectedTurnId/,
+    );
   });
 });

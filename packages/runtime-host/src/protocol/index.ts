@@ -91,7 +91,18 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 39 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 44 as const;
+// 44: Session continuity and inspection stop carrying the retired Session
+// last-used timestamp. Older peers reject those strict projection shapes.
+// 43: Session tool-start events correlate hidden shell polls with `shellRunRef`.
+// Older peers reject that added closed-union field.
+// 42: Turn provider retry progress adds `provider_capacity`. Older peers reject
+// that strict retry-reason enum value, so mixed versions must fail handshake.
+// 41: Context compaction returns a typed terminal outcome on both Turn
+// snapshots and context.compact results. Epoch-40 peers reject these closed
+// shapes after admission, so mixed peers must fail during the handshake.
+// 40: The message queue gains per-entry mutation operations
+// (queue.entry.promote, queue.entry.retract, queue.entries.reorder).
 // 39: Client Capability tool descriptors carry trusted activity semantics and
 // invocations can stream bounded progress frames.
 // 38: `execute` is no longer a permission mode. Frame decoders reject it, so a

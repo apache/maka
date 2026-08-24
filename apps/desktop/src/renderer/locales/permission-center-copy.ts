@@ -54,6 +54,7 @@ export type PermissionCenterCopy = {
   lastRead: string;
   detectAgain: string;
   summaryAria: string;
+  summaryFilterAria(label: string, count: number, selected: boolean): string;
   granted: string;
   pending: string;
   denied: string;
@@ -112,7 +113,7 @@ const PERMISSION_CENTER_COPY = {
     },
     osStates: {
       unsupported: { label: '当前平台不支持', tone: 'neutral' }, unknown: { label: '无法读取状态', tone: 'neutral' },
-      not_determined: { label: '等待授权', tone: 'attention' }, denied: { label: '已拒绝', tone: 'error' }, granted: { label: '已授权', tone: 'neutral' },
+      not_determined: { label: '等待授权', tone: 'attention' }, denied: { label: '已拒绝', tone: 'error' }, granted: { label: '已授权', tone: 'success' },
     },
     loading: '正在加载权限快照', readFailed: '无法读取权限快照', noData: '权限服务未返回数据。', readAgain: '重新读取',
     actionFailed: '权限操作失败',
@@ -126,7 +127,7 @@ const PERMISSION_CENTER_COPY = {
       failed: '权限操作未成功，请稍后重试。',
     },
     title: '权限与能力', subtitle: '查看 Maka 需要的系统权限和当前授权状态，直接从这里前往「系统设置 → 隐私与安全性」完成授权或撤销，不必自己翻菜单。',
-    lastRead: '最近读取：', detectAgain: '重新检测', summaryAria: '权限概览', granted: '已授权', pending: '等待授权', denied: '已拒绝', other: '未知 / 不支持',
+    lastRead: '最近读取：', detectAgain: '重新检测', summaryAria: '按授权状态筛选系统权限', summaryFilterAria: (label, count, selected) => selected ? `${label} ${count} 项，当前筛选；再次按下显示全部` : `仅显示${label}权限，共 ${count} 项`, granted: '已授权', pending: '等待授权', denied: '已拒绝', other: '未知 / 不支持',
     osSection: '系统权限', osSectionHelp: 'Maka 读到的 OS 级权限状态。点击右侧按钮可以直接前往「系统设置 → 隐私与安全性」对应分区。', osListAria: '系统权限列表',
     capabilitiesSection: '功能能力', capabilitiesHelp: '每个能力的就绪状态由「功能开关 · 配置 · 系统权限 · 运行态探测」共同决定。',
     capabilityListAria: '功能能力列表',
@@ -159,7 +160,7 @@ const PERMISSION_CENTER_COPY = {
     },
     osStates: {
       unsupported: { label: 'Unsupported on this platform', tone: 'neutral' }, unknown: { label: 'Status unavailable', tone: 'neutral' },
-      not_determined: { label: 'Waiting for permission', tone: 'attention' }, denied: { label: 'Denied', tone: 'error' }, granted: { label: 'Granted', tone: 'neutral' },
+      not_determined: { label: 'Waiting for permission', tone: 'attention' }, denied: { label: 'Denied', tone: 'error' }, granted: { label: 'Granted', tone: 'success' },
     },
     loading: 'Loading permission snapshot', readFailed: 'Could not read permission snapshot', noData: 'The permission service returned no data.', readAgain: 'Read again',
     actionFailed: 'Permission action failed',
@@ -173,7 +174,7 @@ const PERMISSION_CENTER_COPY = {
       failed: 'The permission action did not succeed. Try again later.',
     },
     title: 'Permissions and capabilities', subtitle: 'Review the system permissions Maka needs and their current state. Open the matching Privacy & Security section directly to grant or revoke access.',
-    lastRead: 'Last read: ', detectAgain: 'Check again', summaryAria: 'Permission overview', granted: 'Granted', pending: 'Waiting', denied: 'Denied', other: 'Unknown / unsupported',
+    lastRead: 'Last read: ', detectAgain: 'Check again', summaryAria: 'Filter system permissions by authorization status', summaryFilterAria: (label, count, selected) => selected ? `${label}, ${count}; filter selected. Press again to show all permissions` : `Show only ${label.toLowerCase()} permissions, ${count}`, granted: 'Granted', pending: 'Waiting', denied: 'Denied', other: 'Unknown / unsupported',
     osSection: 'System permissions', osSectionHelp: 'OS-level permission states reported to Maka. Use the action on the right to open the matching Privacy & Security section in System Settings.', osListAria: 'System permission list',
     capabilitiesSection: 'Feature capabilities', capabilitiesHelp: 'Each readiness state combines the feature toggle, configuration, system permissions, and runtime probe.',
     capabilityListAria: 'Feature capability list',

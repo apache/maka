@@ -58,7 +58,6 @@ import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinat
 import { resolveTurnShellPlan, ShellPreferenceError } from '@maka/runtime/shell-detect';
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
-import { hostedExecutionToolNames } from '../server/hosted-execution-tool-profile.js';
 import { createToolResultArchiveCapability } from '@maka/runtime/tool-result-archive-capability';
 import { loadHistoryCompactCheckpointsFromRunLedger } from '@maka/runtime/history-compact-ledger';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
@@ -134,7 +133,7 @@ const MIN_IMPLEMENTATION_CHILD_REQUESTS = 6;
 const MAX_IMPLEMENTATION_CHILD_REQUESTS =
   MIN_IMPLEMENTATION_CHILD_REQUESTS + MAX_IMPLEMENTATION_CHILD_PTY_READS - 1;
 const HEADLESS_CODING_V1_PROMPT_HASH =
-  'sha256:0e3389e330b8b8f0db1c7a8b8e2126325fe4c672d6eff279afcd3f9412e52271';
+  'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
   'sha256:c062194603f93b568da5ca59b865b316156b5f218ba854c291aa9582859b3de4';
 const execFileAsync = promisify(execFile);
@@ -402,7 +401,6 @@ test('Codex OAuth history compaction uses the provider-native route and preserve
       turnId: 'turn-compact',
       runId: 'run-compact',
       runtimeContext,
-      minRecentTurns: 1,
     });
 
     assert.equal(requests.length, 1, JSON.stringify(result));
@@ -410,7 +408,7 @@ test('Codex OAuth history compaction uses the provider-native route and preserve
     const requestText = JSON.stringify(requests[0]!.body);
     assert.match(requestText, /"type":"compaction_trigger"/);
     assert.doesNotMatch(requestText, /context summarization assistant/i);
-    assert.equal(result.contextBudget?.historyCompactWriteFailures, 1);
+    assert.deepEqual(result.outcome, { kind: 'failed', reason: 'provider_error' });
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'failedOpen');
     assert.equal(attempts.length, 1);
     assert.equal(attempts[0]?.callKind, 'history_compact');
@@ -921,6 +919,7 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     const instructions = responsesDeveloperPrompt(request?.body);
     const tools = request?.body.tools;
     assert.equal(typeof instructions, 'string', JSON.stringify(request?.body));
+    assert.match(instructions ?? '', /^Active model: deepseek-v4-flash$/mu);
     assert.ok(Array.isArray(tools));
     assert.equal(stableHash(instructions), HEADLESS_CODING_V1_PROMPT_HASH);
     assert.equal(stableHash(tools), HEADLESS_CODING_V1_TOOLS_HASH);
@@ -2832,15 +2831,14 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
   const capturedBash = childComposer.tools.find((tool) => tool.name === 'Bash');
   assert.match(capturedBash?.description ?? '', /captured child shell/);
   assert.doesNotMatch(capturedBash?.description ?? '', /unavailable this turn/);
-  assert.match(
-    await childComposer.turnTailPrompt({
-      sessionId: 'session',
-      turnId: 'turn-child',
-      cwd: '/workspace',
-      workspaceRoot: '/workspace',
-    }),
-    /captured child shell/,
-  );
+  const childContext = {
+    sessionId: 'session',
+    turnId: 'turn-child',
+    cwd: '/workspace',
+    workspaceRoot: '/workspace',
+  } as const;
+  const childTail = await childComposer.turnTailPrompt(childContext);
+  assert.match(childTail, /captured child shell/);
 });
 
 test('child execution Bash carries the configured shell guidance and spawn plan', async () => {
@@ -2968,7 +2966,6 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
     } as unknown as HostMemoryCoordinator,
     taskLedger: {} as TaskLedgerStore,
     builtinTools: {},
-    boundToolNames: hostedExecutionToolNames('headless-coding-v1'),
     toolProfile: 'headless-coding-v1',
     parentAgentTools: buildParentAgentTools(),
     scheduledTaskTool: {

@@ -25,6 +25,7 @@ export const RUNTIME_HOST_SERVICE_LOG_MAX_BYTES = 48 * 1024;
 export const RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES = 128;
 export const RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES = 2 * 1024;
 export const RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY = 'access-management-v1';
+export const RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY = 'process-lifetime-lock-v1';
 export const RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV =
   'MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST';
 
@@ -37,11 +38,26 @@ const SERVICE_ACTIONS = [
   'start',
   'stop',
   'restart',
+  'retire',
+  'update',
   'logs',
   'uninstall',
 ] as const;
+const NON_RETIRE_SERVICE_ACTIONS = [
+  'install',
+  'status',
+  'start',
+  'stop',
+  'restart',
+  'logs',
+  'uninstall',
+] as const;
+const UPDATE_PHASES = ['checking', 'staging', 'retiring', 'replacing'] as const;
 const SERVICE_STATES = ['not_installed', 'stopped', 'starting', 'running', 'failed'] as const;
-const OPERATOR_CAPABILITIES = [RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY] as const;
+const OPERATOR_CAPABILITIES = [
+  RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
+] as const;
 
 const boundedString = (maxBytes: number) =>
   z.string().refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);
@@ -50,6 +66,18 @@ const boundedNonEmptyString = (maxBytes: number) =>
     .string()
     .min(1)
     .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);
+
+const RETIREMENT_RESULT_SCHEMA = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('active_tasks') }).strict(),
+  z
+    .object({
+      kind: z.literal('retired'),
+      hostEpoch: boundedNonEmptyString(FIELD_MAX_BYTES),
+      pid: z.number().int().positive(),
+    })
+    .strict(),
+  z.object({ kind: z.literal('stopped') }).strict(),
+]);
 
 const SERVICE_SUMMARY_SCHEMA = z
   .object({
@@ -74,16 +102,71 @@ const SERVICE_SUMMARY_SCHEMA = z
   })
   .strict();
 
-const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.discriminatedUnion('kind', [
+const SERVICE_RESULT_COMMON = {
+  schemaVersion: z.literal(1),
+  kind: z.literal('result'),
+  service: SERVICE_SUMMARY_SCHEMA,
+  operatorCapabilities: z.array(z.enum(OPERATOR_CAPABILITIES)).max(16).optional(),
+  retainedStateRoot: boundedString(PATH_MAX_BYTES).optional(),
+  logs: boundedString(RUNTIME_HOST_SERVICE_LOG_MAX_BYTES).optional(),
+} as const;
+
+const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
   z
     .object({
       schemaVersion: z.literal(1),
-      kind: z.literal('result'),
-      action: z.enum(SERVICE_ACTIONS),
-      service: SERVICE_SUMMARY_SCHEMA,
-      operatorCapabilities: z.array(z.enum(OPERATOR_CAPABILITIES)).max(16).optional(),
-      retainedStateRoot: boundedString(PATH_MAX_BYTES).optional(),
-      logs: boundedString(RUNTIME_HOST_SERVICE_LOG_MAX_BYTES).optional(),
+      kind: z.literal('progress'),
+      action: z.literal('update'),
+      phase: z.enum(UPDATE_PHASES),
+      currentVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+      targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+    })
+    .strict(),
+  z
+    .object({
+      ...SERVICE_RESULT_COMMON,
+      action: z.literal('update'),
+      update: z.discriminatedUnion('kind', [
+        z
+          .object({
+            kind: z.literal('already_current'),
+            version: boundedNonEmptyString(FIELD_MAX_BYTES),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal('active_tasks'),
+            currentVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+            targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal('updated'),
+            previousVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+            targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal('repaired'),
+            version: boundedNonEmptyString(FIELD_MAX_BYTES),
+          })
+          .strict(),
+      ]),
+    })
+    .strict(),
+  z
+    .object({
+      ...SERVICE_RESULT_COMMON,
+      action: z.literal('retire'),
+      retirement: RETIREMENT_RESULT_SCHEMA,
+    })
+    .strict(),
+  z
+    .object({
+      ...SERVICE_RESULT_COMMON,
+      action: z.enum(NON_RETIRE_SERVICE_ACTIONS),
     })
     .strict(),
   z
@@ -103,6 +186,7 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.discriminatedUnion('kind', [
 
 export type RuntimeHostServiceManagementAction = (typeof SERVICE_ACTIONS)[number];
 export type RuntimeHostServiceManagementFrame = z.infer<typeof SERVICE_MANAGEMENT_FRAME_SCHEMA>;
+export type RuntimeHostServiceUpdatePhase = (typeof UPDATE_PHASES)[number];
 export type RuntimeHostOperatorCapability = (typeof OPERATOR_CAPABILITIES)[number];
 export type RuntimeHostServiceSummary = z.infer<typeof SERVICE_SUMMARY_SCHEMA>;
 

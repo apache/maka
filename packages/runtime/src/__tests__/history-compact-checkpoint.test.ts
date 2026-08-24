@@ -37,7 +37,7 @@ import {
   loadLatestHistoryCompactCheckpointFromRunLedger,
 } from '../history-compact-ledger.js';
 import { estimateRuntimeEventsTokens } from '../context-budget.js';
-import { applyRuntimeEventHistoryCompact } from '../history-compact.js';
+import { applyRuntimeEventHistoryCompact } from '../history-compaction.js';
 
 // Satisfies the sectioned summary contract for marked-checkpoint fixtures.
 const STRUCTURED_SUMMARY = [
@@ -864,10 +864,7 @@ describe('history compact checkpoint', () => {
       events,
       {
         enabled: true,
-        mode: 'read_write',
         checkpoint,
-        highWaterRatio: 0.01,
-        tailEstimatedTokens: 1,
       },
       1,
       1_000,
@@ -906,7 +903,7 @@ describe('history compact checkpoint', () => {
     // resurrects the covered raw prefix.
     const replay = applyRuntimeEventHistoryCompact(
       events,
-      { enabled: true, mode: 'read_write', checkpoint },
+      { enabled: true, checkpoint },
       4,
       1_000_000,
     );
@@ -916,8 +913,7 @@ describe('history compact checkpoint', () => {
       replay.events.map((event) => event.id),
       [`history-compact:${checkpoint.checkpointId}`, 'event-4', 'event-5'],
     );
-    assert.equal(replay.diagnosticPatch.historyCompactBlocksSelected, 1);
-    assert.equal(replay.diagnosticPatch.historyCompactSkippedReasonCounts, undefined);
+    assert.equal(replay.diagnosticPatch.compactionDecisions?.[0]?.decision, 'replaced');
   });
 
   test('accepts a complete checkpoint above legacy block limits when the full replay fits', () => {
@@ -941,12 +937,7 @@ describe('history compact checkpoint', () => {
       events,
       {
         enabled: true,
-        mode: 'read_write',
         checkpoint,
-        maxBlockEstimatedTokens: 10_000,
-        maxEstimatedTokens: 100,
-        highWaterRatio: 0.000001,
-        tailEstimatedTokens: 1,
       },
       1,
       10_000,
@@ -981,12 +972,7 @@ describe('history compact checkpoint', () => {
       events,
       {
         enabled: true,
-        mode: 'read_write',
         checkpoint,
-        maxBlockEstimatedTokens: 10_000,
-        maxEstimatedTokens: 10_000,
-        highWaterRatio: 0.000001,
-        tailEstimatedTokens: 1,
       },
       1,
       10_000,

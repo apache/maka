@@ -62,7 +62,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { RunTraceEvent } from './run-trace.js';
 import type { StopSessionInput } from './session-manager.js';
-import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import { projectRuntimeEventsToStoredMessages } from './runtime-event-read-model.js';
 import {
@@ -574,27 +573,6 @@ export class AgentRun {
     }
   }
 
-  recordSemanticCompactBlock(block: SemanticCompactBlock): void {
-    if (!this.input.runStore || !this.runStoreAvailable) return;
-    this.enqueueRunStore('append semantic compact block', async () => {
-      await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
-        type: 'semantic_compact_block_recorded',
-        id: this.input.newId(),
-        runId: this.runId,
-        sessionId: this.sessionId,
-        turnId: block.turnId || this.turnId,
-        ts: this.input.now(),
-        data: {
-          blockId: block.blockId,
-          highWaterName: block.highWaterName,
-          highWaterSeq: block.highWaterSeq,
-          boundaryKind: 'semanticCompact',
-          block,
-        },
-      });
-    });
-  }
-
   async acceptMappedEvent(
     sessionEvent: SessionEvent,
     runtimeEvent: RuntimeEvent,
@@ -1079,7 +1057,6 @@ export class AgentRun {
         : (this.finalStatus ?? { status: 'active' as const });
     try {
       await this.input.hooks.updateHeader(this.sessionId, {
-        lastUsedAt: lastTs,
         lastMessageAt: lastTs,
         hasUnread: true,
         ...buildStatusPatch(nextStatus.status, lastTs, nextStatus.blockedReason),

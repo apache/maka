@@ -207,6 +207,13 @@ export default {
     // electron-updater skips the check when there is none. Adding a certificate
     // is then the whole change — the verification follows it.
   },
+  nsis: {
+    // Everything stays at the one-click per-user defaults; the include only
+    // adds the Abort-path pre-upgrade backup/rollback (and its test-only
+    // deterministic failpoint) — see build/installer.nsh for the mechanism
+    // and its exit-code contract with verify-windows-installer-rollback.mjs.
+    include: 'build/installer.nsh',
+  },
   publish: [
     {
       provider: 'github',

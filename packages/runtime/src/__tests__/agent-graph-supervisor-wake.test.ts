@@ -32,8 +32,8 @@ import type { AgentGraphClientSnapshot } from '../stream-graph-read-model.js';
 import type { AgentGraphScheduleReconciliationResult } from '../stream-graph-schedule-reconcile.js';
 
 describe('Agent Graph supervisor wake delivery', () => {
-  test('uses the shared aggressive compaction adapter for overflow recovery', async () => {
-    const calls: Array<{ sessionId: string; turnId: string; minRecentTurns: number }> = [];
+  test('uses the shared compaction transaction for overflow recovery', async () => {
+    const calls: Array<{ sessionId: string; turnId: string }> = [];
     const recovery = await recoverAgentGraphSupervisorContextOverflow({
       rootSessionId: 'root-session',
       compactTurnId: 'compact-turn',
@@ -55,23 +55,27 @@ describe('Agent Graph supervisor wake delivery', () => {
             droppedTurns: 20,
             keptEvents: 4,
             droppedEvents: 80,
-            historyCompactedEvents: 75,
-            historyCompactBlocksWritten: 1,
+            compactionDecisions: [
+              {
+                stage: 'priorReplay',
+                sourceKind: 'runtimeEvents',
+                decision: 'replaced',
+                boundaryKind: 'historyCompact',
+                boundaryIds: ['checkpoint-1'],
+              },
+            ],
           },
         };
       },
     });
 
-    assert.deepEqual(calls, [
-      { sessionId: 'root-session', turnId: 'compact-turn', minRecentTurns: 0 },
-    ]);
+    assert.deepEqual(calls, [{ sessionId: 'root-session', turnId: 'compact-turn' }]);
     assert.deepEqual(recovery, {
       estimatedTokensBefore: 700_000,
       estimatedTokensAfter: 12_000,
       droppedTurns: 20,
       droppedEvents: 80,
-      historyCompactedEvents: 75,
-      historyCompactBlocksWritten: 1,
+      outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
     });
   });
 
@@ -197,8 +201,7 @@ describe('Agent Graph supervisor wake delivery', () => {
           estimatedTokensBefore: 700_000,
           estimatedTokensAfter: 12_000,
           droppedEvents: 80,
-          historyCompactedEvents: 75,
-          historyCompactBlocksWritten: 1,
+          outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
         };
       },
       newId: sequentialIds(),
@@ -227,8 +230,7 @@ describe('Agent Graph supervisor wake delivery', () => {
           estimatedTokensBefore: 700_000,
           estimatedTokensAfter: 12_000,
           droppedEvents: 80,
-          historyCompactedEvents: 75,
-          historyCompactBlocksWritten: 1,
+          outcome: { kind: 'compacted', checkpointId: 'checkpoint-1' },
         },
       });
     } finally {

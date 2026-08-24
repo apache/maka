@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { SessionEvent, ShellRunUpdate } from '@maka/core/events';
 import {
+  decodeRuntimeResourceRef,
   encodeProtocolMessage,
   RUNTIME_HOST_MAX_MESSAGE_BYTES,
   SESSION_LIVE_DELTA_MAX_BYTES,
@@ -1938,7 +1939,8 @@ function projectToolEvent(
     toolUseId: event.toolUseId,
   };
   switch (event.type) {
-    case 'tool_start':
+    case 'tool_start': {
+      const shellRunRef = toolStartShellRunRef(event);
       return {
         type: event.type,
         ...identity,
@@ -1949,7 +1951,9 @@ function projectToolEvent(
           ? {}
           : { displayName: boundedUtf8(event.displayName, SESSION_TOOL_NAME_MAX_BYTES) }),
         ...(event.stepId === undefined ? {} : { stepId: event.stepId }),
+        ...(shellRunRef ? { shellRunRef } : {}),
       };
+    }
     case 'tool_output_delta':
       return {
         type: event.type,
@@ -2001,6 +2005,22 @@ function boundedUtf8(value: string, maxBytes: number): string {
     bytes += characterBytes;
   }
   return bounded;
+}
+
+function toolStartShellRunRef(
+  event: Extract<RuntimeSessionTransientEvent, { type: 'tool_start' }>,
+): string | undefined {
+  if (event.toolName !== 'Read' && event.toolName !== 'StopBackgroundTask') return undefined;
+  const ref =
+    event.args !== null && typeof event.args === 'object'
+      ? (event.args as { ref?: unknown }).ref
+      : undefined;
+  if (typeof ref !== 'string') return undefined;
+  try {
+    return decodeRuntimeResourceRef(ref);
+  } catch {
+    return undefined;
+  }
 }
 
 function signal(): { readonly promise: Promise<void>; resolve(): void } {

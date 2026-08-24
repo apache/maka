@@ -70,7 +70,7 @@ const COMPACTION_DECISION_SHAPE = defineObjectShape<CompactionDecisionDiagnostic
   ],
 );
 
-const CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>()(
+const CURRENT_CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>()(
   [
     'enabled',
     'estimatedTokensBefore',
@@ -83,7 +83,6 @@ const CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>()(
   [
     'policyName',
     'maxHistoryEstimatedTokens',
-    'maxHistoryTurns',
     'prunedToolResults',
     'prunedToolResultEstimatedTokensBefore',
     'prunedToolResultEstimatedTokensAfter',
@@ -96,77 +95,91 @@ const CONTEXT_BUDGET_SHAPE = defineObjectShape<ContextBudgetDiagnostic>()(
     'activeDuplicateToolResults',
     'activeArchiveFailures',
     'activeEstimatedTokensSaved',
-    'semanticCompactEnabled',
-    'semanticCompactMode',
     'compactionDecisions',
-    'archiveRetrievalMode',
-    'archiveRetrievalEligibleTurns',
-    'retrievedArchiveToolResults',
-    'retrievedArchiveEstimatedTokens',
-    'archiveRetrievalSkipped',
-    'archiveRetrievalFailures',
-    'archiveRetrievalSkippedReasonCounts',
-    'archiveRetrievalFailureReasonCounts',
-    'historySearchMatches',
-    'historyAroundRetrievedEvents',
-    'historyAroundEstimatedTokens',
-    'historyAroundSkippedEvents',
-    'synthesisCacheEnabled',
-    'synthesisCacheMode',
-    'synthesisCacheBlocksLoaded',
-    'synthesisCacheLoadSkipped',
-    'synthesisCacheLoadSkippedReasonCounts',
-    'synthesisCacheLoadFailures',
-    'synthesisCacheBlocksAvailable',
-    'synthesisCacheBlocksSelected',
-    'synthesisCacheBlockIds',
-    'synthesisCacheEstimatedTokens',
-    'synthesisCacheSkipped',
-    'synthesisCacheSkippedReasonCounts',
-    'synthesisCacheInvalidated',
-    'synthesisCacheInvalidationReasonCounts',
-    'synthesisCacheWritesAttempted',
-    'synthesisCacheBlocksWritten',
-    'synthesisCacheWrittenBlockIds',
-    'synthesisCacheWriteEstimatedTokens',
-    'synthesisCacheWriteSkipped',
-    'synthesisCacheWriteSkippedReasonCounts',
-    'synthesisCacheWriteFailures',
-    'synthesisCacheEvicted',
-    'synthesisCacheEvictionReasonCounts',
-    'historyCompactEnabled',
-    'historyCompactMode',
-    'historyCompactBlocksLoaded',
-    'historyCompactLoadSkipped',
-    'historyCompactLoadSkippedReasonCounts',
-    'historyCompactLoadFailures',
-    'historyCompactBlocksAvailable',
-    'historyCompactBlocksSelected',
-    'historyCompactBlockIds',
-    'historyCompactedTurns',
-    'historyCompactedEvents',
-    'historyCompactedEstimatedTokensBefore',
-    'historyCompactedEstimatedTokensAfter',
-    'historyCompactSkipped',
-    'historyCompactSkippedReasonCounts',
-    'historyCompactCoverageHashes',
-    'historyCompactWritesAttempted',
-    'historyCompactBlocksWritten',
-    'historyCompactWrittenBlockIds',
-    'historyCompactWriteEstimatedTokens',
-    'historyCompactWriteSkipped',
-    'historyCompactWriteSkippedReasonCounts',
-    'historyCompactWriteFailures',
-    'highWaterName',
-    'highWaterSeq',
-    'highWaterReason',
-    'highWaterRequestShapeHashBefore',
-    'highWaterRequestShapeHashAfter',
-    'historyRewriteVersion',
-    'historyRewriteResetReason',
-    'historyRewriteGate',
   ],
 );
+
+/**
+ * Keys written by retired context-budget implementations. They remain
+ * accepted only so persisted usage records stay readable; current code cannot
+ * produce them through ContextBudgetDiagnostic.
+ */
+const RETIRED_CONTEXT_BUDGET_KEYS = [
+  'maxHistoryTurns',
+  'semanticCompactEnabled',
+  'semanticCompactMode',
+  'archiveRetrievalMode',
+  'archiveRetrievalEligibleTurns',
+  'retrievedArchiveToolResults',
+  'retrievedArchiveEstimatedTokens',
+  'archiveRetrievalSkipped',
+  'archiveRetrievalFailures',
+  'archiveRetrievalSkippedReasonCounts',
+  'archiveRetrievalFailureReasonCounts',
+  'historySearchMatches',
+  'historyAroundRetrievedEvents',
+  'historyAroundEstimatedTokens',
+  'historyAroundSkippedEvents',
+  'synthesisCacheEnabled',
+  'synthesisCacheMode',
+  'synthesisCacheBlocksLoaded',
+  'synthesisCacheLoadSkipped',
+  'synthesisCacheLoadSkippedReasonCounts',
+  'synthesisCacheLoadFailures',
+  'synthesisCacheBlocksAvailable',
+  'synthesisCacheBlocksSelected',
+  'synthesisCacheBlockIds',
+  'synthesisCacheEstimatedTokens',
+  'synthesisCacheSkipped',
+  'synthesisCacheSkippedReasonCounts',
+  'synthesisCacheInvalidated',
+  'synthesisCacheInvalidationReasonCounts',
+  'synthesisCacheWritesAttempted',
+  'synthesisCacheBlocksWritten',
+  'synthesisCacheWrittenBlockIds',
+  'synthesisCacheWriteEstimatedTokens',
+  'synthesisCacheWriteSkipped',
+  'synthesisCacheWriteSkippedReasonCounts',
+  'synthesisCacheWriteFailures',
+  'synthesisCacheEvicted',
+  'synthesisCacheEvictionReasonCounts',
+  'historyCompactEnabled',
+  'historyCompactMode',
+  'historyCompactBlocksLoaded',
+  'historyCompactLoadSkipped',
+  'historyCompactLoadSkippedReasonCounts',
+  'historyCompactLoadFailures',
+  'historyCompactBlocksAvailable',
+  'historyCompactBlocksSelected',
+  'historyCompactBlockIds',
+  'historyCompactedTurns',
+  'historyCompactedEvents',
+  'historyCompactedEstimatedTokensBefore',
+  'historyCompactedEstimatedTokensAfter',
+  'historyCompactSkipped',
+  'historyCompactSkippedReasonCounts',
+  'historyCompactCoverageHashes',
+  'historyCompactWritesAttempted',
+  'historyCompactBlocksWritten',
+  'historyCompactWrittenBlockIds',
+  'historyCompactWriteEstimatedTokens',
+  'historyCompactWriteSkipped',
+  'historyCompactWriteSkippedReasonCounts',
+  'historyCompactWriteFailures',
+  'highWaterName',
+  'highWaterSeq',
+  'highWaterReason',
+  'highWaterRequestShapeHashBefore',
+  'highWaterRequestShapeHashAfter',
+  'historyRewriteVersion',
+  'historyRewriteResetReason',
+  'historyRewriteGate',
+] as const;
+
+const CONTEXT_BUDGET_SHAPE = {
+  required: CURRENT_CONTEXT_BUDGET_SHAPE.required,
+  allowed: new Set([...CURRENT_CONTEXT_BUDGET_SHAPE.allowed, ...RETIRED_CONTEXT_BUDGET_KEYS]),
+};
 
 const PROMPT_SEGMENT_KINDS = new Set([
   'system_prompt',
@@ -233,60 +246,9 @@ const CONTEXT_NUMBERS = [
   'activeDuplicateToolResults',
   'activeArchiveFailures',
   'activeEstimatedTokensSaved',
-  'archiveRetrievalEligibleTurns',
-  'retrievedArchiveToolResults',
-  'retrievedArchiveEstimatedTokens',
-  'archiveRetrievalSkipped',
-  'archiveRetrievalFailures',
-  'historySearchMatches',
-  'historyAroundRetrievedEvents',
-  'historyAroundEstimatedTokens',
-  'historyAroundSkippedEvents',
-  'synthesisCacheBlocksLoaded',
-  'synthesisCacheLoadSkipped',
-  'synthesisCacheLoadFailures',
-  'synthesisCacheBlocksAvailable',
-  'synthesisCacheBlocksSelected',
-  'synthesisCacheEstimatedTokens',
-  'synthesisCacheSkipped',
-  'synthesisCacheInvalidated',
-  'synthesisCacheWritesAttempted',
-  'synthesisCacheBlocksWritten',
-  'synthesisCacheWriteEstimatedTokens',
-  'synthesisCacheWriteSkipped',
-  'synthesisCacheWriteFailures',
-  'synthesisCacheEvicted',
-  'historyCompactBlocksLoaded',
-  'historyCompactLoadSkipped',
-  'historyCompactLoadFailures',
-  'historyCompactBlocksAvailable',
-  'historyCompactBlocksSelected',
-  'historyCompactedTurns',
-  'historyCompactedEvents',
-  'historyCompactedEstimatedTokensBefore',
-  'historyCompactedEstimatedTokensAfter',
-  'historyCompactSkipped',
-  'historyCompactWritesAttempted',
-  'historyCompactBlocksWritten',
-  'historyCompactWriteEstimatedTokens',
-  'historyCompactWriteSkipped',
-  'historyCompactWriteFailures',
-  'highWaterSeq',
 ] as const;
 
-const CONTEXT_REASON_COUNTS = [
-  'archivePlaceholderReasonCounts',
-  'archiveRetrievalSkippedReasonCounts',
-  'archiveRetrievalFailureReasonCounts',
-  'synthesisCacheLoadSkippedReasonCounts',
-  'synthesisCacheSkippedReasonCounts',
-  'synthesisCacheInvalidationReasonCounts',
-  'synthesisCacheWriteSkippedReasonCounts',
-  'synthesisCacheEvictionReasonCounts',
-  'historyCompactLoadSkippedReasonCounts',
-  'historyCompactSkippedReasonCounts',
-  'historyCompactWriteSkippedReasonCounts',
-] as const;
+const CONTEXT_REASON_COUNTS = ['archivePlaceholderReasonCounts'] as const;
 
 /**
  * Token-usage field bundle shared by the runtime-event, message, and event
@@ -376,53 +338,9 @@ export function isContextBudgetDiagnostic(value: unknown): value is ContextBudge
   }
   return (
     isOptionalString(value.policyName) &&
-    (value.semanticCompactEnabled === undefined ||
-      typeof value.semanticCompactEnabled === 'boolean') &&
-    (value.semanticCompactMode === undefined ||
-      ['off', 'validate_only', 'prepare_step_dry_run', 'replace'].includes(
-        value.semanticCompactMode as string,
-      )) &&
     (value.compactionDecisions === undefined ||
       (Array.isArray(value.compactionDecisions) &&
-        value.compactionDecisions.every(isCompactionDecisionDiagnostic))) &&
-    (value.archiveRetrievalMode === undefined ||
-      value.archiveRetrievalMode === 'eager' ||
-      value.archiveRetrievalMode === 'history_search_gated') &&
-    (value.synthesisCacheEnabled === undefined ||
-      typeof value.synthesisCacheEnabled === 'boolean') &&
-    (value.synthesisCacheMode === undefined ||
-      ['off', 'lookup', 'read_write', 'write_only', 'fallback_archive_retrieval'].includes(
-        value.synthesisCacheMode as string,
-      )) &&
-    optionalStringArray(value.synthesisCacheBlockIds) &&
-    optionalStringArray(value.synthesisCacheWrittenBlockIds) &&
-    (value.historyCompactEnabled === undefined ||
-      typeof value.historyCompactEnabled === 'boolean') &&
-    (value.historyCompactMode === undefined ||
-      ['off', 'deterministic', 'lookup', 'read_write'].includes(
-        value.historyCompactMode as string,
-      )) &&
-    optionalStringArray(value.historyCompactBlockIds) &&
-    optionalStringArray(value.historyCompactCoverageHashes) &&
-    optionalStringArray(value.historyCompactWrittenBlockIds) &&
-    isOptionalString(value.highWaterName) &&
-    (value.highWaterReason === undefined ||
-      [
-        'archive_prune',
-        'history_search_gated_retrieval',
-        'synthesis_cache_write',
-        'synthesis_cache_select',
-        'history_compact',
-        'manual_reset',
-        'system_change',
-        'tools_change',
-        'log_rewrite',
-      ].includes(value.highWaterReason as string)) &&
-    isOptionalString(value.highWaterRequestShapeHashBefore) &&
-    isOptionalString(value.highWaterRequestShapeHashAfter) &&
-    isOptionalString(value.historyRewriteVersion) &&
-    isOptionalString(value.historyRewriteResetReason) &&
-    isOptionalString(value.historyRewriteGate)
+        value.compactionDecisions.every(isCompactionDecisionDiagnostic)))
   );
 }
 

@@ -63,10 +63,12 @@ test('Desktop E2E compaction records a deterministic checkpoint', async () => {
     runtimeContext: [userEvent()],
   });
 
-  assert.deepEqual(result, {});
   assert.equal(recorded.length, 1);
   assert.equal(recorded[0]?.turnId, 'turn-1');
   const checkpoint = recorded[0]!.checkpoint;
+  assert.deepEqual(result, {
+    outcome: { kind: 'compacted', checkpointId: checkpoint.checkpointId },
+  });
   assert.equal(checkpoint.version, 2);
   if (checkpoint.version !== 2) return;
   // The fixture is shaped like a real sectioned checkpoint so the builder's

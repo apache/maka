@@ -500,6 +500,7 @@ function coordinatorFixture(
       header,
       revision: 1,
       committedAt: 1,
+      activityAt: header.lastMessageAt ?? header.createdAt,
       summary: headerToSummary(header),
     });
     return header;
@@ -640,7 +641,6 @@ function sessionHeader(id: string, cwd: string, name: string): SessionHeader {
     workspaceRoot: '/workspace',
     cwd,
     createdAt: 1,
-    lastUsedAt: 1,
     name,
     titleIsManual: false,
     isFlagged: false,

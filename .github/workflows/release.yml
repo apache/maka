@@ -102,7 +102,7 @@ jobs:
             runner: windows-2025
     runs-on: ${{ matrix.runner }}
     environment: release
-    timeout-minutes: 60
+    timeout-minutes: 75
     defaults:
       run:
         # Windows runners default to pwsh; the release steps are written once,
@@ -219,6 +219,13 @@ jobs:
         if: matrix.platform == 'windows'
         run: |
           npm run verify:windows-autoupdate -- \
+            "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
+            apps/desktop/release-autoupdate-next
+
+      - name: Prove deterministic mid-install failure rollback
+        if: matrix.platform == 'windows'
+        run: |
+          npm run verify:windows-installer-rollback -- \
             "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
 

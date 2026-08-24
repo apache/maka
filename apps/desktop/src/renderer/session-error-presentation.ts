@@ -36,6 +36,8 @@ export function describeSessionErrorReason(reason: string | undefined, locale: U
       return copy.auth;
     case 'provider_billing':
       return copy.providerBilling;
+    case 'provider_capacity':
+      return copy.providerCapacity;
     case 'provider_unavailable':
       return copy.provider;
     case 'rate_limit':

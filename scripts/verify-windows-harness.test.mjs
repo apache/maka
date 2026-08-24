@@ -30,11 +30,17 @@ import { validateWindowsUpgradeBaseline } from './prepare-windows-upgrade-baseli
 import {
   diffTreeManifests,
   directoryTreeManifest,
+  rendererLayoutMatchesViewport,
+  rendererViewportMatchesNativeClient,
   runCommand,
   waitForDevToolsPort,
   waitForUsableRenderer,
 } from './verify-packaged-app.mjs';
 import { waitForInstalledProductVersion } from './verify-windows-autoupdate.mjs';
+import {
+  deleteUninstallRegistrationForInstall,
+  readUninstallDisplayVersionsForInstall,
+} from './verify-windows-installer-rollback.mjs';
 import {
   completeInstalledApplicationUninstall,
   installerVersion,
@@ -52,6 +58,96 @@ import {
 const temporaryRoots = [];
 const delay = (milliseconds) =>
   new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+
+it('scopes rollback registration reads and deletion to the fixture uninstaller', async () => {
+  const calls = [];
+  const uninstaller = 'C:\\fixture\\installed\\Uninstall Maka.exe';
+  const run = async (command, args, options) => {
+    calls.push({ command, args, options });
+    return { stdout: '0.1.11', stderr: '' };
+  };
+
+  assert.equal(await readUninstallDisplayVersionsForInstall(uninstaller, { run }), '0.1.11');
+  await deleteUninstallRegistrationForInstall(uninstaller, { run });
+
+  assert.equal(calls.length, 2);
+  for (const { command, args, options } of calls) {
+    assert.equal(command, 'powershell');
+    assert.equal(options.timeoutMs, 30_000);
+    const script = args.at(-1);
+    assert.match(script, /UninstallString/u);
+    assert.ok(script.includes('[StringComparison]::OrdinalIgnoreCase'));
+    assert.match(script, /C:\\fixture\\installed\\Uninstall Maka\.exe/u);
+    assert.doesNotMatch(script, /DisplayName/u);
+  }
+  assert.match(calls[0].args.at(-1), /\.DisplayVersion/u);
+  assert.match(calls[1].args.at(-1), /Remove-Item -LiteralPath \$_\.Path/u);
+});
+
+describe('rendererLayoutMatchesViewport', () => {
+  const viewportLayout = () => ({
+    devicePixelRatio: 1,
+    innerWidth: 1920,
+    innerHeight: 1040,
+    outerWidth: 1920,
+    outerHeight: 1040,
+    documentWidth: 1920,
+    documentHeight: 1040,
+    visualViewportWidth: 1920,
+    visualViewportHeight: 1040,
+    screenAvailWidth: 1920,
+    screenAvailHeight: 1040,
+    html: { x: 0, y: 0, width: 1920, height: 1040 },
+    body: { x: 0, y: 0, width: 1920, height: 1040 },
+    root: { x: 0, y: 0, width: 1920, height: 1040 },
+    appFrame: { x: 0, y: 0, width: 1920, height: 1040 },
+  });
+
+  it('accepts a renderer tree that covers the maximized viewport', () => {
+    assert.equal(rendererLayoutMatchesViewport(viewportLayout()), true);
+  });
+
+  it('rejects the stale-height band from the maximize regression', () => {
+    const layout = viewportLayout();
+    layout.root.height = 820;
+    layout.appFrame.height = 820;
+    assert.equal(rendererLayoutMatchesViewport(layout), false);
+  });
+
+  it('matches the renderer viewport to native client pixels at the reported scale', () => {
+    const layout = viewportLayout();
+    layout.devicePixelRatio = 1.25;
+    assert.equal(
+      rendererViewportMatchesNativeClient(layout, {
+        clientWidth: 2400,
+        clientHeight: 1300,
+      }),
+      true,
+    );
+  });
+
+  it('accepts proportional native dimensions independently of reported DPR', () => {
+    const layout = viewportLayout();
+    layout.devicePixelRatio = 1.5;
+    assert.equal(
+      rendererViewportMatchesNativeClient(layout, {
+        clientWidth: 1920,
+        clientHeight: 1040,
+      }),
+      true,
+    );
+  });
+
+  it('rejects a renderer viewport that is stale against the native client', () => {
+    assert.equal(
+      rendererViewportMatchesNativeClient(viewportLayout(), {
+        clientWidth: 1920,
+        clientHeight: 900,
+      }),
+      false,
+    );
+  });
+});
 
 it('uses the product SemVer contract throughout Windows release verification', () => {
   assert.equal(installerVersion('Maka-1.2.3-beta.2-win-x64.exe'), '1.2.3-beta.2');

@@ -3176,15 +3176,74 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/session');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('↳ Local Read'));
-    assert.match(
-      plainTerminalOutput(terminal.screenOutput()),
-      /Local Read.*subagent:local_read active/,
-    );
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /Local Read.*subagent:local_read/);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /\bactive\b/);
 
     terminal.input('\x1b[B');
     terminal.input('\r');
     await waitFor(() => driver.sessionIds.includes(child.id));
 
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('shows localized live status badges in the Session picker', async () => {
+    const terminal = new FakeTerminal(160, 30);
+    const driver = new SlashCommandDriver([
+      {
+        ...fakeSessionSummary('session-running', '/repo', 'Running chat'),
+        status: 'running',
+        runningTurnIds: ['turn-live'],
+      },
+      {
+        ...fakeSessionSummary('session-stale', '/repo', 'Stale running chat'),
+        status: 'running',
+        runningTurnIds: [],
+      },
+      {
+        ...fakeSessionSummary('session-permission', '/repo', 'Permission chat'),
+        status: 'waiting_for_user',
+        blockedReason: 'permission_required',
+      },
+      {
+        ...fakeSessionSummary('session-auth', '/repo', 'Auth chat'),
+        status: 'blocked',
+        blockedReason: 'auth',
+      },
+      {
+        ...fakeSessionSummary('session-noise', '/repo', 'Retryable chat'),
+        status: 'blocked',
+        blockedReason: 'tool_failed',
+      },
+      {
+        ...fakeSessionSummary('session-stopped', '/repo', 'Stopped chat'),
+        status: 'aborted',
+      },
+    ]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      locale: 'en',
+      terminal,
+    });
+
+    terminal.input('/session');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('needs permission'));
+    const output = plainTerminalOutput(terminal.screenOutput());
+    assert.match(output, /Running chat.*session- · running/);
+    assert.doesNotMatch(output, /Stale running chat.* · running/);
+    assert.match(output, /Permission chat.*session- · needs permission/);
+    assert.match(output, /Auth chat.*session- · needs sign-in/);
+    assert.match(output, /Stopped chat.*session- · stopped/);
+    assert.match(output, /Retryable chat.*session-/);
+    assert.doesNotMatch(output, /waiting_for_user|permission_required|tool_failed/);
+
+    terminal.input('\x1b');
     exitMaka(terminal);
     await run;
   });
@@ -3661,11 +3720,16 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
-  test('shows a session without a cwd in All but prevents resuming it', async () => {
+  test('keeps live status visible for a session without a cwd but prevents resuming it', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([
       fakeSessionSummary('session-current', '/repo', 'Current chat'),
-      { ...fakeSessionSummary('session-legacy', '/repo', 'Legacy chat'), cwd: undefined },
+      {
+        ...fakeSessionSummary('session-legacy', '/repo', 'Legacy chat'),
+        cwd: undefined,
+        status: 'running',
+        runningTurnIds: ['turn-live'],
+      },
     ]);
     Object.defineProperty(driver, 'getSessionResumeAvailability', { value: undefined });
     const run = runMakaPiTui({
@@ -3693,7 +3757,7 @@ describe('Maka Pi TUI runner', () => {
 
     assert.match(
       plainTerminalOutput(terminal.screenOutput()),
-      /Legacy chat.*Missing working directory/,
+      /Legacy chat.*session- · running Missing working directory/,
     );
 
     terminal.input('\x1b');

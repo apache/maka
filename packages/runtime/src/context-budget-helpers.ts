@@ -21,8 +21,8 @@ import { createHash } from 'node:crypto';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 /**
- * Cross-block shared pure helpers for the context-budget / history-compact /
- * synthesis-cache domain. Extracted from `context-budget.ts` so the sibling
+ * Cross-block shared pure helpers for the context-budget and history-compaction
+ * domain. Extracted from `context-budget.ts` so sibling
  * modules can reuse them without a reverse import into `context-budget.ts`.
  *
  * These are intentionally dependency-free (only `node:crypto` and the
@@ -124,48 +124,6 @@ export function finitePositive(value: number | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? Math.floor(value)
     : undefined;
-}
-
-export function nonEmpty(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
-}
-
-export function allNonEmpty(values: readonly unknown[]): boolean {
-  return values.every(nonEmpty);
-}
-
-export function increment(counts: Record<string, number>, key: string): void {
-  counts[key] = (counts[key] ?? 0) + 1;
-}
-
-export function escapeAttribute(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
-}
-
-export function tokenizeSearchQuery(query: string): string[] {
-  return [
-    ...new Set(
-      query
-        .toLowerCase()
-        .split(/[^a-z0-9_./:-]+/i)
-        .map((term) => term.trim())
-        .filter((term) => term.length >= 2),
-    ),
-  ].slice(0, 16);
-}
-
-export function finiteRatio(value: number | undefined, fallback: number): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return fallback;
-  return Math.min(1, value);
-}
-
-export function normalizeWhitespace(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
-export function boundText(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  return `${value.slice(0, Math.max(0, maxChars - 14)).trimEnd()}\n[truncated]`;
 }
 
 export function utf8ByteLength(text: string): number {

@@ -106,7 +106,6 @@ function createActionsDeps() {
     setInteractionBySession: () => undefined,
     showModelSetupToast: () => undefined,
     toastApi: { error: () => undefined, info: () => undefined },
-    upsertSessionSummary: () => undefined,
     newChatModel: null,
     pendingNewChatThinkingLevel: null,
     newChatPermissionChoice: undefined,

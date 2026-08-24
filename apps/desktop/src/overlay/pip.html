@@ -127,20 +127,17 @@
         }
       }
       /* The agent cursor's position inside the mirrored window, drawn as the
-         arrow itself. It was a dot, on the reasoning that the glyph would be
-         noise at mirror scale — but the glyph is not scaled by the mirror:
-         Codex draws a 20 x 23pt cursor whatever the source window measures,
-         which is a tenth of the tile's edge at the 200pt default and larger
-         than the dot it replaces. A dot says where; an arrow says where and
-         which way, for the same pixels. */
+         arrow itself. The mirror does not scale the independently derived
+         20 x 20px dart: its local (0, 0) tip stays on the mapped action point,
+         while the body shows both position and heading. */
       #cursor {
         position: absolute;
         width: 20px;
-        height: 23px;
-        /* Hotspot (4, 4): the tip of the arrow, and the origin the mapped
-           point has to land on. */
-        margin: -4px 0 0 -4px;
-        filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.45));
+        height: 20px;
+        /* The independently drawn dart starts at (0, 0), so the mapped action
+           coordinate and the visible tip are the same point. */
+        margin: 0;
+        filter: drop-shadow(0 1px 3px rgb(0 0 0 / 0.45));
         opacity: 0;
         transition:
           left 180ms ease-out,
@@ -151,10 +148,13 @@
       #cursor[data-visible='1'] {
         opacity: 1;
       }
-      /* The same three-curve AgentCursor path the on-screen cursor draws, in a
-         20 x 23 box with the glyph on a 16pt frame offset by the hotspot. The
+      /* The same independently derived three-curve path the on-screen cursor
+         draws, on its 20px frame with the tip at the local origin. The
          white outline is what keeps a small dark glyph readable over arbitrary
          imagery; it is the one colour literal in the native drawing code. */
+      #cursor svg {
+        overflow: visible;
+      }
       #cursor path {
         fill: var(--accent);
         stroke: rgb(255 255 255 / 0.8);
@@ -329,7 +329,7 @@
       <img id="frame" alt="" />
       <div id="placeholder" data-visible="1" aria-hidden="true"><div id="sweep"></div></div>
       <div id="cursor" aria-hidden="true">
-        <svg viewBox="0 0 20 23" width="20" height="23" aria-hidden="true"><path d="M 4.0958 6.5382 C 3.6218 5.033 4.987 3.6042 6.4253 4.1003 L 18.0214 8.1043 C 19.615 8.6554 19.7344 10.9675 18.207 11.6952 L 13.4949 13.9373 L 11.3528 18.868 C 10.6578 20.468 8.4482 20.3434 7.9216 18.6747 Z" /></svg>
+        <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M 0 0 C 0.6 4.6 2.2 10.2 4 16.6 L 8.6 12.6 C 9.8 11.4 11.4 12 12.6 13.8 L 16 20 L 20 17.8 C 17.2 12.6 13.8 8 0 0 Z" /></svg>
       </div>
       <div id="chrome" data-visible="0" aria-hidden="true"></div>
       <div id="resize" data-visible="0" aria-hidden="true"></div>

@@ -26,10 +26,8 @@ export type CompactionStage = 'priorReplay' | 'activeStep';
 export type CompactionSourceKind = 'runtimeEvents' | 'providerMessages';
 export type CompactionBoundaryKind =
   | 'historyCompact'
-  | 'synthesisCache'
   | 'staleToolResultPrune'
-  | 'activeToolResultPrune'
-  | 'semanticCompact';
+  | 'activeToolResultPrune';
 export type CompactionDecisionKind = 'unchanged' | 'replaced' | 'failedOpen';
 
 export interface CompactionCoverage {
@@ -108,76 +106,6 @@ export interface CompactionDecision {
   failOpenReason?: string;
   skippedReasonCounts?: Readonly<Record<string, number>>;
   validationReasonCounts?: Readonly<Record<string, number>>;
-}
-
-export interface HistoryCompactBoundaryLike {
-  version: number;
-  blockId: string;
-  sessionId: string;
-  createdAt: number;
-  highWaterName: string;
-  highWaterSeq: number;
-  coverage: {
-    turnIds: readonly string[];
-    runtimeEventIds: readonly string[];
-    contentKinds: readonly string[];
-    bodySha256: readonly string[];
-  };
-  sourceArchiveRefs?: readonly {
-    runtimeEventId: string;
-    artifactId: string;
-    bodySha256: string;
-    originalEstimatedTokens: number;
-    originalBytes: number;
-  }[];
-  estimatedTokens?: number;
-}
-
-export function historyCompactBlockToCompactionBoundary(
-  block: HistoryCompactBoundaryLike,
-  options: {
-    stage?: CompactionStage;
-    renderedText?: string;
-    preservedAnchor?: CompactionBoundary['preservedAnchor'];
-    validationStatus?: CompactionBoundary['validationStatus'];
-    validationReason?: string;
-  } = {},
-): CompactionBoundary {
-  return {
-    kind: 'historyCompact',
-    stage: options.stage ?? 'priorReplay',
-    schemaVersion: block.version,
-    boundaryId: block.blockId,
-    sessionId: block.sessionId,
-    createdAt: block.createdAt,
-    highWaterName: block.highWaterName,
-    highWaterSeq: block.highWaterSeq,
-    coverage: {
-      turnIds: block.coverage.turnIds,
-      runtimeEventIds: block.coverage.runtimeEventIds,
-      contentKinds: block.coverage.contentKinds,
-      bodySha256: block.coverage.bodySha256,
-    },
-    ...(options.preservedAnchor ? { preservedAnchor: options.preservedAnchor } : {}),
-    ...(block.sourceArchiveRefs && block.sourceArchiveRefs.length > 0
-      ? {
-          archiveRefs: block.sourceArchiveRefs.map((ref) => ({
-            kind: 'runtimeEventSource' as const,
-            sessionId: block.sessionId,
-            runtimeEventId: ref.runtimeEventId,
-            artifactId: ref.artifactId,
-            bodySha256: ref.bodySha256,
-            originalEstimatedTokens: ref.originalEstimatedTokens,
-            originalBytes: ref.originalBytes,
-          })),
-        }
-      : {}),
-    sourceHashes: block.coverage.bodySha256,
-    ...(options.renderedText !== undefined ? { renderedText: options.renderedText } : {}),
-    ...(block.estimatedTokens !== undefined ? { estimatedTokens: block.estimatedTokens } : {}),
-    validationStatus: options.validationStatus ?? 'notValidated',
-    ...(options.validationReason ? { validationReason: options.validationReason } : {}),
-  };
 }
 
 export function compactionDecisionToDiagnostic(

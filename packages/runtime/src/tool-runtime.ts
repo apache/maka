@@ -1061,7 +1061,10 @@ export class ToolRuntime {
      * refusal the model reads, on the same lane. Every refusal below routes
      * through here so the pair can never be split across lanes again.
      */
-    const refuseBeforeDispatch = async (text: string): Promise<void> => {
+    const refuseBeforeDispatch = async (
+      text: string,
+      sandboxFailure?: Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'],
+    ): Promise<void> => {
       pushCallEvent('preflight');
       await this.writeSyntheticToolResult(
         toolUseId,
@@ -1069,7 +1072,7 @@ export class ToolRuntime {
         text,
         queue,
         undefined,
-        undefined,
+        sandboxFailure,
         undefined,
         activityIdentity,
       );
@@ -1251,7 +1254,10 @@ export class ToolRuntime {
         return this.errorReturn(reason);
       }
       if (clientCapabilityBoundary.kind !== 'bypass') {
-        await refuseBeforeDispatch(CLIENT_CAPABILITY_BOUNDARY_MESSAGE);
+        await refuseBeforeDispatch(CLIENT_CAPABILITY_BOUNDARY_MESSAGE, {
+          reason: 'requires_bypass',
+          source: 'client_capability',
+        });
         trace?.emit('tool', 'tool_failed', 'Client Capability blocked by execution boundary', {
           toolUseId,
           toolName: tool.name,

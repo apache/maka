@@ -26,7 +26,8 @@ import {
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
-import { decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
+import { decodeContextCompactionOutcome, decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
+import type { ContextCompactionOutcome } from '@maka/core/events';
 
 export interface ContextDiagnosticsQueryInput {
   readonly sessionId: string;
@@ -37,7 +38,13 @@ export interface ContextCompactInput {
   readonly turnId: string;
 }
 
-export type ContextCompactResult = TurnSnapshot;
+export type ContextCompactResult =
+  | { readonly kind: 'started'; readonly turn: TurnSnapshot }
+  | {
+      readonly kind: 'finished';
+      readonly turn: TurnSnapshot;
+      readonly outcome: ContextCompactionOutcome;
+    };
 
 export interface ContextDiagnosticsSegment {
   readonly kind: 'system_instructions' | 'tool_definitions' | 'messages' | 'other';
@@ -114,9 +121,9 @@ export const CONTEXT_OPERATION_SPECS = {
     availability: 'ready',
     errors: [...QUERY_ERRORS, 'session_archived', 'session_busy', 'operation_conflict'] as const,
     decodeInput: decodeContextCompactInput,
-    decodeOutput: decodeTurnSnapshot,
+    decodeOutput: decodeContextCompactResult,
     assertOutputForInput: (input, output) => {
-      if (input.sessionId !== output.sessionId || input.turnId !== output.turnId) {
+      if (input.sessionId !== output.turn.sessionId || input.turnId !== output.turn.turnId) {
         throw invalidProtocolFrame('Context compact changed operation identity');
       }
     },
@@ -134,6 +141,22 @@ function decodeContextCompactInput(value: unknown): ContextCompactInput {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
     turnId: requireEntityId(input.turnId, 'turnId'),
   };
+}
+
+function decodeContextCompactResult(value: unknown): ContextCompactResult {
+  const result = requireShapedRecord(
+    value,
+    'Context compact result',
+    ['kind', 'turn'],
+    ['outcome'],
+  );
+  const kind = requireString(result.kind, 'kind', 32);
+  const turn = decodeTurnSnapshot(result.turn);
+  if (kind === 'started' && result.outcome === undefined) return { kind, turn };
+  if (kind === 'finished' && result.outcome !== undefined) {
+    return { kind, turn, outcome: decodeContextCompactionOutcome(result.outcome) };
+  }
+  throw invalidProtocolFrame('Invalid context compact result');
 }
 
 function decodeContextDiagnosticsResult(value: unknown): ContextDiagnosticsResult {

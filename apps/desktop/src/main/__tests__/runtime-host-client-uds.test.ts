@@ -599,7 +599,7 @@ function session(
       hostCwd: '/workspace',
     },
     createdAt: 1,
-    lastUsedAt: 1,
+    activityAt: 1,
     name: 'Desktop Host Session',
     isFlagged: false,
     isArchived: false,

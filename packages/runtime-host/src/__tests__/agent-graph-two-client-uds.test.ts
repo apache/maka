@@ -359,7 +359,6 @@ function canonical(hostEpoch: string): CanonicalSessionProjection {
       metadataRevision: 1,
       status: 'active',
       createdAt: 1,
-      lastUsedAt: 1,
       isArchived: false,
     },
     rootTurn: null,

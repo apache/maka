@@ -108,7 +108,7 @@ test('receives structured incompatibility guidance from the released v0.1.11 Hos
   );
 });
 
-test('rejects an epoch-23 Host before any domain command', async () => {
+test('rejects an epoch-39 Host before any domain command', async () => {
   let admittedRequest: RequestFrame | undefined;
   await withForgedHandshakePeer(
     async (transport, hostEpoch, rootId) => {
@@ -120,7 +120,7 @@ test('rejects an epoch-23 Host before any domain command', async () => {
         hostEpoch,
         connectionId: 'forged-epoch-connection',
         selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
-        compatibilityEpoch: 23,
+        compatibilityEpoch: 39,
         compositionId: 'maka.interactive',
         compositionRevision: '1',
         state: 'ready',

@@ -248,10 +248,11 @@ export function ToolResultPreview(props: {
   // image / summary / unknown — show a compact descriptor so the user knows
   // what kind landed without dumping binary or storage refs.
   if (content.kind === 'file_write') {
+    const copy = getToolActivityCopy(locale).result;
     return (
       <div data-kind={content.kind}>
         <ToolCodeBlock
-          code={`Wrote ${content.bytes} bytes to ${content.path}`}
+          code={copy.fileWritten(content.bytes, content.path)}
           actionIdentity={props.actionIdentity}
         />
       </div>
@@ -301,28 +302,6 @@ function PtyControlPreview(props: {
       {parts.join(' · ') || copy.ptyCompleted}
     </p>
   );
-}
-
-/**
- * Which tint a unified-diff line takes. Deliberately shallow: it reads the
- * line's first character, not the hunk semantics, which is all the colouring
- * needs and all a preview should promise.
- *
- * `+++`/`---` are file markers, not an addition and a deletion — they have to
- * be tested before the single-character cases or every diff opens with one
- * green and one red line that mean nothing.
- */
-export function diffLineKind(line: string): 'add' | 'del' | 'hunk' | 'meta' | 'ctx' {
-  // The trailing space is what separates a file marker from content: unified
-  // diff writes `--- a/path`, never a bare `---`. Without it, deleting a YAML
-  // document separator or an SQL `--` comment paints the removal as a header —
-  // the one line the reader most needs to see as red.
-  if (line.startsWith('--- ') || line.startsWith('+++ ')) return 'meta';
-  if (line.startsWith('@@')) return 'hunk';
-  if (line.startsWith('+')) return 'add';
-  if (line.startsWith('-')) return 'del';
-  if (line.startsWith('diff ') || line.startsWith('index ')) return 'meta';
-  return 'ctx';
 }
 
 /**
@@ -729,7 +708,7 @@ function RiveWorkflowPreview(props: {
     result.stderrTail ? `stderr_tail:\n${result.stderrTail}` : '',
   ].filter(Boolean);
   const body = [
-    result.ok ? 'Rive workflow completed' : 'Rive workflow failed',
+    result.ok ? copy.workflowCompleted : copy.workflowFailed,
     result.summary,
     '',
     ...rows.map(([label, value]) => `${label}: ${value}`),

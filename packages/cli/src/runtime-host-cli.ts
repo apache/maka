@@ -57,7 +57,7 @@ export type RuntimeHostCliCommand =
     }
   | {
       kind: 'runtime-host-service-manage';
-      action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'logs' | 'uninstall';
+      action: 'install' | 'status' | 'start' | 'stop' | 'restart' | 'retire' | 'logs' | 'uninstall';
       json: boolean;
       framed?: true;
       clientDataRoot?: string;
@@ -67,6 +67,15 @@ export type RuntimeHostCliCommand =
       websocketPath?: string;
       expectedTarget?: RuntimeHostManagedServiceTarget;
       retainManagedDeployment?: true;
+      allowInterruptActiveTasks?: true;
+    }
+  | {
+      kind: 'runtime-host-service-update';
+      json: boolean;
+      framed?: true;
+      clientDataRoot?: string;
+      expectedTarget: RuntimeHostManagedServiceTarget;
+      allowInterruptActiveTasks?: true;
     }
   | {
       kind: 'runtime-host-managed-deployment-cleanup';
@@ -225,18 +234,39 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     action !== 'start' &&
     action !== 'stop' &&
     action !== 'restart' &&
+    action !== 'retire' &&
+    action !== 'update' &&
     action !== 'logs' &&
     action !== 'uninstall'
   ) {
     return error(
       action
         ? `Unexpected runtime-host service command: ${action}`
-        : 'runtime-host service requires install, status, start, stop, restart, logs, or uninstall',
+        : 'runtime-host service requires install, status, start, stop, restart, retire, update, logs, or uninstall',
     );
   }
 
   let retainManagedDeployment = false;
+  let allowInterruptActiveTasks = false;
   let clientDataRoot: string | undefined;
+  const flagOptions: Readonly<Record<string, () => void | RuntimeHostCliError>> =
+    action === 'uninstall'
+      ? {
+          '--retain-managed-deployment': () => {
+            if (retainManagedDeployment) return error('Duplicate --retain-managed-deployment');
+            retainManagedDeployment = true;
+          },
+        }
+      : action === 'retire' || action === 'update'
+        ? {
+            '--allow-interrupt-active-tasks': () => {
+              if (allowInterruptActiveTasks) {
+                return error('Duplicate --allow-interrupt-active-tasks');
+              }
+              allowInterruptActiveTasks = true;
+            },
+          }
+        : {};
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: action === 'install',
     allowFramed: true,
@@ -247,24 +277,29 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
         clientDataRoot = value;
       },
     },
-    ...(action === 'uninstall'
-      ? {
-          flagOptions: {
-            '--retain-managed-deployment': () => {
-              if (retainManagedDeployment) return error('Duplicate --retain-managed-deployment');
-              retainManagedDeployment = true;
-            },
-          },
-        }
-      : {}),
+    flagOptions,
   });
   if ('kind' in options) return options;
+  if ((action === 'retire' || action === 'update') && !options.expectedTarget) {
+    return error(`runtime-host service ${action} requires an expected target`);
+  }
+  if (action === 'update') {
+    return {
+      kind: 'runtime-host-service-update',
+      json: options.json,
+      ...(options.framed ? { framed: true } : {}),
+      ...(clientDataRoot ? { clientDataRoot } : {}),
+      expectedTarget: options.expectedTarget!,
+      ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+    };
+  }
   return {
     kind: 'runtime-host-service-manage',
     action,
     ...options,
     ...(clientDataRoot ? { clientDataRoot } : {}),
     ...(retainManagedDeployment ? { retainManagedDeployment: true } : {}),
+    ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
   };
 }
 

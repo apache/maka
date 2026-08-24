@@ -23,105 +23,14 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import type { ActiveToolResultArchiveCandidate } from './active-tool-result-prune.js';
-import type {
-  ArchiveRetrievalMode,
-  ContextBudgetPolicy,
-  HistoryCompactBlock,
-  StaleToolResultArchiveCandidate,
-  SynthesisCacheBlock,
-  SynthesisSourceRef,
-} from './context-budget.js';
+import type { ContextBudgetPolicy } from './context-budget.js';
 import type {
   HistoryCompactCheckpoint,
   HistoryCompactProviderState,
 } from './history-compact-checkpoint.js';
 import type { ModelFactory } from './model-adapter.js';
-import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { ToolResultArchiveCapability } from './tool-result-archive-capability.js';
 
-export interface SynthesisCacheLoadInput {
-  sessionId: string;
-  maxBlocks?: number;
-  maxBytes?: number;
-  maxEstimatedTokens?: number;
-}
-export interface SynthesisCacheLoadResult {
-  blocks: SynthesisCacheBlock[];
-  skipped?: number;
-  skippedReasonCounts?: Record<string, number>;
-  evicted?: number;
-  evictionReasonCounts?: Record<string, number>;
-}
-export interface SynthesisCacheWriteInput {
-  sessionId: string;
-  turnId: string;
-  source: {
-    createdFrom: 'gated_archive_retrieval' | 'eager_archive_retrieval';
-    query: string;
-    hydratedRuntimeEvents: RuntimeEvent[];
-    retrievedArchiveRefs: SynthesisSourceRef[];
-    archiveRetrievalMode: ArchiveRetrievalMode;
-  };
-  limits: {
-    maxBlocks: number;
-    maxBlockEstimatedTokens: number;
-    maxEstimatedTokens: number;
-    charsPerToken: number;
-  };
-  requestShapeHashBefore?: string;
-  requestShapeHashAfter?: string;
-}
-export interface SynthesisCacheWriteResult {
-  blocks: SynthesisCacheBlock[];
-  skipped?: number;
-  skippedReasonCounts?: Record<string, number>;
-}
-export type SynthesisCacheLoader = (
-  input: SynthesisCacheLoadInput,
-) => Promise<SynthesisCacheLoadResult> | SynthesisCacheLoadResult;
-export type SynthesisCacheWriter = (
-  input: SynthesisCacheWriteInput,
-) => Promise<SynthesisCacheWriteResult | void> | SynthesisCacheWriteResult | void;
-
-export interface HistoryCompactLoadInput {
-  sessionId: string;
-  maxBlocks?: number;
-  maxBytes?: number;
-  maxEstimatedTokens?: number;
-}
-export interface HistoryCompactLoadResult {
-  blocks: HistoryCompactBlock[];
-  skipped?: number;
-  skippedReasonCounts?: Record<string, number>;
-}
-export interface HistoryCompactWriteInput {
-  sessionId: string;
-  turnId: string;
-  source: {
-    draftBlock: HistoryCompactBlock;
-    foldedRuntimeEvents: RuntimeEvent[];
-  };
-  limits: {
-    maxBlocks: number;
-    maxBlockEstimatedTokens: number;
-    maxEstimatedTokens: number;
-    charsPerToken: number;
-  };
-  requestShapeHashBefore?: string;
-  requestShapeHashAfter?: string;
-  abortSignal?: AbortSignal;
-}
-export interface HistoryCompactWriteResult {
-  blocks: HistoryCompactBlock[];
-  skipped?: number;
-  skippedReasonCounts?: Record<string, number>;
-}
-export type HistoryCompactLoader = (
-  input: HistoryCompactLoadInput,
-) => Promise<HistoryCompactLoadResult> | HistoryCompactLoadResult;
-export type HistoryCompactWriter = (
-  input: HistoryCompactWriteInput,
-) => Promise<HistoryCompactWriteResult | void> | HistoryCompactWriteResult | void;
 export interface HistoryCompactSummaryInput {
   sessionId: string;
   turnId: string;
@@ -174,15 +83,13 @@ export type HistoryCompactCheckpointRecorder = (
   checkpoint: HistoryCompactCheckpoint,
   turnId: string,
 ) => void | Promise<void>;
-export type SemanticCompactBlockRecorder = (block: SemanticCompactBlock) => void | Promise<void>;
-
 /** Provider and persistence capabilities used by the compaction collaborator. */
 export interface AiSdkCompactionCapabilities {
   connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
   modelFactory: ModelFactory;
-  /** Optional prior-history budget. Keeps whole turns to preserve tool-call/result pairs. */
+  /** Optional model-visible context budget and compaction policy. */
   contextBudget?: ContextBudgetPolicy;
   /**
    * The whole tool-result archive authority (#2026): the writer that durably
@@ -192,21 +99,13 @@ export interface AiSdkCompactionCapabilities {
    * it can no longer mean "archives without a way back".
    */
   toolResultArchive?: ToolResultArchiveCapability;
-  /** Optional best-effort source-bearing synthesis cache loader. */
-  loadSynthesisCache?: SynthesisCacheLoader;
-  /** Optional best-effort source-bearing synthesis cache writer. */
-  writeSynthesisCache?: SynthesisCacheWriter;
-  /** Optional best-effort source-bearing history compact block loader. */
-  loadHistoryCompact?: HistoryCompactLoader;
-  /** Optional best-effort source-bearing history compact block writer. */
-  writeHistoryCompact?: HistoryCompactWriter;
-  /** Preferred bounded checkpoint loader. Legacy artifact blocks remain a read-only fallback. */
+  /** Latest checkpoint loader. */
   loadHistoryCompactCheckpoint?: HistoryCompactCheckpointLoader;
   /** Produces a checkpoint value from prior state plus newly evicted RuntimeEvents. */
   summarizeHistoryCompact?: HistoryCompactSummarizer;
   /** Actual route used by the configured history compactor, for durable diagnostics. */
   historyCompactRoute?: HistoryCompactRoute;
-  /** Best-effort durable recorder for accepted checkpoints. */
+  /** Durable recorder for accepted checkpoints; persistence precedes projection. */
   recordHistoryCompactCheckpoint?: HistoryCompactCheckpointRecorder;
   /**
    * Durable read of the given turn's persisted RuntimeEvents from the
@@ -218,6 +117,4 @@ export interface AiSdkCompactionCapabilities {
   loadTurnRuntimeEvents?: (turnId: string) => Promise<RuntimeEvent[]>;
   /** Explicit capability for folding current-run events into session-scoped history. */
   allowMidTurnHistoryCompaction?: boolean;
-  /** Optional best-effort durable recorder for accepted semantic compact blocks. */
-  recordSemanticCompactBlock?: SemanticCompactBlockRecorder;
 }

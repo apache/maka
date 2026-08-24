@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import type { StoredMessage } from '@maka/core/session';
 import {
   EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS,
   EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS,
@@ -48,6 +49,75 @@ describe('SQLite SessionStore', () => {
       );
     } finally {
       await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('folds retired Session and transcript values only on persisted reads', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-persisted-decode-'));
+    const store = createSessionStore(root);
+    const currentMessage = {
+      type: 'tool_result',
+      id: 'result-1',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'call-1',
+      isError: false,
+      content: {
+        kind: 'subagent',
+        childSessionId: 'child-1',
+        agentName: 'Explore',
+        turnId: 'child-turn-1',
+        status: 'completed',
+        permissionMode: 'ask',
+        summary: 'done',
+        artifactIds: [],
+      },
+    } as const satisfies StoredMessage;
+    let sessionId: string;
+    try {
+      const session = await store.create(makeInput({ permissionMode: 'ask' }));
+      sessionId = session.id;
+      await store.appendMessage(session.id, currentMessage);
+      await assert.rejects(
+        () =>
+          store.appendMessage(session.id, {
+            ...currentMessage,
+            id: 'result-retired',
+            content: { ...currentMessage.content, permissionMode: 'execute' },
+          } as unknown as StoredMessage),
+        /Invalid tool result content/,
+      );
+    } finally {
+      await store.close?.();
+    }
+
+    const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      database.exec(`
+        UPDATE session_metadata
+        SET payload_json = json_set(payload_json, '$.permissionMode', 'execute')
+        WHERE session_id = '${sessionId!}';
+        UPDATE session_messages
+        SET record_json = json_set(record_json, '$.content.permissionMode', 'execute')
+        WHERE session_id = '${sessionId!}';
+      `);
+    } finally {
+      database.close();
+    }
+
+    const reopened = createSessionStore(root);
+    try {
+      assert.equal((await reopened.readHeaderSnapshot(sessionId!)).permissionMode, 'ask');
+      const [message] = await reopened.readMessages(sessionId!);
+      assert.equal(
+        message?.type === 'tool_result' && message.content.kind === 'subagent'
+          ? message.content.permissionMode
+          : undefined,
+        'ask',
+      );
+    } finally {
+      await reopened.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -195,6 +265,7 @@ describe('SQLite SessionStore', () => {
       assert.equal(page.kind, 'page');
       if (page.kind !== 'page') assert.fail('expected a catalog page');
       assert.equal(page.records[0]?.summary.lastMessagePreview, 'hello from SQLite');
+      assert.equal(page.records[0]?.activityAt, 10);
     } finally {
       await store.close?.();
     }

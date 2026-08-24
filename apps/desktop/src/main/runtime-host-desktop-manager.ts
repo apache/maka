@@ -65,6 +65,11 @@ export interface RuntimeHostDesktopManager {
     remote: DesktopRuntimeHostCandidateStartInput['remote'],
   ): Promise<void>;
   disable(profileId: string): Promise<void>;
+  waitUntilReady(
+    profileId: string,
+    previousHostEpoch?: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
   setDefaultProfile(profileId: string): void;
   prepareForUpdate(
     allowInterruptActiveTasks: boolean,
@@ -458,6 +463,26 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     return this.#mutateTarget(profileId, () => this.#disable(profileId));
   }
 
+  async waitUntilReady(
+    profileId: string,
+    previousHostEpoch?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const target = this.#requireTarget(profileId);
+    let candidate = await this.#waitForReadyCandidate(
+      this.#requireLifecycle(target),
+      undefined,
+      signal,
+    );
+    while (previousHostEpoch !== undefined && candidate.client.hostEpoch === previousHostEpoch) {
+      candidate = await this.#waitForReadyCandidate(
+        this.#requireLifecycle(target),
+        candidate,
+        signal,
+      );
+    }
+  }
+
   async #disable(profileId: string): Promise<void> {
     if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
       throw new Error('Local Runtime Host cannot be disabled');
@@ -613,7 +638,14 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         return result.candidate;
       }
       if (result.kind === 'upgrade_required' && result.restartable) {
-        const decision = await this.#resolveRestartable(result);
+        const activity = result.handshake?.activity;
+        const decision =
+          activity &&
+          activity.connections === 0 &&
+          activity.activeOperations === 0 &&
+          activity.residencies.length === 0
+            ? 'restart'
+            : await this.#resolveRestartable(result);
         if (decision === 'cancel') {
           throw new RuntimeHostUpgradeCancelledError();
         }

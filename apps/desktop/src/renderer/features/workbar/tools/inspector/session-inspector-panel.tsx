@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useMemo } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
@@ -25,7 +25,6 @@ import { Heading } from '@astryxdesign/core/Heading';
 import { HStack, VStack } from '@astryxdesign/core/Layout';
 import { Section } from '@astryxdesign/core/Section';
 import { Text } from '@astryxdesign/core/Text';
-import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
 import { traceTurnIdentityKey } from '@maka/core/session-trace';
 import { useToast, useUiLocale } from '@maka/ui';
@@ -46,30 +45,6 @@ import {
   type InspectorTurnRow,
 } from './session-inspector-panel-model.js';
 import { useSessionTrace } from './use-session-trace.js';
-import { useWorkbarServices } from '../../services-context.js';
-
-/**
- * The record file is the workspace's operational-state database — the file
- * both trace ledgers live in. Its exact path is resolved once, in main
- * (`app:info.operationalStateDatabasePath` via @maka/storage's
- * `resolveOperationalStateDatabasePath`); the renderer cannot import that
- * package at runtime (it pulls node:sqlite into the browser bundle), and
- * recomputing the path here would create a second authority. The row only
- * displays and copies the value it receives.
- */
-
-/**
- * Split a record-file path for display only: `dir` is everything before the
- * last separator (both platform separators, since the path came from main and
- * may be POSIX or Windows), `name` is the filename. The name is never
- * truncated by the row's ellipsis; the dir is. The full path is not rebuilt
- * here — the row shows exactly the parts of the value it received.
- */
-function splitRecordFileDisplayPath(path: string): { dir: string; name: string } {
-  const separatorIndex = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
-  if (separatorIndex === -1) return { dir: '', name: path };
-  return { dir: path.slice(0, separatorIndex + 1), name: path.slice(separatorIndex + 1) };
-}
 
 /**
  * Per-session trace (#1625), read top to bottom rather than through a
@@ -87,7 +62,6 @@ function splitRecordFileDisplayPath(path: string): { dir: string; name: string }
  * paragraph.
  */
 export function SessionInspectorPanel(props: { sessionId: string; active: boolean }) {
-  const { inspector } = useWorkbarServices();
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).inspector;
   const toast = useToast();
@@ -101,42 +75,6 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
     [snapshot.context, snapshot.summary],
   );
 
-  // The record file is a fact about the workspace, not about the session's
-  // activity: it exists whether the trace is empty or not, and it never
-  // changes while the app is running. `app:info` resolves the exact database
-  // path in main (the same value the data-settings row shows), so the row has
-  // no second authority and no separator guessing. Read once on mount —
-  // before the user can open the tab — so the row is already painted when the
-  // trace lands and the banner never shifts; a failure hides the row — it is
-  // auxiliary, and a path that will not load should not masquerade as a trace
-  // that failed to read.
-  const [recordFile, setRecordFile] = useState<string | undefined>();
-  useEffect(() => {
-    if (recordFile !== undefined) return;
-    let mounted = true;
-    void inspector
-      .getRecordFile()
-      .then((path) => {
-        if (mounted) {
-          setRecordFile(path);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      mounted = false;
-    };
-  }, [inspector, recordFile]);
-
-  async function copyRecordFile() {
-    if (!recordFile) return;
-    try {
-      await navigator.clipboard.writeText(recordFile);
-      toast.success(copy.pathCopied);
-    } catch {
-      toast.error(copy.copyFailed, copy.copyFailedDetail);
-    }
-  }
-
   async function copyPricingKey(key: string) {
     try {
       await navigator.clipboard.writeText(key);
@@ -146,11 +84,6 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
     }
   }
 
-  // The path is split for display only — the directory part truncates while
-  // the filename never does, so a narrow panel still says which file the row
-  // is about. The full path stays the tooltip and clipboard value, and the
-  // authoritative string is the one `app:info` returned.
-  const pathParts = recordFile ? splitRecordFileDisplayPath(recordFile) : undefined;
   return (
     <Section
       variant="transparent"
@@ -165,47 +98,6 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
           same 16px on "these are two parts of one block" and "this is a
           different block". */}
       <VStack gap={6} height="100%">
-        {recordFile && pathParts && (
-          <HStack
-            gap={2}
-            vAlign="center"
-            className="maka-inspector-record-file-row"
-            data-maka-contract="session-inspector-record-file"
-            data-full-path={recordFile}
-          >
-            <Text type="label" color="secondary" className="maka-inspector-record-file-label">
-              {copy.recordFile}
-            </Text>
-            <Tooltip content={recordFile}>
-              {/* Keyboard-reachable tooltip trigger: the row is one Tab stop,
-                  the tooltip opens on focus-visible and dismisses on Escape,
-                  and the full path never depends on the tooltip alone (it is
-                  the visible filename and the clipboard value too). */}
-              <HStack
-                gap={1}
-                vAlign="center"
-                className="maka-inspector-record-file"
-                tabIndex={0}
-              >
-                <Text type="supporting" className="maka-inspector-record-file-dir">
-                  {pathParts.dir}
-                </Text>
-                <Text type="supporting" className="maka-inspector-record-file-name">
-                  {pathParts.name}
-                </Text>
-              </HStack>
-            </Tooltip>
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<Copy size={ICON_SIZE.control} aria-hidden="true" />}
-              label={copy.copyPath}
-              onClick={() => {
-                void copyRecordFile();
-              }}
-            />
-          </HStack>
-        )}
         {snapshot.error && (
           <Banner
             status="error"
@@ -525,7 +417,7 @@ function InspectorContextSection(props: {
  * Tools are listed by name because that is the only row a reader can act on:
  * "tool definitions ≈ 40%" names nothing to remove.
  */
-function InspectorCompositionSection(props: {
+export function InspectorCompositionSection(props: {
   copy: InspectorCopy;
   state: NonNullable<ReturnType<typeof deriveInspectorOverviewModel>['composition']>;
   formatNumber: (value: number) => string;
@@ -550,10 +442,27 @@ function InspectorCompositionSection(props: {
         <p className="maka-inspector-section-note">{labels.unrecorded}</p>
       ) : (
         <>
+          <div className="maka-inspector-composition-track" aria-hidden="true">
+            {state.composition.parts.map((part) => (
+              <span
+                key={part.kind}
+                className="maka-inspector-composition-band"
+                data-segment={part.kind}
+                style={{ flexGrow: part.estimatedTokens }}
+              />
+            ))}
+          </div>
           <dl className="maka-inspector-grid">
             {state.composition.parts.map((part) => (
               <FactRow
                 key={part.kind}
+                swatch={
+                  <span
+                    className="maka-inspector-composition-swatch"
+                    data-segment={part.kind}
+                    aria-hidden="true"
+                  />
+                }
                 label={labels.part[part.kind]}
                 value={estimate(part.estimatedTokens)}
               />

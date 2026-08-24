@@ -94,6 +94,7 @@ export {
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostElectionDiagnostic,
+  type RuntimeHostSpawnedProcess,
 } from './connect-or-spawn.js';
 export {
   createRuntimeHostCandidateLaunchBarrier,
@@ -110,6 +111,7 @@ export {
   type RuntimeHostCapabilityProviderService,
 } from './capability-provider-service.js';
 export { loadOrCreateRuntimeHostClientInstanceId } from './client-instance-identity.js';
+export { projectSessionCatalogSummary } from './session-catalog-summary.js';
 export { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
 export {
   createOAuthPresentationClientProvider,

@@ -108,7 +108,7 @@ Beta 升级不要使用不带 tag 的 `npm update --global maka-agent`：npm 的
 
 ## 设置远程 Runtime Host
 
-在 Linux 上从精确的发布 package 设置持久 remote Runtime Host：
+在 Linux 或 macOS 上从精确的发布 package 设置持久 remote Runtime Host：
 
 ```sh
 npx --yes --package maka-agent@next maka runtime-host setup \
@@ -121,16 +121,16 @@ npx --yes --package maka-agent@next maka runtime-host setup \
 ## 卸载
 
 ```sh
-# 仅限安装过 managed Runtime Host service 的 Linux
+# 仅限安装过 managed Runtime Host service 的 Linux 或 macOS
 npx --yes --package maka-agent@next maka runtime-host service uninstall
 
 # 如果曾全局安装 Maka
 npm uninstall --global maka-agent
 ```
 
-先删除 managed service，再卸载 npm 包，避免 systemd 留下指向已删除 CLI 的 unit。这两个命令
-都不会删除模型连接、凭证、会话或 Artifact。它们仍保留在发布版 CLI 与 Desktop
-共用的 profile 中：
+先删除 managed service，再卸载 npm 包，避免 OS service manager 留下指向已删除 CLI 的
+service。这两个命令都不会删除模型连接、凭证、会话或 Artifact。它们仍保留在发布版 CLI 与
+Desktop 共用的 profile 中：
 
 | 平台 | Profile 目录 |
 | --- | --- |

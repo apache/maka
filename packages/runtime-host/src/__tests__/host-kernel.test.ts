@@ -522,7 +522,16 @@ describe('non-serving Runtime Host kernel', () => {
                 exited:
                   launches === 1
                     ? new Promise((resolve) => {
-                        setTimeout(() => resolve({ code: 2, signal: null }), 25);
+                        setTimeout(
+                          () =>
+                            resolve({
+                              code: 2,
+                              signal: null,
+                              stderr: '',
+                              stderrTruncated: false,
+                            }),
+                          25,
+                        );
                       })
                     : new Promise<never>(() => undefined),
               }),
@@ -648,7 +657,12 @@ describe('non-serving Runtime Host kernel', () => {
               return {
                 spawned: Promise.resolve({
                   pid: process.pid,
-                  exited: Promise.resolve({ code: 2, signal: null }),
+                  exited: Promise.resolve({
+                    code: 2,
+                    signal: null,
+                    stderr: '',
+                    stderrTruncated: false,
+                  }),
                   startupFailure: new Promise((resolve) => {
                     reportBlocker = resolve;
                   }),
@@ -668,7 +682,10 @@ describe('non-serving Runtime Host kernel', () => {
 
       assert.equal(result.kind, 'connected');
       assert.ok(launches >= 2);
-      if (result.kind === 'connected') await result.connection.close();
+      if (result.kind === 'connected') {
+        assert.equal(result.spawnedProcess?.pid, result.registration.pid);
+        await result.connection.close();
+      }
     });
   });
 
@@ -731,14 +748,6 @@ describe('non-serving Runtime Host kernel', () => {
       assert.equal(connected.kind, 'connected');
       if (connected.kind !== 'connected') return;
       assert.equal(connected.registration.lifecycleMode, 'service');
-      await assert.rejects(
-        connected.connection.request('host.upgrade.prepare', {
-          expectedHostEpoch: connected.connection.hostEpoch,
-          allowInterruptActiveTasks: false,
-        }),
-        (error: unknown) =>
-          error instanceof RuntimeHostOperationError && error.code === 'operation_unavailable',
-      );
       await connected.connection.close();
 
       const incompatible = await connectOrSpawnRuntimeHost({
@@ -1025,6 +1034,35 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('local owner can prepare a managed service Host for retirement', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const host = await RuntimeHostKernel.start({
+        owner,
+        lifecycleMode: 'service',
+        composition: KERNEL_COMPOSITION,
+      });
+      const connected = await retryConnect(paths, CURRENT_PROTOCOL);
+      assert.equal(connected.kind, 'connected');
+      if (connected.kind !== 'connected') return;
+
+      assert.deepEqual(
+        await connected.connection.request('host.upgrade.prepare', {
+          expectedHostEpoch: host.hostEpoch,
+          allowInterruptActiveTasks: false,
+        }),
+        { kind: 'prepared', pid: process.pid },
+      );
+      await host.closed;
+      assert.equal(host.shutdownReason, 'retirement');
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successor);
+      await successor?.close();
+    });
+  });
+
   test('an explicit generation takeover drains only the exact unobserved ephemeral Host', async () => {
     await withHostPaths(async (paths) => {
       const candidate = await startTestRuntimeHostCandidate(paths, {
@@ -1094,6 +1132,98 @@ describe('non-serving Runtime Host kernel', () => {
         await attached.connection.close();
       }
       await replacement.host.close();
+    });
+  });
+
+  test('does not take over an idle-looking Host with a residency acquired after discovery', async () => {
+    await withHostPaths(async (paths) => {
+      let context: RuntimeHostCompositionContext | undefined;
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const host = await RuntimeHostKernel.start({
+        owner,
+        generation: 'desktop-old',
+        idleGraceMs: 10_000,
+        composition: defineInteractiveRuntimeHostComposition(async (value) => {
+          context = value;
+          return testComposition();
+        }),
+      });
+
+      const discovered = await connectRuntimeHost({
+        rootPath: paths.root,
+        protocol: CURRENT_PROTOCOL,
+        generation: 'desktop-new',
+      });
+      assert.equal(discovered.kind, 'upgrade_required');
+      if (discovered.kind !== 'upgrade_required') return;
+      assert.equal(discovered.restartable, true);
+
+      const residency = context?.acquireResidency('late-activity');
+      assert.ok(residency);
+      const takeover = await connectRuntimeHost({
+        rootPath: paths.root,
+        protocol: CURRENT_PROTOCOL,
+        generation: 'desktop-new',
+        takeoverHostEpoch: host.hostEpoch,
+      });
+      assert.equal(takeover.kind, 'upgrade_required');
+      if (takeover.kind === 'upgrade_required') {
+        assert.equal(takeover.restartable, false);
+        assert.equal(takeover.handshake?.activity?.residencies.length, 1);
+      }
+      assert.equal(host.state, 'ready');
+      residency?.release();
+      await host.close();
+    });
+  });
+
+  test('does not take over a generation-mismatched Host before it is ready', async () => {
+    await withHostPaths(async (paths) => {
+      let releaseRecovery!: () => void;
+      const recovery = new Promise<void>((resolve) => {
+        releaseRecovery = resolve;
+      });
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      const hostPromise = RuntimeHostKernel.start({
+        owner,
+        generation: 'desktop-old',
+        idleGraceMs: 10_000,
+        composition: defineInteractiveRuntimeHostComposition(async () => ({
+          ...testComposition(),
+          async recover() {
+            await recovery;
+          },
+        })),
+      });
+
+      let takeover = await connectRuntimeHost({
+        rootPath: paths.root,
+        protocol: CURRENT_PROTOCOL,
+        generation: 'desktop-new',
+      });
+      while (takeover.kind === 'unavailable' && takeover.reason === 'not_registered') {
+        await sleep(10);
+        takeover = await connectRuntimeHost({
+          rootPath: paths.root,
+          protocol: CURRENT_PROTOCOL,
+          generation: 'desktop-new',
+        });
+      }
+      assert.equal(takeover.kind, 'upgrade_required');
+      if (takeover.kind === 'upgrade_required') {
+        assert.equal(takeover.restartable, false);
+        assert.equal(takeover.handshake?.state, 'recovering');
+      }
+      releaseRecovery();
+      const host = await hostPromise;
+      await host.close();
+      await sleep(100);
     });
   });
 
@@ -1653,6 +1783,28 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('a detached Candidate survives writing stderr after its launcher exits', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const markerPath = join(paths.base, 'stderr-after-launcher-exit');
+      const launcher = paths.resources.trackChild(
+        fork(
+          new URL('./fixtures/detached-launcher.js', import.meta.url),
+          [paths.root, capability.rootId, markerPath],
+          { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+        ),
+      );
+      const launchedPid = paths.resources.trackPid(await waitForLaunch(launcher));
+      await waitForExit(launcher);
+
+      assert.equal(await waitForFileText(markerPath), 'alive');
+      assert.equal(isProcessAlive(launchedPid), true);
+      terminateProcess(launchedPid);
+      await waitForProcessExit(launchedPid);
+      paths.resources.forgetPid(launchedPid);
+    });
+  });
+
   test('an Electron Client using the real Candidate launcher survives its parent process', async () => {
     const electronPath = require('electron') as string;
     await withHostPaths(async (paths) => {
@@ -2061,7 +2213,6 @@ describe('non-serving Runtime Host kernel', () => {
         assert.equal(result.diagnostic.sawEndpointConnected, true);
         assert.ok(result.diagnostic.observations.deadlineElapsed >= 1);
         assert.equal(result.diagnostic.lastRegistration?.pid, attempt.pid);
-        assert.equal(result.diagnostic.lastRegistration?.state, 'ready');
         assert.equal(launchCount, 0);
       } finally {
         if (stopped) process.kill(attempt.pid, 'SIGCONT');
@@ -2732,8 +2883,50 @@ describe('non-serving Runtime Host kernel', () => {
       assert.ok(attempt.exited);
       assert.deepEqual(
         await withTimeout(attempt.exited, 2_000, 'detached Candidate did not exit'),
-        { code: 1, signal: null },
+        { code: 1, signal: null, stderr: '', stderrTruncated: false },
       );
+    });
+  });
+
+  test('detached launcher preserves a bounded stderr tail with process exit evidence', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const attempt = await launchDetachedRuntimeHostCandidate({
+        rootPath: paths.root,
+        expectedRootId: capability.rootId,
+        entrypoint: new URL('./fixtures/candidate-stderr-exit.js', import.meta.url),
+      }).spawned;
+      paths.resources.trackPid(attempt.pid);
+      assert.ok(attempt.exited);
+
+      const exit = await withTimeout(attempt.exited, 2_000, 'Candidate exit was not observed');
+      paths.resources.forgetPid(attempt.pid);
+      assert.equal(exit.code, 23);
+      assert.equal(exit.signal, null);
+      assert.equal(exit.stderrTruncated, true);
+      assert.ok(Buffer.byteLength(exit.stderr, 'utf8') <= 4 * 1024);
+      assert.match(exit.stderr, /token=fixture-secret/);
+    });
+  });
+
+  test('detached launcher does not mark an exact-limit stderr payload as truncated', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const attempt = await launchDetachedRuntimeHostCandidate({
+        rootPath: paths.root,
+        expectedRootId: capability.rootId,
+        entrypoint: new URL('./fixtures/candidate-stderr-exit.js', import.meta.url),
+        env: { MAKA_TEST_STDERR_EXACT_LIMIT: '1' },
+      }).spawned;
+      paths.resources.trackPid(attempt.pid);
+      assert.ok(attempt.exited);
+
+      const exit = await withTimeout(attempt.exited, 2_000, 'Candidate exit was not observed');
+      paths.resources.forgetPid(attempt.pid);
+      assert.equal(exit.code, 24);
+      assert.equal(exit.signal, null);
+      assert.equal(exit.stderrTruncated, false);
+      assert.equal(Buffer.byteLength(exit.stderr, 'utf8'), 4 * 1024);
     });
   });
 
@@ -3248,6 +3441,16 @@ function waitForChildExitResult(
 function waitForExit(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   return new Promise((resolve) => child.once('exit', () => resolve()));
+}
+
+async function waitForFileText(path: string, timeoutMs = 5_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await readFile(path, 'utf8').catch(() => undefined);
+    if (value !== undefined) return value;
+    await sleep(20);
+  }
+  throw new Error(`File was not written before timeout: ${path}`);
 }
 
 function waitForSuccessfulExit(child: ChildProcess, label: string): Promise<void> {

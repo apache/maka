@@ -193,6 +193,31 @@ describe("steering timeline", () => {
 });
 
 describe("materializeChat message metadata", () => {
+  test("localizes visible system notes", () => {
+    const messages: StoredMessage[] = [
+      {
+        type: "system_note",
+        id: "note-1",
+        turnId: "t1",
+        ts: 1,
+        kind: "context_compacted",
+      },
+    ];
+
+    assert.equal(
+      materializeChat(messages, "en")[0]?.text,
+      "Context compacted to keep this session within the model window.",
+    );
+    assert.equal(
+      materializeChat(messages, "zh")[0]?.text,
+      "已压缩较早的对话内容，以适应模型上下文窗口。",
+    );
+    assert.equal(
+      materializeTurns(messages, "zh")[0]?.notes[0]?.text,
+      "已压缩较早的对话内容，以适应模型上下文窗口。",
+    );
+  });
+
   test("preserves an explicit empty reference projection as the new-format marker", () => {
     const messages: StoredMessage[] = [
       {
@@ -593,26 +618,16 @@ describe("live tool status over persisted", () => {
       },
     ]);
 
-    const turns = overlayLiveTurn(settled, {
+    const live = applyLiveTurnEvent(undefined, {
+      type: "tool_start",
+      id: "start-1",
       turnId: "t1",
-      phase: "streamed",
-      steps: [
-        {
-          stepId: "tool:computer-1",
-          tools: [
-            {
-              toolUseId: "computer-1",
-              toolName: "maka_computer",
-              status: "running",
-              args: undefined,
-              // Runtime Host live events carry lifecycle but not the durable
-              // result payload.
-              result: { kind: "text", text: "" },
-            },
-          ],
-        },
-      ],
+      toolUseId: "computer-1",
+      toolName: "maka_computer",
+      args: undefined,
+      ts: 5,
     });
+    const turns = overlayLiveTurn(settled, live);
 
     const toolGroup = turns
       .find((turn) => turn.turnId === "t1")

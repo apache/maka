@@ -353,6 +353,268 @@ export async function waitForUsableRenderer(
   }
 }
 
+const WINDOW_LAYOUT_EXPRESSION = `(async () => {
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  const rect = (selector) => {
+    const element = document.querySelector(selector);
+    if (!element) return null;
+    const bounds = element.getBoundingClientRect();
+    return {
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+    };
+  };
+  return {
+    devicePixelRatio: window.devicePixelRatio,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    outerWidth: window.outerWidth,
+    outerHeight: window.outerHeight,
+    documentWidth: document.documentElement.clientWidth,
+    documentHeight: document.documentElement.clientHeight,
+    visualViewportWidth: window.visualViewport?.width ?? null,
+    visualViewportHeight: window.visualViewport?.height ?? null,
+    screenAvailWidth: window.screen.availWidth,
+    screenAvailHeight: window.screen.availHeight,
+    html: rect('html'),
+    body: rect('body'),
+    root: rect('#root'),
+    appFrame: rect('.appFrame'),
+  };
+})()`;
+
+function dimensionsMatch(actual, expected, tolerance = 1) {
+  return Number.isFinite(actual) && Math.abs(actual - expected) <= tolerance;
+}
+
+export function rendererLayoutMatchesViewport(layout) {
+  if (!Number.isFinite(layout?.innerWidth) || layout.innerWidth <= 0) return false;
+  if (!Number.isFinite(layout?.innerHeight) || layout.innerHeight <= 0) return false;
+  if (!dimensionsMatch(layout.documentWidth, layout.innerWidth)) return false;
+  if (!dimensionsMatch(layout.documentHeight, layout.innerHeight)) return false;
+  if (!dimensionsMatch(layout.visualViewportWidth, layout.innerWidth)) return false;
+  if (!dimensionsMatch(layout.visualViewportHeight, layout.innerHeight)) return false;
+  for (const bounds of [layout.html, layout.body, layout.root, layout.appFrame]) {
+    if (!bounds) return false;
+    if (!dimensionsMatch(bounds.x, 0) || !dimensionsMatch(bounds.y, 0)) return false;
+    if (!dimensionsMatch(bounds.width, layout.innerWidth)) return false;
+    if (!dimensionsMatch(bounds.height, layout.innerHeight)) return false;
+  }
+  return true;
+}
+
+export function rendererViewportMatchesNativeClient(layout, nativeWindow) {
+  if (!rendererLayoutMatchesViewport(layout)) return false;
+  if (!Number.isFinite(layout.devicePixelRatio) || layout.devicePixelRatio <= 0) return false;
+  if (!Number.isFinite(nativeWindow?.clientWidth) || nativeWindow.clientWidth <= 0) return false;
+  if (!Number.isFinite(nativeWindow?.clientHeight) || nativeWindow.clientHeight <= 0) return false;
+  const widthScale = nativeWindow.clientWidth / layout.innerWidth;
+  const heightScale = nativeWindow.clientHeight / layout.innerHeight;
+  // Electron can report CSS or physical viewport pixels depending on the
+  // packaged app's DPI-awareness mode. Proportional agreement with the native
+  // client is the stable contract; equating that scale to DPR is not.
+  return dimensionsMatch(widthScale, heightScale, 0.01);
+}
+
+function windowsWindowProbeScript(processId, nextWindowState, restoredBounds) {
+  const stateTransition =
+    nextWindowState === undefined
+      ? ''
+      : String.raw`
+[void][MakaNativeWindow]::ShowWindowAsync($handle, ${nextWindowState === 'maximized' ? 3 : 9})
+$expectedZoomed = ${nextWindowState === 'maximized' ? '$true' : '$false'}
+$stateDeadline = (Get-Date).AddSeconds(2)
+while ([MakaNativeWindow]::IsZoomed($handle) -ne $expectedZoomed) {
+  if ((Get-Date) -ge $stateDeadline) {
+    throw 'Packaged Maka did not enter the requested native window state.'
+  }
+  Start-Sleep -Milliseconds 25
+}`;
+  const resizeRestoredWindow = restoredBounds
+    ? String.raw`
+if (-not [MakaNativeWindow]::MoveWindow(
+  $handle,
+  ${restoredBounds.x},
+  ${restoredBounds.y},
+  ${restoredBounds.width},
+  ${restoredBounds.height},
+  $true
+)) {
+  throw 'MoveWindow failed for packaged Maka.'
+}`
+    : '';
+  return String.raw`
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class MakaNativeWindow {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT {
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+  }
+
+  [DllImport("user32.dll")]
+  public static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+
+  [DllImport("user32.dll")]
+  public static extern bool IsZoomed(IntPtr hWnd);
+
+  [DllImport("user32.dll")]
+  public static extern bool MoveWindow(
+    IntPtr hWnd,
+    int x,
+    int y,
+    int width,
+    int height,
+    bool repaint
+  );
+
+  [DllImport("user32.dll")]
+  public static extern bool ShowWindowAsync(IntPtr hWnd, int command);
+}
+'@
+$process = Get-Process -Id ${processId} -ErrorAction Stop
+$process.Refresh()
+$handle = $process.MainWindowHandle
+if ($handle -eq [IntPtr]::Zero) {
+  throw 'Packaged Maka has no main window handle.'
+}
+${stateTransition}
+${resizeRestoredWindow}
+$rect = New-Object MakaNativeWindow+RECT
+if (-not [MakaNativeWindow]::GetClientRect($handle, [ref]$rect)) {
+  throw 'GetClientRect failed for packaged Maka.'
+}
+$windowState = if ([MakaNativeWindow]::IsZoomed($handle)) { 'maximized' } else { 'normal' }
+[pscustomobject]@{
+  windowState = $windowState
+  clientWidth = $rect.Right - $rect.Left
+  clientHeight = $rect.Bottom - $rect.Top
+} | ConvertTo-Json -Compress
+`;
+}
+
+async function readWindowsNativeWindow(processId, nextWindowState, restoredBounds) {
+  const { stdout } = await runCommand(
+    'powershell',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      windowsWindowProbeScript(processId, nextWindowState, restoredBounds),
+    ],
+    { timeoutMs: 10_000 },
+  );
+  const json = stdout.trim().split(/\r?\n/u).at(-1);
+  if (!json) throw new Error('Windows native window probe returned no state.');
+  return JSON.parse(json);
+}
+
+async function captureWindowLayout(rendererUrl, processId) {
+  const [nativeWindow, layout] = await Promise.all([
+    readWindowsNativeWindow(processId),
+    evaluateInRenderer(rendererUrl, WINDOW_LAYOUT_EXPRESSION, {
+      awaitPromise: true,
+      timeoutMs: 10_000,
+    }),
+  ]);
+  return { nativeWindow, layout };
+}
+
+async function waitForWindowLayout(
+  rendererUrl,
+  child,
+  expectedWindowState,
+  { timeoutMs = 30_000 } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let observed;
+  let lastError;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(`Packaged Maka exited during the ${expectedWindowState} transition.`);
+    }
+    try {
+      observed = await captureWindowLayout(rendererUrl, child.pid);
+      lastError = undefined;
+      if (
+        observed.nativeWindow?.windowState === expectedWindowState &&
+        rendererViewportMatchesNativeClient(observed.layout, observed.nativeWindow)
+      ) {
+        return observed;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(250);
+  }
+  throw new Error(
+    `Packaged renderer did not settle in ${expectedWindowState} state within ${timeoutMs}ms: ${
+      lastError ? lastError.message : JSON.stringify(observed)
+    }`,
+  );
+}
+
+export async function exercisePackagedRendererMaximizeRestore(rendererTarget, child) {
+  const rendererUrl = rendererTarget.webSocketDebuggerUrl;
+  await readWindowsNativeWindow(child.pid, 'normal', {
+    x: 80,
+    y: 60,
+    width: 800,
+    height: 600,
+  });
+  const restored = await waitForWindowLayout(rendererUrl, child, 'normal');
+
+  await readWindowsNativeWindow(child.pid, 'maximized');
+  const maximized = await waitForWindowLayout(rendererUrl, child, 'maximized');
+
+  await readWindowsNativeWindow(child.pid, 'normal');
+  const restoredAgain = await waitForWindowLayout(rendererUrl, child, 'normal');
+
+  const restoredClient = restored.nativeWindow;
+  const maximizedClient = maximized.nativeWindow;
+  const restoredAgainClient = restoredAgain.nativeWindow;
+  if (
+    maximizedClient.clientWidth < restoredClient.clientWidth ||
+    maximizedClient.clientHeight < restoredClient.clientHeight ||
+    (maximizedClient.clientWidth === restoredClient.clientWidth &&
+      maximizedClient.clientHeight === restoredClient.clientHeight)
+  ) {
+    throw new Error(
+      `Packaged Maka maximize smoke did not grow the native client: ${JSON.stringify({
+        restored: restoredClient,
+        maximized: maximizedClient,
+      })}`,
+    );
+  }
+  if (
+    !dimensionsMatch(restoredAgainClient.clientWidth, restoredClient.clientWidth, 2) ||
+    !dimensionsMatch(restoredAgainClient.clientHeight, restoredClient.clientHeight, 2)
+  ) {
+    throw new Error(
+      `Packaged Maka did not restore its original native client size: ${JSON.stringify({
+        restored: restoredClient,
+        restoredAgain: restoredAgainClient,
+      })}`,
+    );
+  }
+
+  console.log(
+    `[packaged-renderer] window transition: ${JSON.stringify({
+      restored,
+      maximized,
+      restoredAgain,
+    })}`,
+  );
+}
+
 export async function stopChild(child) {
   if (child.exitCode !== null) return;
   child.kill('SIGTERM');
@@ -428,7 +690,10 @@ export function isolatedUserEnv(homeDirectory, { temporaryDirectory = homeDirect
   };
 }
 
-export async function smokePackagedRenderer(executable, { workingDirectory } = {}) {
+export async function smokePackagedRenderer(
+  executable,
+  { workingDirectory, verifyMaximizeRestore = false } = {},
+) {
   const home = join(workingDirectory, 'home');
   const userData = join(workingDirectory, 'user-data');
   const userEnv = isolatedUserEnv(home);
@@ -459,6 +724,9 @@ export async function smokePackagedRenderer(executable, { workingDirectory } = {
     const port = await waitForDevToolsPort(child);
     const target = await findRendererTarget(port, child);
     await waitForUsableRenderer(target.webSocketDebuggerUrl, child);
+    if (verifyMaximizeRestore) {
+      await exercisePackagedRendererMaximizeRestore(target, child);
+    }
   } catch (error) {
     throw new Error(`${error.message}${stderr.trim() ? `\n${stderr.trim()}` : ''}`);
   } finally {

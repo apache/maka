@@ -20,6 +20,7 @@
 import {
   decodeAgentRunEvent as decodeCanonicalAgentRunEvent,
   decodeAgentRunHeader as decodeCanonicalAgentRunHeader,
+  decodePersistedAgentRunHeader,
   type AgentRunEvent,
   type AgentRunHeader,
 } from '@maka/core/agent-run';
@@ -29,16 +30,22 @@ import {
   type RuntimeEvent,
 } from '@maka/core/runtime-event';
 
-import { decodeStoredMessage } from '@maka/core/session';
+import {
+  decodeStoredMessage as decodePersistedStoredMessage,
+  type StoredMessage,
+} from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 
-export { decodeStoredMessage };
+export function decodeStoredMessage(value: unknown): StoredMessage {
+  return decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
+}
 
 export function decodeAgentRunHeader(
   value: unknown,
   expected: { sessionId: string; runId: string },
 ): AgentRunHeader {
   try {
-    const header = decodeCanonicalAgentRunHeader(value);
+    const header = decodePersistedAgentRunHeader(markPersisted<AgentRunHeader>(value));
     if (header.sessionId !== expected.sessionId || header.runId !== expected.runId) {
       throw new Error('AgentRun header identity does not match its path');
     }
@@ -48,6 +55,17 @@ export function decodeAgentRunHeader(
       cause: error,
     });
   }
+}
+
+export function decodeCurrentAgentRunHeader(
+  value: unknown,
+  expected: { sessionId: string; runId: string },
+): AgentRunHeader {
+  const header = decodeCanonicalAgentRunHeader(value);
+  if (header.sessionId !== expected.sessionId || header.runId !== expected.runId) {
+    throw new Error('AgentRun header identity does not match its path');
+  }
+  return header;
 }
 
 export function decodeAgentRunEvent(

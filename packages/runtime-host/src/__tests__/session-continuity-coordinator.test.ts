@@ -404,7 +404,7 @@ test('detached canonical refreshes coalesce before Store I/O', async () => {
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
-  projection = canonical({ lastUsedAt: 2 });
+  projection = canonical({ metadataRevision: 2 });
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
   await refreshEntered.promise;
@@ -433,18 +433,17 @@ test('in-flight canonical refresh observes an invalidation after its first read'
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
-  const stale = canonical({ lastUsedAt: 2 });
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
   await waitFor(() => reads === 2);
-  firstRefreshRead.resolve(stale);
-  projection = canonical({ lastUsedAt: 3 });
+  firstRefreshRead.resolve(canonical({ metadataRevision: 2 }));
+  projection = canonical({ metadataRevision: 3 });
   coordinator.enqueueCanonicalRefresh(SESSION_ID);
 
   await waitFor(() => reads === 3 && sink.frames.length === 2);
   assert.deepEqual(
     sink.frames.map((frame) =>
       frame.kind === 'subscription.session_projection'
-        ? frame.snapshot.session.lastUsedAt
+        ? frame.snapshot.session.metadataRevision
         : undefined,
     ),
     [2, 3],
@@ -1872,6 +1871,46 @@ test('publishes only the minimal sandbox failure reason from a tool result', asy
   coordinator.close();
 });
 
+test('publishes only the bounded shell-run correlation from poll args', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+  const ref = 'maka://runtime/background-tasks/bg-1';
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_start',
+    id: 'start-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    toolName: 'Read',
+    args: { ref, unrelated: 'not published' },
+  });
+  await waitFor(() => sink.frames.length === 1);
+
+  const [frame] = sink.frames;
+  assert.equal(frame?.kind, 'subscription.session_event');
+  if (frame?.kind !== 'subscription.session_event') return;
+  assert.deepEqual(frame.event, {
+    type: 'tool_start',
+    id: 'start-1',
+    turnId: 'turn-1',
+    ts: 2,
+    toolUseId: 'tool-1',
+    toolName: 'Read',
+    shellRunRef: ref,
+  });
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
 class RecordingSink implements SessionContinuityFrameSink {
   readonly frames: SubscriptionFrame[] = [];
 
@@ -2013,7 +2052,7 @@ function connectionContext(connectionId: string): ConnectionContext {
 
 function canonical(
   overrides: {
-    lastUsedAt?: number;
+    metadataRevision?: number;
     rootTurn?: CanonicalSessionProjection['rootTurn'];
     interactions?: CanonicalSessionProjection['interactions'];
     queue?: CanonicalSessionProjection['queue'];
@@ -2022,10 +2061,9 @@ function canonical(
   return {
     session: {
       sessionId: SESSION_ID,
-      metadataRevision: 1,
+      metadataRevision: overrides.metadataRevision ?? 1,
       status: 'active',
       createdAt: 1,
-      lastUsedAt: overrides.lastUsedAt ?? 1,
       isArchived: false,
     },
     rootTurn:

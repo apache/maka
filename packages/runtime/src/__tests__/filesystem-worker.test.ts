@@ -477,7 +477,7 @@ describe('filesystem worker operations', () => {
     assert.equal(await readFile(target, 'utf8'), 'external');
   });
 
-  test('omits the diff when the content is too large to diff cheaply', async () => {
+  test('returns a localized diff for a small Edit in a large file', async () => {
     const root = await temporaryDirectory('maka-worker-huge-');
     const target = join(root, 'huge.ts');
     const before = Array.from({ length: 900 }, (_, i) => `const v${i} = ${i};`).join('\n') + '\n';
@@ -499,7 +499,34 @@ describe('filesystem worker operations', () => {
     assert.ok(response.ok);
     assert.equal(response.result.kind, 'edit');
     if (response.result.kind !== 'edit') return;
+    assert.match(response.result.diff ?? '', /-const v0 = 0;/);
+    assert.match(response.result.diff ?? '', /\+const v0 = -1;/);
+  });
+
+  test('omits an oversized Edit diff while still applying the replacement', async () => {
+    const root = await temporaryDirectory('maka-worker-large-replacement-');
+    const target = join(root, 'large.ts');
+    await writeFile(target, 'const value = 1;\n', 'utf8');
+    const replacement = Array.from({ length: 900 }, (_, i) => `const value${i} = ${i};`).join('\n');
+
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        {
+          kind: 'edit',
+          cwd: root,
+          path: target,
+          oldString: 'const value = 1;',
+          newString: replacement,
+        },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+      ),
+    );
+
+    assert.ok(response.ok);
+    assert.equal(response.result.kind, 'edit');
+    if (response.result.kind !== 'edit') return;
     assert.equal(response.result.diff, undefined);
+    assert.equal(await readFile(target, 'utf8'), `${replacement}\n`);
   });
 
   test('omits the diff when FormatJson leaves the file unchanged', async () => {

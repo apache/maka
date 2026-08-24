@@ -205,6 +205,18 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
+  test('publishes a new compatibility epoch for provider capacity retry progress', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 41);
+  });
+
+  test('publishes a new compatibility epoch for shell-run poll correlation', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 42);
+  });
+
+  test('publishes a new compatibility epoch for the retired Session timestamp', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 43);
+  });
+
   test('selects the highest mutually supported protocol and rejects a gap', () => {
     assert.equal(negotiateProtocol({ min: 0, max: 0 }, { min: 0, max: 0 }), 0);
     assert.equal(negotiateProtocol({ min: 1, max: 3 }, { min: 2, max: 4 }), 3);
@@ -962,6 +974,71 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(decodeClientFrame(submit), submit);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);
+    const entryRetract = {
+      requestId: 'entry-retract-request-1',
+      operation: 'queue.entry.retract' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        retractId: 'retract-2',
+      },
+    };
+    const entryPromote = {
+      requestId: 'entry-promote-request-1',
+      operation: 'queue.entry.promote' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        entryId: 'entry-1',
+        promoteId: 'promote-1',
+      },
+    };
+    const entriesReorder = {
+      requestId: 'entries-reorder-request-1',
+      operation: 'queue.entries.reorder' as const,
+      input: {
+        originHostEpoch: 'epoch-1',
+        sessionId: 'session-1',
+        reorderId: 'reorder-1',
+        entryIds: ['entry-2', 'entry-1'],
+      },
+    };
+    assert.deepEqual(decodeClientFrame(entryRetract), entryRetract);
+    assert.deepEqual(decodeClientFrame(entryPromote), entryPromote);
+    assert.deepEqual(decodeClientFrame(entriesReorder), entriesReorder);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entriesReorder,
+          input: { ...entriesReorder.input, entryIds: ['entry-1', 'entry-1'] },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entriesReorder,
+          input: { ...entriesReorder.input, entryIds: ['not/a/semantic/id'] },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entryRetract,
+          input: { ...entryRetract.input, generation: 1 },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...entryPromote,
+          input: { ...entryPromote.input, entryId: 'not/a/semantic/id' },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeClientFrame({ ...submit, input: { ...submit.input, originHostEpoch: undefined } }),
@@ -1271,6 +1348,30 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+    for (const [operation, requestId] of [
+      ['queue.entry.retract', 'entry-retract-response'],
+      ['queue.entry.promote', 'entry-promote-response'],
+      ['queue.entries.reorder', 'entries-reorder-response'],
+    ] as const) {
+      assert.doesNotThrow(() =>
+        decodeHostFrame({
+          requestId,
+          operation,
+          ok: true,
+          result: { queueRevision: 8 },
+        }),
+      );
+      assert.throws(
+        () =>
+          decodeHostFrame({
+            requestId,
+            operation,
+            ok: true,
+            result: { queueRevision: 8, retracted: [] },
+          }),
+        isInvalidFrame,
+      );
+    }
     const retracted = [retractedMessage()];
     assert.doesNotThrow(() =>
       decodeHostFrame({
@@ -1631,7 +1732,6 @@ function continuitySnapshot(hostEpoch: string) {
       metadataRevision: 1,
       status: 'running' as const,
       createdAt: 1,
-      lastUsedAt: 2,
       isArchived: false,
     },
     projectionRevision: 1,

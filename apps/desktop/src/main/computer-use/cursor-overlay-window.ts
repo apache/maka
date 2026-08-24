@@ -188,6 +188,9 @@ export function cursorOverlayWindowOptions(bounds: Rectangle, preloadPath: strin
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      // This persistent transparent window must keep its real rAF cadence while
+      // unfocused. Idle remains free: the renderer requests no frames at rest.
+      backgroundThrottling: false,
     },
   };
 }
