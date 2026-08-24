@@ -27,6 +27,27 @@ import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
 const EMPTY_SKILLS: InvocableSkillEntry[] = [];
 
 /**
+ * Whether a reloaded projection describes the same Skills as the one on
+ * screen, so an unchanged refresh can keep the array it already published.
+ */
+function invocableSkillListsEqual(
+  current: readonly InvocableSkillEntry[],
+  next: readonly InvocableSkillEntry[],
+): boolean {
+  if (current.length !== next.length) return false;
+  return current.every((skill, index) => {
+    const other = next[index];
+    return (
+      other !== undefined &&
+      skill.ref === other.ref &&
+      skill.id === other.id &&
+      skill.name === other.name &&
+      skill.description === other.description
+    );
+  });
+}
+
+/**
  * Owns the composer mention popup wiring so app-shell.tsx keeps no inline
  * `window.maka` state (app-shell-composer-attachment-owner-contract). Derives
  * the `/` popup's skill list from Runtime's authoritative invocable projection, and
@@ -105,14 +126,21 @@ export function useComposerMentions(options: {
     let requestVersion = 0;
     const refresh = () => {
       const version = ++requestVersion;
-      setCatalog((previous) => ({
-        contextKey,
-        loading: true,
-        // A same-context refresh keeps its settled verdict; a context switch
-        // has nothing settled to hold.
-        settled: previous.contextKey === contextKey ? previous.settled : undefined,
-        skills: [],
-      }));
+      setCatalog((previous) =>
+        previous.contextKey === contextKey
+          ? // A same-context refresh keeps both its settled verdict and the
+            // Skills already on screen. Clearing here is what made an open `/`
+            // menu alternate between its commands-only and commands-plus-skills
+            // geometries on every session or MCP event (#2667). The backend
+            // surface has not changed, so there is nothing to fail closed
+            // against; and a Skill withdrawn inside the one-IPC-round-trip
+            // stale window still fails safely, because selection resolves
+            // through the Runtime resolver that no longer knows it.
+            { ...previous, loading: true }
+          : // A context switch has nothing settled to hold, and its Skills
+            // belong to the surface being left behind.
+            { contextKey, loading: true, settled: undefined, skills: [] },
+      );
       const context = {
         ...(newSessionModel ?? {}),
         collaborationMode: newSessionCollaborationMode ?? 'agent',
@@ -128,12 +156,19 @@ export function useComposerMentions(options: {
       void request.then(
         (next) => {
           if (cancelled || version !== requestVersion) return;
-          setCatalog({
+          setCatalog((previous) => ({
             contextKey,
             loading: false,
             settled: next.length === 0 ? 'empty' : 'populated',
-            skills: next,
-          });
+            // A refresh that changed nothing keeps the previous array
+            // identity, so the composer's trigger memo and the menu-replay
+            // effect stay quiet instead of remounting the popup.
+            skills:
+              previous.contextKey === contextKey &&
+              invocableSkillListsEqual(previous.skills, next)
+                ? previous.skills
+                : [...next],
+          }));
         },
         () => {
           // Fail soft: an unavailable projection leaves `/` with no suggestions.
