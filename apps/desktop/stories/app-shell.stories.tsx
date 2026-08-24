@@ -2512,3 +2512,48 @@ export const RailStaysOnTheVisiblePrompt: Story = {
     ).toBe(true);
   },
 };
+
+// Real path (#3587): an explicit compaction runs as its own host Turn. The
+// transcript shows a live "正在压缩上下文…" row driven by the live Turn snapshot
+// (rootExecutionKind: 'context_compact'), with no assistant content of its own.
+export const ContextCompactionRunning: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'running', streaming: true }}
+      chat={{
+        runningStatus: true,
+        messages: [
+          user('msg-c-1', 'turn-c1', 6, '继续把上下文压缩那个功能实现完。'),
+          assistant('msg-c-2', 'turn-c1', 5, '好的，我先梳理一下现有实现，再动手。'),
+          { type: 'turn_state', id: 'state-c1', turnId: 'turn-c1', ts: NOW - 300_000, status: 'completed', partialOutputRetained: false },
+          { type: 'turn_state', id: 'state-compact', turnId: 'turn-compact', ts: NOW - 2_000, status: 'running', partialOutputRetained: false },
+        ],
+        liveTurn: {
+          turnId: 'turn-compact',
+          phase: 'waiting',
+          steps: [],
+          rootExecutionKind: 'context_compact',
+          startedAt: NOW - 2_000,
+        },
+      }}
+    />
+  ),
+};
+
+// Real path (#3587): the compaction Turn ends. The live row settles into the
+// durable `context_compacted` system note, rendered in transcript order.
+export const ContextCompactionCompacted: Story = {
+  render: () => (
+    <ComposedShell
+      chat={{
+        messages: [
+          user('msg-c-1', 'turn-c1', 6, '继续把上下文压缩那个功能实现完。'),
+          assistant('msg-c-2', 'turn-c1', 5, '好的，我先梳理一下现有实现，再动手。'),
+          { type: 'turn_state', id: 'state-c1', turnId: 'turn-c1', ts: NOW - 300_000, status: 'completed', partialOutputRetained: false },
+          { type: 'system_note', id: 'note-compact', turnId: 'turn-compact', ts: NOW - 1_000, kind: 'context_compacted' },
+          { type: 'turn_state', id: 'state-compact', turnId: 'turn-compact', ts: NOW - 1_000, status: 'completed', partialOutputRetained: false },
+        ],
+      }}
+    />
+  ),
+};

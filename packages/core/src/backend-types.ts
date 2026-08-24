@@ -216,6 +216,7 @@ export type BackendSessionEvent = Exclude<
         | 'message_admission'
         | 'client_capability_request'
         | 'client_capability_decision_ack'
+        | 'context_compaction_started'
         | 'permission_request'
         | 'permission_answer_ack'
         | 'permission_closure_ack'
