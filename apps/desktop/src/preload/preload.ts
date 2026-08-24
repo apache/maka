@@ -3165,18 +3165,20 @@ const makaBridge = {
   },
 } satisfies MakaBridge;
 
-// E2E-only async latches. Real users never get these: the preload mirrors the
+// E2E-only async controls. Real users never get these: the preload mirrors the
 // main process's isolated-E2E gate (startup-context.ts) — MAKA_E2E alone is
 // not enough without the throwaway profile dir. An armed latch holds the next
 // bridge call or an explicitly gated renderer boundary until the test releases
-// it, so Playwright gets a deterministic in-flight window instead of racing
-// near-instant work. The wrappers must be installed BEFORE
+// it, while a settled-call waiter exposes a deterministic completion boundary
+// for work whose visible result may intentionally keep the same DOM identity.
+// The wrappers must be installed BEFORE
 // exposeInMainWorld: the bridge is cloned into the main world at expose time,
 // and the exposed clone is sealed against later patching.
 if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
   type LatchKey = 'newTasks.listInvocableSkills' | 'sessions.list' | 'settings.chunk';
   const gates = new Map<LatchKey, { promise: Promise<void>; oneShot: boolean }>();
   const releases = new Map<LatchKey, { resolve: () => void; reject: (error: Error) => void }>();
+  const invocableSkillsWaiters = new Map<string, Array<() => void>>();
   const waitForLatch = async (key: LatchKey): Promise<void> => {
     const gate = gates.get(key);
     if (!gate) return;
@@ -3198,6 +3200,24 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
     makaBridge.sessions.list.bind(makaBridge.sessions),
     'sessions.list',
   );
+  const listInvocableSkills = makaBridge.skills.listInvocable.bind(makaBridge.skills);
+  makaBridge.skills.listInvocable = async (...args) => {
+    try {
+      return await listInvocableSkills(...args);
+    } finally {
+      const sessionId = args[0];
+      if (sessionId) {
+        const waiters = invocableSkillsWaiters.get(sessionId);
+        const resolve = waiters?.shift();
+        if (waiters?.length === 0) invocableSkillsWaiters.delete(sessionId);
+        if (resolve) {
+          // Let consumers of the bridge promise run their state updates before
+          // the test continues from the observed completion.
+          setTimeout(resolve, 0);
+        }
+      }
+    }
+  };
   contextBridge.exposeInMainWorld('makaE2eLatch', {
     arm(key: LatchKey, options?: { oneShot?: boolean }) {
       let resolve: () => void = () => {};
@@ -3211,6 +3231,13 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
     },
     wait(key: 'settings.chunk') {
       return waitForLatch(key);
+    },
+    waitForInvocableSkillsCall(sessionId: string) {
+      return new Promise<void>((resolve) => {
+        const waiters = invocableSkillsWaiters.get(sessionId) ?? [];
+        waiters.push(resolve);
+        invocableSkillsWaiters.set(sessionId, waiters);
+      });
     },
     release(key: LatchKey) {
       releases.get(key)?.resolve();
