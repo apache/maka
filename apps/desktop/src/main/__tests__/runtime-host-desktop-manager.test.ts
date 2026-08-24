@@ -219,11 +219,51 @@ test('coalesces concurrent retirement intents onto one exact Host request', asyn
   const update = owner.retireOwnedLocalHost('refuse_active_work');
   await exitWaitStarted;
   const quit = owner.retireOwnedLocalHost('interrupt_active_work');
-  assert.equal(quit, update);
   releaseExitWait();
-  await Promise.all([update, quit]);
+  assert.deepEqual(
+    (await Promise.all([update, quit])).map(({ kind }) => kind),
+    ['retired', 'retired'],
+  );
 
   assert.equal(current.prepareRetirementCalls, 1);
+  assert.deepEqual(current.retirementModes, ['refuse_active_work']);
+  await owner.close();
+});
+
+test('reissues a concurrent strong retirement when weak retirement is refused', async () => {
+  let reportWeakPrepare!: () => void;
+  let releaseWeakPrepare!: () => void;
+  const weakPrepareStarted = new Promise<void>((resolve) => {
+    reportWeakPrepare = resolve;
+  });
+  const weakPrepareGate = new Promise<void>((resolve) => {
+    releaseWeakPrepare = resolve;
+  });
+  const current = candidateHarness({
+    activeTasks: true,
+    disconnectOnPrepare: true,
+    onPrepare: async (mode) => {
+      if (mode !== 'refuse_active_work') return;
+      reportWeakPrepare();
+      await weakPrepareGate;
+    },
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+    waitForHostExit: async () => {},
+  });
+
+  const update = owner.retireOwnedLocalHost('refuse_active_work');
+  await weakPrepareStarted;
+  const quit = owner.retireOwnedLocalHost('interrupt_active_work');
+  releaseWeakPrepare();
+
+  assert.deepEqual(await update, { kind: 'active_tasks' });
+  assert.equal((await quit).kind, 'retired');
+  assert.deepEqual(current.retirementModes, [
+    'refuse_active_work',
+    'interrupt_active_work',
+  ]);
   await owner.close();
 });
 
@@ -287,6 +327,28 @@ test('resumes candidate launches when active tasks block the update', async () =
   assert.deepEqual(events, ['pause', 'retire', 'resume']);
   await owner.close();
   assert.equal(events.at(-1), 'release');
+});
+
+test('preserves Host facts when authorized retirement is refused', async () => {
+  const current = candidateHarness({ activeTasks: 'always' });
+  const owner = await startRuntimeHostDesktopManager({
+    rootPath: '/test-root',
+  } as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => ready(current.candidate),
+  });
+
+  await assert.rejects(
+    owner.retireOwnedLocalHost('interrupt_active_work'),
+    (error: unknown) =>
+      error instanceof DesktopLocalHostRetirementError &&
+      error.facts.hostId === 'test-host' &&
+      error.facts.hostEpoch === 'test-host-epoch' &&
+      error.facts.rootPath === '/test-root' &&
+      error.facts.pid === 42 &&
+      error.cause instanceof Error &&
+      error.cause.message === 'Runtime Host refused authorized retirement',
+  );
+  await owner.close();
 });
 
 test('resumes candidate launches when candidate retirement fails', async () => {
@@ -998,13 +1060,13 @@ function candidateHarness(
   options: {
     delayDisconnect?: boolean;
     disconnectOnPrepare?: boolean;
-    activeTasks?: boolean;
+    activeTasks?: boolean | 'always';
     lifecycleMode?: 'ephemeral' | 'service' | 'remote';
     hostId?: string;
     hostEpoch?: string;
     finalizeFailures?: Error[];
     disconnectOnFinalizeFailure?: boolean;
-    onPrepare?: () => void;
+    onPrepare?: (mode: string) => unknown | Promise<unknown>;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -1033,10 +1095,13 @@ function candidateHarness(
         return { pid: 42 };
       },
       async prepareHostRetirement(mode: string) {
-        options.onPrepare?.();
         prepareRetirementCalls += 1;
         retirementModes.push(mode);
-        if (options.activeTasks && mode === 'refuse_active_work') {
+        await options.onPrepare?.(mode);
+        if (
+          (options.activeTasks && mode === 'refuse_active_work') ||
+          options.activeTasks === 'always'
+        ) {
           return { kind: 'active_tasks' as const };
         }
         if (options.disconnectOnPrepare) {
