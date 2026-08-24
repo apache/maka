@@ -45,6 +45,36 @@ const PROVIDER_UNAVAILABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
 const PROVIDER_CAPACITY_CODES: ReadonlySet<string> = new Set(['resource-exhausted']);
 
 /**
+ * Structured provider error identifiers that mean an ACCOUNT-level usage or
+ * billing condition — exhausted credits or a closed plan/quota window —
+ * rather than an invalid credential. Providers disagree on which HTTP status
+ * travels with them (402, 401/403, even 429); the structured code is the
+ * stable evidence, so it outranks every numeric fallback below.
+ */
+const PROVIDER_BILLING_PROVIDER_CODES: ReadonlySet<string> = new Set([
+  'insufficient_quota', // OpenAI & OpenAI-compatible: error.code
+  'insufficient_balance', // DeepSeek: error.code
+  'quota_exceeded', // OpenAI-compatible variants: error.code
+]);
+
+/**
+ * Free-text usage/billing wording that overrides a credential-shaped HTTP
+ * status (401/403): some providers report exhausted plan windows, credits,
+ * or subscriptions through auth-style statuses for validly signed-in users,
+ * and "Authentication failed" would send them to re-authenticate (#2516).
+ * Matched only on that status branch, so genuine throttles keep their
+ * RateLimit path and plain invalid-key / permission messages — which carry
+ * none of this vocabulary — still project to Auth.
+ */
+const USAGE_LIMIT_TEXT_PATTERNS: readonly RegExp[] = [
+  /\bquota\b/i,
+  /usage limit/i,
+  /plan (?:limit|allowance)/i,
+  /(?:credit|balance|allowance)[^.]{0,40}(?:exhaust|reached)|exhaust[^.]{0,20}(?:credit|balance)/i,
+  /subscription/i,
+];
+
+/**
  * A provider failure normalized into classification evidence. classifyError's
  * real input domain is NOT just Error instances: a request-level failure is
  * an AI SDK `APICallError` (provider JSON parsed in `data`, raw in
@@ -632,11 +662,24 @@ function classifyProviderFacts(facts: ProviderErrorFacts): string {
   // Structured provider evidence: the parsed error JSON's code/type is the
   // only unconditional signal for a context overflow.
   if (structuredCodes.some((c) => CONTEXT_OVERFLOW_PROVIDER_CODES.has(c))) return 'ContextLength';
+  if (
+    PROVIDER_BILLING_PROVIDER_CODES.has(normalizedCode) ||
+    structuredCodes.some((c) => PROVIDER_BILLING_PROVIDER_CODES.has(c))
+  ) {
+    return 'ProviderBilling';
+  }
   if (text.includes('abort')) return 'Abort';
   if (statusCode === '402' || code === '402') return 'ProviderBilling';
   if (statusCode === '429' || code === '429') return 'RateLimit';
-  if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403')
+  if (statusCode === '401' || statusCode === '403' || code === '401' || code === '403') {
+    // Credential-shaped statuses can still carry account-level usage
+    // evidence: an exhausted plan/credit window for a validly signed-in
+    // user must not tell them to re-authenticate (#2516).
+    if (USAGE_LIMIT_TEXT_PATTERNS.some((pattern) => pattern.test(text))) {
+      return 'ProviderBilling';
+    }
     return 'Auth';
+  }
   if (statusCode === '413' || code === '413') return 'ContextLength';
   // Free-text overflow relations on the composite text, veto-first inside.
   if (isContextOverflowErrorText(text)) return 'ContextLength';
