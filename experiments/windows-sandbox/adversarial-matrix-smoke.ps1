@@ -63,7 +63,8 @@ function Write-LaunchRequest {
     timeoutMs = 120000
   }
   $path = Join-Path $workRoot "$Name.json"
-  $request | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path -Encoding utf8
+  $requestJson = $request | ConvertTo-Json -Depth 5
+  [IO.File]::WriteAllText($path, $requestJson, [Text.UTF8Encoding]::new($false))
   return $path
 }
 
