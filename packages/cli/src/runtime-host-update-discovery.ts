@@ -56,10 +56,11 @@ export interface RuntimeHostUpdateCandidate {
   readonly compatibility?: number;
 }
 
-type RuntimeHostUpdateCheck = Extract<
+type RuntimeHostUpdateCheckFrame = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result'; action: 'check_update' }
->['updateCheck'];
+>;
+type RuntimeHostUpdateCheck = RuntimeHostUpdateCheckFrame['updateCheck'];
 
 export interface RuntimeHostUpdateCheckCliOptions {
   readonly json: boolean;
@@ -100,7 +101,14 @@ export async function runManagedRuntimeHostUpdateCheckCli(
     );
     const currentVersion = status.service.installedVersion;
     const config = status.service.config;
-    if (!status.service.installed || !currentVersion || !config?.managedDeploymentRoot) {
+    const service = runtimeHostServiceSummary(status);
+    const serviceState = service.state;
+    if (
+      !status.service.installed ||
+      serviceState === 'not_installed' ||
+      !currentVersion ||
+      !config?.managedDeploymentRoot
+    ) {
       throw new RuntimeHostServiceManagerError(
         'not_installed',
         'A Maka-managed Runtime Host service is required to check for updates',
@@ -112,14 +120,13 @@ export async function runManagedRuntimeHostUpdateCheckCli(
       readPackageCompatibility(config.launch.cliPath, currentVersion),
     ]);
     const assessment = assessRuntimeHostUpdate(currentVersion, currentCompatibility, candidate);
-    const frame: RuntimeHostServiceManagementFrame = {
+    const frame: RuntimeHostUpdateCheckFrame = {
       schemaVersion: 1,
       kind: 'result',
       action: 'check_update',
-      service: runtimeHostServiceSummary(status),
+      service: { ...service, state: serviceState, installedVersion: currentVersion },
       updateCheck: {
         selector: options.selector,
-        currentVersion,
         candidate: { version: candidate.version, integrity: candidate.integrity },
         outcome: assessment,
       },
@@ -278,24 +285,25 @@ function runNpmView(args: readonly string[]): Promise<NpmViewResult> {
 }
 
 function writeSuccess(
-  frame: Extract<RuntimeHostServiceManagementFrame, { kind: 'result'; action: 'check_update' }>,
+  frame: RuntimeHostUpdateCheckFrame,
   options: RuntimeHostUpdateCheckCliOptions,
 ): void {
   if (options.framed) process.stdout.write(encodeRuntimeHostServiceManagementFrame(frame));
   else if (options.json) process.stdout.write(`${JSON.stringify({ ...frame, ok: true })}\n`);
-  else process.stdout.write(`${formatRuntimeHostUpdateCheck(frame.updateCheck)}\n`);
+  else process.stdout.write(`${formatRuntimeHostUpdateCheck(frame)}\n`);
 }
 
-export function formatRuntimeHostUpdateCheck(check: RuntimeHostUpdateCheck): string {
+export function formatRuntimeHostUpdateCheck(frame: RuntimeHostUpdateCheckFrame): string {
+  const check = frame.updateCheck;
   if (check.outcome.kind === 'current') {
-    return `Runtime Host ${check.currentVersion} already matches the selected target.`;
+    return `Runtime Host ${frame.service.installedVersion} already matches the selected target.`;
   }
   if (check.outcome.kind === 'unattended_update') {
     return `Runtime Host ${check.candidate.version} is available for unattended update.`;
   }
   switch (check.outcome.reason) {
     case 'target_not_newer':
-      return `Selected Runtime Host ${check.candidate.version} is older than installed ${check.currentVersion}; manual selection is required.`;
+      return `Selected Runtime Host ${check.candidate.version} is older than installed ${frame.service.installedVersion}; manual selection is required.`;
     case 'current_compatibility_unknown':
       return `Runtime Host ${check.candidate.version} requires a manual update because the installed package has no unattended-update compatibility evidence.`;
     case 'target_compatibility_unknown':

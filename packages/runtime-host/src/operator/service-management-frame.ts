@@ -66,7 +66,8 @@ const MANUAL_ACTION_REASONS = [
   'target_compatibility_unknown',
   'compatibility_mismatch',
 ] as const;
-const SERVICE_STATES = ['not_installed', 'stopped', 'starting', 'running', 'failed'] as const;
+const INSTALLED_SERVICE_STATES = ['stopped', 'starting', 'running', 'failed'] as const;
+const SERVICE_STATES = ['not_installed', ...INSTALLED_SERVICE_STATES] as const;
 const OPERATOR_CAPABILITIES = [
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
@@ -93,7 +94,6 @@ const UPDATE_CHECK_SCHEMA = z
         })
         .strict(),
     ]),
-    currentVersion: PRODUCT_RELEASE_VERSION_SCHEMA,
     candidate: z
       .object({
         version: PRODUCT_RELEASE_VERSION_SCHEMA,
@@ -123,22 +123,6 @@ const UPDATE_CHECK_SCHEMA = z
         code: 'custom',
         path: ['candidate', 'version'],
         message: 'Exact update selector and candidate version must match',
-      });
-    }
-    const relation = compareProductReleaseVersions(check.candidate.version, check.currentVersion);
-    const consistent =
-      check.outcome.kind === 'current'
-        ? relation === 0
-        : check.outcome.kind === 'unattended_update'
-          ? relation > 0
-          : check.outcome.reason === 'target_not_newer'
-            ? relation < 0
-            : relation > 0;
-    if (!consistent) {
-      context.addIssue({
-        code: 'custom',
-        path: ['outcome'],
-        message: 'Update outcome must match the version relation',
       });
     }
   });
@@ -177,6 +161,10 @@ const SERVICE_SUMMARY_SCHEMA = z
       .max(64),
   })
   .strict();
+const INSTALLED_SERVICE_SUMMARY_SCHEMA = SERVICE_SUMMARY_SCHEMA.extend({
+  state: z.enum(INSTALLED_SERVICE_STATES),
+  installedVersion: PRODUCT_RELEASE_VERSION_SCHEMA,
+});
 
 const SERVICE_RESULT_COMMON = {
   schemaVersion: z.literal(1),
@@ -202,9 +190,32 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
     .object({
       ...SERVICE_RESULT_COMMON,
       action: z.literal('check_update'),
+      service: INSTALLED_SERVICE_SUMMARY_SCHEMA,
       updateCheck: UPDATE_CHECK_SCHEMA,
     })
-    .strict(),
+    .strict()
+    .superRefine((frame, context) => {
+      const relation = compareProductReleaseVersions(
+        frame.updateCheck.candidate.version,
+        frame.service.installedVersion,
+      );
+      const outcome = frame.updateCheck.outcome;
+      const consistent =
+        outcome.kind === 'current'
+          ? relation === 0
+          : outcome.kind === 'unattended_update'
+            ? relation > 0
+            : outcome.reason === 'target_not_newer'
+              ? relation < 0
+              : relation > 0;
+      if (!consistent) {
+        context.addIssue({
+          code: 'custom',
+          path: ['updateCheck', 'outcome'],
+          message: 'Update outcome must match the installed and candidate versions',
+        });
+      }
+    }),
   z
     .object({
       ...SERVICE_RESULT_COMMON,
