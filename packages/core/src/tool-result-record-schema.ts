@@ -21,7 +21,8 @@ import {
   decodeCanonicalShellToolResultContent,
   isSandboxDenialSignal,
 } from './shell-run-result.js';
-import { decodePersistedPermissionMode } from './permission.js';
+import { decodePersistedPermissionMode, isPermissionMode } from './permission.js';
+import type { PersistedValue } from './persisted-value.js';
 import { isStorageRef, type ToolResultContent } from './events.js';
 import { validateSandboxBoundaryExpansion } from './sandbox-boundary.js';
 import {
@@ -215,21 +216,18 @@ export function decodeCanonicalToolResultContent(value: unknown): ToolResultCont
   if (!isNonShellToolResultContent(value)) {
     throw new Error('Invalid tool result content');
   }
-  return foldRetiredPermissionMode(value);
+  return value;
 }
 
-/**
- * Transcript records written before a permission mode was retired still carry
- * the old spelling. The shape validators accept it on purpose — rejecting would
- * make the Turn unreadable — so canonicalize it here, at the single exit every
- * stored tool result passes through, rather than leaving a value the return
- * type forbids.
- */
-function foldRetiredPermissionMode(content: ToolResultContent): ToolResultContent {
-  if (content.kind !== 'subagent') return content;
-  const permissionMode = decodePersistedPermissionMode(content.permissionMode);
-  if (permissionMode === undefined || permissionMode === content.permissionMode) return content;
-  return { ...content, permissionMode };
+export function decodePersistedToolResultContent(
+  persisted: PersistedValue<ToolResultContent>,
+): ToolResultContent {
+  const value = persisted as unknown;
+  if (!isRecord(value) || value.kind !== 'subagent') {
+    return decodeCanonicalToolResultContent(value);
+  }
+  const permissionMode = decodePersistedPermissionMode(value.permissionMode);
+  return decodeCanonicalToolResultContent({ ...value, permissionMode });
 }
 
 function isNonShellToolResultContent(value: unknown): value is ToolResultContent {
@@ -341,7 +339,7 @@ function hasValidSubagentResultFields(value: Record<string, unknown>): boolean {
     typeof value.agentName === 'string' &&
     typeof value.turnId === 'string' &&
     isOptionalString(value.runId) &&
-    decodePersistedPermissionMode(value.permissionMode) !== undefined &&
+    isPermissionMode(value.permissionMode) &&
     typeof value.summary === 'string' &&
     isStringArray(value.artifactIds) &&
     isOptionalFiniteNumber(value.startedAt) &&

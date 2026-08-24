@@ -149,6 +149,7 @@
   align-items: flex-start;
   justify-content: space-between;
   width: 100%;
+  height: auto;
   padding: 10px 0;
   gap: 16px;
   border: 0;

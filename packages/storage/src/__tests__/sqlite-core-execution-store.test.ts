@@ -67,6 +67,49 @@ describe('SQLite core execution stores', () => {
     });
   });
 
+  test('folds retired AgentRun values only when reading persisted rows', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await assert.rejects(
+        () =>
+          store.createRun({
+            ...runHeader({ runId: 'run-retired', turnId: 'turn-retired' }),
+            permissionMode: 'execute',
+          } as unknown as AgentRunHeader),
+        /Invalid AgentRun header schema/,
+      );
+      store.close?.();
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        const row = database
+          .prepare("SELECT record_json AS recordJson FROM core_agent_runs WHERE run_id = 'run-1'")
+          .get() as { recordJson: string };
+        const retired = JSON.parse(row.recordJson) as Record<string, unknown>;
+        retired.status = 'waiting_permission';
+        retired.permissionMode = 'execute';
+        retired.automationId = 'automation-1';
+        database
+          .prepare("UPDATE core_agent_runs SET record_json = ? WHERE run_id = 'run-1'")
+          .run(JSON.stringify(retired));
+      } finally {
+        database.close();
+      }
+
+      const reopened = createSqliteAgentRunStore(root);
+      try {
+        const decoded = await reopened.readRun('session-1', 'run-1');
+        assert.equal(decoded.status, 'waiting_for_user');
+        assert.equal(decoded.permissionMode, 'ask');
+        assert.equal(decoded.legacyAutomationId, 'automation-1');
+        assert.equal(Object.hasOwn(decoded, 'automationId'), false);
+      } finally {
+        reopened.close?.();
+      }
+    });
+  });
+
   test('advances the model-call high-water index with the authority append', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);

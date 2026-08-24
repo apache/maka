@@ -17,7 +17,12 @@
  * under the License.
  */
 
-import { decodePersistedPermissionMode, type PermissionMode } from './permission.js';
+import {
+  decodePersistedPermissionMode,
+  isPermissionMode,
+  type PermissionMode,
+} from './permission.js';
+import type { PersistedValue } from './persisted-value.js';
 import { isCollaborationMode, type CollaborationMode } from './collaboration.js';
 import {
   isAgentSwarmAuthorizationSource,
@@ -592,7 +597,14 @@ const AGENT_RUN_EVENT_SHAPE = defineObjectShape<AgentRunEvent>()(
   ['message', 'data'],
 );
 
-export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
+const RETIRED_AGENT_RUN_STATUSES: Readonly<Record<string, AgentRunStatus>> = {
+  waiting_permission: 'waiting_for_user',
+};
+
+export function decodePersistedAgentRunHeader(
+  persisted: PersistedValue<AgentRunHeader>,
+): AgentRunHeader {
+  let value = persisted as unknown;
   if (
     isRecord(value) &&
     value.automationId !== undefined &&
@@ -601,25 +613,33 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     const { automationId, ...current } = value;
     value = { ...current, legacyAutomationId: automationId };
   }
+  if (isRecord(value)) {
+    const status =
+      typeof value.status === 'string'
+        ? (RETIRED_AGENT_RUN_STATUSES[value.status] ?? value.status)
+        : value.status;
+    const permissionMode = decodePersistedPermissionMode(value.permissionMode);
+    if (status !== value.status || permissionMode !== value.permissionMode) {
+      value = { ...value, status, permissionMode };
+    }
+  }
+  return decodeAgentRunHeader(value);
+}
+
+export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
   if (!isRecord(value) || !hasExactShape(value, AGENT_RUN_HEADER_SHAPE)) {
     throw new Error('Invalid AgentRun header schema');
   }
-  const status =
-    value.status === 'waiting_permission' ? ('waiting_for_user' as const) : value.status;
-  // Same shape as the status fold above: a run written before a mode was
-  // retired is old, not malformed, so it decodes to the live equivalent
-  // rather than making the run unreadable.
-  const permissionMode = decodePersistedPermissionMode(value.permissionMode);
   const valid =
     typeof value.runId === 'string' &&
     typeof value.sessionId === 'string' &&
     typeof value.turnId === 'string' &&
-    (AGENT_RUN_STATUSES as readonly unknown[]).includes(status) &&
+    (AGENT_RUN_STATUSES as readonly unknown[]).includes(value.status) &&
     isPersistedBackendKind(value.backendKind) &&
     typeof value.llmConnectionSlug === 'string' &&
     typeof value.modelId === 'string' &&
     typeof value.cwd === 'string' &&
-    permissionMode !== undefined &&
+    isPermissionMode(value.permissionMode) &&
     (value.collaborationMode === undefined || isCollaborationMode(value.collaborationMode)) &&
     (value.orchestrationMode === undefined || isOrchestrationMode(value.orchestrationMode)) &&
     (value.orchestrationSource === undefined ||
@@ -663,9 +683,6 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     (value.continuationSource === undefined ||
       isAgentRunContinuationSource(value.continuationSource));
   if (!valid) throw new Error('Invalid AgentRun header schema');
-  if (status !== value.status || permissionMode !== value.permissionMode) {
-    return { ...value, status, permissionMode } as unknown as AgentRunHeader;
-  }
   return value as unknown as AgentRunHeader;
 }
 

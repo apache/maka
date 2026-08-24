@@ -19,6 +19,7 @@
 
 import type { CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
+import { expect, waitFor } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { GitReviewSnapshot } from '@maka/core/git-review';
@@ -422,6 +423,18 @@ const populatedTrace: SessionTrace = {
     oversizedRuns: 0,
     turnsWithFewerModelCallsThanSteps: [],
   },
+};
+
+const narrowTrace: SessionTrace = {
+  ...populatedTrace,
+  turns: populatedTrace.turns.map((turn) =>
+    turn.turnId === 'turn-2'
+      ? {
+          ...turn,
+          failure: { code: 'turn_aborted', message: 'turn was aborted' },
+        }
+      : turn,
+  ),
 };
 
 const populatedContext: ContextDiagnosticsResult = {
@@ -920,6 +933,39 @@ export const SideChat: Story = {
 export const Trace: Story = {
   decorators: [bridge({ trace: populatedTrace, context: populatedContext })],
   render: () => <Workbar tab="inspector" />,
+};
+
+// Real path: resize the right workbar to its 320px floor while a failed turn
+// is visible. The timestamp owns the first row; the failure and measurement
+// share the second without squeezing the failure into a vertical word.
+export const TraceMinimumWidth: Story = {
+  decorators: [bridge({ trace: narrowTrace, context: populatedContext })],
+  render: () => <Workbar tab="inspector" width={320} />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      const failure = canvasElement.querySelector<HTMLElement>(
+        '[data-maka-contract="session-inspector-turn-failed"]',
+      );
+      const turn = failure?.closest<HTMLElement>(
+        '[data-maka-contract="session-inspector-turn"]',
+      );
+      const label = turn?.querySelector<HTMLElement>('.maka-inspector-turn-label');
+      const meta = turn?.querySelector<HTMLElement>('.maka-inspector-turn-meta');
+      expect(failure).not.toBeNull();
+      expect(turn).not.toBeNull();
+      expect(label).not.toBeNull();
+      expect(meta).not.toBeNull();
+      if (!failure || !turn || !label || !meta) return;
+
+      const failureRect = failure.getBoundingClientRect();
+      const labelRect = label.getBoundingClientRect();
+      const metaRect = meta.getBoundingClientRect();
+      expect(failureRect.top).toBeGreaterThan(labelRect.top);
+      expect(Math.abs(failureRect.top - metaRect.top)).toBeLessThanOrEqual(1);
+      expect(failureRect.height).toBeLessThanOrEqual(metaRect.height + 1);
+      expect(turn.scrollWidth).toBeLessThanOrEqual(turn.clientWidth);
+    });
+  },
 };
 
 // Real path: the first bounded page of a longer trace. The continuation control

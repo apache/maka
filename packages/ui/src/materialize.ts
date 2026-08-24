@@ -97,6 +97,7 @@ export interface ToolActivityItem {
    * legacy call with no step association.
    */
   stepId?: string;
+  /** Lifecycle of the tool invocation itself, independent of a returned resource. */
   status: ToolActivityStatus;
   args: unknown;
   result?: ToolResultContent;
@@ -266,15 +267,10 @@ function mergeLiveOverPersisted(
   if (live.args === undefined) {
     merged.args = persisted.args;
   }
-  const liveResultIsEmpty =
-    live.result === undefined ||
-    (live.result.kind === "text" && live.result.text.length === 0);
-  if (persisted.result !== undefined && liveResultIsEmpty) {
-    // Runtime Host represents its deliberately omitted result payload as an
-    // empty text result at the SessionEvent compatibility seam. A transcript
-    // refresh can also win the race with the terminal live event, leaving no
-    // live result at all. In both cases the committed result supplies detail
-    // without taking a newer, meaningful live result away.
+  if (persisted.result !== undefined && live.result === undefined) {
+    // `applyLiveTurnEvent` removes deliberately omitted payloads before this
+    // merge. Only absence asks durable state to fill the result; an explicit
+    // empty result is still meaningful newer evidence.
     merged.result = persisted.result;
   }
   // A settled turn always yields a settled persisted status — materializeTools
@@ -581,15 +577,19 @@ export function foldShellRunUpdates(
       update.result,
       "ui.overlay-shell-run-updates",
     );
+    const acceptedOwnership = merged.result.revision === update.result.revision;
     byToolUseId.set(update.sourceToolCallId, {
       result: merged.result,
-      source:
+      source: acceptedOwnership
+        ? (
         !isActiveShellRunStatus(merged.result.status) ||
         update.ownership.kind === "local"
           ? undefined
           : update.ownership.kind === "source_owned"
             ? "owned"
-            : "unavailable",
+            : "unavailable"
+        )
+        : current?.source,
     });
   }
   return byToolUseId;
@@ -617,10 +617,35 @@ export function applyShellRunOverlayEntry(
     entry.result,
     "ui.overlay-shell-run-update",
   );
-  return merged.changed || tool.shellRunSource !== entry.source
-    ? { ...tool, result: merged.result, shellRunSource: entry.source }
+  const source = merged.result.revision === entry.result.revision
+    ? entry.source
+    : tool.shellRunSource;
+  return merged.changed || tool.shellRunSource !== source
+    ? { ...tool, result: merged.result, shellRunSource: source }
     : tool;
 }
+
+/** Presentation is derived from invocation and resource facts, never persisted as another state. */
+export function toolActivityPresentationStatus(item: ToolActivityItem): ToolActivityStatus {
+  if (item.status === "errored") return "errored";
+  if (item.toolName === "Bash" && item.result?.kind === "shell_run") {
+    return SHELL_RUN_PRESENTATION_STATUS[item.result.status];
+  }
+  return item.status;
+}
+
+const SHELL_RUN_PRESENTATION_STATUS = {
+  starting: "running",
+  running: "running",
+  completed: "completed",
+  cancelled: "interrupted",
+  failed: "errored",
+  timed_out: "errored",
+  orphaned: "errored",
+} as const satisfies Record<
+  Extract<ToolResultContent, { kind: "shell_run" }>["status"],
+  ToolActivityStatus
+>;
 
 /**
  * Group materialized chat + tool items by `turnId` into ordered turns. Items

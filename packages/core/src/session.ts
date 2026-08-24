@@ -42,7 +42,11 @@ import {
 } from './record-schema.js';
 import { isPermissionDecisionFields } from './interaction-record-schema.js';
 import { isTokenUsageFields, type TokenUsageFields } from './usage-record-schema.js';
-import { decodeCanonicalToolResultContent } from './tool-result-record-schema.js';
+import {
+  decodeCanonicalToolResultContent,
+  decodePersistedToolResultContent,
+} from './tool-result-record-schema.js';
+import { markPersisted, type PersistedValue } from './persisted-value.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 
@@ -212,7 +216,6 @@ export interface SessionHeader {
 
   // Lifecycle timestamps
   createdAt: number;
-  lastUsedAt: number;
   lastMessageAt?: number;
 
   // User metadata
@@ -370,6 +373,11 @@ export interface SessionSummary {
   collaborationMode?: CollaborationMode;
   /** Defaults to `default` when absent on legacy summaries. */
   orchestrationMode?: OrchestrationMode;
+}
+
+/** A complete Session catalog row. Its order key is authoritative and never synthesized by clients. */
+export interface SessionCatalogSummary extends SessionSummary {
+  activityAt: number;
 }
 
 export function sessionRevisionFamilyId(
@@ -1019,8 +1027,21 @@ const SYSTEM_NOTE_KINDS = new Set([
   'abort',
 ]);
 
-export function decodeStoredMessage(value: unknown): StoredMessage {
-  const message = decodeStoredMessageContent(value, decodeCanonicalToolResultContent);
+export function decodeCanonicalMessage(value: unknown): StoredMessage {
+  return decodeMessage(value, decodeCanonicalToolResultContent);
+}
+
+export function decodeStoredMessage(persisted: PersistedValue<StoredMessage>): StoredMessage {
+  return decodeMessage(persisted as unknown, (content) =>
+    decodePersistedToolResultContent(markPersisted<ToolResultContent>(content)),
+  );
+}
+
+function decodeMessage(
+  value: unknown,
+  decodeToolResultContent: (content: unknown) => ToolResultContent,
+): StoredMessage {
+  const message = decodeStoredMessageContent(value, decodeToolResultContent);
   if (!isRecord(message)) throw new Error('Invalid stored message schema');
   switch (message.type) {
     case 'user':

@@ -244,10 +244,6 @@ const PREVIEW_PART_CLASSES = {
       "load-tool-title": "maka-load-tool-title",
       // `.maka-load-tool-count`
       "load-tool-count": "maka-load-tool-count",
-      // `.maka-load-tool-tools`
-      "load-tool-tools": "maka-load-tool-tools",
-      // `.maka-load-tool-footer`
-      "load-tool-footer": "maka-load-tool-footer",
 } as const;
 
 type PreviewPart = keyof typeof PREVIEW_PART_CLASSES;

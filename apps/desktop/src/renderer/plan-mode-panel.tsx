@@ -71,7 +71,6 @@ export function usePlanModeState(session: SessionSummary | undefined): PlanModeS
         event.type === 'plan_submitted'
         || event.type === 'complete'
         || event.type === 'abort'
-        || isPlanToolResult(event)
       ) {
         refreshOrReport();
       }
@@ -335,16 +334,6 @@ export function PlanExecutionPanel(props: {
       {planMode.error && <Banner status="error" role="alert" title={planMode.error} />}
     </section>
   );
-}
-
-function isPlanToolResult(event: SessionEvent): boolean {
-  if (event.type !== 'tool_result' || event.content.kind !== 'json') return false;
-  const value = event.content.value;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const kind = (value as { kind?: unknown }).kind;
-  return kind === 'plan_progress_updated'
-    || kind === 'plan_execution_completed'
-    || kind === 'plan_execution_cancelled';
 }
 
 function proposalStatusLabel(

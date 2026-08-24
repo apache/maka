@@ -359,7 +359,6 @@ function testHeader(): SessionHeader {
     workspaceRoot: '/tmp',
     cwd: '/tmp',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,

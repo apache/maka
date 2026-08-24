@@ -20,8 +20,13 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { StoredMessage } from '../session.js';
-import { decodeStoredMessage } from '../session.js';
-import { decodeCanonicalToolResultContent } from '../tool-result-record-schema.js';
+import { decodeCanonicalMessage, decodeStoredMessage } from '../session.js';
+import { markPersisted } from '../persisted-value.js';
+import {
+  decodeCanonicalToolResultContent,
+  decodePersistedToolResultContent,
+} from '../tool-result-record-schema.js';
+import type { ToolResultContent } from '../events.js';
 
 describe('sandbox denial tool result metadata', () => {
   test('accepts a canonical text result carrying a sandbox denial signal', () => {
@@ -35,7 +40,7 @@ describe('sandbox denial tool result metadata', () => {
     } as const;
 
     assert.deepEqual(decodeCanonicalToolResultContent(result), result);
-    assert.deepEqual(toolResultContent(decodeStoredMessage(storedToolResult(result))), result);
+    assert.deepEqual(toolResultContent(decodePersistedMessage(storedToolResult(result))), result);
   });
 
   test('rejects malformed or widened sandbox denial signals', () => {
@@ -70,7 +75,7 @@ describe('sandbox boundary failure tool result metadata', () => {
     } as const;
 
     assert.deepEqual(decodeCanonicalToolResultContent(result), result);
-    assert.deepEqual(toolResultContent(decodeStoredMessage(storedToolResult(result))), result);
+    assert.deepEqual(toolResultContent(decodePersistedMessage(storedToolResult(result))), result);
   });
 
   test('preserves the client capability source for actionable bypass recovery', () => {
@@ -84,7 +89,7 @@ describe('sandbox boundary failure tool result metadata', () => {
     } as const;
 
     assert.deepEqual(decodeCanonicalToolResultContent(result), result);
-    assert.deepEqual(toolResultContent(decodeStoredMessage(storedToolResult(result))), result);
+    assert.deepEqual(toolResultContent(decodePersistedMessage(storedToolResult(result))), result);
   });
 
   test('rejects malformed or widened boundary failure signals', () => {
@@ -120,7 +125,7 @@ describe('uncertain tool outcome metadata', () => {
     } as const;
 
     assert.deepEqual(decodeCanonicalToolResultContent(result), result);
-    assert.deepEqual(toolResultContent(decodeStoredMessage(storedToolResult(result))), result);
+    assert.deepEqual(toolResultContent(decodePersistedMessage(storedToolResult(result))), result);
   });
 
   test('rejects widened or retryable uncertain outcome signals', () => {
@@ -155,16 +160,24 @@ describe('retired permission modes in stored subagent results', () => {
   } as const;
 
   test('folds a legacy mode to its live equivalent instead of returning it verbatim', () => {
-    const decoded = decodeCanonicalToolResultContent(stored);
+    const decoded = decodePersistedToolResultContent(markPersisted<ToolResultContent>(stored));
     assert.equal(decoded.kind === 'subagent' ? decoded.permissionMode : undefined, 'ask');
     assert.deepEqual(decoded, { ...stored, permissionMode: 'ask' });
   });
 
   test('folds through the stored-message decoder as well', () => {
-    assert.deepEqual(toolResultContent(decodeStoredMessage(storedToolResult(stored))), {
+    assert.deepEqual(toolResultContent(decodePersistedMessage(storedToolResult(stored))), {
       ...stored,
       permissionMode: 'ask',
     });
+  });
+
+  test('rejects retired values at canonical tool-result and message boundaries', () => {
+    assert.throws(() => decodeCanonicalToolResultContent(stored), /Invalid tool result content/);
+    assert.throws(
+      () => decodeCanonicalMessage(storedToolResult(stored)),
+      /Invalid tool result content/,
+    );
   });
 
   test('leaves a live mode untouched', () => {
@@ -190,6 +203,10 @@ function storedToolResult(content: unknown) {
     isError: false,
     content,
   };
+}
+
+function decodePersistedMessage(value: unknown): StoredMessage {
+  return decodeStoredMessage(markPersisted<StoredMessage>(value));
 }
 
 function toolResultContent(message: StoredMessage) {

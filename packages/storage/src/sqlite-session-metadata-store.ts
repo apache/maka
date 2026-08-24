@@ -92,8 +92,10 @@ import {
   type SessionHeaderPatch,
   type StoredMessage,
   type SubagentSessionParent,
-  decodeStoredMessage,
+  decodeCanonicalMessage,
+  decodeStoredMessage as decodePersistedStoredMessage,
 } from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 import {
   type AgentGraphIntentAdmissionSnapshot,
   type AgentGraphTimelineMetadataSnapshot,
@@ -110,6 +112,7 @@ import {
 import { type SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   assertSafeSessionId,
+  decodePersistedSessionHeader,
   normalizeSessionHeader,
   SessionNotFoundError,
   type ExternalSessionImportLookupResult,
@@ -144,6 +147,10 @@ const SQLITE_TRANSCRIPT_MESSAGE_LOOKUP_BATCH_SIZE = 256;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_MESSAGES = 1_024;
 const SQLITE_TURN_CONTRIBUTION_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const SQLITE_TURN_LANDMARK_LEGACY_NEIGHBOR_MESSAGES = 32;
+
+function decodeStoredMessage(value: unknown): StoredMessage {
+  return decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
+}
 
 const require = createRequire(import.meta.url);
 const AGENT_GRAPH_CONTROL_DELETE_TABLES = SQLITE_AGENT_GRAPH_CONTROL_TABLES.filter(
@@ -190,6 +197,7 @@ export interface SessionMetadataRecord {
 }
 
 export interface SessionMetadataCatalogRecord extends SessionMetadataRecord {
+  readonly activityAt: number;
   readonly lastMessagePreview?: string;
 }
 
@@ -1039,6 +1047,7 @@ export class SqliteSessionMetadataStore {
           metadata.payload_json,
           metadata.metadata_version,
           metadata.committed_at,
+          projection.activity_at,
           projection.last_message_preview
         FROM session_catalog_projection projection
         JOIN session_metadata metadata
@@ -1263,9 +1272,11 @@ export class SqliteSessionMetadataStore {
         SELECT session_id, payload_json, metadata_version, committed_at
         FROM session_metadata metadata
         ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
-        ORDER BY
-          COALESCE(last_message_at, last_used_at, created_at) DESC,
-          session_id ASC
+        ORDER BY (
+          SELECT activity_at
+          FROM session_catalog_projection projection
+          WHERE projection.session_id = metadata.session_id
+        ) DESC, session_id ASC
       `,
       )
       .all(...parameters) as unknown as SessionMetadataRow[];
@@ -1335,7 +1346,7 @@ export class SqliteSessionMetadataStore {
     // through JSON so the stored form matches what the recovery path reads.
     const encoded = messages.map((message) => {
       const json = JSON.stringify(message);
-      const canonical = decodeStoredMessage(JSON.parse(json) as unknown);
+      const canonical = decodeCanonicalMessage(JSON.parse(json) as unknown);
       return { message: canonical, json };
     });
     return this.transaction(() => {
@@ -1441,7 +1452,7 @@ export class SqliteSessionMetadataStore {
     if (messages.length === 0) return;
     const encoded = messages.map((message) => {
       const json = JSON.stringify(message);
-      const canonical = decodeStoredMessage(JSON.parse(json) as unknown);
+      const canonical = decodeCanonicalMessage(JSON.parse(json) as unknown);
       return { message: canonical, json };
     });
     this.transaction(() => {
@@ -3644,7 +3655,6 @@ export class SqliteSessionMetadataStore {
           session_id,
           payload_json,
           created_at,
-          last_used_at,
           last_message_at,
           name,
           is_flagged,
@@ -3668,14 +3678,13 @@ export class SqliteSessionMetadataStore {
           model,
           metadata_version,
           committed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       )
       .run(
         header.id,
         JSON.stringify(header),
         header.createdAt,
-        header.lastUsedAt,
         header.lastMessageAt ?? null,
         header.name,
         booleanInteger(header.isFlagged),
@@ -3939,7 +3948,6 @@ export class SqliteSessionMetadataStore {
         SET
           payload_json = ?,
           created_at = ?,
-          last_used_at = ?,
           last_message_at = ?,
           name = ?,
           is_flagged = ?,
@@ -3960,7 +3968,6 @@ export class SqliteSessionMetadataStore {
       .run(
         JSON.stringify(next),
         next.createdAt,
-        next.lastUsedAt,
         next.lastMessageAt ?? null,
         next.name,
         booleanInteger(next.isFlagged),
@@ -4977,6 +4984,7 @@ interface OrphanedAgentGraphOperatorRow extends OwnedAgentGraphOperatorRow {
 }
 
 interface SessionMetadataCatalogRow extends SessionMetadataRow {
+  activity_at: number;
   last_message_preview: string | null;
 }
 
@@ -5274,16 +5282,20 @@ function decodeRecord(row: SessionMetadataRow): SessionMetadataRecord {
     throw new Error(`Invalid SQLite session metadata record for ${row.session_id}`);
   }
   return {
-    header: normalizeSessionHeader(parsed, row.session_id),
+    header: decodePersistedSessionHeader(markPersisted<SessionHeader>(parsed), row.session_id),
     metadataVersion: row.metadata_version,
     committedAt: row.committed_at,
   };
 }
 
 function decodeCatalogRecord(row: SessionMetadataCatalogRow): SessionMetadataCatalogRecord {
+  if (!Number.isSafeInteger(row.activity_at) || row.activity_at < 0) {
+    throw new Error(`Invalid SQLite Session catalog activity for ${row.session_id}`);
+  }
   const lastMessagePreview = decodeCatalogPreview(row.last_message_preview, row.session_id);
   return {
     ...decodeRecord(row),
+    activityAt: row.activity_at,
     ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
   };
 }
@@ -5593,7 +5605,7 @@ function decodeStoredMessageRow(
   }
   try {
     const parsed = JSON.parse(row.record_json) as unknown;
-    return decodeStoredMessage(parsed);
+    return decodeStoredMessage(markPersisted<StoredMessage>(parsed));
   } catch (error) {
     throw new StoredSessionMessageIncompatibleError(sessionId, sequence, {
       cause: error,
@@ -5963,7 +5975,9 @@ function validateTranscriptRecord(
 ): void {
   try {
     decodeStoredMessage(
-      JSON.parse(typeof data === 'string' ? data : data.toString('utf8')) as unknown,
+      markPersisted<StoredMessage>(
+        JSON.parse(typeof data === 'string' ? data : data.toString('utf8')),
+      ),
     );
   } catch (error) {
     throw new StoredSessionMessageIncompatibleError(sessionId, sequence, {

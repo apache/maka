@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -107,6 +108,16 @@ async function readWorkspaceInstructions(
   }
 
   const out: WorkspaceInstruction[] = [];
+  // Content already accepted from this directory. Sharing one instruction file
+  // across the names different agent CLIs read — Claude Code reads CLAUDE.md,
+  // Codex reads AGENTS.md, Gemini CLI reads GEMINI.md — is the documented way
+  // to do it, whether by symlink or by copy, so identical bytes arriving under
+  // two names here are redundancy rather than two instructions. Digesting the
+  // cleaned text catches both forms; `realpath` alone would miss the copy.
+  // Scoped to one directory on purpose: the same text at global and project
+  // scope is a user repeating themselves deliberately, and collapsing that
+  // would silently drop a layer.
+  const seenDigests = new Set<string>();
   for (const file of WORKSPACE_INSTRUCTION_FILES) {
     const candidate = join(root, file);
     let resolved: string;
@@ -120,6 +131,11 @@ async function readWorkspaceInstructions(
       const raw = await readFile(resolved, 'utf8');
       const cleaned = cleanPromptText(raw.trim());
       if (!cleaned) continue;
+      // Digest before truncation: two files that diverge only past the cap are
+      // still different instructions.
+      const digest = createHash('sha256').update(cleaned).digest('hex');
+      if (seenDigests.has(digest)) continue;
+      seenDigests.add(digest);
       const chars = Array.from(cleaned).length;
       out.push({
         file,

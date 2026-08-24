@@ -618,26 +618,16 @@ describe("live tool status over persisted", () => {
       },
     ]);
 
-    const turns = overlayLiveTurn(settled, {
+    const live = applyLiveTurnEvent(undefined, {
+      type: "tool_start",
+      id: "start-1",
       turnId: "t1",
-      phase: "streamed",
-      steps: [
-        {
-          stepId: "tool:computer-1",
-          tools: [
-            {
-              toolUseId: "computer-1",
-              toolName: "maka_computer",
-              status: "running",
-              args: undefined,
-              // Runtime Host live events carry lifecycle but not the durable
-              // result payload.
-              result: { kind: "text", text: "" },
-            },
-          ],
-        },
-      ],
+      toolUseId: "computer-1",
+      toolName: "maka_computer",
+      args: undefined,
+      ts: 5,
     });
+    const turns = overlayLiveTurn(settled, live);
 
     const toolGroup = turns
       .find((turn) => turn.turnId === "t1")

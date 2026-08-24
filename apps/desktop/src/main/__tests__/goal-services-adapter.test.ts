@@ -61,19 +61,16 @@ describe('createDesktopGoalServices', () => {
       changes.push(sessionId);
     });
     sessionHandler?.({
-      type: 'sessions_changed',
       reason: 'updated',
       sessionId: 'ignored',
       ts: 1,
     });
     sessionHandler?.({
-      type: 'sessions_changed',
       reason: 'goal-change',
       sessionId: 's',
       ts: 2,
     });
     sessionHandler?.({
-      type: 'sessions_changed',
       reason: 'goal-change',
       ts: 3,
     });

@@ -20,6 +20,7 @@
 import { randomUUID } from "node:crypto";
 import type { IpcMain } from "electron";
 import type { ActiveInteractionRequestEvent } from '@maka/core/events';
+import { redactSecrets } from '@maka/core/redaction';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import type { SessionChangedEvent, SessionChangedReason } from '@maka/core/session';
 import type { BotRegistry } from '@maka/runtime/bots';
@@ -33,6 +34,7 @@ import {
   type ConnectOrSpawnRuntimeHostResult,
   type RuntimeHostConnection,
   type RuntimeHostCandidateLaunchBarrier,
+  type RuntimeHostSpawnedProcess,
   type RemoteRuntimeHostProfile,
 } from "@maka/runtime-host/client";
 import {
@@ -76,6 +78,7 @@ import type {
   ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
 import type { RuntimeHostTargetIpcMain } from "./runtime-host-reconnecting-ipc-main.js";
+import { runtimeHostProcessLogBuffer } from './main-process-diagnostics.js';
 import {
   desktopSessionResourceKey,
   requireDesktopTargetScope,
@@ -288,6 +291,7 @@ export async function startDesktopRuntimeHostCandidate(
     ? await input.candidateLaunchBarrier.connect(connectInput(input))
     : await connectOrSpawnRuntimeHost(connectInput(input));
   if (connection.kind !== "connected") return connection;
+  observeLocalRuntimeHostProcess(connection.spawnedProcess);
   try {
     return {
       kind: "ready",
@@ -303,6 +307,52 @@ export async function startDesktopRuntimeHostCandidate(
     await connection.connection.close().catch(() => undefined);
     throw error;
   }
+}
+
+function observeLocalRuntimeHostProcess(spawnedProcess: RuntimeHostSpawnedProcess | undefined): void {
+  if (!spawnedProcess) return;
+  void spawnedProcess.exited.then(
+    (exit) =>
+      logLocalRuntimeHostProcessDiagnostic(
+        formatLocalRuntimeHostProcessExitDiagnostic(spawnedProcess.pid, exit),
+      ),
+    () =>
+      logLocalRuntimeHostProcessDiagnostic(
+        `[runtime-host] local Host child exit could not be observed: pid=${spawnedProcess.pid}`,
+      ),
+  );
+}
+
+function logLocalRuntimeHostProcessDiagnostic(diagnostic: string): void {
+  runtimeHostProcessLogBuffer.append('error', diagnostic);
+  console.error(diagnostic);
+}
+
+export function formatLocalRuntimeHostProcessExitDiagnostic(
+  pid: number,
+  exit: Awaited<RuntimeHostSpawnedProcess['exited']>,
+): string {
+  const status = `pid=${pid} code=${exit.code ?? 'null'} signal=${exit.signal ?? 'none'}`;
+  const stderr = redactRuntimeHostStderr(
+    exit.stderrTruncated ? discardLeadingPartialStderrRecord(exit.stderr) : exit.stderr,
+  );
+  if (!stderr) return `[runtime-host] local Host child exited: ${status}`;
+  const truncation = exit.stderrTruncated
+    ? '\n<stderr truncated; showing final 4096 bytes>'
+    : '';
+  return `[runtime-host] local Host child exited: ${status}\nstderr:\n${stderr}${truncation}`;
+}
+
+function discardLeadingPartialStderrRecord(stderr: string): string {
+  const separator = stderr.search(/[\r\n]/u);
+  return separator === -1 ? '' : stderr.slice(separator + 1);
+}
+
+function redactRuntimeHostStderr(stderr: string): string {
+  const redacted = redactSecrets(stderr.trim());
+  // The full stderr blob normally takes text redaction. Rechecking each
+  // compact token also applies structured JSON redaction to embedded payloads.
+  return redacted.replace(/\S+/gu, (token) => redactSecrets(token));
 }
 
 async function startRemoteDesktopRuntimeHostCandidate(

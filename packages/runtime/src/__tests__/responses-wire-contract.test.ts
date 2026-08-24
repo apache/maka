@@ -68,6 +68,32 @@ describe('responses wire contract', () => {
     );
   });
 
+  test('routes OpenCode Go Muse Spark through the Responses endpoint', async () => {
+    const urls: string[] = [];
+    const fetch = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return Response.json({
+        id: 'r',
+        object: 'response',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+    }) as typeof globalThis.fetch;
+    const model = getAIModel({
+      connection: conn('opencode-go'),
+      apiKey: '[redacted]',
+      modelId: 'muse-spark-1.2-contributor',
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+    });
+
+    assert.deepEqual(urls, ['https://opencode.ai/zen/go/v1/responses']);
+  });
+
   test('normalizes the upstream Open Responses endpoint exactly once', () => {
     assert.equal(
       openResponsesUrl('https://api.deepseek.com/v1'),
@@ -136,6 +162,37 @@ describe('responses wire contract', () => {
       kind: 'responses',
       contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
     });
+  });
+
+  test('resolves parallel tool calls from model facts before native wire defaults', () => {
+    assert.equal(
+      resolveModelRuntime({ providerType: 'openai' }, 'gpt-5.5').parallelToolCalls,
+      true,
+    );
+    assert.equal(
+      resolveModelRuntime(
+        {
+          providerType: 'openai',
+          models: [{ id: 'gpt-5.5', capabilities: { parallelToolCalls: false } }],
+        },
+        'gpt-5.5',
+      ).parallelToolCalls,
+      false,
+    );
+    assert.equal(
+      resolveModelRuntime({ providerType: 'openai-compatible' }, 'relay-model').parallelToolCalls,
+      undefined,
+    );
+    assert.equal(
+      resolveModelRuntime(
+        {
+          providerType: 'openai-compatible',
+          models: [{ id: 'relay-model', capabilities: { parallelToolCalls: true } }],
+        },
+        'relay-model',
+      ).parallelToolCalls,
+      true,
+    );
   });
 
   test('enables Responses only through an explicit supported contract', () => {

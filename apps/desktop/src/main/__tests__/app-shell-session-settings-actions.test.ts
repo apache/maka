@@ -118,9 +118,6 @@ function createHarness(options: {
       for (const key of Object.keys(pendingBySession)) delete pendingBySession[key];
       Object.assign(pendingBySession, next);
     },
-    setSessions: (update) => {
-      sessionsRef.current = update(sessionsRef.current);
-    },
     toastApi: {
       success: (title, description) => successes.push({ title, description }),
       error: (title, _description, _details, target) => {

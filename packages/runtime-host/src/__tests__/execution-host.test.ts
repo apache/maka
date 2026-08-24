@@ -40,7 +40,11 @@ import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
-import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
+import {
+  decodeStoredMessage as decodePersistedStoredMessage,
+  type StoredMessage,
+} from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 import type { Task } from '@maka/core/task-ledger';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
@@ -115,6 +119,9 @@ import {
   withExecutionRoot,
   withTimeout,
 } from './fixtures/execution-host-suite.js';
+
+const decodeStoredMessage = (value: unknown): StoredMessage =>
+  decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
 
 test('production Host resumes a Session through the ScheduledTask authority', {
   timeout: 30_000,

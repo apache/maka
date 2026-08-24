@@ -136,7 +136,7 @@ export function computerRunningLabel(
   for (const item of items) {
     if (!isComputerTool(item)) continue;
     target = computerActionTarget(item, locale) ?? target;
-    if (item.status === 'pending' || item.status === 'running') active = item;
+    if (item.status === 'running') active = item;
   }
   if (!active) return undefined;
   const copy = getToolActivityCopy(locale).computer;

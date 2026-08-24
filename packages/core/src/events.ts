@@ -530,6 +530,8 @@ export interface ToolStartEvent extends BaseEvent, ToolActivityIdentity {
   type: 'tool_start';
   toolUseId: string;
   toolName: string;
+  /** Bounded correlation for a shell-run observation without transporting full tool args. */
+  shellRunRef?: string;
   /** Runtime-owned durable tool-operation identity (Phase 2). */
   operationId?: string;
   /** Stable semantic category for presentation; absent on legacy events. */
@@ -646,6 +648,8 @@ export interface ToolResultEvent extends BaseEvent, ToolActivityIdentity {
   providerExecuted?: boolean;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
+  /** The transport omitted durable result content; consumers must not treat the placeholder as authoritative. */
+  contentOmitted?: true;
   isError: boolean;
   content: ToolResultContent;
   durationMs?: number;

@@ -24,12 +24,13 @@ import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep 
 import { promisify } from 'node:util';
 import type { ProjectLocation, ProjectRecord } from '@maka/core/project';
 import type { SessionHeader } from '@maka/core/session';
+import { markPersisted } from '@maka/core/persisted-value';
 import { hasEnclosingGitEntry } from './git-entry.js';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
 } from './operational-state-store.js';
-import { normalizeSessionHeader } from './session-store.js';
+import { decodePersistedSessionHeader, normalizeSessionHeader } from './session-store.js';
 
 export type { ProjectLocation, ProjectRecord } from '@maka/core/project';
 
@@ -742,8 +743,8 @@ function reassignProjectSessions(
   );
   const updatedSessionIds: string[] = [];
   for (const row of rows) {
-    const header = normalizeSessionHeader(
-      JSON.parse(row.payload_json) as SessionHeader,
+    const header = decodePersistedSessionHeader(
+      markPersisted<SessionHeader>(JSON.parse(row.payload_json)),
       row.session_id,
     );
     let patch: Pick<SessionHeader, 'cwd' | 'projectId'> | undefined;
