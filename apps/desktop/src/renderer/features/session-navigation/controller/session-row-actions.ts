@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import type { SessionSummary, StoredMessage } from '@maka/core/session';
+import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
+import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
+import type { SessionNavigationSessionService } from '../ports.js';
 
 type RefBox<T> = { current: T };
 
@@ -66,7 +67,7 @@ export interface SessionPurgeOutcome {
   };
 }
 
-export interface AppShellSessionRowActions {
+export interface SessionNavigationRowActions {
   flagSession(sessionId: string, flagged: boolean): Promise<void>;
   archiveSession(sessionId: string): Promise<void>;
   unarchiveSession(sessionId: string): Promise<void>;
@@ -75,26 +76,28 @@ export interface AppShellSessionRowActions {
   purgeSessions(sessionIds: readonly string[]): Promise<SessionPurgeOutcome>;
 }
 
-export function createAppShellSessionRowActions(deps: {
+export function createSessionNavigationRowActions(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
+  clearActiveMessages: () => void;
   clearSessionRendererState: (sessionId: string) => void;
   pendingSessionRowActionsRef: RefBox<Set<string>>;
-  refreshSessions: () => Promise<SessionSummary[]>;
-  sessionsRef: RefBox<SessionSummary[]>;
+  refreshSessions: () => Promise<ReadonlyArray<SessionSummary>>;
+  service: SessionNavigationSessionService;
+  sessionsRef: RefBox<ReadonlyArray<SessionSummary>>;
   setActiveId: (sessionId: string | undefined) => void;
-  setMessages: (messages: StoredMessage[]) => void;
   toastApi: ToastApi;
-}): AppShellSessionRowActions {
+}): SessionNavigationRowActions {
   const {
     uiLocale,
     activeIdRef,
+    clearActiveMessages,
     clearSessionRendererState,
     pendingSessionRowActionsRef,
     refreshSessions,
+    service,
     sessionsRef,
     setActiveId,
-    setMessages,
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).sessionRowActions;
@@ -125,7 +128,7 @@ export function createAppShellSessionRowActions(deps: {
 
   async function flagSession(sessionId: string, flagged: boolean) {
     return runSessionRowAction(sessionId, 'flag', flagged ? copy.flagFailedTitle : copy.unflagFailedTitle, async () => {
-      await window.maka.sessions.setFlagged(sessionId, flagged, { revisionFamily: true });
+      await service.setFlagged(sessionId, flagged, { revisionFamily: true });
       await refreshSessions();
     });
   }
@@ -133,10 +136,10 @@ export function createAppShellSessionRowActions(deps: {
   async function archiveSession(sessionId: string) {
     return runSessionRowAction(sessionId, 'archive', copy.archiveFailedTitle, async () => {
       const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
-      await window.maka.sessions.archive(sessionId, { revisionFamily: true });
+      await service.archive(sessionId, { revisionFamily: true });
       if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
         setActiveId(undefined);
-        setMessages([]);
+        clearActiveMessages();
       }
       for (const id of familyIds) clearSessionRendererState(id);
       await refreshSessions();
@@ -145,14 +148,14 @@ export function createAppShellSessionRowActions(deps: {
 
   async function unarchiveSession(sessionId: string) {
     return runSessionRowAction(sessionId, 'archive', copy.unarchiveFailedTitle, async () => {
-      await window.maka.sessions.unarchive(sessionId, { revisionFamily: true });
+      await service.unarchive(sessionId, { revisionFamily: true });
       await refreshSessions();
     });
   }
 
   async function renameSession(sessionId: string, name: string) {
     return runSessionRowAction(sessionId, 'rename', copy.renameFailedTitle, async () => {
-      await window.maka.sessions.rename(sessionId, name, { revisionFamily: true });
+      await service.rename(sessionId, name, { revisionFamily: true });
       await refreshSessions();
     });
   }
@@ -194,14 +197,14 @@ export function createAppShellSessionRowActions(deps: {
     // Read before the write: the family comes off the live catalog, which no
     // longer lists it afterwards.
     const familyIds = revisionFamilySessionIds(sessionsRef.current, sessionId);
-    const disposition = await window.maka.sessions.remove(sessionId, {
+    const disposition = await service.remove(sessionId, {
       revisionFamily: true,
       requireArchived: options.requireArchived,
     });
     if (disposition === 'restored') return disposition;
     if (activeIdRef.current && familyIds.includes(activeIdRef.current)) {
       setActiveId(undefined);
-      setMessages([]);
+      clearActiveMessages();
     }
     for (const id of familyIds) clearSessionRendererState(id);
     return disposition;
@@ -270,7 +273,7 @@ export function createAppShellSessionRowActions(deps: {
     }
     let listed: SessionSummary[] | undefined;
     try {
-      listed = await window.maka.sessions.list();
+      listed = await service.list();
     } catch {
       listed = undefined;
     }

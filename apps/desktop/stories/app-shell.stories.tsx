@@ -35,9 +35,11 @@ import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions'
 import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
-import { deriveBranchBanner } from '../src/renderer/branch-banner';
-import { deriveSessionRevisionNavigation } from '../src/renderer/session-revisions';
-import { deriveSessionRail } from '../src/renderer/session-rail';
+import {
+  deriveBranchBanner,
+  deriveSessionRail,
+  deriveSessionRevisionNavigation,
+} from '../src/renderer/features/session-navigation/testing';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
 import { GoalDialog } from '../src/renderer/features/goals/testing';
 

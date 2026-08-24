@@ -25,7 +25,7 @@ import { Archive, ICON_SIZE, Search } from '@maka/ui/icons';
 import { HStack, StackItem } from '@astryxdesign/core';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { TextInput } from '@astryxdesign/core/TextInput';
-import type { SessionPurgeOutcome } from '../app-shell-session-row-actions.js';
+import type { SessionPurgeOutcome } from '../features/session-navigation';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import { getSettingsTasksCopy } from '../locales/settings-tasks-copy.js';
