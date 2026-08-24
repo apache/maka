@@ -51,7 +51,7 @@ import {
   type ConfigCategory,
   type ConfigData,
   type ConnectionConflictStrategy,
-} from '@maka/storage';
+} from '@maka/storage/config-transfer';
 
 interface RuntimeHostConfigIpcDeps {
   readonly ipcMain: Pick<IpcMain, 'handle'>;

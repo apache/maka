@@ -22,7 +22,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
-import { createFileCredentialStore } from '@maka/storage';
+import { createFileCredentialStore } from '@maka/storage/credential-store';
 import {
   RUNTIME_HOST_REMOTE_INCOMPATIBLE_CODE,
   RuntimeHostRemoteCompatibilityError,

@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { acquireOperationalStateDatabase } from '@maka/storage';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 
 export interface SessionCopyCreationLease {
   sessionId: string;

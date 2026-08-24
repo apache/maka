@@ -130,7 +130,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
     `  ${cliCommand} runtime-host access revoke --credential <id>`,
     `  ${cliCommand} runtime-host project list [--root <path>]`,
-    `  ${cliCommand} runtime-host project add <path> [--root <path>]`,
+    `  ${cliCommand} runtime-host project add <path> [--prefer] [--root <path>]`,
     `  ${cliCommand} runtime-host profile list`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]`,
@@ -373,7 +373,12 @@ export async function runMakaCli(
       const rootPath = command.rootPath ?? dataRoots.workspaceRoot;
       return command.kind === 'runtime-host-project-list'
         ? runRuntimeHostProjectCli({ kind: 'list', rootPath })
-        : runRuntimeHostProjectCli({ kind: 'add', rootPath, path: command.path });
+        : runRuntimeHostProjectCli({
+            kind: 'add',
+            rootPath,
+            path: command.path,
+            prefer: command.prefer,
+          });
     }
     case 'runtime-host-capability-provider-serve': {
       const { runRuntimeHostCapabilityProviderCli } = await import(

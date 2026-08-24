@@ -18,15 +18,56 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rename, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createProjectCatalog, createSessionStore } from '@maka/storage';
+import { promisify } from 'node:util';
+import { createProjectCatalog } from '@maka/storage/project-catalog';
+import { createSessionStore } from '@maka/storage/session-store';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostChangeFeed } from '../server/host-change-feed.js';
 import { HostProjectCatalogCoordinator } from '../server/project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from '../server/project-membership-gate.js';
+
+const execFileAsync = promisify(execFile);
+
+test('Host Project Catalog can register a location without changing the preferred path', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-project-register-preference-'));
+  const repository = join(base, 'repository');
+  const linkedWorktree = join(base, 'linked');
+  await createGitRepositoryWithWorktree(repository, linkedWorktree);
+  let now = 1_000;
+  const catalog = createProjectCatalog(join(base, 'storage'), {
+    now: () => now,
+    createId: () => 'project-1',
+  });
+  const coordinator = new HostProjectCatalogCoordinator(
+    catalog,
+    { publish: () => {} },
+    { publish: () => {} },
+    new HostProjectMembershipGate(),
+    () => assert.fail('ordinary project mutations must not drain the Host'),
+  );
+
+  try {
+    const original = await catalog.register(repository);
+    const repositoryPath = await realpath(repository);
+    now = 2_000;
+    const input = { kind: 'register' as const, path: linkedWorktree, prefer: false };
+    const registered = await coordinator.handlers['project.catalog.mutate'](input, connection());
+
+    assert.equal(registered.ok, true);
+    if (!registered.ok || registered.result.kind !== 'project') return;
+    assert.equal(registered.result.project.id, original.id);
+    assert.equal(registered.result.project.locationCount, 2);
+    assert.equal((await catalog.list())[0]?.preferredPath, repositoryPath);
+  } finally {
+    catalog.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
 
 test('Host Project Catalog relink merges identities and reassigns every affected Session', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-project-catalog-'));
@@ -186,6 +227,33 @@ test('directory resolution failures cannot enter the unknown-commit drain path',
     await rm(base, { recursive: true, force: true });
   }
 });
+
+async function createGitRepositoryWithWorktree(
+  repository: string,
+  linkedWorktree: string,
+): Promise<void> {
+  await mkdir(repository);
+  await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+  await writeFile(join(repository, 'tracked.txt'), 'tracked\n', 'utf8');
+  await execFileAsync('git', ['add', 'tracked.txt'], { cwd: repository });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.name=Maka Test',
+      '-c',
+      'user.email=test@maka.invalid',
+      'commit',
+      '--quiet',
+      '-m',
+      'init',
+    ],
+    { cwd: repository },
+  );
+  await execFileAsync('git', ['worktree', 'add', '--quiet', '-b', 'linked', linkedWorktree], {
+    cwd: repository,
+  });
+}
 
 function sessionInput(cwd: string, projectId: string) {
   return {

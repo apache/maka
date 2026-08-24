@@ -25,10 +25,9 @@ import {
   computeSessionBundleCanonicalTreeDigest,
   encodeSessionBundleCanonicalTree,
   SessionBundleCanonicalTreeDigestBuilder,
-  SessionBundleFileError,
   type SessionBundleCanonicalTreeEntry,
-  type Sha256Digest,
-} from '../index.js';
+} from '../session-bundle-canonical-tree.js';
+import { SessionBundleFileError, type Sha256Digest } from '../session-bundle-contract.js';
 
 const identityDigest: Sha256Digest =
   'sha256:0e9561cfb83d50990a103b3896fe249a11fe27fa28985448187f93ec12116d72';

@@ -27,7 +27,7 @@ import {
   testBotChannel as testRuntimeBotChannel,
   type BotRegistry,
 } from '@maka/runtime/bots';
-import type { SettingsStore } from '@maka/storage';
+import type { SettingsStore } from '@maka/storage/settings-store';
 import {
   BotOnboardingService,
   type BotOnboardingProviderAdapter,

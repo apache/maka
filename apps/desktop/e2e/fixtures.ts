@@ -24,11 +24,9 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import {
-  createProjectCatalog,
-  createSessionStore,
-  createSettingsStore,
-} from '@maka/storage';
+import { createProjectCatalog } from '@maka/storage/project-catalog';
+import { createSessionStore } from '@maka/storage/session-store';
+import { createSettingsStore } from '@maka/storage/settings-store';
 import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,

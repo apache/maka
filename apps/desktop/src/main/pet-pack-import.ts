@@ -30,7 +30,7 @@ import {
   PetPackStoreError,
   type PetPackStore,
 } from '@maka/storage/pet-pack-store';
-import type { SettingsStore } from '@maka/storage';
+import type { SettingsStore } from '@maka/storage/settings-store';
 import type { createMainWindowController } from './main-window.js';
 
 type MainWindowController = Pick<

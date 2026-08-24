@@ -35,13 +35,11 @@ import {
 import { type AgentGraphScheduleUpdate } from '@maka/core/agent-graph-schedule';
 import { type AgentRunHeader } from '@maka/core/agent-run';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
-import {
-  createSessionStore,
-  createSqliteSessionMetadataStore,
-  isSessionNotFoundError,
-  OPERATIONAL_STATE_DATABASE_NAME,
-} from '@maka/storage';
-import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
+import { createSessionStore, isSessionNotFoundError } from '@maka/storage/session-store';
+import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { FakeBackend } from '../test-only/fake-backend.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { SessionActivityRegistry } from '../goal-turn-lifecycle.js';

@@ -23,7 +23,7 @@ import {
   type RuntimeHostRemoteTransport,
   type RuntimeHostProfileCatalog,
 } from '@maka/runtime-host/client';
-import { resolveMakaClientDataRoot } from '@maka/storage';
+import { resolveMakaClientDataRoot } from '@maka/storage/workspace-root';
 
 const DEFAULT_CREDENTIAL_ENV = 'MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL';
 

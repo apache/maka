@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ProjectCatalog } from '@maka/storage';
+import type { ProjectCatalog } from '@maka/storage/project-catalog';
 import type { WorkspaceTarget } from '@maka/runtime-host/protocol';
 
 export interface DesktopSessionWorkspaceInput {

@@ -176,6 +176,12 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 45);
   });
 
+  test('publishes a new compatibility epoch for the project registration preference', () => {
+    // Epoch 46 Hosts reject the optional preference field on the closed register
+    // input, so mixed-version peers must fail during the handshake instead.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 46);
+  });
+
   test('adds credential rotation without changing existing credential inputs', () => {
     const issueInput = {
       principalKind: 'remote_owner',
