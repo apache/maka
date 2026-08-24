@@ -19,6 +19,7 @@
 
 import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
 import {
+  type ConnectionBaseUrlRejection,
   type ConnectionTestResult,
   type CreateConnectionInput,
   type LlmConnection,
@@ -52,6 +53,38 @@ export interface ConnectionsBridge {
 }
 
 export type CredentialPresenceStatus = boolean | 'loading' | 'error';
+
+/**
+ * The localized sentence for a rejected service URL.
+ *
+ * Both write surfaces call this — the add form marks its endpoint field with
+ * it, and the detail page's endpoint row reports it instead of letting the
+ * Host's English domain error fall through to `actionFallback`, which named
+ * neither the field nor the rule (#3672).
+ */
+export function connectionEndpointRejectionMessage(
+  rejection: ConnectionBaseUrlRejection,
+  locale: UiLocale = 'zh',
+): string {
+  const shared = getProviderSettingsCopy(locale).shared;
+  switch (rejection) {
+    case 'malformed':
+      return shared.endpointInvalidUrl;
+    case 'scheme':
+      return shared.endpointScheme;
+    case 'credentials':
+      return shared.endpointCredentials;
+    case 'query_or_fragment':
+      return shared.endpointQueryOrFragment;
+    case 'too_long':
+    case 'too_many_bytes':
+    // A non-string can only come from a caller that bypassed the field, so
+    // there is no field-specific advice to give; the generic URL sentence is
+    // the closest true statement.
+    case 'not_a_string':
+      return shared.endpointTooLong;
+  }
+}
 
 export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale = 'zh'): string {
   const shared = getProviderSettingsCopy(locale).shared;

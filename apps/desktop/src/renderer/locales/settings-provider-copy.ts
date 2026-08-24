@@ -156,6 +156,15 @@ const zhCopy = {
     modelKeyAria: (name: string) => `${name} 模型密钥`,
   },
   shared: {
+    // One sentence per rule the Runtime Host enforces on a service URL. The
+    // form checks these before it writes, so the user reads the rule they
+    // broke instead of `actionFallback`, which used to blame the service and
+    // suggest a retry that could never succeed (#3672).
+    endpointInvalidUrl: '服务地址不是有效的 URL，请填写完整地址，例如 https://example.com/v1。',
+    endpointScheme: '服务地址只支持 http:// 或 https:// 开头。',
+    endpointCredentials: '服务地址不能包含用户名或密码，请把密钥填在上方的 API Key 中。',
+    endpointQueryOrFragment: '服务地址不能包含查询参数（?）或锚点（#）。如需附加参数，请使用下方的高级请求设置。',
+    endpointTooLong: '服务地址过长，请控制在 2048 字节以内。',
     actionFallback: '模型连接服务暂时不可用，请稍后重试。', rateLimit: '当前账号或模型服务触发速率限制，请稍后重试。',
     timeout: '请求超时，请检查网络或代理后重试。', unavailable: '模型服务暂时不可用，请稍后重试。',
     network: '网络错误，请检查服务地址或代理设置后重试。', statusUnavailable: '连接测试状态暂时无法显示，请重新测试。',
@@ -306,6 +315,11 @@ const enCopy: ProviderSettingsCopy = {
     modelKeyAria: (name: string) => `${name} model key`,
   },
   shared: {
+    endpointInvalidUrl: 'The service URL is not a valid URL. Enter a full address, for example https://example.com/v1.',
+    endpointScheme: 'The service URL must start with http:// or https://.',
+    endpointCredentials: 'The service URL must not contain a username or password. Put the secret in the API key field above.',
+    endpointQueryOrFragment: 'The service URL must not contain a query (?) or fragment (#). Use the advanced request settings below to add parameters.',
+    endpointTooLong: 'The service URL is too long. Keep it under 2048 bytes.',
     actionFallback: 'The model connection service is temporarily unavailable. Try again later.', rateLimit: 'This account or model service is rate-limited. Try again later.',
     timeout: 'The request timed out. Check the network or proxy and try again.', unavailable: 'The model service is temporarily unavailable. Try again later.',
     network: 'Network error. Check the service URL or proxy settings and try again.', statusUnavailable: 'The connection test status is temporarily unavailable. Test again.',

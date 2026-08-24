@@ -554,9 +554,38 @@ export function deriveConnectionSlug(
   }
 }
 
+export const CONNECTION_BASE_URL_MAX_LENGTH = 2048;
+export const CONNECTION_BASE_URL_MAX_BYTES = 2048;
+
+/**
+ * Why a connection `baseUrl` is refused, as a code rather than a sentence.
+ *
+ * The same rule is enforced at three sites that each speak a different
+ * vocabulary — the Desktop form wants localized field copy, the IPC gate
+ * wants an English developer message, and the Runtime Host codec wants its
+ * wire-facing domain error. Returning a code lets all three share one
+ * implementation without any of them inheriting another's wording.
+ */
+export type ConnectionBaseUrlRejection =
+  | 'not_a_string'
+  | 'too_long'
+  | 'too_many_bytes'
+  | 'malformed'
+  | 'scheme'
+  | 'credentials'
+  | 'query_or_fragment';
+
+export interface ConnectionBaseUrlRejected {
+  readonly ok: false;
+  readonly reason: ConnectionBaseUrlRejection;
+  /** The offending scheme, when `reason` is `'scheme'`. */
+  readonly scheme?: string;
+}
+
 /**
  * PR-UI-IPC-1 (@kenji msg 35260e29 + 2e495eb7): connection `baseUrl`
- * scheme allowlist gate.
+ * scheme allowlist gate, widened in #3672 to the full contract the
+ * Runtime Host already enforced.
  *
  * The renderer can submit any string for `CreateConnectionInput.baseUrl`
  * / `UpdateConnectionInput.baseUrl`; the AI SDK fetch downstream
@@ -571,30 +600,81 @@ export function deriveConnectionSlug(
  * — we intentionally do NOT block private-network / localhost URLs
  * (Ollama, LM Studio, vLLM and other local providers need
  * `http://localhost:11434`, `http://127.0.0.1:8000`, etc. to work).
- * Provider/setupMode-specific further restrictions are a separate
- * future PR.
  *
- * **Pair with `normalizeConnectionBaseUrl` for the IPC site.**
- * This function only validates; it does NOT trim or canonicalize.
- * The IPC handler should use `normalizeConnectionBaseUrl` so the
- * store only ever sees the canonical form (trimmed URL or
- * undefined) — not raw whitespace-padded input. See @kenji msg
- * 8755ffb3.
+ * **This is the only implementation of the rule.** `normalizeCatalogConnectionBaseUrl`
+ * (the Host's catalog codec) delegates here, so the client cannot accept an
+ * endpoint the Host will refuse. Before #3672 the two drifted: the client
+ * checked scheme and length only, so a URL carrying a query string or
+ * embedded credentials passed the form, passed IPC, and then failed the
+ * write — surfacing as "the model connection service is temporarily
+ * unavailable", which named neither the field nor the rule and invited a
+ * retry that could never succeed.
  *
  * Accepts:
- *   - `undefined` / empty string / whitespace-only: no override,
- *     fall back to provider default. Returns `null` (valid). The
- *     caller treats this as "user wants the provider's canonical
- *     baseUrl".
- *   - `http:` / `https:` schemes parsing as valid `URL` (case-
- *     insensitive scheme via WHATWG URL spec).
+ *   - empty / whitespace-only: no override, `value` is `''` — the caller's
+ *     "fall back to the provider default" or explicit-clear case.
+ *   - `http:` / `https:` URLs with no credentials, query, or fragment,
+ *     returned in WHATWG canonical form (`URL.toString()`).
  *
- * Rejects (returns error message):
- *   - Any other scheme (`file:`, `javascript:`, `data:`, `vbscript:`,
- *     `chrome-extension:`, `app:`, `maka:`, custom).
- *   - Malformed URL strings the `URL` constructor throws on.
- *   - Pathological lengths (> 2048 chars — defense against
- *     adversarial inputs; real-world baseUrls are < 100 chars).
+ * Rejects: non-strings, anything over 2048 characters or whose canonical
+ * form exceeds 2048 bytes, unparseable URLs, any other scheme,
+ * `user:password@` credentials, and `?`/`#`.
+ *
+ * Canonicalization is deliberate and matches the Host byte for byte. The
+ * previous "trim is the only canonicalization" note argued that rewriting
+ * `https://Example.com:443/V1` could surprise someone who typed it that
+ * way — but the Host canonicalizes on write regardless, so that form was
+ * never what got stored. Doing it here only moves the surprise to where
+ * the user can still see and correct it.
+ */
+export function canonicalizeConnectionBaseUrl(
+  baseUrl: unknown,
+): { ok: true; value: string } | ConnectionBaseUrlRejected {
+  // Defensive runtime-type guard (@kenji msg 57ac8a8c): the TypeScript
+  // signature is a compile-time guarantee, but IPC payloads cross a process
+  // boundary and could be `null` / number / object / array regardless.
+  if (typeof baseUrl !== 'string') return { ok: false, reason: 'not_a_string' };
+  // Length is checked before the trim, matching the Host's `stringValue`
+  // bound on the value it receives.
+  if (baseUrl.length > CONNECTION_BASE_URL_MAX_LENGTH) {
+    return { ok: false, reason: 'too_long' };
+  }
+  const trimmed = baseUrl.trim();
+  // An empty trimmed value is the explicit-clear intent (user typed
+  // whitespace = "remove my override"); preserve it as `''` so the store's
+  // existing clear semantics fire. The caller must NOT convert this to
+  // `undefined` — that would be "don't touch" and silently swallow the
+  // user's clear intent.
+  if (trimmed === '') return { ok: true, value: '' };
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { ok: false, reason: 'malformed' };
+  }
+  // Closed scheme allowlist. `URL.protocol` includes the trailing colon and
+  // is lowercased by the WHATWG URL spec for special schemes.
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, reason: 'scheme', scheme: parsed.protocol };
+  }
+  // Credentials in the endpoint would be persisted in the connection
+  // catalog, which — unlike the API key — is not the credential store.
+  if (parsed.username || parsed.password) return { ok: false, reason: 'credentials' };
+  // Read the typed text, not the parsed URL: a percent-encoded `%3F` in a
+  // path is a path, and only a literal `?`/`#` starts a query or fragment.
+  if (trimmed.includes('?') || trimmed.includes('#')) {
+    return { ok: false, reason: 'query_or_fragment' };
+  }
+  const canonical = parsed.toString();
+  if (new TextEncoder().encode(canonical).byteLength > CONNECTION_BASE_URL_MAX_BYTES) {
+    return { ok: false, reason: 'too_many_bytes' };
+  }
+  return { ok: true, value: canonical };
+}
+
+/**
+ * The developer-facing English sentence for a rejection, used by the IPC
+ * gate whose message reaches a log or a raw error rather than a user.
  *
  * Returns `null` on accept, an error string on reject. Mirrors
  * `validateSlug`'s shape.
@@ -603,24 +683,28 @@ export function validateConnectionBaseUrl(baseUrl: string | undefined | null): s
   // No baseUrl override is valid — the caller falls back to the
   // provider default.
   if (baseUrl === undefined || baseUrl === null) return null;
-  const trimmed = baseUrl.trim();
-  if (trimmed === '') return null;
-  if (trimmed.length > 2048) {
-    return 'baseUrl must be 2048 characters or fewer';
+  const result = canonicalizeConnectionBaseUrl(baseUrl);
+  if (result.ok) return null;
+  return connectionBaseUrlRejectionMessage(result);
+}
+
+export function connectionBaseUrlRejectionMessage(rejection: ConnectionBaseUrlRejected): string {
+  switch (rejection.reason) {
+    case 'not_a_string':
+      return 'baseUrl must be a string';
+    case 'too_long':
+      return `baseUrl must be ${CONNECTION_BASE_URL_MAX_LENGTH} characters or fewer`;
+    case 'too_many_bytes':
+      return `baseUrl must not exceed ${CONNECTION_BASE_URL_MAX_BYTES} bytes`;
+    case 'malformed':
+      return 'baseUrl must be a valid URL';
+    case 'scheme':
+      return `baseUrl scheme '${rejection.scheme}' is not allowed (use http: or https:)`;
+    case 'credentials':
+      return 'baseUrl must not contain credentials';
+    case 'query_or_fragment':
+      return 'baseUrl must not contain a query or fragment';
   }
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    return 'baseUrl must be a valid URL';
-  }
-  // Closed scheme allowlist. `URL.protocol` includes the trailing
-  // colon and is lowercased by the WHATWG URL spec for special
-  // schemes.
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return `baseUrl scheme '${parsed.protocol}' is not allowed (use http: or https:)`;
-  }
-  return null;
 }
 
 /**
@@ -647,50 +731,22 @@ export function validateConnectionBaseUrl(baseUrl: string | undefined | null): s
  * validation).
  *
  * Return shape:
- *   - `{ ok: false, error }` — bad scheme / malformed / oversize.
- *   - `{ ok: true, value: '<trimmed URL>' }` — accepted override.
+ *   - `{ ok: false, error }` — rejected; see `canonicalizeConnectionBaseUrl`.
+ *   - `{ ok: true, value: '<canonical URL>' }` — accepted override.
  *     Caller sets the store payload's `baseUrl` to this value.
- *   - `{ ok: true, value: '' }` — EXPLICIT CLEAR INTENT (user
- *     typed whitespace meaning "remove my override"). Caller must
+ *   - `{ ok: true, value: '' }` — EXPLICIT CLEAR INTENT. Caller must
  *     preserve this as `''` so the store's existing clear semantics
  *     (`patch.baseUrl !== undefined ? patch.baseUrl || undefined :
  *     current.baseUrl`) treat it as "clear existing override". DO
  *     NOT convert to `undefined` — that would be "don't touch" and
  *     silently swallow the user's clear intent.
- *
- * The trim is the only canonicalization performed. We deliberately
- * do NOT change scheme/host case, strip default ports, drop
- * fragments, etc. — that's a different normalization (URL
- * canonicalization) and could surprise users who deliberately
- * configured `https://Example.com:443/V1`. Trim is the minimum
- * needed to prevent whitespace from becoming a stored override.
  */
 export function normalizeConnectionBaseUrl(
   baseUrl: unknown,
 ): { ok: true; value: string } | { ok: false; error: string } {
-  // PR-UI-IPC-1 review fixup v3 (@kenji msg 57ac8a8c): defensive
-  // runtime-type guard. TypeScript signature `(input: string)` is
-  // a compile-time guarantee, but IPC payloads from the renderer
-  // arrive over a process boundary and could be `null` / number /
-  // object / array regardless. Without this guard, `baseUrl.trim()`
-  // would throw TypeError on non-string and the IPC handler would
-  // surface an opaque crash instead of the typed reject the gate
-  // promises.
-  if (typeof baseUrl !== 'string') {
-    return { ok: false, error: 'baseUrl must be a string' };
-  }
-  // Validate first so bad schemes / malformed / oversize reject
-  // before we report a normalized value.
-  const error = validateConnectionBaseUrl(baseUrl);
-  if (error !== null) {
-    return { ok: false, error };
-  }
-  // Validate accepted. Trim is the only canonicalization. An empty
-  // trimmed value is the explicit-clear intent (user typed
-  // whitespace = "remove my override"); preserve it as `''` so the
-  // store's existing clear semantics fire. The caller must NOT
-  // convert this to `undefined` — see contract note above.
-  return { ok: true, value: baseUrl.trim() };
+  const result = canonicalizeConnectionBaseUrl(baseUrl);
+  if (result.ok) return { ok: true, value: result.value };
+  return { ok: false, error: connectionBaseUrlRejectionMessage(result) };
 }
 
 export interface CreateConnectionInput {
