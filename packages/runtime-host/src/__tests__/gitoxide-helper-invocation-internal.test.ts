@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -33,6 +33,7 @@ import {
   GITOXIDE_HELPER_ERROR_REASONS_V1,
   GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL,
   GitoxideHelperInvocationError,
+  importSourceHeadWithGitoxideHelperInternal,
   inspectRepositoryWithGitoxideHelperInternal,
 } from '../server/gitoxide-helper-invocation-internal.js';
 
@@ -48,6 +49,81 @@ test('uses a bounded import deadline distinct from repository inspection', () =>
     inspectRepositoryMs: 5_000,
     importSourceHeadMs: 10 * 60_000,
   });
+});
+
+test('applies the import deadline and terminates the helper process tree', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'maka-gitoxide-timeout-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const markerPath = join(root, 'processes.txt');
+  const helperPath = join(root, 'hanging-helper');
+  await writeFile(
+    helperPath,
+    `#!/bin/sh\n/bin/sleep 600 &\nprintf '%s %s' "$$" "$!" > '${escapeSingleQuotedShell(markerPath)}'\nwait\n`,
+  );
+  await chmod(helperPath, 0o755);
+  const helper = await admitHelperPath(helperPath);
+  const repositoryPath = await createRepository(t, 'sha1');
+  await writeFile(join(repositoryPath, 'hello.txt'), 'timeout fixture\n');
+  git(repositoryPath, ['add', 'hello.txt']);
+  git(repositoryPath, [
+    '-c',
+    'user.name=Maka Test',
+    '-c',
+    'user.email=maka@example.invalid',
+    'commit',
+    '--quiet',
+    '-m',
+    'fixture',
+  ]);
+  const expectedSourceHeadCommitOid = git(repositoryPath, ['rev-parse', 'HEAD']);
+
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let settled = false;
+  const operation = importSourceHeadWithGitoxideHelperInternal({
+    ...helper,
+    sourceRepositoryPath: repositoryPath,
+    expectedSourceHeadCommitOid,
+    destinationRepositoryPath: join(root, 'destination.git'),
+    baselineRef: 'refs/maka/baseline',
+    managedTreePolicyVersion: 1,
+  });
+  void operation.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  const [helperPid, descendantPid] = await waitForProcessMarker(markerPath);
+  t.after(() => {
+    for (const pid of [descendantPid, helperPid]) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // The timeout path already reaped the process tree.
+      }
+    }
+  });
+
+  t.mock.timers.tick(GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.inspectRepositoryMs);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'import must not inherit the inspection deadline');
+
+  t.mock.timers.tick(
+    GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.importSourceHeadMs -
+      GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.inspectRepositoryMs,
+  );
+  await assert.rejects(
+    operation,
+    (error) =>
+      error instanceof GitoxideHelperInvocationError &&
+      error.code === 'gitoxide_helper_invocation_timed_out',
+  );
+  assert.equal(isProcessAlive(helperPid), false);
+  assert.equal(isProcessAlive(descendantPid), false);
 });
 
 test('keeps the Rust and TypeScript helper error protocol exhaustive', async () => {
@@ -144,27 +220,68 @@ async function admittedHelper(): Promise<AdmittedHelper | undefined> {
   admittedHelperPromise = (async () => {
     const configuredHelperPath = process.env.MAKA_GITOXIDE_HELPER_PATH;
     if (!configuredHelperPath) return undefined;
-    const helperPath = await realpath(configuredHelperPath);
-    const helperBytes = await readFile(helperPath);
-    const helperInfo = await stat(helperPath);
-    const releaseOwnerToken = {};
-    const invocationOwnerToken = {};
-    const claim = issueGitoxideHelperReleaseArtifactClaimInternal(releaseOwnerToken, {
-      executablePath: helperPath,
-      expectedSha256: `sha256:${createHash('sha256').update(helperBytes).digest('hex')}`,
-      expectedBytes: helperInfo.size,
-      platform: process.platform,
-      arch: process.arch,
-      protocolVersion: 1,
-    });
-    const capability = await admitGitoxideHelperArtifactInternal({
-      releaseOwnerToken,
-      invocationOwnerToken,
-      claim,
-    });
-    return { invocationOwnerToken, capability };
+    return admitHelperPath(configuredHelperPath);
   })();
   return admittedHelperPromise;
+}
+
+async function admitHelperPath(configuredHelperPath: string): Promise<AdmittedHelper> {
+  const helperPath = await realpath(configuredHelperPath);
+  const helperBytes = await readFile(helperPath);
+  const helperInfo = await stat(helperPath);
+  const releaseOwnerToken = {};
+  const invocationOwnerToken = {};
+  const claim = issueGitoxideHelperReleaseArtifactClaimInternal(releaseOwnerToken, {
+    executablePath: helperPath,
+    expectedSha256: `sha256:${createHash('sha256').update(helperBytes).digest('hex')}`,
+    expectedBytes: helperInfo.size,
+    platform: process.platform,
+    arch: process.arch,
+    protocolVersion: 1,
+  });
+  const capability = await admitGitoxideHelperArtifactInternal({
+    releaseOwnerToken,
+    invocationOwnerToken,
+    claim,
+  });
+  return { invocationOwnerToken, capability };
+}
+
+async function waitForProcessMarker(path: string): Promise<readonly [number, number]> {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    try {
+      const [helperPid, descendantPid, ...extra] = (await readFile(path, 'utf8'))
+        .trim()
+        .split(' ')
+        .map(Number);
+      if (
+        extra.length === 0 &&
+        helperPid !== undefined &&
+        descendantPid !== undefined &&
+        Number.isSafeInteger(helperPid) &&
+        Number.isSafeInteger(descendantPid)
+      ) {
+        return [helperPid, descendantPid];
+      }
+    } catch {
+      // The helper has not published its process identity yet.
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error('Hanging helper did not publish its process identity');
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function escapeSingleQuotedShell(value: string): string {
+  return value.replaceAll("'", "'\\''");
 }
 
 async function createRepository(t: TestContext, objectFormat: 'sha1' | 'sha256') {
