@@ -43,6 +43,7 @@ import {
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
 import {
+  openRuntimeHostManagedPackageDeployment,
   prepareRuntimeHostManagedPackageDeployment,
   removeRuntimeHostManagedDeployment,
   resolveRuntimeHostManagedDeploymentRoot,
@@ -1336,12 +1337,13 @@ describe('managed Runtime Host service', () => {
     let observedVersion = '1.0.0';
     let observedState: 'running' | 'stopped' = 'running';
     let observedCliPath: string | undefined;
-    let readyChecks = 0;
     let readyFailure = false;
     let operatorSupportsProcessLifetimeLock = false;
     let legacyLeaseCalls = 0;
     let operatorFailure: Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> | undefined;
     let replaceFailure = false;
+    let cleanupFailure = false;
+    let expectAllowInterruptActiveTasks = true;
     let insideLifecycle = false;
     let output = '';
     const options = {
@@ -1354,6 +1356,24 @@ describe('managed Runtime Host service', () => {
       expectedTarget,
       allowInterruptActiveTasks: true,
     } as const;
+    const deployment = (version: string, cliPath: string) => ({
+      version,
+      root: deploymentRoot,
+      cliPath,
+      operatorPath: join(deploymentRoot, 'operator'),
+      activate: async () => {
+        assert.equal(insideLifecycle, true);
+        order.push('activate');
+        operatorSupportsProcessLifetimeLock = true;
+      },
+      cleanup: async () => {
+        order.push('cleanup');
+        if (cleanupFailure) throw new Error('Injected package cleanup failure');
+      },
+      rollback: async () => {
+        order.push('rollback');
+      },
+    });
     const overrides = {
       createBackend: createUnusedBackend,
       withLifecycleLock: async <T>(_root: string, operation: () => Promise<T>) => {
@@ -1373,29 +1393,20 @@ describe('managed Runtime Host service', () => {
         legacyLeaseCalls += 1;
         return operation([]);
       },
+      openDeployment: async (
+        input: Parameters<typeof openRuntimeHostManagedPackageDeployment>[0],
+      ) => deployment(input.version, input.cliPath),
       prepareDeployment: async (
         input: Parameters<typeof prepareRuntimeHostManagedPackageDeployment>[0],
-      ) => ({
-        version: input.version,
-        root: deploymentRoot,
-        cliPath: resolveRuntimeHostManagedPackageCliPath(
-          deploymentRoot,
+      ) =>
+        deployment(
           input.version,
-          input.packageIntegrity,
+          resolveRuntimeHostManagedPackageCliPath(
+            deploymentRoot,
+            input.version,
+            input.packageIntegrity,
+          ),
         ),
-        operatorPath: join(deploymentRoot, 'operator'),
-        activate: async () => {
-          assert.equal(insideLifecycle, true);
-          order.push('activate');
-          operatorSupportsProcessLifetimeLock = true;
-        },
-        cleanup: async () => {
-          order.push('cleanup');
-        },
-        rollback: async () => {
-          order.push('rollback');
-        },
-      }),
       runOperator: async (
         _operatorPath: string,
         args: readonly string[],
@@ -1436,7 +1447,12 @@ describe('managed Runtime Host service', () => {
           };
         }
         order.push(action);
-        if (action === 'retire') assert.ok(args.includes('--allow-interrupt-active-tasks'));
+        if (action === 'retire') {
+          assert.equal(
+            args.includes('--allow-interrupt-active-tasks'),
+            expectAllowInterruptActiveTasks,
+          );
+        }
         if (operatorFailure) return operatorFailure;
         return {
           schemaVersion: 1 as const,
@@ -1457,11 +1473,7 @@ describe('managed Runtime Host service', () => {
         };
       },
       verifyReady: async () => {
-        readyChecks += 1;
         if (readyFailure) throw new Error('Host is active but not ready');
-      },
-      prunePackages: async () => {
-        order.push('cleanup');
       },
       manage: async (input: Parameters<typeof manageRuntimeHostService>[0]) => {
         if (input.action === 'stop') {
@@ -1530,8 +1542,29 @@ describe('managed Runtime Host service', () => {
     observedState = 'running';
     output = '';
     assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
-    assert.equal(readyChecks, 1);
     assert.deepEqual(order, ['cleanup']);
+
+    cleanupFailure = true;
+    order.length = 0;
+    statusReads = 0;
+    output = '';
+    assert.equal(
+      await runManagedRuntimeHostUpdateCli({ ...options, json: true, framed: false }, overrides),
+      1,
+    );
+    assert.deepEqual(order, ['cleanup']);
+    const cleanupRecovery = JSON.parse(output) as RuntimeHostServiceManagementFrame;
+    assert.equal(
+      cleanupRecovery.kind === 'error' ? cleanupRecovery.error.code : undefined,
+      'update_incomplete',
+    );
+    assert.equal(
+      cleanupRecovery.kind === 'error' && cleanupRecovery.action === 'update'
+        ? cleanupRecovery.retryTargetVersion
+        : undefined,
+      '2.0.0',
+    );
+    cleanupFailure = false;
 
     const localTargetCliPath = join(deploymentRoot, 'versions', '2.0.0', 'dist', 'cli.js');
     const packageIntegrity =
@@ -1593,7 +1626,6 @@ describe('managed Runtime Host service', () => {
     output = '';
     readyFailure = true;
     assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
-    assert.equal(readyChecks, 2);
     assert.deepEqual(order, ['retire', 'activate', 'replace', 'cleanup']);
     assert.equal(legacyLeaseCalls, 1);
     const activeRecovery = decodeRuntimeHostServiceManagementFrame(
@@ -1615,6 +1647,24 @@ describe('managed Runtime Host service', () => {
       action: 'retire',
       error: { code: 'retirement_failed', message: 'The active Host is not reachable' },
     };
+    expectAllowInterruptActiveTasks = false;
+    const { allowInterruptActiveTasks: _allowInterruptActiveTasks, ...safeOptions } = options;
+    assert.equal(await runManagedRuntimeHostUpdateCli(safeOptions, overrides), 1);
+    assert.deepEqual(order, ['retire', 'rollback']);
+    const activeTasks = decodeRuntimeHostServiceManagementFrame(
+      output.trim().split('\n').at(-1) ?? '',
+    );
+    assert.equal(
+      activeTasks?.kind === 'result' && activeTasks.action === 'update'
+        ? activeTasks.update.kind
+        : undefined,
+      'active_tasks',
+    );
+
+    order.length = 0;
+    statusReads = 0;
+    output = '';
+    expectAllowInterruptActiveTasks = true;
     assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
     assert.deepEqual(order, ['retire', 'stop', 'activate', 'replace', 'cleanup']);
     assert.equal(legacyLeaseCalls, 1);

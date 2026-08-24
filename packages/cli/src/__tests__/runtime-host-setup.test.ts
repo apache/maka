@@ -336,6 +336,7 @@ test('registry package identity avoids local content and recovers an interrupted
   );
   assert.equal(await readFile(recovered.cliPath, 'utf8'), 'registry package\n');
   assert.deepEqual(await readdir(versionsRoot), [basename(registryRoot)]);
+  await mkdir(join(versionsRoot, 'stale-package'));
 
   const stateRoot = join(clientDataRoot, 'workspaces', 'default');
   const config: RuntimeHostManagedServiceConfig = {
@@ -401,30 +402,45 @@ test('managed setup leaves no inactive package when service installation fails',
     platform: 'linux' as const,
   };
   const outputs: string[] = [];
-  const exitCode = await runRuntimeHostSetupCli(
-    {
-      json: true,
-      clientDataRoot,
-      defaultRootPath: join(clientDataRoot, 'workspaces', 'default'),
-      sourcePackageRoot,
-      version: '0.2.0',
-      principalId: 'desktop.client-1',
-      preset: 'desktop-client',
+  let rollbackFails = false;
+  const options = {
+    json: true,
+    clientDataRoot,
+    defaultRootPath: join(clientDataRoot, 'workspaces', 'default'),
+    sourcePackageRoot,
+    version: '0.2.0',
+    principalId: 'desktop.client-1',
+    preset: 'desktop-client',
+  } as const;
+  const overrides = {
+    createBackend: () => unusedBackend(),
+    manageService: async (input: { readonly action: string }) => {
+      if (input.action === 'status') return serviceResult('status', null, null);
+      throw new RuntimeHostServiceManagerError(
+        'service_manager_operation_failed',
+        `Injected service failure ${'x'.repeat(2_000)}`,
+      );
     },
-    {
-      createBackend: () => unusedBackend(),
-      manageService: async (input: { readonly action: string }) => {
-        if (input.action === 'status') return serviceResult('status', null, null);
-        throw new RuntimeHostServiceManagerError(
-          'service_manager_operation_failed',
-          `Injected service failure ${'x'.repeat(2_000)}`,
-        );
-      },
-      prepareDeployment: (input) =>
-        prepareRuntimeHostManagedPackageDeployment(input, deploymentPathOptions),
-      writeOutput: (value) => outputs.push(value),
+    prepareDeployment: async (
+      input: Parameters<typeof prepareRuntimeHostManagedPackageDeployment>[0],
+    ) => {
+      const deployment = await prepareRuntimeHostManagedPackageDeployment(
+        input,
+        deploymentPathOptions,
+      );
+      return rollbackFails
+        ? {
+            ...deployment,
+            rollback: async () => {
+              await deployment.rollback();
+              throw new Error('Injected rollback failure');
+            },
+          }
+        : deployment;
     },
-  );
+    writeOutput: (value: string) => outputs.push(value),
+  };
+  const exitCode = await runRuntimeHostSetupCli(options, overrides);
   assert.equal(exitCode, 1);
   const failure = decodeRuntimeHostSetupFrame(outputs.at(-1) ?? '');
   assert.equal(failure?.kind, 'error');
@@ -441,6 +457,15 @@ test('managed setup leaves no inactive package when service installation fails',
       ),
     ),
   );
+
+  rollbackFails = true;
+  outputs.length = 0;
+  assert.equal(await runRuntimeHostSetupCli(options, overrides), 1);
+  const rollbackFailure = decodeRuntimeHostSetupFrame(outputs.at(-1) ?? '');
+  assert.deepEqual(rollbackFailure?.kind === 'error' ? rollbackFailure.error : undefined, {
+    code: 'deployment_failed',
+    message: 'Runtime Host setup failed and its staged package could not be removed',
+  });
 });
 
 test('managed operator binds its Client Data Root and routes deployment cleanup', {

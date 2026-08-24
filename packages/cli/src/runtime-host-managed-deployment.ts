@@ -132,6 +132,49 @@ export async function prepareRuntimeHostManagedPackageDeployment(
   }
 }
 
+export async function openRuntimeHostManagedPackageDeployment(input: {
+  readonly serviceId: string;
+  readonly clientDataRoot: string;
+  readonly deploymentRoot: string;
+  readonly cliPath: string;
+  readonly version: string;
+}): Promise<RuntimeHostManagedPackageDeployment> {
+  assertVersion(input.version);
+  let deploymentRoot: string;
+  let cliPath: string;
+  try {
+    deploymentRoot = await realpath(resolve(input.deploymentRoot));
+    cliPath = await realpath(input.cliPath);
+  } catch (error) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_package',
+      `The managed Maka ${input.version} package is unavailable`,
+      { cause: error },
+    );
+  }
+  if (resolveRuntimeHostManagedDeploymentForCli(input.serviceId, cliPath) !== deploymentRoot) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_package',
+      'The configured Runtime Host package does not belong to its managed deployment',
+    );
+  }
+  const packageRoot = await validatePackage(dirname(dirname(cliPath)), input.version);
+  if (cliPath !== join(packageRoot, 'dist', 'cli.js')) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_package',
+      'The configured Runtime Host CLI does not match its managed package',
+    );
+  }
+  return deployment(
+    input.version,
+    deploymentRoot,
+    packageRoot,
+    cliPath,
+    resolve(input.clientDataRoot),
+    false,
+  );
+}
+
 async function removeAbandonedPackageWorkspaces(
   versionsRoot: string,
   packageDirectory: string,
@@ -238,51 +281,6 @@ export async function removeRuntimeHostManagedDeployment(
   }
   await rm(operatorPath, { force: true });
   await rm(requestedRoot, { recursive: true, force: true });
-}
-
-export async function pruneRuntimeHostManagedDeploymentPackages(
-  deploymentRoot: string,
-  retainedCliPath: string,
-): Promise<void> {
-  const versionsRoot = join(await realpath(resolve(deploymentRoot)), 'versions');
-  const packageRoot = dirname(dirname(await realpath(retainedCliPath)));
-  const pathFromVersions = relative(versionsRoot, packageRoot);
-  if (
-    pathFromVersions === '' ||
-    pathFromVersions === '..' ||
-    pathFromVersions.startsWith(`..${sep}`) ||
-    isAbsolute(pathFromVersions) ||
-    pathFromVersions.includes(sep)
-  ) {
-    throw new RuntimeHostManagedDeploymentError(
-      'deployment_failed',
-      'Refusing to prune packages for an invalid managed Runtime Host CLI path',
-    );
-  }
-  await pruneInactivePackages(versionsRoot, pathFromVersions);
-}
-
-export async function repairRuntimeHostManagedDeploymentOperator(input: {
-  readonly deploymentRoot: string;
-  readonly serviceId: string;
-  readonly clientDataRoot: string;
-  readonly cliPath: string;
-}): Promise<void> {
-  const deploymentRoot = await realpath(resolve(input.deploymentRoot));
-  const cliPath = await realpath(input.cliPath);
-  if (!isRuntimeHostManagedDeploymentCli(deploymentRoot, input.serviceId, cliPath)) {
-    throw new RuntimeHostManagedDeploymentError(
-      'deployment_failed',
-      'Refusing to repair an operator for an invalid managed Runtime Host package',
-    );
-  }
-  const operatorPath = join(deploymentRoot, 'operator');
-  await writeOperatorLauncher(
-    operatorPath,
-    process.execPath,
-    cliPath,
-    resolve(input.clientDataRoot),
-  );
 }
 
 async function validatePackage(path: string, version: string): Promise<string> {

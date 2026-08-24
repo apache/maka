@@ -80,6 +80,11 @@ describe('managed Runtime Host update package acquisition', () => {
 
     assert.deepEqual(calls[0]?.slice(0, 2), ['pack', 'maka-agent@2.0.0']);
     assert.equal(calls[0]?.includes('https://registry.npmjs.org/'), true);
+    const downloadCache = calls[0]?.[calls[0].indexOf('--cache') + 1];
+    const installCache = calls[1]?.[calls[1].indexOf('--cache') + 1];
+    assert.match(downloadCache ?? '', /download-cache$/u);
+    assert.match(installCache ?? '', /empty-cache$/u);
+    assert.notEqual(downloadCache, installCache);
     assert.equal(calls[1]?.includes('--offline'), true);
     assert.equal(calls[1]?.includes('--ignore-scripts'), true);
     assert.equal(calls[1]?.includes('http://127.0.0.1:9/'), true);

@@ -69,6 +69,7 @@ export async function withRuntimeHostRegistryUpdatePackage<T>(
     let packageRoot: string;
     try {
       const downloadRoot = join(temporaryRoot, 'download');
+      const downloadCache = join(temporaryRoot, 'download-cache');
       const installRoot = join(temporaryRoot, 'install');
       const emptyCache = join(temporaryRoot, 'empty-cache');
       await mkdir(downloadRoot, { mode: 0o700 });
@@ -80,6 +81,8 @@ export async function withRuntimeHostRegistryUpdatePackage<T>(
           downloadRoot,
           '--registry',
           NPM_REGISTRY,
+          '--cache',
+          downloadCache,
           '--ignore-scripts',
         ],
         temporaryRoot,

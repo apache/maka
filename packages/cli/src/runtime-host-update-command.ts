@@ -33,7 +33,7 @@ import {
   type RuntimeHostServiceUpdatePhase,
 } from '@maka/runtime-host/operator';
 import {
-  pruneRuntimeHostManagedDeploymentPackages,
+  openRuntimeHostManagedPackageDeployment,
   prepareRuntimeHostManagedPackageDeployment,
   resolveRuntimeHostManagedPackageCliPath,
   RuntimeHostManagedDeploymentError,
@@ -95,13 +95,13 @@ export interface RuntimeHostSelectedUpdateCliOptions
 interface RuntimeHostUpdateCliDeps {
   readonly manage: typeof manageRuntimeHostService;
   readonly replace: typeof replaceRuntimeHostManagedService;
+  readonly openDeployment: typeof openRuntimeHostManagedPackageDeployment;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
   readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly withLegacyOperatorLeases: typeof withRuntimeHostManagedServiceLegacyOperatorLeases;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly verifyReady: typeof verifyRuntimeHostManagedServiceReady;
-  readonly prunePackages: typeof pruneRuntimeHostManagedDeploymentPackages;
   readonly runOperator: (
     operatorPath: string,
     args: readonly string[],
@@ -131,19 +131,20 @@ export async function runManagedRuntimeHostUpdateCli(
   const deps: RuntimeHostUpdateCliDeps = {
     manage: manageRuntimeHostService,
     replace: replaceRuntimeHostManagedService,
+    openDeployment: openRuntimeHostManagedPackageDeployment,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
     withLifecycleLock: withRuntimeHostManagedServiceLifecycleLock,
     withDeploymentLock: withRuntimeHostManagedServiceDeploymentLock,
     withLegacyOperatorLeases: withRuntimeHostManagedServiceLegacyOperatorLeases,
     createBackend: createPlatformRuntimeHostServiceBackend,
     verifyReady: verifyRuntimeHostManagedServiceReady,
-    prunePackages: pruneRuntimeHostManagedDeploymentPackages,
     runOperator: runManagedRuntimeHostOperator,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
     ...overrides,
   };
   let deployment: RuntimeHostManagedPackageDeployment | undefined;
+  let exactTargetObserved = false;
   let cutoverStarted = false;
   let retired = false;
   const emit = (frame: RuntimeHostServiceManagementFrame): void => {
@@ -191,9 +192,10 @@ export async function runManagedRuntimeHostUpdateCli(
             'The Runtime Host service is not owned by a Maka managed deployment',
           );
         }
+        const deploymentRoot = serviceConfig.managedDeploymentRoot;
         const currentCliPath = resolve(serviceConfig.launch.cliPath);
         const targetCliPath = resolveRuntimeHostManagedPackageCliPath(
-          serviceConfig.managedDeploymentRoot,
+          deploymentRoot,
           options.version,
           options.registrySelection?.integrity,
         );
@@ -204,6 +206,7 @@ export async function runManagedRuntimeHostUpdateCli(
             currentCliPath === resolve(expectedCurrent.cliPath));
         const targetDeploymentIsCurrent =
           currentVersion === options.version && currentCliPath === targetCliPath;
+        exactTargetObserved = targetDeploymentIsCurrent;
         if (!selectedDeploymentStillCurrent && !targetDeploymentIsCurrent) {
           throw new RuntimeHostServiceManagerError(
             'target_mismatch',
@@ -219,10 +222,14 @@ export async function runManagedRuntimeHostUpdateCli(
             activeTargetNeedsRepair = true;
           }
           if (!activeTargetNeedsRepair) {
-            await deps.prunePackages(
-              serviceConfig.managedDeploymentRoot,
-              serviceConfig.launch.cliPath,
-            );
+            const currentDeployment = await deps.openDeployment({
+              serviceId,
+              clientDataRoot: options.clientDataRoot,
+              deploymentRoot,
+              cliPath: serviceConfig.launch.cliPath,
+              version: options.version,
+            });
+            await currentDeployment.cleanup();
             emit({
               schemaVersion: 1,
               kind: 'result',
@@ -248,17 +255,25 @@ export async function runManagedRuntimeHostUpdateCli(
 
         emit(progress('staging', currentVersion, options.version));
         deployment = await deps.withLifecycleLock(options.clientDataRoot, () =>
-          deps.prepareDeployment({
-            serviceId,
-            clientDataRoot: options.clientDataRoot,
-            sourcePackageRoot: options.sourcePackageRoot,
-            version: options.version,
-            ...(options.registrySelection
-              ? { packageIntegrity: options.registrySelection.integrity }
-              : {}),
-          }),
+          targetDeploymentIsCurrent
+            ? deps.openDeployment({
+                serviceId,
+                clientDataRoot: options.clientDataRoot,
+                deploymentRoot,
+                cliPath: serviceConfig.launch.cliPath,
+                version: options.version,
+              })
+            : deps.prepareDeployment({
+                serviceId,
+                clientDataRoot: options.clientDataRoot,
+                sourcePackageRoot: options.sourcePackageRoot,
+                version: options.version,
+                ...(options.registrySelection
+                  ? { packageIntegrity: options.registrySelection.integrity }
+                  : {}),
+              }),
         );
-        if (deployment.root !== serviceConfig.managedDeploymentRoot) {
+        if (deployment.root !== deploymentRoot) {
           throw new RuntimeHostServiceManagerError(
             'target_mismatch',
             'The staged Runtime Host package belongs to a different managed deployment',
@@ -423,11 +438,11 @@ export async function runManagedRuntimeHostUpdateCli(
       }
     });
   } catch (error) {
-    const updateIncomplete = retired || cutoverStarted;
+    const updateIncomplete = exactTargetObserved || retired || cutoverStarted;
     const reportedError = updateIncomplete
       ? new RuntimeHostServiceManagerError(
           'update_incomplete',
-          `The Runtime Host update may have started its cutover before it failed; retry the exact ${options.version} update to complete recovery`,
+          `The Runtime Host update did not complete; retry the exact ${options.version} update to complete recovery`,
           { cause: error },
         )
       : error;
