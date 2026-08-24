@@ -99,6 +99,14 @@ const WORKBAR_TOOL_DEFINITION_BY_KIND = {
     singleton: true,
     defaultPlacement: 'right',
   },
+  'work-board': {
+    kind: 'work-board',
+    labelKey: 'work-board',
+    icon: 'list-todo',
+    persisted: true,
+    singleton: true,
+    defaultPlacement: 'right',
+  },
   inspector: {
     kind: 'inspector',
     labelKey: 'inspector',

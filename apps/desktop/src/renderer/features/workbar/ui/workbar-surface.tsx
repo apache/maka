@@ -45,10 +45,11 @@ import {
   TaskLedgerPanel,
   deriveTaskLedgerPanelModel,
   IconButton,
+  Composer,
   useUiLocale,
   type ChatModelChoice,
-  type Composer,
 } from '@maka/ui';
+import type { ComposerProps } from '../../../../../../../packages/ui/dist/composer.d.ts';
 import {
   ICON_SIZE,
   Activity,
@@ -717,10 +718,10 @@ export function WorkbarSurface(props: {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
-  mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
-  mentionSkillsUnavailable?: ComponentProps<typeof Composer>['mentionSkillsUnavailable'];
-  mentionSkillsLoading?: ComponentProps<typeof Composer>['mentionSkillsLoading'];
-  onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
+  mentionSkills?: ComposerProps['mentionSkills'];
+  mentionSkillsUnavailable?: ComposerProps['mentionSkillsUnavailable'];
+  mentionSkillsLoading?: ComposerProps['mentionSkillsLoading'];
+  onSearchMentionFiles?: ComposerProps['onSearchMentionFiles'];
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
   const sessionTasks = useSessionTasks(props.sessionId);

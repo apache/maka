@@ -24,6 +24,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type ClipboardEvent,
   type DragEvent,
   type FormEvent,
@@ -2060,3 +2061,5 @@ export const Composer = forwardRef<
     </>
   );
 });
+
+export type ComposerProps = ComponentProps<typeof Composer>;
