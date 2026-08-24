@@ -22,7 +22,11 @@ import { join } from 'node:path';
 import type { E2eFixtureScenario, E2eFixtureState } from '@maka/core/e2e-fixture';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { createProjectCatalog } from '@maka/storage/project-catalog';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
+import {
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+} from '@maka/storage/root-authority';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   E2E_FIXTURE_NOW,
   LONG_SIDEBAR_PROJECT_ID,
@@ -46,7 +50,7 @@ import {
   writeScheduledTasks,
   writeSettings,
 } from './e2e-fixture/scenarios-settings.js';
-import { usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
+import { usageStatsRecords, usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
 
 const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-models',
@@ -211,7 +215,7 @@ export async function seedE2eFixture(input: {
   const scenario = input.fixture.scenario;
   await rm(input.workspaceRoot, { recursive: true, force: true });
   await mkdir(input.workspaceRoot, { recursive: true });
-  await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
+  const storageRoot = await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
   await writeSettings(input.workspaceRoot, scenario);
   await writeConnections(input.workspaceRoot, now, scenario);
   await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
@@ -241,6 +245,18 @@ export async function seedE2eFixture(input: {
   if (scenario === 'settings-usage') {
     for (const seed of usageStatsSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
+    }
+    const owner = await tryAcquireInteractiveRootOwner(storageRoot);
+    if (!owner) throw new Error('Unable to acquire the E2E fixture storage root');
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    try {
+      const records = usageStatsRecords(now);
+      for (const record of records.llm) await usage.telemetry.recordLlmCall(record);
+      for (const record of records.tools) await usage.telemetry.recordToolInvocation(record);
+      await usage.flush();
+    } finally {
+      await usage.close();
+      await owner.close();
     }
   }
 }

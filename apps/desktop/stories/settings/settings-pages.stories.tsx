@@ -203,7 +203,7 @@ function makeUsageLog(input: {
   kind: 'model' | 'tool';
   model: string;
   toolName?: string;
-  status?: 'success' | 'error';
+  status?: 'success' | 'error' | 'aborted';
   minutesAgo: number;
   sessionName?: string;
 }): UsageStats['logs'][number] {
@@ -245,6 +245,12 @@ const usageLogs: UsageStats['logs'] = [
   // No sessionName → renders the "未命名会话 · <short id>" fallback.
   makeUsageLog({ id: '3', kind: 'model', model: 'glm-4.7', status: 'error', minutesAgo: 16 }),
   makeUsageLog({ id: '4', kind: 'tool', model: 'glm-4.7', toolName: 'Bash', sessionName: 'Bash 环境探查', minutesAgo: 25 }),
+  {
+    ...makeUsageLog({ id: '5', kind: 'model', model: 'gpt-5', status: 'aborted', minutesAgo: 31 }),
+    sessionId: undefined,
+    turnId: undefined,
+    costUsd: undefined,
+  },
 ];
 
 const usageStats: UsageStats = {
@@ -1954,13 +1960,19 @@ export const UsageMultiModel: Story = {
   decorators: [withUsageMultiModelBridge],
   render: () => <SettingsStory section="usage" />,
 };
-// Real path: 设置 → 使用统计 → 详情记录 on → 请求日志, with long model and tool names.
+// Real path: 设置 → 使用统计 → 详情记录 on → 活动记录, with long model and tool names.
 export const UsageLongTail: Story = {
   decorators: [withUsageLongTailBridge],
   render: () => <SettingsStory section="usage" />,
   play: async ({ canvasElement, globals }) => {
     const canvas = within(canvasElement);
     const usageCopy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : 'zh');
+    expect(
+      await canvas.findByText(usageCopy.totalRequests, {
+        selector: '[data-slot="stat-tile-label"]',
+      }),
+    ).toBeInTheDocument();
+    expect(await canvas.findByRole('tab', { name: usageCopy.tabs[0] })).toBeInTheDocument();
     await waitForStoryCondition(
       () => canvas.queryByRole('table', { name: usageCopy.tables.requestsAria }) !== null
         || canvas.queryByRole('button', { name: usageCopy.showDetails }) !== null,

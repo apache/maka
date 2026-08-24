@@ -294,7 +294,11 @@ export function SettingsSurface(props: {
   const defaultRuntimeHostProfileIdRef = useRef(
     initialRuntimeHostCatalog?.defaultProfileId,
   );
-  const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
+  const [usageStats, setUsageStats] = useState<{
+    hostKey: string;
+    range: UsageRange;
+    value: UsageStats;
+  } | null>(null);
   const [clientLoading, setClientLoading] = useState(initialClientSettings === undefined);
   const settingsModalMountedRef = useMountedRef();
   const clientSettingsTicketRef = useRef(0);
@@ -344,6 +348,8 @@ export function SettingsSurface(props: {
   const selectedRuntimeHostKey = selectedRuntimeHost
     ? runtimeHostSettingsKey(selectedRuntimeHost)
     : undefined;
+  const selectedRuntimeHostKeyRef = useRef(selectedRuntimeHostKey);
+  selectedRuntimeHostKeyRef.current = selectedRuntimeHostKey;
   function commitSelectedRuntimeHostProfile(
     profileId: string,
     snapshot = runtimeHosts,
@@ -353,10 +359,14 @@ export function SettingsSurface(props: {
     const nextKey = nextHost ? runtimeHostSettingsKey(nextHost) : undefined;
     // Reject old-Host reads and writes synchronously with the authority
     // change, before React renders the newly selected profile.
-    runtimeHostRequestAuthority.selectTarget(
+    const targetChanged = runtimeHostRequestAuthority.selectTarget(
       nextKey,
       lifecycle?.epoch,
     );
+    if (targetChanged) {
+      usageReloadTicketRef.current += 1;
+      setUsageStats(null);
+    }
     selectedProfileIdRef.current = profileId;
     setSelectedProfileId(profileId);
   }
@@ -603,15 +613,30 @@ export function SettingsSurface(props: {
   }
 
   async function reloadUsage(range: UsageRange = settings.usage.range) {
+    const host = selectedRuntimeHost;
+    if (!host) {
+      usageReloadTicketRef.current += 1;
+      setUsageStats(null);
+      return;
+    }
+    const hostKey = runtimeHostSettingsKey(host);
     const ticket = usageReloadTicketRef.current + 1;
     usageReloadTicketRef.current = ticket;
     try {
-      const next = await window.maka.settings.usageStats(range);
-      if (settingsModalMountedRef.current && ticket === usageReloadTicketRef.current) {
-        setUsageStats(next);
+      const next = await window.maka.settings.usageStats(range, host);
+      if (
+        settingsModalMountedRef.current &&
+        ticket === usageReloadTicketRef.current &&
+        selectedRuntimeHostKeyRef.current === hostKey
+      ) {
+        setUsageStats({ hostKey, range, value: next });
       }
     } catch (error) {
-      if (settingsModalMountedRef.current && ticket === usageReloadTicketRef.current) {
+      if (
+        settingsModalMountedRef.current &&
+        ticket === usageReloadTicketRef.current &&
+        selectedRuntimeHostKeyRef.current === hostKey
+      ) {
         toast.error(copy.usageLoadFailed, settingsActionErrorMessage(error, locale));
       }
     }
@@ -682,6 +707,8 @@ export function SettingsSurface(props: {
           // Fence synchronously, before the catalog refresh can resolve. The
           // previous generation's snapshots stay visible but no Host-backed
           // control may treat them as current write authority.
+          usageReloadTicketRef.current += 1;
+          setUsageStats(null);
           setRuntimeHostCatalog(invalidateSettingsResourceGeneration);
           setRuntimeHostSettings(invalidateSettingsResourceGeneration);
           setRuntimeHostConnections(invalidateSettingsResourceGeneration);
@@ -747,18 +774,11 @@ export function SettingsSurface(props: {
   }, [connectionsBridge, selectedRuntimeHost]);
 
   useEffect(() => {
-    // Keyed on the EFFECTIVE range, not just the section: usage is
-    // client-owned (settings-ownership.ts), and the persisted range rides
-    // in with the async getClient() load — which lands after this effect
-    // first fires when a Settings window is restored directly onto
-    // 使用统计. The initial fetch then used the '24h' default while the
-    // chip showed the persisted range, and nothing refetched — every
-    // metric read 0 until a manual refresh or a tab round-trip. With the
-    // range in the deps, the truth's arrival (or any later range change,
-    // including the page's own persisted range clicks) is the trigger, and
-    // this effect is the single owner of range-driven fetches.
+    // Usage records are Host-owned while the display preferences remain
+    // client-owned. Refetch when either the persisted range arrives or the
+    // selected Host changes so labels and numbers always describe one Host.
     if (section === 'usage') void reloadUsage(settings.usage.range);
-  }, [section, settings.usage.range]);
+  }, [section, settings.usage.range, selectedRuntimeHostKey]);
 
   // PR-SETTINGS-HEADER-COPY-MAP-0 (U1): the page header derives its title
   // and description from the section→copy map keyed by the active section,
@@ -964,7 +984,13 @@ export function SettingsSurface(props: {
                           <SettingsPageBody
                             section={section}
                             settings={settings}
-                            usageStats={usageStats}
+                            usageStats={
+                              usageStats &&
+                              usageStats.hostKey === selectedRuntimeHostKey &&
+                              usageStats.range === settings.usage.range
+                                ? usageStats.value
+                                : null
+                            }
                             connections={connections}
                             connectionsBridge={connectionsBridge}
                             defaultSlug={defaultSlug}

@@ -96,6 +96,7 @@ export function UsageSettingsPage(props: {
       .filter((log) =>
         normalizedModelFilter.length === 0 ||
         log.model.toLowerCase().includes(normalizedModelFilter) ||
+        log.provider.toLowerCase().includes(normalizedModelFilter) ||
         (log.toolName ?? '').toLowerCase().includes(normalizedModelFilter)
       );
   }, [stats, usageDraft.status, normalizedModelFilter]);
@@ -297,6 +298,7 @@ function UsageRequestsPanel(props: {
             { value: 'all', label: props.copy.statuses[0] },
             { value: 'success', label: props.copy.statuses[1] },
             { value: 'error', label: props.copy.statuses[2] },
+            { value: 'aborted', label: props.copy.statuses[3] },
           ]}
           width={320}
           onChange={(value) => props.onStatusChange(value as AppSettings['usage']['status'])}
@@ -340,8 +342,8 @@ function UsageRequestsPanel(props: {
           usageRequestTarget(row),
           usageRequestSessionCell(row, props.copy, props.onOpenSession),
           row.inputTokens + row.outputTokens,
-          row.kind === 'model' ? `$${(row.costUsd ?? 0).toFixed(2)}` : '-',
-          row.latencyMs ? `${row.latencyMs}ms` : '-',
+          row.kind === 'model' && row.costUsd !== undefined ? `$${row.costUsd.toFixed(2)}` : '-',
+          row.latencyMs !== undefined ? `${row.latencyMs}ms` : '-',
           usageRequestStatusLabel(row.status, props.copy),
         ])}
         empty={{
@@ -439,10 +441,14 @@ function usageRequestKindLabel(kind: UsageStats['logs'][number]['kind'], copy: U
 }
 
 function usageRequestTarget(row: UsageStats['logs'][number]) {
-  return row.kind === 'tool' ? row.toolName ?? row.model : row.model;
+  return row.kind === 'tool' ? row.toolName || row.model || row.provider || '-' : row.model || row.provider || '-';
 }
 
 function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSettingsCopy, onOpenSession?: (sessionId: string) => void) {
+  // Canonical activity rows can lack a session (e.g. an aborted call before a
+  // session was attached); show it as unknown rather than a blank link.
+  if (!row.sessionId) return copy.tables.unknown;
+  const sessionId = row.sessionId;
   const label = usageSessionDisplayLabel(row, copy);
   if (!onOpenSession) return label;
   return (
@@ -450,7 +456,7 @@ function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSet
       className="settingsUsageSessionCell"
       variant="ghost"
       size="sm"
-      onClick={() => onOpenSession(row.sessionId)}
+      onClick={() => onOpenSession(sessionId)}
       label={label}
       tooltip={copy.tables.openSession(label)}
     />
@@ -464,7 +470,7 @@ function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSet
 function usageSessionDisplayLabel(row: UsageStats['logs'][number], copy: UsageSettingsCopy) {
   const name = row.sessionName?.trim();
   if (name) return name;
-  return `${copy.tables.untitledSession} · ${shortRealSessionId(row.sessionId)}`;
+  return `${copy.tables.untitledSession} · ${shortRealSessionId(row.sessionId ?? '')}`;
 }
 
 function shortRealSessionId(sessionKey: string) {
@@ -483,6 +489,7 @@ function usageRequestStatusLabel(status: UsageStats['logs'][number]['status'], c
   switch (status) {
     case 'success': return copy.tables.success;
     case 'error': return copy.tables.error;
+    case 'aborted': return copy.tables.aborted;
   }
 }
 

@@ -18,20 +18,24 @@
  */
 
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
+import type { TelemetryIndexWriter } from '@maka/storage/usage-stores';
 import { header } from './seed-helpers.js';
 
-// Settings → 使用统计 fixture. `usageStats` aggregates `token_usage` + tool
-// messages across ALL sessions in the workspace, so the settings-usage capture
-// only shows real tables if the seed contains enough varied traffic. These
-// sessions are gated to the `settings-usage` scenario so no other capture is
-// disturbed; every value is a literal keyed off the fixed `now`, so the tables
-// render deterministically.
+type PersistedLlmCallRecord = Parameters<TelemetryIndexWriter['recordLlmCall']>[0];
+type PersistedToolInvocationRecord = Parameters<
+  TelemetryIndexWriter['recordToolInvocation']
+>[0];
+
+// Settings → 使用统计 fixture. Session messages keep the task links realistic,
+// while `usageStatsRecords` seeds the Runtime Host's canonical usage surface.
+// These records are gated to `settings-usage` so no other capture is disturbed;
+// every value is derived from the fixed fixture clock for deterministic tables.
 //
 // The shape below intentionally spreads across:
 //   - 3 providers (zai-live / relay-fallback / needs-reauth) → 供应商统计
 //   - 5 models (glm / claude / gpt families) → 模型统计
 //   - 6 tools with 2 failures → 工具统计 (exercises the error column)
-//   - a dozen request-log rows mixing model + tool + success/error → 请求日志
+//   - a dozen activity rows mixing model + tool + success/error → 活动记录
 
 interface UsageTurnSpec {
   turnId: string;
@@ -214,4 +218,80 @@ export function usageStatsSessions(
       ],
     },
   ];
+}
+
+export function usageStatsRecords(now: number): {
+  llm: PersistedLlmCallRecord[];
+  tools: PersistedToolInvocationRecord[];
+} {
+  const sessions = usageStatsSessions(now);
+  const llm: PersistedLlmCallRecord[] = [];
+  const tools: PersistedToolInvocationRecord[] = [];
+  for (const { header: session, messages } of sessions) {
+    const modelByTurn = new Map(
+      messages
+        .filter((message) => message.type === 'assistant')
+        .map((message) => [message.turnId, message.modelId]),
+    );
+    const toolResults = new Map(
+      messages
+        .filter((message) => message.type === 'tool_result')
+        .map((message) => [message.toolUseId, message]),
+    );
+    for (const message of messages) {
+      if (message.type === 'token_usage') {
+        const inputTokens = message.input;
+        const outputTokens = message.output;
+        const cacheRead = message.cacheRead ?? 0;
+        const cacheMiss = message.cacheMissInput ?? Math.max(0, inputTokens - cacheRead);
+        const cacheWrite = message.cacheCreation ?? 0;
+        llm.push({
+          id: message.id,
+          sessionId: session.id,
+          turnId: message.turnId,
+          callKind: 'main',
+          callId: message.id,
+          connectionSlug: session.llmConnectionSlug,
+          providerId: session.llmConnectionSlug,
+          modelId: modelByTurn.get(message.turnId) ?? session.model,
+          inputTokens,
+          outputTokens,
+          cacheHitInputTokens: cacheRead,
+          cacheMissInputTokens: cacheMiss,
+          cachedInputTokens: cacheRead,
+          cacheWriteInputTokens: cacheWrite,
+          reasoningTokens: message.reasoning ?? 0,
+          totalTokens: inputTokens + outputTokens,
+          costUsd: message.costUsd ?? 0,
+          latencyMs: 2_000,
+          status: 'success',
+          startedAt: message.ts - 2_000,
+          date: new Date(message.ts).toISOString().slice(0, 10),
+          ts: message.ts,
+        });
+      }
+      if (message.type === 'tool_call') {
+        const result = toolResults.get(message.id);
+        const durationMs = result?.durationMs ?? 0;
+        const ts = result?.ts ?? message.ts;
+        tools.push({
+          id: `tool:${message.id}`,
+          sessionId: session.id,
+          turnId: message.turnId,
+          toolCallId: message.id,
+          toolName: message.displayName ?? message.toolName,
+          providerId: session.llmConnectionSlug,
+          modelId: modelByTurn.get(message.turnId) ?? session.model,
+          durationMs,
+          status: result?.isError ? 'error' : 'success',
+          bytesIn: 0,
+          bytesOut: 0,
+          startedAt: message.ts,
+          date: new Date(ts).toISOString().slice(0, 10),
+          ts,
+        });
+      }
+    }
+  }
+  return { llm, tools };
 }

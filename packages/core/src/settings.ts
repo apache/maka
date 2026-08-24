@@ -112,7 +112,7 @@ export interface AppNetworkSettings {
 }
 
 export type UsageRange = '24h' | '7d' | '30d' | 'all';
-export type UsageStatus = 'all' | 'success' | 'error';
+export type UsageStatus = 'all' | 'success' | 'error' | 'aborted';
 export type UsageTab = 'requests' | 'providers' | 'models' | 'tools' | 'pricing';
 
 export interface UsageSettings {
@@ -510,10 +510,10 @@ export interface UsageRequestLog {
   id: string;
   ts: number;
   kind: 'model' | 'tool';
-  sessionId: string;
+  sessionId?: string;
   /** Human-readable session title (SessionHeader.name); may be empty for untitled sessions. */
-  sessionName: string;
-  turnId: string;
+  sessionName?: string;
+  turnId?: string;
   provider: string;
   model: string;
   toolName?: string;
@@ -525,7 +525,7 @@ export interface UsageRequestLog {
   reasoning?: number;
   costUsd?: number;
   latencyMs?: number;
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'aborted';
 }
 
 export interface UsageSummary {
