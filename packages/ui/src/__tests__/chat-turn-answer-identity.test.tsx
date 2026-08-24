@@ -159,6 +159,22 @@ test('redacts secrets before rendering a settled collapsed reasoning preview', a
   assert.doesNotMatch(header.textContent ?? '', /sk-live-1234567890abcdef/);
 });
 
+test('preserves currency in a settled collapsed reasoning preview', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, turnWith([
+    {
+      kind: 'thinking',
+      text: 'The estimated cost is $5, not $$x + 1$$.',
+      messageId: 'thinking-1',
+      live: false,
+    },
+  ]));
+
+  const header = container.querySelector('[data-slot="activity-card-header"]');
+  assert.ok(header);
+  assert.match(header.textContent ?? '', /cost is \$5, not x \+ 1/);
+});
+
 test('preserves a model-authored single newline in plain reasoning', async () => {
   const { container, root } = domRoot();
   await renderTurn(root, turnWith([

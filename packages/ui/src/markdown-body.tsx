@@ -130,11 +130,11 @@ export function MarkdownBody(props: {
   settledText?: string;
   density?: 'default' | 'compact';
 }) {
-  const prepared = prepareMarkdownMath(neutralizeUnsafeMarkdownImages(props.text));
+  const source = neutralizeUnsafeMarkdownImages(props.text);
+  const settledSource =
+    props.settledText === undefined ? undefined : neutralizeUnsafeMarkdownImages(props.settledText);
+  const prepared = prepareMarkdownMath(source, settledSource);
   const safeText = prepared.text;
-  const settledText = props.settledText === undefined
-    ? undefined
-    : prepareMarkdownMath(neutralizeUnsafeMarkdownImages(props.settledText)).text;
   const budgetedText = props.streaming ? safeText : applyMermaidRenderBudget(safeText);
   const density = props.density ?? 'default';
   const components = props.streaming
@@ -178,7 +178,7 @@ export function MarkdownBody(props: {
         components={components}
         inlinePlugins={[prepared.plugin]}
         isStreaming={props.streaming}
-        settledText={settledText}
+        settledText={prepared.settledText}
       >
         {budgetedText}
       </AstryxMarkdown>

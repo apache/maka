@@ -1310,7 +1310,7 @@ function reasoningPreviewText(text: string): string {
   return firstLine
     .replace(/^#{1,6}\s+/, '')
     .replace(/\\([()[\]])/g, '')
-    .replace(/\${1,2}/g, '')
+    .replace(/\$\$/g, '')
     .replace(/[*_~`]+/g, '')
     .trim();
 }

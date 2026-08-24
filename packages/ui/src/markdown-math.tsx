@@ -20,25 +20,34 @@
 import katex from 'katex';
 import type { MarkdownInlinePlugin } from '@astryxdesign/core/Markdown';
 
-const TOKEN_START = '\uE000MAKAMATH';
-const TOKEN_END = 'END\uE001';
-const TOKEN_PATTERN = new RegExp(`${TOKEN_START}([ID])([0-9A-F]+)${TOKEN_END}`, 'g');
-
 export interface PreparedMarkdownMath {
   text: string;
+  settledText?: string;
   plugin: MarkdownInlinePlugin;
 }
 
-export function prepareMarkdownMath(source: string): PreparedMarkdownMath {
+interface MathTokenValue {
+  formula: string;
+  displayMode: boolean;
+}
+
+export function prepareMarkdownMath(
+  source: string,
+  settledSource?: string,
+): PreparedMarkdownMath {
+  const registry = createMathTokenRegistry([source, settledSource]);
   return {
-    text: protectMathOutsideCode(source),
+    text: protectMathOutsideCode(source, registry.register),
+    ...(settledSource === undefined
+      ? {}
+      : { settledText: protectMathOutsideCode(settledSource, registry.register) }),
     plugin: {
-      pattern: TOKEN_PATTERN,
+      pattern: registry.pattern,
       render: (match, key) => {
-        const displayMode = match[1] === 'D';
-        const formula = decodeFormula(match[2] ?? '');
-        const html = katex.renderToString(formula, {
-          displayMode,
+        const value = registry.values.get(match[0]);
+        if (!value) return match[0];
+        const html = katex.renderToString(value.formula, {
+          displayMode: value.displayMode,
           output: 'htmlAndMathml',
           strict: 'warn',
           throwOnError: false,
@@ -47,7 +56,9 @@ export function prepareMarkdownMath(source: string): PreparedMarkdownMath {
         return (
           <span
             key={key}
-            className={displayMode ? 'maka-math maka-math-display' : 'maka-math maka-math-inline'}
+            className={
+              value.displayMode ? 'maka-math maka-math-display' : 'maka-math maka-math-inline'
+            }
             dangerouslySetInnerHTML={{ __html: html }}
           />
         );
@@ -56,7 +67,43 @@ export function prepareMarkdownMath(source: string): PreparedMarkdownMath {
   };
 }
 
-function protectMathOutsideCode(source: string): string {
+function createMathTokenRegistry(sources: Array<string | undefined>): {
+  pattern: RegExp;
+  register: (formula: string, displayMode: boolean) => string;
+  values: Map<string, MathTokenValue>;
+} {
+  let namespaceIndex = 0;
+  let namespace = '';
+  do {
+    namespace = `\uE000MAKAMATH:${namespaceIndex}:`;
+    namespaceIndex += 1;
+  } while (sources.some((source) => source?.includes(namespace)));
+
+  const tokenEnd = ':\uE001';
+  const values = new Map<string, MathTokenValue>();
+  const tokensByValue = new Map<string, string>();
+  let nextTokenId = 0;
+  return {
+    pattern: new RegExp(`${escapeRegExp(namespace)}\\d+${escapeRegExp(tokenEnd)}`, 'g'),
+    register: (formula, displayMode) => {
+      const valueKey = JSON.stringify([displayMode, formula]);
+      const existingToken = tokensByValue.get(valueKey);
+      if (existingToken) return existingToken;
+
+      const token = `${namespace}${nextTokenId}${tokenEnd}`;
+      nextTokenId += 1;
+      values.set(token, { formula, displayMode });
+      tokensByValue.set(valueKey, token);
+      return token;
+    },
+    values,
+  };
+}
+
+function protectMathOutsideCode(
+  source: string,
+  register: (formula: string, displayMode: boolean) => string,
+): string {
   const lines = source.split('\n');
   let fence: { character: string; length: number } | undefined;
   let proseLines: string[] = [];
@@ -64,7 +111,7 @@ function protectMathOutsideCode(source: string): string {
 
   const flushProse = () => {
     if (proseLines.length === 0) return;
-    protectedParts.push(protectMathInProse(proseLines.join('\n')));
+    protectedParts.push(protectMathInProse(proseLines.join('\n'), register));
     proseLines = [];
   };
 
@@ -91,7 +138,10 @@ function protectMathOutsideCode(source: string): string {
   return protectedParts.join('\n');
 }
 
-function protectMathInProse(source: string): string {
+function protectMathInProse(
+  source: string,
+  register: (formula: string, displayMode: boolean) => string,
+): string {
   let output = '';
   let index = 0;
 
@@ -109,10 +159,9 @@ function protectMathInProse(source: string): string {
     const delimited =
       readDelimitedMath(source, index, '\\(', '\\)', false, false)
       ?? readDelimitedMath(source, index, '\\[', '\\]', true, true)
-      ?? readDelimitedMath(source, index, '$$', '$$', true, true)
-      ?? readDollarMath(source, index);
+      ?? readDelimitedMath(source, index, '$$', '$$', true, true);
     if (delimited) {
-      output += mathToken(delimited.formula, delimited.displayMode);
+      output += register(delimited.formula, delimited.displayMode);
       index = delimited.end;
       continue;
     }
@@ -142,45 +191,6 @@ function readDelimitedMath(
   return { formula, displayMode, end: close + closing.length };
 }
 
-function readDollarMath(
-  line: string,
-  index: number,
-): { formula: string; displayMode: false; end: number } | undefined {
-  if (line[index] !== '$' || line[index - 1] === '\\' || line[index + 1] === '$') {
-    return undefined;
-  }
-  const lineEnd = line.indexOf('\n', index + 1);
-  const close = findClosingDollar(line, index + 1, lineEnd < 0 ? line.length : lineEnd);
-  if (close < 0) return undefined;
-  const formula = line.slice(index + 1, close);
-  if (!formula || /^\s|\s$/.test(formula)) return undefined;
-  if (isPairedCurrencyRange(line, index, close)) return undefined;
-  return { formula, displayMode: false, end: close + 1 };
-}
-
-function isPairedCurrencyRange(line: string, opening: number, closing: number): boolean {
-  return /\d/.test(line[opening + 1] ?? '') && /\d/.test(line[closing + 1] ?? '');
-}
-
-function findClosingDollar(line: string, start: number, end: number): number {
-  for (let index = start; index < end; index += 1) {
-    if (line[index] !== '$' || line[index - 1] === '\\' || line[index + 1] === '$') continue;
-    return index;
-  }
-  return -1;
-}
-
-function mathToken(formula: string, displayMode: boolean): string {
-  const encoded = Array.from(formula, (character) =>
-    (character.codePointAt(0) ?? 0).toString(16).padStart(6, '0').toUpperCase()
-  ).join('');
-  return `${TOKEN_START}${displayMode ? 'D' : 'I'}${encoded}${TOKEN_END}`;
-}
-
-function decodeFormula(encoded: string): string {
-  let formula = '';
-  for (let index = 0; index < encoded.length; index += 6) {
-    formula += String.fromCodePoint(Number.parseInt(encoded.slice(index, index + 6), 16));
-  }
-  return formula;
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

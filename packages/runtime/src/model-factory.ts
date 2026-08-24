@@ -36,6 +36,7 @@ import {
 } from '@ai-sdk/provider';
 import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
+import { lookupModelMetadata } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
   resolveThinkingLevel,
@@ -402,24 +403,55 @@ function openAiResponsesSummary(modelId: string, reasoningEffort: string | undef
 }
 
 function visibleClaudeThinking(
+  providerType: RuntimeExecutionConnection['providerType'],
   modelId: string,
   thinkingOptions: ThinkingOptions | undefined,
   effort: string | undefined,
 ) {
-  const familyModelId = claudeFamilyId(modelId);
-  if (!familyModelId.startsWith('claude-')) return undefined;
-  const effectiveOptions = thinkingOptions ?? thinkingOptionsForModel('anthropic', familyModelId);
-  const supportsThinking =
-    effectiveOptions?.toggle === true || (effectiveOptions?.efforts?.length ?? 0) > 0;
-  if (!supportsThinking) return undefined;
+  const mode = claudeThinkingMode(providerType, modelId, thinkingOptions);
+  if (!mode) return undefined;
 
-  const thinking = getAnthropicModelCapabilities(familyModelId).supportsAdaptiveThinking
-    ? { type: 'adaptive' as const, display: 'summarized' as const }
-    : { type: 'enabled' as const, budgetTokens: 1_024 };
+  const thinking =
+    mode === 'adaptive'
+      ? { type: 'adaptive' as const, display: 'summarized' as const }
+      : { type: 'enabled' as const, budgetTokens: 1_024 };
   return {
     thinking,
     ...(effort ? { effort } : {}),
   };
+}
+
+function claudeThinkingMode(
+  providerType: RuntimeExecutionConnection['providerType'],
+  modelId: string,
+  thinkingOptions: ThinkingOptions | undefined,
+): 'adaptive' | 'legacy' | undefined {
+  const familyModelId = claudeFamilyId(modelId);
+  if (!familyModelId.startsWith('claude-')) return undefined;
+
+  const providerMetadata = lookupModelMetadata(providerType, modelId);
+  const anthropicMetadata = lookupModelMetadata('anthropic', familyModelId);
+  const isKnownBareLegacyClaude4 = /^claude-(?:opus|sonnet)-4$/.test(familyModelId);
+  const effectiveOptions =
+    thinkingOptions ??
+    providerMetadata.thinkingOptions ??
+    anthropicMetadata.thinkingOptions ??
+    thinkingOptionsForModel('anthropic', familyModelId);
+  const supportsThinking =
+    effectiveOptions?.toggle === true ||
+    (effectiveOptions?.efforts?.length ?? 0) > 0 ||
+    providerMetadata.capabilities?.reasoning === true ||
+    anthropicMetadata.capabilities?.reasoning === true ||
+    isKnownBareLegacyClaude4;
+  if (!supportsThinking) return undefined;
+
+  // The SDK's capability table only recognizes dated Claude 4 aliases. The
+  // active bare aliases are the same legacy budget-thinking families.
+  if (isKnownBareLegacyClaude4) return 'legacy';
+
+  return getAnthropicModelCapabilities(familyModelId).supportsAdaptiveThinking
+    ? 'adaptive'
+    : 'legacy';
 }
 
 export function buildProviderOptions(
@@ -494,7 +526,7 @@ function buildThinkingProviderOptions(
       const summarizedThinking =
         connection.providerType === 'anthropic' &&
         (thinkingLevel === undefined || level !== undefined)
-          ? visibleClaudeThinking(modelId, thinkingOptions, level)
+          ? visibleClaudeThinking(connection.providerType, modelId, thinkingOptions, level)
           : undefined;
       if (level === 'off' && thinkingOptions?.offBehavior === 'anthropic-thinking-disabled') {
         reasoning = { thinking: { type: 'disabled' as const } };
@@ -716,7 +748,12 @@ function buildFamilyWire(
     };
   }
   if (wire === 'anthropic-messages' && (requestedLevel === undefined || level !== undefined)) {
-    const reasoning = visibleClaudeThinking(modelId, thinkingOptions, explicitReasoningEffort);
+    const reasoning = visibleClaudeThinking(
+      connection.providerType,
+      modelId,
+      thinkingOptions,
+      explicitReasoningEffort,
+    );
     if (reasoning) return { anthropic: reasoning };
   }
   if (wire === 'openai-chat' && adapter.kind === 'openai-compatible') {

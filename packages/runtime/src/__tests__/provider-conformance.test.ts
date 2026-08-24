@@ -149,6 +149,11 @@ describe('models.dev provider conformance', () => {
         expectedThinking: { type: 'adaptive', display: 'summarized' },
       },
       {
+        modelId: 'claude-sonnet-4',
+        providerType: 'opencode' as const,
+        expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
+      },
+      {
         modelId: 'anthropic/claude-opus-4.5',
         providerType: 'anthropic-compatible' as const,
         expectedThinking: { type: 'enabled', budget_tokens: 1_024 },

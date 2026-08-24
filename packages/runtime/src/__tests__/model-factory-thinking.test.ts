@@ -19,10 +19,13 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
+import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core/model-thinking';
+import { isRetiredProvider } from '@maka/core/provider-registry';
 
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
+import { resolveModelRuntime } from '../model-runtime.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
   return {
@@ -458,6 +461,11 @@ describe('buildProviderOptions: thinking level', () => {
         effort: 'high',
       },
     });
+    assert.deepEqual(buildProviderOptions(conn('opencode'), 'claude-sonnet-4'), {
+      anthropic: {
+        thinking: { type: 'enabled', budgetTokens: 1_024 },
+      },
+    });
     assert.deepEqual(buildProviderOptions(conn('opencode'), 'gemini-3.5-flash', 'high'), {
       google: { thinkingConfig: { includeThoughts: true, thinkingLevel: 'high' } },
     });
@@ -469,6 +477,65 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(conn('github-copilot'), 'gpt-5.4', 'high'), {
       githubCopilot: { reasoningEffort: 'high' },
     });
+  });
+
+  test('every active shipped Claude model on Anthropic Messages requests visible thinking', () => {
+    const activeClaudeModels: Array<{
+      connection: LlmConnection;
+      modelId: string;
+    }> = [];
+    for (const providerType of Object.keys(PROVIDER_DEFAULTS) as LlmConnection['providerType'][]) {
+      if (isRetiredProvider(providerType)) continue;
+      const connection = conn(providerType);
+      for (const modelId of PROVIDER_DEFAULTS[providerType].fallbackModels) {
+        const familyModelId = modelId.includes('/')
+          ? modelId.slice(modelId.lastIndexOf('/') + 1)
+          : modelId;
+        const metadata = lookupModelMetadata(providerType, modelId);
+        if (
+          familyModelId.startsWith('claude-') &&
+          metadata.lifecycle === 'active' &&
+          metadata.capabilities?.reasoning === true &&
+          resolveModelRuntime(connection, modelId).wire === 'anthropic-messages'
+        ) {
+          activeClaudeModels.push({ connection, modelId });
+        }
+      }
+    }
+
+    assert.equal(activeClaudeModels.length, 13);
+    assert.ok(
+      activeClaudeModels.some(
+        ({ connection, modelId }) =>
+          connection.providerType === 'opencode' && modelId === 'claude-sonnet-4',
+      ),
+    );
+    for (const { connection, modelId } of activeClaudeModels) {
+      const thinking = (
+        buildProviderOptions(connection, modelId).anthropic as
+          | { thinking?: { type?: string; display?: string; budgetTokens?: number } }
+          | undefined
+      )?.thinking;
+      assert.ok(thinking, `${connection.providerType}/${modelId} must request visible thinking`);
+      if (thinking.type === 'adaptive') {
+        assert.equal(thinking.display, 'summarized', `${connection.providerType}/${modelId}`);
+      } else {
+        assert.deepEqual(
+          thinking,
+          { type: 'enabled', budgetTokens: 1_024 },
+          `${connection.providerType}/${modelId}`,
+        );
+      }
+    }
+  });
+
+  test('unknown non-Claude models on Anthropic Messages do not inherit Claude thinking', () => {
+    const connection = {
+      ...conn('opencode'),
+      models: [{ id: 'custom-reasoner', apiProtocol: 'anthropic-messages' as const }],
+    };
+
+    assert.deepEqual(buildProviderOptions(connection, 'custom-reasoner'), {});
   });
 
   test('github-copilot routes thinking by the account-declared model protocol', () => {
@@ -526,6 +593,11 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(conn('anthropic-compatible'), 'claude-opus-4-8'), {
       anthropic: {
         thinking: { type: 'adaptive', display: 'summarized' },
+      },
+    });
+    assert.deepEqual(buildProviderOptions(conn('anthropic-compatible'), 'claude-sonnet-4'), {
+      anthropic: {
+        thinking: { type: 'enabled', budgetTokens: 1_024 },
       },
     });
     assert.deepEqual(
