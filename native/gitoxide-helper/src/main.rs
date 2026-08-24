@@ -33,6 +33,17 @@ const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMPORT_FILES: u64 = 200_000;
+const MANAGED_TREE_POLICY_V1: ManagedTreePolicy = ManagedTreePolicy {
+    max_depth: 64,
+    max_tree_visits: 250_000,
+    max_entries: 400_000,
+    max_total_path_bytes: 256 * 1024 * 1024,
+    max_component_bytes: 255,
+    max_relative_path_bytes: 4096,
+    max_files: MAX_IMPORT_FILES,
+    max_file_bytes: MAX_IMPORT_FILE_BYTES,
+    max_bytes: MAX_IMPORT_BYTES,
+};
 
 #[derive(Deserialize)]
 #[serde(
@@ -242,8 +253,16 @@ fn import_source_head(
     fs::create_dir(destination_repository_path.join("hooks"))
         .map_err(|_| "import_hooks_cleanup_failed")?;
 
-    let mut stats = ImportStats::default();
-    copy_source_tree(&source, &destination, source_tree, "", &mut stats)?;
+    let mut stats = ManagedTreeStats::default();
+    copy_source_tree(
+        &source,
+        &destination,
+        source_tree,
+        "",
+        0,
+        MANAGED_TREE_POLICY_V1,
+        &mut stats,
+    )?;
 
     let signature = gix::actor::SignatureRef {
         name: b"Maka Workspace Service".as_bstr(),
@@ -289,8 +308,11 @@ fn copy_source_tree(
     destination: &gix::Repository,
     tree_oid: gix::hash::ObjectId,
     prefix: &str,
-    stats: &mut ImportStats,
+    depth: u64,
+    policy: ManagedTreePolicy,
+    stats: &mut ManagedTreeStats,
 ) -> Result<(), &'static str> {
+    stats.enter_tree(depth, policy)?;
     let tree = source
         .find_tree(tree_oid)
         .map_err(|_| "source_tree_unavailable")?;
@@ -298,7 +320,9 @@ fn copy_source_tree(
         let entry = entry.map_err(|_| "source_tree_invalid")?;
         let component =
             std::str::from_utf8(entry.filename()).map_err(|_| "unsupported_source_path")?;
-        if !is_supported_source_component(component) {
+        if !is_supported_source_component(component)
+            || component.len() as u64 > policy.max_component_bytes
+        {
             return Err("unsupported_source_path");
         }
         let relative_path = if prefix.is_empty() {
@@ -306,10 +330,7 @@ fn copy_source_tree(
         } else {
             format!("{prefix}/{component}")
         };
-        let folded_path: String = relative_path.nfc().flat_map(char::to_lowercase).collect();
-        if !stats.folded_paths.insert(folded_path) {
-            return Err("source_path_collision");
-        }
+        stats.observe_entry(&relative_path, policy)?;
         match entry.mode().kind() {
             gix::objs::tree::EntryKind::Tree => {
                 copy_source_tree(
@@ -317,24 +338,17 @@ fn copy_source_tree(
                     destination,
                     entry.object_id(),
                     &relative_path,
+                    depth.checked_add(1).ok_or("source_tree_depth_exceeded")?,
+                    policy,
                     stats,
                 )?;
             }
             gix::objs::tree::EntryKind::Blob | gix::objs::tree::EntryKind::BlobExecutable => {
-                stats.files = stats
-                    .files
-                    .checked_add(1)
-                    .filter(|count| *count <= MAX_IMPORT_FILES)
-                    .ok_or("source_file_limit_exceeded")?;
                 let header = entry.id().header().map_err(|_| "source_blob_unavailable")?;
-                if header.kind() != gix::objs::Kind::Blob || header.size() > MAX_IMPORT_FILE_BYTES {
-                    return Err("source_file_limit_exceeded");
+                if header.kind() != gix::objs::Kind::Blob {
+                    return Err("source_blob_invalid");
                 }
-                stats.bytes = stats
-                    .bytes
-                    .checked_add(header.size())
-                    .filter(|bytes| *bytes <= MAX_IMPORT_BYTES)
-                    .ok_or("source_byte_limit_exceeded")?;
+                stats.observe_blob(header.size(), policy)?;
                 let blob = entry
                     .object()
                     .map_err(|_| "source_blob_unavailable")?
@@ -372,11 +386,161 @@ fn is_supported_source_component(component: &str) -> bool {
         && !component.eq_ignore_ascii_case(".gitattributes")
 }
 
+#[derive(Clone, Copy)]
+struct ManagedTreePolicy {
+    max_depth: u64,
+    max_tree_visits: u64,
+    max_entries: u64,
+    max_total_path_bytes: u64,
+    max_component_bytes: u64,
+    max_relative_path_bytes: u64,
+    max_files: u64,
+    max_file_bytes: u64,
+    max_bytes: u64,
+}
+
 #[derive(Default)]
-struct ImportStats {
+struct ManagedTreeStats {
+    tree_visits: u64,
+    entries: u64,
+    total_path_bytes: u64,
     files: u64,
     bytes: u64,
     folded_paths: HashSet<String>,
+}
+
+impl ManagedTreeStats {
+    fn enter_tree(
+        &mut self,
+        depth: u64,
+        policy: ManagedTreePolicy,
+    ) -> Result<(), &'static str> {
+        if depth > policy.max_depth {
+            return Err("source_tree_depth_exceeded");
+        }
+        self.tree_visits = self
+            .tree_visits
+            .checked_add(1)
+            .filter(|visits| *visits <= policy.max_tree_visits)
+            .ok_or("source_tree_visit_limit_exceeded")?;
+        Ok(())
+    }
+
+    fn observe_entry(
+        &mut self,
+        relative_path: &str,
+        policy: ManagedTreePolicy,
+    ) -> Result<(), &'static str> {
+        let path_bytes = relative_path.len() as u64;
+        if path_bytes > policy.max_relative_path_bytes {
+            return Err("source_path_length_exceeded");
+        }
+        self.entries = self
+            .entries
+            .checked_add(1)
+            .filter(|entries| *entries <= policy.max_entries)
+            .ok_or("source_tree_entry_limit_exceeded")?;
+        self.total_path_bytes = self
+            .total_path_bytes
+            .checked_add(path_bytes)
+            .filter(|bytes| *bytes <= policy.max_total_path_bytes)
+            .ok_or("source_path_byte_limit_exceeded")?;
+        let folded_path: String = relative_path.nfc().flat_map(char::to_lowercase).collect();
+        if !self.folded_paths.insert(folded_path) {
+            return Err("source_path_collision");
+        }
+        Ok(())
+    }
+
+    fn observe_blob(
+        &mut self,
+        size: u64,
+        policy: ManagedTreePolicy,
+    ) -> Result<(), &'static str> {
+        if size > policy.max_file_bytes {
+            return Err("source_file_limit_exceeded");
+        }
+        self.files = self
+            .files
+            .checked_add(1)
+            .filter(|files| *files <= policy.max_files)
+            .ok_or("source_file_limit_exceeded")?;
+        self.bytes = self
+            .bytes
+            .checked_add(size)
+            .filter(|bytes| *bytes <= policy.max_bytes)
+            .ok_or("source_byte_limit_exceeded")?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tiny_policy() -> ManagedTreePolicy {
+        ManagedTreePolicy {
+            max_depth: 1,
+            max_tree_visits: 2,
+            max_entries: 2,
+            max_total_path_bytes: 5,
+            max_component_bytes: 3,
+            max_relative_path_bytes: 4,
+            max_files: 1,
+            max_file_bytes: 3,
+            max_bytes: 3,
+        }
+    }
+
+    #[test]
+    fn managed_tree_budget_bounds_depth_visits_and_entries() {
+        let policy = tiny_policy();
+        let mut stats = ManagedTreeStats::default();
+        assert_eq!(stats.enter_tree(0, policy), Ok(()));
+        assert_eq!(stats.enter_tree(1, policy), Ok(()));
+        assert_eq!(
+            stats.enter_tree(1, policy),
+            Err("source_tree_visit_limit_exceeded")
+        );
+
+        let mut stats = ManagedTreeStats::default();
+        assert_eq!(
+            stats.enter_tree(2, policy),
+            Err("source_tree_depth_exceeded")
+        );
+        assert_eq!(stats.observe_entry("a", policy), Ok(()));
+        assert_eq!(stats.observe_entry("bb", policy), Ok(()));
+        assert_eq!(
+            stats.observe_entry("c", policy),
+            Err("source_tree_entry_limit_exceeded")
+        );
+    }
+
+    #[test]
+    fn managed_tree_budget_bounds_paths_and_blob_bytes() {
+        let policy = tiny_policy();
+        let mut stats = ManagedTreeStats::default();
+        assert_eq!(
+            stats.observe_entry("abcde", policy),
+            Err("source_path_length_exceeded")
+        );
+        assert_eq!(stats.observe_entry("abc", policy), Ok(()));
+        assert_eq!(
+            stats.observe_entry("def", policy),
+            Err("source_path_byte_limit_exceeded")
+        );
+
+        let mut stats = ManagedTreeStats::default();
+        assert_eq!(
+            stats.observe_blob(4, policy),
+            Err("source_file_limit_exceeded")
+        );
+        assert_eq!(stats.observe_blob(3, policy), Ok(()));
+        assert_eq!(
+            stats.observe_blob(1, policy),
+            Err("source_file_limit_exceeded")
+        );
+    }
 }
 
 fn reject_unsupported_object_format(object_format: String) -> ExitCode {
