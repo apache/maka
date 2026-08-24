@@ -55,7 +55,7 @@ export interface SkillsHostModel {
   onUseSkill(skillId: string, skillName: string): void;
   onOpenSkillsFolder?: () => void | Promise<void>;
   onRefreshManagedSkillSources(): Promise<void>;
-  onImportManagedSkillSource(): Promise<void>;
+  onImportManagedSkillSource?: () => Promise<void>;
   onInstallManagedSkill(sourceId: string): Promise<void>;
   onRefreshBundledSkillCatalog(): Promise<void>;
   onInstallBundledSkill(id: string): Promise<void>;
@@ -794,10 +794,10 @@ export function useSkillsController(
         ? {
             onOpenSkill: openSkill,
             onOpenSkillsFolder: input.openSkillsFolder,
+            onImportManagedSkillSource: importManagedSkillSource,
           }
         : {}),
       onRefreshManagedSkillSources: refreshManagedSkillSources,
-      onImportManagedSkillSource: importManagedSkillSource,
       onInstallManagedSkill: installManagedSkill,
       onRefreshBundledSkillCatalog: refreshBundledSkillCatalog,
       onInstallBundledSkill: installBundledSkill,

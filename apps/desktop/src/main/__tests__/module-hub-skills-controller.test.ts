@@ -246,10 +246,15 @@ test("Skills mutations preserve refresh combinations and suppress inactive or ca
       delete: async () => ({ ok: true }),
     },
   });
-  const activeInput = input(records);
+  const activeInput = input(records, {
+    openSkillsFolder: () => undefined,
+  });
   await act(async () => renderController(root, services, activeInput));
+  const importManagedSkillSource =
+    controller().host.onImportManagedSkillSource;
+  assert.ok(importManagedSkillSource);
 
-  await act(async () => controller().host.onImportManagedSkillSource());
+  await act(async () => importManagedSkillSource());
   assert.equal(records.length, 0);
 
   services.skills.importManagedSource = async () => ({
@@ -262,7 +267,7 @@ test("Skills mutations preserve refresh combinations and suppress inactive or ca
       sourceType: "local",
     },
   });
-  await act(async () => controller().host.onImportManagedSkillSource());
+  await act(async () => importManagedSkillSource());
   assert.deepEqual(calls.splice(0), ["sources"]);
 
   await act(async () => controller().host.onInstallManagedSkill("source-a"));
@@ -338,6 +343,7 @@ test("Skills capabilities and stale mutation diagnostics are fenced", async () =
   );
   assert.equal(controller().host.onOpenSkill, undefined);
   assert.equal(controller().host.onOpenSkillsFolder, undefined);
+  assert.equal(controller().host.onImportManagedSkillSource, undefined);
   controller().host.onUseSkill("skill-a", "Skill A");
   assert.deepEqual(used, ["skill-a:Skill A"]);
 
@@ -354,6 +360,10 @@ test("Skills capabilities and stale mutation diagnostics are fenced", async () =
     ),
   );
   assert.equal(typeof controller().host.onOpenSkill, "function");
+  assert.equal(
+    typeof controller().host.onImportManagedSkillSource,
+    "function",
+  );
   controller().host.onOpenSkillsFolder?.();
   assert.deepEqual(opened, ["folder"]);
 
