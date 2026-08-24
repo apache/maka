@@ -37,8 +37,7 @@ const MAX_IMPORT_FILES: u64 = 200_000;
 const MAX_COMMIT_OBJECT_BYTES: u64 = 1024 * 1024;
 const MAX_SINGLE_TREE_OBJECT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_TOTAL_TREE_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_GITOXIDE_OBJECT_ALLOCATION_BYTES: &str =
-    "gitoxide.objects.allocLimit=67108864";
+const MAX_GITOXIDE_OBJECT_ALLOCATION_BYTES: &str = "gitoxide.objects.allocLimit=67108864";
 const MANAGED_TREE_POLICY_V1: ManagedTreePolicy = ManagedTreePolicy {
     max_depth: 64,
     max_tree_visits: 250_000,
@@ -296,8 +295,7 @@ fn import_source_head(
     if !baseline_ref.starts_with("refs/maka/") {
         return Err("baseline_ref_outside_maka_namespace");
     }
-    gix::refs::FullName::try_from(baseline_ref.as_str())
-        .map_err(|_| "invalid_baseline_ref")?;
+    gix::refs::FullName::try_from(baseline_ref.as_str()).map_err(|_| "invalid_baseline_ref")?;
     if managed_tree_policy_version != MANAGED_TREE_POLICY_VERSION {
         return Err("unsupported_managed_tree_policy");
     }

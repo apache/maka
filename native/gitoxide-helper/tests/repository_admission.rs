@@ -333,7 +333,10 @@ fn exactly_one_process_claims_a_fresh_import_destination() {
     let second_output = second.wait_with_output().unwrap();
     let outputs = [first_output, second_output];
     assert_eq!(
-        outputs.iter().filter(|output| output.status.success()).count(),
+        outputs
+            .iter()
+            .filter(|output| output.status.success())
+            .count(),
         1
     );
     assert_eq!(
@@ -546,10 +549,8 @@ impl RepositoryFixture {
         )
         .into_bytes();
         commit.resize(1024 * 1024 + 1, b'x');
-        let commit_oid = fixture.git_input_output(
-            ["hash-object", "-t", "commit", "-w", "--stdin"],
-            &commit,
-        );
+        let commit_oid =
+            fixture.git_input_output(["hash-object", "-t", "commit", "-w", "--stdin"], &commit);
         fixture.git(["update-ref", "HEAD", &commit_oid]);
         fixture
     }
