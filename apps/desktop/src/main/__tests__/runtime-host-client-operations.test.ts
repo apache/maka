@@ -228,6 +228,68 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
   );
 });
 
+test('merges active-turn configuration edits from the Host pending projection', async () => {
+  const { client, requests } = clientWithResponses([
+    {
+      kind: 'session',
+      session: session('session-1', 10, {
+        model: 'model-a',
+        thinkingLevel: 'high',
+        pendingConfiguration: {
+          llmConnectionSlug: 'test-connection',
+          model: 'model-b',
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+        },
+      }),
+    },
+    {
+      kind: 'committed',
+      session: session('session-1', 11, {
+        model: 'model-a',
+        thinkingLevel: 'high',
+      }),
+    },
+  ]);
+
+  await client.updateSessionConfiguration('session-1', {
+    modelTarget: { kind: 'explicit', connectionSlug: 'test-connection', model: 'model-a' },
+    thinkingLevel: null,
+  });
+
+  const request = requests.find(({ operation }) => operation === 'session.configuration.update');
+  assert.deepEqual(request?.input, {
+    sessionId: 'session-1',
+    expectedRevision: 10,
+    configuration: {
+      modelTarget: { kind: 'explicit', connectionSlug: 'test-connection', model: 'model-a' },
+      thinkingLevel: 'high',
+      permissionMode: 'ask',
+      collaborationMode: 'agent',
+      orchestrationMode: 'default',
+    },
+  });
+});
+
+test('resets thinking when a model selection moves away from the effective model', async () => {
+  const { client, requests } = clientWithResponses([
+    {
+      kind: 'session',
+      session: session('session-1', 10, { model: 'model-a', thinkingLevel: 'high' }),
+    },
+    { kind: 'committed', session: session('session-1', 11, { model: 'model-b' }) },
+  ]);
+
+  await client.updateSessionConfiguration('session-1', {
+    modelTarget: { kind: 'explicit', connectionSlug: 'test-connection', model: 'model-b' },
+    thinkingLevel: null,
+  });
+
+  const input = requests.find(({ operation }) => operation === 'session.configuration.update')?.input;
+  assert.equal((input as { configuration: { thinkingLevel: unknown } }).configuration.thinkingLevel, null);
+});
+
 test('retries a Session update through transient revision churn', async () => {
   const responses: unknown[] = [];
   for (let revision = 10; revision < 14; revision += 1) {

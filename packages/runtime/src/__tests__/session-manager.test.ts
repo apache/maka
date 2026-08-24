@@ -71,7 +71,13 @@ import type {
   RuntimeEventStore,
 } from '@maka/core/runtime-event-store';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
+import type {
+  PendingSessionConfiguration,
+  SessionHeader,
+  SessionSummary,
+  StoredMessage,
+  TurnRecord,
+} from '@maka/core/session';
 import type { BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
 import { PlanConflictError, emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
 import { expect } from '../test-helpers.js';
@@ -4411,6 +4417,96 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
       },
     );
     assert.deepEqual(kernel.disposed, [session.id]);
+  });
+
+  test('stages configuration during a turn and applies it at the next admission', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const kernel = new DelegatingRuntimeKernel();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(26_420),
+      runtimeKernel: kernel,
+    });
+    const session = await manager.createSession(makeInput({ model: 'model-a' }));
+    const nextConfiguration = {
+      backend: session.backend,
+      llmConnectionSlug: session.llmConnectionSlug,
+      connectionLocked: true,
+      model: 'model-b',
+      thinkingLevel: undefined,
+      permissionMode: session.permissionMode,
+      collaborationMode: session.collaborationMode ?? 'agent',
+      orchestrationMode: session.orchestrationMode ?? 'default',
+    } as const;
+
+    kernel.activeRuns = true;
+    const staged = await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: 1,
+      configuration: nextConfiguration,
+    });
+    expect(staged.revision).toBe(2);
+    expect(staged.header.model).toBe('model-a');
+    expect(staged.header.pendingConfiguration).toMatchObject({ model: 'model-b' });
+    expect(kernel.disposed).toEqual([]);
+
+    kernel.activeRuns = false;
+    const applied = await manager.applyPendingSessionConfiguration(session.id);
+    expect(applied.header.model).toBe('model-b');
+    expect(applied.header.pendingConfiguration).toBeUndefined();
+    expect(kernel.disposed).toEqual([session.id]);
+  });
+
+  test('preserves a staged configuration when next-Turn validation fails', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const kernel = new DelegatingRuntimeKernel();
+    let validated: PendingSessionConfiguration | undefined;
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(26_422),
+      runtimeKernel: kernel,
+      validatePendingSessionConfiguration: async (pending) => {
+        validated = pending;
+        throw new Error('the selected connection is no longer ready');
+      },
+    });
+    const session = await manager.createSession(makeInput({ model: 'model-a' }));
+
+    kernel.activeRuns = true;
+    await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: 1,
+      configuration: {
+        backend: session.backend,
+        llmConnectionSlug: session.llmConnectionSlug,
+        connectionLocked: true,
+        model: 'model-b',
+        thinkingLevel: undefined,
+        permissionMode: session.permissionMode,
+        collaborationMode: session.collaborationMode ?? 'agent',
+        orchestrationMode: session.orchestrationMode ?? 'default',
+      },
+    });
+
+    kernel.activeRuns = false;
+    await assert.rejects(manager.applyPendingSessionConfiguration(session.id), (error: unknown) => {
+      assert.ok(error instanceof SessionConfigurationTransitionError);
+      assert.equal(error.code, 'operation_unavailable');
+      assert.match(error.message, /no longer available/);
+      return true;
+    });
+    assert.deepEqual(validated, (await store.readHeader(session.id)).pendingConfiguration);
+    assert.deepEqual((await store.readHeader(session.id)).pendingConfiguration, {
+      llmConnectionSlug: session.llmConnectionSlug,
+      model: 'model-b',
+      permissionMode: session.permissionMode,
+      collaborationMode: session.collaborationMode ?? 'agent',
+      orchestrationMode: session.orchestrationMode ?? 'default',
+    });
+    assert.equal((await store.readHeader(session.id)).model, 'model-a');
+    assert.deepEqual(kernel.disposed, []);
   });
 
   test('workspace relocation uses the same quiescent revision fence as execution configuration', async () => {
@@ -17712,6 +17808,9 @@ class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
     const header = await super.updateHeader(sessionId, {
       ...input.configuration,
       labels: [...input.configuration.labels],
+      ...(input.pendingConfiguration === undefined
+        ? {}
+        : { pendingConfiguration: input.pendingConfiguration ?? undefined }),
       ...(input.lifecycle.kind === 'clear_connection_block'
         ? {
             status: 'active',

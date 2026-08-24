@@ -787,6 +787,17 @@ function AppShellContent({
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeSession = sessions.find((session) => session.id === activeId);
+  const activeSessionSelection = activeSession?.pendingConfiguration
+    ? {
+        ...activeSession,
+        llmConnectionSlug: activeSession.pendingConfiguration.llmConnectionSlug,
+        model: activeSession.pendingConfiguration.model,
+        ...(activeSession.pendingConfiguration.thinkingLevel === undefined
+          ? { thinkingLevel: undefined }
+          : { thinkingLevel: activeSession.pendingConfiguration.thinkingLevel }),
+        permissionMode: activeSession.pendingConfiguration.permissionMode,
+      }
+    : activeSession;
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   const activeDesktopSession = activeSession;
   // The shell's reading of the active live turn: streaming/settled flags, the
@@ -858,7 +869,7 @@ function AppShellContent({
     activationCandidate: modelSettingsOwnsComposerHost
       ? onboardingActivationCandidate
       : undefined,
-    activeSession,
+    activeSession: activeSessionSelection,
     persistedComposerDefaults,
     usePersistedComposerDefaults: modelSettingsOwnsComposerHost,
     defaultThinkingLevel: newTask.selectedHost?.chatDefaults.thinkingLevel,
@@ -1222,6 +1233,11 @@ function AppShellContent({
           permissionMode: newTaskPermissionMode,
         })
       : undefined);
+  // The Host keeps the effective Session configuration immutable for the
+  // active AgentRun and projects an optional next-Turn selection alongside it.
+  // Controls show that latest selection, while execution-boundary reads below
+  // continue to use the effective configuration.
+  const activeSessionSelectionView = activeSessionSelection ?? activeSessionForView;
   // Each control reads its own field. There is nothing to project and nothing
   // to keep in sync: a Session in Plan with Swarm as its orchestration default
   // says both, because it is both.
@@ -1294,7 +1310,8 @@ function AppShellContent({
     activeExecutionBoundary,
     activeId ? (activeSessionForView?.permissionMode ?? 'ask') : newTaskPermissionMode,
   );
-  const activePermissionMode = activeBoundarySurface.permissionMode;
+  const activePermissionMode =
+    activeSessionSelectionView?.permissionMode ?? activeBoundarySurface.permissionMode;
   const planMode = usePlanModeState(activeSessionForView);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
@@ -3053,7 +3070,7 @@ function AppShellContent({
                       : attachFilePaths
                   }
                   modelLabel={activeModelLabel ?? newChatModelLabel ?? undefined}
-                  activeSession={activeSessionForView}
+                  activeSession={activeSessionSelectionView}
                   activeModel={activeModel}
                   activeModelLabel={activeModelLabel}
                   activeProviderType={activeConnection?.providerType}
@@ -3088,22 +3105,14 @@ function AppShellContent({
                   }
                   permissionMode={activePermissionMode}
                   permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
-                  // Every "cannot change this mid-turn" gate reads `turnActive`,
-                  // the same witness Stop reads. Reading the persisted status
-                  // here instead left these toggles live through the whole
-                  // send→run-start window — long enough on a cold backend for a
-                  // mode change to land before the run registers and alter the
-                  // execution config of the turn already sent.
+                  // The Host owns active-turn configuration as pending
+                  // next-Turn state. The short local pending flag only blocks
+                  // duplicate writes; it never changes the active Run's
+                  // permission boundary.
                   permissionModeDisabledReason={
                     activeId && pendingPermissionModeBySession[activeId] === true
-                        ? shellCopy.permissionModeChanging
-                      : activeStreamingLive
-                          ? shellCopy.permissionModeStreaming
-                        : activeId && turnActive
-                            ? shellCopy.permissionModeRunning
-                          : activeId && activeSessionForView?.status === 'waiting_for_user'
-                              ? shellCopy.permissionModeWaiting
-                            : undefined
+                      ? shellCopy.permissionModeChanging
+                      : undefined
                   }
                   onPermissionModeChange={
                     activeBoundarySurface.localInteractionAvailable
@@ -3157,7 +3166,7 @@ function AppShellContent({
                     onStreamingSettled={
                       activeId ? (messageId) => settleAssistantStreaming(activeId, messageId) : undefined
                     }
-                activeSession={activeSessionForView}
+                activeSession={activeSessionSelectionView}
                 activeConnectionLabel={activeConnectionLabel}
                 activeModelLabel={activeModelLabel}
                 activeProviderType={activeConnection?.providerType}

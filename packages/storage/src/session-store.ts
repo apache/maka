@@ -50,6 +50,7 @@ import {
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
 import { decodePersistedPermissionMode, isPermissionMode } from '@maka/core/permission';
+import { isThinkingLevel } from '@maka/core/model-thinking';
 import type { PersistedValue } from '@maka/core/persisted-value';
 import { isSubagentWorkspaceBinding } from '@maka/core/subagent-workspace';
 import { WORKSPACE_AUTHORITY_SESSION_ID } from '@maka/core/workspace-version-authority';
@@ -74,6 +75,7 @@ import {
   type SessionHeaderPatch,
   type SessionConversationCopy,
   type SessionExternalOrigin,
+  type PendingSessionConfiguration,
   type SessionSummary,
   type StoredMessage,
   type TurnRecord,
@@ -1117,6 +1119,8 @@ export function normalizeSessionHeader(
     typeof header.model === 'string' &&
     (header.toolProfile === undefined || isSessionToolProfile(header.toolProfile)) &&
     isPermissionMode(header.permissionMode) &&
+    (header.pendingConfiguration === undefined ||
+      isValidPendingSessionConfiguration(header.pendingConfiguration)) &&
     isCollaborationMode(header.collaborationMode) &&
     isOrchestrationMode(header.orchestrationMode) &&
     (header.transcriptLedgerVersion === undefined ||
@@ -1132,6 +1136,21 @@ export function normalizeSessionHeader(
     return { ...withoutBlockedReason, name: normalizedName };
   }
   return { ...header, name: normalizedName };
+}
+
+function isValidPendingSessionConfiguration(value: unknown): value is PendingSessionConfiguration {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const pending = value as Record<string, unknown>;
+  return (
+    typeof pending.llmConnectionSlug === 'string' &&
+    pending.llmConnectionSlug.length > 0 &&
+    typeof pending.model === 'string' &&
+    pending.model.length > 0 &&
+    (pending.thinkingLevel === undefined || isThinkingLevel(pending.thinkingLevel)) &&
+    isPermissionMode(pending.permissionMode) &&
+    isCollaborationMode(pending.collaborationMode) &&
+    isOrchestrationMode(pending.orchestrationMode)
+  );
 }
 
 export function decodePersistedSessionHeader(
@@ -1344,6 +1363,9 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
     connectionLocked: header.connectionLocked,
     model: header.model,
     permissionMode: header.permissionMode,
+    ...(header.pendingConfiguration === undefined
+      ? {}
+      : { pendingConfiguration: header.pendingConfiguration }),
     collaborationMode: header.collaborationMode ?? 'agent',
     orchestrationMode: header.orchestrationMode ?? 'default',
     ...(header.thinkingLevel !== undefined ? { thinkingLevel: header.thinkingLevel } : {}),

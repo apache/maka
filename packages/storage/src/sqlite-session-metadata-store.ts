@@ -90,6 +90,7 @@ import {
   isSubagentSessionSpawn,
   type SessionHeader,
   type SessionHeaderPatch,
+  type PendingSessionConfiguration,
   type StoredMessage,
   type SubagentSessionParent,
   decodeCanonicalMessage,
@@ -276,6 +277,8 @@ export type StableSessionMetadataCreateResult =
 
 export interface SessionConfigurationMetadataUpdate {
   readonly expectedVersion: number;
+  /** `null` clears a staged next-Turn configuration; omitted preserves it. */
+  readonly pendingConfiguration?: PendingSessionConfiguration | null;
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
     readonly llmConnectionSlug: string;
@@ -729,6 +732,9 @@ export class SqliteSessionMetadataStore {
           headerPatch: {
             ...input.configuration,
             labels: [...input.configuration.labels],
+            ...(input.pendingConfiguration === undefined
+              ? {}
+              : { pendingConfiguration: input.pendingConfiguration ?? undefined }),
             ...lifecyclePatch,
           },
         },

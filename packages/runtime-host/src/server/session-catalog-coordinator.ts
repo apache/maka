@@ -33,7 +33,11 @@ import {
   isSessionStartModeLabel as isExecutionSemanticLabel,
   sessionStartModeSpec,
 } from '@maka/core/explore-agent';
-import type { SessionHeader, SessionHeaderPatch } from '@maka/core/session';
+import type {
+  PendingSessionConfiguration,
+  SessionHeader,
+  SessionHeaderPatch,
+} from '@maka/core/session';
 import {
   isSessionNotFoundError,
   SessionMetadataConflictError,
@@ -99,7 +103,7 @@ type SessionCatalogStores = Pick<
   | 'updateHeaderVersioned'
 >;
 
-type SessionRuntimePolicyStores = {
+export type SessionRuntimePolicyStores = {
   readonly connectionCatalog: Pick<RuntimePolicyStoresWriter['connectionCatalog'], 'getSnapshot'>;
   readonly runtimePolicy: Pick<RuntimePolicyStoresWriter['runtimePolicy'], 'getSnapshot'>;
   readonly operations: Pick<RuntimePolicyStoresWriter['operations'], 'resolveExecutionConnection'>;
@@ -140,6 +144,19 @@ export interface HostSessionCatalogCoordinatorOptions {
 interface ResolvedSessionModel {
   readonly connectionSlug: string;
   readonly model: string;
+}
+
+/** Re-check a staged explicit model target at the next-Turn commit boundary. */
+export async function validatePendingSessionConfiguration(
+  runtimePolicy: SessionRuntimePolicyStores,
+  pending: PendingSessionConfiguration,
+): Promise<void> {
+  await resolveExplicitSessionModel(
+    runtimePolicy,
+    pending.llmConnectionSlug,
+    pending.model,
+    pending.thinkingLevel,
+  );
 }
 
 /** Host-owned Session catalog, creation, and configuration authority. */
@@ -471,6 +488,7 @@ export class HostSessionCatalogCoordinator {
         );
         const clearsConnectionBlock = current.header.blockedReason === 'NO_REAL_CONNECTION';
         if (
+          current.header.pendingConfiguration === undefined &&
           !clearsConnectionBlock &&
           sessionConfigurationMatches(current.header, model, input.configuration)
         ) {
@@ -672,76 +690,13 @@ export class HostSessionCatalogCoordinator {
     thinkingLevel: SessionCreateInput['thinkingLevel'],
   ): Promise<ResolvedSessionModel> {
     const selected = await this.#selectModelTarget(target);
-    const readiness = await this.#runtimePolicy.operations.resolveExecutionConnection(
+    return resolveExplicitSessionModel(
+      this.#runtimePolicy,
       selected.connectionSlug,
+      selected.modelId,
+      thinkingLevel,
+      selected.connectionId,
     );
-    if (readiness.kind === 'not_found' || readiness.kind === 'disabled') {
-      throw new SessionOperationFailure(
-        'invalid_request',
-        'Session model connection is unavailable',
-      );
-    }
-    if (readiness.kind === 'credential_not_configured') {
-      throw new SessionOperationFailure(
-        'operation_unavailable',
-        'Session model connection is not ready',
-      );
-    }
-    // Refused before the Session is committed, not when a backend is later
-    // built for it: an upgraded installation keeps the credential, so nothing
-    // downstream of here would notice on its own. Covers the default target and
-    // an explicit one alike, which is what reaches Bot, CLI and scheduled runs.
-    if (readiness.kind === 'provider_retired') {
-      throw new SessionOperationFailure(
-        'invalid_request',
-        'Session model connection uses a sign-in that was removed from Maka',
-      );
-    }
-    if (
-      selected.connectionId !== undefined &&
-      readiness.connection.connectionId !== selected.connectionId
-    ) {
-      throw new SessionOperationFailure(
-        'operation_conflict',
-        'Default Session model changed during selection',
-      );
-    }
-    const connection = readiness.connection;
-    const model = authorizeConnectionModel(connection, selected.modelId);
-    if (!model) {
-      throw new SessionOperationFailure('invalid_request', 'Session model is not enabled');
-    }
-    if (isModelExplicitlyUnsupportedForChat(model)) {
-      throw new SessionOperationFailure('invalid_request', 'Session model is not chat-capable');
-    }
-    if (Buffer.byteLength(selected.modelId, 'utf8') > SESSION_CATALOG_MODEL_MAX_BYTES) {
-      throw new SessionOperationFailure(
-        'invalid_request',
-        'Session model identifier exceeds the wire limit',
-      );
-    }
-    // Fail-closed for undeclared levels only: the catalog entry carries the
-    // typed `relayModelProfiles` table, so a relay's user-declared levels DO
-    // reach this gate. A level outside the resolved variants is still
-    // rejected — execution-model-authority rebuilds the runtime connection
-    // from the same table, so whatever passes here is exactly what the wire
-    // can send.
-    if (
-      thinkingLevel !== undefined &&
-      !thinkingVariantsForConnection(
-        {
-          providerType: connection.providerType,
-          relayModelProfiles: connection.relayModelProfiles,
-        },
-        selected.modelId,
-      ).includes(thinkingLevel)
-    ) {
-      throw new SessionOperationFailure(
-        'invalid_request',
-        `Session model does not support thinking level ${thinkingLevel}`,
-      );
-    }
-    return { connectionSlug: connection.slug, model: selected.modelId };
   }
 
   async #selectModelTarget(target: SessionModelTarget): Promise<{
@@ -792,6 +747,80 @@ export class HostSessionCatalogCoordinator {
       throw new SessionOperationFailure('persistence_failed', 'Runtime policy is unavailable');
     }
   }
+}
+
+async function resolveExplicitSessionModel(
+  runtimePolicy: SessionRuntimePolicyStores,
+  connectionSlug: string,
+  modelId: string,
+  thinkingLevel: SessionCreateInput['thinkingLevel'],
+  expectedConnectionId?: string,
+): Promise<ResolvedSessionModel> {
+  const readiness = await runtimePolicy.operations.resolveExecutionConnection(connectionSlug);
+  if (readiness.kind === 'not_found' || readiness.kind === 'disabled') {
+    throw new SessionOperationFailure('invalid_request', 'Session model connection is unavailable');
+  }
+  if (readiness.kind === 'credential_not_configured') {
+    throw new SessionOperationFailure(
+      'operation_unavailable',
+      'Session model connection is not ready',
+    );
+  }
+  // Refused before the Session is committed, not when a backend is later
+  // built for it: an upgraded installation keeps the credential, so nothing
+  // downstream of here would notice on its own. Covers the default target and
+  // an explicit one alike, which is what reaches Bot, CLI and scheduled runs.
+  if (readiness.kind === 'provider_retired') {
+    throw new SessionOperationFailure(
+      'invalid_request',
+      'Session model connection uses a sign-in that was removed from Maka',
+    );
+  }
+  if (
+    expectedConnectionId !== undefined &&
+    readiness.connection.connectionId !== expectedConnectionId
+  ) {
+    throw new SessionOperationFailure(
+      'operation_conflict',
+      'Default Session model changed during selection',
+    );
+  }
+  const connection = readiness.connection;
+  const model = authorizeConnectionModel(connection, modelId);
+  if (!model) {
+    throw new SessionOperationFailure('invalid_request', 'Session model is not enabled');
+  }
+  if (isModelExplicitlyUnsupportedForChat(model)) {
+    throw new SessionOperationFailure('invalid_request', 'Session model is not chat-capable');
+  }
+  if (Buffer.byteLength(modelId, 'utf8') > SESSION_CATALOG_MODEL_MAX_BYTES) {
+    throw new SessionOperationFailure(
+      'invalid_request',
+      'Session model identifier exceeds the wire limit',
+    );
+  }
+  // Fail-closed for undeclared levels only: the catalog entry carries the
+  // typed `relayModelProfiles` table, so a relay's user-declared levels DO
+  // reach this gate. A level outside the resolved variants is still
+  // rejected — execution-model-authority rebuilds the runtime connection
+  // from the same table, so whatever passes here is exactly what the wire
+  // can send.
+  if (
+    thinkingLevel !== undefined &&
+    !thinkingVariantsForConnection(
+      {
+        providerType: connection.providerType,
+        relayModelProfiles: connection.relayModelProfiles,
+      },
+      modelId,
+    ).includes(thinkingLevel)
+  ) {
+    throw new SessionOperationFailure(
+      'invalid_request',
+      `Session model does not support thinking level ${thinkingLevel}`,
+    );
+  }
+  return { connectionSlug: connection.slug, model: modelId };
 }
 
 function sessionConfigurationMatches(
@@ -933,6 +962,9 @@ export function projectSessionCatalogRecord(
     model: header.model,
     ...(header.thinkingLevel === undefined ? {} : { thinkingLevel: header.thinkingLevel }),
     permissionMode: header.permissionMode,
+    ...(header.pendingConfiguration === undefined
+      ? {}
+      : { pendingConfiguration: header.pendingConfiguration }),
     collaborationMode: header.collaborationMode ?? 'agent',
     orchestrationMode: header.orchestrationMode ?? 'default',
   };

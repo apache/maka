@@ -206,6 +206,23 @@ export interface SessionExternalOrigin {
   readonly sourceSessionId: string;
 }
 
+/**
+ * Host-owned configuration selected while the current root Turn is active.
+ *
+ * The active AgentRun keeps its own immutable configuration snapshot. This
+ * projection is the configuration the next root Turn should use; it is
+ * cleared when that Turn is admitted or when the user returns to the current
+ * effective configuration.
+ */
+export interface PendingSessionConfiguration {
+  readonly llmConnectionSlug: string;
+  readonly model: string;
+  readonly thinkingLevel?: import('./model-thinking.js').ThinkingLevel;
+  readonly permissionMode: PermissionMode;
+  readonly collaborationMode: CollaborationMode;
+  readonly orchestrationMode: OrchestrationMode;
+}
+
 export interface SessionHeader {
   // Identity
   id: string;
@@ -270,6 +287,8 @@ export interface SessionHeader {
   /** Per-model reasoning-depth variant; `undefined` = model default. Cleared on model switch. */
   thinkingLevel?: import('./model-thinking.js').ThinkingLevel;
   permissionMode: PermissionMode;
+  /** Configuration selected for the next root Turn while one is active. */
+  pendingConfiguration?: PendingSessionConfiguration;
   /** Defaults to `agent` when absent on legacy session records. */
   collaborationMode?: CollaborationMode;
   /** Defaults to `default` when absent on legacy session records. */
@@ -369,6 +388,8 @@ export interface SessionSummary {
   /** Per-model reasoning-depth variant; `undefined` = model default. Cleared on model switch. */
   thinkingLevel?: import('./model-thinking.js').ThinkingLevel;
   permissionMode: PermissionMode;
+  /** Configuration selected for the next root Turn while one is active. */
+  pendingConfiguration?: PendingSessionConfiguration;
   /** Defaults to `agent` when absent on legacy summaries. */
   collaborationMode?: CollaborationMode;
   /** Defaults to `default` when absent on legacy summaries. */

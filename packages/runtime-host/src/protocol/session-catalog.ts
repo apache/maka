@@ -29,6 +29,7 @@ import {
   type SessionStatus,
   type SessionSubagentProjection,
   type SessionToolProfile,
+  type PendingSessionConfiguration,
 } from '@maka/core/session';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import type { ExecutionBoundarySummary } from '@maka/core/sandbox-boundary';
@@ -123,6 +124,7 @@ const PROJECTION_FIELDS = [
   'revisionIndex',
   'revisionState',
   'thinkingLevel',
+  'pendingConfiguration',
   'lastReadMessageId',
   'liveRunState',
 ] as const;
@@ -239,6 +241,7 @@ export interface SessionCatalogProjection {
   readonly model: string;
   readonly thinkingLevel?: ThinkingLevel;
   readonly permissionMode: PermissionMode;
+  readonly pendingConfiguration?: PendingSessionConfiguration;
   readonly collaborationMode: CollaborationMode;
   readonly orchestrationMode: OrchestrationMode;
 }
@@ -678,6 +681,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     model: requireUtf8String(record.model, 'Session model', SESSION_CATALOG_MODEL_MAX_BYTES),
     ...optionalThinkingLevel(record),
     permissionMode: permissionMode(record.permissionMode),
+    ...optionalPendingConfiguration(record),
     collaborationMode: collaborationMode(record.collaborationMode),
     orchestrationMode: orchestrationMode(record.orchestrationMode),
   };
@@ -884,6 +888,51 @@ function optionalThinkingLevel(
 ): Pick<SessionCatalogProjection, 'thinkingLevel'> | Record<string, never> {
   if (!Object.hasOwn(record, 'thinkingLevel')) return {};
   return { thinkingLevel: thinkingLevel(record.thinkingLevel) };
+}
+
+function optionalPendingConfiguration(
+  record: Record<string, unknown>,
+): Pick<SessionCatalogProjection, 'pendingConfiguration'> | Record<string, never> {
+  if (!Object.hasOwn(record, 'pendingConfiguration')) return {};
+  const value = requireRecord(record.pendingConfiguration, 'Pending Session configuration');
+  assertAllowedKeys(value, 'Pending Session configuration', [
+    'llmConnectionSlug',
+    'model',
+    'thinkingLevel',
+    'permissionMode',
+    'collaborationMode',
+    'orchestrationMode',
+  ]);
+  for (const field of [
+    'llmConnectionSlug',
+    'model',
+    'permissionMode',
+    'collaborationMode',
+    'orchestrationMode',
+  ]) {
+    if (!Object.hasOwn(value, field))
+      throw invalidProtocolFrame('Invalid Pending Session configuration fields');
+  }
+  return {
+    pendingConfiguration: {
+      llmConnectionSlug: requireUtf8String(
+        value.llmConnectionSlug,
+        'Pending Session connection slug',
+        SESSION_CATALOG_CONNECTION_SLUG_MAX_BYTES,
+      ),
+      model: requireUtf8String(
+        value.model,
+        'Pending Session model',
+        SESSION_CATALOG_MODEL_MAX_BYTES,
+      ),
+      ...(Object.hasOwn(value, 'thinkingLevel')
+        ? { thinkingLevel: thinkingLevel(value.thinkingLevel) }
+        : {}),
+      permissionMode: permissionMode(value.permissionMode),
+      collaborationMode: collaborationMode(value.collaborationMode),
+      orchestrationMode: orchestrationMode(value.orchestrationMode),
+    },
+  };
 }
 
 // `'fake'` stays accepted on decode: the projection carries the session

@@ -150,7 +150,10 @@ import { notifySandboxBoundaryGraphWake } from './sandbox-boundary-graph-wake.js
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
-import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
+import {
+  HostSessionCatalogCoordinator,
+  validatePendingSessionConfiguration,
+} from './session-catalog-coordinator.js';
 import { HostWorkspaceResolver } from './workspace-resolver.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
@@ -873,6 +876,8 @@ export async function createExecutionRuntimeHostComposition(
       runtimeEventStore: stores.runtimeEventStore,
       toolBoundaryProtocol: stores.runtimeEventStore.toolBoundaryProtocol,
       backends,
+      validatePendingSessionConfiguration: (configuration) =>
+        validatePendingSessionConfiguration(runtimePolicyStores, configuration),
       subagentCatalog,
       newId: randomUUID,
       now: Date.now,

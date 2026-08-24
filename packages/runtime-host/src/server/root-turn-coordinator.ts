@@ -1932,6 +1932,16 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       throw new Error('Admitted non-terminal Turn has no active Runtime Host execution');
     }
 
+    // A staged Session configuration is consumed only when a fresh user root
+    // Turn is admitted. The current AgentRun never observes this transition;
+    // the Host admission lease serializes the commit with successor creation.
+    if (
+      admission.execution.kind === 'external_message' ||
+      admission.execution.kind === 'regenerate'
+    ) {
+      await this.manager.applyPendingSessionConfiguration(input.sessionId);
+    }
+
     const active = this.#executions.get(input.sessionId);
     const currentReservation = this.#admissions.get(input.sessionId);
     if (currentReservation && currentReservation !== rootReservation) {

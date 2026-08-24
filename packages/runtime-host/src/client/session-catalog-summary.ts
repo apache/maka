@@ -65,6 +65,9 @@ export function projectSessionCatalogSummary(
     model: session.model,
     ...(session.thinkingLevel === undefined ? {} : { thinkingLevel: session.thinkingLevel }),
     permissionMode: session.permissionMode,
+    ...(session.pendingConfiguration === undefined
+      ? {}
+      : { pendingConfiguration: session.pendingConfiguration }),
     collaborationMode: session.collaborationMode,
     orchestrationMode: session.orchestrationMode,
   };

@@ -867,29 +867,58 @@ export class DesktopRuntimeHostClient {
     ) as DesktopSessionConfigurationPatch;
     if (Object.keys(definedPatch).length === 0)
       return this.#requireSession(sessionId);
-    return this.#updateSession(sessionId, (current) =>
-      this.request("session.configuration.update", {
+    return this.#updateSession(sessionId, (current) => {
+      const effectiveModelTarget = {
+        kind: "explicit" as const,
+        connectionSlug: current.llmConnectionSlug,
+        model: current.model,
+      };
+      const base = current.pendingConfiguration ?? {
+        ...effectiveModelTarget,
+        thinkingLevel: current.thinkingLevel,
+        permissionMode: current.permissionMode,
+        collaborationMode: current.collaborationMode,
+        orchestrationMode: current.orchestrationMode,
+      };
+      const defaultModelTarget = current.pendingConfiguration
+        ? {
+            kind: "explicit" as const,
+            connectionSlug: current.pendingConfiguration.llmConnectionSlug,
+            model: current.pendingConfiguration.model,
+          }
+          : current.connectionLocked
+          ? effectiveModelTarget
+          : { kind: "default" as const };
+      const modelTarget = definedPatch.modelTarget ?? defaultModelTarget;
+      const selectingModel = definedPatch.modelTarget !== undefined;
+      const selectedModelIsEffective =
+        selectingModel &&
+        definedPatch.modelTarget?.kind === "explicit" &&
+        definedPatch.modelTarget.connectionSlug === current.llmConnectionSlug &&
+        definedPatch.modelTarget.model === current.model;
+      const thinkingLevel =
+        selectingModel &&
+        definedPatch.thinkingLevel === null
+          ? selectedModelIsEffective
+            ? (current.pendingConfiguration?.thinkingLevel ?? current.thinkingLevel ?? null)
+            : null
+          : (base.thinkingLevel ?? null);
+      return this.request("session.configuration.update", {
         sessionId,
         expectedRevision: current.revision,
         configuration: {
           // An unlocked Session still follows the Host-owned default route.
           // Once execution or an explicit model change locks it, the resolved
           // catalog route is the explicit target that must survive this patch.
-          modelTarget: current.connectionLocked
-            ? {
-                kind: "explicit",
-                connectionSlug: current.llmConnectionSlug,
-                model: current.model,
-              }
-            : { kind: "default" },
-          thinkingLevel: current.thinkingLevel ?? null,
-          permissionMode: current.permissionMode,
-          collaborationMode: current.collaborationMode,
-          orchestrationMode: current.orchestrationMode,
+          permissionMode: base.permissionMode,
+          collaborationMode: base.collaborationMode,
+          orchestrationMode: base.orchestrationMode,
           ...definedPatch,
+          modelTarget,
+          thinkingLevel,
         },
-      }),
-    );
+      });
+    });
   }
 
   async setSessionReadMarker(

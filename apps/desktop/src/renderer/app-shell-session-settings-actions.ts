@@ -114,7 +114,10 @@ export function createAppShellSessionSettingsActions(deps: {
     if (mode !== 'ask' && mode !== 'bypass') return false;
     const sessionId = activeIdRef.current;
     const currentMode = sessionId
-      ? sessionsRef.current.find((session) => session.id === sessionId)?.permissionMode
+      ? (() => {
+          const session = sessionsRef.current.find((entry) => entry.id === sessionId);
+          return session?.pendingConfiguration?.permissionMode ?? session?.permissionMode;
+        })()
       : undefined;
     if (currentMode === mode) return true;
     const pendingKey = sessionId ?? '__global_permission_mode__';
@@ -218,7 +221,10 @@ export function createAppShellSessionSettingsActions(deps: {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     const current = sessionsRef.current.find((session) => session.id === sessionId);
-    if (current && current.thinkingLevel === level) return;
+    if (
+      current &&
+      (current.pendingConfiguration?.thinkingLevel ?? current.thinkingLevel) === level
+    ) return;
     if (pendingSessionModelChangesRef.current.has(sessionId)) return;
     pendingSessionModelChangesRef.current.add(sessionId);
     setPendingSessionModelBySession((currentPending) => ({

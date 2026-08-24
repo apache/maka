@@ -1336,26 +1336,11 @@ export const Composer = forwardRef<
   // already handed to the active Turn and leave the plate at that moment.
   const queueCount = props.queuedMessages?.length ?? 0;
   const modelChipLabel = props.modelLabel?.trim() || copy.selectModel;
-  // Mid-turn the model and thinking menus stay mounted but locked, each
-  // carrying the reason in its own words (model vs thinking level) — the
-  // lock is one state with two wordings, not two locks.
-  const switchLock = props.streaming
-    ? 'streaming'
-    : props.activeSession?.status === 'running'
-      ? 'running'
-      : props.activeSession?.status === 'waiting_for_user'
-        ? 'permission'
-        : undefined;
-  const modelSwitcherDisabledReason =
-    switchLock === 'streaming' ? copy.switchDisabledStreaming
-    : switchLock === 'running' ? copy.switchDisabledRunning
-    : switchLock === 'permission' ? copy.switchDisabledPermission
-    : undefined;
-  const thinkingSwitcherDisabledReason =
-    switchLock === 'streaming' ? copy.thinkingDisabledStreaming
-    : switchLock === 'running' ? copy.thinkingDisabledRunning
-    : switchLock === 'permission' ? copy.thinkingDisabledPermission
-    : undefined;
+  // Model and thinking selections are Host-owned next-Turn state. They stay
+  // interactive while the active AgentRun is running; only the short local
+  // write-in-flight flag prevents duplicate submissions.
+  const modelSwitcherDisabledReason = undefined;
+  const thinkingSwitcherDisabledReason = undefined;
 
   /**
    * The drawer's contract is context staged for the *next send*: quotes and
@@ -1908,10 +1893,9 @@ export const Composer = forwardRef<
               ) : null}
               {/* Model + thinking sit left after permission (adjacent pair), not
                   in the send cluster. Thinking is its own menu, only when the
-                  active/new-chat model offers levels. Mid-turn the pair stays
-                  mounted — `modelSwitcherDisabledReason` carries the lock and
-                  its explanation, so the footer never reflows when a turn
-                  starts or ends. */}
+                  active/new-chat model offers levels. The Host keeps the
+                  controls mounted and applies active-turn changes to the next
+                  root Turn. */}
               <div className="maka-model-selection-controls">
                 {props.activeSession ? (
                   <ChatModelSwitcher
@@ -1951,7 +1935,7 @@ export const Composer = forwardRef<
                     levels={props.activeThinkingLevels ?? []}
                     current={props.activeThinkingLevel}
                     onChange={props.onThinkingLevelChange}
-                    disabled={Boolean(modelSwitcherDisabledReason) || props.modelChangePending}
+                    disabled={props.modelChangePending}
                     disabledReason={thinkingSwitcherDisabledReason}
                     loading={props.modelChangePending}
                   />

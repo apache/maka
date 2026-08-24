@@ -177,6 +177,8 @@ export interface RuntimeKernelLike {
   /** Take back every queued message (both queues) as one `\n\n`-joined string. */
   retractQueue(sessionId: string): string;
   hasActiveRuns(sessionId: string): boolean;
+  /** True while a root/child execution has been claimed but not yet attached. */
+  hasPendingExecutionClaims?(sessionId: string): boolean;
   /**
    * The turns of the runs in flight for this session. The same fact
    * `hasActiveRuns` reports, named — which is what lets a client tell a turn
@@ -2566,6 +2568,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   hasActiveRuns(sessionId: string): boolean {
     return this.backendGenerationsFor(sessionId).some((active) => active.activeRuns.size > 0);
+  }
+
+  hasPendingExecutionClaims(sessionId: string): boolean {
+    return (this.executionClaims.get(sessionId)?.size ?? 0) > 0;
   }
 
   runningTurnIds(sessionId: string): string[] {

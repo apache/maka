@@ -49,7 +49,9 @@ import { HostProjectMembershipGate } from '../server/project-membership-gate.js'
 import { HostWorkspaceResolver } from '../server/workspace-resolver.js';
 import {
   HostSessionCatalogCoordinator,
+  SessionOperationFailure,
   type HostSessionCatalogCoordinatorOptions,
+  validatePendingSessionConfiguration,
 } from '../server/session-catalog-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
@@ -460,6 +462,60 @@ test('creation on a relay connection honours declared levels via the catalog pro
   assert.equal(outcome.ok, true);
   assert.equal(createAttempts, 1);
   assert.equal(persistedThinkingLevel, 'low');
+});
+
+test('pending configuration validation rechecks model readiness and thinking support', async () => {
+  const runtimePolicy = runtimePolicyFixture({
+    providerType: 'openai-compatible',
+    enabledModelIds: ['relay-model'],
+    models: [{ id: 'relay-model' }],
+    relayModelProfiles: { 'relay-model': { thinkingLevels: ['low'] } },
+  });
+  const pending = {
+    llmConnectionSlug: 'test',
+    model: 'relay-model',
+    thinkingLevel: 'low' as const,
+    permissionMode: 'ask' as const,
+    collaborationMode: 'agent' as const,
+    orchestrationMode: 'default' as const,
+  };
+
+  await validatePendingSessionConfiguration(runtimePolicy, pending);
+  await assert.rejects(
+    validatePendingSessionConfiguration(runtimePolicy, {
+      ...pending,
+      thinkingLevel: 'high',
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof SessionOperationFailure);
+      assert.equal(error.code, 'invalid_request');
+      assert.match(error.message, /does not support thinking level high/);
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    validatePendingSessionConfiguration(
+      runtimePolicyFixture({
+        executionResolution: {
+          kind: 'credential_not_configured',
+          status: {
+            locator: { scope: 'connection', connectionId: 'connection-1', kind: 'api_key' },
+            configured: false,
+            credentialId: null,
+            revision: null,
+            updatedAt: null,
+          },
+        },
+      }),
+      { ...pending, model: 'model-1', thinkingLevel: undefined },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof SessionOperationFailure);
+      assert.equal(error.code, 'operation_unavailable');
+      return true;
+    },
+  );
 });
 
 test('creation admits the enabled bootstrap DeepSeek model before discovery', async () => {

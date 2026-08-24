@@ -49,6 +49,7 @@ import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events
 import type {
   SessionHeader,
   SessionHeaderPatch,
+  PendingSessionConfiguration,
   SessionBlockedReason,
   SessionStatus,
   SessionSummary,
@@ -574,6 +575,8 @@ export interface VersionedSessionHeader {
 
 export interface SessionConfigurationStoreUpdate {
   readonly expectedVersion: number;
+  /** `null` clears a staged next-Turn configuration; omitted preserves it. */
+  readonly pendingConfiguration?: PendingSessionConfiguration | null;
   readonly configuration: {
     readonly backend: SessionHeader['backend'];
     readonly llmConnectionSlug: string;
@@ -845,6 +848,10 @@ interface SessionManagerBaseDeps {
   runtimeSource?: InvocationSource;
   runtimeInvocationObserver?: (result: InvocationResult) => void | Promise<void>;
   runtimeKernel?: RuntimeKernelLike;
+  /** Host-owned validation for a staged model target before next-Turn commit. */
+  validatePendingSessionConfiguration?: (
+    configuration: PendingSessionConfiguration,
+  ) => Promise<void>;
   /** Optional host-owned parent run authority for runtimes that execute the parent externally. */
   isParentRunActive?: (sessionId: string, runId: string, turnId: string) => boolean;
   shellRuns?: ShellRunProcessManager;
@@ -1146,6 +1153,63 @@ export class SessionManager {
     input: SessionConfigurationTransitionRequest,
   ): Promise<VersionedSessionHeader> {
     const store = this.requireSessionConfigurationStore();
+    const current = await store.readHeaderRecordSnapshot(sessionId);
+    if (current.revision !== input.expectedRevision) {
+      throw new SessionConfigurationRevisionConflictError(input.expectedRevision, current.revision);
+    }
+    if (current.header.isArchived) {
+      throw new SessionConfigurationTransitionError(
+        'operation_conflict',
+        'Archived Session configuration cannot be changed',
+      );
+    }
+    await this.assertCollaborationTransition(current.header, input.configuration.collaborationMode);
+    const desired: PendingSessionConfiguration = {
+      llmConnectionSlug: input.configuration.llmConnectionSlug,
+      model: input.configuration.model,
+      ...(input.configuration.thinkingLevel === undefined
+        ? {}
+        : { thinkingLevel: input.configuration.thinkingLevel }),
+      permissionMode: input.configuration.permissionMode,
+      collaborationMode: input.configuration.collaborationMode,
+      orchestrationMode: input.configuration.orchestrationMode,
+    };
+
+    // The active AgentRun owns its immutable configuration snapshot. A
+    // configuration change during that run is therefore a Host-owned next-Turn
+    // selection, not a resource transition for the live backend.
+    if (sessionHasActiveExecution(this.runtimeKernel, sessionId)) {
+      if (
+        (current.header.collaborationMode ?? 'agent') !== input.configuration.collaborationMode ||
+        (current.header.orchestrationMode ?? 'default') !== input.configuration.orchestrationMode
+      ) {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Collaboration and orchestration configuration cannot change while a Turn is active',
+        );
+      }
+      const updateHeaderVersioned = store.updateHeaderVersioned?.bind(store);
+      if (!updateHeaderVersioned) {
+        throw new SessionConfigurationTransitionError(
+          'operation_unavailable',
+          'Session configuration authority is unavailable',
+        );
+      }
+      const next = sessionConfigurationMatches(current.header, input.configuration)
+        ? await updateHeaderVersioned(
+            sessionId,
+            { pendingConfiguration: undefined },
+            input.expectedRevision,
+          )
+        : await updateHeaderVersioned(
+            sessionId,
+            { pendingConfiguration: desired },
+            input.expectedRevision,
+          );
+      this.runtimeKernel.updateCachedHeader(sessionId, next.header);
+      return next;
+    }
+
     const next = await this.commitExecutionResourceTransition(
       sessionId,
       input.configuration.permissionMode,
@@ -1193,11 +1257,51 @@ export class SessionManager {
                     statusUpdatedAt: this.deps.now(),
                   }
                 : { kind: 'preserve' },
+            pendingConfiguration: null,
           });
       },
     );
     this.runtimeKernel.updateCachedHeader(sessionId, next.header);
     return next;
+  }
+
+  /** Apply a Host-owned next-Turn configuration at the root admission boundary. */
+  async applyPendingSessionConfiguration(sessionId: string): Promise<VersionedSessionHeader> {
+    const store = this.requireSessionConfigurationStore();
+    const current = await store.readHeaderRecordSnapshot(sessionId);
+    const pending = current.header.pendingConfiguration;
+    if (!pending) return current;
+    if (sessionHasActiveExecution(this.runtimeKernel, sessionId)) {
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'Session configuration cannot be applied while a Turn is active',
+      );
+    }
+    if (this.deps.validatePendingSessionConfiguration) {
+      try {
+        await this.deps.validatePendingSessionConfiguration(pending);
+      } catch (error) {
+        if (error instanceof SessionConfigurationTransitionError) throw error;
+        const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
+        throw new SessionConfigurationTransitionError(
+          'operation_unavailable',
+          `Pending Session configuration is no longer available${detail}`,
+        );
+      }
+    }
+    return this.transitionSessionConfiguration(sessionId, {
+      expectedRevision: current.revision,
+      configuration: {
+        backend: 'ai-sdk',
+        llmConnectionSlug: pending.llmConnectionSlug,
+        model: pending.model,
+        thinkingLevel: pending.thinkingLevel,
+        connectionLocked: true,
+        permissionMode: pending.permissionMode,
+        collaborationMode: pending.collaborationMode,
+        orchestrationMode: pending.orchestrationMode,
+      },
+    });
   }
 
   async relocateSessionWorkspace(
@@ -6326,6 +6430,29 @@ function executionBoundaryMatchesPermissionMode(
   return mode === 'explore'
     ? boundary.profile.name === 'read-only'
     : boundary.profile.name !== 'read-only';
+}
+
+function sessionConfigurationMatches(
+  header: SessionHeader,
+  configuration: SessionConfigurationTransitionRequest['configuration'],
+): boolean {
+  return (
+    header.backend === 'ai-sdk' &&
+    header.llmConnectionSlug === configuration.llmConnectionSlug &&
+    header.model === configuration.model &&
+    header.thinkingLevel === configuration.thinkingLevel &&
+    header.connectionLocked === configuration.connectionLocked &&
+    header.permissionMode === configuration.permissionMode &&
+    (header.collaborationMode ?? 'agent') === configuration.collaborationMode &&
+    (header.orchestrationMode ?? 'default') === configuration.orchestrationMode
+  );
+}
+
+function sessionHasActiveExecution(runtimeKernel: RuntimeKernelLike, sessionId: string): boolean {
+  return (
+    runtimeKernel.hasActiveRuns(sessionId) === true ||
+    runtimeKernel.hasPendingExecutionClaims?.(sessionId) === true
+  );
 }
 
 function narrowsExecutionAuthority(
