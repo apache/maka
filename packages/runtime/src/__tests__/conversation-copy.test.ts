@@ -321,6 +321,114 @@ test('Side Conversation snapshots remove linked child ownership identifiers', ()
   ]);
 });
 
+test('Side Conversation snapshots rewrite source-owned Agent Swarm identities', () => {
+  const message: Extract<StoredMessage, { readonly type: 'tool_result' }> = {
+    type: 'tool_result',
+    id: 'source-owned-result',
+    turnId: 'turn-1',
+    ts: 1,
+    toolUseId: 'source-owned-call',
+    isError: false,
+    content: {
+      kind: 'agent_swarm',
+      status: 'completed',
+      items: [
+        {
+          itemId: 'item-1',
+          index: 0,
+          profile: 'default',
+          started: true,
+          runId: 'run-source',
+          resumedFromRunId: 'run-parent-source',
+          status: 'completed',
+          summary: 'The source-owned run completed.',
+          artifactIds: ['artifact-source'],
+        },
+      ],
+      startedAt: 1,
+      completedAt: 2,
+      durationMs: 1,
+    },
+  };
+  const rewritten = rewriteConversationCopyMessage(message, {
+    mode: 'exact',
+    sourceSessionId: 'session-source',
+    targetSessionId: 'session-target',
+    artifactIds: new Map([['artifact-source', 'artifact-target']]),
+    relativePaths: new Map(),
+    linkedChildren: {
+      mode: 'snapshot',
+      archivedResults: new Map(),
+    },
+    runIds: new Map([
+      ['run-source', 'run-target'],
+      ['run-parent-source', 'run-parent-target'],
+    ]),
+    runtimeEventIds: new Map(),
+    providerTraceIds: new Map(),
+  });
+
+  assert.equal(rewritten.type, 'tool_result');
+  if (rewritten.type !== 'tool_result' || rewritten.content.kind !== 'agent_swarm') {
+    assert.fail('Expected the source-owned Agent Swarm result');
+  }
+  assert.deepEqual(rewritten.content.items, [
+    {
+      itemId: 'item-1',
+      index: 0,
+      profile: 'default',
+      started: true,
+      runId: 'run-target',
+      resumedFromRunId: 'run-parent-target',
+      status: 'completed',
+      summary: 'The source-owned run completed.',
+      artifactIds: ['artifact-target'],
+    },
+  ]);
+});
+
+test('Side Conversation snapshots rewrite source-owned subagent identities', () => {
+  const message: Extract<StoredMessage, { readonly type: 'tool_result' }> = {
+    type: 'tool_result',
+    id: 'source-owned-result',
+    turnId: 'turn-1',
+    ts: 1,
+    toolUseId: 'source-owned-call',
+    isError: false,
+    content: {
+      kind: 'subagent',
+      agentName: 'Researcher',
+      turnId: 'turn-1',
+      runId: 'run-source',
+      status: 'completed',
+      permissionMode: 'ask',
+      summary: 'The source-owned run completed.',
+      artifactIds: ['artifact-source'],
+    },
+  };
+  const rewritten = rewriteConversationCopyMessage(message, {
+    mode: 'exact',
+    sourceSessionId: 'session-source',
+    targetSessionId: 'session-target',
+    artifactIds: new Map([['artifact-source', 'artifact-target']]),
+    relativePaths: new Map(),
+    linkedChildren: {
+      mode: 'snapshot',
+      archivedResults: new Map(),
+    },
+    runIds: new Map([['run-source', 'run-target']]),
+    runtimeEventIds: new Map(),
+    providerTraceIds: new Map(),
+  });
+
+  assert.equal(rewritten.type, 'tool_result');
+  if (rewritten.type !== 'tool_result' || rewritten.content.kind !== 'subagent') {
+    assert.fail('Expected the source-owned subagent result');
+  }
+  assert.equal(rewritten.content.runId, 'run-target');
+  assert.deepEqual(rewritten.content.artifactIds, ['artifact-target']);
+});
+
 test('Side Conversation snapshots preserve ordinary archived tool results', () => {
   const message: Extract<StoredMessage, { readonly type: 'tool_result' }> = {
     type: 'tool_result',

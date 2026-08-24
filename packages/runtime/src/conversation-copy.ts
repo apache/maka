@@ -1154,7 +1154,7 @@ function rewriteToolResultContent(
     };
   }
   if (content.kind === 'subagent') {
-    if (linkedChildrenAreSnapshots(references)) {
+    if (linkedChildrenAreSnapshots(references) && content.childSessionId) {
       const { childSessionId: _childSessionId, runId: _runId, ...snapshot } = content;
       return {
         ...snapshot,
@@ -1184,7 +1184,7 @@ function rewriteToolResultContent(
     return {
       ...content,
       items: content.items.map((item) => {
-        if (linkedChildrenAreSnapshots(references)) {
+        if (linkedChildrenAreSnapshots(references) && item.childSessionId) {
           const {
             childSessionId: _childSessionId,
             runId: _runId,
