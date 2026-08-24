@@ -80,6 +80,7 @@
     "@maka/ui": "0.1.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@playwright/test": "^1.62.1",
+    "@storybook/addon-mcp": "^0.7.0",
     "@storybook/react-vite": "^10.5.10",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
