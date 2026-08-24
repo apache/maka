@@ -67,6 +67,18 @@ function readyHost(input: {
   };
 }
 
+function readyRemoteHost(hostId: string): Extract<TaskEntryHost, { state: 'available' }> {
+  return {
+    ...readyHost({ chooseClientDirectory: false, chooseHostDirectory: true }),
+    profile: {
+      id: 'remote',
+      name: 'Remote',
+      kind: 'remote',
+    },
+    hostId,
+  };
+}
+
 function catalog(host: TaskEntryHost = readyHost()): TaskEntryCatalog {
   return { defaultProfileId: 'local', hosts: [host] };
 }
@@ -301,21 +313,12 @@ describe('useTaskEntryController', () => {
   it('closes a remote directory handoff when the Host generation changes', async () => {
     const { root } = installReactRenderer();
     let reads = 0;
-    const remoteHost = (hostId: string) => ({
-      ...readyHost({ chooseClientDirectory: false, chooseHostDirectory: true }),
-      profile: {
-        id: 'remote',
-        name: 'Remote',
-        kind: 'remote' as const,
-      },
-      hostId,
-    });
     const services = createFakeTaskEntryServices({
       catalog: {
         ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => ({
           defaultProfileId: 'remote',
-          hosts: [remoteHost(++reads === 1 ? 'generation-a' : 'generation-b')],
+          hosts: [readyRemoteHost(++reads === 1 ? 'generation-a' : 'generation-b')],
         }),
       },
     });
@@ -340,22 +343,13 @@ describe('useTaskEntryController', () => {
     const stale = deferred<TaskEntryCatalog>();
     const current = deferred<TaskEntryCatalog>();
     let reads = 0;
-    const remoteHost = (hostId: string) => ({
-      ...readyHost({ chooseClientDirectory: false, chooseHostDirectory: true }),
-      profile: {
-        id: 'remote',
-        name: 'Remote',
-        kind: 'remote' as const,
-      },
-      hostId,
-    });
     const services = createFakeTaskEntryServices({
       catalog: {
         ...createFakeTaskEntryServices().catalog,
         getCatalog: async () => {
           reads += 1;
           if (reads === 1) {
-            return { defaultProfileId: 'remote', hosts: [remoteHost('initial')] };
+            return { defaultProfileId: 'remote', hosts: [readyRemoteHost('initial')] };
           }
           return reads === 2 ? stale.promise : current.promise;
         },
@@ -371,14 +365,123 @@ describe('useTaskEntryController', () => {
     });
     await act(async () => current.resolve({
       defaultProfileId: 'remote',
-      hosts: [remoteHost('current-generation')],
+      hosts: [readyRemoteHost('current-generation')],
     }));
     await act(async () => stale.resolve({
       defaultProfileId: 'remote',
-      hosts: [remoteHost('stale-generation')],
+      hosts: [readyRemoteHost('stale-generation')],
     }));
     await act(async () => Promise.all([choose, refresh]));
 
+    assert.equal(controller().selectors.target?.hostId, 'current-generation');
+    assert.equal(controller().host.directoryHost?.hostId, 'current-generation');
+  });
+
+  it('awaits the winning refresh when an onboarding catalog read settles stale first', async () => {
+    const { root } = installReactRenderer();
+    const stale = deferred<TaskEntryCatalog>();
+    const current = deferred<TaskEntryCatalog>();
+    const errors: unknown[] = [];
+    let reads = 0;
+    let emit: (() => void) | undefined;
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => {
+          reads += 1;
+          if (reads === 1) return catalog();
+          return reads === 2 ? stale.promise : current.promise;
+        },
+        subscribeChanges: (handler) => {
+          emit = handler;
+          return () => undefined;
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services, errors));
+    let settled = false;
+    let chooseError: unknown;
+    let choose!: Promise<void>;
+    await act(async () => {
+      choose = controller().commands.chooseProjectForProfile('remote')
+        .catch((error: unknown) => {
+          chooseError = error;
+        })
+        .finally(() => {
+          settled = true;
+        });
+      emit?.();
+    });
+
+    await act(async () => stale.resolve({
+      defaultProfileId: 'remote',
+      hosts: [readyRemoteHost('stale-generation')],
+    }));
+    assert.equal(settled, false);
+    assert.equal(errors.length, 0);
+
+    await act(async () => current.resolve({
+      defaultProfileId: 'remote',
+      hosts: [readyRemoteHost('current-generation')],
+    }));
+    await act(async () => choose);
+
+    assert.equal(chooseError, undefined);
+    assert.equal(errors.length, 0);
+    assert.equal(controller().selectors.target?.hostId, 'current-generation');
+    assert.equal(controller().host.directoryHost?.hostId, 'current-generation');
+  });
+
+  it('awaits the winning refresh when an onboarding catalog read rejects stale first', async () => {
+    const { root } = installReactRenderer();
+    const stale = deferred<TaskEntryCatalog>();
+    const current = deferred<TaskEntryCatalog>();
+    const errors: unknown[] = [];
+    let reads = 0;
+    let emit: (() => void) | undefined;
+    const services = createFakeTaskEntryServices({
+      catalog: {
+        ...createFakeTaskEntryServices().catalog,
+        getCatalog: async () => {
+          reads += 1;
+          if (reads === 1) return catalog();
+          return reads === 2 ? stale.promise : current.promise;
+        },
+        subscribeChanges: (handler) => {
+          emit = handler;
+          return () => undefined;
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services, errors));
+    let settled = false;
+    let chooseError: unknown;
+    let choose!: Promise<void>;
+    await act(async () => {
+      choose = controller().commands.chooseProjectForProfile('remote')
+        .catch((error: unknown) => {
+          chooseError = error;
+        })
+        .finally(() => {
+          settled = true;
+        });
+      emit?.();
+    });
+
+    await act(async () => stale.reject(new Error('stale catalog failed')));
+    assert.equal(settled, false);
+    assert.equal(errors.length, 0);
+
+    await act(async () => current.resolve({
+      defaultProfileId: 'remote',
+      hosts: [readyRemoteHost('current-generation')],
+    }));
+    await act(async () => choose);
+
+    assert.equal(chooseError, undefined);
+    assert.equal(errors.length, 0);
     assert.equal(controller().selectors.target?.hostId, 'current-generation');
     assert.equal(controller().host.directoryHost?.hostId, 'current-generation');
   });

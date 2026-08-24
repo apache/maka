@@ -116,36 +116,54 @@ export function useTaskEntryController(
   const directoryOpenerRef = useRef<HTMLElement | null>(null);
   const committedCatalogRef = useRef<TaskEntryCatalog>(EMPTY_CATALOG);
   const refreshSequence = useRef(0);
+  // Imperative callers must follow a refresh that supersedes their own read;
+  // otherwise a one-shot onboarding handoff can act on the previous catalog.
+  const latestRefreshRef = useRef<{
+    readonly sequence: number;
+    readonly promise: Promise<TaskEntryCatalog>;
+  } | undefined>(undefined);
   const projectMutationPendingRef = useRef(false);
 
-  const refresh = useCallback(async (): Promise<TaskEntryCatalog> => {
+  const refresh = useCallback((): Promise<TaskEntryCatalog> => {
     const sequence = ++refreshSequence.current;
     setRefreshing(true);
-    try {
-      const next = await service.getCatalog();
-      if (refreshSequence.current !== sequence) return committedCatalogRef.current;
-      committedCatalogRef.current = next;
-      setCatalog(next);
-      setError(undefined);
-      setSelectedProfileId((current) => selectAvailableProfile(next, current));
-      setDirectoryHost((current) => {
-        if (!current) return current;
-        return next.hosts.find(
-          (host): host is ReadyTaskEntryHost =>
-            host.profile.id === current.profile.id &&
-            isReadyTaskEntryHost(host) &&
-            host.hostId === current.hostId,
-        );
-      });
-      return next;
-    } catch (cause) {
-      if (refreshSequence.current === sequence) {
-        setError(localizedShellErrorMessage(cause, copy.catalogUnavailable, locale));
+    const promise = (async (): Promise<TaskEntryCatalog> => {
+      try {
+        const next = await service.getCatalog();
+        if (refreshSequence.current !== sequence) {
+          const winner = latestRefreshRef.current;
+          return winner && winner.sequence > sequence
+            ? winner.promise
+            : committedCatalogRef.current;
+        }
+        committedCatalogRef.current = next;
+        setCatalog(next);
+        setError(undefined);
+        setSelectedProfileId((current) => selectAvailableProfile(next, current));
+        setDirectoryHost((current) => {
+          if (!current) return current;
+          return next.hosts.find(
+            (host): host is ReadyTaskEntryHost =>
+              host.profile.id === current.profile.id &&
+              isReadyTaskEntryHost(host) &&
+              host.hostId === current.hostId,
+          );
+        });
+        return next;
+      } catch (cause) {
+        if (refreshSequence.current !== sequence) {
+          const winner = latestRefreshRef.current;
+          if (winner && winner.sequence > sequence) return winner.promise;
+        } else {
+          setError(localizedShellErrorMessage(cause, copy.catalogUnavailable, locale));
+        }
+        throw cause;
+      } finally {
+        if (refreshSequence.current === sequence) setRefreshing(false);
       }
-      throw cause;
-    } finally {
-      if (refreshSequence.current === sequence) setRefreshing(false);
-    }
+    })();
+    latestRefreshRef.current = { sequence, promise };
+    return promise;
   }, [copy.catalogUnavailable, locale, service]);
 
   useEffect(() => {
