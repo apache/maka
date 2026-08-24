@@ -485,7 +485,7 @@ async function verifyPackagedConcurrencySoak({
 async function verifyPackagedAdversarialMatrix(sandboxExecutable) {
   const script = join(repoRoot, 'experiments', 'windows-sandbox', 'adversarial-matrix-smoke.ps1');
   const { stdout, stderr } = await execFileAsync(
-    'powershell.exe',
+    'pwsh.exe',
     ['-NoProfile', '-NonInteractive', '-File', script, '-LauncherPath', sandboxExecutable],
     {
       cwd: repoRoot,
