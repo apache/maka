@@ -22,10 +22,12 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 const HELPER: &str = env!("CARGO_BIN_EXE_maka-gitoxide-helper");
+static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn inspects_a_sha1_repository_without_invoking_system_git() {
@@ -191,8 +193,9 @@ impl RepositoryFixture {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "maka-gitoxide-helper-admission-{}-{nonce}",
-            std::process::id()
+            "maka-gitoxide-helper-admission-{}-{nonce}-{}",
+            std::process::id(),
+            FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
         ));
         fs::create_dir_all(&root).unwrap();
         let fixture = Self { root };
