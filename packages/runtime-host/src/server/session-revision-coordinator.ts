@@ -492,7 +492,6 @@ export class HostSessionRevisionCoordinator {
             ? {
                 mode: 'snapshot' as const,
                 archivedResults: archivedSnapshotResults,
-                artifactIds: artifactCopy.artifactIds,
               }
             : linkedReferences.references.size > 0
               ? {

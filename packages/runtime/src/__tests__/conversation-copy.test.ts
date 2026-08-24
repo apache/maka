@@ -292,12 +292,11 @@ test('Side Conversation snapshots remove linked child ownership identifiers', ()
     mode: 'exact',
     sourceSessionId: 'session-source',
     targetSessionId: 'session-target',
-    artifactIds: new Map(),
+    artifactIds: new Map([['child-artifact', 'child-artifact-snapshot']]),
     relativePaths: new Map(),
     linkedChildren: {
       mode: 'snapshot',
       archivedResults: new Map(),
-      artifactIds: new Map([['child-artifact', 'child-artifact-snapshot']]),
     },
     runIds: new Map(),
     runtimeEventIds: new Map(),
@@ -355,7 +354,6 @@ test('Side Conversation snapshots preserve ordinary archived tool results', () =
     linkedChildren: {
       mode: 'snapshot',
       archivedResults: new Map(),
-      artifactIds: new Map(),
     },
     runIds: new Map(),
     runtimeEventIds: new Map([['event-source', 'event-target']]),
@@ -408,7 +406,7 @@ test('Side Conversation snapshots retire archived linked-child results', () => {
     mode: 'exact',
     sourceSessionId: 'session-source',
     targetSessionId: 'session-target',
-    artifactIds: new Map(),
+    artifactIds: new Map([['child-artifact', 'child-artifact-snapshot']]),
     relativePaths: new Map(),
     linkedChildren: {
       mode: 'snapshot',
@@ -428,7 +426,6 @@ test('Side Conversation snapshots retire archived linked-child results', () => {
           }),
         ],
       ]),
-      artifactIds: new Map([['child-artifact', 'child-artifact-snapshot']]),
     },
     runIds: new Map(),
     runtimeEventIds: new Map([['event-source', 'event-target']]),

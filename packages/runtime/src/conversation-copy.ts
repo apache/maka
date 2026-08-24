@@ -90,7 +90,6 @@ export type ConversationCopyArtifactReferenceMap =
         | {
             readonly mode: 'snapshot';
             readonly archivedResults: ReadonlyMap<string, string>;
-            readonly artifactIds: ReadonlyMap<string, string>;
           }
         | {
             readonly mode: 'preserve_validated';
@@ -1274,9 +1273,8 @@ function rewriteSnapshotArtifactIds(
   if (references.mode !== 'exact' || references.linkedChildren.mode !== 'snapshot') {
     return artifactIds;
   }
-  const snapshotArtifactIds = references.linkedChildren.artifactIds;
   return artifactIds.map((artifactId) =>
-    requiredMappedId(snapshotArtifactIds, artifactId, 'linked Artifact'),
+    requiredMappedId(references.artifactIds, artifactId, 'linked Artifact'),
   );
 }
 
