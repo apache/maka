@@ -53,6 +53,7 @@ import {
 const SERVICE_CONFIG_FILE = 'runtime-host-service.json';
 const SERVICE_LIFECYCLE_LOCK_FILE = 'runtime-host-setup';
 const SERVICE_DEPLOYMENT_LOCK_FILE = 'runtime-host-deployment';
+const SERVICE_RECONCILIATION_LOCK_FILE = 'runtime-host-reconciliation';
 const DEFAULT_WEBSOCKET_PATH = '/runtime-host';
 const SERVICE_OPERATION_LOCK_TIMEOUT_MS = 60_000;
 const SERVICE_READY_TIMEOUT_MS = 45_000;
@@ -274,6 +275,19 @@ export async function withRuntimeHostManagedServiceDeploymentLock<T>(
   await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });
   return withProcessLifetimeFileUpdateLock(
     join(clientDataRoot, SERVICE_DEPLOYMENT_LOCK_FILE),
+    operation,
+    timeoutMs,
+  );
+}
+
+export async function withRuntimeHostManagedServiceReconciliationLock<T>(
+  clientDataRoot: string,
+  operation: () => Promise<T>,
+  timeoutMs = SERVICE_OPERATION_LOCK_TIMEOUT_MS,
+): Promise<T> {
+  await mkdir(clientDataRoot, { recursive: true, mode: 0o700 });
+  return withProcessLifetimeFileUpdateLock(
+    join(clientDataRoot, SERVICE_RECONCILIATION_LOCK_FILE),
     operation,
     timeoutMs,
   );

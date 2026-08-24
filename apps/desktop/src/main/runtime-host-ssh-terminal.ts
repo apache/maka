@@ -85,7 +85,10 @@ export interface DesktopRuntimeHostSshManagementInput {
   readonly destination: string;
   readonly sshPort?: number;
   readonly operatorPath: string;
-  readonly action: Exclude<RuntimeHostServiceManagementAction, 'check_update' | 'update'>;
+  readonly action: Exclude<
+    RuntimeHostServiceManagementAction,
+    'check_update' | 'update' | 'update_policy' | 'reconcile_update'
+  >;
   readonly expectedTarget: {
     readonly serviceId: string;
     readonly rootPath: string;

@@ -579,7 +579,7 @@ function serviceResult(
   operatorAccess = false,
 ): Exclude<
   Extract<RuntimeHostServiceManagementFrame, { kind: 'result' }>,
-  { action: 'check_update' | 'update' }
+  { action: 'check_update' | 'update' | 'update_policy' | 'reconcile_update' }
 > {
   const result = {
     schemaVersion: 1 as const,

@@ -822,7 +822,9 @@ describe('managed Runtime Host service', () => {
     const legacyFrame = decodeRuntimeHostServiceManagementFrame(await run());
     assert.equal(legacyFrame?.kind, 'result');
     assert.equal(
-      legacyFrame?.kind === 'result' ? legacyFrame.operatorCapabilities : undefined,
+      legacyFrame?.kind === 'result' && legacyFrame.action === 'status'
+        ? legacyFrame.operatorCapabilities
+        : undefined,
       undefined,
     );
 
@@ -830,7 +832,9 @@ describe('managed Runtime Host service', () => {
       RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY;
     const frame = decodeRuntimeHostServiceManagementFrame(await run());
     assert.equal(frame?.kind, 'result');
-    if (frame?.kind !== 'result') assert.fail('Expected a service result frame');
+    if (frame?.kind !== 'result' || frame.action !== 'status') {
+      assert.fail('Expected a service status result frame');
+    }
     assert.equal(frame.service.installedVersion, '1.2.3');
     assert.deepEqual(frame.operatorCapabilities, ['access-management-v1']);
     assert.equal(frame.service.stateRoot, '/srv/maka');
@@ -839,9 +843,12 @@ describe('managed Runtime Host service', () => {
     process.env[RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV] =
       RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY;
     const lockFrame = decodeRuntimeHostServiceManagementFrame(await run());
-    assert.deepEqual(lockFrame?.kind === 'result' ? lockFrame.operatorCapabilities : undefined, [
-      'process-lifetime-lock-v1',
-    ]);
+    assert.deepEqual(
+      lockFrame?.kind === 'result' && lockFrame.action === 'status'
+        ? lockFrame.operatorCapabilities
+        : undefined,
+      ['process-lifetime-lock-v1'],
+    );
   });
 
   it('reads service logs when an interrupted install left no config', async (t) => {

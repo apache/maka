@@ -139,6 +139,20 @@ installs or switches a package. Installation-management callers can pass the sam
 to the existing exact-package update transaction, and does not mutate a candidate that requires
 manual review.
 
+The installation owner can persist one update target and reconcile it with the same verified
+transaction:
+
+```sh
+maka runtime-host service update-policy --target latest \
+  --expected-service-id <service-id> \
+  --expected-root-path <state-root> \
+  --expected-root-id <root-id>
+maka runtime-host service reconcile-update --json
+```
+
+Use `update-policy --target manual` to disable automatic reconciliation. Reconciliation is a
+bounded one-shot command: it never interrupts active work and does not install a scheduler.
+
 ## Uninstall
 
 ```sh

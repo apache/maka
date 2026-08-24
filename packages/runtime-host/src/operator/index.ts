@@ -40,6 +40,7 @@ export {
   encodeRuntimeHostServiceManagementFrame,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
+  type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostServiceUpdatePhase,
   type RuntimeHostOperatorCapability,
   type RuntimeHostServiceSummary,

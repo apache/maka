@@ -46,6 +46,8 @@ const SERVICE_ACTIONS = [
   'retire',
   'check_update',
   'update',
+  'update_policy',
+  'reconcile_update',
   'logs',
   'uninstall',
 ] as const;
@@ -93,6 +95,23 @@ const boundedNonEmptyString = (maxBytes: number) =>
     .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);
 const PRODUCT_RELEASE_VERSION_SCHEMA = z.string().refine(isProductReleaseVersion);
 const PACKAGE_INTEGRITY_SCHEMA = z.string().refine(isSha512PackageIntegrity);
+const UPDATE_POLICY_SCHEMA = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('manual') }).strict(),
+  z
+    .object({
+      kind: z.literal('fixed'),
+      version: PRODUCT_RELEASE_VERSION_SCHEMA,
+    })
+    .strict(),
+  z.object({ kind: z.literal('channel'), channel: z.enum(UPDATE_CHANNELS) }).strict(),
+]);
+const MANAGED_SERVICE_TARGET_SCHEMA = z
+  .object({
+    serviceId: z.string().regex(/^[a-f0-9]{64}$/u),
+    rootPath: boundedNonEmptyString(PATH_MAX_BYTES),
+    rootId: z.string().regex(/^[a-f0-9]{64}$/u),
+  })
+  .strict();
 
 const UPDATE_CHECK_SCHEMA = z
   .object({
@@ -150,6 +169,51 @@ const RETIREMENT_RESULT_SCHEMA = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('stopped') }).strict(),
 ]);
 
+const UPDATE_RESULT_SCHEMA = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('already_current'),
+      version: boundedNonEmptyString(FIELD_MAX_BYTES),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('active_tasks'),
+      currentVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+      targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('updated'),
+      previousVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+      targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('repaired'),
+      version: boundedNonEmptyString(FIELD_MAX_BYTES),
+    })
+    .strict(),
+]);
+
+const UPDATE_POLICY_RESULT_SCHEMA = z
+  .object({
+    policy: UPDATE_POLICY_SCHEMA,
+    target: MANAGED_SERVICE_TARGET_SCHEMA.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.policy.kind === 'manual') !== (value.target === undefined)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['target'],
+        message: 'Only an automatic update policy has a managed service target',
+      });
+    }
+  });
+
 const SERVICE_SUMMARY_SCHEMA = z
   .object({
     platform: boundedNonEmptyString(FIELD_MAX_BYTES),
@@ -205,6 +269,16 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
     .strict(),
   z
     .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('progress'),
+      action: z.literal('reconcile_update'),
+      phase: z.enum(UPDATE_PHASES),
+      currentVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+      targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
+    })
+    .strict(),
+  z
+    .object({
       ...SERVICE_RESULT_COMMON,
       action: z.literal('check_update'),
       service: INSTALLED_SERVICE_SUMMARY_SCHEMA,
@@ -237,36 +311,51 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
     .object({
       ...SERVICE_RESULT_COMMON,
       action: z.literal('update'),
-      update: z.discriminatedUnion('kind', [
-        z
-          .object({
-            kind: z.literal('already_current'),
-            version: boundedNonEmptyString(FIELD_MAX_BYTES),
-          })
-          .strict(),
-        z
-          .object({
-            kind: z.literal('active_tasks'),
-            currentVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
-            targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
-          })
-          .strict(),
-        z
-          .object({
-            kind: z.literal('updated'),
-            previousVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
-            targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
-          })
-          .strict(),
-        z
-          .object({
-            kind: z.literal('repaired'),
-            version: boundedNonEmptyString(FIELD_MAX_BYTES),
-          })
-          .strict(),
-      ]),
+      update: UPDATE_RESULT_SCHEMA,
     })
     .strict(),
+  z
+    .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('result'),
+      action: z.literal('update_policy'),
+      updatePolicy: UPDATE_POLICY_RESULT_SCHEMA,
+    })
+    .strict(),
+  z
+    .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('result'),
+      action: z.literal('reconcile_update'),
+      updatePolicy: UPDATE_POLICY_RESULT_SCHEMA,
+      service: SERVICE_SUMMARY_SCHEMA.optional(),
+      reconciliation: z.discriminatedUnion('kind', [
+        z.object({ kind: z.literal('disabled') }).strict(),
+        z
+          .object({
+            kind: z.literal('manual_action'),
+            candidate: z
+              .object({
+                version: PRODUCT_RELEASE_VERSION_SCHEMA,
+                integrity: PACKAGE_INTEGRITY_SCHEMA,
+              })
+              .strict(),
+            reason: z.enum(MANUAL_ACTION_REASONS),
+          })
+          .strict(),
+        ...UPDATE_RESULT_SCHEMA.options,
+      ]),
+    })
+    .strict()
+    .superRefine((frame, context) => {
+      if ((frame.reconciliation.kind === 'disabled') !== (frame.service === undefined)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['service'],
+          message: 'Only disabled reconciliation omits the managed service summary',
+        });
+      }
+    }),
   z
     .object({
       ...SERVICE_RESULT_COMMON,
@@ -292,6 +381,22 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
     .object({
       schemaVersion: z.literal(1),
       kind: z.literal('error'),
+      action: z.literal('reconcile_update'),
+      error: SERVICE_ERROR_SCHEMA,
+    })
+    .strict(),
+  z
+    .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('error'),
+      action: z.literal('update_policy'),
+      error: SERVICE_ERROR_SCHEMA,
+    })
+    .strict(),
+  z
+    .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('error'),
       action: z.enum(NON_UPDATE_SERVICE_ACTIONS),
       error: SERVICE_ERROR_SCHEMA,
     })
@@ -301,6 +406,7 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
 export type RuntimeHostServiceManagementAction = (typeof SERVICE_ACTIONS)[number];
 export type RuntimeHostServiceManagementFrame = z.infer<typeof SERVICE_MANAGEMENT_FRAME_SCHEMA>;
 export type RuntimeHostServiceUpdatePhase = (typeof UPDATE_PHASES)[number];
+export type RuntimeHostManagedUpdatePolicy = z.infer<typeof UPDATE_POLICY_SCHEMA>;
 export type RuntimeHostOperatorCapability = (typeof OPERATOR_CAPABILITIES)[number];
 export type RuntimeHostServiceSummary = z.infer<typeof SERVICE_SUMMARY_SCHEMA>;
 

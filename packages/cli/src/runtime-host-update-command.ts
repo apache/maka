@@ -59,6 +59,7 @@ import {
 import {
   resolveManagedRuntimeHostUpdateSelection,
   RuntimeHostUpdateDiscoveryError,
+  type RuntimeHostUpdateSelection,
 } from './runtime-host-update-discovery.js';
 import {
   RuntimeHostUpdatePackageError,
@@ -111,12 +112,25 @@ interface RuntimeHostUpdateCliDeps {
   readonly writeError: (value: string) => unknown;
 }
 
-interface RuntimeHostSelectedUpdateCliDeps {
-  readonly resolveSelection: typeof resolveManagedRuntimeHostUpdateSelection;
+interface RuntimeHostResolvedUpdateCliDeps {
   readonly withPackage: typeof withRuntimeHostRegistryUpdatePackage;
   readonly update: typeof runManagedRuntimeHostUpdateCli;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
+}
+
+interface RuntimeHostSelectedUpdateCliDeps extends RuntimeHostResolvedUpdateCliDeps {
+  readonly resolveSelection: typeof resolveManagedRuntimeHostUpdateSelection;
+}
+
+export type RuntimeHostUpdateFrame = Extract<
+  RuntimeHostServiceManagementFrame,
+  { action: 'update' }
+>;
+
+export interface RuntimeHostUpdateCliObserver {
+  readonly onFrame?: (frame: RuntimeHostUpdateFrame) => void;
+  readonly suppressPresentation?: boolean;
 }
 
 interface RuntimeHostOperatorInvocation {
@@ -127,6 +141,7 @@ interface RuntimeHostOperatorInvocation {
 export async function runManagedRuntimeHostUpdateCli(
   options: RuntimeHostUpdateCliOptions,
   overrides: Partial<RuntimeHostUpdateCliDeps> = {},
+  observer: RuntimeHostUpdateCliObserver = {},
 ): Promise<number> {
   const deps: RuntimeHostUpdateCliDeps = {
     manage: manageRuntimeHostService,
@@ -147,7 +162,9 @@ export async function runManagedRuntimeHostUpdateCli(
   let exactTargetObserved = false;
   let cutoverStarted = false;
   let retired = false;
-  const emit = (frame: RuntimeHostServiceManagementFrame): void => {
+  const emit = (frame: RuntimeHostUpdateFrame): void => {
+    observer.onFrame?.(frame);
+    if (observer.suppressPresentation) return;
     if (options.framed) {
       deps.writeOutput(encodeRuntimeHostServiceManagementFrame(frame));
       return;
@@ -488,6 +505,7 @@ export async function runManagedRuntimeHostUpdateCli(
 export async function runManagedRuntimeHostSelectedUpdateCli(
   options: RuntimeHostSelectedUpdateCliOptions,
   overrides: Partial<RuntimeHostSelectedUpdateCliDeps> = {},
+  observer: RuntimeHostUpdateCliObserver = {},
 ): Promise<number> {
   const deps: RuntimeHostSelectedUpdateCliDeps = {
     resolveSelection: resolveManagedRuntimeHostUpdateSelection,
@@ -497,20 +515,6 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
     writeError: (value) => process.stderr.write(value),
     ...overrides,
   };
-  const emit = (frame: Exclude<RuntimeHostServiceManagementFrame, { kind: 'progress' }>): void => {
-    if (options.framed) {
-      deps.writeOutput(encodeRuntimeHostServiceManagementFrame(frame));
-    } else if (options.json) {
-      deps.writeOutput(`${JSON.stringify(frame)}\n`);
-    } else if (frame.kind === 'error') {
-      deps.writeError(`${frame.error.message}\n`);
-    } else {
-      if (frame.action !== 'update') {
-        throw new TypeError('Managed Runtime Host update returned an unrelated result');
-      }
-      deps.writeOutput(`${humanResult(frame)}\n`);
-    }
-  };
 
   try {
     const selection = await deps.resolveSelection({
@@ -519,40 +523,7 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
       selector: options.selector,
       expectedTarget: options.expectedTarget,
     });
-    if (selection.outcome.kind === 'manual_action') {
-      emit({
-        schemaVersion: 1,
-        kind: 'error',
-        action: 'update',
-        error: {
-          code: 'update_not_admitted',
-          message: manualUpdateRequiredMessage(
-            selection.candidate.version,
-            selection.outcome.reason,
-          ),
-        },
-      });
-      return 1;
-    }
-
-    const apply = async (packageRoot: string) => {
-      const { selector: _selector, ...updateOptions } = options;
-      return await deps.update({
-        ...updateOptions,
-        sourcePackageRoot: packageRoot,
-        version: selection.candidate.version,
-        registrySelection: {
-          integrity: selection.candidate.integrity,
-          current: {
-            version: selection.service.installedVersion,
-            cliPath: selection.currentCliPath,
-          },
-        },
-      });
-    };
-    return selection.outcome.kind === 'current'
-      ? await apply(dirname(dirname(selection.currentCliPath)))
-      : await deps.withPackage(selection.candidate, apply);
+    return await runManagedRuntimeHostResolvedUpdateCli(options, selection, deps, observer);
   } catch (error) {
     const code =
       error instanceof RuntimeHostUpdateDiscoveryError ||
@@ -561,7 +532,7 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
         ? error.code
         : 'update_resolution_failed';
     const message = error instanceof Error ? error.message : String(error);
-    emit({
+    emitSelectedUpdateTerminal(options, deps, observer, {
       schemaVersion: 1,
       kind: 'error',
       action: 'update',
@@ -578,11 +549,111 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
   }
 }
 
+export async function runManagedRuntimeHostResolvedUpdateCli(
+  options: RuntimeHostSelectedUpdateCliOptions,
+  selection: RuntimeHostUpdateSelection,
+  overrides: Partial<RuntimeHostResolvedUpdateCliDeps> = {},
+  observer: RuntimeHostUpdateCliObserver = {},
+): Promise<number> {
+  const deps: RuntimeHostResolvedUpdateCliDeps = {
+    withPackage: withRuntimeHostRegistryUpdatePackage,
+    update: runManagedRuntimeHostUpdateCli,
+    writeOutput: (value) => process.stdout.write(value),
+    writeError: (value) => process.stderr.write(value),
+    ...overrides,
+  };
+
+  try {
+    if (selection.outcome.kind === 'manual_action') {
+      emitSelectedUpdateTerminal(options, deps, observer, {
+        schemaVersion: 1,
+        kind: 'error',
+        action: 'update',
+        error: {
+          code: 'update_not_admitted',
+          message: manualUpdateRequiredMessage(
+            selection.candidate.version,
+            selection.outcome.reason,
+          ),
+        },
+      });
+      return 1;
+    }
+
+    const apply = async (packageRoot: string) => {
+      const { selector: _selector, ...updateOptions } = options;
+      return await deps.update(
+        {
+          ...updateOptions,
+          sourcePackageRoot: packageRoot,
+          version: selection.candidate.version,
+          registrySelection: {
+            integrity: selection.candidate.integrity,
+            current: {
+              version: selection.service.installedVersion,
+              cliPath: selection.currentCliPath,
+            },
+          },
+        },
+        {},
+        observer,
+      );
+    };
+    return selection.outcome.kind === 'current'
+      ? await apply(dirname(dirname(selection.currentCliPath)))
+      : await deps.withPackage(selection.candidate, apply);
+  } catch (error) {
+    const code =
+      error instanceof RuntimeHostUpdateDiscoveryError ||
+      error instanceof RuntimeHostServiceManagerError ||
+      error instanceof RuntimeHostUpdatePackageError
+        ? error.code
+        : 'update_resolution_failed';
+    const message = error instanceof Error ? error.message : String(error);
+    emitSelectedUpdateTerminal(options, deps, observer, {
+      schemaVersion: 1,
+      kind: 'error',
+      action: 'update',
+      error: {
+        code:
+          truncateUtf8(code, RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES) ||
+          'update_resolution_failed',
+        message:
+          truncateUtf8(message, RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES) ||
+          'Unable to prepare the Runtime Host update',
+      },
+    });
+    return 1;
+  }
+}
+
+function emitSelectedUpdateTerminal(
+  options: RuntimeHostSelectedUpdateCliOptions,
+  deps: Pick<RuntimeHostResolvedUpdateCliDeps, 'writeOutput' | 'writeError'>,
+  observer: RuntimeHostUpdateCliObserver,
+  frame: Exclude<RuntimeHostUpdateFrame, { kind: 'progress' }>,
+): void {
+  observer.onFrame?.(frame);
+  if (observer.suppressPresentation) return;
+  if (options.framed) {
+    deps.writeOutput(encodeRuntimeHostServiceManagementFrame(frame));
+  } else if (options.json) {
+    deps.writeOutput(`${JSON.stringify(frame)}\n`);
+  } else if (frame.kind === 'error') {
+    deps.writeError(`${frame.error.message}\n`);
+  } else {
+    if (frame.action !== 'update') {
+      throw new TypeError('Managed Runtime Host update returned an unrelated result');
+    }
+    deps.writeOutput(`${humanResult(frame)}\n`);
+  }
+}
+
 function progress(
   phase: RuntimeHostServiceUpdatePhase,
   currentVersion: string,
   targetVersion: string,
-): RuntimeHostServiceManagementFrame {
+): RuntimeHostUpdateFrame {
   return {
     schemaVersion: 1,
     kind: 'progress',

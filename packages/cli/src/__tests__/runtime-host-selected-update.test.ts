@@ -111,7 +111,7 @@ describe('managed Runtime Host selected update', () => {
     });
   });
 
-  it('lets the exact transaction decide whether a current candidate needs repair', async () => {
+  it('lets the exact transaction inspect the current deployment without downloading it again', async () => {
     const selection = updateSelection({ kind: 'current' });
     let updateInput: RuntimeHostUpdateCliOptions | undefined;
     assert.equal(

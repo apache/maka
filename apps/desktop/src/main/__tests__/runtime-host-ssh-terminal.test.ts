@@ -264,7 +264,9 @@ test('reads a framed service result without projecting it into the SSH terminal'
 
   const result = await management;
   assert.equal(result.kind, 'result');
-  if (result.kind !== 'result') assert.fail('expected service management result');
+  if (result.kind !== 'result' || result.action !== 'status') {
+    assert.fail('expected service status result');
+  }
   assert.equal(result.service.installedVersion, '1.2.3');
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   assert.match(JSON.stringify(harness.events), /Password/u);

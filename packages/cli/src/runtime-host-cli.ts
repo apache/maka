@@ -19,6 +19,7 @@
 
 import { isAbsolute } from 'node:path';
 import { isProductReleaseVersion } from '@maka/runtime-host/operator';
+import type { RuntimeHostManagedUpdatePolicy } from '@maka/runtime-host/operator';
 import {
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
@@ -90,6 +91,20 @@ export type RuntimeHostCliCommand =
       expectedTarget: RuntimeHostManagedServiceTarget;
       selector?: RuntimeHostUpdateSelector;
       allowInterruptActiveTasks?: true;
+    }
+  | {
+      kind: 'runtime-host-service-update-policy';
+      json: boolean;
+      framed?: true;
+      clientDataRoot?: string;
+      policy?: RuntimeHostManagedUpdatePolicy;
+      expectedTarget?: RuntimeHostManagedServiceTarget;
+    }
+  | {
+      kind: 'runtime-host-service-reconcile-update';
+      json: boolean;
+      framed?: true;
+      clientDataRoot?: string;
     }
   | {
       kind: 'runtime-host-managed-deployment-cleanup';
@@ -251,13 +266,15 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     action !== 'retire' &&
     action !== 'check-update' &&
     action !== 'update' &&
+    action !== 'update-policy' &&
+    action !== 'reconcile-update' &&
     action !== 'logs' &&
     action !== 'uninstall'
   ) {
     return error(
       action
         ? `Unexpected runtime-host service command: ${action}`
-        : 'runtime-host service requires install, status, start, stop, restart, retire, check-update, update, logs, or uninstall',
+        : 'runtime-host service requires install, status, start, stop, restart, retire, check-update, update, update-policy, reconcile-update, logs, or uninstall',
     );
   }
 
@@ -292,7 +309,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
         if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
         clientDataRoot = value;
       },
-      ...(action === 'check-update' || action === 'update'
+      ...(action === 'check-update' || action === 'update' || action === 'update-policy'
         ? {
             '--target': (value: string) => {
               if (updateTarget !== undefined) return error('Duplicate --target');
@@ -306,6 +323,38 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   if ('kind' in options) return options;
   if ((action === 'retire' || action === 'update') && !options.expectedTarget) {
     return error(`runtime-host service ${action} requires an expected target`);
+  }
+  if (action === 'update-policy') {
+    const policy = updateTarget === undefined ? undefined : parseUpdatePolicy(updateTarget);
+    if (policy && 'exitCode' in policy) return policy;
+    if (policy?.kind === 'manual' && options.expectedTarget) {
+      return error('runtime-host service update-policy manual does not accept an expected target');
+    }
+    if (policy && policy.kind !== 'manual' && !options.expectedTarget) {
+      return error('runtime-host service update-policy requires an expected target');
+    }
+    if (!policy && options.expectedTarget) {
+      return error('runtime-host service update-policy requires --target when setting a target');
+    }
+    return {
+      kind: 'runtime-host-service-update-policy',
+      json: options.json,
+      ...(options.framed ? { framed: true } : {}),
+      ...(clientDataRoot ? { clientDataRoot } : {}),
+      ...(policy ? { policy } : {}),
+      ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
+    };
+  }
+  if (action === 'reconcile-update') {
+    if (options.expectedTarget) {
+      return error('runtime-host service reconcile-update does not accept an expected target');
+    }
+    return {
+      kind: 'runtime-host-service-reconcile-update',
+      json: options.json,
+      ...(options.framed ? { framed: true } : {}),
+      ...(clientDataRoot ? { clientDataRoot } : {}),
+    };
   }
   if (action === 'check-update') {
     const selector = parseUpdateSelector(updateTarget);
@@ -343,9 +392,16 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   };
 }
 
+function parseUpdatePolicy(value: string): RuntimeHostManagedUpdatePolicy | RuntimeHostCliError {
+  if (value === 'manual') return { kind: 'manual' };
+  const selector = parseUpdateSelector(value, 'update-policy');
+  if ('exitCode' in selector) return selector;
+  return selector.kind === 'exact' ? { kind: 'fixed', version: selector.version } : selector;
+}
+
 function parseUpdateSelector(
   value: string | undefined,
-  action: 'check-update' | 'update' = 'check-update',
+  action: 'check-update' | 'update' | 'update-policy' = 'check-update',
 ): RuntimeHostUpdateSelector | RuntimeHostCliError {
   if (!value) return error(`runtime-host service ${action} requires --target`);
   if (value === 'latest' || value === 'next') {

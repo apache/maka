@@ -37,11 +37,13 @@ import {
   RuntimeHostServiceManagerError,
   withRuntimeHostManagedServiceDeploymentLock,
   withRuntimeHostManagedServiceLifecycleLock,
+  withRuntimeHostManagedServiceReconciliationLock,
   type RuntimeHostManagedServiceInput,
   type RuntimeHostManagedServiceResult,
   type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
+import { writeRuntimeHostManagedUpdatePolicy } from './runtime-host-update-policy-store.js';
 import { createLaunchAgentRuntimeHostService } from './runtime-host-launch-agent-service.js';
 import { createSystemdUserRuntimeHostService } from './runtime-host-systemd-service.js';
 
@@ -56,6 +58,8 @@ export interface RuntimeHostServiceManagementCliDeps {
   readonly manage: typeof manageRuntimeHostService;
   readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
+  readonly withReconciliationLock: typeof withRuntimeHostManagedServiceReconciliationLock;
+  readonly clearUpdatePolicy: (clientDataRoot: string) => Promise<void>;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
@@ -69,6 +73,9 @@ export async function runManagedRuntimeHostServiceCli(
     manage: manageRuntimeHostService,
     withDeploymentLock: withRuntimeHostManagedServiceDeploymentLock,
     withLifecycleLock: withRuntimeHostManagedServiceLifecycleLock,
+    withReconciliationLock: withRuntimeHostManagedServiceReconciliationLock,
+    clearUpdatePolicy: (clientDataRoot) =>
+      writeRuntimeHostManagedUpdatePolicy(clientDataRoot, null),
     createBackend: createPlatformRuntimeHostServiceBackend,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
@@ -78,14 +85,22 @@ export async function runManagedRuntimeHostServiceCli(
     const { json: _json, framed: _framed, ...input } = options;
     const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
     const manage = () => deps.manage(input, deps.createBackend(serviceId));
+    const mutate = () =>
+      deps.withDeploymentLock(options.clientDataRoot, () =>
+        deps.withLifecycleLock(options.clientDataRoot, manage),
+      );
     const result =
       options.action === 'status' || options.action === 'logs'
         ? await manage()
         : options.action === 'retire'
           ? await deps.withLifecycleLock(options.clientDataRoot, manage)
-          : await deps.withDeploymentLock(options.clientDataRoot, () =>
-              deps.withLifecycleLock(options.clientDataRoot, manage),
-            );
+          : options.action === 'uninstall'
+            ? await deps.withReconciliationLock(options.clientDataRoot, async () => {
+                const uninstalled = await mutate();
+                await deps.clearUpdatePolicy(options.clientDataRoot);
+                return uninstalled;
+              })
+            : await mutate();
     const blocked = result.action === 'retire' && result.retirement.kind === 'active_tasks';
     if (options.framed) {
       deps.writeOutput(encodeRuntimeHostServiceManagementFrame(successFrame(result)));
