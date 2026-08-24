@@ -30,6 +30,8 @@ import {
   issueGitoxideHelperReleaseArtifactClaimInternal,
 } from '../server/gitoxide-helper-artifact-authority-internal.js';
 import {
+  GITOXIDE_HELPER_ERROR_REASONS_V1,
+  GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL,
   GitoxideHelperInvocationError,
   inspectRepositoryWithGitoxideHelperInternal,
 } from '../server/gitoxide-helper-invocation-internal.js';
@@ -40,6 +42,28 @@ interface AdmittedHelper {
 }
 
 let admittedHelperPromise: Promise<AdmittedHelper | undefined> | undefined;
+
+test('uses a bounded import deadline distinct from repository inspection', () => {
+  assert.deepEqual(GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL, {
+    inspectRepositoryMs: 5_000,
+    importSourceHeadMs: 10 * 60_000,
+  });
+});
+
+test('keeps the Rust and TypeScript helper error protocol exhaustive', async () => {
+  const rustSource = await readFile(
+    new URL('../../../../native/gitoxide-helper/src/main.rs', import.meta.url),
+    'utf8',
+  );
+  const contract = /const HELPER_ERROR_REASONS_V1: &\[&str\] = &\[(?<reasons>[\s\S]*?)\];/.exec(
+    rustSource,
+  );
+  assert.ok(contract?.groups?.reasons, 'Rust helper error contract is missing');
+  const rustReasons = [...contract.groups.reasons.matchAll(/"([a-z0-9_]+)"/g)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(rustReasons, [...GITOXIDE_HELPER_ERROR_REASONS_V1]);
+});
 
 test('observes exact SHA-1 HEAD identity through the admitted helper capability', async (t) => {
   const helper = await admittedHelper();

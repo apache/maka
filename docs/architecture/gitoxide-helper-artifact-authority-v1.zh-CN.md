@@ -69,7 +69,8 @@ packaging owner 的接缝，不是签名信任根；在该 owner 落地前，本
 7. 比较 exact byte count 与 digest。
 
 admission 与每次 invocation resolve 都执行这套校验。它可以识别校验之前或校验期间的替换，不会把
-相邻 manifest 当作自证信任根。
+相邻 manifest 当作自证信任根；但校验完成后必须关闭 handle，而 Node 只能按 path spawn，所以这里不把
+“刚验证的 bytes”表述成“实际执行的 bytes”。
 
 ## 4. 原子性、失败状态与回滚
 
@@ -91,10 +92,11 @@ admission 与每次 invocation resolve 都执行这套校验。它可以识别�
 
 - 它尚未验证 macOS code signature、Windows Authenticode 或 Linux 发布清单的受信签名；
 - 它尚未把 helper 放进由正式安装器保护的只读目录；
-- 它尚未拥有 spawn，因此不声称消除了“最后一次 path 校验完成后、未来 spawn 开始前”的替换窗口。
+- invocation 已接入 path-based spawn，但不能消除“最后一次 handle 校验完成后、exec 开始前”的替换
+  窗口；重复 rehash 只能缩小窗口，不能形成 executable CAS，因此本 Draft 明确保留该限制。
 
-下一切片在接入 spawn 前，必须由正式 packaged-release owner 提供信任根，并明确三平台安装目录与
-签名能力。不能通过给本 API 再传一个裸 expected digest 来绕过这一门槛。
+正式生产接入前，必须由 packaged-release owner 提供信任根，并明确三平台安装目录与签名能力。不能
+通过给本 API 再传一个裸 expected digest 来绕过这一门槛。
 
 ## 6. 平台能力矩阵
 

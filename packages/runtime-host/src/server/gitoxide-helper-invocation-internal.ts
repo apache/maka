@@ -29,25 +29,30 @@ import {
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_STDOUT_BYTES = 64 * 1024;
 const MAX_STDERR_BYTES = 16 * 1024;
-const INVOCATION_TIMEOUT_MS = 5_000;
+export const GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL = Object.freeze({
+  inspectRepositoryMs: 5_000,
+  importSourceHeadMs: 10 * 60_000,
+});
 const SHA1_OID_PATTERN = /^[0-9a-f]{40}$/;
 const OBJECT_FORMAT_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const MAKA_REF_PATTERN = /^refs\/maka\/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/;
-const HELPER_ERROR_REASONS = new Set([
+export const GITOXIDE_HELPER_ERROR_REASONS_V1 = Object.freeze([
+  'internal_error_reason_invalid',
   'request_read_failed',
   'request_too_large',
   'invalid_request',
   'unsupported_protocol_version',
-  'unsupported_operation',
   'repository_open_failed',
   'head_commit_unavailable',
   'head_tree_unavailable',
   'baseline_commit_write_failed',
   'baseline_publish_failed',
+  'baseline_publish_conflict',
   'baseline_ref_outside_maka_namespace',
   'import_destination_create_failed',
   'import_destination_not_fresh',
   'import_destination_object_format_mismatch',
+  'import_destination_parent_untrusted',
   'import_destination_unreadable',
   'import_hooks_cleanup_failed',
   'invalid_source_head_commit_oid',
@@ -72,7 +77,10 @@ const HELPER_ERROR_REASONS = new Set([
   'source_tree_visit_limit_exceeded',
   'unsupported_source_entry_kind',
   'unsupported_source_path',
-]);
+  'unsupported_object_format',
+  'unsupported_managed_tree_policy',
+] as const);
+const HELPER_ERROR_REASONS = new Set<string>(GITOXIDE_HELPER_ERROR_REASONS_V1);
 
 export interface GitoxideRepositoryObservationV1 {
   readonly kind: 'repository_inspected';
@@ -103,6 +111,7 @@ export interface GitoxideSourceImportObservationV1 {
   readonly baselineCommitOid: string;
   readonly baselineTreeOid: string;
   readonly baselineRef: string;
+  readonly managedTreePolicyVersion: 1;
   readonly filesImported: number;
   readonly bytesImported: number;
 }
@@ -169,6 +178,7 @@ export async function inspectRepositoryWithGitoxideHelperInternal(input: {
     executablePath: artifact.executablePath,
     request,
     abortSignal: input.abortSignal,
+    timeoutMs: GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.inspectRepositoryMs,
   });
   return decodeOutcome(outcome);
 }
@@ -180,6 +190,7 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
   readonly expectedSourceHeadCommitOid: string;
   readonly destinationRepositoryPath: string;
   readonly baselineRef: string;
+  readonly managedTreePolicyVersion: 1;
   readonly abortSignal?: AbortSignal;
 }): Promise<GitoxideSourceImportObservationV1> {
   throwIfAborted(input.abortSignal);
@@ -212,6 +223,7 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
       expectedSourceHeadCommitOid: input.expectedSourceHeadCommitOid,
       destinationRepositoryPath: input.destinationRepositoryPath,
       baselineRef: input.baselineRef,
+      managedTreePolicyVersion: input.managedTreePolicyVersion,
     }),
   );
   if (request.length > MAX_REQUEST_BYTES) {
@@ -224,6 +236,7 @@ export async function importSourceHeadWithGitoxideHelperInternal(input: {
     executablePath: artifact.executablePath,
     request,
     abortSignal: input.abortSignal,
+    timeoutMs: GITOXIDE_HELPER_OPERATION_TIMEOUTS_INTERNAL.importSourceHeadMs,
   });
   return decodeSourceImportOutcome(outcome);
 }
@@ -239,6 +252,7 @@ function invokeHelper(input: {
   readonly executablePath: string;
   readonly request: Buffer;
   readonly abortSignal?: AbortSignal;
+  readonly timeoutMs: number;
 }): Promise<HelperProcessOutcome> {
   return new Promise((resolve, reject) => {
     let child: ReturnType<typeof spawn>;
@@ -274,7 +288,7 @@ function invokeHelper(input: {
     let processFailure: GitoxideHelperInvocationError | undefined;
     const timeout = setTimeout(
       () => terminate('gitoxide_helper_invocation_timed_out'),
-      INVOCATION_TIMEOUT_MS,
+      input.timeoutMs,
     );
     const abort = () => terminate('gitoxide_helper_invocation_aborted');
     input.abortSignal?.addEventListener('abort', abort, { once: true });
@@ -432,6 +446,7 @@ function isSourceImportObservation(value: unknown): value is GitoxideSourceImpor
       'baselineCommitOid',
       'baselineTreeOid',
       'baselineRef',
+      'managedTreePolicyVersion',
       'filesImported',
       'bytesImported',
     ]) &&
@@ -449,6 +464,7 @@ function isSourceImportObservation(value: unknown): value is GitoxideSourceImpor
     value.baselineTreeOid === value.sourceTreeOid &&
     typeof value.baselineRef === 'string' &&
     MAKA_REF_PATTERN.test(value.baselineRef) &&
+    value.managedTreePolicyVersion === 1 &&
     Number.isSafeInteger(value.filesImported) &&
     (value.filesImported as number) >= 0 &&
     Number.isSafeInteger(value.bytesImported) &&

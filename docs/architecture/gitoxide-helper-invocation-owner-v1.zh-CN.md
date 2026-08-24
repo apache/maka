@@ -26,7 +26,8 @@ Desktop/CLI/managed-workspace 生产消费者。
 
 本切片只证明：
 
-> Runtime Host 只能通过 owner-bound opaque artifact capability 启动一次 exact Gitoxide helper；
+> Runtime Host 只能通过 owner-bound opaque artifact capability 启动一个刚完成 artifact observation 的
+> Gitoxide helper path；
 > invocation 使用固定 strict JSON request、最小环境、有界 stdin/stdout/stderr、固定超时与取消边界；
 > exit 0/1/2 必须分别匹配 inspected/operational failure/policy rejection 的 exact response shape，任意
 > 不一致均 fail closed。
@@ -45,8 +46,9 @@ one short-lived Rust helper
 typed observation | typed policy rejection | stable error
 ```
 
-caller 不能提供 executable path、argv、environment、protocol version、timeout 或 output limit。唯一可变
-输入是 absolute repository path 与 AbortSignal；repository path 在 spawn 前 canonicalize。
+caller 不能提供 executable path、argv、environment、protocol version、timeout 或 output limit。可变
+业务输入只包括 operation 所需的 absolute repository path、显式 policy 与 AbortSignal；repository path
+在 spawn 前 canonicalize。
 
 ## 3. 原子性、失败状态与回滚
 
@@ -57,11 +59,11 @@ caller 不能提供 executable path、argv、environment、protocol version、ti
 | 成功 | exit 0 + exact SHA-1 `repository_inspected` |
 | policy rejection | exit 2 + exact `unsupported_object_format` |
 | repository/helper failure | exit 1 + allowlisted stable helper reason |
-| timeout | 5 秒后 force-kill process tree，`gitoxide_helper_invocation_timed_out` |
+| timeout | inspect 为 5 秒、source import 为 10 分钟；到期后 force-kill process tree，`gitoxide_helper_invocation_timed_out` |
 | cancellation | preflight 或运行中 fail closed，`gitoxide_helper_invocation_aborted` |
 | resource failure | stdout 64 KiB、stderr 16 KiB，超限 force-kill |
 | malformed protocol | exit code、JSON shape、OID 或字段不一致均拒绝 |
-| rollback | helper 是只读 observation，无 durable side effect |
+| rollback | inspect 无 durable side effect；import 只允许 fresh destination，但 partial artifact cleanup 留给未来 storage owner |
 
 Rust helper v1 不启动 descendants；Runtime 仍使用共享 process-tree terminator 处理 timeout、abort 和
 output overflow，不允许常驻或 detached helper。
@@ -83,8 +85,10 @@ output overflow，不允许常驻或 detached helper。
 2. 构建 Runtime Host；
 3. 通过真实 helper executable 验证 SHA-1 success、SHA-256 rejection、unborn SHA-1 failure。
 
-该证据只覆盖进程崩溃/终止和只读协议，不包含平台安装签名或恶意同用户替换；后者仍属于正式
-packaged-release trust root。
+该证据只覆盖 helper 协议、进程终止与 fresh-only import，不包含平台安装签名或恶意同用户替换。
+当前实现会在 spawn 前完成 bytes/identity observation，但 Node 的 path-based spawn 不能把已打开并验证的
+handle 直接作为 executable，因此 observation 与 exec 之间仍有 TOCTOU。正式 packaged-release owner
+必须依赖平台签名和受保护安装目录；本 Draft 不声称抵抗拥有同用户写权限的攻击者。
 
 ## 6. 下一切片
 

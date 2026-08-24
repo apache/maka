@@ -25,16 +25,23 @@
 
 本切片只证明：
 
-> source import 只能消费 owner-bound repository admission capability 中冻结的 exact SHA-1 HEAD；helper
-> 只把该 commit 的 reachable tree/blob 导入此前不存在的 Maka-owned bare repository，并以确定性零父
-> baseline commit 发布 `refs/maka/*`。caller 不能重新提交 source path、HEAD 或 tree identity。
+> source import 只能消费 owner-bound repository admission capability 中冻结的 exact SHA-1 HEAD、
+> helper artifact identity 与 managed-tree policy；helper 只把该 commit 的 reachable tree/blob 导入
+> 此前不存在的 fresh bare repository，并以确定性零父 baseline commit 发布 `refs/maka/*`。caller 不能
+> 重新提交 source path、HEAD、tree identity、helper identity 或 tree policy。
+
+本 Draft 尚未接入 state-root lease，因此不能证明 destination 属于 Maka。正式消费者必须在调用 helper
+以前由 Storage owner 签发 destination capability；在此之前，API 只接受 fresh path，并拒绝接管或修复
+任何已有 repository。
 
 ## 2. Owner 与原子性边界
 
 - repository admission authority 拥有 source path、commit 与 tree identity；
 - invocation owner 在每次调用前重新验证 helper artifact；
 - short-lived helper 拥有 object copy 与 baseline ref publication；
-- fresh destination 整体是 artifact 边界，不尝试跨 source/destination/SQLite 伪造事务。
+- fresh destination 整体是 artifact 边界，不尝试跨 source/destination/SQLite 伪造事务；
+- helper 不拥有 destination recovery/cleanup 权限。失败后的 partial artifact 只能由未来持有 storage-root
+  identity 与 durable receipt 的 owner 处理。
 
 线性化点是 fresh destination 内 `refs/maka/*` 从不存在到 baseline commit 的 ref publication。ref 发布前
 的 objects 不具有 canonical 意义；完整 response 返回前，destination 不能被上层接受。
@@ -44,9 +51,10 @@
 | 状态 | 处理 |
 | --- | --- |
 | source HEAD 与 admission 不一致 | 创建 destination 前失败 |
-| destination 已存在、是文件或 symlink | 拒绝接管，不修改原内容 |
-| path/type/quota/object copy 失败 | destination 是 untrusted partial artifact，整体删除 |
-| helper 进程中断或响应丢失 | 不推断成功；整体删除 fresh destination 后用新路径重试 |
+| destination 已存在（包括 source 自身、foreign bare repo、partial import） | `import_destination_not_fresh`，不读取、修复或删除原内容 |
+| destination parent 含 symlink/junction/reparse alias | `import_destination_parent_untrusted`，创建前拒绝 |
+| path/type/quota/object copy 失败 | destination 可能是 untrusted partial artifact；helper 不自动清理或重试 |
+| helper 进程中断或响应丢失 | 不推断成功；未来 storage owner 必须先验证/隔离 partial artifact，再签发新的 fresh destination |
 | SHA-256/未知 object format | policy reject；不 fallback 到系统 Git |
 
 v1 不复制 source commit/history，不创建 alternates，不执行 hook/filter/submodule/LFS，也不接入 T1/T2。
@@ -56,7 +64,10 @@ v1 不复制 source commit/history，不创建 alternates，不执行 hook/filte
 - 单文件最多 64 MiB；总计最多 2 GiB；最多 200,000 个普通文件；
 - 只接受 tree、`100644` blob 与 `100755` executable blob；
 - 拒绝 symlink、submodule、`.git`、`.gitattributes`、非 UTF-8 与 NFC/大小写 collision；
-- Linux/macOS/Windows 运行同一 locked Cargo suite；只承诺 process-crash discard/retry，不承诺断电；
+- repository inspection deadline 为 5 秒；source import deadline 为 10 分钟。2 GiB/200,000 files 是输入
+  上限，不是十分钟内一定成功的 SLA；超时后 fail closed；
+- Linux/macOS/Windows 运行同一 locked Cargo suite；当前只证明 fresh-only fail-closed，不承诺 import
+  process-crash 自动恢复或断电恢复；
 - Windows 保留 Git tree 中的 executable bit，不把它映射成 ACL 权威。
 
 ## 5. 后续依赖

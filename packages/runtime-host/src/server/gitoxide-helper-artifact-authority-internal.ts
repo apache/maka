@@ -47,6 +47,12 @@ export interface VerifiedGitoxideHelperArtifactInternal {
   readonly protocolVersion: 1;
 }
 
+export interface GitoxideHelperArtifactIdentityInternal {
+  readonly sha256: `sha256:${string}`;
+  readonly bytes: number;
+  readonly protocolVersion: 1;
+}
+
 export type GitoxideHelperArtifactAuthorityErrorCode =
   | 'gitoxide_helper_release_claim_invalid'
   | 'gitoxide_helper_release_claim_unsupported'
@@ -146,6 +152,24 @@ export async function verifyGitoxideHelperArtifactForInvocationInternal(
   }
   return Object.freeze({
     executablePath: canonicalExecutablePath,
+    protocolVersion: record.claim.protocolVersion,
+  });
+}
+
+export function requireGitoxideHelperArtifactIdentityInternal(
+  invocationOwnerToken: object,
+  capability: GitoxideHelperInvocationCapability,
+): GitoxideHelperArtifactIdentityInternal {
+  const record = invocationCapabilities.get(capability);
+  if (!record || record.invocationOwnerToken !== invocationOwnerToken) {
+    throw new GitoxideHelperArtifactAuthorityError(
+      'gitoxide_helper_invocation_capability_invalid',
+      'Gitoxide helper invocation capability is invalid for this owner',
+    );
+  }
+  return Object.freeze({
+    sha256: record.claim.expectedSha256,
+    bytes: record.claim.expectedBytes,
     protocolVersion: record.claim.protocolVersion,
   });
 }

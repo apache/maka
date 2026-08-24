@@ -21,7 +21,7 @@ use std::{
     collections::HashSet,
     fs,
     io::{self, Read},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
 const PROTOCOL_VERSION: u8 = 1;
+const MANAGED_TREE_POLICY_VERSION: u8 = 1;
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -44,6 +45,50 @@ const MANAGED_TREE_POLICY_V1: ManagedTreePolicy = ManagedTreePolicy {
     max_file_bytes: MAX_IMPORT_FILE_BYTES,
     max_bytes: MAX_IMPORT_BYTES,
 };
+const HELPER_ERROR_REASONS_V1: &[&str] = &[
+    "internal_error_reason_invalid",
+    "request_read_failed",
+    "request_too_large",
+    "invalid_request",
+    "unsupported_protocol_version",
+    "repository_open_failed",
+    "head_commit_unavailable",
+    "head_tree_unavailable",
+    "baseline_commit_write_failed",
+    "baseline_publish_failed",
+    "baseline_publish_conflict",
+    "baseline_ref_outside_maka_namespace",
+    "import_destination_create_failed",
+    "import_destination_not_fresh",
+    "import_destination_object_format_mismatch",
+    "import_destination_parent_untrusted",
+    "import_destination_unreadable",
+    "import_hooks_cleanup_failed",
+    "invalid_source_head_commit_oid",
+    "source_blob_copy_failed",
+    "source_blob_identity_mismatch",
+    "source_blob_invalid",
+    "source_blob_unavailable",
+    "source_byte_limit_exceeded",
+    "source_file_limit_exceeded",
+    "source_head_commit_mismatch",
+    "source_head_commit_unavailable",
+    "source_head_tree_unavailable",
+    "source_path_collision",
+    "source_path_byte_limit_exceeded",
+    "source_path_length_exceeded",
+    "source_tree_copy_failed",
+    "source_tree_depth_exceeded",
+    "source_tree_entry_limit_exceeded",
+    "source_tree_identity_mismatch",
+    "source_tree_invalid",
+    "source_tree_unavailable",
+    "source_tree_visit_limit_exceeded",
+    "unsupported_source_entry_kind",
+    "unsupported_source_path",
+    "unsupported_object_format",
+    "unsupported_managed_tree_policy",
+];
 
 #[derive(Deserialize)]
 #[serde(
@@ -63,6 +108,7 @@ enum Request {
         expected_source_head_commit_oid: String,
         destination_repository_path: PathBuf,
         baseline_ref: String,
+        managed_tree_policy_version: u8,
     },
 }
 
@@ -92,6 +138,7 @@ enum Response<'a> {
         baseline_commit_oid: String,
         baseline_tree_oid: String,
         baseline_ref: String,
+        managed_tree_policy_version: u8,
         files_imported: u64,
         bytes_imported: u64,
     },
@@ -106,6 +153,11 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(reason) => {
+            let reason = if HELPER_ERROR_REASONS_V1.contains(&reason) {
+                reason
+            } else {
+                "internal_error_reason_invalid"
+            };
             write_response(&Response::HelperError {
                 protocol_version: PROTOCOL_VERSION,
                 reason,
@@ -131,6 +183,7 @@ fn run() -> Result<ExitCode, &'static str> {
             expected_source_head_commit_oid,
             destination_repository_path,
             baseline_ref,
+            managed_tree_policy_version,
         } => {
             assert_protocol_version(protocol_version)?;
             import_source_head(
@@ -138,6 +191,7 @@ fn run() -> Result<ExitCode, &'static str> {
                 expected_source_head_commit_oid,
                 destination_repository_path,
                 baseline_ref,
+                managed_tree_policy_version,
             )
         }
     }
@@ -210,11 +264,15 @@ fn import_source_head(
     expected_source_head_commit_oid: String,
     destination_repository_path: PathBuf,
     baseline_ref: String,
+    managed_tree_policy_version: u8,
 ) -> Result<ExitCode, &'static str> {
     use gix::bstr::ByteSlice;
 
     if !baseline_ref.starts_with("refs/maka/") {
         return Err("baseline_ref_outside_maka_namespace");
+    }
+    if managed_tree_policy_version != MANAGED_TREE_POLICY_VERSION {
+        return Err("unsupported_managed_tree_policy");
     }
     let source = open_repository(source_repository_path)?;
     if source.object_hash() != gix::hash::Kind::Sha1 {
@@ -237,10 +295,8 @@ fn import_source_head(
         .map_err(|_| "source_head_tree_unavailable")?
         .detach();
 
+    assert_import_destination_parent(&destination_repository_path)?;
     let destination = match fs::symlink_metadata(&destination_repository_path) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            open_repository(destination_repository_path.clone())?
-        }
         Ok(_) => return Err("import_destination_not_fresh"),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             gix::init_bare(&destination_repository_path)
@@ -317,10 +373,46 @@ fn import_source_head(
         baseline_commit_oid: baseline_commit.to_string(),
         baseline_tree_oid: source_tree.to_string(),
         baseline_ref,
+        managed_tree_policy_version: MANAGED_TREE_POLICY_VERSION,
         files_imported: stats.files,
         bytes_imported: stats.bytes,
     });
     Ok(ExitCode::SUCCESS)
+}
+
+fn assert_import_destination_parent(destination: &Path) -> Result<(), &'static str> {
+    if !destination.is_absolute() {
+        return Err("import_destination_parent_untrusted");
+    }
+    let parent = destination
+        .parent()
+        .ok_or("import_destination_parent_untrusted")?;
+    let mut ancestors = parent.ancestors().collect::<Vec<_>>();
+    ancestors.reverse();
+    for ancestor in ancestors {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        let metadata =
+            fs::symlink_metadata(ancestor).map_err(|_| "import_destination_parent_untrusted")?;
+        if metadata.file_type().is_symlink() || is_windows_reparse_point(&metadata) {
+            return Err("import_destination_parent_untrusted");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_windows_reparse_point(_metadata: &fs::Metadata) -> bool {
+    false
 }
 
 fn copy_source_tree(

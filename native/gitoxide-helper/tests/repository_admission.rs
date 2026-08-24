@@ -133,6 +133,7 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 1,
     }));
 
     assert!(
@@ -146,6 +147,7 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
     assert_eq!(response["sourceHeadCommitOid"], source_head);
     assert_eq!(response["sourceTreeOid"], source_tree);
     assert_eq!(response["baselineTreeOid"], source_tree);
+    assert_eq!(response["managedTreePolicyVersion"], 1);
     assert_eq!(response["filesImported"], 2);
     assert_eq!(response["bytesImported"], 29);
     let baseline_commit = response["baselineCommitOid"].as_str().unwrap();
@@ -174,25 +176,24 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 1,
     }));
-    assert!(retry.status.success());
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&retry.stdout).unwrap(),
-        response
-    );
+    assert_helper_error(&retry, "import_destination_not_fresh");
 }
 
 #[test]
-fn repairs_an_initialized_import_destination_without_a_published_baseline() {
+fn rejects_a_foreign_bare_destination_without_modifying_it() {
     let fixture = RepositoryFixture::sha1_with_commit();
     let source_head = fixture.git_output(["rev-parse", "HEAD"]);
-    let destination = fixture.root.join("managed-partial.git");
+    let destination = fixture.root.join("foreign.git");
     let initialized = Command::new("git")
         .args(["init", "--bare"])
         .arg(&destination)
         .output()
         .unwrap();
     assert!(initialized.status.success());
+    let sentinel = destination.join("hooks/foreign-owner");
+    fs::write(&sentinel, b"preserve me\n").unwrap();
 
     let output = invoke_request(serde_json::json!({
         "protocolVersion": 1,
@@ -201,14 +202,104 @@ fn repairs_an_initialized_import_destination_without_a_published_baseline() {
         "expectedSourceHeadCommitOid": source_head,
         "destinationRepositoryPath": destination,
         "baselineRef": "refs/maka/accepted",
+        "managedTreePolicyVersion": 1,
     }));
 
-    assert!(output.status.success());
-    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        git_bare_output(&destination, ["rev-parse", "refs/maka/accepted"]),
-        response["baselineCommitOid"].as_str().unwrap()
-    );
+    assert_helper_error(&output, "import_destination_not_fresh");
+    assert_eq!(fs::read(&sentinel).unwrap(), b"preserve me\n");
+    assert!(!git_bare_succeeds(
+        &destination,
+        ["show-ref", "--verify", "refs/maka/accepted"]
+    ));
+}
+
+#[test]
+fn rejects_a_foreign_non_bare_destination_without_modifying_it() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("foreign-worktree");
+    fs::create_dir(&destination).unwrap();
+    let sentinel = destination.join("user-data.txt");
+    fs::write(&sentinel, b"preserve non-bare content\n").unwrap();
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/accepted",
+        "managedTreePolicyVersion": 1,
+    }));
+
+    assert_helper_error(&output, "import_destination_not_fresh");
+    assert_eq!(fs::read(&sentinel).unwrap(), b"preserve non-bare content\n");
+}
+
+#[test]
+fn rejects_the_source_repository_as_its_own_destination_without_modifying_it() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let sentinel = fixture.root.join("hooks/user-data");
+    fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
+    fs::write(&sentinel, b"preserve source bytes\n").unwrap();
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": fixture.root,
+        "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 1,
+    }));
+
+    assert_helper_error(&output, "import_destination_not_fresh");
+    assert_eq!(fs::read(&sentinel).unwrap(), b"preserve source bytes\n");
+}
+
+#[test]
+fn rejects_an_unknown_managed_tree_policy_before_creating_the_destination() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("unsupported-policy.git");
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 2,
+    }));
+
+    assert_helper_error(&output, "unsupported_managed_tree_policy");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn rejects_a_destination_below_an_aliased_parent() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let owned_parent = fixture.root.join("owned-parent");
+    let aliased_parent = fixture.root.join("aliased-parent");
+    fs::create_dir(&owned_parent).unwrap();
+    create_directory_alias(&owned_parent, &aliased_parent);
+    let destination = aliased_parent.join("managed.git");
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline",
+        "managedTreePolicyVersion": 1,
+    }));
+
+    assert_helper_error(&output, "import_destination_parent_untrusted");
+    assert!(!owned_parent.join("managed.git").exists());
 }
 
 fn invoke_helper(repository_path: &Path) -> Output {
@@ -237,6 +328,33 @@ fn invoke_request(request: serde_json::Value) -> Output {
         .write_all(serde_json::to_string(&request).unwrap().as_bytes())
         .unwrap();
     child.wait_with_output().unwrap()
+}
+
+fn assert_helper_error(output: &Output, expected_reason: &str) {
+    assert_eq!(output.status.code(), Some(1));
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["kind"], "helper_error");
+    assert_eq!(response["reason"], expected_reason);
+}
+
+#[cfg(unix)]
+fn create_directory_alias(target: &Path, alias: &Path) {
+    std::os::unix::fs::symlink(target, alias).unwrap();
+}
+
+#[cfg(windows)]
+fn create_directory_alias(target: &Path, alias: &Path) {
+    let output = Command::new("cmd")
+        .args(["/d", "/s", "/c", "mklink", "/J"])
+        .arg(alias)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "junction fixture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn git_bare_output<const N: usize>(repository: &Path, args: [&str; N]) -> String {
@@ -326,6 +444,7 @@ impl RepositoryFixture {
             FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
         ));
         fs::create_dir_all(&root).unwrap();
+        let root = canonicalize_fixture_root(root);
         let fixture = Self { root };
         fixture.git([
             "init",
@@ -359,6 +478,16 @@ impl RepositoryFixture {
         assert!(output.status.success());
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
+}
+
+#[cfg(unix)]
+fn canonicalize_fixture_root(root: PathBuf) -> PathBuf {
+    fs::canonicalize(root).unwrap()
+}
+
+#[cfg(windows)]
+fn canonicalize_fixture_root(root: PathBuf) -> PathBuf {
+    root
 }
 
 impl Drop for RepositoryFixture {

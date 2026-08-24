@@ -18,7 +18,11 @@
  */
 
 import { realpath } from 'node:fs/promises';
-import type { GitoxideHelperInvocationCapability } from './gitoxide-helper-artifact-authority-internal.js';
+import {
+  type GitoxideHelperArtifactIdentityInternal,
+  type GitoxideHelperInvocationCapability,
+  requireGitoxideHelperArtifactIdentityInternal,
+} from './gitoxide-helper-artifact-authority-internal.js';
 import {
   importSourceHeadWithGitoxideHelperInternal,
   inspectRepositoryWithGitoxideHelperInternal,
@@ -36,7 +40,11 @@ export interface GitoxideRepositoryAdmissionStateInternal {
   readonly objectFormat: 'sha1';
   readonly headCommitOid: string;
   readonly headTreeOid: string;
+  readonly helperArtifactSha256: `sha256:${string}`;
+  readonly managedTreePolicyVersion: 1;
 }
+
+const MANAGED_TREE_POLICY_VERSION = 1 as const;
 
 export type GitoxideRepositoryAdmissionResultV1 =
   | {
@@ -54,6 +62,7 @@ export class GitoxideRepositoryAdmissionAuthorityError extends Error {
 
 interface AdmissionCapabilityRecord {
   readonly admissionOwnerToken: object;
+  readonly helperArtifactIdentity: GitoxideHelperArtifactIdentityInternal;
   readonly state: GitoxideRepositoryAdmissionStateInternal;
 }
 
@@ -67,6 +76,10 @@ export async function admitGitoxideRepositoryInternal(input: {
   readonly abortSignal?: AbortSignal;
 }): Promise<GitoxideRepositoryAdmissionResultV1> {
   const repositoryPath = await realpath(input.repositoryPath);
+  const helperArtifactIdentity = requireGitoxideHelperArtifactIdentityInternal(
+    input.invocationOwnerToken,
+    input.helperCapability,
+  );
   const observation = await inspectRepositoryWithGitoxideHelperInternal({
     invocationOwnerToken: input.invocationOwnerToken,
     capability: input.helperCapability,
@@ -82,12 +95,15 @@ export async function admitGitoxideRepositoryInternal(input: {
     capability,
     Object.freeze({
       admissionOwnerToken: input.admissionOwnerToken,
+      helperArtifactIdentity,
       state: Object.freeze({
         protocolVersion: observation.protocolVersion,
         repositoryPath,
         objectFormat: observation.objectFormat,
         headCommitOid: observation.headCommitOid,
         headTreeOid: observation.headTreeOid,
+        helperArtifactSha256: helperArtifactIdentity.sha256,
+        managedTreePolicyVersion: MANAGED_TREE_POLICY_VERSION,
       }),
     }),
   );
@@ -98,13 +114,7 @@ export function requireGitoxideRepositoryAdmissionInternal(
   admissionOwnerToken: object,
   capability: GitoxideRepositoryAdmissionCapability,
 ): GitoxideRepositoryAdmissionStateInternal {
-  const state = admissions.get(capability);
-  if (!state || state.admissionOwnerToken !== admissionOwnerToken) {
-    throw new GitoxideRepositoryAdmissionAuthorityError(
-      'gitoxide_repository_admission_capability_invalid',
-    );
-  }
-  return state.state;
+  return requireAdmissionRecord(admissionOwnerToken, capability).state;
 }
 
 export async function importAdmittedGitoxideRepositoryInternal(input: {
@@ -116,10 +126,17 @@ export async function importAdmittedGitoxideRepositoryInternal(input: {
   readonly baselineRef: string;
   readonly abortSignal?: AbortSignal;
 }): Promise<GitoxideSourceImportObservationV1> {
-  const source = requireGitoxideRepositoryAdmissionInternal(
-    input.admissionOwnerToken,
-    input.repositoryCapability,
+  const admission = requireAdmissionRecord(input.admissionOwnerToken, input.repositoryCapability);
+  const source = admission.state;
+  const helperArtifactIdentity = requireGitoxideHelperArtifactIdentityInternal(
+    input.invocationOwnerToken,
+    input.helperCapability,
   );
+  if (!sameHelperArtifactIdentity(helperArtifactIdentity, admission.helperArtifactIdentity)) {
+    throw new GitoxideRepositoryAdmissionAuthorityError(
+      'gitoxide_repository_admission_capability_invalid',
+    );
+  }
   const result = await importSourceHeadWithGitoxideHelperInternal({
     invocationOwnerToken: input.invocationOwnerToken,
     capability: input.helperCapability,
@@ -127,6 +144,7 @@ export async function importAdmittedGitoxideRepositoryInternal(input: {
     expectedSourceHeadCommitOid: source.headCommitOid,
     destinationRepositoryPath: input.destinationRepositoryPath,
     baselineRef: input.baselineRef,
+    managedTreePolicyVersion: source.managedTreePolicyVersion,
     abortSignal: input.abortSignal,
   });
   if (
@@ -138,4 +156,28 @@ export async function importAdmittedGitoxideRepositoryInternal(input: {
     );
   }
   return result;
+}
+
+function requireAdmissionRecord(
+  admissionOwnerToken: object,
+  capability: GitoxideRepositoryAdmissionCapability,
+): AdmissionCapabilityRecord {
+  const record = admissions.get(capability);
+  if (!record || record.admissionOwnerToken !== admissionOwnerToken) {
+    throw new GitoxideRepositoryAdmissionAuthorityError(
+      'gitoxide_repository_admission_capability_invalid',
+    );
+  }
+  return record;
+}
+
+function sameHelperArtifactIdentity(
+  left: GitoxideHelperArtifactIdentityInternal,
+  right: GitoxideHelperArtifactIdentityInternal,
+): boolean {
+  return (
+    left.sha256 === right.sha256 &&
+    left.bytes === right.bytes &&
+    left.protocolVersion === right.protocolVersion
+  );
 }

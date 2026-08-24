@@ -27,8 +27,8 @@
 
 > 在选择 managed-workspace durable mode 或写入 T1 以前，Git backend owner 可以通过一个
 > 短生命周期、隔离配置的 Gitoxide helper 观察 repository object format 和 exact HEAD identity；
-> 只有 SHA-1 repository 返回 observation，SHA-256 与未知格式稳定 fail closed，且不得调用或
-> 回退到系统 Git。
+> 只有 SHA-1 repository 返回 observation；SHA-256 返回显式 policy rejection，未知或无法由 Gitoxide
+> 打开的 object format 稳定 fail closed，且不得调用或回退到系统 Git。
 
 它不证明 source import、clone、fetch、worktree、candidate、projection、ref CAS、Write/Edit 或
 resume。现有 dormant `GitWorkspaceService` 也没有切换到该 helper。
@@ -64,9 +64,9 @@ process exit
 | 原子性边界 | 单个 repository handle 的一次只读 observation；无跨介质事务 |
 | rollback | 只读操作，不需要回滚 |
 
-当前 response 中的 observation 不是不可伪造的进程外 capability。未来 Node/Runtime adapter 必须先
-验证 helper binary/release identity、绑定 invocation input，并把 observation 转换为 owner-issued
-opaque capability；不能让 caller 直接提交裸 OID 或 object format。
+当前 response 中的 observation 不是不可伪造的进程外 capability。Node/Runtime admission adapter 会把
+helper artifact digest、managed-tree policy version 与 repository observation 一起绑定进 owner-issued
+opaque capability；不能让后续 caller 重新提交裸 OID、object format、helper identity 或 policy。
 
 ## 4. SHA-256 策略
 
