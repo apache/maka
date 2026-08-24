@@ -530,13 +530,9 @@ fn walk_verified_source_tree(
     .map_err(|_| "source_tree_invalid")?;
     stats.enter_tree(depth, tree.data.len() as u64, policy)?;
     assert_canonical_tree_modes(&tree.data)?;
-    let mut previous_entry = None;
+    let mut previous_entry: Option<(Vec<u8>, bool)> = None;
     for entry in tree.iter() {
         let entry = entry.map_err(|_| "source_tree_invalid")?;
-        if previous_entry.is_some_and(|previous| previous >= entry) {
-            return Err("source_tree_not_sorted");
-        }
-        previous_entry = Some(entry);
         let component =
             std::str::from_utf8(entry.filename()).map_err(|_| "unsupported_source_path")?;
         if !is_supported_source_component(component)
@@ -544,6 +540,14 @@ fn walk_verified_source_tree(
         {
             return Err("unsupported_source_path");
         }
+        let is_tree = matches!(entry.mode().kind(), gix::objs::tree::EntryKind::Tree);
+        if previous_entry.as_ref().is_some_and(|(name, tree)| {
+            compare_git_tree_entry_names(name, *tree, entry.filename(), is_tree)
+                != std::cmp::Ordering::Less
+        }) {
+            return Err("source_tree_not_sorted");
+        }
+        previous_entry = Some((entry.filename().to_vec(), is_tree));
         let relative_path = if prefix.is_empty() {
             component.to_owned()
         } else {
@@ -600,6 +604,31 @@ fn walk_verified_source_tree(
         }
     }
     Ok(())
+}
+
+fn compare_git_tree_entry_names(
+    left_name: &[u8],
+    left_is_tree: bool,
+    right_name: &[u8],
+    right_is_tree: bool,
+) -> std::cmp::Ordering {
+    let common = left_name.len().min(right_name.len());
+    match left_name[..common].cmp(&right_name[..common]) {
+        std::cmp::Ordering::Equal => {
+            let left_suffix =
+                left_name
+                    .get(common)
+                    .copied()
+                    .unwrap_or(if left_is_tree { b'/' } else { 0 });
+            let right_suffix =
+                right_name
+                    .get(common)
+                    .copied()
+                    .unwrap_or(if right_is_tree { b'/' } else { 0 });
+            left_suffix.cmp(&right_suffix)
+        }
+        ordering => ordering,
+    }
 }
 
 fn assert_canonical_tree_modes(mut data: &[u8]) -> Result<(), &'static str> {
@@ -917,6 +946,26 @@ mod tests {
         assert_eq!(
             stats.observe_entry("A", policy),
             Err("source_folded_path_byte_limit_exceeded")
+        );
+    }
+
+    #[test]
+    fn canonical_tree_order_uses_gits_directory_suffix_rule() {
+        assert_eq!(
+            compare_git_tree_entry_names(b"foo", false, b"foo.bar", false),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_git_tree_entry_names(b"foo.bar", false, b"foo", true),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_git_tree_entry_names(b"foo", true, b"foo0", false),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_git_tree_entry_names(b"same", false, b"same", false),
+            std::cmp::Ordering::Equal
         );
     }
 }
