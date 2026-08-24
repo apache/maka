@@ -1558,12 +1558,6 @@ describe('managed Runtime Host service', () => {
       cleanupRecovery.kind === 'error' ? cleanupRecovery.error.code : undefined,
       'update_incomplete',
     );
-    assert.equal(
-      cleanupRecovery.kind === 'error' && cleanupRecovery.action === 'update'
-        ? cleanupRecovery.retryTargetVersion
-        : undefined,
-      '2.0.0',
-    );
     cleanupFailure = false;
 
     const localTargetCliPath = join(deploymentRoot, 'versions', '2.0.0', 'dist', 'cli.js');
@@ -1712,12 +1706,6 @@ describe('managed Runtime Host service', () => {
     assert.equal(
       incomplete.kind === 'error' ? incomplete.error.code : undefined,
       'update_incomplete',
-    );
-    assert.equal(
-      incomplete.kind === 'error' && incomplete.action === 'update'
-        ? incomplete.retryTargetVersion
-        : undefined,
-      '2.0.0',
     );
 
     statusReads = 0;

@@ -442,7 +442,7 @@ export async function runManagedRuntimeHostUpdateCli(
     const reportedError = updateIncomplete
       ? new RuntimeHostServiceManagerError(
           'update_incomplete',
-          `The Runtime Host update did not complete; retry the exact ${options.version} update to complete recovery`,
+          'The Runtime Host update did not complete; run the update again to reconcile the managed installation',
           { cause: error },
         )
       : error;
@@ -456,7 +456,6 @@ export async function runManagedRuntimeHostUpdateCli(
       schemaVersion: 1,
       kind: 'error',
       action: 'update',
-      ...(updateIncomplete ? { retryTargetVersion: options.version } : {}),
       error: {
         code:
           truncateUtf8(code, RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES) || 'internal_service_error',

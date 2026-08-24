@@ -285,7 +285,6 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
       schemaVersion: z.literal(1),
       kind: z.literal('error'),
       action: z.literal('update'),
-      retryTargetVersion: boundedNonEmptyString(FIELD_MAX_BYTES).optional(),
       error: SERVICE_ERROR_SCHEMA,
     })
     .strict(),
