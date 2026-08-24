@@ -19,11 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { CuAction } from '@maka/core/computer-use';
+import { CU_TOOL_ACTION_TYPES, type CuAction } from '@maka/core/computer-use';
 import { zodSchema } from 'ai';
 import {
   adaptToCuAction,
   buildComputerUseTools,
+  COMPUTER_USE_MODEL_SCREENSHOT_POLICY,
   snapshotComputerParams,
   type CuDispatchBackend,
   type CuObservation,
@@ -2611,27 +2612,55 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
 
   test('keeps PiP-only screenshots out of semantic action model output', () => {
     const [tool] = buildComputerUseTools({ backend: fakeBackend() });
-    const output = {
+    const output = (includeScreenshotInModelOutput: boolean) => ({
       text: 'persisted result',
       modelText: 'fresh semantic observation',
       screenshot: { base64: 'AA==', mimeType: 'image/png' },
-    };
-    const project = (input: unknown) =>
+      includeScreenshotInModelOutput,
+    });
+    const project = (includeScreenshotInModelOutput: boolean) =>
       tool.toModelOutput?.({
+        toolCallId: 'tool-1',
+        input: {},
+        output: output(includeScreenshotInModelOutput),
+      }) as { value: Array<{ type: string }> };
+
+    assert.deepEqual(project(false).value, [{ type: 'text', text: 'fresh semantic observation' }]);
+    assert.equal(project(true).value[1]?.type, 'file');
+  });
+
+  test('classifies every canonical action for model-visible screenshots', () => {
+    assert.deepEqual(Object.keys(COMPUTER_USE_MODEL_SCREENSHOT_POLICY), [...CU_TOOL_ACTION_TYPES]);
+  });
+
+  test('binds model-visible screenshots to the immutable executed invocation', async () => {
+    const projectAfterMutation = async (
+      includeScreenshot: boolean,
+      mutatedIncludeScreenshot: boolean,
+    ) => {
+      const backend = fakeBackend() as CuDispatchBackend & {
+        observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+      };
+      backend.observeApp = async () => observation();
+      const [tool] = buildComputerUseTools({ backend });
+      const input = {
+        action: 'observe' as const,
+        app: 'Fixture',
+        include_screenshot: includeScreenshot,
+      };
+      const output = await tool.impl(input, ctx());
+      input.include_screenshot = mutatedIncludeScreenshot;
+      return tool.toModelOutput?.({
         toolCallId: 'tool-1',
         input,
         output,
       }) as { value: Array<{ type: string }> };
+    };
 
-    assert.deepEqual(project({ action: 'element_sequence' }).value, [
-      { type: 'text', text: 'fresh semantic observation' },
-    ]);
-    assert.deepEqual(project({ action: 'observe', include_screenshot: false }).value, [
-      { type: 'text', text: 'fresh semantic observation' },
-    ]);
-    assert.equal(project({ action: 'observe', include_screenshot: true }).value[1]?.type, 'file');
-    assert.equal(project({ action: 'screenshot' }).value[1]?.type, 'file');
-    assert.equal(project({ action: 'left_click' }).value[1]?.type, 'file');
+    assert.equal((await projectAfterMutation(true, false)).value[1]?.type, 'file');
+    const nonVisual = await projectAfterMutation(false, true);
+    assert.equal(nonVisual.value.length, 1);
+    assert.equal(nonVisual.value[0]?.type, 'text');
   });
 
   test('S18: an already-aborted signal short-circuits before any dispatch', async () => {

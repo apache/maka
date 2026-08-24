@@ -35,6 +35,7 @@ import {
   isCuObservingAction,
   type CuAction,
   type CuPoint,
+  type CuToolActionType,
   type ComputerUseErrorCode,
   type ComputerUseWindowIdentity,
 } from '@maka/core/computer-use';
@@ -340,31 +341,46 @@ interface ComputerToolResult {
   error?: ComputerUseErrorCode;
   failureClass?: 'ambiguous_target';
   screenshot?: { base64: string; mimeType: string };
+  includeScreenshotInModelOutput?: boolean;
 }
 
-const MODEL_SCREENSHOT_ACTIONS: ReadonlySet<string> = new Set([
-  'screenshot',
-  'zoom',
-  'mouse_move',
-  'left_click',
-  'right_click',
-  'middle_click',
-  'double_click',
-  'triple_click',
-  'left_mouse_down',
-  'left_mouse_up',
-  'left_click_drag',
-  'type',
-  'key',
-  'hold_key',
-  'scroll',
-]);
+export const COMPUTER_USE_MODEL_SCREENSHOT_POLICY = {
+  list_apps: 'never',
+  launch_app: 'never',
+  observe: 'explicit',
+  click_element: 'never',
+  set_value: 'never',
+  select_text: 'never',
+  secondary_action: 'never',
+  scroll_element: 'never',
+  window_action: 'never',
+  element_sequence: 'never',
+  press_key: 'never',
+  screenshot: 'always',
+  cursor_position: 'never',
+  mouse_move: 'always',
+  left_click: 'always',
+  right_click: 'always',
+  middle_click: 'always',
+  double_click: 'always',
+  triple_click: 'always',
+  left_mouse_down: 'always',
+  left_mouse_up: 'always',
+  left_click_drag: 'always',
+  type: 'always',
+  key: 'always',
+  hold_key: 'always',
+  scroll: 'always',
+  wait: 'never',
+  zoom: 'always',
+} as const satisfies Record<CuToolActionType, 'always' | 'explicit' | 'never'>;
 
-function shouldSendScreenshotToModel(input: unknown): boolean {
-  if (!input || typeof input !== 'object') return false;
-  const record = input as { action?: unknown; include_screenshot?: unknown };
-  if (record.action === 'observe') return record.include_screenshot === true;
-  return typeof record.action === 'string' && MODEL_SCREENSHOT_ACTIONS.has(record.action);
+function shouldSendScreenshotToModel(input: ComputerParams): boolean {
+  const policy = COMPUTER_USE_MODEL_SCREENSHOT_POLICY[input.action];
+  return (
+    policy === 'always' ||
+    (policy === 'explicit' && input.action === 'observe' && input.include_screenshot === true)
+  );
 }
 
 export interface ComputerUseToolSet extends Array<MakaTool> {
@@ -1010,6 +1026,7 @@ export function buildComputerUseTools(deps: {
   function deliveredWithoutFreshObservation(
     action: ComputerSummaryAction,
     result: CuRunResult,
+    includeScreenshotInModelOutput = false,
   ): ComputerToolResult {
     const evidence = summarizeEvidence(result.outcome.evidence);
     const hostEvidence = summarizeEvidence(result.outcome.evidence, 'host');
@@ -1034,6 +1051,7 @@ export function buildComputerUseTools(deps: {
               base64: screenshot.base64,
               mimeType: screenshot.mimeType,
             },
+            includeScreenshotInModelOutput,
           }
         : {}),
     };
@@ -1622,6 +1640,7 @@ export function buildComputerUseTools(deps: {
     ): Promise<ComputerToolResult> => {
       if (abortSignal.aborted) return { text: 'computer aborted before start' };
       const input = snapshotComputerParams(computerParams.parse(args));
+      const includeScreenshotInModelOutput = shouldSendScreenshotToModel(input);
       // Before anything is claimed against a frame or dispatched: an argument
       // holding one of this host's own withheld-value placeholders is a replay
       // of the record, not a value, and every path below would have typed it.
@@ -1630,7 +1649,7 @@ export function buildComputerUseTools(deps: {
       const invocationGeneration = presentationGenerations.get(sessionId) ?? 0;
       const releasePendingInvocation = trackPendingInvocation(sessionId, turnId);
       try {
-        return await withInvocationQueue(sessionId, abortSignal, async () => {
+        return await withInvocationQueue<ComputerToolResult>(sessionId, abortSignal, async () => {
           if ((presentationGenerations.get(sessionId) ?? 0) !== invocationGeneration) {
             return sessionFailure('user_stopped');
           }
@@ -2301,6 +2320,7 @@ export function buildComputerUseTools(deps: {
                   text: persistedObservationText(observation),
                   modelText: observationText({ ...observation, screenshot }),
                   screenshot: { base64: screenshot.base64, mimeType: screenshot.mimeType },
+                  includeScreenshotInModelOutput,
                 }
               : {
                   text: persistedObservationText(observation),
@@ -2366,6 +2386,7 @@ export function buildComputerUseTools(deps: {
                 base64: screenshotObservation.screenshot.base64,
                 mimeType: screenshotObservation.screenshot.mimeType,
               },
+              includeScreenshotInModelOutput,
             };
           }
           if (
@@ -2767,11 +2788,19 @@ export function buildComputerUseTools(deps: {
                   : undefined;
             } catch {
               presentation?.finish(result);
-              return deliveredWithoutFreshObservation(modelAction, result);
+              return deliveredWithoutFreshObservation(
+                modelAction,
+                result,
+                includeScreenshotInModelOutput,
+              );
             }
             if (actionLease && result.outcome.ok && !freshObservation) {
               presentation?.finish(result);
-              return deliveredWithoutFreshObservation(modelAction, result);
+              return deliveredWithoutFreshObservation(
+                modelAction,
+                result,
+                includeScreenshotInModelOutput,
+              );
             }
             presentation?.finish(withMirrorFrame(result, freshObservation));
             const modelRefresh = freshObservation
@@ -2798,6 +2827,7 @@ export function buildComputerUseTools(deps: {
                   ...(!result.outcome.ok ? { error: result.outcome.error } : {}),
                   ...(failureClass ? { failureClass } : {}),
                   screenshot: { base64: screenshot.base64, mimeType: screenshot.mimeType },
+                  includeScreenshotInModelOutput,
                 }
               : {
                   text,
@@ -2815,7 +2845,7 @@ export function buildComputerUseTools(deps: {
     // return a fresh accessibility observation, so their automatically captured
     // PiP frame stays local. Explicit visual requests and legacy coordinate
     // actions still receive the native image block.
-    toModelOutput: ({ input, output }) => {
+    toModelOutput: ({ output }) => {
       const o = (output ?? {}) as Partial<ComputerToolResult> & { error?: unknown };
       const text =
         typeof o.modelText === 'string'
@@ -2829,7 +2859,7 @@ export function buildComputerUseTools(deps: {
         type: 'content',
         value: [
           { type: 'text', text },
-          ...(o.screenshot && shouldSendScreenshotToModel(input)
+          ...(o.screenshot && o.includeScreenshotInModelOutput === true
             ? [
                 {
                   type: 'file' as const,
