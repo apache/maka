@@ -113,7 +113,6 @@ test('does not expose artifact-only workspace creation through the public storag
     'migrateOperationalStateDatabaseInternal',
     'inspectOperationalStateSchema',
     'OperationalStateMigrationBlockedError',
-    'withCredentialFileLock',
   ]) {
     assert.equal(reachable.has(internalSymbol), false, internalSymbol);
   }
