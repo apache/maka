@@ -47,7 +47,6 @@ function header(): SessionHeader {
     workspaceRoot: '/tmp/maka-repro',
     cwd: '/tmp/maka-repro',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Repro',
     titleIsManual: true,
     isFlagged: false,
