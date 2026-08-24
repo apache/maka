@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
-import { createFileCredentialStore } from '@maka/storage';
+import { createFileCredentialStore } from '@maka/storage/credential-store';
 
 import {
   createGitHubCopilotAccountTokens,

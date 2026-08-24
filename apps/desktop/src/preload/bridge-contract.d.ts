@@ -169,7 +169,7 @@ import type {
 import type { BotStatus, WechatBridgeQrCodeResult } from '@maka/runtime/bots';
 import type { ShellRunPtyDataEvent, ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry } from '@maka/ui';
-import type { ConfigCategory } from '@maka/storage';
+import type { ConfigCategory } from '@maka/storage/config-transfer';
 import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from '@maka/core/onboarding';
 import type {
   RemoteRuntimeHostProfile,
@@ -199,6 +199,10 @@ export type DesktopBranchFromTurnInput = BranchFromTurnInput & {
   /** Stable target identity for retrying one Desktop copy action. */
   copyId: string;
 };
+
+export type DesktopSideConversationBranchResult =
+  | { ok: true; session: DesktopSessionSummary }
+  | { ok: false; reason: 'session_busy' | 'operation_unavailable' };
 
 export type DesktopReviseBeforeTurnInput = ReviseBeforeTurnInput & {
   /** Stable target identity for retrying one Desktop copy action. */
@@ -772,7 +776,14 @@ export interface MakaBridge {
       | { disposition: 'park'; rejectionReasons: string[]; diagnostics: unknown[] }
     >;
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void>;
-    branchFromTurn(sessionId: string, input: DesktopBranchFromTurnInput): Promise<DesktopSessionSummary>;
+    branchFromTurn(
+      sessionId: string,
+      input: DesktopBranchFromTurnInput & { sideConversation: true },
+    ): Promise<DesktopSideConversationBranchResult>;
+    branchFromTurn(
+      sessionId: string,
+      input: DesktopBranchFromTurnInput & { sideConversation?: false },
+    ): Promise<DesktopSessionSummary>;
     reviseBeforeTurn(sessionId: string, input: DesktopReviseBeforeTurnInput): Promise<DesktopSessionSummary>;
     respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void>;

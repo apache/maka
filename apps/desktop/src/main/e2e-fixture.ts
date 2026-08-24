@@ -21,7 +21,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { E2eFixtureScenario, E2eFixtureState } from '@maka/core/e2e-fixture';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { createProjectCatalog } from '@maka/storage';
+import { createProjectCatalog } from '@maka/storage/project-catalog';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
   E2E_FIXTURE_NOW,

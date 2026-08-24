@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import { requireCount, requireEntityId, requireExactRecord, requireRecord } from './codec.js';
+import {
+  requireCount,
+  requireEntityId,
+  requireExactRecord,
+  requireRecord,
+  requireShapedRecord,
+} from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 import { decodeSessionCatalogItem, type SessionCatalogItem } from './session-catalog.js';
@@ -40,6 +46,7 @@ export interface SessionConversationCopyInput {
   readonly targetSessionId: string;
   readonly sourceTurnId: string;
   readonly expectedSourceRevision: number;
+  readonly intent?: 'side_conversation';
 }
 
 export type SessionConversationCopyResult =
@@ -82,7 +89,7 @@ export const SESSION_REVISION_OPERATION_SPECS = {
     mode: 'command',
     availability: 'ready',
     errors: SESSION_COPY_ERRORS,
-    decodeInput: decodeSessionConversationCopyInput,
+    decodeInput: decodeSessionRevisionCopyInput,
     decodeOutput: decodeSessionConversationCopyResult,
     assertOutputForInput: assertConversationCopyOutput,
   }),
@@ -104,6 +111,14 @@ export const SESSION_REVISION_OPERATION_SPECS = {
   }),
 } as const;
 
+function decodeSessionRevisionCopyInput(value: unknown): SessionConversationCopyInput {
+  const input = decodeSessionConversationCopyInput(value);
+  if (input.intent !== undefined) {
+    throw invalidProtocolFrame('Session revision copy does not support an intent');
+  }
+  return input;
+}
+
 function decodeSessionRevisionAbandonInput(value: unknown): SessionRevisionAbandonInput {
   const input = requireExactRecord(value, 'Session revision abandon input', ['targetSessionId']);
   return { targetSessionId: requireEntityId(input.targetSessionId, 'targetSessionId') };
@@ -124,16 +139,19 @@ function decodeSessionRevisionAbandonResult(value: unknown): SessionRevisionAban
 }
 
 export function decodeSessionConversationCopyInput(value: unknown): SessionConversationCopyInput {
-  const input = requireExactRecord(value, 'Session conversation-copy input', [
-    'sourceSessionId',
-    'targetSessionId',
-    'sourceTurnId',
-    'expectedSourceRevision',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'Session conversation-copy input',
+    ['sourceSessionId', 'targetSessionId', 'sourceTurnId', 'expectedSourceRevision'],
+    ['intent'],
+  );
   const sourceSessionId = requireEntityId(input.sourceSessionId, 'sourceSessionId');
   const targetSessionId = requireEntityId(input.targetSessionId, 'targetSessionId');
   if (sourceSessionId === targetSessionId) {
     throw invalidProtocolFrame('Session conversation copy requires distinct Sessions');
+  }
+  if (input.intent !== undefined && input.intent !== 'side_conversation') {
+    throw invalidProtocolFrame('Invalid Session conversation-copy intent');
   }
   return {
     sourceSessionId,
@@ -143,6 +161,7 @@ export function decodeSessionConversationCopyInput(value: unknown): SessionConve
       input.expectedSourceRevision,
       'expected source Session revision',
     ),
+    ...(input.intent === 'side_conversation' ? { intent: input.intent } : {}),
   };
 }
 

@@ -88,6 +88,10 @@ export type ConversationCopyArtifactReferenceMap =
       readonly linkedChildren:
         | { readonly mode: 'reject' }
         | {
+            readonly mode: 'snapshot';
+            readonly archivedResults: ReadonlyMap<string, string>;
+          }
+        | {
             readonly mode: 'preserve_validated';
             readonly references: ReadonlyMap<string, ConversationCopyExternalChildReferences>;
           };
@@ -530,6 +534,20 @@ export function archivedToolResultContainsConversationOwnedReferences(
     );
   }
   return false;
+}
+
+export function archivedToolResultContainsLinkedChildReferences(serializedResult: string): boolean {
+  const value = deserializeToolResultArchive(serializedResult);
+  if (isArchivedToolResultPlaceholder(value)) return false;
+  try {
+    return (
+      conversationCopyLinkedChildReferences(
+        decodePersistedToolResultContent(markPersisted<ToolResultContent>(value)),
+      ).length > 0
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function conversationCopyLinkedChildReferences(
@@ -1010,9 +1028,11 @@ function rewriteRuntimeEventReferences(
               }
             : {}),
           ...(event.refs.artifactId
-            ? {
-                artifactId: rewriteOwnedArtifactId(event.refs.artifactId, references),
-              }
+            ? archivedSnapshotResult(event.refs.artifactId, references) !== undefined
+              ? {}
+              : {
+                  artifactId: rewriteOwnedArtifactId(event.refs.artifactId, references),
+                }
             : {}),
           ...(event.refs.sourceInvocationId
             ? {
@@ -1111,6 +1131,8 @@ function rewriteToolResultContent(
     return { ...content, ref: rewriteStorageRef(content.ref, references) };
   }
   if (content.kind === 'archived_tool_result') {
+    const snapshot = rewriteArchivedSnapshot(content, references);
+    if (snapshot) return snapshot;
     return {
       ...content,
       runtimeEventId: rewriteOwnedId(
@@ -1124,12 +1146,21 @@ function rewriteToolResultContent(
     };
   }
   if (content.kind === 'json' && isArchivedToolResultPlaceholder(content.value)) {
+    const snapshot = rewriteArchivedSnapshot(content.value, references);
+    if (snapshot) return snapshot;
     return {
       ...content,
       value: rewriteArchivedToolResult(content.value, references),
     };
   }
   if (content.kind === 'subagent') {
+    if (linkedChildrenAreSnapshots(references) && content.childSessionId) {
+      const { childSessionId: _childSessionId, runId: _runId, ...snapshot } = content;
+      return {
+        ...snapshot,
+        artifactIds: rewriteSnapshotArtifactIds(content.artifactIds, references),
+      };
+    }
     return {
       ...content,
       ...(content.runId
@@ -1153,6 +1184,18 @@ function rewriteToolResultContent(
     return {
       ...content,
       items: content.items.map((item) => {
+        if (linkedChildrenAreSnapshots(references) && item.childSessionId) {
+          const {
+            childSessionId: _childSessionId,
+            runId: _runId,
+            resumedFromRunId: _resumedFromRunId,
+            ...snapshot
+          } = item;
+          return {
+            ...snapshot,
+            artifactIds: rewriteSnapshotArtifactIds(item.artifactIds, references),
+          };
+        }
         return {
           ...item,
           ...(item.runId
@@ -1183,6 +1226,8 @@ function rewriteRuntimeToolResult(
   references: ConversationCopyMessageReferenceMap,
 ): unknown {
   if (isArchivedToolResultPlaceholder(value)) {
+    const snapshot = rewriteArchivedSnapshot(value, references);
+    if (snapshot) return snapshot;
     return rewriteArchivedToolResult(value, references);
   }
   let content: ToolResultContent;
@@ -1206,6 +1251,7 @@ function validatedExternalChildReferences(
   references: ConversationCopyMessageReferenceMap,
 ): ConversationCopyExternalChildReferences | undefined {
   if (references.mode === 'preserve_external') return undefined;
+  if (references.linkedChildren.mode === 'snapshot') return undefined;
   if (references.linkedChildren.mode === 'reject') {
     throw new Error(`Conversation copy cannot retain linked child Session ${childSessionId}`);
   }
@@ -1214,6 +1260,81 @@ function validatedExternalChildReferences(
     throw new Error(`Conversation copy is missing linked child Session ${childSessionId}`);
   }
   return external;
+}
+
+function linkedChildrenAreSnapshots(references: ConversationCopyMessageReferenceMap): boolean {
+  return references.mode === 'exact' && references.linkedChildren.mode === 'snapshot';
+}
+
+function rewriteSnapshotArtifactIds(
+  artifactIds: readonly string[],
+  references: ConversationCopyMessageReferenceMap,
+): readonly string[] {
+  if (references.mode !== 'exact' || references.linkedChildren.mode !== 'snapshot') {
+    return artifactIds;
+  }
+  return artifactIds.map((artifactId) =>
+    requiredMappedId(references.artifactIds, artifactId, 'linked Artifact'),
+  );
+}
+
+function rewriteArchivedSnapshot(
+  value:
+    | ArchivedToolResultPlaceholder
+    | Extract<ToolResultContent, { kind: 'archived_tool_result' }>,
+  references: ConversationCopyMessageReferenceMap,
+): ToolResultContent | undefined {
+  const serializedResult = archivedSnapshotResult(value.artifactId, references);
+  if (serializedResult === undefined) return undefined;
+  const archived = deserializeToolResultArchive(serializedResult);
+  if (isArchivedToolResultPlaceholder(archived)) {
+    return unavailableArchivedToolResult(value, references);
+  }
+  try {
+    const decoded = decodePersistedToolResultContent(markPersisted<ToolResultContent>(archived));
+    return decoded.kind === 'archived_tool_result'
+      ? unavailableArchivedToolResult(value, references)
+      : rewriteToolResultContent(decoded, references);
+  } catch {
+    return unavailableArchivedToolResult(value, references);
+  }
+}
+
+function archivedSnapshotResult(
+  artifactId: string | undefined,
+  references: ConversationCopyMessageReferenceMap,
+): string | undefined {
+  if (
+    artifactId === undefined ||
+    references.mode !== 'exact' ||
+    references.linkedChildren.mode !== 'snapshot'
+  ) {
+    return undefined;
+  }
+  return references.linkedChildren.archivedResults.get(artifactId);
+}
+
+function unavailableArchivedToolResult(
+  value:
+    | ArchivedToolResultPlaceholder
+    | Extract<ToolResultContent, { kind: 'archived_tool_result' }>,
+  references: ConversationCopyMessageReferenceMap,
+): Extract<ToolResultContent, { kind: 'archived_tool_result' }> {
+  return {
+    kind: 'archived_tool_result',
+    status: 'missing',
+    runtimeEventId: rewriteOwnedId(
+      value.runtimeEventId,
+      references.runtimeEventIds,
+      'RuntimeEvent',
+    ),
+    toolCallId: value.toolCallId,
+    toolName: value.toolName,
+    originalEstimatedTokens: value.originalEstimatedTokens,
+    originalBytes: value.originalBytes,
+    rewriteVersion: value.rewriteVersion,
+    reason: value.reason,
+  };
 }
 
 function rewriteLinkedRunId(

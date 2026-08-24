@@ -51,15 +51,15 @@ import {
   performCompanionTurn,
   type CompanionErrorCode,
   type EnsureCompanionForkResult,
-} from './quote-companion-core';
+} from './quote-companion-core.js';
 import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import {
   snapshotCompanionQuotes,
   type CompanionQuoteSnapshot,
   type StagedCompanionQuote,
-} from './quote-companion-panel-state';
-import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
+} from './quote-companion-panel-state.js';
+import type { CompanionForkVisibilityEvent } from './quote-companion-visibility.js';
 
 export interface UseQuoteCompanionInput {
   /** Stable owner for the currently mounted panel generation. */
@@ -151,8 +151,11 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   // A created fork is hidden immediately, but is not considered usable until
   // onForkCommitted promotes it.
   const pendingForkIdRef = useRef<string | null>(null);
+  const sourceSessionRef = useRef(sourceSession);
+  sourceSessionRef.current = sourceSession;
+  const sourceSessionId = sourceSession?.id;
   const sourceSessionIdRef = useRef(sourceSession?.id);
-  sourceSessionIdRef.current = sourceSession?.id;
+  sourceSessionIdRef.current = sourceSessionId;
   const forkSetupPromiseRef = useRef<Promise<EnsureCompanionForkResult> | null>(null);
   const stopRequestedRef = useRef(false);
   const activeTurnIdRef = useRef<string | null>(null);
@@ -178,6 +181,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
   const [hasContent, setHasContent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [forkRetryPending, setForkRetryPending] = useState(false);
   // Bumped whenever the own-turn set changes so the render picks up the new
   // filter result (the set lives in a ref to stay stable for the event handler).
   const [, setOwnTurnTick] = useState(0);
@@ -264,18 +268,23 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   );
 
   const ensureFork = useCallback(
-    (name: string): Promise<EnsureCompanionForkResult> => {
+    (
+      name: string,
+      options: { readonly showPreparing?: boolean } = {},
+    ): Promise<EnsureCompanionForkResult> => {
       const existing = companionRef.current;
       if (existing) return Promise.resolve({ status: 'ready', session: existing });
       if (forkSetupPromiseRef.current) return forkSetupPromiseRef.current;
-      if (!sourceSession) {
+      const currentSourceSession = sourceSessionRef.current;
+      if (!currentSourceSession) {
         return Promise.resolve({ status: 'error', code: 'fork_setup_failed' });
       }
 
-      setPreparing(true);
+      const showPreparing = options.showPreparing ?? true;
+      if (showPreparing) setPreparing(true);
       const promise = ensureCompanionFork({
         api: sideChat,
-        sourceSession,
+        sourceSession: currentSourceSession,
         panelId,
         name,
         isDisposed: () => !mountedRef.current,
@@ -298,25 +307,67 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       })
         .then((result) => {
           if (result.status === 'ready' && mountedRef.current) {
+            setForkRetryPending(false);
+            setError(null);
             commitFork(result.session);
           } else if (result.status === 'error' && mountedRef.current) {
-            setError(copyRef.current.errors.forkSetupFailed);
+            setForkRetryPending(result.code === 'fork_source_busy');
+            const errors = copyRef.current.errors;
+            setError(
+              result.code === 'fork_source_busy'
+                ? errors.forkSourceBusy
+                : result.code === 'fork_unsupported'
+                  ? errors.forkUnsupported
+                  : errors.forkSetupFailed,
+            );
           }
           return result;
         })
         .finally(() => {
           forkSetupPromiseRef.current = null;
-          if (mountedRef.current) setPreparing(false);
+          if (showPreparing && mountedRef.current) setPreparing(false);
         });
       forkSetupPromiseRef.current = promise;
       return promise;
     },
-    [commitFork, mountedRef, panelId, sideChat, sourceSession],
+    [commitFork, mountedRef, panelId, sideChat],
   );
 
   useEffect(() => {
-    if (sourceSession) void ensureFork(copyRef.current.defaultName);
-  }, [ensureFork, sourceSession]);
+    if (sourceSessionId) void ensureFork(copyRef.current.defaultName);
+  }, [ensureFork, sourceSessionId]);
+
+  useEffect(() => {
+    if (!sourceSessionId || !forkRetryPending) return;
+    let retrying = false;
+    const retry = () => {
+      if (retrying || !mountedRef.current || companionRef.current) return;
+      retrying = true;
+      const currentSetup = forkSetupPromiseRef.current;
+      void (async () => {
+        if (currentSetup) await currentSetup;
+        if (!mountedRef.current || companionRef.current) return;
+        await ensureFork(copyRef.current.defaultName, { showPreparing: false });
+      })().finally(() => {
+        retrying = false;
+      });
+    };
+    const unsubscribe = sideChat.subscribeSessionChanges((event) => {
+      if (
+        event.sessionId === sourceSessionId &&
+        (event.reason === 'turn-status-change' ||
+          event.reason === 'status-change' ||
+          event.reason === 'message-appended')
+      ) {
+        retry();
+      }
+    });
+    const retryTimer = globalThis.setInterval(retry, 2_000);
+    return () => {
+      globalThis.clearInterval(retryTimer);
+      unsubscribe();
+    };
+  }, [ensureFork, forkRetryPending, mountedRef, sideChat, sourceSessionId]);
 
   // The fork is ephemeral (用完即弃): when the panel is dismissed — 退出,
   // switching source session — unsubscribe and remove the fork so it never
@@ -427,6 +478,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         const errors = copyRef.current.errors;
         const byCode: Record<CompanionErrorCode, string> = {
           fork_setup_failed: errors.forkSetupFailed,
+          fork_source_busy: errors.forkSourceBusy,
+          fork_unsupported: errors.forkUnsupported,
           send_failed: errors.sendFailed,
           send_rejected: errors.sendRejected,
         };

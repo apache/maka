@@ -37,6 +37,7 @@ export * from './tools/inspector/session-inspector-overview-model.js';
 export * from './tools/side-chat/quote-companion-panel-state.js';
 export * from './tools/side-chat/quote-companion-core.js';
 export * from './tools/side-chat/quote-companion-visibility.js';
+export { useQuoteCompanion } from './tools/side-chat/use-quote-companion.js';
 export * from './tools/terminal/session-terminal-hydration.js';
 export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/terminal/session-terminal-frame.js';
@@ -136,6 +137,7 @@ export function createFakeWorkbarServices(
       respondToSandboxBoundary: async () => undefined,
       respondToUserQuestion: async () => undefined,
       subscribeEvents: noopSubscription,
+      subscribeSessionChanges: noopSubscription,
     },
     ...overrides,
   };

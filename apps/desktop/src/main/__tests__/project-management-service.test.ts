@@ -26,7 +26,7 @@ import { test } from 'node:test';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
-import { createProjectCatalog, type ProjectCatalog } from '@maka/storage';
+import { createProjectCatalog, type ProjectCatalog } from '@maka/storage/project-catalog';
 import {
   createProjectManagementService,
   type ProjectManagementCatalog,

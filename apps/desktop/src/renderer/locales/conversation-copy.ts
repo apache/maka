@@ -280,6 +280,10 @@ export interface DesktopConversationCopy {
     errors: {
       /** Reading the source boundary or creating the companion fork failed. */
       forkSetupFailed: string;
+      /** The source or one of its linked child runs is still active. */
+      forkSourceBusy: string;
+      /** The retained source context cannot be represented safely. */
+      forkUnsupported: string;
       /** `sessions.send` was rejected without throwing (e.g. an unresolved skill). */
       sendRejected: string;
       /** `sessions.send` threw / the turn could not be started. */
@@ -558,6 +562,8 @@ const COPY = {
       },
       errors: {
         forkSetupFailed: '无法创建侧边对话，请稍后重试。',
+        forkSourceBusy: '主对话或子任务仍在运行，请等待完成后重试。',
+        forkUnsupported: '当前对话上下文暂不支持创建侧边对话。',
         sendRejected: '追问未能开始，请稍后重试。',
         sendFailed: '追问失败，请稍后重试。',
         settlementFailed: '运行已结束，但消息加载失败。请重试或重新打开侧边对话。',
@@ -761,6 +767,9 @@ const COPY = {
       },
       errors: {
         forkSetupFailed: 'Could not open the side chat. Please try again.',
+        forkSourceBusy:
+          'The main conversation or a linked task is still running. Try again when it finishes.',
+        forkUnsupported: 'This conversation context cannot be opened as a side chat yet.',
         sendRejected: 'The companion could not start. Please try again.',
         sendFailed: 'The companion request failed. Please try again.',
         settlementFailed: 'The run ended, but its messages could not be loaded. Retry or reopen the side chat.',

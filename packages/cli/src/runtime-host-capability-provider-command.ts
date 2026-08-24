@@ -28,7 +28,8 @@ import type {
   McpToolDescriptor,
 } from '@maka/core/mcp';
 import { createCredentialMcpOAuthStorage, McpClientManager } from '@maka/mcp';
-import { createFileCredentialStore, normalizeMcpConfig } from '@maka/storage';
+import { createFileCredentialStore } from '@maka/storage/credential-store';
+import { normalizeMcpConfig } from '@maka/storage/mcp-config-store';
 import {
   connectRemoteRuntimeHost,
   loadOrCreateRuntimeHostClientInstanceId,

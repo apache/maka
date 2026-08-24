@@ -27,7 +27,11 @@ import {
   type McpServerStatus,
 } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
-import { McpServerExistsError, normalizeMcpConfig, type McpConfigStore } from '@maka/storage';
+import {
+  McpServerExistsError,
+  normalizeMcpConfig,
+  type McpConfigStore,
+} from '@maka/storage/mcp-config-store';
 import type { McpOAuthController } from './mcp-oauth-controller.js';
 import {
   redactMcpConfigSecrets,

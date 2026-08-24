@@ -20,7 +20,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { createFileCredentialStore, type CredentialStore } from '@maka/storage';
+import { createFileCredentialStore, type CredentialStore } from '@maka/storage/credential-store';
 import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,

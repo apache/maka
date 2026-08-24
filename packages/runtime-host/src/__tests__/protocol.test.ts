@@ -182,11 +182,18 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 46);
   });
 
+  test('publishes a new compatibility epoch for Side Conversation copy intent', () => {
+    // Epoch 47 belongs to project registration preferences on current main.
+    // Side Conversation adds another closed branch-copy input and therefore
+    // needs its own later handshake boundary.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 47);
+  });
+
   test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
-    // Epoch 47 does not offer `github-copilot`, so such a Host rejects a login
+    // Epoch 48 does not offer `github-copilot`, so such a Host rejects a login
     // start at its strict provider decoder rather than refusing the pair at
     // connect. The floor is current main's epoch, not a preselected number.
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 47);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 48);
   });
 
   test('adds credential rotation without changing existing credential inputs', () => {

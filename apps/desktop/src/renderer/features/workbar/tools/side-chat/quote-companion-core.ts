@@ -50,6 +50,8 @@ import { sessionEventErrorMessage } from '../../../../model-connection-errors.js
  *  `{ok:false}`. */
 export type CompanionErrorCode =
   | 'fork_setup_failed'
+  | 'fork_source_busy'
+  | 'fork_unsupported'
   | 'send_failed'
   | 'send_rejected';
 
@@ -247,12 +249,20 @@ export async function ensureCompanionFork(
     ) {
       return { status: 'error', code: 'fork_setup_failed' };
     }
-    created = await api.branchFromTurn(sourceSession.id, {
+    const result = await api.branchFromTurn(sourceSession.id, {
       sourceTurnId: copyAttempt.sourceTurnId,
       name,
       copyId: copyAttempt.copyId,
       sideConversation: true,
     });
+    if (!result.ok) {
+      copyAttempt.complete();
+      return {
+        status: 'error',
+        code: result.reason === 'session_busy' ? 'fork_source_busy' : 'fork_unsupported',
+      };
+    }
+    created = result.session;
   } catch {
     return { status: 'error', code: 'fork_setup_failed' };
   }

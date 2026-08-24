@@ -716,7 +716,10 @@ async function readRequestBody(request) {
 }
 
 async function resolveInstalledDataRoots(packageRoot, environment, home) {
-  const storage = await importInstalled(packageRoot, 'node_modules/@maka/storage/dist/index.js');
+  const storage = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/storage/dist/workspace-root.js',
+  );
   return storage.resolveMakaDataRoots({ env: environment, homeDir: home, profileName: 'Maka' });
 }
 

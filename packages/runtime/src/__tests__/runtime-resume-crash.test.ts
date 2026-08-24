@@ -27,7 +27,8 @@ import { spawn } from 'node:child_process';
 import { describe, test } from 'node:test';
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 
 import {
   RUNTIME_RESUME_FAILPOINTS,

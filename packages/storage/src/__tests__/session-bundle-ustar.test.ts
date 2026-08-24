@@ -20,11 +20,11 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
+import { SessionBundleFileError } from '../session-bundle-contract.js';
 import {
   decodeSessionBundleUstarHeaderV1,
   encodeSessionBundleUstarHeaderV1,
-  SessionBundleFileError,
-} from '../index.js';
+} from '../session-bundle-ustar.js';
 
 test('pins the exact canonical USTAR V1 header', () => {
   const header = Buffer.from(

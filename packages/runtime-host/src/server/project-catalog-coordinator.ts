@@ -26,7 +26,7 @@ import {
   ProjectPathConflictError,
   ProjectPathMismatchError,
   ProjectUnavailableError,
-} from '@maka/storage';
+} from '@maka/storage/project-catalog';
 import {
   decodeProjectCatalogProject,
   PROJECT_CATALOG_PAGE_MAX_BYTES,

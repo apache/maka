@@ -26,7 +26,7 @@ import { describe, test } from 'node:test';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
-import { createSessionStore } from '@maka/storage';
+import { createSessionStore } from '@maka/storage/session-store';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import {
   HostScheduledTaskSessionBusyError,

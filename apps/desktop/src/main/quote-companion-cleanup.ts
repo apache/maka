@@ -18,13 +18,14 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { acquireOperationalStateDatabase } from '@maka/storage';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 
 export interface SessionCopyCreationLease {
   sessionId: string;
   kind: 'branch' | 'revision';
   sourceSessionId: string;
   sourceTurnId: string;
+  intent?: 'side_conversation';
   ownerId: string;
 }
 
@@ -61,6 +62,7 @@ export interface SessionCopyCleanupRecovery {
 
 export interface SessionCopyCleanupAuthority {
   ownCreation<T>(creation: SessionCopyCreationLease, operation: () => Promise<T>): Promise<T>;
+  rejectCreation(sessionId: string): Promise<void>;
   cleanup(sessionId: string): Promise<void>;
   schedule(sessionId: string): Promise<void>;
   abandonOwner(ownerId: string): Promise<void>;
@@ -123,6 +125,17 @@ class SessionCopyCleanupAuthorityImpl implements SessionCopyCleanupAuthority {
     })();
     this.creations.set(normalized.sessionId, { creation: normalized, operation: task });
     return task;
+  }
+
+  async rejectCreation(sessionId: string): Promise<void> {
+    const normalized = normalizeSessionId(sessionId);
+    await this.creations.get(normalized)?.operation.catch(() => undefined);
+    const record = await this.store.read(normalized);
+    if (!record) return;
+    if (record.phase !== 'creating') {
+      throw new Error(`Session copy ${normalized} is no longer awaiting creation`);
+    }
+    await this.store.forget(normalized);
   }
 
   async cleanup(sessionId: string): Promise<void> {
@@ -258,6 +271,7 @@ class SqliteSessionCopyCleanupStore implements SessionCopyCleanupStore {
           kind: creation.kind,
           sourceSessionId: creation.sourceSessionId,
           sourceTurnId: creation.sourceTurnId,
+          ...(creation.intent ? { intent: creation.intent } : {}),
         },
       };
     });
@@ -396,6 +410,7 @@ function normalizeCreationLease(creation: SessionCopyCreationLease): SessionCopy
     kind: creation.kind,
     sourceSessionId: normalizeSessionId(creation.sourceSessionId),
     sourceTurnId: normalizeSessionId(creation.sourceTurnId),
+    ...(creation.intent === 'side_conversation' ? { intent: creation.intent } : {}),
     ownerId: normalizeOwnerId(creation.ownerId),
   };
 }
@@ -409,6 +424,7 @@ function sameCreation(
     left.kind === right.kind &&
     left.sourceSessionId === right.sourceSessionId &&
     left.sourceTurnId === right.sourceTurnId &&
+    left.intent === right.intent &&
     left.ownerId === right.ownerId
   );
 }
@@ -420,7 +436,8 @@ function samePersistedCreation(
   return (
     left.kind === right.kind &&
     left.sourceSessionId === right.sourceSessionId &&
-    left.sourceTurnId === right.sourceTurnId
+    left.sourceTurnId === right.sourceTurnId &&
+    left.intent === right.intent
   );
 }
 

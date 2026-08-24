@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { evaluateCuE2eScenarioState, getCuE2eScenario } from './e2e-scenarios.mjs';
 import { validateRealReport } from './provider-matrix.mjs';
 import { sanitizeCuActionRecord, sanitizeCuReport, sanitizeCuTrace } from './report-sanitize.mjs';
-import { createSqliteAgentRunStore } from '../../packages/storage/dist/index.js';
+import { createSqliteAgentRunStore } from '../../packages/storage/dist/agent-run-store.js';
 import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,

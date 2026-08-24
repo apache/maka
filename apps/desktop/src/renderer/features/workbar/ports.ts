@@ -36,6 +36,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
+  SessionChangedEvent,
   SessionSummary,
   StoredMessage,
   TurnRecord,
@@ -212,9 +213,12 @@ export interface SideChatSessionPort {
       sourceTurnId: string;
       name?: string;
       copyId: string;
-      sideConversation?: boolean;
+      sideConversation: true;
     },
-  ): Promise<SessionSummary>;
+  ): Promise<
+    | { ok: true; session: SessionSummary }
+    | { ok: false; reason: 'session_busy' | 'operation_unavailable' }
+  >;
   cleanupSessionCopy(sessionId: string): Promise<void>;
   abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
   send(
@@ -246,6 +250,7 @@ export interface SideChatSessionPort {
     sessionId: string,
     handler: (event: SessionEvent) => void,
   ): WorkbarUnsubscribe;
+  subscribeSessionChanges(handler: (event: SessionChangedEvent) => void): WorkbarUnsubscribe;
 }
 
 export interface WorkbarServices {

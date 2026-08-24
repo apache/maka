@@ -20,7 +20,7 @@
 import { join } from 'node:path';
 import { inspect } from 'node:util';
 import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
-import { createSqliteRuntimeStore } from '@maka/storage';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { startExecutionRuntimeHostCandidate } from '../../server/execution-candidate.js';
 import { createExecutionRuntimeHostComposition } from '../../server/execution-composition.js';
 import { runRuntimeHostProcessLifecycle } from '../../server/process-lifecycle.js';

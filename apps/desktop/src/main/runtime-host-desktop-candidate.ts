@@ -130,6 +130,7 @@ export interface DesktopRuntimeHostCandidateDeps {
       kind: 'branch' | 'revision';
       sourceSessionId: string;
       sourceTurnId: string;
+      intent?: 'side_conversation';
     }) => Promise<void>;
   }) => SessionCopyCleanupAuthority;
   readonly registerClientIpc?: (
@@ -638,11 +639,12 @@ export async function createDesktopRuntimeHostCandidate(
         emitSessionsChanged("deleted", sessionId);
         return disposition;
       },
-      resumeSessionCopy: async ({ sessionId, kind, sourceSessionId, sourceTurnId }) => {
+      resumeSessionCopy: async ({ sessionId, kind, sourceSessionId, sourceTurnId, intent }) => {
         await client.copySession(kind, {
           sourceSessionId,
           targetSessionId: sessionId,
           sourceTurnId,
+          ...(intent ? { intent } : {}),
         });
       },
     });
