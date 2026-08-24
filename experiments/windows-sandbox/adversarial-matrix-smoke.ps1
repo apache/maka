@@ -157,7 +157,7 @@ try {
       # The probe is already fail-closed if no response arrives.
     }
   }
-  $udpListener.BeginReceive($udpCallback, $null)
+  $udpListener.BeginReceive($udpCallback, $null) | Out-Null
   $pipe = [IO.Pipes.NamedPipeServerStream]::new(
     $pipeShortName,
     [IO.Pipes.PipeDirection]::InOut,
@@ -304,3 +304,5 @@ try {
   }
   Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+exit 0
