@@ -22,6 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { createSqliteDeepResearchStore } from '../deep-research-store.js';
 import { openInteractiveScheduledTaskStoreForWrite } from '../scheduled-task-store.js';
 import { createSqlitePlanStore } from '../plan-store.js';
@@ -397,6 +398,93 @@ describe('SQLite workflow stores', () => {
           runId: 'run-1',
           userMessageId: 'message-1',
         });
+      } finally {
+        reopened.close();
+        await owner.close();
+      }
+    });
+  });
+
+  test('folds retired permission modes in tasks and pending fire claims', async () => {
+    await withRoot(async (root) => {
+      const now = Date.now();
+      const { owner, open } = await scheduledTaskStoreRoot(root);
+      const store = await open();
+      await assert.rejects(
+        () =>
+          store.create(
+            {
+              title: 'Reject retired input',
+              intentBody: 'run',
+              schedule: { kind: 'once', runAt: now + 1_000 },
+              effect: {
+                kind: 'agent_run',
+                execution: {
+                  cwd: '/workspace',
+                  llmConnectionSlug: 'default',
+                  model: 'test-model',
+                  permissionMode: 'execute',
+                  collaborationMode: 'agent',
+                  orchestrationMode: 'default',
+                },
+              },
+              createdBy: { kind: 'user' },
+            },
+            now,
+          ),
+        /execution.permissionMode is required/,
+      );
+      const task = await store.create(
+        {
+          title: 'Decode retired rows',
+          intentBody: 'run',
+          schedule: { kind: 'once', runAt: now + 1_000 },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: '/workspace',
+              llmConnectionSlug: 'default',
+              model: 'test-model',
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
+          },
+          createdBy: { kind: 'user' },
+        },
+        now,
+      );
+      await store.claimNow(task.id, now);
+      store.close();
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        database.exec(`
+          UPDATE workflow_scheduled_tasks
+          SET record_json = json_set(record_json, '$.effect.execution.permissionMode', 'execute');
+          UPDATE workflow_scheduled_task_fires
+          SET record_json = json_set(record_json, '$.task.effect.execution.permissionMode', 'execute');
+        `);
+      } finally {
+        database.close();
+      }
+
+      const reopened = await open();
+      try {
+        const decodedTask = (await reopened.list())[0];
+        const decodedClaim = (await reopened.listPendingFires())[0];
+        assert.equal(
+          decodedTask?.effect.kind === 'agent_run'
+            ? decodedTask.effect.execution.permissionMode
+            : undefined,
+          'ask',
+        );
+        assert.equal(
+          decodedClaim?.task.effect.kind === 'agent_run'
+            ? decodedClaim.task.effect.execution.permissionMode
+            : undefined,
+          'ask',
+        );
       } finally {
         reopened.close();
         await owner.close();

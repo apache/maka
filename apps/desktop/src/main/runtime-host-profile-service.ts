@@ -113,6 +113,7 @@ export interface DesktopRuntimeHostProfileService {
   startEnabledProfiles(): Promise<void>;
   resolvePairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
   setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
+  reconnect(profileId: string, expectedRootId: string): Promise<void>;
   setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
   remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
 }
@@ -873,6 +874,20 @@ export function createDesktopRuntimeHostProfileService(input: {
         unavailable.delete(profileId);
         await input.disable(profileId);
         return snapshot();
+      });
+    },
+    reconnect(profileId, expectedRootId) {
+      return mutateProfiles(async () => {
+        assertPairingComplete(profileId);
+        if (!preferences.enabledRemoteProfileIds.includes(profileId)) {
+          throw new Error('Enable this Runtime Host before reconnecting it');
+        }
+        const target = await catalog.resolve(profileId);
+        if (target.profile.kind !== 'remote' || target.profile.rootId !== expectedRootId) {
+          throw new Error('Runtime Host profile changed before it could reconnect');
+        }
+        await input.disable(profileId);
+        await activateTarget(target, 'terminal');
       });
     },
     setDefault(profileId) {

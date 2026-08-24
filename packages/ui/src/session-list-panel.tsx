@@ -77,6 +77,11 @@ export function SessionListPanel(props: {
   updateReminder?: SidebarUpdateReminder;
   onOpenUpdate?(): void;
   onNew(): void;
+  workHubEntry?: {
+    active: boolean;
+    label: string;
+    onSelect(): void;
+  };
   rowActions?: SessionRowActions;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
@@ -170,6 +175,7 @@ export function SessionListPanel(props: {
               moduleMemory={props.moduleMemory}
               onSelect={props.onSelect}
               onNew={props.onNew}
+              workHubEntry={props.workHubEntry}
             />
             {groupingSwitch}
           </>

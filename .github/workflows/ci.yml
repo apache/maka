@@ -96,10 +96,6 @@ jobs:
           node-version: '24'
           cache: npm
 
-      - name: Verify ASF source release mechanics
-        if: steps.plan.outputs.asf_source == 'true'
-        run: npm run check:asf-source
-
       - name: Select the release npm toolchain
         if: steps.plan.outputs.cli_package == 'true'
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
@@ -129,8 +125,15 @@ jobs:
           fi
 
       - name: Install dependencies
-        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
+
+      # The header audit above remains install-free. The complete source gate
+      # also exercises generation and therefore runs after its pinned formatter
+      # dependency is installed, matching the source-candidate workflow.
+      - name: Verify ASF source release mechanics
+        if: steps.plan.outputs.asf_source == 'true'
+        run: npm run check:asf-source
 
       - name: Lint
         if: steps.plan.outputs.code == 'true'
@@ -139,6 +142,14 @@ jobs:
       - name: Check formatting
         if: steps.plan.outputs.code == 'true'
         run: npm run format:check
+
+      # This generated artifact describes the whole renderer/UI tree, so every
+      # code-validation run checks it even when the triggering diff is outside
+      # an Astryx surface. Keep it before Build so stale output is reported
+      # directly instead of being hidden behind an earlier compilation failure.
+      - name: Astryx surface inventory
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true'
+        run: npm run astryx:surface-inventory
 
       - name: Build
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
@@ -151,10 +162,6 @@ jobs:
       - name: Typecheck
         if: steps.plan.outputs.code == 'true'
         run: npm run typecheck
-
-      - name: Astryx surface inventory
-        if: steps.plan.outputs.astryx_surface == 'true'
-        run: npm run astryx:surface-inventory
 
       - name: Astryx theme drift
         if: steps.plan.outputs.code == 'true'

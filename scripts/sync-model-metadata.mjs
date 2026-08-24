@@ -17,10 +17,16 @@
  * under the License.
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { stripTypeScriptTypes } from 'node:module';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const SOURCE_URL = 'https://models.dev/api.json';
+const DEFAULT_SNAPSHOT = 'scripts/model-metadata/models-dev-api.snapshot.json';
 const DEFAULT_OUTPUT = 'packages/core/src/model-metadata.generated.ts';
 const DEFAULT_PRICING_OUTPUT = 'packages/runtime/src/telemetry/model-pricing.generated.ts';
 // models.dev cost fields describe the catalog provider's public API. They are
@@ -100,69 +106,40 @@ export const PROVIDERS = {
 };
 
 export async function main(argv = process.argv) {
-  const inputPath = option('--input', argv);
+  const refreshInputPath = option('--refresh-input', argv);
+  const snapshotPath = option('--snapshot', argv) ?? DEFAULT_SNAPSHOT;
   const outputPath = option('--output', argv) ?? DEFAULT_OUTPUT;
   const pricingOutputPath =
     option('--pricing-output', argv) ??
     (outputPath === DEFAULT_OUTPUT ? DEFAULT_PRICING_OUTPUT : undefined);
-  const sourceText = inputPath
-    ? await readFile(inputPath, 'utf8')
-    : await fetch(SOURCE_URL, { signal: AbortSignal.timeout(10_000) }).then((response) => {
-        if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`);
-        return response.text();
-      });
-  const catalog = JSON.parse(sourceText);
+  const refresh = argv.includes('--refresh');
+  const check = argv.includes('--check');
+  const acceptUpstreamRemovals = argv.includes('--accept-upstream-removals');
+  if (refreshInputPath && !refresh) throw new Error('--refresh-input requires --refresh');
+  if (acceptUpstreamRemovals && !refresh) {
+    throw new Error('--accept-upstream-removals requires --refresh');
+  }
 
-  const generated = {};
-  const generatedPricing = [];
-  const generatedProviders = {};
-  const generatedModelProviderOverrides = {};
-  for (const [providerType, sourceId] of Object.entries(PROVIDERS)) {
-    const provider = catalog[sourceId];
-    if (!provider) {
-      throw new Error(`models.dev provider ${sourceId} is missing`);
-    }
-    if (!provider.models || typeof provider.models !== 'object') {
-      throw new Error(`models.dev provider ${sourceId} has no models object`);
-    }
-    if (
-      typeof provider.id !== 'string' ||
-      typeof provider.name !== 'string' ||
-      typeof provider.doc !== 'string'
-    ) {
-      throw new Error(`models.dev provider ${sourceId} has an unsupported shape`);
-    }
-    generatedProviders[providerType] = {
-      id: provider.id,
-      name: provider.name,
-      ...(typeof provider.api === 'string' ? { api: provider.api } : {}),
-      doc: provider.doc,
-    };
-    generated[providerType] = Object.fromEntries(
-      Object.entries(provider.models)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([id, model]) => [id, toMetadata(sourceId, id, provider, model)]),
-    );
-    generatedModelProviderOverrides[providerType] = Object.fromEntries(
-      Object.entries(provider.models)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .filter(([, model]) => model.provider !== undefined)
-        .map(([id, model]) => [id, toModelProviderOverride(sourceId, id, model.provider)]),
-    );
-    if (!PRICING_EXCLUDED_PROVIDER_TYPES.has(providerType)) {
-      generatedPricing.push(
-        ...Object.entries(provider.models)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([id, model]) => toPricing(providerType, id, model))
-          .filter((pricing) => pricing !== undefined),
-      );
-    }
+  const source = refresh
+    ? await refreshSnapshot(snapshotPath, refreshInputPath, { acceptUpstreamRemovals })
+    : await loadSnapshot(snapshotPath);
+  const {
+    metadata: generated,
+    pricing: generatedPricing,
+    providerFacts: generatedProviders,
+    providerOverrides: generatedModelProviderOverrides,
+  } = source.projection;
+  if (check) {
+    await assertGeneratedOutputs(outputPath, pricingOutputPath, source);
+    if (source.snapshotWrite) await replaceFilesTransactionally([source.snapshotWrite]);
+    return;
   }
 
   const providerTypeUnion = Object.keys(PROVIDERS).map(JSON.stringify).join(' | ');
   const lines = [
     ...snapshotHeader(
       '// Do not edit by hand; put access-path-specific facts in model-metadata.ts.',
+      source,
     ),
     "import type { ModelMetadata } from './model-metadata.js';",
     '',
@@ -190,10 +167,338 @@ export async function main(argv = process.argv) {
     lines.push(`  ${JSON.stringify(provider)}: ${JSON.stringify(facts)},`);
   }
   lines.push('};', '');
-  await writeFile(outputPath, lines.join('\n'));
+  const metadataText = formatGenerated(lines.join('\n'), outputPath);
+  const writes = [{ path: outputPath, text: metadataText }];
   if (pricingOutputPath) {
-    await writeFile(pricingOutputPath, buildPricingModule(generatedPricing));
+    const pricingText = formatGenerated(
+      buildPricingModule(generatedPricing, source),
+      pricingOutputPath,
+    );
+    writes.push({ path: pricingOutputPath, text: pricingText });
   }
+  if (source.snapshotWrite) writes.push(source.snapshotWrite);
+  await replaceFilesTransactionally(writes);
+}
+
+function buildProjection(catalog) {
+  const metadata = {};
+  const pricing = [];
+  const providerFacts = {};
+  const providerOverrides = {};
+  for (const [providerType, sourceId] of Object.entries(PROVIDERS)) {
+    const provider = catalog[sourceId];
+    if (!provider) {
+      throw new Error(`models.dev provider ${sourceId} is missing`);
+    }
+    if (
+      !provider.models ||
+      typeof provider.models !== 'object' ||
+      Array.isArray(provider.models) ||
+      Object.keys(provider.models).length === 0
+    ) {
+      throw new Error(`models.dev provider ${sourceId} has no non-empty models object`);
+    }
+    if (
+      typeof provider.id !== 'string' ||
+      typeof provider.name !== 'string' ||
+      typeof provider.doc !== 'string'
+    ) {
+      throw new Error(`models.dev provider ${sourceId} has an unsupported shape`);
+    }
+    providerFacts[providerType] = {
+      id: provider.id,
+      name: provider.name,
+      ...(typeof provider.api === 'string' ? { api: provider.api } : {}),
+      doc: provider.doc,
+    };
+    metadata[providerType] = Object.fromEntries(
+      Object.entries(provider.models)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([id, model]) => [id, toMetadata(sourceId, id, provider, model)]),
+    );
+    providerOverrides[providerType] = Object.fromEntries(
+      Object.entries(provider.models)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .filter(([, model]) => model.provider !== undefined)
+        .map(([id, model]) => [id, toModelProviderOverride(sourceId, id, model.provider)]),
+    );
+    if (!PRICING_EXCLUDED_PROVIDER_TYPES.has(providerType)) {
+      pricing.push(
+        ...Object.entries(provider.models)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([id, model]) => toPricing(providerType, id, model))
+          .filter((pricing) => pricing !== undefined),
+      );
+    }
+  }
+
+  return { metadata, pricing, providerFacts, providerOverrides };
+}
+
+async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
+  let sourceText;
+  let sourceEtag = null;
+  let retrievedAt = new Date().toISOString();
+  if (refreshInputPath) {
+    sourceText = await readFile(refreshInputPath, 'utf8');
+  } else {
+    const response = await fetch(SOURCE_URL, { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`);
+    sourceText = await response.text();
+    sourceEtag = response.headers.get('etag');
+    retrievedAt = new Date(response.headers.get('date') ?? Date.now()).toISOString();
+  }
+  const projection = buildProjection(selectCatalog(JSON.parse(sourceText)));
+  if (!options.acceptUpstreamRemovals) {
+    const previous = await loadSnapshotIfPresent(snapshotPath);
+    if (previous) assertProjectionDoesNotShrink(previous.projection, projection);
+  }
+  const projectionText = JSON.stringify(projection);
+  const snapshot = {
+    formatVersion: 1,
+    sourceUrl: SOURCE_URL,
+    origin: {
+      kind: 'models-dev-response',
+      retrievedAt,
+      etag: sourceEtag,
+      responseSha256: sha256(sourceText),
+    },
+    projectionSha256: sha256(projectionText),
+    projection,
+  };
+  await mkdir(dirname(snapshotPath), { recursive: true });
+  return {
+    projection,
+    snapshotDigest: snapshot.projectionSha256,
+    snapshotLabel: snapshotPath,
+    snapshotWrite: { path: snapshotPath, text: `${JSON.stringify(snapshot, null, 2)}\n` },
+  };
+}
+
+function assertProjectionDoesNotShrink(previous, next) {
+  const removals = [];
+  collectProjectionRemovals(previous, next, [], removals);
+  if (removals.length === 0) return;
+
+  throw new Error(
+    `models.dev refresh would remove committed projection paths: ${removals.sort().join(', ')}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
+  );
+}
+
+function collectProjectionRemovals(previous, next, path, removals) {
+  if (Array.isArray(previous)) {
+    if (!Array.isArray(next)) {
+      removals.push(projectionPath(path));
+      return;
+    }
+    if (path.length === 1 && path[0] === 'pricing') {
+      const nextByModelKey = new Map(next.map((entry) => [entry?.modelKey, entry]));
+      for (const entry of previous) {
+        const modelPath = [...path, entry.modelKey];
+        const nextEntry = nextByModelKey.get(entry.modelKey);
+        if (!nextEntry) removals.push(projectionPath(modelPath));
+        else collectProjectionRemovals(entry, nextEntry, modelPath, removals);
+      }
+      return;
+    }
+    for (const value of previous) {
+      if (!next.some((candidate) => Object.is(candidate, value))) {
+        removals.push(`${projectionPath(path)} value ${JSON.stringify(value)}`);
+      }
+    }
+    return;
+  }
+
+  if (!previous || typeof previous !== 'object') {
+    if (
+      previous === true &&
+      next === false &&
+      path.length === 5 &&
+      path[0] === 'metadata' &&
+      path[3] === 'capabilities'
+    ) {
+      removals.push(projectionPath(path));
+    }
+    return;
+  }
+  if (!next || typeof next !== 'object' || Array.isArray(next)) {
+    removals.push(projectionPath(path));
+    return;
+  }
+  for (const [key, value] of Object.entries(previous)) {
+    const childPath = [...path, key];
+    if (!Object.prototype.hasOwnProperty.call(next, key)) {
+      removals.push(projectionPath(childPath));
+    } else {
+      collectProjectionRemovals(value, next[key], childPath, removals);
+    }
+  }
+}
+
+function projectionPath(path) {
+  return `/${path.map((segment) => String(segment).replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`;
+}
+
+async function replaceFilesTransactionally(writes) {
+  if (new Set(writes.map((write) => write.path)).size !== writes.length) {
+    throw new Error('model metadata outputs must use distinct paths');
+  }
+  const transactionId = `${process.pid}-${randomUUID()}`;
+  const entries = writes.map((write) => ({
+    ...write,
+    stagedPath: `${write.path}.tmp-${transactionId}`,
+    backupPath: `${write.path}.bak-${transactionId}`,
+    hadOriginal: false,
+    installed: false,
+  }));
+
+  let committed = false;
+  try {
+    // Stage every byte before replacing any target. Missing/unwritable output
+    // directories therefore leave the existing snapshot and outputs intact.
+    const stageResults = await Promise.allSettled(
+      entries.map((entry) => writeFile(entry.stagedPath, entry.text, { flag: 'wx' })),
+    );
+    const stageFailure = stageResults.find((result) => result.status === 'rejected');
+    if (stageFailure) throw stageFailure.reason;
+    for (const entry of entries) {
+      try {
+        await rename(entry.path, entry.backupPath);
+        entry.hadOriginal = true;
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+      await rename(entry.stagedPath, entry.path);
+      entry.installed = true;
+    }
+    committed = true;
+  } catch (error) {
+    let rollbackError;
+    for (const entry of [...entries].reverse()) {
+      try {
+        if (entry.installed) await rm(entry.path, { force: true });
+        if (entry.hadOriginal) await rename(entry.backupPath, entry.path);
+      } catch (candidate) {
+        rollbackError ??= candidate;
+      }
+    }
+    if (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        'model metadata transaction rollback failed',
+      );
+    }
+    throw error;
+  } finally {
+    const cleanupPaths = entries.flatMap((entry) => [
+      entry.stagedPath,
+      ...(committed ? [entry.backupPath] : []),
+    ]);
+    await Promise.all(cleanupPaths.map((path) => rm(path, { force: true }).catch(() => {})));
+  }
+}
+
+async function loadSnapshot(snapshotPath) {
+  const snapshot = JSON.parse(await readFile(snapshotPath, 'utf8'));
+  if (
+    snapshot?.formatVersion !== 1 ||
+    snapshot.sourceUrl !== SOURCE_URL ||
+    !snapshot.origin ||
+    typeof snapshot.origin !== 'object' ||
+    Array.isArray(snapshot.origin) ||
+    typeof snapshot.projectionSha256 !== 'string' ||
+    !snapshot.projection ||
+    typeof snapshot.projection !== 'object' ||
+    Array.isArray(snapshot.projection)
+  ) {
+    throw new Error(`models.dev snapshot ${snapshotPath} has an unsupported shape`);
+  }
+  const actualDigest = sha256(JSON.stringify(snapshot.projection));
+  if (actualDigest !== snapshot.projectionSha256) {
+    throw new Error(
+      `models.dev snapshot ${snapshotPath} digest mismatch: expected ${snapshot.projectionSha256}, got ${actualDigest}`,
+    );
+  }
+  return {
+    projection: snapshot.projection,
+    snapshotDigest: actualDigest,
+    snapshotLabel: snapshotPath,
+  };
+}
+
+async function loadSnapshotIfPresent(snapshotPath) {
+  try {
+    return await loadSnapshot(snapshotPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+function selectCatalog(catalog) {
+  const selected = {};
+  for (const sourceId of [...new Set(Object.values(PROVIDERS))].sort()) {
+    if (!catalog[sourceId]) throw new Error(`models.dev provider ${sourceId} is missing`);
+    selected[sourceId] = catalog[sourceId];
+  }
+  return selected;
+}
+
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function formatGenerated(source, outputPath) {
+  return execFileSync(
+    process.execPath,
+    ['node_modules/@biomejs/biome/bin/biome', 'format', '--stdin-file-path', outputPath],
+    { encoding: 'utf8', input: source, maxBuffer: 16 * 1024 * 1024 },
+  );
+}
+
+async function assertGeneratedOutputs(metadataPath, pricingPath, source) {
+  const metadataSource = await readFile(metadataPath, 'utf8');
+  assert.ok(
+    metadataSource.includes(
+      `// Snapshot: ${source.snapshotLabel} (SHA-256 ${source.snapshotDigest}).`,
+    ),
+    `${metadataPath} is stale; run npm run sync:model-metadata`,
+  );
+  const metadataModule = await loadTypeScriptModule(metadataSource);
+  assert.deepEqual(
+    metadataModule.GENERATED_MODELS_DEV_METADATA,
+    source.projection.metadata,
+    `${metadataPath} is stale; run npm run sync:model-metadata`,
+  );
+  assert.deepEqual(
+    metadataModule.GENERATED_MODELS_DEV_MODEL_PROVIDER_OVERRIDES,
+    source.projection.providerOverrides,
+    `${metadataPath} is stale; run npm run sync:model-metadata`,
+  );
+  assert.deepEqual(
+    metadataModule.GENERATED_MODELS_DEV_PROVIDER_FACTS,
+    source.projection.providerFacts,
+    `${metadataPath} is stale; run npm run sync:model-metadata`,
+  );
+  if (!pricingPath) return;
+  const pricingSource = await readFile(pricingPath, 'utf8');
+  assert.ok(
+    pricingSource.includes(
+      `// Snapshot: ${source.snapshotLabel} (SHA-256 ${source.snapshotDigest}).`,
+    ),
+    `${pricingPath} is stale; run npm run sync:model-metadata`,
+  );
+  const pricingModule = await loadTypeScriptModule(pricingSource);
+  assert.deepEqual(
+    pricingModule.GENERATED_MODEL_PRICING,
+    source.projection.pricing,
+    `${pricingPath} is stale; run npm run sync:model-metadata`,
+  );
+}
+
+async function loadTypeScriptModule(source) {
+  const javascript = stripTypeScriptTypes(source, { mode: 'transform' });
+  return import(`data:text/javascript;base64,${Buffer.from(javascript).toString('base64')}`);
 }
 
 function toModelProviderOverride(providerId, modelId, override) {
@@ -225,6 +530,16 @@ export function toMetadata(providerId, modelId, provider, model) {
     typeof model.tool_call !== 'boolean'
   ) {
     throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
+  }
+  if (
+    model.modalities?.input.some(
+      (value) => value !== 'text' && value !== 'image' && value !== 'audio' && value !== 'pdf',
+    ) ||
+    model.modalities?.output.some(
+      (value) => value !== 'text' && value !== 'image' && value !== 'audio',
+    )
+  ) {
+    throw new Error(`models.dev model ${providerId}/${modelId} has unsupported modalities`);
   }
   if (
     (model.description !== undefined && typeof model.description !== 'string') ||
@@ -286,13 +601,8 @@ export function toMetadata(providerId, modelId, provider, model) {
     ...(model.modalities
       ? {
           modalities: {
-            input: model.modalities.input.filter(
-              (value) =>
-                value === 'text' || value === 'image' || value === 'audio' || value === 'pdf',
-            ),
-            output: (Array.isArray(model.modalities.output) ? model.modalities.output : []).filter(
-              (value) => value === 'text' || value === 'image' || value === 'audio',
-            ),
+            input: model.modalities.input,
+            output: model.modalities.output,
           },
         }
       : {}),
@@ -357,24 +667,25 @@ function optionalPriceNumber(providerType, modelId, value, field) {
   return value === undefined ? undefined : priceNumber(providerType, modelId, value, field);
 }
 
-// Every generated file names its upstream. The copyright line is required by
-// models.dev's MIT license and is repeated in LICENSE under THIRD-PARTY
-// COMPONENTS. models.dev serves a rolling document with no revision to cite,
-// and the committed bytes below are what actually ships, so the file records
-// where the data came from and lets git fix which data it was.
-function snapshotHeader(handEditLine) {
+// Every generated file names the exact repository-contained input projection.
+// The copyright line is required by models.dev's MIT license and is repeated
+// in LICENSE under THIRD-PARTY COMPONENTS. The digest binds generated output
+// to the snapshot bytes that ship in the same source archive.
+function snapshotHeader(handEditLine, source) {
   return [
     `// Generated by scripts/sync-model-metadata.mjs from ${SOURCE_URL}.`,
-    '// Upstream: sst/models.dev (https://github.com/sst/models.dev), MIT,',
+    `// Snapshot: ${source.snapshotLabel} (SHA-256 ${source.snapshotDigest}).`,
+    '// Upstream: anomalyco/models.dev (https://github.com/anomalyco/models.dev), MIT,',
     '// Copyright (c) 2025 models.dev. See LICENSE, THIRD-PARTY COMPONENTS.',
     handEditLine,
   ];
 }
 
-function buildPricingModule(pricing) {
+function buildPricingModule(pricing, source) {
   const lines = [
     ...snapshotHeader(
       '// Do not edit by hand; special access-path pricing belongs in builtin-pricing.ts.',
+      source,
     ),
     "import type { PricingConfig } from '@maka/core/usage-stats/types';",
     '',

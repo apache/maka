@@ -23,11 +23,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { decodeStoredMessage } from '@maka/core/session';
+import { decodeCanonicalMessage } from '@maka/core/session';
 import { CodexSessionAdapter } from '../codex-session-adapter.js';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
 
 const CURRENT_FIXTURE = fixturePath('codex-rollout-v0.144.jsonl');
+const ITEM_COMPLETED_FIXTURE = fixturePath('codex-rollout-v0.149-item-completed.jsonl');
 
 describe('CodexSessionAdapter', () => {
   test('lists active and archived root Sessions from the newest Codex state database', async () => {
@@ -190,7 +191,7 @@ describe('CodexSessionAdapter', () => {
       });
       assert.equal(session.messages.length, 9);
       for (const message of session.messages) {
-        assert.deepEqual(decodeStoredMessage(message), message);
+        assert.deepEqual(decodeCanonicalMessage(message), message);
       }
 
       assert.deepEqual(session.messages[0], {
@@ -238,6 +239,62 @@ describe('CodexSessionAdapter', () => {
       assert.equal(session.messages[7]?.type, 'system_note');
       assert.equal(session.messages[8]?.type, 'turn_state');
       assert.equal(session.messages[8]?.status, 'completed');
+    });
+  });
+
+  test('converts Codex Desktop completed items without importing response mirrors', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-item-completed';
+      await seedRawRollout(codexHome, sessionId, await readFile(ITEM_COMPLETED_FIXTURE, 'utf8'));
+
+      const adapter = new CodexSessionAdapter({ codexHome });
+      assert.deepEqual(
+        (await adapter.listSessions()).map(({ id, name }) => ({ id, name })),
+        [{ id: sessionId, name: 'Analyze the image. Use OpenCV.js.' }],
+      );
+      const session = await adapter.readSession(sessionId);
+
+      assert.deepEqual(session.metadata, {
+        name: 'Analyze the image. Use OpenCV.js.',
+        cwd: '/workspace/opencv',
+      });
+      assert.equal(session.messages.length, 4);
+      assert.deepEqual(
+        session.messages.map((message) => message.type),
+        ['user', 'assistant', 'assistant', 'turn_state'],
+      );
+      for (const message of session.messages) {
+        assert.deepEqual(decodeStoredMessage(message), message);
+      }
+
+      assert.deepEqual(session.messages[0], {
+        type: 'user',
+        id: 'user-client-1',
+        turnId: 'codex-turn-item-completed',
+        ts: Date.parse('2026-08-22T00:00:02.100Z'),
+        text: 'Analyze the image. Use OpenCV.js.',
+      });
+      assert.deepEqual(session.messages[1], {
+        type: 'assistant',
+        id: 'reasoning-item-1',
+        turnId: 'codex-turn-item-completed',
+        ts: Date.parse('2026-08-22T00:00:03.000Z'),
+        text: '',
+        thinking: { text: 'Inspect the pixels.\nDraft the solution.' },
+        contentOrder: ['thinking'],
+        modelId: 'gpt-codex-item-test',
+      });
+      assert.deepEqual(session.messages[2], {
+        type: 'assistant',
+        id: 'assistant-item-1',
+        turnId: 'codex-turn-item-completed',
+        ts: Date.parse('2026-08-22T00:00:04.000Z'),
+        text: 'Use canvas. Then process the pixels.',
+        modelId: 'gpt-codex-item-test',
+        contentOrder: ['text'],
+      });
+      assert.equal(session.messages[3]?.type, 'turn_state');
+      assert.equal(session.messages[3]?.status, 'completed');
     });
   });
 

@@ -22,7 +22,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { decodeStoredMessage, type StoredMessage } from '@maka/core/session';
+import { decodeCanonicalMessage, type StoredMessage } from '@maka/core/session';
 import { ClaudeCodeSessionAdapter } from '../claude-code-session-adapter.js';
 import { createExternalSessionAdapterRegistry } from '../external-session-adapters.js';
 
@@ -392,7 +392,7 @@ describe('ClaudeCodeSessionAdapter', () => {
       const messages = await read(home, 'aaaaaaaa-0000-4000-8000-000000000009');
       assert.ok(messages.length > 0);
       for (const message of messages) {
-        assert.doesNotThrow(() => decodeStoredMessage(JSON.parse(JSON.stringify(message))));
+        assert.doesNotThrow(() => decodeCanonicalMessage(JSON.parse(JSON.stringify(message))));
       }
     });
   });

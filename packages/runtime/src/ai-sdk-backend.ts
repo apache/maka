@@ -932,6 +932,8 @@ function providerRetryReason(kind: ModelFailureKind): ProviderRetryReason {
     case 'rate_limit':
     case 'timeout':
       return kind;
+    case 'provider_capacity':
+      return 'provider_capacity';
     default:
       return 'unknown';
   }

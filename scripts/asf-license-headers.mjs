@@ -202,6 +202,7 @@ export const exclusionRules = [
         'packages/runtime/src/tool-output.ts',
         // Adapted from Vercel AI SDK material; recorded by the #2907 origin audit.
         'packages/runtime/src/model-protocol.ts',
+        'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
         'packages/ui/src/astryx-chat-reasoning.tsx',
       )(path) ||
       isUnder('apps/desktop/src/renderer/assets/provider-brands', '.svg')(path) ||

@@ -339,8 +339,7 @@ export class RuntimeHostSessionProjector {
       return emptyUpdate(events);
     }
     if (frame.kind === 'subscription.session_event') {
-      const event = projectToolEvent(frame);
-      if (event) events.push(event);
+      events.push(projectToolEvent(frame));
       return emptyUpdate(events);
     }
     if (frame.kind !== 'subscription.session_projection') return emptyUpdate(events);
@@ -479,7 +478,7 @@ export function projectRuntimeHostInteractionRequest(
 
 function projectToolEvent(
   frame: Extract<SubscriptionFrame, { kind: 'subscription.session_event' }>,
-): SessionEvent | undefined {
+): SessionEvent {
   const event = frame.event;
   const base = {
     id: event.id,
@@ -497,6 +496,7 @@ function projectToolEvent(
       ...(event.activityKind ? { activityKind: event.activityKind } : {}),
       ...(event.displayName ? { displayName: event.displayName } : {}),
       ...(event.stepId ? { stepId: event.stepId } : {}),
+      ...(event.shellRunRef ? { shellRunRef: event.shellRunRef } : {}),
     };
   }
   if (event.type === 'tool_output_delta') {
@@ -524,6 +524,7 @@ function projectToolEvent(
   return {
     type: 'tool_result',
     ...base,
+    contentOmitted: true,
     isError: event.status === 'errored',
     content: {
       kind: 'text',

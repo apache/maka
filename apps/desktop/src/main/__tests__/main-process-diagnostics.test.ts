@@ -244,6 +244,9 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
     },
     environment: () => environment,
     mainLogs: () => ['main remained available'],
+    runtimeHostProcessLogs: () => [
+      '[2026-08-20T00:00:00.000Z] ERROR [runtime-host] local Host child exited: pid=42 code=23 signal=none',
+    ],
     resolveActiveRuntimeHost: () => undefined,
     resolveRuntimeHost: () => ({
       getDiagnostics: async () => {
@@ -265,6 +268,10 @@ test('copies Desktop diagnostics while Runtime Host is unavailable', async () =>
   );
 
   assert.match(clipboard, /Recent main-process logs \(1\)\nmain remained available/);
+  assert.match(
+    clipboard,
+    /Recent local Runtime Host process exits \(1\)[\s\S]*pid=42 code=23 signal=none/,
+  );
   assert.match(clipboard, /Diagnostics unavailable: Runtime Host disconnected/);
 });
 

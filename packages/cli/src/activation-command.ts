@@ -27,10 +27,9 @@ import type { SessionSummary } from '@maka/core/session';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { redactSecrets } from '@maka/core/redaction';
 import { assertSessionBundleRootLayout } from '@maka/storage';
-import { readRuntimeHostSessions } from '@maka/runtime-host/client';
+import { projectSessionCatalogSummary, readRuntimeHostSessions } from '@maka/runtime-host/client';
 import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
 import { createRuntimeHostRunContext } from './runtime-host-run-command.js';
-import { runtimeHostSessionSummary } from './runtime-host-session-driver.js';
 import type { MakaRunOutcome } from './run-command-core.js';
 import { sessionEventSandboxBoundaryFailureReason } from './sandbox-boundary-failure.js';
 
@@ -884,7 +883,7 @@ async function listRuntimeHostActivationSessions(stateRoot: string): Promise<Ses
   });
   try {
     return (await readRuntimeHostSessions(connected.connection)).flatMap((session) =>
-      'kind' in session ? [] : [runtimeHostSessionSummary(session)],
+      'kind' in session ? [] : [projectSessionCatalogSummary(session)],
     );
   } finally {
     await connected.close();

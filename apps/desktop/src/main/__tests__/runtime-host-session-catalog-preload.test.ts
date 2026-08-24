@@ -1,0 +1,47 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
+import { collectRuntimeHostSessionCatalogs } from '../../preload/runtime-host-session-catalog.js';
+
+function session(id: string, activityAt: number): DesktopSessionSummary {
+  return { id, activityAt } as DesktopSessionSummary;
+}
+
+test('keeps healthy Host catalogs when another Host rejects', async () => {
+  const sessions = await collectRuntimeHostSessionCatalogs([
+    Promise.resolve([session('older', 1)]),
+    Promise.reject(new Error('remote unavailable')),
+    Promise.resolve([session('newer', 2)]),
+  ]);
+
+  assert.deepEqual(sessions.map(({ id }) => id), ['newer', 'older']);
+});
+
+test('fails when every Host catalog rejects', async () => {
+  await assert.rejects(
+    collectRuntimeHostSessionCatalogs([
+      Promise.reject(new Error('first unavailable')),
+      Promise.reject(new Error('second unavailable')),
+    ]),
+    /Every Runtime Host Session Catalog request failed/,
+  );
+});

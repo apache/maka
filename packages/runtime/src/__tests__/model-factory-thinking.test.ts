@@ -122,29 +122,114 @@ describe('buildProviderOptions: thinking level', () => {
 
   test('openai gpt-5.5 sends reasoningEffort (none for off, max for max); gpt-4o drops level', () => {
     assert.deepEqual(buildProviderOptions(conn('openai'), 'gpt-4o', 'high'), {
-      openai: { store: false },
+      openai: { store: false, parallelToolCalls: true },
     });
     assert.deepEqual(buildProviderOptions(conn('openai'), 'gpt-5.5', 'medium'), {
-      openai: { store: false, reasoningEffort: 'medium' },
+      openai: { store: false, reasoningEffort: 'medium', parallelToolCalls: true },
     });
     assert.deepEqual(buildProviderOptions(conn('openai'), 'gpt-5.5', 'xhigh'), {
-      openai: { store: false, reasoningEffort: 'xhigh' },
+      openai: { store: false, reasoningEffort: 'xhigh', parallelToolCalls: true },
     });
     assert.deepEqual(buildProviderOptions(conn('openai'), 'gpt-5.5', 'off'), {
-      openai: { store: false, reasoningEffort: 'none' },
+      openai: { store: false, reasoningEffort: 'none', parallelToolCalls: true },
     });
   });
 
   test('openai-codex (gpt-5.5) preserves store:false / textVerbosity and merges reasoningEffort', () => {
     assert.deepEqual(buildProviderOptions(conn('openai-codex'), 'gpt-5.5'), {
-      openai: { store: false, textVerbosity: 'medium' },
+      openai: { store: false, textVerbosity: 'medium', parallelToolCalls: true },
     });
     assert.deepEqual(buildProviderOptions(conn('openai-codex'), 'gpt-5.5', 'high'), {
-      openai: { store: false, textVerbosity: 'medium', reasoningEffort: 'high' },
+      openai: {
+        store: false,
+        textVerbosity: 'medium',
+        reasoningEffort: 'high',
+        parallelToolCalls: true,
+      },
     });
     assert.deepEqual(buildProviderOptions(conn('openai-codex'), 'gpt-5.5', 'off'), {
-      openai: { store: false, textVerbosity: 'medium', reasoningEffort: 'none' },
+      openai: {
+        store: false,
+        textVerbosity: 'medium',
+        reasoningEffort: 'none',
+        parallelToolCalls: true,
+      },
     });
+  });
+
+  test('parallel tool-call capability overrides wire defaults and stays opt-in on compatible providers', () => {
+    const disabled: LlmConnection = {
+      ...conn('openai'),
+      models: [{ id: 'gpt-5.5', capabilities: { parallelToolCalls: false } }],
+    };
+    assert.deepEqual(buildProviderOptions(disabled, 'gpt-5.5'), {
+      openai: { store: false, parallelToolCalls: false },
+    });
+
+    const compatible: LlmConnection = {
+      ...conn('openai-compatible', 'my-relay'),
+      baseUrl: 'https://relay.example/v1',
+      models: [{ id: 'relay-model', capabilities: { parallelToolCalls: true } }],
+    };
+    assert.deepEqual(buildProviderOptions(compatible, 'relay-model'), {
+      myRelay: { parallel_tool_calls: true },
+    });
+    assert.deepEqual(
+      buildProviderOptions(
+        { ...conn('openai-compatible', 'my-relay'), baseUrl: 'https://relay.example/v1' },
+        'relay-model',
+      ),
+      {},
+    );
+  });
+
+  test('parallel tool-call capability reaches native and compatible chat request bodies', async () => {
+    const cases: Array<{ connection: LlmConnection; modelId: string; expected: boolean }> = [
+      { connection: conn('openai'), modelId: 'gpt-4o', expected: true },
+      {
+        connection: {
+          ...conn('openai-compatible', 'my-relay'),
+          baseUrl: 'https://relay.example/v1',
+          models: [{ id: 'relay-model', capabilities: { parallelToolCalls: false } }],
+        },
+        modelId: 'relay-model',
+        expected: false,
+      },
+    ];
+
+    for (const { connection, modelId, expected } of cases) {
+      let body: Record<string, unknown> = {};
+      const model = getAIModel({
+        connection,
+        apiKey: 'test-key',
+        modelId,
+        fetch: async (_input, init) => {
+          body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return new Response(
+            JSON.stringify({
+              id: 'chatcmpl-1',
+              object: 'chat.completion',
+              created: 1,
+              model: modelId,
+              choices: [
+                {
+                  index: 0,
+                  message: { role: 'assistant', content: 'ok' },
+                  finish_reason: 'stop',
+                },
+              ],
+              usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        },
+      });
+      await model.doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        providerOptions: buildProviderOptions(connection, modelId),
+      });
+      assert.equal(body.parallel_tool_calls, expected);
+    }
   });
 
   test('google effort model (gemini-3) sends thinkingLevel; Gemini 2.5 Flash off sends thinkingBudget 0; safetySettings always present', () => {
@@ -265,7 +350,12 @@ describe('buildProviderOptions: thinking level', () => {
     // gpt-5.5 resolves to the Responses wire, so it takes the wire branch and
     // its encrypted-reasoning terms rather than a bare effort.
     assert.deepEqual(buildProviderOptions(conn('opencode'), 'gpt-5.5', 'high'), {
-      openai: { store: false, forceReasoning: true, reasoningEffort: 'high' },
+      openai: {
+        store: false,
+        forceReasoning: true,
+        reasoningEffort: 'high',
+        parallelToolCalls: true,
+      },
     });
     assert.deepEqual(buildProviderOptions(conn('opencode'), 'claude-fable-5', 'high'), {
       anthropic: { effort: 'high' },
@@ -426,7 +516,7 @@ describe('buildProviderOptions: thinking level', () => {
 
   test('a level the model does not support is dropped (defensive)', () => {
     assert.deepEqual(buildProviderOptions(conn('openai'), 'gpt-4o', 'high'), {
-      openai: { store: false },
+      openai: { store: false, parallelToolCalls: true },
     });
     assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-haiku-4-5', 'max'), {
       anthropic: { cacheControl: { type: 'ephemeral' } },
@@ -572,13 +662,23 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       },
     };
     assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'high'), {
-      openai: { store: false, forceReasoning: true, reasoningEffort: 'high' },
+      openai: {
+        store: false,
+        forceReasoning: true,
+        reasoningEffort: 'high',
+        parallelToolCalls: true,
+      },
     });
     assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'max'), {
-      openai: { store: false, forceReasoning: true, reasoningEffort: 'max' },
+      openai: {
+        store: false,
+        forceReasoning: true,
+        reasoningEffort: 'max',
+        parallelToolCalls: true,
+      },
     });
     assert.deepEqual(buildProviderOptions(declared, 'custom-reasoner', 'xhigh'), {
-      openai: { store: false, forceReasoning: true },
+      openai: { store: false, forceReasoning: true, parallelToolCalls: true },
     });
   });
 
@@ -596,7 +696,12 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
       relayModelProfiles: { 'gpt-5-relay': { serviceTier: 'fast' } },
     };
     assert.deepEqual(buildProviderOptions(responses, 'gpt-5-relay'), {
-      openai: { store: false, forceReasoning: true, serviceTier: 'fast' },
+      openai: {
+        store: false,
+        forceReasoning: true,
+        serviceTier: 'fast',
+        parallelToolCalls: true,
+      },
     });
     assert.deepEqual(
       buildProviderOptions(
@@ -631,6 +736,7 @@ describe('buildProviderOptions: openai-compatible namespace', () => {
           store: false,
           forceReasoning: true,
           ...(supported ? { serviceTier: 'fast' } : {}),
+          parallelToolCalls: true,
         },
       });
     }

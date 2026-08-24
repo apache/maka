@@ -148,7 +148,7 @@ No `NOTICE` addition is warranted. The fixed Astryx and `trycua/cua` revisions h
 
 ## Other provenance evidence
 
-The SCANOSS table above covers only what its winnowing scanner fingerprints, which is source code in supported formats. Two further categories of incoming material were found outside it and are recorded here. Both are attribution gaps rather than license conflicts, and both are tracked for the release legal-files gate in #3270; neither is resolved by this report.
+The SCANOSS table above covers only what its winnowing scanner fingerprints, which is source code in supported formats. Additional incoming-material and same-author transfer records that sit outside that scan are recorded here. The records distinguish third-party attribution obligations from contributor-confirmed ASF contributions rather than treating every cross-repository lineage as third-party code.
 
 ### Adapted opencode source
 
@@ -162,6 +162,43 @@ Upstream is MIT, Copyright (c) 2025 opencode. The repository now resolves to `an
 ### models.dev data snapshot
 
 `packages/core/src/model-metadata.generated.ts` and `packages/runtime/src/telemetry/model-pricing.generated.ts` are checked-in, shipped derivations of `https://models.dev/api.json`, together about 27,800 lines. Upstream `sst/models.dev` is MIT, Copyright (c) 2025 models.dev. The individual entries are facts and are not themselves copyrightable, but the selection and arrangement — which providers and fields are carried, and upstream's normalized structures such as `lifecycle` and `thinkingOptions.efforts` — come from that database. The same generator boundary applies: models.dev is not an npm dependency, and it appears in none of the four attribution surfaces. The generated headers also record no snapshot date or upstream revision, so the fixed source cannot currently be identified.
+
+### PawWork browser port
+
+The embedded-browser work introduced by Maka commit `fab537af179232cc88dc39314038000f70d15d05` was ported from two fixed source batches in [`Astro-Han/pawwork`](https://github.com/Astro-Han/pawwork):
+
+- CDP bridge and browser options: `aff7ce202f5ccb9a7166a95172aa754b0d4de7db`;
+- `BrowserSession`, generic observe→act tools, and their desktop integration: `e3595b705c687c369828736ecd154127ed44f545`.
+
+Both PawWork snapshots are Apache-2.0. On 2026-08-23, their author AstroHan confirmed that these are the only two source batches, that all code carried into Maka was his own work, and that he submitted it directly as an ASF contribution. PawWork's repository-level `NOTICE` also describes unrelated OpenCode material, but that notice does not pertain to this contributor-confirmed slice. No PawWork or OpenCode bytes outside the two stated batches are part of this port.
+
+The exact Maka introduction boundary is the following 23-file change. This list records the transfer boundary, not an assertion that every byte in each integration file came from PawWork:
+
+- `apps/desktop/src/global.d.ts`
+- `apps/desktop/src/main/__tests__/automation-host.test.ts`
+- `apps/desktop/src/main/__tests__/browser-logic.test.ts`
+- `apps/desktop/src/main/__tests__/browser-session.test.ts`
+- `apps/desktop/src/main/__tests__/browser-tools.test.ts`
+- `apps/desktop/src/main/__tests__/browser-view-manager.test.ts`
+- `apps/desktop/src/main/__tests__/cdp-bridge.test.ts`
+- `apps/desktop/src/main/browser/automation-host.ts`
+- `apps/desktop/src/main/browser/browser-host.ts`
+- `apps/desktop/src/main/browser/browser-tools.ts`
+- `apps/desktop/src/main/browser/cdp-bridge.ts`
+- `apps/desktop/src/main/browser/controller.ts`
+- `apps/desktop/src/main/browser/logic.ts`
+- `apps/desktop/src/main/browser/options.ts`
+- `apps/desktop/src/main/browser/session.ts`
+- `apps/desktop/src/main/browser/view-manager.ts`
+- `apps/desktop/src/main/main.ts`
+- `apps/desktop/src/preload/preload.ts`
+- `apps/desktop/src/renderer/browser-panel.tsx`
+- `apps/desktop/src/renderer/main.tsx`
+- `apps/desktop/src/renderer/styles.css`
+- `packages/core/src/browser.ts`
+- `packages/core/src/index.ts`
+
+Subsequent refactors moved `apps/desktop/src/renderer/browser-panel.tsx` to `apps/desktop/src/renderer/features/workbar/tools/browser/browser-panel.tsx` and deleted the old `packages/core/src/index.ts` barrel. Those changes do not add another source batch; the introduction commit and fixed upstream revisions remain the provenance anchors.
 
 ### Bundled Skills
 

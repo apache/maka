@@ -107,9 +107,22 @@ export interface ToolActivityCopy {
   };
   loadTools: {
     displayName: string;
-    loaded: (namespace?: string) => string;
+    genericAction: string;
+    genericTitle: string;
+    genericDescription: string;
     count: (count: number) => string;
-    footer: string;
+    technicalDetails: string;
+    groupId: string;
+    toolIds: string;
+    groups: Record<
+      'browser' | 'computer_use' | 'mcp' | 'rive' | 'agent' | 'settings',
+      {
+        label: string;
+        action: string;
+        title: string;
+        description: string;
+      }
+    >;
   };
   permissionDenied: string;
   result: {
@@ -268,7 +281,24 @@ const TOOL_ACTIVITY_COPY = {
         drag: '拖动',
       },
     },
-    loadTools: { displayName: '加载工具组', loaded: (namespace) => namespace ? `已加载 ${namespace} 工具组` : '已加载工具组', count: (n) => `新增 ${n} 个可用工具：`, footer: '下一步即可调用' },
+    loadTools: {
+      displayName: '启用能力',
+      genericAction: '启用工具能力',
+      genericTitle: '工具能力已启用',
+      genericDescription: '现在可以使用这组工具。',
+      count: (n) => `${n} 项能力可用`,
+      technicalDetails: '技术详情',
+      groupId: '工具组',
+      toolIds: '工具',
+      groups: {
+        browser: { label: 'Browser', action: '启用浏览器操作', title: '浏览器操作已启用', description: '可以打开页面、读取内容并与网页交互。' },
+        computer_use: { label: 'Computer Use', action: '启用桌面操作', title: '桌面操作已启用', description: '可以查看和操作已授权的本地应用。' },
+        mcp: { label: 'MCP', action: '连接 MCP', title: 'MCP 工具已连接', description: '可以调用当前客户端连接的 MCP 服务。' },
+        rive: { label: 'Rive', action: '启用 Rive 工作流', title: 'Rive 工作流已启用', description: '可以运行可恢复的多智能体工作流。' },
+        agent: { label: 'Agent', action: '启用子智能体', title: '子智能体协作已启用', description: '可以并行分派、跟踪和汇总子任务。' },
+        settings: { label: '设置', action: '启用设置工具', title: '设置工具已启用', description: '可以读取或更新当前客户端设置。' },
+      },
+    },
     permissionDenied: '用户已拒绝权限请求',
     result: {
       hiddenLines: (n) => `… 已隐藏 ${n} 行`, ptyFailed: '后台终端交互失败', queued: '已输入', notQueued: '未输入', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}：${preview}` : `${action}：${preview}… · 共 ${bytes} 字节`, byteCount: (action, bytes) => `${action} ${bytes} 字节`, resizeNotApplied: (size) => `未调整为 ${size}`, resized: (size) => `已调整为 ${size}`, sizeUnchanged: (size) => `尺寸已是 ${size}`, ptyCompleted: '后台终端交互已完成', terminalUnavailable: '终端输出不可用', noTerminalFrame: '（无可用终端画面）', noOutputYet: '（尚无输出）', noOutput: '（无输出）', exitCode: (code) => `退出码 ${code}`, managedBySource: '由源任务管理', sourceUnavailable: '源任务不可用', running: '运行中', success: '成功', failed: '失败', timedOut: '已超时', cancelled: '已取消', disconnected: '已断开', terminalTruncated: '终端输出已截断', terminalRedacted: '终端输出已脱敏', streamHidden: (stream, n) => `… ${stream} 已隐藏 ${n} 行`, streamsTruncated: (limit) => `输出已截断 · 每路仅展示前 ${limit} 行`, outputTruncated: '输出已截断', outputRedacted: '输出已脱敏',
@@ -358,7 +388,24 @@ const TOOL_ACTIVITY_COPY = {
         drag: 'Drag',
       },
     },
-    loadTools: { displayName: 'Load tools', loaded: (namespace) => namespace ? `Loaded ${namespace} tools` : 'Loaded tools', count: (n) => `Added ${n} available ${n === 1 ? 'tool' : 'tools'}:`, footer: 'Ready to use' },
+    loadTools: {
+      displayName: 'Enable capabilities',
+      genericAction: 'Enable tool capabilities',
+      genericTitle: 'Tool capabilities enabled',
+      genericDescription: 'This tool group is ready to use.',
+      count: (n) => `${n} ${n === 1 ? 'capability' : 'capabilities'} available`,
+      technicalDetails: 'Technical details',
+      groupId: 'Group',
+      toolIds: 'Tools',
+      groups: {
+        browser: { label: 'Browser', action: 'Enable browser actions', title: 'Browser actions enabled', description: 'Open pages, read content, and interact with websites.' },
+        computer_use: { label: 'Computer Use', action: 'Enable desktop actions', title: 'Desktop actions enabled', description: 'View and operate authorized local applications.' },
+        mcp: { label: 'MCP', action: 'Connect MCP', title: 'MCP tools connected', description: 'Use MCP services connected by the current client.' },
+        rive: { label: 'Rive', action: 'Enable Rive workflows', title: 'Rive workflows enabled', description: 'Run durable multi-agent workflows.' },
+        agent: { label: 'Agent', action: 'Enable subagents', title: 'Subagent collaboration enabled', description: 'Delegate, track, and summarize tasks in parallel.' },
+        settings: { label: 'Settings', action: 'Enable settings tools', title: 'Settings tools enabled', description: 'Read or update settings owned by the current client.' },
+      },
+    },
     permissionDenied: 'User denied the permission request',
     result: {
       hiddenLines: (n) => `… ${n} ${n === 1 ? 'line' : 'lines'} hidden`, ptyFailed: 'Background terminal interaction failed', queued: 'Entered', notQueued: 'Not entered', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}: ${preview}` : `${action}: ${preview}… · ${bytes} bytes total`, byteCount: (action, bytes) => `${action} ${bytes} bytes`, resizeNotApplied: (size) => `Not resized to ${size}`, resized: (size) => `Resized to ${size}`, sizeUnchanged: (size) => `Size already ${size}`, ptyCompleted: 'Background terminal interaction completed', terminalUnavailable: 'Terminal output unavailable', noTerminalFrame: '(No terminal frame available)', noOutputYet: '(No output yet)', noOutput: '(No output)', exitCode: (code) => `exit code ${code}`, managedBySource: 'Managed by the source task', sourceUnavailable: 'Source task unavailable', running: 'Running', success: 'Succeeded', failed: 'Failed', timedOut: 'Timed out', cancelled: 'Cancelled', disconnected: 'Disconnected', terminalTruncated: 'Terminal output truncated', terminalRedacted: 'Terminal output redacted', streamHidden: (stream, n) => `… ${n} ${stream} ${n === 1 ? 'line' : 'lines'} hidden`, streamsTruncated: (limit) => `Output truncated · showing the first ${limit} lines of each stream`, outputTruncated: 'Output truncated', outputRedacted: 'Output redacted',

@@ -39,7 +39,6 @@ import cohereBrandMark from '../assets/provider-brands/cohere.svg';
 import cloudflareMarkUrl from '../assets/provider-brands/cloudflare.svg';
 import deepinfraBrandMark from '../assets/provider-brands/deepinfra.svg';
 import fireworksMarkUrl from '../assets/provider-brands/fireworks.svg';
-import githubCopilotBrandMark from '../assets/provider-brands/github-copilot.svg';
 import groqBrandMark from '../assets/provider-brands/groq.svg';
 import huggingfaceBrandMark from '../assets/provider-brands/huggingface.svg';
 import hunyuanBrandMark from '../assets/provider-brands/hunyuan.svg';
@@ -67,14 +66,6 @@ import zenmuxBrandMark from '../assets/provider-brands/zenmux.svg';
 // - variant: monochrome; no upstream color variant exists in this release
 // - license: MIT (repository LICENSE); ZenMux trademark remains its owner's
 // - SHA-256: 1f9fab4e48601ca583e44ff06f22040a8b40f8952bc6bd67e67b065bef00b4b5
-
-// GitHub Copilot mark vendored byte-for-byte from the official Primer Octicons repository:
-// - repository: https://github.com/primer/octicons
-// - commit: 2ed936e7759451e80ae38b8147cbe2c89de6cc7a
-// - path: icons/copilot-24.svg
-// - SHA-256: eeafb3c2f333e04ccf7d031ae215f7adafaed4c6352556b0bf79496e048bcdd7
-// - governance: GitHub Copilot name and logo remain GitHub trademarks; the Octicons MIT grant
-//   does not grant trademark rights. Used unmodified only to identify the connected service.
 
 // Real xAI/Grok mark vendored byte-for-byte from Lobe Icons:
 // - repository: https://github.com/lobehub/lobe-icons
@@ -421,7 +412,9 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
     case 'openai-responses-compatible':
       return <OpenAI />;
     case 'github-copilot':
-      return <ProviderAssetMask src={githubCopilotBrandMark} />;
+      // Primer Octicons does not license GitHub logos under its MIT terms.
+      // Keep the provider identifiable by name without redistributing the mark.
+      return <GenericProviderMark />;
     case 'google':
       return <Gemini />;
     case 'deepseek':

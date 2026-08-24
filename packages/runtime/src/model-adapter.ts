@@ -927,6 +927,8 @@ function modelFailureKind(errorClass: string): ModelFailureKind {
       return 'network';
     case 'ProviderBilling':
       return 'provider_billing';
+    case 'ProviderCapacity':
+      return 'provider_capacity';
     case 'ProviderUnavailable':
       return 'provider_unavailable';
     case 'RateLimit':
@@ -950,6 +952,8 @@ function errorClassFromFailureKind(kind: ModelFailureKind): string {
       return 'Network';
     case 'provider_billing':
       return 'ProviderBilling';
+    case 'provider_capacity':
+      return 'ProviderCapacity';
     case 'provider_unavailable':
       return 'ProviderUnavailable';
     case 'rate_limit':

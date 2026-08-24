@@ -26,7 +26,7 @@
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ToolActivityItem } from '../materialize.js';
-import { loadToolDisplayName } from '../tool-format.js';
+import { describeLoadToolResult, loadToolDisplayName } from '../tool-format.js';
 
 const CONNECTOR_TOOL_NAMES: ReadonlySet<string> = new Set(['load_tools', 'load_tool']);
 
@@ -36,6 +36,10 @@ export function isConnectorTool(name: string): boolean {
 
 export function resolveToolDisplayName(item: ToolActivityItem, locale: UiLocale): string {
   if (item.displayName) return item.displayName;
-  if (isConnectorTool(item.toolName)) return loadToolDisplayName(locale);
+  if (isConnectorTool(item.toolName)) {
+    const value = item.result?.kind === 'json' ? item.result.value : undefined;
+    return describeLoadToolResult(item.args, value, locale)?.actionLabel
+      ?? loadToolDisplayName(locale);
+  }
   return item.toolName;
 }

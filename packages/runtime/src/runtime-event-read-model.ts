@@ -21,6 +21,7 @@ import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/core/session';
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
+import { markPersisted } from '@maka/core/persisted-value';
 import {
   SANDBOX_BOUNDARY_REQUEST_STATUSES,
   validateSandboxBoundaryExpansion,
@@ -34,7 +35,7 @@ import {
   isTerminalRuntimeEventStatus,
 } from '@maka/core/runtime-event';
 
-import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
+import { decodePersistedToolResultContent } from '@maka/core/tool-result-record-schema';
 
 /** The statuses a settled boundary decision can carry — every status but `pending`. */
 type SettledSandboxBoundaryStatus = Exclude<
@@ -849,7 +850,9 @@ function projectFunctionResponse(
   let normalizedResult: ToolResultContent | undefined;
   if (!archivedPlaceholder) {
     try {
-      normalizedResult = decodeCanonicalToolResultContent(compatibleResult);
+      normalizedResult = decodePersistedToolResultContent(
+        markPersisted<ToolResultContent>(compatibleResult),
+      );
     } catch (error) {
       diagnostic(
         state,

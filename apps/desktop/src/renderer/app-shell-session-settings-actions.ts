@@ -21,7 +21,7 @@ import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
 import {
-  deriveModelSwitchTranscript,
+  latestAssistantModelId,
   type StoredMessage,
 } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
@@ -71,9 +71,6 @@ export function createAppShellSessionSettingsActions(deps: {
   setNewTaskPermissionMode: (mode: ChatDefaultPermissionMode) => void | Promise<void>;
   setPendingPermissionModeBySession: BooleanRecordUpdater;
   setPendingSessionModelBySession: BooleanRecordUpdater;
-  setSessions: (
-    updater: (current: DesktopSessionSummary[]) => DesktopSessionSummary[],
-  ) => void;
   toastApi: ToastApi;
 }): AppShellSessionSettingsActions {
   const {
@@ -89,7 +86,6 @@ export function createAppShellSessionSettingsActions(deps: {
     setNewTaskPermissionMode,
     setPendingPermissionModeBySession,
     setPendingSessionModelBySession,
-    setSessions,
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).sessionSettingsActions;
@@ -147,9 +143,6 @@ export function createAppShellSessionSettingsActions(deps: {
       if (sessionId) {
         const next = await window.maka.sessions.setPermissionMode(sessionId, mode);
         nextMode = next.permissionMode === 'bypass' ? 'bypass' : 'ask';
-        setSessions((prev) =>
-          prev.map((session) => (session.id === sessionId ? next : session)),
-        );
       } else {
         await setNewTaskPermissionMode(mode);
       }
@@ -177,7 +170,7 @@ export function createAppShellSessionSettingsActions(deps: {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     const previous = sessionsRef.current.find((session) => session.id === sessionId);
-    const transcript = deriveModelSwitchTranscript(messages);
+    const lastUsedModel = latestAssistantModelId(messages);
     if (pendingSessionModelChangesRef.current.has(sessionId)) return;
     pendingSessionModelChangesRef.current.add(sessionId);
     setPendingSessionModelBySession((current) => ({
@@ -186,11 +179,10 @@ export function createAppShellSessionSettingsActions(deps: {
     }));
     try {
       const next = await window.maka.sessions.setModel(sessionId, input);
-      setSessions((prev) => prev.map((session) => (session.id === next.id ? next : session)));
       if (activeIdRef.current === sessionId) {
         const connectionChanged = previous?.llmConnectionSlug !== next.llmConnectionSlug;
         const to = modelEndpointLabel(next.llmConnectionSlug, next.model, connectionChanged);
-        const previousModel = transcript.lastUsedModel ?? previous?.model;
+        const previousModel = lastUsedModel ?? previous?.model;
         toastApi.success(
           copy.modelSwitchedTitle,
           previous && previousModel
@@ -234,8 +226,7 @@ export function createAppShellSessionSettingsActions(deps: {
       [sessionId]: true,
     }));
     try {
-      const next = await window.maka.sessions.setThinkingLevel(sessionId, level);
-      setSessions((prev) => prev.map((session) => (session.id === next.id ? next : session)));
+      await window.maka.sessions.setThinkingLevel(sessionId, level);
       if (activeIdRef.current === sessionId) {
         toastApi.success(copy.thinkingUpdatedTitle, level ? copy.thinkingLabels[level] : copy.thinkingDefault);
       }

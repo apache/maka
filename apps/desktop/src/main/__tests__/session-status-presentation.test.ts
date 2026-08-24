@@ -79,5 +79,19 @@ describe('failed turn recovery presentation', () => {
       ),
       { action: 'inspect_tool', label: 'Inspect the tool result before retrying' },
     );
+    assert.deepEqual(
+      deriveFailedTurnRecovery(
+        { ...outputFreeFailure, errorClass: 'provider_capacity', partialOutputRetained: true },
+        'en',
+      ),
+      { action: 'continue', label: 'Partial output was retained; continue from here' },
+    );
+    assert.deepEqual(
+      deriveFailedTurnRecovery(
+        { ...outputFreeFailure, errorClass: 'provider_capacity', toolActivityCount: 1 },
+        'en',
+      ),
+      { action: 'inspect_tool', label: 'Tool history was retained; inspect it before retrying' },
+    );
   });
 });

@@ -35,7 +35,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import { projectRuntimeEventsToStoredMessages } from '../runtime-event-read-model.js';
-import { materializeSession } from '../materializer.js';
 import type { InvocationContext } from '../invocation-context.js';
 import type { AssistantMessage, StoredMessage, ToolResultMessage } from '@maka/core/session';
 import { z } from 'zod';
@@ -8578,6 +8577,69 @@ describe('AiSdkBackend RunTrace', () => {
     );
   });
 
+  test('preserves provider capacity in retry progress', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new APICallError({
+            message: 'The model is currently at capacity due to high demand.',
+            url: 'https://api.x.ai/v1/chat/completions',
+            requestBodyValues: {},
+            data: { error: { code: 'resource-exhausted' } },
+          });
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, reason }) => ({ phase, reason })),
+      [
+        { phase: 'scheduled', reason: 'provider_capacity' },
+        { phase: 'started', reason: 'provider_capacity' },
+      ],
+    );
+  });
+
   test('retries one idle watchdog timeout after preserving partial thinking', async () => {
     const timers = manualWatchdogTimer();
     const assistants: AssistantMessage[] = [];
@@ -10611,13 +10673,6 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.equal(assistant.text, 'Final answer.');
     assert.equal(assistant.thinking?.text, 'Let me reason.');
     assert.equal(assistant.thinking?.signature, 'sig-123');
-
-    // materializeSession (session reload) surfaces the reconstructed thinking.
-    const viewModel = materializeSession(projection.messages);
-    const assistantItem = viewModel.items.find((item) => item.kind === 'assistant');
-    assert.ok(assistantItem && assistantItem.kind === 'assistant');
-    assert.equal(assistantItem.message.thinking?.text, 'Let me reason.');
-    assert.equal(assistantItem.message.thinking?.signature, 'sig-123');
   });
 
   test('persists reasoning for a thinking-only turn that produces no final text', async () => {
@@ -10679,8 +10734,8 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.equal(assistantMessage.text, '');
     assert.equal(assistantMessage.thinking?.text, 'silent thought');
 
-    // Full chain: RuntimeEvent projection + materialize keep the reasoning on an
-    // empty-text assistant row without crashing.
+    // Full chain: RuntimeEvent projection keeps the reasoning on an empty-text
+    // assistant row without crashing.
     const ctx = {
       sessionId: 'session-1',
       invocationId: 'inv-1',
@@ -10711,11 +10766,6 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.ok(assistant && assistant.type === 'assistant');
     assert.equal(assistant.text, '');
     assert.equal(assistant.thinking?.text, 'silent thought');
-
-    const viewModel = materializeSession(projection.messages);
-    const assistantItem = viewModel.items.find((item) => item.kind === 'assistant');
-    assert.ok(assistantItem && assistantItem.kind === 'assistant');
-    assert.equal(assistantItem.message.thinking?.text, 'silent thought');
   });
 
   test('text-only terminal replay fixture preserves signed thinking and usage exactly', async () => {
@@ -13847,7 +13897,6 @@ function header(permissionMode: SessionHeader['permissionMode'] = 'ask'): Sessio
     workspaceRoot: '/tmp/maka',
     cwd: '/tmp/maka',
     createdAt: 1,
-    lastUsedAt: 1,
     name: 'Test',
     titleIsManual: true,
     isFlagged: false,

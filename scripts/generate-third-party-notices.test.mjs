@@ -50,3 +50,34 @@ test('keeps a version-pinned Apache override scoped to the Apache license', () =
   assert.ok(providerUtils, 'provider-utils notice section must exist');
   assert.doesNotMatch(providerUtils, /THIRD-PARTY COMPONENTS/);
 });
+
+test('preserves exact README MIT notices for packages without license files', () => {
+  const result = spawnSync(
+    process.execPath,
+    ['scripts/generate-third-party-notices.mjs', '--check'],
+    {
+      cwd: root,
+      encoding: 'utf8',
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+
+  const notices = readFileSync(
+    join(root, 'apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt'),
+    'utf8',
+  );
+  const sections = notices.split(
+    '\n================================================================================\n',
+  );
+  const fastdom = sections.find((section) => section.includes('Package: fastdom@1.0.12'));
+  const strictdom = sections.find((section) => section.includes('Package: strictdom@1.0.1'));
+
+  assert.ok(fastdom, 'fastdom notice section must exist');
+  assert.match(fastdom, /Copyright \(c\) 2016 Wilson Page <wilsonpage@me\.com>/);
+  assert.match(fastdom, /associated documentation files \(the 'Software'\)/);
+  assert.doesNotMatch(fastdom, /Kornel Lesinski/);
+
+  assert.ok(strictdom, 'strictdom notice section must exist');
+  assert.match(strictdom, /Copyright \(c\) 2013 Wilson Page <wilsonpage@me\.com>/);
+  assert.match(strictdom, /associated documentation files \(the 'Software'\)/);
+});

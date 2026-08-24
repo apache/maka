@@ -104,12 +104,12 @@ const LICENSE_METADATA_OVERRIDES = new Map([
 ]);
 // The published tarball omits the repository LICENSE; package.json declares Apache-2.0.
 // Keyed by exact version so a bump re-checks the license rather than inheriting this.
-const APACHE_TEXT_OVERRIDE_KEYS = new Set(['@ai-sdk/provider-utils@5.0.27']);
+const APACHE_TEXT_OVERRIDE_KEYS = new Set(['@ai-sdk/provider-utils@5.0.28']);
 const EMBEDDED_COMPONENT_LICENSES = new Map([
   [
     '@ai-sdk/code-mode',
     {
-      version: '1.0.23',
+      version: '1.0.27',
       components: [
         {
           name: 'quickjs-emscripten (embedded runtime)',
@@ -131,12 +131,14 @@ const EMBEDDED_COMPONENT_LICENSES = new Map([
 const MIT_COPYRIGHT_OVERRIDES = new Map([
   // The published tarball omits the monorepo-root LICENSE.
   ['@earendil-works/pi-tui@0.83.0', 'Copyright (c) 2025 Mario Zechner'],
+  ['@earendil-works/pi-tui@0.84.2', 'Copyright (c) 2025 Mario Zechner'],
   // The published tarball omits the repository LICENSE; sibling @astryxdesign
   // packages ship it verbatim with this notice.
   ['@astryxdesign/core@0.1.9', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.2.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.3.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@astryxdesign/core@0.4.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.4.5', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@stylexjs/stylex@0.19.0', 'Copyright (c) Meta Platforms, Inc. and affiliates.'],
   ['@wecom/aibot-node-sdk@1.0.7', 'Copyright (c) WeComTeam contributors'],
   [
@@ -179,6 +181,24 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.`;
+
+// These exact tarballs omit a LICENSE file but include the same complete MIT
+// block in README.md. Keep the upstream wording and version-specific notice;
+// neither the package author nor its contributor list is a license authority.
+const README_MIT_TEXT = (copyrightNotice) => `(The MIT License)
+
+${copyrightNotice}
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the 'Software'), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.`;
+
+const MIT_TEXT_OVERRIDES = new Map([
+  ['fastdom@1.0.12', README_MIT_TEXT('Copyright (c) 2016 Wilson Page <wilsonpage@me.com>')],
+  ['strictdom@1.0.1', README_MIT_TEXT('Copyright (c) 2013 Wilson Page <wilsonpage@me.com>')],
+]);
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -258,6 +278,8 @@ function overrideLicenseText(packageKey, selectedLicense) {
     }
     return normalizeText(apacheText);
   }
+  const exactMitText = MIT_TEXT_OVERRIDES.get(packageKey);
+  if (selectedLicense === 'MIT' && exactMitText) return exactMitText;
   const copyrightNotice = MIT_COPYRIGHT_OVERRIDES.get(packageKey);
   if (selectedLicense === 'MIT' && copyrightNotice) return MIT_TEXT(copyrightNotice);
   return undefined;

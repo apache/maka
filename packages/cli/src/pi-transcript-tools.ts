@@ -33,11 +33,16 @@ import { colorDiff } from './tui-diff.js';
 import {
   collapseToSingleLine,
   fitLine,
+  formatToolResultContent,
   formatUnknownInline,
   limitText,
   renderIndented,
 } from './pi-transcript-format.js';
-import type { MakaPiToolEntry, MakaPiToolOutputDelta } from './pi-transcript.js';
+import {
+  makaPiToolPresentationStatus,
+  type MakaPiToolEntry,
+  type MakaPiToolOutputDelta,
+} from './pi-transcript.js';
 
 export function renderToolBlock(
   entry: MakaPiToolEntry,
@@ -49,10 +54,10 @@ export function renderToolBlock(
 
 /** Status disc for a tool row: green = done, accent = running, danger = error/aborted/failed, muted = detached/unavailable. */
 function toolDisc(entry: MakaPiToolEntry): string {
-  if (entry.status === 'running') return disc('accent');
-  if (entry.status === 'error' || entry.status === 'aborted' || entry.status === 'failed')
-    return disc('danger');
-  if (entry.status === 'detached' || entry.status === 'unavailable') return disc('muted');
+  const status = makaPiToolPresentationStatus(entry);
+  if (status === 'running') return disc('accent');
+  if (status === 'error' || status === 'aborted' || status === 'failed') return disc('danger');
+  if (status === 'detached' || status === 'unavailable') return disc('muted');
   return disc('ok');
 }
 
@@ -64,14 +69,15 @@ function toolDisc(entry: MakaPiToolEntry): string {
  * `source unavailable`) are dimmed like the other placeholders.
  */
 function toolDurationText(entry: MakaPiToolEntry): string {
+  const status = makaPiToolPresentationStatus(entry);
   const subSecond = entry.durationMs !== undefined && entry.durationMs < 1000;
   const secs =
     entry.durationMs === undefined ? undefined : Math.max(0, Math.round(entry.durationMs / 1000));
-  if (entry.status === 'running') {
+  if (status === 'running') {
     return secs === undefined || subSecond ? 'running' : `running ${secs}s`;
   }
-  if (entry.status === 'detached') return ansi.dim('detached');
-  if (entry.status === 'unavailable') return ansi.dim('source unavailable');
+  if (status === 'detached') return ansi.dim('detached');
+  if (status === 'unavailable') return ansi.dim('source unavailable');
   return secs === undefined || subSecond ? '' : `${secs}s`;
 }
 
@@ -113,7 +119,7 @@ function compactAnnotation(entry: MakaPiToolEntry): { text: string; protect: boo
   const duration = toolDurationText(entry);
   if (duration) parts.push(duration);
   let protect = true;
-  if (entry.status !== 'running') {
+  if (makaPiToolPresentationStatus(entry) !== 'running') {
     const summary = compactToolSummary(entry);
     if (summary && !(summary.placeholder && parts.length > 0)) {
       parts.push(collapseToSingleLine(summary.text));
@@ -193,12 +199,12 @@ function renderExpandedToolBlock(entry: MakaPiToolEntry, width: number): string[
     }
     lines.push(...renderToolStreams(entry.outputDeltas.values(), width));
   }
-  if (entry.result || entry.output) {
+  if (entry.result || makaPiToolPresentationStatus(entry) === 'aborted') {
     lines.push(...renderToolResult(entry, width));
   }
   if (
     entry.toolName === 'Bash' &&
-    entry.status === 'running' &&
+    makaPiToolPresentationStatus(entry) === 'running' &&
     entry.result?.kind === 'shell_run'
   ) {
     lines.push(...renderIndented(ansi.dim('Ask Maka to stop this task'), width, 2));
@@ -311,7 +317,7 @@ function compactToolSummary(entry: MakaPiToolEntry): CompactToolSummary | undefi
   // fabricated file count.
   if (
     entry.toolName === 'Read' &&
-    entry.status !== 'error' &&
+    makaPiToolPresentationStatus(entry) !== 'error' &&
     isFilesystemReadPath(entry) &&
     isReadBodyResult(result)
   ) {
@@ -524,7 +530,7 @@ function renderToolResult(entry: MakaPiToolEntry, width: number): string[] {
   // visible instead of being mistaken for a one-line file.
   if (
     entry.toolName === 'Read' &&
-    entry.status !== 'error' &&
+    makaPiToolPresentationStatus(entry) !== 'error' &&
     isFilesystemReadPath(entry) &&
     isReadBodyResult(result)
   ) {
@@ -549,8 +555,8 @@ function renderToolResult(entry: MakaPiToolEntry, width: number): string[] {
   }
   // A generic `text` dump — a Bash body or raw tool text — is what the head/tail
   // cap targets: the model already holds the full body, so the transcript only
-  // needs enough to orient. An undefined result with a formatted `output` string
-  // is treated the same way. `json` is deliberately excluded: a Read json is
+  // needs enough to orient. An interrupted call with no result uses the same
+  // capped path for its explanation. `json` is deliberately excluded: a Read json is
   // summarized above, a Grep/Glob json is a structured list the user expands to
   // scan in full, and any other json collapses to a single inline line where the
   // cap would be a no-op anyway.
@@ -566,6 +572,11 @@ function renderToolResult(entry: MakaPiToolEntry, width: number): string[] {
 /** Best-effort extraction of the human-readable body from a tool result. */
 function plainResultText(entry: MakaPiToolEntry): string {
   const result = entry.result;
+  if (!result) {
+    return makaPiToolPresentationStatus(entry) === 'aborted'
+      ? 'Interrupted before the tool returned a result.'
+      : '';
+  }
   if (result?.kind === 'text') return typeof result.text === 'string' ? result.text : '';
   if (result?.kind === 'json') {
     const value = result.value;
@@ -585,7 +596,7 @@ function plainResultText(entry: MakaPiToolEntry): string {
     const preview = formatQuietJsonValue(value, 'en');
     return preview.headline ? `${preview.headline}\n${preview.body}` : preview.body;
   }
-  return entry.output ?? '';
+  return formatToolResultContent(result);
 }
 
 function renderTerminalResult(

@@ -194,6 +194,24 @@ test('Desktop packaging does not distribute the retired bundled Git runtime', ()
   );
 });
 
+test('a successful Windows upgrade invalidates stale backup authority before best-effort cleanup', async () => {
+  const source = await readFile(
+    join(repoRoot, 'apps', 'desktop', 'build', 'installer.nsh'),
+    'utf8',
+  );
+  const macroStart = source.indexOf('!macro customInstall');
+  const macroEnd = source.indexOf('!macroend', macroStart);
+  assert.ok(macroStart >= 0 && macroEnd > macroStart);
+  const cleanup = source.slice(macroStart, macroEnd);
+  const markerInvalidation = cleanup.indexOf('Delete "$makaBackupDir\\${MAKA_BACKUP_MARKER}"');
+  const backupRemoval = cleanup.indexOf('RMDir /r "$makaBackupDir"');
+  const snapshotRemoval = cleanup.indexOf('DeleteRegKey SHELL_CONTEXT "${MAKA_SNAPSHOT_REG_KEY}"');
+
+  assert.ok(markerInvalidation >= 0);
+  assert.ok(backupRemoval > markerInvalidation);
+  assert.ok(snapshotRemoval > markerInvalidation);
+});
+
 test('platform package verifiers keep Git checks out of current artifacts', async () => {
   const windowsSource = await readFile(join(repoRoot, 'scripts', 'verify-windows-x64.mjs'), 'utf8');
   assert.match(
