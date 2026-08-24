@@ -126,6 +126,17 @@ npx --yes --package maka-agent@next maka runtime-host setup \
 Rerunning setup replaces that Client credential. The service no longer depends on the temporary
 `npx` cache after setup succeeds.
 
+Check a managed service against a release channel without changing the running Host:
+
+```sh
+maka runtime-host service check-update --target next --json
+```
+
+The result pins the selected channel to an exact version and package integrity. It also reports
+whether the package carries enough compatibility evidence for a future unattended update; this
+command never installs or switches a package. An updater must still verify the downloaded archive
+against that integrity and confirm the compatibility value from its extracted package manifest.
+
 ## Uninstall
 
 ```sh

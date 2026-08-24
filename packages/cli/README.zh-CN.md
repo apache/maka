@@ -118,6 +118,16 @@ npx --yes --package maka-agent@next maka runtime-host setup \
 
 重复设置会替换该 Client credential。设置成功后，service 不再依赖临时 `npx` cache。
 
+可以在不改变当前 Host 的情况下检查 managed service 对应的发布频道：
+
+```sh
+maka runtime-host service check-update --target next --json
+```
+
+结果会把频道固定为精确版本和 package integrity，并说明 package 是否提供足够的兼容性证据，
+可供未来的无人值守更新使用；该命令不会安装或切换 package。更新程序仍须以该 integrity
+校验下载的 archive，并从解压后的 package manifest 中再次确认兼容性值。
+
 ## 卸载
 
 ```sh

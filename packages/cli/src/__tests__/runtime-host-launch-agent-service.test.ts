@@ -96,6 +96,7 @@ test('maps install, stop, start, restart, and uninstall onto one LaunchAgent ser
     await backend.stop();
     assert.equal(processChecks, 1);
     assert.equal((await backend.status()).state, 'stopped');
+    await backend.verifyDeployment(config);
     await backend.start();
     await backend.restart();
     assert.equal((await backend.status()).pid, 4103);

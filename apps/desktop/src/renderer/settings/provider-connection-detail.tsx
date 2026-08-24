@@ -57,6 +57,7 @@ import { AddModelDialog } from './provider-add-model-dialog';
 import { EnabledModelManager } from './provider-enabled-model-manager';
 import { useActionGuard } from './use-action-guard';
 import {
+  RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
@@ -942,6 +943,17 @@ function GitHubCopilotReloginNotice(props: {
   hasSecret: CredentialPresenceStatus;
   onRelogin(): Promise<void>;
 }) {
+  return (
+    <RuntimeHostSettingsGenerationBoundary>
+      <GitHubCopilotReloginNoticeForCurrentGeneration {...props} />
+    </RuntimeHostSettingsGenerationBoundary>
+  );
+}
+
+function GitHubCopilotReloginNoticeForCurrentGeneration(props: {
+  hasSecret: CredentialPresenceStatus;
+  onRelogin(): Promise<void>;
+}) {
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
@@ -959,6 +971,10 @@ function GitHubCopilotReloginNotice(props: {
     if (!connectGuard.begin('connect')) return;
     try {
       const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
+      // A same-key Runtime Host replacement remounts this controller through
+      // the generation boundary above. The old import cannot report into, or
+      // refresh, the connection detail now owned by the replacement Host.
+      if (!mountedRef.current) return;
       if (!result.ok) {
         reportHostError(copy.copilotImportFailed, result.message);
         return;
@@ -994,6 +1010,18 @@ function GitHubCopilotReloginNotice(props: {
 // token still reads hasSecret===true, so it must not hide behind
 // hasSecret===false.
 function OAuthReloginNotice(props: {
+  service: OAuthLoginService;
+  hasSecret: CredentialPresenceStatus;
+  onRelogin(): Promise<void>;
+}) {
+  return (
+    <RuntimeHostSettingsGenerationBoundary>
+      <OAuthReloginNoticeForCurrentGeneration {...props} />
+    </RuntimeHostSettingsGenerationBoundary>
+  );
+}
+
+function OAuthReloginNoticeForCurrentGeneration(props: {
   service: OAuthLoginService;
   hasSecret: CredentialPresenceStatus;
   onRelogin(): Promise<void>;

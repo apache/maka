@@ -18,6 +18,11 @@
  */
 
 import { z } from 'zod';
+import {
+  compareProductReleaseVersions,
+  isProductReleaseVersion,
+  isSha512PackageIntegrity,
+} from './update-package-evidence.js';
 
 export const RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX =
   'MAKA_RUNTIME_HOST_SERVICE_MANAGEMENT_V1 ';
@@ -39,6 +44,7 @@ const SERVICE_ACTIONS = [
   'stop',
   'restart',
   'retire',
+  'check_update',
   'update',
   'logs',
   'uninstall',
@@ -53,7 +59,15 @@ const NON_RETIRE_SERVICE_ACTIONS = [
   'uninstall',
 ] as const;
 const UPDATE_PHASES = ['checking', 'staging', 'retiring', 'replacing'] as const;
-const SERVICE_STATES = ['not_installed', 'stopped', 'starting', 'running', 'failed'] as const;
+const UPDATE_CHANNELS = ['latest', 'next'] as const;
+const MANUAL_ACTION_REASONS = [
+  'target_not_newer',
+  'current_compatibility_unknown',
+  'target_compatibility_unknown',
+  'compatibility_mismatch',
+] as const;
+const INSTALLED_SERVICE_STATES = ['stopped', 'starting', 'running', 'failed'] as const;
+const SERVICE_STATES = ['not_installed', ...INSTALLED_SERVICE_STATES] as const;
 const OPERATOR_CAPABILITIES = [
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
@@ -66,6 +80,52 @@ const boundedNonEmptyString = (maxBytes: number) =>
     .string()
     .min(1)
     .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);
+const PRODUCT_RELEASE_VERSION_SCHEMA = z.string().refine(isProductReleaseVersion);
+const PACKAGE_INTEGRITY_SCHEMA = z.string().refine(isSha512PackageIntegrity);
+
+const UPDATE_CHECK_SCHEMA = z
+  .object({
+    selector: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('channel'), channel: z.enum(UPDATE_CHANNELS) }).strict(),
+      z
+        .object({
+          kind: z.literal('exact'),
+          version: PRODUCT_RELEASE_VERSION_SCHEMA,
+        })
+        .strict(),
+    ]),
+    candidate: z
+      .object({
+        version: PRODUCT_RELEASE_VERSION_SCHEMA,
+        integrity: PACKAGE_INTEGRITY_SCHEMA,
+      })
+      .strict(),
+    outcome: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('current') }).strict(),
+      z
+        .object({
+          kind: z.literal('unattended_update'),
+          compatibility: z.number().int().positive(),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal('manual_action'),
+          reason: z.enum(MANUAL_ACTION_REASONS),
+        })
+        .strict(),
+    ]),
+  })
+  .strict()
+  .superRefine((check, context) => {
+    if (check.selector.kind === 'exact' && check.selector.version !== check.candidate.version) {
+      context.addIssue({
+        code: 'custom',
+        path: ['candidate', 'version'],
+        message: 'Exact update selector and candidate version must match',
+      });
+    }
+  });
 
 const RETIREMENT_RESULT_SCHEMA = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('active_tasks') }).strict(),
@@ -101,6 +161,10 @@ const SERVICE_SUMMARY_SCHEMA = z
       .max(64),
   })
   .strict();
+const INSTALLED_SERVICE_SUMMARY_SCHEMA = SERVICE_SUMMARY_SCHEMA.extend({
+  state: z.enum(INSTALLED_SERVICE_STATES),
+  installedVersion: PRODUCT_RELEASE_VERSION_SCHEMA,
+});
 
 const SERVICE_RESULT_COMMON = {
   schemaVersion: z.literal(1),
@@ -122,6 +186,36 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
       targetVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
     })
     .strict(),
+  z
+    .object({
+      ...SERVICE_RESULT_COMMON,
+      action: z.literal('check_update'),
+      service: INSTALLED_SERVICE_SUMMARY_SCHEMA,
+      updateCheck: UPDATE_CHECK_SCHEMA,
+    })
+    .strict()
+    .superRefine((frame, context) => {
+      const relation = compareProductReleaseVersions(
+        frame.updateCheck.candidate.version,
+        frame.service.installedVersion,
+      );
+      const outcome = frame.updateCheck.outcome;
+      const consistent =
+        outcome.kind === 'current'
+          ? relation === 0
+          : outcome.kind === 'unattended_update'
+            ? relation > 0
+            : outcome.reason === 'target_not_newer'
+              ? relation < 0
+              : relation > 0;
+      if (!consistent) {
+        context.addIssue({
+          code: 'custom',
+          path: ['updateCheck', 'outcome'],
+          message: 'Update outcome must match the installed and candidate versions',
+        });
+      }
+    }),
   z
     .object({
       ...SERVICE_RESULT_COMMON,

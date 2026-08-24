@@ -134,15 +134,19 @@ export function createDesktopRuntimeHostManagement(input: {
     };
     if (managementAction !== 'uninstall') {
       const response = await input.runServiceManagement(managementInput);
+      if (response.action !== managementAction) {
+        throw new Error('Remote Runtime Host returned a different management action');
+      }
       return response.kind === 'result'
         ? {
             ...response,
+            action: managementAction,
             accessManagementAvailable:
               response.operatorCapabilities?.includes(
                 RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
               ) ?? false,
           }
-        : response;
+        : { ...response, action: managementAction };
     }
 
     let pending = managed;
@@ -152,7 +156,10 @@ export function createDesktopRuntimeHostManagement(input: {
         ...managementInput,
         retainManagedDeployment: true,
       });
-      if (response.kind === 'error') return response;
+      if (response.action !== managementAction) {
+        throw new Error('Remote Runtime Host returned a different management action');
+      }
+      if (response.kind === 'error') return { ...response, action: managementAction };
       assertUninstalled(response);
       pending = await input.profiles.markManagedServiceCleanupPending(pending);
     }
