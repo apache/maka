@@ -30,7 +30,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 import {
@@ -52,6 +52,7 @@ import {
 } from '../runtime-host-service-manager.js';
 
 const execFile = promisify(execFileCallback);
+const PACKAGE_INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString('base64')}`;
 
 test('managed setup converges on one exact package and verified Client pairing', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-setup-'));
@@ -279,6 +280,45 @@ test('managed setup replaces one exact development package with another', async 
   assert.equal(exitCode, 0);
   assert.match(installedCliPath ?? '', /0\.2\.0-dev-222222222222/u);
   assert.deepEqual(await readdir(join(previousDeployment.root, 'versions')), [nextVersion]);
+});
+
+test('registry package identity does not reuse same-version local content', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-registry-package-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const version = '0.2.0';
+  const localPackage = await createReleasePackage(join(base, 'local'), version);
+  const registryPackage = await createReleasePackage(join(base, 'registry'), version);
+  await writeFile(join(localPackage, 'dist', 'cli.js'), 'local package\n');
+  await writeFile(join(registryPackage, 'dist', 'cli.js'), 'registry package\n');
+  const clientDataRoot = join(base, 'config', 'Maka');
+  const serviceId = resolveRuntimeHostManagedServiceId(clientDataRoot);
+  const pathOptions = {
+    env: { XDG_DATA_HOME: join(base, 'data') },
+    homeDir: join(base, 'home'),
+    platform: 'linux' as const,
+  };
+  const local = await prepareRuntimeHostManagedPackageDeployment(
+    { serviceId, clientDataRoot, sourcePackageRoot: localPackage, version },
+    pathOptions,
+  );
+  const registry = await prepareRuntimeHostManagedPackageDeployment(
+    {
+      serviceId,
+      clientDataRoot,
+      sourcePackageRoot: registryPackage,
+      version,
+      packageIntegrity: PACKAGE_INTEGRITY,
+    },
+    pathOptions,
+  );
+
+  assert.notEqual(local.cliPath, registry.cliPath);
+  assert.match(registry.cliPath, /\/versions\/registry-[a-f0-9]{64}\/dist\/cli\.js$/u);
+  assert.equal(await readFile(registry.cliPath, 'utf8'), 'registry package\n');
+  await registry.cleanup();
+  assert.deepEqual(await readdir(dirname(dirname(dirname(registry.cliPath)))), [
+    basename(dirname(dirname(registry.cliPath))),
+  ]);
 });
 
 test('managed setup removes a newly copied package when service installation fails', async (t) => {

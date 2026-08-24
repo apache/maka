@@ -89,7 +89,7 @@ export async function runManagedRuntimeHostUpdateCheckCli(
   options: RuntimeHostUpdateCheckCliOptions,
 ): Promise<number> {
   try {
-    const { frame } = await resolveManagedRuntimeHostUpdateCheck(options);
+    const frame = await resolveManagedRuntimeHostUpdateCheck(options);
     writeSuccess(frame, options);
     return 0;
   } catch (error) {
@@ -104,14 +104,29 @@ export async function runManagedRuntimeHostUpdateCheckCli(
   }
 }
 
-export interface RuntimeHostUpdateCheckResolution {
-  readonly frame: RuntimeHostUpdateCheckFrame;
+export interface RuntimeHostUpdateSelection {
+  readonly service: RuntimeHostUpdateCheckFrame['service'];
+  readonly selector: RuntimeHostUpdateSelector;
   readonly candidate: RuntimeHostUpdateCandidate;
+  readonly outcome: RuntimeHostUpdateCheck['outcome'];
 }
 
-export async function resolveManagedRuntimeHostUpdateCheck(
+export function resolveManagedRuntimeHostUpdateSelection(
   options: RuntimeHostUpdateCheckOptions,
-): Promise<RuntimeHostUpdateCheckResolution> {
+): Promise<RuntimeHostUpdateSelection> {
+  return resolveManagedRuntimeHostUpdate(options, false);
+}
+
+async function resolveManagedRuntimeHostUpdateCheck(
+  options: RuntimeHostUpdateCheckOptions,
+): Promise<RuntimeHostUpdateCheckFrame> {
+  return updateCheckFrame(await resolveManagedRuntimeHostUpdate(options, true));
+}
+
+async function resolveManagedRuntimeHostUpdate(
+  options: RuntimeHostUpdateCheckOptions,
+  verifyDeployment: boolean,
+): Promise<RuntimeHostUpdateSelection> {
   const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
   const backend = createPlatformRuntimeHostServiceBackend(serviceId);
   const status = await manageRuntimeHostService(
@@ -140,24 +155,37 @@ export async function resolveManagedRuntimeHostUpdateCheck(
       'A Maka-managed Runtime Host service is required to check for updates',
     );
   }
-  await backend.verifyDeployment(config);
+  if (verifyDeployment) await backend.verifyDeployment(config);
   const [candidate, currentCompatibility] = await Promise.all([
     resolveRuntimeHostRegistryUpdateCandidate(options.selector),
     readPackageCompatibility(config.launch.cliPath, currentVersion),
   ]);
   const assessment = assessRuntimeHostUpdate(currentVersion, currentCompatibility, candidate);
   return {
+    service: {
+      ...service,
+      state: serviceState,
+      installedVersion: currentVersion,
+    },
+    selector: options.selector,
     candidate,
-    frame: {
-      schemaVersion: 1,
-      kind: 'result',
-      action: 'check_update',
-      service: { ...service, state: serviceState, installedVersion: currentVersion },
-      updateCheck: {
-        selector: options.selector,
-        candidate: { version: candidate.version, integrity: candidate.integrity },
-        outcome: assessment,
+    outcome: assessment,
+  };
+}
+
+function updateCheckFrame(selection: RuntimeHostUpdateSelection): RuntimeHostUpdateCheckFrame {
+  return {
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'check_update',
+    service: selection.service,
+    updateCheck: {
+      selector: selection.selector,
+      candidate: {
+        version: selection.candidate.version,
+        integrity: selection.candidate.integrity,
       },
+      outcome: selection.outcome,
     },
   };
 }
@@ -231,7 +259,11 @@ export async function resolveRuntimeHostRegistryUpdateCandidate(
     return invalidMetadata();
   }
   const compatibility = positiveInteger(metadata[COMPATIBILITY_FIELD]);
-  return { version, integrity, ...(compatibility === undefined ? {} : { compatibility }) };
+  return {
+    version,
+    integrity,
+    ...(compatibility === undefined ? {} : { compatibility }),
+  };
 }
 
 async function readPackageCompatibility(

@@ -1464,6 +1464,9 @@ describe('managed Runtime Host service', () => {
         readyChecks += 1;
         if (readyFailure) throw new Error('Host is active but not ready');
       },
+      prunePackages: async () => {
+        order.push('cleanup');
+      },
       manage: async (input: Parameters<typeof manageRuntimeHostService>[0]) => {
         assert.equal(input.action, 'status');
         statusReads += 1;
@@ -1517,7 +1520,7 @@ describe('managed Runtime Host service', () => {
     output = '';
     assert.equal(await runManagedRuntimeHostUpdateCli(options, overrides), 0);
     assert.equal(readyChecks, 1);
-    assert.deepEqual(order, []);
+    assert.deepEqual(order, ['cleanup']);
 
     order.length = 0;
     statusReads = 0;

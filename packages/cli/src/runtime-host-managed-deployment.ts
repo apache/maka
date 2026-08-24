@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   cp,
   lstat,
@@ -32,6 +32,7 @@ import {
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isSha512PackageIntegrity } from '@maka/runtime-host/operator';
 
 const PACKAGE_NAME = 'maka-agent';
 
@@ -66,6 +67,7 @@ export async function prepareRuntimeHostManagedPackageDeployment(
     readonly clientDataRoot: string;
     readonly sourcePackageRoot: string;
     readonly version: string;
+    readonly packageIntegrity?: string;
   },
   options: RuntimeHostManagedDeploymentPathOptions = {},
 ): Promise<RuntimeHostManagedPackageDeployment> {
@@ -75,7 +77,10 @@ export async function prepareRuntimeHostManagedPackageDeployment(
   await mkdir(join(requestedDeploymentRoot, 'versions'), { recursive: true, mode: 0o700 });
   const deploymentRoot = await realpath(requestedDeploymentRoot);
   const versionsRoot = join(deploymentRoot, 'versions');
-  const packageRoot = join(versionsRoot, input.version);
+  const packageDirectory = input.packageIntegrity
+    ? registryPackageDirectory(input.packageIntegrity)
+    : input.version;
+  const packageRoot = join(versionsRoot, packageDirectory);
   const cliPath = join(packageRoot, 'dist', 'cli.js');
   const clientDataRoot = resolve(input.clientDataRoot);
   if (await pathExists(packageRoot)) {
@@ -83,8 +88,8 @@ export async function prepareRuntimeHostManagedPackageDeployment(
     return deployment(input.version, deploymentRoot, packageRoot, cliPath, clientDataRoot, false);
   }
 
-  await removeAbandonedStagingPackages(versionsRoot, input.version);
-  const stagingRoot = join(versionsRoot, `.${input.version}.${randomUUID()}.tmp`);
+  await removeAbandonedStagingPackages(versionsRoot, packageDirectory);
+  const stagingRoot = join(versionsRoot, `.${packageDirectory}.${randomUUID()}.tmp`);
   try {
     await cp(sourcePackageRoot, stagingRoot, {
       recursive: true,
@@ -217,6 +222,28 @@ export async function removeRuntimeHostManagedDeployment(
   await rm(requestedRoot, { recursive: true, force: true });
 }
 
+export async function pruneRuntimeHostManagedDeploymentPackages(
+  deploymentRoot: string,
+  retainedCliPath: string,
+): Promise<void> {
+  const versionsRoot = join(await realpath(resolve(deploymentRoot)), 'versions');
+  const packageRoot = dirname(dirname(await realpath(retainedCliPath)));
+  const pathFromVersions = relative(versionsRoot, packageRoot);
+  if (
+    pathFromVersions === '' ||
+    pathFromVersions === '..' ||
+    pathFromVersions.startsWith(`..${sep}`) ||
+    isAbsolute(pathFromVersions) ||
+    pathFromVersions.includes(sep)
+  ) {
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'Refusing to prune packages for an invalid managed Runtime Host CLI path',
+    );
+  }
+  await pruneInactivePackages(versionsRoot, pathFromVersions);
+}
+
 async function validatePackage(path: string, version: string): Promise<string> {
   let packageRoot: string;
   let manifest: unknown;
@@ -269,7 +296,7 @@ function deployment(
     cliPath,
     operatorPath,
     activate: () => writeOperatorLauncher(operatorPath, process.execPath, cliPath, clientDataRoot),
-    cleanup: () => pruneInactiveDevelopmentPackages(dirname(packageRoot), version),
+    cleanup: () => pruneInactivePackages(dirname(packageRoot), basename(packageRoot)),
     rollback: () =>
       created ? rm(packageRoot, { recursive: true, force: true }) : Promise.resolve(),
   };
@@ -319,21 +346,22 @@ function quotePosix(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-async function pruneInactiveDevelopmentPackages(
-  versionsRoot: string,
-  retainedVersion: string,
-): Promise<void> {
-  if (!isRuntimeHostDevelopmentPackageVersion(retainedVersion)) return;
+async function pruneInactivePackages(versionsRoot: string, retainedPackage: string): Promise<void> {
   await Promise.all(
     (await readdir(versionsRoot, { withFileTypes: true }))
-      .filter(
-        (entry) =>
-          entry.isDirectory() &&
-          entry.name !== retainedVersion &&
-          isRuntimeHostDevelopmentPackageVersion(entry.name),
-      )
+      .filter((entry) => entry.name !== retainedPackage)
       .map((entry) => rm(join(versionsRoot, entry.name), { recursive: true, force: true })),
   );
+}
+
+function registryPackageDirectory(integrity: string): string {
+  if (!isSha512PackageIntegrity(integrity)) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_package',
+      'The managed Runtime Host package integrity is invalid',
+    );
+  }
+  return `registry-${createHash('sha256').update(integrity).digest('hex')}`;
 }
 
 function assertVersion(version: string): void {

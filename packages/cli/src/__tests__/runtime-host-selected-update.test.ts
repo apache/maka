@@ -26,7 +26,7 @@ import {
   type RuntimeHostUpdateCliOptions,
 } from '../runtime-host-update-command.js';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
-import type { RuntimeHostUpdateCheckResolution } from '../runtime-host-update-discovery.js';
+import type { RuntimeHostUpdateSelection } from '../runtime-host-update-discovery.js';
 
 const INTEGRITY =
   'sha512-jUKdo/5dbM94KXq+kOZ1d+obhDLAENfI/QWr1PnXWcdu2PqDyLklJBtiVO6HRwoL1l40z1NE9Rq+hLAxCN0Fyg==';
@@ -83,19 +83,16 @@ describe('managed Runtime Host selected update', () => {
   });
 
   it('hands one verified admitted package to the existing update transaction', async () => {
-    const resolution = updateResolution({ kind: 'unattended_update', compatibility: 7 });
-    let cleanupCalls = 0;
+    const selection = updateSelection({
+      kind: 'unattended_update',
+      compatibility: 7,
+    });
     let updateInput: RuntimeHostUpdateCliOptions | undefined;
     const exitCode = await runManagedRuntimeHostSelectedUpdateCli(OPTIONS, {
-      resolveCheck: async () => resolution,
-      acquire: async (candidate) => {
-        assert.deepEqual(candidate, resolution.candidate);
-        return {
-          root: '/verified/package',
-          cleanup: async () => {
-            cleanupCalls += 1;
-          },
-        };
+      resolveSelection: async () => selection,
+      withPackage: async (candidate, use) => {
+        assert.deepEqual(candidate, selection.candidate);
+        return use('/verified/package');
       },
       update: async (input) => {
         updateInput = input;
@@ -106,64 +103,68 @@ describe('managed Runtime Host selected update', () => {
     assert.equal(updateInput?.sourcePackageRoot, '/verified/package');
     assert.equal(updateInput?.version, '2.0.0');
     assert.equal(updateInput?.expectedCurrentVersion, '1.0.0');
-    assert.equal(cleanupCalls, 1);
+    assert.equal(updateInput?.packageIntegrity, INTEGRITY);
   });
 
-  it('keeps current and non-admitted candidates outside the mutation path', async () => {
-    for (const outcome of [
-      { kind: 'current' as const },
-      { kind: 'manual_action' as const, reason: 'compatibility_mismatch' as const },
-    ]) {
-      let output = '';
-      const exitCode = await runManagedRuntimeHostSelectedUpdateCli(OPTIONS, {
-        resolveCheck: async () => updateResolution(outcome),
-        acquire: async () => assert.fail('package acquisition is not expected'),
-        update: async () => assert.fail('the update transaction is not expected'),
-        writeOutput: (value) => {
-          output += value;
+  it('lets the exact transaction decide whether a current candidate needs repair', async () => {
+    const selection = updateSelection({ kind: 'current' });
+    let updates = 0;
+    assert.equal(
+      await runManagedRuntimeHostSelectedUpdateCli(OPTIONS, {
+        resolveSelection: async () => selection,
+        withPackage: async (_candidate, use) => use('/verified/package'),
+        update: async () => {
+          updates += 1;
+          return 0;
         },
-      });
-      const frame = decodeRuntimeHostServiceManagementFrame(output.trim());
-      if (outcome.kind === 'current') {
-        assert.equal(exitCode, 0);
-        assert.equal(
-          frame?.kind === 'result' && frame.action === 'update' ? frame.update.kind : undefined,
-          'already_current',
-        );
-      } else {
-        assert.equal(exitCode, 1);
-        assert.equal(frame?.kind === 'error' ? frame.error.code : undefined, 'update_not_admitted');
-      }
-    }
+      }),
+      0,
+    );
+    assert.equal(updates, 1);
+  });
+
+  it('keeps non-admitted candidates outside package acquisition and mutation', async () => {
+    let output = '';
+    const exitCode = await runManagedRuntimeHostSelectedUpdateCli(OPTIONS, {
+      resolveSelection: async () =>
+        updateSelection({
+          kind: 'manual_action',
+          reason: 'compatibility_mismatch',
+        }),
+      withPackage: async () => assert.fail('package acquisition is not expected'),
+      update: async () => assert.fail('the update transaction is not expected'),
+      writeOutput: (value) => {
+        output += value;
+      },
+    });
+    const frame = decodeRuntimeHostServiceManagementFrame(output.trim());
+    assert.equal(exitCode, 1);
+    assert.equal(frame?.kind === 'error' ? frame.error.code : undefined, 'update_not_admitted');
   });
 });
 
-function updateResolution(
-  outcome: RuntimeHostUpdateCheckResolution['frame']['updateCheck']['outcome'],
-): RuntimeHostUpdateCheckResolution {
-  const candidate = { version: '2.0.0', integrity: INTEGRITY, compatibility: 7 };
+function updateSelection(
+  outcome: RuntimeHostUpdateSelection['outcome'],
+): RuntimeHostUpdateSelection {
+  const candidate = {
+    version: '2.0.0',
+    integrity: INTEGRITY,
+    compatibility: 7,
+  };
   return {
+    selector: OPTIONS.selector,
     candidate,
-    frame: {
-      schemaVersion: 1,
-      kind: 'result',
-      action: 'check_update',
-      service: {
-        platform: 'linux',
-        arch: 'x64',
-        osRelease: 'test',
-        state: 'running',
-        pid: 42,
-        lastExitCode: null,
-        installedVersion: outcome.kind === 'current' ? candidate.version : '1.0.0',
-        stateRoot: TARGET.rootPath,
-        projectDirectoryRoots: [],
-      },
-      updateCheck: {
-        selector: OPTIONS.selector,
-        candidate: { version: candidate.version, integrity: candidate.integrity },
-        outcome,
-      },
+    outcome,
+    service: {
+      platform: 'linux',
+      arch: 'x64',
+      osRelease: 'test',
+      state: 'running',
+      pid: 42,
+      lastExitCode: null,
+      installedVersion: outcome.kind === 'current' ? candidate.version : '1.0.0',
+      stateRoot: TARGET.rootPath,
+      projectDirectoryRoots: [],
     },
   };
 }
