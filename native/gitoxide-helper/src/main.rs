@@ -338,10 +338,7 @@ fn assert_repository_metadata_budget(repository_path: &Path) -> Result<(), &'sta
     Ok(())
 }
 
-fn add_repository_metadata_file(
-    path: &Path,
-    observed_bytes: &mut u64,
-) -> Result<(), &'static str> {
+fn add_repository_metadata_file(path: &Path, observed_bytes: &mut u64) -> Result<(), &'static str> {
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => {
             add_repository_metadata_bytes(metadata.len(), observed_bytes)
@@ -352,10 +349,7 @@ fn add_repository_metadata_file(
     }
 }
 
-fn add_repository_metadata_bytes(
-    bytes: u64,
-    observed_bytes: &mut u64,
-) -> Result<(), &'static str> {
+fn add_repository_metadata_bytes(bytes: u64, observed_bytes: &mut u64) -> Result<(), &'static str> {
     *observed_bytes = observed_bytes
         .checked_add(bytes)
         .ok_or("repository_metadata_limit_exceeded")?;
