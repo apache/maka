@@ -21,11 +21,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OPENCODE_FREE_DEFAULT_ENABLED_MODELS } from '@maka/core/llm-connections';
 import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type { ConnectionOnboardingVerifyInput } from '@maka/runtime-host/protocol';
 import {
+  projectConnectionCatalogProbe,
   projectHostConnections,
   projectHostConnectionTest,
   registerRuntimeHostConnectionsIpc,
 } from '../runtime-host-connections-ipc-main.js';
+import { normalizeConnectionCatalogProbeInput } from '../connections-ipc-validation.js';
 
 test('registers pure Connection reads for replacement-Host retry', () => {
   const reads = new Set<string>();
@@ -349,6 +352,108 @@ test('preserves the Host-tested model and diagnostics for the existing Desktop U
       statusCode: 503,
       errorClass: 'provider_unavailable',
     },
+  );
+});
+
+test('probes a relay catalog through the host before a connection exists', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      probeConnectionModels: async (input: ConnectionOnboardingVerifyInput) => {
+        assert.deepEqual(input, {
+          providerType: 'openai-compatible',
+          // No connection exists to edit yet: the probe targets the canonical
+          // slug as null, exactly like the post-create discovery fetch.
+          connectionId: null,
+          apiKey: 'relay-key',
+          baseUrl: 'https://relay.example.test/v1',
+        });
+        return {
+          kind: 'verified',
+          models: [{ id: 'relay-model', contextWindow: 128_000 }],
+        };
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  // Endpoint and key are canonicalized at the boundary before reaching the
+  // host; the handler never sees the surrounding whitespace the user typed.
+  const outcome = await handlers.get('connections:probeModels')?.(
+    {},
+    {
+      providerType: 'openai-compatible',
+      baseUrl: '  https://relay.example.test/v1  ',
+      apiKey: ' relay-key ',
+    },
+  );
+  assert.deepEqual(outcome, {
+    kind: 'ready',
+    models: [{ id: 'relay-model', contextWindow: 128_000 }],
+  });
+});
+
+test('projects the host onboarding verdict onto the probe outcome contract', () => {
+  assert.deepEqual(
+    projectConnectionCatalogProbe({
+      kind: 'verified',
+      models: [{ id: 'relay-model' }],
+    }),
+    { kind: 'ready', models: [{ id: 'relay-model' }] },
+  );
+  assert.deepEqual(
+    projectConnectionCatalogProbe({ kind: 'rejected', reason: 'credential_not_configured' }),
+    { kind: 'rejected', reason: 'credential_not_configured' },
+  );
+  assert.deepEqual(
+    projectConnectionCatalogProbe({ kind: 'rejected', reason: 'base_url_not_configured' }),
+    { kind: 'rejected', reason: 'base_url_not_configured' },
+  );
+  // A fresh probe never names an existing connection, so a connection-identity
+  // rejection collapses to a generic failure rather than a reason the form
+  // cannot render.
+  assert.deepEqual(
+    projectConnectionCatalogProbe({ kind: 'rejected', reason: 'connection_not_found' }),
+    { kind: 'failed', errorClass: 'connection_not_found' },
+  );
+  assert.deepEqual(
+    projectConnectionCatalogProbe({ kind: 'failed', errorClass: 'auth' }),
+    { kind: 'failed', errorClass: 'auth' },
+  );
+});
+
+test('refuses a catalog probe without a probeable endpoint', () => {
+  assert.throws(
+    () =>
+      normalizeConnectionCatalogProbeInput({
+        providerType: 'openai-compatible',
+        baseUrl: '   ',
+        apiKey: null,
+      }),
+    /endpoint is required/u,
+  );
+  assert.throws(
+    () =>
+      normalizeConnectionCatalogProbeInput({
+        providerType: 'openai-compatible',
+        baseUrl: 'not a url',
+        apiKey: 'relay-key',
+      }),
+    /valid URL/u,
+  );
+  assert.throws(
+    () =>
+      normalizeConnectionCatalogProbeInput({
+        providerType: 'no-such-provider',
+        baseUrl: 'https://relay.example.test/v1',
+        apiKey: null,
+      }),
+    /Invalid provider type/u,
   );
 });
 

@@ -165,6 +165,10 @@ export type AppIconImportResult =
 export type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 export type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-board-ipc.js';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
+import type {
+  ConnectionCatalogProbeOutcome,
+  ConnectionCatalogProbeRequest,
+} from '../shared/connection-catalog-probe.js';
 import type { DesktopExternalSessionCatalogItem } from './external-session-catalog.js';
 import type { DesktopDiagnosticInput } from './diagnostics-contract.js';
 import type { Result } from '@maka/core/result';
@@ -1232,6 +1236,10 @@ export interface MakaBridge {
     delete(slug: string, host?: DesktopRuntimeHostRef): Promise<void>;
     test(slug: string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
     fetchModels(slug: string, host?: DesktopRuntimeHostRef): Promise<ModelDiscoveryResult>;
+    probeModels(
+      request: ConnectionCatalogProbeRequest,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<ConnectionCatalogProbeOutcome>;
     hasSecret(slug: string, host?: DesktopRuntimeHostRef): Promise<boolean>;
     getRequestHeaders(slug: string, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(

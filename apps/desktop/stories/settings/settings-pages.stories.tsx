@@ -179,6 +179,14 @@ const connectionsBridge: ConnectionsBridge = {
       fetchedAt: NOW,
     };
   },
+  async probeModels(request) {
+    return {
+      kind: 'ready',
+      models: [
+        { id: request.providerType.includes('openai') ? 'relay-gpt-5' : 'relay-glm-4.7' },
+      ],
+    };
+  },
   async hasSecret() {
     return true;
   },

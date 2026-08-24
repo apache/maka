@@ -33,6 +33,10 @@ import { type UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
 import { cleanErrorMessage } from '../model-connection-errors.js';
 import type { DesktopConnectionSnapshot } from '../../shared/desktop-connection-snapshot.js';
+import type {
+  ConnectionCatalogProbeOutcome,
+  ConnectionCatalogProbeRequest,
+} from '../../shared/connection-catalog-probe.js';
 
 export interface ConnectionsBridge {
   getSnapshot(): Promise<DesktopConnectionSnapshot>;
@@ -42,6 +46,9 @@ export interface ConnectionsBridge {
   delete(slug: string): Promise<void>;
   test(slug: string, opts?: { model?: string }): Promise<ConnectionTestResult>;
   fetchModels(slug: string): Promise<ModelDiscoveryResult>;
+  probeModels(
+    request: ConnectionCatalogProbeRequest,
+  ): Promise<ConnectionCatalogProbeOutcome>;
   hasSecret(slug: string): Promise<boolean>;
   getRequestHeaders(slug: string): Promise<SavedRequestHeaders>;
   setRequestHeaders(

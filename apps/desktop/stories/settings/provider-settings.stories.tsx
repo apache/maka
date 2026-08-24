@@ -295,6 +295,15 @@ function createBridge(input: {
         fetchedAt: NOW,
       };
     },
+    async probeModels(request) {
+      return {
+        kind: 'ready',
+        models: [
+          { id: request.providerType.includes('openai') ? 'relay-gpt-5' : 'relay-glm-4.7' },
+          { id: request.providerType.includes('openai') ? 'relay-gpt-4o' : 'relay-glm-4.6' },
+        ],
+      };
+    },
     async hasSecret() {
       return true;
     },

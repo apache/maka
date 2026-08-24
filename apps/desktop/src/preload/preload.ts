@@ -231,6 +231,10 @@ import {
   type DesktopTargetScope,
 } from '../shared/runtime-host-identity.js';
 import type { GoalArmOutcome, GoalArmRequest } from '../shared/goal-arm.js';
+import type {
+  ConnectionCatalogProbeOutcome,
+  ConnectionCatalogProbeRequest,
+} from '../shared/connection-catalog-probe.js';
 import {
   invokeProjectedSessionRuntimeHost as invokeProjectedSessionRuntimeHostBridge,
   projectProtocolSessionIds,
@@ -2427,6 +2431,12 @@ const makaBridge = {
     },
     fetchModels(slug: string, host?: DesktopRuntimeHostRef): Promise<ModelDiscoveryResult> {
       return invokeSelectedRuntimeHost(host, 'connections:fetchModels', slug);
+    },
+    probeModels(
+      request: ConnectionCatalogProbeRequest,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<ConnectionCatalogProbeOutcome> {
+      return invokeSelectedRuntimeHost(host, 'connections:probeModels', request);
     },
     hasSecret(slug: string, host?: DesktopRuntimeHostRef): Promise<boolean> {
       return invokeSelectedRuntimeHost(host, 'connections:hasSecret', slug);
