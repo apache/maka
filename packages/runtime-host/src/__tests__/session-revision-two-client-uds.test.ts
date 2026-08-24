@@ -1620,10 +1620,12 @@ async function verifyDurableBranch(
     if (archivedSideConversationContent.kind !== 'subagent') {
       assert.fail('Copied archived child result must be restored as a static snapshot');
     }
+    assert.notEqual(archivedSideConversationContent.runId, 'archived-owned-child-run');
     assert.deepEqual(archivedSideConversationContent, {
       kind: 'subagent',
       agentName: 'Worker',
       turnId: 'archived-owned-child-turn',
+      runId: archivedSideConversationChildRun.runId,
       status: 'completed',
       permissionMode: 'ask',
       summary: 'done',

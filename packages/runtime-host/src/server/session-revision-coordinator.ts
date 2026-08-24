@@ -632,7 +632,7 @@ export class HostSessionRevisionCoordinator {
           ? [...new Set([...source.labels, SIDE_CONVERSATION_SESSION_LABEL])]
           : [...source.labels],
       conversationCopy: {
-        kind: kind === 'revision' ? 'revision' : 'branch',
+        kind: persistedConversationCopyKind(kind),
         sourceSessionId: input.sourceSessionId,
         sourceTurnId: input.sourceTurnId,
         requestFingerprint,
@@ -693,7 +693,7 @@ export class HostSessionRevisionCoordinator {
     }
     const copy = probe.record.header.conversationCopy;
     if (
-      copy?.kind !== (kind === 'revision' ? 'revision' : 'branch') ||
+      copy?.kind !== persistedConversationCopyKind(kind) ||
       copy.intent !== (kind === 'side_conversation' ? kind : undefined) ||
       copy.sourceSessionId !== input.sourceSessionId ||
       copy.sourceTurnId !== input.sourceTurnId ||
@@ -831,22 +831,13 @@ function conversationCopyFingerprint(
   // The optimistic source revision guards only the initial create. Once this
   // target exists, its stable identity must resolve the committed outcome even
   // if a reconnecting Client observes a newer source revision.
-  const identity =
-    kind === 'side_conversation'
-      ? [
-          'session.conversation-copy.v2',
-          kind,
-          input.sourceSessionId,
-          input.targetSessionId,
-          input.sourceTurnId,
-        ]
-      : [
-          'session.conversation-copy.v1',
-          kind,
-          input.sourceSessionId,
-          input.targetSessionId,
-          input.sourceTurnId,
-        ];
+  const identity = [
+    kind === 'side_conversation' ? 'session.conversation-copy.v2' : 'session.conversation-copy.v1',
+    kind,
+    input.sourceSessionId,
+    input.targetSessionId,
+    input.sourceTurnId,
+  ];
   return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
 }
 
@@ -881,6 +872,10 @@ function conversationCopySemanticKind(
   input: SessionConversationCopyInput,
 ): ConversationCopySemanticKind {
   return kind === 'branch' && input.intent === 'side_conversation' ? input.intent : kind;
+}
+
+function persistedConversationCopyKind(kind: ConversationCopySemanticKind): ConversationCopyKind {
+  return kind === 'revision' ? 'revision' : 'branch';
 }
 
 function isRevisionStartData(value: unknown): boolean {

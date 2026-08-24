@@ -182,6 +182,13 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 46);
   });
 
+  test('publishes a new compatibility epoch for Side Conversation copy intent', () => {
+    // Epoch 47 belongs to project registration preferences on current main.
+    // Side Conversation adds another closed branch-copy input and therefore
+    // needs its own later handshake boundary.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 47);
+  });
+
   test('adds credential rotation without changing existing credential inputs', () => {
     const issueInput = {
       principalKind: 'remote_owner',

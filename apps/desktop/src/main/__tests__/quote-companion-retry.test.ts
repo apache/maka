@@ -116,7 +116,7 @@ test('retries a busy Side Conversation at the newest settled boundary and clears
     await Promise.resolve();
   });
   await waitUntil(() => branchInputs.length === 1 && sessionChange !== undefined);
-  assert.match(container.textContent, /source conversation is still running/i);
+  assert.match(container.textContent, /main conversation or a linked task is still running/i);
   const probe = container.firstElementChild;
   assert.ok(probe);
 
@@ -131,7 +131,7 @@ test('retries a busy Side Conversation at the newest settled boundary and clears
   });
   await waitUntil(() => branchInputs.length === 2 && releaseRetry !== undefined);
   assert.equal(probe.getAttribute('data-preparing'), 'false');
-  assert.match(container.textContent, /source conversation is still running/i);
+  assert.match(container.textContent, /main conversation or a linked task is still running/i);
 
   await act(async () => {
     releaseRetry?.();

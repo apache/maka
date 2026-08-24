@@ -767,7 +767,8 @@ const COPY = {
       },
       errors: {
         forkSetupFailed: 'Could not open the side chat. Please try again.',
-        forkSourceBusy: 'The source conversation is still running. Try again when it finishes.',
+        forkSourceBusy:
+          'The main conversation or a linked task is still running. Try again when it finishes.',
         forkUnsupported: 'This conversation context cannot be opened as a side chat yet.',
         sendRejected: 'The companion could not start. Please try again.',
         sendFailed: 'The companion request failed. Please try again.',
