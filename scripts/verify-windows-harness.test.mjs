@@ -81,6 +81,7 @@ it('pins every Phase 4 adversarial category to executable evidence', async () =>
   assert.deepEqual(WINDOWS_SANDBOX_DEFERRED_HARDENING, [
     'Authenticode identity verification',
     'direct Credential Manager and DPAPI probes',
+    'inbound listener enforcement',
     'no-Win32k mitigation',
     'dedicated window-station and clipboard isolation',
     'power-loss automatic recovery',
@@ -107,7 +108,6 @@ it('pins every Phase 4 adversarial category to executable evidence', async () =>
     'fileDenied',
     'tcpDenied',
     'udpDenied',
-    'listenerDenied',
     'namedPipeDenied',
     'environmentDenied',
     'registryDenied',

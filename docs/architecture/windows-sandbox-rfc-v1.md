@@ -347,6 +347,9 @@ Designed but deferred as later gates (not enforced in the preview slice):
 - Direct Windows Credential Manager/DPAPI isolation evidence. The packaged W1 matrix proves that
   ambient credential files and environment secrets are not granted or inherited, but direct
   `CredRead`/DPAPI probes remain a W2/W3 hardening gate.
+- Inbound listener enforcement. AppContainer denies the packaged outbound TCP/UDP attempts, but
+  local listener creation is not itself denied by the current token policy; full inbound-channel
+  enforcement remains a W2/W3 network hardening gate.
 
 Deferral narrows readiness richness and desktop-layer defense-in-depth, not the enforcement
 boundary: an unavailable, drifted, or failed backend still fails closed, and a restricted managed
@@ -483,7 +486,7 @@ For the W1 preview, the packaged verifier maps the supported attack surface to e
 | Category | Packaged evidence |
 | --- | --- |
 | Filesystem aliases | outside denial plus recursive junction and multi-hard-link admission refusal |
-| Network channels | TCP connect, UDP bind, and TCP listener denial without network capabilities |
+| Network channels | TCP connect and UDP send denial without network capabilities |
 | IPC | host named-pipe denial and an explicit inherited-handle list |
 | Descendants | child-created descendant retains the AppContainer token and kill-on-close Job |
 | Environment/credentials | ambient host secret and outside credential file are unavailable |

@@ -34,6 +34,7 @@ $pipeShortName = "maka-phase4-host-$PID"
 $pipeName = "\\.\pipe\$pipeShortName"
 $hostSecretName = 'MAKA_PHASE4_HOST_SECRET'
 $listener = $null
+$udpListener = $null
 $pipe = $null
 $quarantinedSid = $null
 $quarantineRoot = $null
@@ -142,6 +143,8 @@ try {
   $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
   $listener.Start()
   $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+  $udpListener = [Net.Sockets.UdpClient]::new(0)
+  $udpPort = ([Net.IPEndPoint]$udpListener.Client.LocalEndPoint).Port
   $pipe = [IO.Pipes.NamedPipeServerStream]::new(
     $pipeShortName,
     [IO.Pipes.PipeDirection]::InOut,
@@ -159,6 +162,7 @@ try {
     allowedReadPath = $allowedReadPath
     allowedWritePath = $allowedWritePath
     loopbackPort = $port
+    udpPort = $udpPort
     pipeName = $pipeName
     environmentSecretName = $hostSecretName
     registrySubkey = $registrySubkey
@@ -169,9 +173,9 @@ try {
 
   $probeRequest = Write-LaunchRequest -Name "phase4-adversarial-$PID" `
     -Arguments @('--adversarial-probe', $probeInputPath) `
-    -ReadRoots @($probeInputPath, $allowedReadPath) `
+    -ReadRoots @($probeInputPath, $allowedReadPath, $launcher) `
     -WriteRoots @($allowedWritePath) `
-    -ExactReadRoots @($probeInputPath, $allowedReadPath) `
+    -ExactReadRoots @($probeInputPath, $allowedReadPath, $launcher) `
     -ExactWriteRoots @($allowedWritePath)
   $result = Invoke-Launcher @('--appcontainer', $probeRequest)
   $output = $result.Output
@@ -183,7 +187,6 @@ try {
     '"allowedWrite":true',
     '"tcpDenied":true',
     '"udpDenied":true',
-    '"listenerDenied":true',
     '"namedPipeDenied":true',
     '"environmentDenied":true',
     '"registryDenied":true',
@@ -266,6 +269,7 @@ try {
   Write-Host "Phase 4 adversarial matrix verified: $rendered"
 } finally {
   if ($listener) { $listener.Stop() }
+  if ($udpListener) { $udpListener.Dispose() }
   if ($pipe) { $pipe.Dispose() }
   [Environment]::SetEnvironmentVariable($hostSecretName, $null, 'Process')
   Remove-Item -LiteralPath $registryPath -Recurse -Force -ErrorAction SilentlyContinue

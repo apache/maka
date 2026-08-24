@@ -204,6 +204,8 @@ Maka 外已失陷的同用户进程。sandboxed code 从第一条指令开始按
 - 运行中宿主的主动 readiness 恢复（§6.4）:负可用性结果由 TTL 限时,使其不会长时间毒化 module 缓存,并由**下一次 composition 构建**重探。运行中的 Runtime Host 不会主动重探或热发布 filesystem worker——worker 在候选构建时一次性组装——故已判负的运行中宿主对瞬时负结果的恢复被限定到新 composition 构建或重启。带动态 worker 发布的主动 readiness 重试暂缓。
 - Windows Credential Manager/DPAPI 的直接隔离证据：打包 W1 矩阵已证明 ambient credential 文件与
   环境 secret 不会被授权或继承，但直接 `CredRead`/DPAPI probe 仍是 W2/W3 后续加固门禁。
+- inbound listener 强制：AppContainer 会拒绝打包的 outbound TCP/UDP 尝试，但当前 token policy
+  不会单独拒绝本地 listener 创建；完整 inbound channel 强制仍是 W2/W3 网络加固门禁。
 
 暂缓收窄的是 readiness 丰富度与 desktop 层的 defense-in-depth，而非强制边界本身：backend 不可用、identity drift 或启动失败仍然 fail closed，受限 managed profile 也绝不回退到宿主执行。
 
@@ -327,7 +329,7 @@ Windows sandbox job 必须运行真实 child-process 正反测试：
 | 类别 | 打包证据 |
 | --- | --- |
 | 文件别名 | outside 拒绝，加递归 junction 与多硬链接准入拒绝 |
-| 网络通道 | 无网络 capability 时拒绝 TCP connect、UDP bind 与 TCP listener |
+| 网络通道 | 无网络 capability 时拒绝 TCP connect 与 UDP send |
 | IPC | 拒绝宿主 named pipe，并只继承显式 handle 列表 |
 | descendant | child 创建的 descendant 仍持有 AppContainer token 与 kill-on-close Job |
 | 环境/credential | ambient host secret 与 outside credential 文件均不可用 |
