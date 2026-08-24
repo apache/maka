@@ -237,13 +237,17 @@ fn import_source_head(
         .map_err(|_| "source_head_tree_unavailable")?
         .detach();
 
-    match fs::symlink_metadata(&destination_repository_path) {
+    let destination = match fs::symlink_metadata(&destination_repository_path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            open_repository(destination_repository_path.clone())?
+        }
         Ok(_) => return Err("import_destination_not_fresh"),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            gix::init_bare(&destination_repository_path)
+                .map_err(|_| "import_destination_create_failed")?
+        }
         Err(_) => return Err("import_destination_unreadable"),
-    }
-    let destination = gix::init_bare(&destination_repository_path)
-        .map_err(|_| "import_destination_create_failed")?;
+    };
     if destination.object_hash() != gix::hash::Kind::Sha1 {
         return Err("import_destination_object_format_mismatch");
     }
@@ -280,14 +284,30 @@ fn import_source_head(
         .map_err(|_| "baseline_commit_write_failed")?
         .id()
         .detach();
-    destination
-        .reference(
-            baseline_ref.as_str(),
-            baseline_commit,
-            gix::refs::transaction::PreviousValue::MustNotExist,
-            "maka managed workspace baseline",
-        )
-        .map_err(|_| "baseline_publish_failed")?;
+    match destination
+        .try_find_reference(baseline_ref.as_str())
+        .map_err(|_| "baseline_publish_failed")?
+    {
+        Some(reference) => {
+            let current = reference
+                .into_fully_peeled_id()
+                .map_err(|_| "baseline_publish_failed")?
+                .detach();
+            if current != baseline_commit {
+                return Err("baseline_publish_conflict");
+            }
+        }
+        None => {
+            destination
+                .reference(
+                    baseline_ref.as_str(),
+                    baseline_commit,
+                    gix::refs::transaction::PreviousValue::MustNotExist,
+                    "maka managed workspace baseline",
+                )
+                .map_err(|_| "baseline_publish_failed")?;
+        }
+    }
 
     write_response(&Response::SourceImported {
         protocol_version: PROTOCOL_VERSION,

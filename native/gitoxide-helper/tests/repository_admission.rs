@@ -166,6 +166,49 @@ fn imports_an_exact_source_head_into_a_fresh_managed_repository() {
         ["cat-file", "-e", source_head.as_str()]
     ));
     assert!(!destination.join("objects/info/alternates").exists());
+
+    let retry = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/baseline",
+    }));
+    assert!(retry.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&retry.stdout).unwrap(),
+        response
+    );
+}
+
+#[test]
+fn repairs_an_initialized_import_destination_without_a_published_baseline() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("managed-partial.git");
+    let initialized = Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&destination)
+        .output()
+        .unwrap();
+    assert!(initialized.status.success());
+
+    let output = invoke_request(serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "import_source_head",
+        "sourceRepositoryPath": fixture.root,
+        "expectedSourceHeadCommitOid": source_head,
+        "destinationRepositoryPath": destination,
+        "baselineRef": "refs/maka/accepted",
+    }));
+
+    assert!(output.status.success());
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        git_bare_output(&destination, ["rev-parse", "refs/maka/accepted"]),
+        response["baselineCommitOid"].as_str().unwrap()
+    );
 }
 
 fn invoke_helper(repository_path: &Path) -> Output {
