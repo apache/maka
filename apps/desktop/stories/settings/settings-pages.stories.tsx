@@ -58,6 +58,7 @@ import type {
 } from '../../src/preload/bridge-contract.js';
 import { withScopedMakaBridge } from '../maka-bridge';
 import { getDailyReviewSettingsCopy } from '../../src/renderer/locales/settings-daily-review-copy';
+import { getUsageSettingsCopy } from '../../src/renderer/locales/settings-usage-copy';
 
 /**
  * Read from the copy table, not typed out again. This selector matched a
@@ -1346,6 +1347,43 @@ export const UsageMultiModel: Story = {
 export const UsageLongTail: Story = {
   decorators: [withUsageLongTailBridge],
   render: () => <SettingsStory section="usage" />,
+  play: async ({ canvasElement, globals }) => {
+    const canvas = within(canvasElement);
+    const usageCopy = getUsageSettingsCopy(globals.locale === 'en' ? 'en' : 'zh');
+    await waitForStoryCondition(
+      () => canvas.queryByRole('table', { name: usageCopy.tables.requestsAria }) !== null
+        || canvas.queryByRole('button', { name: usageCopy.showDetails }) !== null,
+      'Usage request details did not become available',
+    );
+    const showDetails = canvas.queryByRole('button', { name: usageCopy.showDetails });
+    if (showDetails) await userEvent.click(showDetails);
+
+    const table = await canvas.findByRole('table', { name: usageCopy.tables.requestsAria });
+    const timeCell = table.querySelector<HTMLTableCellElement>('tbody tr td:first-child');
+    expect(timeCell).not.toBeNull();
+    const timeText = timeCell?.firstElementChild;
+    expect(timeText).toBeInstanceOf(HTMLElement);
+    const timeRange = document.createRange();
+    timeRange.selectNodeContents(timeText!);
+    const timeCellStyle = getComputedStyle(timeCell!);
+    const requiredWidth = timeRange.getBoundingClientRect().width
+      + Number.parseFloat(timeCellStyle.paddingLeft)
+      + Number.parseFloat(timeCellStyle.paddingRight);
+    expect(requiredWidth).toBeLessThanOrEqual(timeCell!.clientWidth);
+
+    const longTarget = 'anthropic/claude-sonnet-4-5-20250929-preview-extended-thinking';
+    const targetCellText = within(table).getByText(longTarget);
+    await waitFor(() => expect(targetCellText).toHaveAttribute('title', longTarget));
+    await userEvent.hover(targetCellText);
+    await waitFor(() => {
+      const tooltipId = targetCellText.getAttribute('aria-describedby');
+      expect(tooltipId).toBeTruthy();
+      const tooltip = document.getElementById(tooltipId!);
+      expect(tooltip).toHaveAttribute('role', 'tooltip');
+      expect(tooltip).toHaveTextContent(longTarget);
+    });
+    await userEvent.unhover(targetCellText);
+  },
 };
 // Real path: the same long-content Usage page at the minimum supported window width.
 export const UsageNarrow: Story = {
