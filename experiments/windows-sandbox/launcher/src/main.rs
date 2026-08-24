@@ -155,7 +155,11 @@ fn run() -> Result<u8, String> {
         }
         let source = fs::read_to_string(&input_path)
             .map_err(|error| format!("read adversarial probe input failed: {error}"))?;
-        let input: AdversarialProbeInput = serde_json::from_str(&source)
+        // Windows PowerShell 5.1 may emit a UTF-8 BOM for `Set-Content
+        // -Encoding utf8`; accepting it here keeps the probe input parser
+        // deterministic across the supported PowerShell implementations.
+        let source = source.strip_prefix('\u{feff}').unwrap_or(&source);
+        let input: AdversarialProbeInput = serde_json::from_str(source)
             .map_err(|error| format!("decode adversarial probe input failed: {error}"))?;
         return adversarial_probe(&input);
     }

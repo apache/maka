@@ -137,7 +137,7 @@ try {
   [Environment]::SetEnvironmentVariable($hostSecretName, 'environment-secret', 'Process')
 
   $probeInputPath = Join-Path $allowedRoot 'adversarial-probe.json'
-  [ordered]@{
+  $probeJson = [ordered]@{
     deniedPath = $deniedPath
     allowedReadPath = $allowedReadPath
     allowedWritePath = $allowedWritePath
@@ -147,7 +147,8 @@ try {
     registrySubkey = $registrySubkey
     registryValueName = $registryValueName
     parentPid = $PID
-  } | ConvertTo-Json | Set-Content -LiteralPath $probeInputPath -Encoding utf8
+  } | ConvertTo-Json
+  [IO.File]::WriteAllText($probeInputPath, $probeJson, [Text.UTF8Encoding]::new($false))
 
   $probeRequest = Write-LaunchRequest -Name "phase4-adversarial-$PID" `
     -Arguments @('--adversarial-probe', $probeInputPath) `
