@@ -1885,6 +1885,81 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('cancels a running turn as one Host operation that returns the retracted queue', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: sequenceIds('interrupt-1'),
+    });
+    await driver.switchSession('session-1');
+
+    // One operation, not a retract followed by a stop: the Host commits the queue
+    // stop fence, retracts, and aborts the owning turn atomically, so no message
+    // can be consumed in a gap between two client calls.
+    assert.deepEqual(await driver.interruptTurn!(), {
+      text: 'Still queued\n\nAlso queued',
+      messageIds: ['message-1', 'message-2'],
+    });
+    assert.deepEqual(
+      connection.requests.filter(
+        (request) =>
+          request.operation === 'turn.interrupt' ||
+          request.operation === 'queue.retract' ||
+          request.operation === 'turn.stop',
+      ),
+      [
+        {
+          operation: 'turn.interrupt',
+          input: {
+            originHostEpoch: 'host-1',
+            sessionId: 'session-1',
+            interruptId: 'interrupt-1',
+            turnId: 'turn-1',
+            runId: 'run-1',
+          },
+        },
+      ],
+    );
+  });
+
+  test('retracts without interrupting when no turn owns the cancellation', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ rootTurn: completedTurn('turn-1', 'run-1') }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: sequenceIds('retract-1'),
+    });
+    await driver.switchSession('session-1');
+
+    // A terminal turn has nothing left to abort, but the queue can still hold
+    // entries the user wants back — retracting alone beats reporting nothing.
+    assert.deepEqual(await driver.interruptTurn!(), {
+      text: 'Later',
+      messageIds: ['message-1'],
+    });
+    assert.deepEqual(
+      connection.requests
+        .filter(
+          (request) =>
+            request.operation === 'turn.interrupt' ||
+            request.operation === 'queue.retract' ||
+            request.operation === 'turn.stop',
+        )
+        .map((request) => request.operation),
+      ['queue.retract'],
+    );
+  });
+
   test('projects the acknowledgement that releases a question answered through the Host', async () => {
     const subscription = new FakeSubscription(
       continuitySnapshot({ interactions: { pending: [pendingQuestion()] } }),
@@ -2634,6 +2709,34 @@ class FakeConnection {
       return {
         sessionId: (input as OperationInput<'goal.query'>).sessionId,
         goal: this.goalQueryResults.shift() ?? null,
+      } as OperationOutput<K>;
+    }
+    if (operation === 'turn.interrupt') {
+      const interrupt = input as OperationInput<'turn.interrupt'>;
+      return {
+        queueRevision: 4,
+        retracted: [
+          {
+            entryId: 'entry-1',
+            messageId: 'message-1',
+            content: { text: 'Still queued' },
+            placement: 'current_turn',
+          },
+          {
+            entryId: 'entry-2',
+            messageId: 'message-2',
+            content: { text: 'Also queued' },
+            placement: 'next_turn',
+          },
+        ],
+        turn: {
+          sessionId: interrupt.sessionId,
+          turnId: interrupt.turnId,
+          runId: interrupt.runId,
+          status: 'aborted',
+          completedAt: 90,
+          terminalEventId: `terminal-${interrupt.turnId}`,
+        },
       } as OperationOutput<K>;
     }
     if (operation === 'session.configuration.update') {

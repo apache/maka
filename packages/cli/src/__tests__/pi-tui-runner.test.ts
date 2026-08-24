@@ -48,6 +48,7 @@ import type {
   MakaPreparedSessionTurn,
   MakaAttachedSessionTurn,
   MakaSessionMoveResult,
+  MakaRetractedMessages,
   MakaSessionDriver,
   MakaSideConversationParentStatus,
   MakaSessionRewindResult,
@@ -5756,6 +5757,120 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('dispatches the interrupt ahead of a never-settling enqueue', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new StuckEnqueueDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    // Mid-turn Enter steers. This driver's steer RPC never settles, standing in
+    // for a `turn.message.submit` delayed by transport, Session admission,
+    // storage, or a fallback retry — so the enqueue task stays pending for the
+    // rest of the turn.
+    terminal.input('unfinished idea');
+    terminal.input('\r');
+    await waitFor(() => driver.steerCalls === 1);
+
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    // The cancellation authority must be reached without waiting on that RPC.
+    await waitFor(() => driver.stopCalls === 1, 'the stop authority to be reached');
+    // ...and the turn must actually converge, not merely be asked to.
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('reports Cancelling while the stop authority is still converging', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlowStopDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Working…'));
+
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    // This driver records the stop but leaves the turn parked, standing in for a
+    // tool held through its process termination grace. Acceptance is a local
+    // fact, so the strip flips now rather than after that cleanup lands.
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Cancelling…'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /Working…/);
+    // Fast acknowledgement must not fake completion: the turn is still running,
+    // and durable terminal convergence is still owed.
+    assert.equal(terminal.progressStates.at(-1), true);
+    assert.equal(driver.stopCalls, 1);
+
+    driver.endTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    // A frame painted after convergence no longer claims cancellation is in
+    // progress, and the editor takes input again.
+    terminal.input('next');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('next'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /Cancelling…/);
+
+    terminal.input('\x03');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('interrupts through the driver authority instead of composing retract and stop', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new InterruptAuthorityDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    // One authoritative operation owns the queue fence, the retraction, and the
+    // abort — the CLI no longer sequences `queue.retract` then `turn.stop`.
+    assert.equal(driver.interruptCalls, 1);
+    assert.equal(driver.retractCalls, 0);
+    assert.equal(driver.stopCalls, 0);
+    // Its retracted entries are what comes back for re-editing.
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('idea the authority gave back'),
+    );
+
+    terminal.input('\x03');
+    exitMaka(terminal);
+    await run;
+  });
+
   test('exits on a second Ctrl-C while a turn interrupt is still in flight', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlowStopDriver();
@@ -8082,9 +8197,13 @@ class InterruptibleTurnDriver extends FakeSessionDriver {
   stopCalls = 0;
   readonly prompts: string[] = [];
   private releaseTurn: (() => void) | null = null;
+  private stopped = false;
 
   preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
     this.prompts.push(prompt);
+    // The turn exists from here on, so its abort state is armed here — not on
+    // first pull. A Host turn's event buffer is created by preparePrompt too.
+    this.stopped = false;
     return prepareTestPrompt(this, prompt);
   }
 
@@ -8093,10 +8212,15 @@ class InterruptibleTurnDriver extends FakeSessionDriver {
 
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     this.streamPulls += 1;
-    // The turn parks like a real long-running provider call until stop() aborts it.
-    await new Promise<void>((resolve) => {
-      this.releaseTurn = resolve;
-    });
+    // The turn parks like a real long-running provider call until stop() aborts
+    // it. Cancellation is level-triggered, matching the Host channel: an abort
+    // that lands before the drain pulls the first event is still observed,
+    // rather than being dropped because nobody was parked to receive it.
+    if (!this.stopped) {
+      await new Promise<void>((resolve) => {
+        this.releaseTurn = resolve;
+      });
+    }
     yield {
       type: 'abort',
       id: 'event-abort',
@@ -8108,6 +8232,7 @@ class InterruptibleTurnDriver extends FakeSessionDriver {
 
   async stop(): Promise<void> {
     this.stopCalls += 1;
+    this.stopped = true;
     this.releaseTurn?.();
     this.releaseTurn = null;
   }
@@ -8164,6 +8289,9 @@ class SteeringTurnDriver extends FakeSessionDriver {
   ): Promise<MakaPreparedSessionTurn> {
     const turnId = options.turnId ?? 'turn-1';
     this.turnOrchestrations.push(options.turnOrchestration);
+    // Armed here, not on first pull: a stop between turn creation and the first
+    // event pull must still end the turn (see InterruptibleTurnDriver).
+    this.turnEnded = false;
     return Promise.resolve({
       sessionId: this.sessionId,
       turnId,
@@ -8194,7 +8322,6 @@ class SteeringTurnDriver extends FakeSessionDriver {
 
   async *promptEvents(_prompt: string, turnId: string): AsyncIterable<SessionEvent> {
     this.turnOpen = true;
-    this.turnEnded = false;
     for (;;) {
       while (this.pendingEvents.length > 0) yield this.pendingEvents.shift()!;
       if (this.turnEnded) break;
@@ -8285,6 +8412,98 @@ class SteeringTurnDriver extends FakeSessionDriver {
 class FailingOrchestrationDriver extends SteeringTurnDriver {
   override preparePrompt(): Promise<MakaPreparedSessionTurn> {
     return Promise.reject(new Error('admission failed'));
+  }
+}
+
+// A turn that parks like InterruptibleTurnDriver, plus a mid-turn submit that
+// never settles — the enqueue barrier the interrupt used to wait behind.
+class StuckEnqueueDriver extends FakeSessionDriver {
+  stopCalls = 0;
+  steerCalls = 0;
+  private releaseTurn: (() => void) | null = null;
+  private stopped = false;
+  private turnOpen = false;
+
+  preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
+    this.stopped = false;
+    return prepareTestPrompt(this, prompt);
+  }
+
+  async *promptEvents(): AsyncIterable<SessionEvent> {
+    this.turnOpen = true;
+    // Level-triggered, matching the Host channel: a stop that lands before the
+    // drain pulls the first event is still observed.
+    if (!this.stopped) {
+      await new Promise<void>((resolve) => {
+        this.releaseTurn = resolve;
+      });
+    }
+    this.turnOpen = false;
+    yield { type: 'abort', id: 'event-abort', turnId: 'turn-1', ts: 1, reason: 'user_stop' };
+  }
+
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined> {
+    if (!this.turnOpen) return admitMessageAsTurn(this, text, options);
+    this.steerCalls += 1;
+    // Never settles. The text stays owned by this request, so it is restored by
+    // the enqueue's own failure path — never by the interrupt waiting on it.
+    return new Promise<TurnMessageSubmitResult | undefined>(() => {});
+  }
+
+  async stop(): Promise<void> {
+    this.stopCalls += 1;
+    this.stopped = true;
+    this.releaseTurn?.();
+    this.releaseTurn = null;
+  }
+}
+
+// A driver that owns cancellation as one operation, the way the Runtime Host's
+// `turn.interrupt` does: it commits the queue fence, returns what it retracted,
+// and aborts the turn. `stop()`/`retractQueued()` stay here only to prove the
+// runner stops composing them once the authority exists.
+class InterruptAuthorityDriver extends FakeSessionDriver {
+  stopCalls = 0;
+  retractCalls = 0;
+  interruptCalls = 0;
+  private releaseTurn: (() => void) | null = null;
+  private stopped = false;
+
+  preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
+    this.stopped = false;
+    return prepareTestPrompt(this, prompt);
+  }
+
+  async *promptEvents(): AsyncIterable<SessionEvent> {
+    if (!this.stopped) {
+      await new Promise<void>((resolve) => {
+        this.releaseTurn = resolve;
+      });
+    }
+    yield { type: 'abort', id: 'event-abort', turnId: 'turn-1', ts: 1, reason: 'user_stop' };
+  }
+
+  async retractQueued(): Promise<MakaRetractedMessages> {
+    this.retractCalls += 1;
+    return { text: '', messageIds: [] };
+  }
+
+  async interruptTurn(): Promise<MakaRetractedMessages> {
+    this.interruptCalls += 1;
+    this.stopped = true;
+    this.releaseTurn?.();
+    this.releaseTurn = null;
+    return { text: 'idea the authority gave back', messageIds: [] };
+  }
+
+  async stop(): Promise<void> {
+    this.stopCalls += 1;
+    this.stopped = true;
+    this.releaseTurn?.();
+    this.releaseTurn = null;
   }
 }
 

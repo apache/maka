@@ -163,6 +163,17 @@ export interface MakaSessionDriver {
   compactSession(): AsyncIterable<SessionEvent>;
   resumeLatest?(): AsyncIterable<SessionEvent>;
   retractQueued?(): Promise<MakaRetractedMessages>;
+  /**
+   * Cancel the running turn as one authoritative step: commit the queue stop
+   * fence, retract what was still queued, and abort the owning turn. Reports
+   * the retraction in `retractQueued()`'s form, so the caller retires the same
+   * transient rows it would for an ordinary retract.
+   *
+   * A driver exposing this owns the ordering itself, so the caller never has to
+   * land a queue mutation before it can ask for cancellation. Callers fall back
+   * to `retractQueued()` followed by `stop()` when it is absent.
+   */
+  interruptTurn?(): Promise<MakaRetractedMessages>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
   setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void>;

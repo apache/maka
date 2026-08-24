@@ -212,6 +212,13 @@ export interface MakaPiTranscriptMetadata {
   modelContextWindow?: number;
   /** Elapsed milliseconds of the running agent turn, for the activity strip. */
   turnElapsedMs?: number;
+  /**
+   * Elapsed milliseconds since a turn interrupt was accepted, for the activity
+   * strip's `Cancelling…` counter. Set from local gesture recognition, not from
+   * the runtime's terminal convergence — the counter is what makes a slow
+   * cleanup readable instead of looking like an ignored keypress.
+   */
+  interruptElapsedMs?: number;
   providerRetry?: ProviderRetryCountdown;
   /** Resolved locale for primary TUI guidance. Defaults to English for direct embeddings. */
   uiLocale?: UiLocale;
@@ -1809,14 +1816,25 @@ function sideConversationStatusLineText(
 
 /**
  * One-line activity strip shown between the transcript and the editor.
- * Renders `Working… <elapsed>` while a turn runs, or a blank reserved row when idle
- * so the layout does not jump when a turn starts or ends.
+ * Renders `Cancelling… <elapsed>` once an interrupt is accepted, `Working… <elapsed>`
+ * while a turn runs, or a blank reserved row when idle so the layout does not
+ * jump when a turn starts or ends.
  */
 export function renderMakaPiActivityStrip(
   metadata: MakaPiTranscriptMetadata,
   width: number,
 ): string {
   const safeWidth = Math.max(1, width);
+  // Cancellation outranks both other states: the abort supersedes a scheduled
+  // provider retry, and the turn is no longer working towards anything the user
+  // asked for. The elapsed counter keeps a slow cleanup — a tool holding a
+  // process through its termination grace — legible as progress.
+  if (metadata.interruptElapsedMs !== undefined) {
+    return fitLine(
+      ansi.dim(`Cancelling… ${formatElapsedDuration(metadata.interruptElapsedMs)}`),
+      safeWidth,
+    );
+  }
   if (metadata.providerRetry) {
     const { event: retry, receivedAtMs } = metadata.providerRetry;
     const text =
