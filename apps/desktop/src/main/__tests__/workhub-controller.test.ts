@@ -49,6 +49,7 @@ function session(
 function port(sessions: WorkHubSessionFacts[]): WorkHubSessionPort {
   return {
     list: async () => sessions,
+    recentTurns: async () => [],
     routingEvidence: async () => [],
     create: async () => {
       throw new Error('create is not used by this read test');
@@ -104,6 +105,40 @@ test('read exposes existing ordinary Sessions as factual Work summaries', async 
       updatedAt: 20,
     },
   ]);
+  assert.deepEqual(projection.turns, []);
+});
+
+test('read rebuilds a bounded conversation projection from ordinary Session turns', async () => {
+  const sessions = port([
+    session('login', { sessionName: '登录刷新令牌', updatedAt: 30 }),
+    session('internal', { kind: 'internal', updatedAt: 40 }),
+  ]);
+  const requestedTargets: string[][] = [];
+  sessions.recentTurns = async (targets) => {
+    requestedTargets.push(targets.map((target) => target.sessionId));
+    return [{
+      messageId: 'user-1',
+      target: { sessionId: 'login' },
+      turnId: 'turn-login',
+      text: '检查刷新令牌竞争条件',
+      state: 'completed',
+      result: '已定位到并发刷新窗口',
+      updatedAt: 20,
+    }];
+  };
+
+  const projection = await createWorkHubController({ sessions }).read();
+
+  assert.deepEqual(requestedTargets, [['login']]);
+  assert.deepEqual(projection.turns, [{
+    messageId: 'user-1',
+    target: { sessionId: 'login' },
+    turnId: 'turn-login',
+    text: '检查刷新令牌竞争条件',
+    state: 'completed',
+    result: '已定位到并发刷新窗口',
+    updatedAt: 20,
+  }]);
 });
 
 test('archived Sessions stay inspectable but are excluded from routing targets', async () => {

@@ -19,6 +19,7 @@
 
 import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { renderTuiShortcutCopy } from './tui-shortcut-copy.js';
 
 type TuiCommandId = SlashCommandIdForSurface<'tui'>;
 
@@ -135,6 +136,16 @@ const TUI_PRIMARY_GUIDANCE = {
   },
 } satisfies UiCatalog<TuiPrimaryGuidanceCopy>;
 
-export function getTuiPrimaryGuidance(locale: UiLocale): TuiPrimaryGuidanceCopy {
-  return TUI_PRIMARY_GUIDANCE[locale];
+export function getTuiPrimaryGuidance(
+  locale: UiLocale,
+  platform: NodeJS.Platform = process.platform,
+): TuiPrimaryGuidanceCopy {
+  const guidance = TUI_PRIMARY_GUIDANCE[locale];
+  return {
+    ...guidance,
+    help: {
+      ...guidance.help,
+      keybindings: guidance.help.keybindings.map((line) => renderTuiShortcutCopy(line, platform)),
+    },
+  };
 }

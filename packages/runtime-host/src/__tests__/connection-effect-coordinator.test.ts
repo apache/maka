@@ -62,7 +62,7 @@ test('verifies a first-run API key without persisting a connection or credential
     });
 
     const result = await coordinator.handlers['connection.onboarding.verify'](
-      { providerType: 'openai', apiKey: 'first-run-secret' },
+      { providerType: 'openai', connectionId: null, apiKey: 'first-run-secret', baseUrl: null },
       context,
     );
 
@@ -73,6 +73,387 @@ test('verifies a first-run API key without persisting a connection or credential
     assert.deepEqual(observed, { slug: 'openai', secret: 'first-run-secret' });
     assert.deepEqual((await stores.connectionCatalog.getSnapshot()).connections, []);
     assert.deepEqual((await stores.credentialVault.getSnapshot()).entries, []);
+  });
+});
+
+test('onboards a custom relay end to end: rejects a missing endpoint, discovers and persists a supplied one', async () => {
+  await withFixture(async ({ stores }) => {
+    let observedBaseUrl: string | undefined;
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => 123,
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async (connection) => {
+        observedBaseUrl = connection.baseUrl;
+        return { ok: true, models: [{ id: 'relay/model' }] };
+      },
+    });
+
+    // A relay has no registry endpoint and no existing connection: nothing
+    // can answer discovery, so the attempt is rejected before any probe.
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.verify'](
+        {
+          providerType: 'openai-compatible',
+          connectionId: null,
+          apiKey: 'relay-secret',
+          baseUrl: null,
+        },
+        context,
+      ),
+      { ok: true, result: { kind: 'rejected', reason: 'base_url_not_configured' } },
+    );
+    assert.equal(observedBaseUrl, undefined);
+
+    const saved = await coordinator.handlers['connection.onboarding.save'](
+      {
+        providerType: 'openai-compatible',
+        apiKey: 'relay-secret',
+        connectionId: null,
+        baseUrl: 'https://relay.example.test/v1',
+        enabledModelIds: ['relay/model'],
+      },
+      context,
+    );
+    assert.deepEqual(saved, { ok: true, result: { kind: 'saved' } });
+    assert.equal(observedBaseUrl, 'https://relay.example.test/v1');
+
+    const connection = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ slug }) => slug === 'openai-compatible',
+    );
+    assert.equal(connection?.baseUrl, 'https://relay.example.test/v1');
+    // Re-verifying with a blank endpoint now reuses the persisted one.
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.verify'](
+        { providerType: 'openai-compatible', connectionId: null, apiKey: '', baseUrl: null },
+        context,
+      ),
+      { ok: true, result: { kind: 'verified', models: [{ id: 'relay/model' }] } },
+    );
+  });
+});
+
+test('re-onboarding by connection identity edits a Desktop custom-slug relay in place', async () => {
+  await withFixture(async ({ stores }) => {
+    // Desktop can create a relay under any slug; the wizard resolves that
+    // connection's identity and must edit it, not derive a second connection
+    // at the canonical slug (#3467 review).
+    const connection = await createConnection(stores, 0, {
+      ...connectionDraft('my-relay', 'openai-compatible'),
+      baseUrl: 'https://relay-a.example.test/v1',
+      enabledModelIds: ['relay/model'],
+    });
+    await setConnectionCredential(stores, connection, 'old-secret');
+    let observedBaseUrl: string | undefined;
+    let observedSecret: string | undefined;
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => 123,
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async (target, secret) => {
+        observedBaseUrl = target.baseUrl;
+        observedSecret = secret;
+        return { ok: true, models: [{ id: 'relay/model' }] };
+      },
+    });
+
+    // A blank re-verify against the resolved identity reuses the stored
+    // secret and the persisted custom-slug endpoint.
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.verify'](
+        {
+          providerType: 'openai-compatible',
+          connectionId: connection.connectionId,
+          apiKey: '',
+          baseUrl: null,
+        },
+        context,
+      ),
+      { ok: true, result: { kind: 'verified', models: [{ id: 'relay/model' }] } },
+    );
+    assert.equal(observedBaseUrl, 'https://relay-a.example.test/v1');
+    assert.equal(observedSecret, 'old-secret');
+
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.save'](
+        {
+          providerType: 'openai-compatible',
+          connectionId: connection.connectionId,
+          apiKey: 'new-secret',
+          baseUrl: 'https://relay-b.example.test/v1',
+          enabledModelIds: ['relay/model'],
+        },
+        context,
+      ),
+      { ok: true, result: { kind: 'saved' } },
+    );
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    // Edited in place: still exactly one connection, same identity, custom
+    // slug preserved, endpoint replaced.
+    assert.deepEqual(
+      catalog.connections.map(({ connectionId, slug, baseUrl }) => ({
+        connectionId,
+        slug,
+        baseUrl,
+      })),
+      [
+        {
+          connectionId: connection.connectionId,
+          slug: 'my-relay',
+          baseUrl: 'https://relay-b.example.test/v1',
+        },
+      ],
+    );
+
+    // A stale identity is rejected instead of silently creating a duplicate.
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.verify'](
+        {
+          providerType: 'openai-compatible',
+          connectionId: '00000000-0000-4000-8000-00000000dead',
+          apiKey: 'x',
+          baseUrl: null,
+        },
+        context,
+      ),
+      { ok: true, result: { kind: 'rejected', reason: 'connection_not_found' } },
+    );
+  });
+});
+
+test('a save whose connection changed between discovery and commit is superseded, never mixed', async () => {
+  await withFixture(async ({ stores }) => {
+    // The #3467 review race: discovery observes relay A/key A, a supported
+    // concurrent policy update moves the connection to relay B/key B before
+    // the commit, and the save must NOT persist relay B with the model
+    // inventory relay A produced.
+    const connection = await createConnection(stores, 0, {
+      ...connectionDraft('openai-compatible', 'openai-compatible'),
+      baseUrl: 'https://relay-a.example.test/v1',
+      enabledModelIds: ['relay/original'],
+    });
+    await setConnectionCredential(stores, connection, 'key-a');
+
+    let releaseDiscovery!: () => void;
+    const discoveryPaused = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    let observeDiscovery!: (value: { baseUrl?: string; secret: string }) => void;
+    const discoveryObserved = new Promise<{ baseUrl?: string; secret: string }>((resolve) => {
+      observeDiscovery = resolve;
+    });
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => 999,
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async (target, secret) => {
+        observeDiscovery({ baseUrl: target.baseUrl, secret });
+        await discoveryPaused;
+        return { ok: true, models: [{ id: 'model-from-relay-a' }] };
+      },
+    });
+
+    const saving = coordinator.handlers['connection.onboarding.save'](
+      {
+        providerType: 'openai-compatible',
+        connectionId: connection.connectionId,
+        apiKey: '',
+        baseUrl: null,
+        enabledModelIds: ['model-from-relay-a'],
+      },
+      context,
+    );
+    const observed = await discoveryObserved;
+    assert.equal(observed.baseUrl, 'https://relay-a.example.test/v1');
+    assert.equal(observed.secret, 'key-a');
+
+    // Concurrent, fully supported policy update while discovery is in flight:
+    // move the endpoint and rotate the credential.
+    const moved = await stores.connectionCatalog.update({
+      expected: { connectionId: connection.connectionId, revision: connection.revision },
+      changes: {
+        name: connection.name,
+        baseUrl: 'https://relay-b.example.test/v1',
+        enabled: true,
+        enabledModelIds: connection.enabledModelIds,
+      },
+    });
+    assert.equal(moved.kind, 'committed');
+    const keyA = await connectionCredentialStatus(stores, connection);
+    assert.equal(keyA.configured, true);
+    const rotated = await stores.credentialVault.set({
+      locator: connectionCredential(connection),
+      expected:
+        keyA.configured === true
+          ? { credentialId: keyA.credentialId, revision: keyA.revision }
+          : null,
+      secret: 'key-b',
+    });
+    assert.equal(rotated.kind, 'committed');
+
+    releaseDiscovery();
+    assert.deepEqual(await saving, {
+      ok: true,
+      result: { kind: 'rejected', reason: 'superseded' },
+    });
+
+    // Relay B and key B stand untouched; relay A's inventory never landed.
+    const after = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ connectionId }) => connectionId === connection.connectionId,
+    );
+    assert.equal(after?.baseUrl, 'https://relay-b.example.test/v1');
+    assert.equal(
+      after?.models.some(({ id }) => id === 'model-from-relay-a'),
+      false,
+    );
+    assert.deepEqual(after?.enabledModelIds, ['relay/original']);
+    assert.equal(
+      (await stores.operations.exportCredentialMaterial(connectionCredential(connection)))?.secret,
+      'key-b',
+    );
+
+    // A retry against the settled state discovers through relay B/key B and
+    // commits cleanly.
+    const retried = await coordinator.handlers['connection.onboarding.save'](
+      {
+        providerType: 'openai-compatible',
+        connectionId: connection.connectionId,
+        apiKey: '',
+        baseUrl: null,
+        enabledModelIds: ['model-from-relay-a'],
+      },
+      context,
+    );
+    assert.deepEqual(retried, { ok: true, result: { kind: 'saved' } });
+  });
+});
+
+test('onboarding probes with the custom request headers the models path sends, and a header rotation supersedes', async () => {
+  await withFixture(async ({ stores }) => {
+    // A connection that authenticates through a custom header (plus a body
+    // overlay) must onboard with the same probe the models path sends —
+    // otherwise re-onboarding fails against the very provider that
+    // models.fetch reaches fine (#3467 review).
+    const headerSecret = 'header-secret-must-not-escape';
+    const connection = await createConnection(stores, 0, {
+      ...connectionDraft('header-relay', 'openai-compatible'),
+      baseUrl: 'https://relay.example.test/v1',
+      enabledModelIds: ['relay/model'],
+      requestBodyOverlay: { tenant: 'acme' },
+    });
+    await setConnectionCredential(stores, connection, 'api-key');
+    const headersLocator = {
+      scope: 'connection' as const,
+      connectionId: connection.connectionId,
+      kind: 'request_headers' as const,
+    };
+    const headersSet = await stores.credentialVault.set({
+      locator: headersLocator,
+      expected: null,
+      secret: JSON.stringify({ 'X-Relay-Auth': headerSecret }),
+    });
+    assert.equal(headersSet.kind, 'committed');
+
+    const probes: Array<{ header: string | null; body: unknown }> = [];
+    let releaseDiscovery!: () => void;
+    const discoveryPaused = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    let observeDiscovery!: () => void;
+    const discoveryObserved = new Promise<void>((resolve) => {
+      observeDiscovery = resolve;
+    });
+    let discoveryRuns = 0;
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      now: () => 456,
+      createTransport: () => ({
+        fetch: (async (input, init) => {
+          const request = new Request(input, init);
+          probes.push({
+            header: request.headers.get('x-relay-auth'),
+            body: JSON.parse(await request.text()),
+          });
+          return new Response('{}', { status: 200 });
+        }) as typeof globalThis.fetch,
+        close: async () => {},
+      }),
+      runModelDiscovery: async (_target, _secret, options) => {
+        await options.fetch('https://relay.example.test/v1/models', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ probe: true }),
+        });
+        discoveryRuns += 1;
+        if (discoveryRuns === 2) {
+          observeDiscovery();
+          await discoveryPaused;
+        }
+        return { ok: true, models: [{ id: 'relay/model' }] };
+      },
+    });
+
+    const verified = await coordinator.handlers['connection.onboarding.verify'](
+      {
+        providerType: 'openai-compatible',
+        connectionId: connection.connectionId,
+        apiKey: '',
+        baseUrl: null,
+      },
+      context,
+    );
+    assert.equal(verified.ok, true);
+    assert.deepEqual(probes, [{ header: headerSecret, body: { probe: true, tenant: 'acme' } }]);
+    assertRedacted(verified, [headerSecret]);
+
+    // Rotating the header credential while a save's discovery is in flight
+    // invalidates its basis: the committed inventory must describe what the
+    // connection would fetch, and that changed under the probe.
+    const saving = coordinator.handlers['connection.onboarding.save'](
+      {
+        providerType: 'openai-compatible',
+        connectionId: connection.connectionId,
+        apiKey: '',
+        baseUrl: null,
+        enabledModelIds: ['relay/model'],
+      },
+      context,
+    );
+    await discoveryObserved;
+    const headerStatus = await stores.credentialVault.getStatus(headersLocator);
+    assert.equal(headerStatus.kind === 'status' && headerStatus.status.configured, true);
+    if (headerStatus.kind !== 'status' || !headerStatus.status.configured) return;
+    const rotated = await stores.credentialVault.set({
+      locator: headersLocator,
+      expected: {
+        credentialId: headerStatus.status.credentialId,
+        revision: headerStatus.status.revision,
+      },
+      secret: JSON.stringify({ 'X-Relay-Auth': 'rotated-header-secret' }),
+    });
+    assert.equal(rotated.kind, 'committed');
+    // The rotation left the catalog row untouched, so this supersede can only
+    // come from the header credential joining the discovery basis.
+    const row = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ connectionId }) => connectionId === connection.connectionId,
+    );
+    assert.equal(row?.revision, connection.revision);
+
+    releaseDiscovery();
+    assert.deepEqual(await saving, {
+      ok: true,
+      result: { kind: 'rejected', reason: 'superseded' },
+    });
+    // The save's own probe carried the same customization as the verify's.
+    assert.deepEqual(probes[1], probes[0]);
   });
 });
 
@@ -94,6 +475,8 @@ test('saves a verified first-run target through the canonical Host authorities',
       {
         providerType: 'openai',
         apiKey: 'first-run-secret',
+        connectionId: null,
+        baseUrl: null,
         enabledModelIds: ['second-model'],
       },
       context,
@@ -154,6 +537,8 @@ test('re-enables an existing connection without replacing another default target
       {
         providerType: 'openai',
         apiKey: null,
+        connectionId: null,
+        baseUrl: null,
         enabledModelIds: ['restored-model'],
       },
       context,
@@ -191,6 +576,8 @@ test('leaves canonical onboarding state unchanged when the durable intent cannot
           {
             providerType: 'openai',
             apiKey: 'new-secret',
+            connectionId: null,
+            baseUrl: null,
             enabledModelIds: ['new-model'],
           },
           context,
@@ -239,6 +626,8 @@ test('recovers a durable onboarding intent instead of rolling back a partial pub
           {
             providerType: 'openai',
             apiKey: 'new-secret',
+            connectionId: null,
+            baseUrl: null,
             enabledModelIds: ['new-model'],
           },
           context,
@@ -285,6 +674,8 @@ test('invalidates a verified result when onboarding rotates only the credential'
         {
           providerType: 'openai',
           apiKey: 'new-secret',
+          connectionId: null,
+          baseUrl: null,
           enabledModelIds: ['gpt-5'],
         },
         context,
@@ -328,6 +719,8 @@ test('onboarding keeps what its wizard never offered and prunes what it did', as
         {
           providerType: 'openai-compatible',
           apiKey: 'new-secret',
+          connectionId: null,
+          baseUrl: null,
           enabledModelIds: ['kept-model'],
         },
         context,
@@ -350,6 +743,28 @@ test('onboarding keeps what its wizard never offered and prunes what it did', as
       (await stores.connectionCatalog.getSnapshot()).connections.map(({ slug }) => slug),
       ['openai-compatible'],
     );
+
+    // Declarations are endpoint-keyed, like the update path enforces: a
+    // re-onboarding that swaps the relay URL must not carry the old relay's
+    // profile table onto the new one.
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.save'](
+        {
+          providerType: 'openai-compatible',
+          apiKey: '',
+          connectionId: null,
+          baseUrl: 'https://relay-b.example.test/v1',
+          enabledModelIds: ['kept-model'],
+        },
+        context,
+      ),
+      { ok: true, result: { kind: 'saved' } },
+    );
+    const swapped = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ connectionId }) => connectionId === connection.connectionId,
+    );
+    assert.equal(swapped?.baseUrl, 'https://relay-b.example.test/v1');
+    assert.equal(swapped?.relayModelProfiles, undefined);
   });
 });
 
@@ -385,6 +800,8 @@ test('onboarding drops a declaration for a model the wizard offered and the user
         {
           providerType: 'openai-compatible',
           apiKey: 'new-secret',
+          connectionId: null,
+          baseUrl: null,
           enabledModelIds: ['kept-model'],
         },
         context,
@@ -429,6 +846,8 @@ test('rejects an oversized final catalog before publishing a recovery intent', a
         {
           providerType: 'openai',
           apiKey: 'capacity-secret',
+          connectionId: null,
+          baseUrl: null,
           enabledModelIds: [discovered[0]!.id],
         },
         context,

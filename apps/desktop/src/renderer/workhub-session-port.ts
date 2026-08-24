@@ -17,12 +17,20 @@
  * under the License.
  */
 
+import { deriveTurnRecords, type StoredMessage } from '@maka/core/session';
 import type {
+  DesktopTranscriptBatch,
+  DesktopTranscriptHandle,
+} from '../preload/transcript-contract.js';
+import { DesktopTranscriptRangeStore } from './desktop-transcript-range-store.js';
+import type {
+  WorkHubProjectedTurn,
   WorkHubSessionFacts,
   WorkHubSessionPort,
   WorkHubSessionState,
   WorkHubSessionTarget,
 } from './workhub-controller.js';
+import { boundedWorkHubTimelineText } from './workhub-controller.js';
 
 export interface WorkHubDesktopSession {
   id: string;
@@ -56,8 +64,21 @@ export interface WorkHubDesktopSessionBridge {
   subscribeChanges(handler: () => void): () => void;
 }
 
+export interface WorkHubDesktopTranscriptBridge {
+  open(
+    sessionId: string,
+    handler: (batch: DesktopTranscriptBatch) => void,
+    registerCancellation?: (cancel: () => void) => void,
+  ): Promise<DesktopTranscriptHandle>;
+}
+
+const WORKHUB_TIMELINE_SESSION_LIMIT = 10;
+const WORKHUB_TIMELINE_TURN_LIMIT = 40;
+const WORKHUB_TRANSCRIPT_READY_TIMEOUT_MS = 5_000;
+
 export function createDesktopWorkHubSessionPort(deps: {
   sessions: WorkHubDesktopSessionBridge;
+  transcripts: WorkHubDesktopTranscriptBridge;
   projectName(projectId: string): string | undefined;
   newTurnId(): string;
 }): WorkHubSessionPort {
@@ -92,6 +113,28 @@ export function createDesktopWorkHubSessionPort(deps: {
   return {
     async list() {
       return (await deps.sessions.list()).map(projectSession);
+    },
+    async recentTurns(targets) {
+      const turnsBySession = await Promise.all(
+        targets.slice(0, WORKHUB_TIMELINE_SESSION_LIMIT).map(async (target) => {
+          try {
+            const messages = await readWorkHubSessionMessages(deps.transcripts, target);
+            return projectWorkHubSessionTurns({ target, messages });
+          } catch {
+            // One unavailable transcript must not hide the other Sessions or
+            // turn WorkHub into a second recovery authority.
+            return [];
+          }
+        }),
+      );
+      return turnsBySession
+        .flat()
+        .sort((left, right) =>
+          left.updatedAt - right.updatedAt ||
+          left.target.sessionId.localeCompare(right.target.sessionId) ||
+          left.messageId.localeCompare(right.messageId),
+        )
+        .slice(-WORKHUB_TIMELINE_TURN_LIMIT);
     },
     async routingEvidence(targets) {
       return Promise.all(targets.map(async (target) => {
@@ -137,6 +180,86 @@ export function createDesktopWorkHubSessionPort(deps: {
       return deps.sessions.subscribeChanges(handler);
     },
   };
+}
+
+export function projectWorkHubSessionTurns(input: {
+  target: WorkHubSessionTarget;
+  messages: readonly StoredMessage[];
+}): WorkHubProjectedTurn[] {
+  const stateByTurnId = new Map(
+    deriveTurnRecords(input.messages).map((turn) => [turn.turnId, turn.status]),
+  );
+  const turns: WorkHubProjectedTurn[] = [];
+  const latestUserIndexByTurnId = new Map<string, number>();
+
+  for (const message of input.messages) {
+    if (message.type === 'user') {
+      const text = boundedWorkHubTimelineText(message.displayText ?? message.text);
+      if (!text) continue;
+      const state = stateByTurnId.get(message.turnId) ?? 'completed';
+      turns.push({
+        messageId: message.id,
+        target: input.target,
+        turnId: message.turnId,
+        text,
+        state,
+        updatedAt: message.ts,
+      });
+      latestUserIndexByTurnId.set(message.turnId, turns.length - 1);
+      continue;
+    }
+    if (message.type !== 'assistant') continue;
+    const result = boundedWorkHubTimelineText(message.text);
+    if (!result) continue;
+    const userIndex = latestUserIndexByTurnId.get(message.turnId);
+    if (userIndex === undefined) continue;
+    turns[userIndex] = { ...turns[userIndex]!, result };
+  }
+
+  return turns;
+}
+
+async function readWorkHubSessionMessages(
+  transcripts: WorkHubDesktopTranscriptBridge,
+  target: WorkHubSessionTarget,
+): Promise<readonly StoredMessage[]> {
+  const store = new DesktopTranscriptRangeStore(target.sessionId);
+  let resolveReady: ((messages: readonly StoredMessage[]) => void) | undefined;
+  const ready = new Promise<readonly StoredMessage[]>((resolve) => {
+    resolveReady = resolve;
+  });
+  let cancelOpen = () => {};
+  let timedOut = false;
+  let handle: DesktopTranscriptHandle | undefined;
+  let rejectTimeout!: (error: Error) => void;
+  const timeoutFailure = new Promise<never>((_resolve, reject) => {
+    rejectTimeout = reject;
+  });
+  void timeoutFailure.catch(() => undefined);
+  const timeout = globalThis.setTimeout(() => {
+    timedOut = true;
+    cancelOpen();
+    rejectTimeout(new Error('WorkHub Session transcript did not become ready'));
+  }, WORKHUB_TRANSCRIPT_READY_TIMEOUT_MS);
+  const opening = transcripts.open(
+    target.sessionId,
+    (batch) => {
+      store.accept(batch);
+      if (batch.ready) resolveReady?.(store.snapshot().messages);
+    },
+    (cancel) => {
+      cancelOpen = cancel;
+      if (timedOut) cancel();
+    },
+  );
+  void opening.catch(() => undefined);
+  try {
+    handle = await Promise.race([opening, timeoutFailure]);
+    return await Promise.race([ready, timeoutFailure]);
+  } finally {
+    globalThis.clearTimeout(timeout);
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 function projectState(session: WorkHubDesktopSession): WorkHubSessionState {

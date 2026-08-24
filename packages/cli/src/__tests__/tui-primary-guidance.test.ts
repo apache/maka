@@ -42,4 +42,21 @@ describe('TUI primary guidance catalog', () => {
 
     assert.deepEqual(tokens('zh'), tokens('en'));
   });
+
+  test('renders Option shortcut labels on macOS and Alt labels elsewhere', () => {
+    const guidanceFor = (locale: 'zh' | 'en', platform: NodeJS.Platform) =>
+      getTuiPrimaryGuidance(locale, platform);
+
+    for (const locale of ['zh', 'en'] as const) {
+      const macKeybindings = guidanceFor(locale, 'darwin').help.keybindings.join('\n');
+      assert.match(macKeybindings, /⌥\+Enter/u);
+      assert.match(macKeybindings, /⌥\+↑/u);
+      assert.doesNotMatch(macKeybindings, /\bAlt\+/u);
+
+      const linuxKeybindings = guidanceFor(locale, 'linux').help.keybindings.join('\n');
+      assert.match(linuxKeybindings, /Alt\+Enter/u);
+      assert.match(linuxKeybindings, /Alt\+↑/u);
+      assert.doesNotMatch(linuxKeybindings, /⌥\+/u);
+    }
+  });
 });

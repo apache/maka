@@ -1382,8 +1382,11 @@ export async function connectResolvedRuntimeHost(
       result.handshake.generation !== generation
     ) {
       return registration.lifecycleMode === 'ephemeral' &&
+        result.handshake.state === 'ready' &&
         result.handshake.activity !== undefined &&
-        result.handshake.activity.connections === 0
+        result.handshake.activity.connections === 0 &&
+        result.handshake.activity.activeOperations === 0 &&
+        result.handshake.activity.residencies.length === 0
         ? {
             kind: 'upgrade_required',
             registration,

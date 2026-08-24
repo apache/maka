@@ -58,7 +58,6 @@ import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinat
 import { resolveTurnShellPlan, ShellPreferenceError } from '@maka/runtime/shell-detect';
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { SESSION_RECAP_INSTRUCTION } from '@maka/runtime/session-recap';
-import { hostedExecutionToolNames } from '../server/hosted-execution-tool-profile.js';
 import { createToolResultArchiveCapability } from '@maka/runtime/tool-result-archive-capability';
 import { loadHistoryCompactCheckpointsFromRunLedger } from '@maka/runtime/history-compact-ledger';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
@@ -2967,7 +2966,6 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
     } as unknown as HostMemoryCoordinator,
     taskLedger: {} as TaskLedgerStore,
     builtinTools: {},
-    boundToolNames: hostedExecutionToolNames('headless-coding-v1'),
     toolProfile: 'headless-coding-v1',
     parentAgentTools: buildParentAgentTools(),
     scheduledTaskTool: {

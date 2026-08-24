@@ -742,12 +742,7 @@ export async function createExecutionRuntimeHostComposition(
           skills,
           memory: requireMemory(memory),
           taskLedger,
-          ...(runProfile
-            ? {
-                boundToolNames: runProfile.toolNames,
-                toolProfile: header.toolProfile,
-              }
-            : {}),
+          ...(runProfile ? { toolProfile: header.toolProfile } : {}),
           ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
           builtinTools,
           hostTools: surface.hostTools,

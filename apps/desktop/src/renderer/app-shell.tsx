@@ -1560,6 +1560,7 @@ function AppShellContent({
   const workHubController = useMemo(() => createWorkHubController({
     sessions: createDesktopWorkHubSessionPort({
       sessions: window.maka.sessions,
+      transcripts: window.maka.transcripts,
       projectName: (projectId) => projects.find((project) => project.id === projectId)?.name,
       newTurnId: () => crypto.randomUUID(),
     }),

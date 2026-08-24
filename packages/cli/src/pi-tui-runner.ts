@@ -1082,6 +1082,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // The runner holds them so the wizard stays UI-only; the secret never crosses
   // back into the wizard.
   let wizardApiKey = '';
+  // The relay endpoint from the base-URL step ('' reuses the persisted one).
+  let wizardBaseUrl = '';
+  // The existing connection the picked provider resolved to, so saving edits
+  // it in place (a Desktop-created relay may live under a custom slug).
+  let wizardConnectionId: string | undefined;
   let wizardModels: readonly ModelInfo[] = [];
   // Authoritative ready model choices for `/model`. A startup snapshot refreshed
   // in place after `/setup` saves so newly configured models are immediately
@@ -1848,6 +1853,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizard = undefined;
     wizardProviderType = undefined;
     wizardApiKey = '';
+    wizardBaseUrl = '';
+    wizardConnectionId = undefined;
     wizardModels = [];
   };
 
@@ -1872,26 +1879,32 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const attempt = ++wizardAttempt;
     targetWizard.setVerifying();
     requestRender();
-    void input.onboarding.verify({ providerType, apiKey }).then(
-      (result) => {
-        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-        if (result.kind === 'error') {
-          // Probe failed: re-arm the key field in place. The host stores nothing
-          // during verify, so retrying with a corrected key is clean.
-          wizard.setKeyError(`API key 验证失败：${result.text}。请检查后重新输入。`);
+    void input.onboarding
+      .verify({ providerType, connectionId: wizardConnectionId, apiKey, baseUrl: wizardBaseUrl })
+      .then(
+        (result) => {
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          if (result.kind === 'error') {
+            // Probe failed: re-arm the key field in place. The host stores nothing
+            // during verify, so retrying with a corrected key is clean.
+            // A stale snapshot (the targeted connection is gone) is not a key
+            // problem — retyping cannot fix it, so skip that framing.
+            wizard.setKeyError(
+              result.stale ? result.text : `API key 验证失败：${result.text}。请检查后重新输入。`,
+            );
+            requestRender();
+            return;
+          }
+          wizardModels = result.models;
+          wizard.setModels(result.models); // advance to the models step
           requestRender();
-          return;
-        }
-        wizardModels = result.models;
-        wizard.setModels(result.models); // advance to the models step
-        requestRender();
-      },
-      (error) => {
-        if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-        wizard.setKeyError(`配置失败：${error instanceof Error ? error.message : String(error)}`);
-        requestRender();
-      },
-    );
+        },
+        (error) => {
+          if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
+          wizard.setKeyError(`配置失败：${error instanceof Error ? error.message : String(error)}`);
+          requestRender();
+        },
+      );
   };
 
   // Models submit from the wizard: persist the curated enabled set, refresh the
@@ -1911,7 +1924,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     targetWizard.setSaving();
     requestRender();
     void input.onboarding
-      .save({ providerType, apiKey: wizardApiKey, enabledModelIds, models: wizardModels })
+      .save({
+        providerType,
+        connectionId: wizardConnectionId,
+        apiKey: wizardApiKey,
+        baseUrl: wizardBaseUrl,
+        enabledModelIds,
+        models: wizardModels,
+      })
       .then(
         (result) => {
           if (result.kind === 'error') {
@@ -1979,11 +1999,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizardOverlay?.hide();
     wizard = new OnboardingWizard(tui, {
       providers,
-      onPickProvider: (providerType) => {
+      onPickProvider: (providerType, existingConnectionId) => {
         wizardProviderType = providerType;
         wizardApiKey = '';
+        wizardBaseUrl = '';
+        wizardConnectionId = existingConnectionId;
         wizardModels = [];
         wizardAttempt += 1; // a new pick supersedes any in-flight attempt
+        requestRender();
+      },
+      onSubmitBaseUrl: (baseUrl) => {
+        wizardBaseUrl = baseUrl;
         requestRender();
       },
       onSubmitKey: submitWizardKey,

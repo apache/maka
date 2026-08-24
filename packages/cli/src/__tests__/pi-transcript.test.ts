@@ -31,6 +31,7 @@ import {
   applyShellRunUpdateToTranscript,
   createMakaPiTranscriptState,
   renderMakaPiActivityStrip,
+  renderMakaPiPendingQueue,
   renderMakaPiStatusLine,
   renderMakaPiTranscript,
   refreshRunningShellRunElapsed,
@@ -102,9 +103,17 @@ describe('Maka Pi TUI transcript', () => {
   test('renders fresh-session guidance in the resolved locale', () => {
     const state = createMakaPiTranscriptState();
 
-    const english = renderMakaPiTranscript(state, { ...meta(), uiLocale: 'en' }, 100)
-      .map(stripAnsi)
-      .join('\n');
+    const englishLines = renderMakaPiTranscript(state, { ...meta(), uiLocale: 'en' }, 100).map(
+      stripAnsi,
+    );
+    assert.deepEqual(englishLines.slice(0, 5), [
+      '                  _',
+      '  _ __ ___   __ _| | ____ _',
+      " | '_ ` _ \\ / _` | |/ / _` |",
+      ' | | | | | | (_| |   < (_| |',
+      ' |_| |_| |_|\\__,_|_|\\_\\__,_|',
+    ]);
+    const english = englishLines.join('\n');
     assert.match(english, /Get things done together/);
     assert.match(english, /Type a message to start/);
     assert.match(english, /\/session\s+Switch or resume a session/);
@@ -115,6 +124,16 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(chinese, /陪你把事做完/);
     assert.match(chinese, /输入消息开始对话/);
     assert.match(chinese, /\/session\s+切换或恢复会话/);
+  });
+
+  test('renders the pending-queue edit shortcut for the current platform', () => {
+    const state = createMakaPiTranscriptState();
+    state.steering = ['Keep going'];
+    const renderFor = (platform: NodeJS.Platform) =>
+      renderMakaPiPendingQueue(state, 80, platform).map(stripAnsi);
+
+    assert.equal(renderFor('darwin').at(-1), '⌥+↑ 取回队列以重新编辑');
+    assert.equal(renderFor('linux').at(-1), 'Alt+↑ 取回队列以重新编辑');
   });
 
   test('renders goal-origin prompts as autonomous provenance, not as user prompts', () => {

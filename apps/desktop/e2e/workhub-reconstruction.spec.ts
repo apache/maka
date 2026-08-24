@@ -1,0 +1,64 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { expect, test, COMPOSER_INPUT } from './fixtures';
+
+test('WorkHub rebuilds Session conversation after navigating away and back', async ({
+  window: page,
+}) => {
+  const initialPrompt = '检查支付回调重复投递时的幂等性';
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill(initialPrompt);
+  await composer.press('Enter');
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+
+  const sessionName = await page.evaluate(async () =>
+    (await window.maka.sessions.list())[0]?.name,
+  );
+  expect(sessionName).toBeTruthy();
+  await page.evaluate(async () => {
+    await window.maka.settings.updateClient({ workHub: { enabled: true } });
+  });
+  await expect(page.getByRole('main', { name: 'WorkHub' })).toBeVisible();
+  await expect(
+    page.locator('.workhub-projected-turn .workhub-user-bubble > p', {
+      hasText: initialPrompt,
+    }),
+  ).toBeVisible();
+
+  const routedPrompt = `继续${sessionName}，补充重复投递测试点。`;
+  const workHubComposer = page.locator(
+    '.workhub-surface .maka-composer-editor [contenteditable="true"]',
+  );
+  await workHubComposer.fill(routedPrompt);
+  await workHubComposer.press('Enter');
+  await expect(page.locator('.workhub-submitted').last()).toBeVisible();
+  await page.locator('.workhub-submitted > button').last().click();
+  await expect(page.getByRole('main', { name: 'WorkHub' })).toBeHidden();
+
+  await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
+  await expect(page.getByRole('main', { name: 'WorkHub' })).toBeVisible();
+  await expect(
+    page.locator('.workhub-projected-turn .workhub-user-bubble > p', {
+      hasText: routedPrompt,
+    }),
+  ).toBeVisible();
+});
