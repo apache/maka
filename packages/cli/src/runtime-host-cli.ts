@@ -18,12 +18,12 @@
  */
 
 import { isAbsolute } from 'node:path';
+import { isProductReleaseVersion } from '@maka/runtime-host/operator';
 import {
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
   PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
 } from '@maka/runtime-host/protocol';
-import { isProductReleaseVersion } from './product-release-version.js';
 import type { RuntimeHostManagedServiceTarget } from './runtime-host-service-manager.js';
 
 type RuntimeHostCliError = { kind: 'error'; message: string; exitCode: number };

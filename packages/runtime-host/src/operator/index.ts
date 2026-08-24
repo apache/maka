@@ -55,3 +55,8 @@ export {
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
 } from './setup-frame.js';
+export {
+  compareProductReleaseVersions,
+  isProductReleaseVersion,
+  isSha512PackageIntegrity,
+} from './update-package-evidence.js';

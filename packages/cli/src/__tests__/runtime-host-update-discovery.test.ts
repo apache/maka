@@ -19,6 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import {
+  encodeRuntimeHostServiceManagementFrame,
+  type RuntimeHostServiceManagementFrame,
+} from '@maka/runtime-host/operator';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
 import {
   assessRuntimeHostUpdate,
@@ -78,6 +82,8 @@ describe('managed Runtime Host update discovery', () => {
       'dist.integrity',
       'maka.managedRuntimeHostUpdateCompatibility',
       '--json',
+      '--registry',
+      'https://registry.npmjs.org/',
     ]);
     assert.deepEqual(candidate, {
       version: '2.0.0-beta.1',
@@ -140,6 +146,14 @@ describe('managed Runtime Host update discovery', () => {
       }),
       { kind: 'manual_action', reason: 'target_not_newer' },
     );
+    assert.deepEqual(
+      assessRuntimeHostUpdate('1.0.0', 4, {
+        version: '2.0.0',
+        integrity: INTEGRITY,
+        compatibility: 5,
+      }),
+      { kind: 'manual_action', reason: 'compatibility_mismatch' },
+    );
     assert.match(
       formatRuntimeHostUpdateCheck({
         selector: { kind: 'channel', channel: 'next' },
@@ -148,6 +162,58 @@ describe('managed Runtime Host update discovery', () => {
         outcome: manual,
       }),
       /target package has no unattended-update compatibility evidence/u,
+    );
+  });
+
+  it('rejects malformed or contradictory machine evidence', () => {
+    const frame: RuntimeHostServiceManagementFrame = {
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'check_update',
+      service: {
+        platform: 'darwin',
+        arch: 'arm64',
+        osRelease: 'test',
+        state: 'stopped',
+        pid: null,
+        lastExitCode: 0,
+        installedVersion: '1.0.0',
+        projectDirectoryRoots: [],
+      },
+      updateCheck: {
+        selector: { kind: 'exact', version: '2.0.0' },
+        currentVersion: '1.0.0',
+        candidate: { version: '2.0.0', integrity: INTEGRITY },
+        outcome: { kind: 'unattended_update', compatibility: 4 },
+      },
+    };
+    assert.doesNotThrow(() => encodeRuntimeHostServiceManagementFrame(frame));
+    assert.throws(() =>
+      encodeRuntimeHostServiceManagementFrame({
+        ...frame,
+        updateCheck: {
+          ...frame.updateCheck,
+          candidate: { version: '9.0.0', integrity: INTEGRITY },
+        },
+      }),
+    );
+    assert.throws(() =>
+      encodeRuntimeHostServiceManagementFrame({
+        ...frame,
+        updateCheck: {
+          ...frame.updateCheck,
+          candidate: { version: '2.0.0', integrity: 'not-a-digest' },
+        },
+      }),
+    );
+    assert.throws(() =>
+      encodeRuntimeHostServiceManagementFrame({
+        ...frame,
+        updateCheck: {
+          ...frame.updateCheck,
+          outcome: { kind: 'current' },
+        },
+      }),
     );
   });
 });

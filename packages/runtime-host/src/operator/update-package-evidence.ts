@@ -54,6 +54,14 @@ export function compareProductReleaseVersions(left: string, right: string): -1 |
   return 0;
 }
 
+export function isSha512PackageIntegrity(value: string): boolean {
+  if (!value.startsWith('sha512-')) return false;
+  const encoded = value.slice('sha512-'.length);
+  if (encoded.length !== 88 || !/^[A-Za-z0-9+/]+={2}$/u.test(encoded)) return false;
+  const digest = Buffer.from(encoded, 'base64');
+  return digest.length === 64 && digest.toString('base64') === encoded;
+}
+
 function parseProductReleaseVersion(value: string): ProductReleaseVersion | undefined {
   if (value.length > 512) return undefined;
   const match =

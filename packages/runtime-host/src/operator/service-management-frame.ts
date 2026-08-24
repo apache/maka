@@ -18,6 +18,11 @@
  */
 
 import { z } from 'zod';
+import {
+  compareProductReleaseVersions,
+  isProductReleaseVersion,
+  isSha512PackageIntegrity,
+} from './update-package-evidence.js';
 
 export const RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX =
   'MAKA_RUNTIME_HOST_SERVICE_MANAGEMENT_V1 ';
@@ -74,6 +79,69 @@ const boundedNonEmptyString = (maxBytes: number) =>
     .string()
     .min(1)
     .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);
+const PRODUCT_RELEASE_VERSION_SCHEMA = z.string().refine(isProductReleaseVersion);
+const PACKAGE_INTEGRITY_SCHEMA = z.string().refine(isSha512PackageIntegrity);
+
+const UPDATE_CHECK_SCHEMA = z
+  .object({
+    selector: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('channel'), channel: z.enum(UPDATE_CHANNELS) }).strict(),
+      z
+        .object({
+          kind: z.literal('exact'),
+          version: PRODUCT_RELEASE_VERSION_SCHEMA,
+        })
+        .strict(),
+    ]),
+    currentVersion: PRODUCT_RELEASE_VERSION_SCHEMA,
+    candidate: z
+      .object({
+        version: PRODUCT_RELEASE_VERSION_SCHEMA,
+        integrity: PACKAGE_INTEGRITY_SCHEMA,
+      })
+      .strict(),
+    outcome: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('current') }).strict(),
+      z
+        .object({
+          kind: z.literal('unattended_update'),
+          compatibility: z.number().int().positive(),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal('manual_action'),
+          reason: z.enum(MANUAL_ACTION_REASONS),
+        })
+        .strict(),
+    ]),
+  })
+  .strict()
+  .superRefine((check, context) => {
+    if (check.selector.kind === 'exact' && check.selector.version !== check.candidate.version) {
+      context.addIssue({
+        code: 'custom',
+        path: ['candidate', 'version'],
+        message: 'Exact update selector and candidate version must match',
+      });
+    }
+    const relation = compareProductReleaseVersions(check.candidate.version, check.currentVersion);
+    const consistent =
+      check.outcome.kind === 'current'
+        ? relation === 0
+        : check.outcome.kind === 'unattended_update'
+          ? relation > 0
+          : check.outcome.reason === 'target_not_newer'
+            ? relation < 0
+            : relation > 0;
+    if (!consistent) {
+      context.addIssue({
+        code: 'custom',
+        path: ['outcome'],
+        message: 'Update outcome must match the version relation',
+      });
+    }
+  });
 
 const RETIREMENT_RESULT_SCHEMA = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('active_tasks') }).strict(),
@@ -134,41 +202,7 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
     .object({
       ...SERVICE_RESULT_COMMON,
       action: z.literal('check_update'),
-      updateCheck: z
-        .object({
-          selector: z.discriminatedUnion('kind', [
-            z.object({ kind: z.literal('channel'), channel: z.enum(UPDATE_CHANNELS) }).strict(),
-            z
-              .object({
-                kind: z.literal('exact'),
-                version: boundedNonEmptyString(FIELD_MAX_BYTES),
-              })
-              .strict(),
-          ]),
-          currentVersion: boundedNonEmptyString(FIELD_MAX_BYTES),
-          candidate: z
-            .object({
-              version: boundedNonEmptyString(FIELD_MAX_BYTES),
-              integrity: boundedNonEmptyString(FIELD_MAX_BYTES),
-            })
-            .strict(),
-          outcome: z.discriminatedUnion('kind', [
-            z.object({ kind: z.literal('current') }).strict(),
-            z
-              .object({
-                kind: z.literal('unattended_update'),
-                compatibility: z.number().int().positive(),
-              })
-              .strict(),
-            z
-              .object({
-                kind: z.literal('manual_action'),
-                reason: z.enum(MANUAL_ACTION_REASONS),
-              })
-              .strict(),
-          ]),
-        })
-        .strict(),
+      updateCheck: UPDATE_CHECK_SCHEMA,
     })
     .strict(),
   z

@@ -19,10 +19,14 @@
 
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
+  compareProductReleaseVersions,
   encodeRuntimeHostServiceManagementFrame,
+  isProductReleaseVersion,
+  isSha512PackageIntegrity,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostServiceManagementFrame,
@@ -34,16 +38,13 @@ import {
   type RuntimeHostManagedServiceTarget,
 } from './runtime-host-service-manager.js';
 import {
-  compareProductReleaseVersions,
-  isProductReleaseVersion,
-} from './product-release-version.js';
-import {
   createPlatformRuntimeHostServiceBackend,
   runtimeHostServiceSummary,
 } from './runtime-host-service-management-command.js';
 import type { RuntimeHostUpdateSelector } from './runtime-host-cli.js';
 
 const PACKAGE_NAME = 'maka-agent';
+const NPM_REGISTRY = 'https://registry.npmjs.org/';
 const COMPATIBILITY_FIELD = 'maka.managedRuntimeHostUpdateCompatibility';
 const REGISTRY_TIMEOUT_MS = 30_000;
 const REGISTRY_OUTPUT_MAX_BYTES = 64 * 1024;
@@ -170,6 +171,8 @@ export async function resolveRuntimeHostRegistryUpdateCandidate(
     'dist.integrity',
     COMPATIBILITY_FIELD,
     '--json',
+    '--registry',
+    NPM_REGISTRY,
   ]);
   if (result.exitCode !== 0) {
     const failure = parseJson(result.stdout);
@@ -199,7 +202,7 @@ export async function resolveRuntimeHostRegistryUpdateCandidate(
     !isProductReleaseVersion(version) ||
     (selector.kind === 'exact' && version !== selector.version) ||
     typeof integrity !== 'string' ||
-    !isSha512Integrity(integrity)
+    !isSha512PackageIntegrity(integrity)
   ) {
     return invalidMetadata();
   }
@@ -240,6 +243,7 @@ function runNpmView(args: readonly string[]): Promise<NpmViewResult> {
     // Windows requires its command shell to resolve npm.cmd. The only dynamic
     // argument has already passed the strict release-version/channel parser.
     const child = spawn('npm', args, {
+      cwd: homedir(),
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
       shell: process.platform === 'win32',
@@ -337,14 +341,6 @@ function invalidMetadata(): never {
 
 function positiveInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
-}
-
-function isSha512Integrity(value: string): boolean {
-  if (!value.startsWith('sha512-')) return false;
-  const encoded = value.slice('sha512-'.length);
-  if (encoded.length !== 88 || !/^[A-Za-z0-9+/]+={2}$/u.test(encoded)) return false;
-  const digest = Buffer.from(encoded, 'base64');
-  return digest.length === 64 && digest.toString('base64') === encoded;
 }
 
 function parseJson(value: string): unknown {
