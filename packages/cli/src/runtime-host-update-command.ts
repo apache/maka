@@ -77,21 +77,18 @@ export interface RuntimeHostUpdateCliOptions {
   readonly sourcePackageRoot: string;
   readonly version: string;
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
-  readonly expectedCurrentVersion?: string;
-  readonly expectedCurrentCliPath?: string;
-  readonly packageIntegrity?: string;
+  readonly registrySelection?: {
+    readonly integrity: string;
+    readonly current: {
+      readonly version: string;
+      readonly cliPath: string;
+    };
+  };
   readonly allowInterruptActiveTasks?: boolean;
 }
 
 export interface RuntimeHostSelectedUpdateCliOptions
-  extends Omit<
-    RuntimeHostUpdateCliOptions,
-    | 'sourcePackageRoot'
-    | 'version'
-    | 'expectedCurrentVersion'
-    | 'expectedCurrentCliPath'
-    | 'packageIntegrity'
-  > {
+  extends Omit<RuntimeHostUpdateCliOptions, 'sourcePackageRoot' | 'version' | 'registrySelection'> {
   readonly selector: RuntimeHostUpdateSelector;
 }
 
@@ -198,12 +195,13 @@ export async function runManagedRuntimeHostUpdateCli(
         const targetCliPath = resolveRuntimeHostManagedPackageCliPath(
           serviceConfig.managedDeploymentRoot,
           options.version,
-          options.packageIntegrity,
+          options.registrySelection?.integrity,
         );
+        const expectedCurrent = options.registrySelection?.current;
         const selectedDeploymentStillCurrent =
-          (!options.expectedCurrentVersion || currentVersion === options.expectedCurrentVersion) &&
-          (!options.expectedCurrentCliPath ||
-            currentCliPath === resolve(options.expectedCurrentCliPath));
+          !expectedCurrent ||
+          (currentVersion === expectedCurrent.version &&
+            currentCliPath === resolve(expectedCurrent.cliPath));
         const targetDeploymentIsCurrent =
           currentVersion === options.version && currentCliPath === targetCliPath;
         if (!selectedDeploymentStillCurrent && !targetDeploymentIsCurrent) {
@@ -255,7 +253,9 @@ export async function runManagedRuntimeHostUpdateCli(
             clientDataRoot: options.clientDataRoot,
             sourcePackageRoot: options.sourcePackageRoot,
             version: options.version,
-            ...(options.packageIntegrity ? { packageIntegrity: options.packageIntegrity } : {}),
+            ...(options.registrySelection
+              ? { packageIntegrity: options.registrySelection.integrity }
+              : {}),
           }),
         );
         if (deployment.root !== serviceConfig.managedDeploymentRoot) {
@@ -396,14 +396,13 @@ export async function runManagedRuntimeHostUpdateCli(
           action: 'update',
           service: runtimeHostServiceSummary(updated),
           ...operatorCapabilities(),
-          update:
-            currentVersion === options.version
-              ? { kind: 'repaired', version: options.version }
-              : {
-                  kind: 'updated',
-                  previousVersion: currentVersion,
-                  targetVersion: options.version,
-                },
+          update: targetDeploymentIsCurrent
+            ? { kind: 'repaired', version: options.version }
+            : {
+                kind: 'updated',
+                previousVersion: currentVersion,
+                targetVersion: options.version,
+              },
         });
         return 0;
       } catch (error) {
@@ -420,30 +419,29 @@ export async function runManagedRuntimeHostUpdateCli(
             );
           }
         }
-        if (
-          (retired || cutoverStarted) &&
-          !(error instanceof RuntimeHostServiceManagerError && error.code === 'update_incomplete')
-        ) {
-          throw new RuntimeHostServiceManagerError(
-            'update_incomplete',
-            `The Runtime Host update may have started its cutover before it failed; retry the exact ${options.version} update to complete recovery`,
-            { cause: error },
-          );
-        }
         throw error;
       }
     });
   } catch (error) {
+    const updateIncomplete = retired || cutoverStarted;
+    const reportedError = updateIncomplete
+      ? new RuntimeHostServiceManagerError(
+          'update_incomplete',
+          `The Runtime Host update may have started its cutover before it failed; retry the exact ${options.version} update to complete recovery`,
+          { cause: error },
+        )
+      : error;
     const code =
-      error instanceof RuntimeHostServiceManagerError ||
-      error instanceof RuntimeHostManagedDeploymentError
-        ? error.code
+      reportedError instanceof RuntimeHostServiceManagerError ||
+      reportedError instanceof RuntimeHostManagedDeploymentError
+        ? reportedError.code
         : 'internal_service_error';
-    const message = error instanceof Error ? error.message : String(error);
+    const message = reportedError instanceof Error ? reportedError.message : String(reportedError);
     emit({
       schemaVersion: 1,
       kind: 'error',
       action: 'update',
+      ...(updateIncomplete ? { retryTargetVersion: options.version } : {}),
       error: {
         code:
           truncateUtf8(code, RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES) || 'internal_service_error',
@@ -512,9 +510,13 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
         ...updateOptions,
         sourcePackageRoot: packageRoot,
         version: selection.candidate.version,
-        expectedCurrentVersion: selection.service.installedVersion,
-        expectedCurrentCliPath: selection.currentCliPath,
-        packageIntegrity: selection.candidate.integrity,
+        registrySelection: {
+          integrity: selection.candidate.integrity,
+          current: {
+            version: selection.service.installedVersion,
+            cliPath: selection.currentCliPath,
+          },
+        },
       });
     });
   } catch (error) {
@@ -707,6 +709,9 @@ function humanResult(
   }
   if (frame.update.kind === 'repaired') {
     return `Runtime Host ${frame.update.version} was restored to a ready state.`;
+  }
+  if (frame.update.previousVersion === frame.update.targetVersion) {
+    return `Runtime Host package ${frame.update.targetVersion} was updated.`;
   }
   return `Runtime Host was updated from ${frame.update.previousVersion} to ${frame.update.targetVersion}.`;
 }

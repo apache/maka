@@ -102,9 +102,13 @@ describe('managed Runtime Host selected update', () => {
     assert.equal(exitCode, 0);
     assert.equal(updateInput?.sourcePackageRoot, '/verified/package');
     assert.equal(updateInput?.version, '2.0.0');
-    assert.equal(updateInput?.expectedCurrentVersion, '1.0.0');
-    assert.equal(updateInput?.expectedCurrentCliPath, '/managed/versions/1.0.0/dist/cli.js');
-    assert.equal(updateInput?.packageIntegrity, INTEGRITY);
+    assert.deepEqual(updateInput?.registrySelection, {
+      integrity: INTEGRITY,
+      current: {
+        version: '1.0.0',
+        cliPath: '/managed/versions/1.0.0/dist/cli.js',
+      },
+    });
   });
 
   it('lets the exact transaction decide whether a current candidate needs repair', async () => {

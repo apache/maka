@@ -41,6 +41,7 @@ import {
   createPlatformRuntimeHostServiceBackend,
   runtimeHostServiceSummary,
 } from './runtime-host-service-management-command.js';
+import { resolveRuntimeHostManagedPackageCliPath } from './runtime-host-managed-deployment.js';
 import type { RuntimeHostUpdateSelector } from './runtime-host-cli.js';
 
 const PACKAGE_NAME = 'maka-agent';
@@ -161,14 +162,25 @@ async function resolveManagedRuntimeHostUpdate(
     resolveRuntimeHostRegistryUpdateCandidate(options.selector),
     readPackageCompatibility(config.launch.cliPath, currentVersion),
   ]);
-  const assessment = assessRuntimeHostUpdate(currentVersion, currentCompatibility, candidate);
+  const currentCliPath = resolve(config.launch.cliPath);
+  const targetCliPath = resolveRuntimeHostManagedPackageCliPath(
+    config.managedDeploymentRoot,
+    candidate.version,
+    candidate.integrity,
+  );
+  const assessment = assessRuntimeHostUpdate(
+    currentVersion,
+    currentCompatibility,
+    candidate,
+    currentCliPath === targetCliPath,
+  );
   return {
     service: {
       ...service,
       state: serviceState,
       installedVersion: currentVersion,
     },
-    currentCliPath: resolve(config.launch.cliPath),
+    currentCliPath,
     selector: options.selector,
     candidate,
     outcome: assessment,
@@ -196,9 +208,10 @@ export function assessRuntimeHostUpdate(
   currentVersion: string,
   currentCompatibility: number | undefined,
   candidate: RuntimeHostUpdateCandidate,
+  currentDeploymentMatchesCandidate: boolean,
 ): RuntimeHostUpdateCheck['outcome'] {
   const relation = compareProductReleaseVersions(candidate.version, currentVersion);
-  if (relation === 0) return { kind: 'current' };
+  if (relation === 0 && currentDeploymentMatchesCandidate) return { kind: 'current' };
   if (relation < 0) {
     return { kind: 'manual_action', reason: 'target_not_newer' };
   }

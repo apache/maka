@@ -58,6 +58,17 @@ const NON_RETIRE_SERVICE_ACTIONS = [
   'logs',
   'uninstall',
 ] as const;
+const NON_UPDATE_SERVICE_ACTIONS = [
+  'install',
+  'status',
+  'start',
+  'stop',
+  'restart',
+  'retire',
+  'check_update',
+  'logs',
+  'uninstall',
+] as const;
 const UPDATE_PHASES = ['checking', 'staging', 'retiring', 'replacing'] as const;
 const UPDATE_CHANNELS = ['latest', 'next'] as const;
 const MANUAL_ACTION_REASONS = [
@@ -174,6 +185,12 @@ const SERVICE_RESULT_COMMON = {
   retainedStateRoot: boundedString(PATH_MAX_BYTES).optional(),
   logs: boundedString(RUNTIME_HOST_SERVICE_LOG_MAX_BYTES).optional(),
 } as const;
+const SERVICE_ERROR_SCHEMA = z
+  .object({
+    code: boundedNonEmptyString(RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES),
+    message: boundedNonEmptyString(RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES),
+  })
+  .strict();
 
 const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
   z
@@ -204,10 +221,10 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
         outcome.kind === 'current'
           ? relation === 0
           : outcome.kind === 'unattended_update'
-            ? relation > 0
+            ? relation >= 0
             : outcome.reason === 'target_not_newer'
               ? relation < 0
-              : relation > 0;
+              : relation >= 0;
       if (!consistent) {
         context.addIssue({
           code: 'custom',
@@ -267,13 +284,17 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
     .object({
       schemaVersion: z.literal(1),
       kind: z.literal('error'),
-      action: z.enum(SERVICE_ACTIONS),
-      error: z
-        .object({
-          code: boundedNonEmptyString(RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES),
-          message: boundedNonEmptyString(RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES),
-        })
-        .strict(),
+      action: z.literal('update'),
+      retryTargetVersion: boundedNonEmptyString(FIELD_MAX_BYTES).optional(),
+      error: SERVICE_ERROR_SCHEMA,
+    })
+    .strict(),
+  z
+    .object({
+      schemaVersion: z.literal(1),
+      kind: z.literal('error'),
+      action: z.enum(NON_UPDATE_SERVICE_ACTIONS),
+      error: SERVICE_ERROR_SCHEMA,
     })
     .strict(),
 ]);

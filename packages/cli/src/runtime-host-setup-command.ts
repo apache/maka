@@ -38,9 +38,12 @@ import {
   type RuntimeHostAccessPreset,
 } from './runtime-host-access-command.js';
 import {
+  isRuntimeHostManagedDeploymentCli,
   isRuntimeHostDevelopmentPackageVersion,
   prepareRuntimeHostManagedPackageDeployment,
+  repairRuntimeHostManagedDeploymentOperator,
   RuntimeHostManagedDeploymentError,
+  type RuntimeHostManagedPackageDeployment,
 } from './runtime-host-managed-deployment.js';
 import { createPlatformRuntimeHostServiceBackend } from './runtime-host-service-management-command.js';
 import {
@@ -76,6 +79,7 @@ interface RuntimeHostSetupDeps {
   readonly manageService: typeof manageRuntimeHostService;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly prepareDeployment: typeof prepareRuntimeHostManagedPackageDeployment;
+  readonly repairOperator: typeof repairRuntimeHostManagedDeploymentOperator;
   readonly prepareCredential: typeof prepareRuntimeHostAccessCredential;
   readonly replaceCredential: typeof replaceRuntimeHostAccessCredential;
   readonly revokeCredential: typeof revokeRuntimeHostAccessCredential;
@@ -103,6 +107,7 @@ export async function runRuntimeHostSetupCli(
     manageService: manageRuntimeHostService,
     createBackend: createPlatformRuntimeHostServiceBackend,
     prepareDeployment: prepareRuntimeHostManagedPackageDeployment,
+    repairOperator: repairRuntimeHostManagedDeploymentOperator,
     prepareCredential: prepareRuntimeHostAccessCredential,
     replaceCredential: replaceRuntimeHostAccessCredential,
     revokeCredential: revokeRuntimeHostAccessCredential,
@@ -148,14 +153,24 @@ async function runRuntimeHostSetupLocked(
   } as const;
   const status = await deps.manageService({ ...common, action: 'status' }, backend);
   await assertCompatibleExistingVersion(status, options.version);
+  const currentPackage = currentManagedPackage(status, serviceId, options.version);
 
   emit({ kind: 'progress', phase: 'installing_package' });
-  const deployment = await deps.prepareDeployment({
-    serviceId,
-    clientDataRoot: options.clientDataRoot,
-    sourcePackageRoot: options.sourcePackageRoot,
-    version: options.version,
-  });
+  let deployment: RuntimeHostManagedPackageDeployment | undefined;
+  let packagePaths = currentPackage;
+  if (!packagePaths) {
+    deployment = await deps.prepareDeployment({
+      serviceId,
+      clientDataRoot: options.clientDataRoot,
+      sourcePackageRoot: options.sourcePackageRoot,
+      version: options.version,
+    });
+    packagePaths = {
+      deploymentRoot: deployment.root,
+      cliPath: deployment.cliPath,
+      operatorPath: deployment.operatorPath,
+    };
+  }
 
   emit({ kind: 'progress', phase: 'installing_service' });
   let installed: RuntimeHostManagedServiceResult;
@@ -164,7 +179,7 @@ async function runRuntimeHostSetupLocked(
       {
         ...common,
         action: 'install',
-        cliPath: deployment.cliPath,
+        cliPath: packagePaths.cliPath,
         ...(options.rootPath ? { rootPath: options.rootPath } : {}),
         ...(options.projectDirectoryRoots
           ? { projectDirectoryRoots: options.projectDirectoryRoots }
@@ -175,13 +190,15 @@ async function runRuntimeHostSetupLocked(
       backend,
     );
   } catch (error) {
-    try {
-      await deployment.rollback();
-    } catch (rollbackError) {
-      throw new AggregateError(
-        [error, rollbackError],
-        'Runtime Host setup failed and its staged package could not be removed',
-      );
+    if (deployment) {
+      try {
+        await deployment.rollback();
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          'Runtime Host setup failed and its staged package could not be removed',
+        );
+      }
     }
     throw error;
   }
@@ -192,8 +209,17 @@ async function runRuntimeHostSetupLocked(
       'Managed Runtime Host service did not become ready',
     );
   }
-  await deployment.activate();
-  await deployment.cleanup();
+  if (deployment) {
+    await deployment.activate();
+  } else {
+    await deps.repairOperator({
+      deploymentRoot: packagePaths.deploymentRoot,
+      serviceId,
+      clientDataRoot: options.clientDataRoot,
+      cliPath: packagePaths.cliPath,
+    });
+  }
+  await deployment?.cleanup();
 
   emit({ kind: 'progress', phase: 'pairing_client' });
   let paired: Awaited<ReturnType<typeof prepareRuntimeHostAccessCredential>>;
@@ -228,9 +254,9 @@ async function runRuntimeHostSetupLocked(
     });
     emit({
       kind: 'complete',
-      version: deployment.version,
+      version: options.version,
       serviceId,
-      operatorPath: deployment.operatorPath,
+      operatorPath: packagePaths.operatorPath,
       rootPath: config.rootPath,
       rootId: paired.rootId,
       endpoint,
@@ -253,6 +279,36 @@ async function runRuntimeHostSetupLocked(
     }
     throw error;
   }
+}
+
+function currentManagedPackage(
+  status: RuntimeHostManagedServiceResult,
+  serviceId: string,
+  version: string,
+):
+  | {
+      readonly deploymentRoot: string;
+      readonly cliPath: string;
+      readonly operatorPath: string;
+    }
+  | undefined {
+  const config = status.service.config;
+  if (
+    status.service.installedVersion !== version ||
+    !config?.managedDeploymentRoot ||
+    !isRuntimeHostManagedDeploymentCli(
+      config.managedDeploymentRoot,
+      serviceId,
+      config.launch.cliPath,
+    )
+  ) {
+    return undefined;
+  }
+  return {
+    deploymentRoot: config.managedDeploymentRoot,
+    cliPath: config.launch.cliPath,
+    operatorPath: join(config.managedDeploymentRoot, 'operator'),
+  };
 }
 
 async function assertCompatibleExistingVersion(

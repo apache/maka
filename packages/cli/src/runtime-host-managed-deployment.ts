@@ -262,6 +262,29 @@ export async function pruneRuntimeHostManagedDeploymentPackages(
   await pruneInactivePackages(versionsRoot, pathFromVersions);
 }
 
+export async function repairRuntimeHostManagedDeploymentOperator(input: {
+  readonly deploymentRoot: string;
+  readonly serviceId: string;
+  readonly clientDataRoot: string;
+  readonly cliPath: string;
+}): Promise<void> {
+  const deploymentRoot = await realpath(resolve(input.deploymentRoot));
+  const cliPath = await realpath(input.cliPath);
+  if (!isRuntimeHostManagedDeploymentCli(deploymentRoot, input.serviceId, cliPath)) {
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'Refusing to repair an operator for an invalid managed Runtime Host package',
+    );
+  }
+  const operatorPath = join(deploymentRoot, 'operator');
+  await writeOperatorLauncher(
+    operatorPath,
+    process.execPath,
+    cliPath,
+    resolve(input.clientDataRoot),
+  );
+}
+
 async function validatePackage(path: string, version: string): Promise<string> {
   let packageRoot: string;
   let manifest: unknown;

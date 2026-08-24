@@ -336,6 +336,57 @@ test('registry package identity avoids local content and recovers an interrupted
   );
   assert.equal(await readFile(recovered.cliPath, 'utf8'), 'registry package\n');
   assert.deepEqual(await readdir(versionsRoot), [basename(registryRoot)]);
+
+  const stateRoot = join(clientDataRoot, 'workspaces', 'default');
+  const config: RuntimeHostManagedServiceConfig = {
+    schemaVersion: 1,
+    managedDeploymentRoot: recovered.root,
+    rootPath: stateRoot,
+    projectDirectoryRoots: [],
+    websocket: { host: '127.0.0.1', port: 42_111, path: '/runtime-host' },
+    launch: { nodePath: process.execPath, cliPath: recovered.cliPath },
+  };
+  let installedCliPath = '';
+  assert.equal(
+    await runRuntimeHostSetupCli(
+      {
+        json: true,
+        clientDataRoot,
+        defaultRootPath: stateRoot,
+        sourcePackageRoot: localPackage,
+        version,
+        principalId: 'desktop.client-1',
+        preset: 'desktop-client',
+      },
+      {
+        createBackend: () => unusedBackend(),
+        manageService: async (input: { readonly action: string; readonly cliPath: string }) => {
+          if (input.action === 'status') return serviceResult('status', config, version);
+          installedCliPath = input.cliPath;
+          return serviceResult('install', config, version);
+        },
+        prepareDeployment: async () => assert.fail('same-version setup must reuse the deployment'),
+        replaceCredential: async () => ({
+          rootId: 'a'.repeat(64),
+          credential: 'new-secret',
+          credentialId: 'new-credential',
+          principalKind: 'remote_owner',
+          principalId: 'desktop.client-1',
+          operationGrants: ['host.status'],
+          canPublishClientCapabilities: true,
+          canUseHostPaths: false,
+        }),
+        verifyCredential: async () => undefined,
+        writeOutput: () => undefined,
+      },
+    ),
+    0,
+  );
+  assert.equal(installedCliPath, recovered.cliPath);
+  const repairedOperator = await readFile(join(recovered.root, 'operator'), 'utf8');
+  assert.equal(repairedOperator.includes(recovered.cliPath), true);
+  assert.equal(repairedOperator.includes(clientDataRoot), true);
+  assert.deepEqual(await readdir(versionsRoot), [basename(registryRoot)]);
 });
 
 test('managed setup leaves no inactive package when service installation fails', async (t) => {

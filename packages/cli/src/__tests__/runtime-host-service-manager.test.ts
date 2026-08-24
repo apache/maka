@@ -1341,6 +1341,7 @@ describe('managed Runtime Host service', () => {
     let operatorSupportsProcessLifetimeLock = false;
     let legacyLeaseCalls = 0;
     let operatorFailure: Extract<RuntimeHostServiceManagementFrame, { kind: 'error' }> | undefined;
+    let replaceFailure = false;
     let insideLifecycle = false;
     let output = '';
     const options = {
@@ -1480,6 +1481,12 @@ describe('managed Runtime Host service', () => {
       replace: async (input: Parameters<typeof replaceRuntimeHostManagedService>[0]) => {
         assert.equal(insideLifecycle, true);
         order.push('replace');
+        if (replaceFailure) {
+          throw new RuntimeHostServiceManagerError(
+            'update_incomplete',
+            'The replacement did not become ready',
+          );
+        }
         return service('2.0.0', 'running', input.cliPath).service;
       },
       writeOutput: (value: string) => {
@@ -1536,9 +1543,10 @@ describe('managed Runtime Host service', () => {
       await runManagedRuntimeHostUpdateCli(
         {
           ...options,
-          packageIntegrity,
-          expectedCurrentVersion: '2.0.0',
-          expectedCurrentCliPath: localTargetCliPath,
+          registrySelection: {
+            integrity: packageIntegrity,
+            current: { version: '2.0.0', cliPath: localTargetCliPath },
+          },
         },
         overrides,
       ),
@@ -1552,7 +1560,7 @@ describe('managed Runtime Host service', () => {
       identityUpdate?.kind === 'result' && identityUpdate.action === 'update'
         ? identityUpdate.update.kind
         : undefined,
-      'repaired',
+      'updated',
     );
 
     order.length = 0;
@@ -1563,9 +1571,10 @@ describe('managed Runtime Host service', () => {
       await runManagedRuntimeHostUpdateCli(
         {
           ...options,
-          packageIntegrity,
-          expectedCurrentVersion: '2.0.0',
-          expectedCurrentCliPath: localTargetCliPath,
+          registrySelection: {
+            integrity: packageIntegrity,
+            current: { version: '2.0.0', cliPath: localTargetCliPath },
+          },
         },
         overrides,
       ),
@@ -1626,13 +1635,58 @@ describe('managed Runtime Host service', () => {
     );
 
     statusReads = 0;
-    observedVersion = '3.0.0';
     operatorFailure = undefined;
+    replaceFailure = true;
     output = '';
     order.length = 0;
     assert.equal(
       await runManagedRuntimeHostUpdateCli(
-        { ...options, expectedCurrentVersion: '1.0.0' },
+        {
+          ...options,
+          json: true,
+          framed: false,
+          registrySelection: {
+            integrity: packageIntegrity,
+            current: {
+              version: '1.0.0',
+              cliPath: join(deploymentRoot, 'versions', '1.0.0', 'dist', 'cli.js'),
+            },
+          },
+        },
+        overrides,
+      ),
+      1,
+    );
+    assert.deepEqual(order, ['retire', 'activate', 'replace']);
+    const incomplete = JSON.parse(output) as RuntimeHostServiceManagementFrame;
+    assert.equal(
+      incomplete.kind === 'error' ? incomplete.error.code : undefined,
+      'update_incomplete',
+    );
+    assert.equal(
+      incomplete.kind === 'error' && incomplete.action === 'update'
+        ? incomplete.retryTargetVersion
+        : undefined,
+      '2.0.0',
+    );
+
+    statusReads = 0;
+    observedVersion = '3.0.0';
+    replaceFailure = false;
+    output = '';
+    order.length = 0;
+    assert.equal(
+      await runManagedRuntimeHostUpdateCli(
+        {
+          ...options,
+          registrySelection: {
+            integrity: packageIntegrity,
+            current: {
+              version: '1.0.0',
+              cliPath: join(deploymentRoot, 'versions', '1.0.0', 'dist', 'cli.js'),
+            },
+          },
+        },
         overrides,
       ),
       1,
