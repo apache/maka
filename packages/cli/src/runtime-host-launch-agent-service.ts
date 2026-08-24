@@ -124,7 +124,12 @@ export function createLaunchAgentRuntimeHostService(
     },
     replace: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
-      await applyLaunchAgentDeployment(context, config);
+      const previous = await captureLaunchAgentDeployment(context);
+      try {
+        await applyLaunchAgentDeployment(context, config);
+      } catch (error) {
+        await restoreFailedLaunchAgentDeployment(previous, context, error, 'update_incomplete');
+      }
     },
     verifyDeployment: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
@@ -302,12 +307,15 @@ async function restoreFailedLaunchAgentDeployment(
   snapshot: LaunchAgentDeploymentSnapshot,
   context: LaunchAgentContext,
   originalError: unknown,
+  recoveryFailureCode:
+    | 'service_manager_operation_failed'
+    | 'update_incomplete' = 'service_manager_operation_failed',
 ): Promise<never> {
   try {
     await restoreLaunchAgentDeployment(snapshot, context);
   } catch (rollbackError) {
     throw new RuntimeHostServiceManagerError(
-      'service_manager_operation_failed',
+      recoveryFailureCode,
       'Updating the Runtime Host LaunchAgent failed and the previous deployment could not be restored',
       { cause: new AggregateError([originalError, rollbackError]) },
     );

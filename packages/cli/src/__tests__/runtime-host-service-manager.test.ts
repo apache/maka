@@ -1231,9 +1231,24 @@ describe('managed Runtime Host service', () => {
       /Starting the Runtime Host service failed/u,
     );
     assert.match(await readFile(unitPath, 'utf8'), /--websocket-port" "41001"/u);
+
+    const replacementBackend = backend();
+    await replacementBackend.stop();
+    systemd.failNext('restart');
+    assert.ok(first.service.config);
+    const replacementConfig = {
+      ...first.service.config,
+      websocket: { ...first.service.config.websocket, port: 41_004 },
+    };
+    await assert.rejects(
+      replacementBackend.replace(replacementConfig),
+      /Starting the Runtime Host service failed/u,
+    );
+    assert.match(await readFile(unitPath, 'utf8'), /--websocket-port" "41001"/u);
+    assert.equal((await replacementBackend.status()).state, 'stopped');
   });
 
-  it('keeps the selected package configured when replacement readiness is unknown', async (t) => {
+  it('distinguishes backend replacement failure from unknown target readiness', async (t) => {
     const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-update-failure-'));
     t.after(() => rm(base, { recursive: true, force: true }));
     const clientDataRoot = join(base, 'config');
@@ -1246,6 +1261,7 @@ describe('managed Runtime Host service', () => {
     await writeFile(targetCli, '#!/usr/bin/env node\n', 'utf8');
     let state: 'running' | 'stopped' = 'running';
     let replaceCalls = 0;
+    let replaceFails = true;
     const backend: RuntimeHostServiceBackend = {
       ...createReadyBackend(),
       status: async () => ({
@@ -1259,7 +1275,7 @@ describe('managed Runtime Host service', () => {
       }),
       replace: async () => {
         replaceCalls += 1;
-        throw new Error('replacement failed after launch');
+        if (replaceFails) throw new Error('replacement was not committed');
       },
       stop: async () => {
         state = 'stopped';
@@ -1287,10 +1303,24 @@ describe('managed Runtime Host service', () => {
         error instanceof RuntimeHostServiceManagerError && error.code === 'update_incomplete',
     );
     assert.equal(replaceCalls, 1);
-    const config = JSON.parse(
+    const restored = JSON.parse(
       await readFile(resolveRuntimeHostManagedServiceConfigPath(clientDataRoot), 'utf8'),
     ) as RuntimeHostManagedServiceConfig;
-    assert.equal(config.launch.cliPath, await realpath(targetCli));
+    assert.equal(restored.launch.cliPath, await realpath(previousCli));
+
+    replaceFails = false;
+    await assert.rejects(
+      replaceRuntimeHostManagedService({ ...common, cliPath: targetCli, expectedTarget }, backend, {
+        waitForReady: async () => Promise.reject(new Error('target readiness is unknown')),
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'update_incomplete',
+    );
+    assert.equal(replaceCalls, 2);
+    const retained = JSON.parse(
+      await readFile(resolveRuntimeHostManagedServiceConfigPath(clientDataRoot), 'utf8'),
+    ) as RuntimeHostManagedServiceConfig;
+    assert.equal(retained.launch.cliPath, await realpath(targetCli));
   });
 
   it('updates through the current operator and preserves exact update outcomes', async () => {

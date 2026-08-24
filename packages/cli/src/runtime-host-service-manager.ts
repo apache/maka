@@ -94,6 +94,7 @@ export interface RuntimeHostServiceBackendStatus {
 export interface RuntimeHostServiceBackend {
   preflightInstall(): Promise<void>;
   install(config: RuntimeHostManagedServiceConfig): Promise<RuntimeHostServiceDeployment>;
+  /** A rejected replacement must restore the previous deployment or report update_incomplete. */
   replace(config: RuntimeHostManagedServiceConfig): Promise<void>;
   verifyDeployment(config: RuntimeHostManagedServiceConfig): Promise<void>;
   status(): Promise<RuntimeHostServiceBackendStatus>;
@@ -549,12 +550,38 @@ async function replaceRuntimeHostManagedServiceLocked(
   }
   try {
     await backend.replace(config);
+  } catch (error) {
+    if (error instanceof RuntimeHostServiceManagerError && error.code === 'update_incomplete') {
+      await backend.stop().catch(() => undefined);
+      throw error;
+    }
+    try {
+      await writeRuntimeHostServiceFile(
+        configPath,
+        `${JSON.stringify(service.config, null, 2)}\n`,
+        0o600,
+      );
+    } catch (restoreError) {
+      await backend.stop().catch(() => undefined);
+      throw new RuntimeHostServiceManagerError(
+        'update_incomplete',
+        'Replacing the Runtime Host service failed and its previous configuration could not be restored',
+        { cause: new AggregateError([error, restoreError]) },
+      );
+    }
+    throw new RuntimeHostServiceManagerError(
+      'update_incomplete',
+      'Replacing the Runtime Host service failed; the previous deployment was restored and remains stopped',
+      { cause: error },
+    );
+  }
+  try {
     await deps.waitForReady(config, backend);
   } catch (error) {
     await backend.stop().catch(() => undefined);
     throw new RuntimeHostServiceManagerError(
       'update_incomplete',
-      'The replacement Runtime Host did not become ready; the previous deployment was retained but was not restarted because its storage compatibility is unknown',
+      'The replacement Runtime Host did not become ready; the selected deployment was retained but stopped because rolling back across an unknown storage boundary is unsafe',
       { cause: error },
     );
   }

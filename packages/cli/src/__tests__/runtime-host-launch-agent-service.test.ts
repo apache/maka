@@ -117,27 +117,29 @@ test('maps install, stop, start, restart, and uninstall onto one LaunchAgent ser
   });
 });
 
-test('restores the previous loaded LaunchAgent when replacement bootstrap fails', async () => {
-  await withFixture(async ({ homeDir, cliPath, launchctl }) => {
-    const plistPath = resolveLaunchAgentPath(SERVICE_ID, homeDir);
-    const previousPlist = '<plist>previous</plist>\n';
-    await writeFile(plistPath, previousPlist, { mode: 0o600 });
-    launchctl.loaded = true;
-    launchctl.failNextBootstrap = true;
-    const backend = createLaunchAgentRuntimeHostService(SERVICE_ID, {
-      homeDir,
-      uid: UID,
-      runLaunchctl: launchctl.run,
-      isProcessAlive: () => false,
-    });
+test('restores the previous loaded LaunchAgent when deployment bootstrap fails', async () => {
+  for (const action of ['install', 'replace'] as const) {
+    await withFixture(async ({ homeDir, cliPath, launchctl }) => {
+      const plistPath = resolveLaunchAgentPath(SERVICE_ID, homeDir);
+      const previousPlist = '<plist>previous</plist>\n';
+      await writeFile(plistPath, previousPlist, { mode: 0o600 });
+      launchctl.loaded = true;
+      launchctl.failNextBootstrap = true;
+      const backend = createLaunchAgentRuntimeHostService(SERVICE_ID, {
+        homeDir,
+        uid: UID,
+        runLaunchctl: launchctl.run,
+        isProcessAlive: () => false,
+      });
 
-    await assert.rejects(
-      backend.install(fixtureConfig(process.execPath, cliPath, join(homeDir, 'state'))),
-      /Starting the Runtime Host LaunchAgent failed/u,
-    );
-    assert.equal(await readFile(plistPath, 'utf8'), previousPlist);
-    assert.equal(launchctl.loaded, true);
-  });
+      await assert.rejects(
+        backend[action](fixtureConfig(process.execPath, cliPath, join(homeDir, 'state'))),
+        /Starting the Runtime Host LaunchAgent failed/u,
+      );
+      assert.equal(await readFile(plistPath, 'utf8'), previousPlist);
+      assert.equal(launchctl.loaded, true);
+    });
+  }
 });
 
 interface FakeLaunchctl {

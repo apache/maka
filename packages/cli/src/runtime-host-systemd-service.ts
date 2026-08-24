@@ -115,7 +115,12 @@ export function createSystemdUserRuntimeHostService(
     },
     replace: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
-      await applySystemdDeployment(context, config);
+      const previous = await captureSystemdDeployment(context.unitPath, readStatus);
+      try {
+        await applySystemdDeployment(context, config);
+      } catch (error) {
+        await restoreFailedSystemdDeployment(previous, context, error, 'update_incomplete');
+      }
     },
     verifyDeployment: async (config) => {
       await validateRuntimeHostServiceLaunch(config);
@@ -292,12 +297,15 @@ async function restoreFailedSystemdDeployment(
   snapshot: SystemdDeploymentSnapshot,
   context: SystemdUnitContext,
   originalError: unknown,
+  recoveryFailureCode:
+    | 'service_manager_operation_failed'
+    | 'update_incomplete' = 'service_manager_operation_failed',
 ): Promise<never> {
   try {
     await restoreSystemdDeployment(snapshot, context);
   } catch (rollbackError) {
     throw new RuntimeHostServiceManagerError(
-      'service_manager_operation_failed',
+      recoveryFailureCode,
       'Updating the Runtime Host service failed and the previous systemd deployment could not be restored',
       { cause: new AggregateError([originalError, rollbackError]) },
     );
