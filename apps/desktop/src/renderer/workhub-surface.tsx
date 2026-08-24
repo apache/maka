@@ -232,7 +232,6 @@ export function WorkHubSurface(props: {
     <ChatSurfaceLayout
       className="workhub-surface"
       conversationKey="workhub"
-      scrollToBottomLabel={copy.scrollToBottom}
       composer={(
         <Composer
           draftKey="workhub"

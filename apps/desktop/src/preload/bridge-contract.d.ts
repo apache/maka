@@ -101,6 +101,8 @@ import type {
   DesktopTranscriptHandle,
 } from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
+import type { WorkBoardItem, WorkBoardListQuery, WorkBoardPage } from '@maka/core/work-board';
+import type { WorkBoardMutationOptions } from '@maka/storage/work-board-store';
 import type {
   OperationInput,
   OperationOutput,
@@ -149,6 +151,7 @@ export type AppIconImportResult =
     };
 
 export type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
+export type { WorkBoardChangedEvent, WorkBoardIpcResult } from '../shared/work-board-ipc.js';
 import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
 import type { DesktopExternalSessionCatalogItem } from './external-session-catalog.js';
 import type { DesktopDiagnosticInput } from './diagnostics-contract.js';
@@ -659,6 +662,26 @@ export interface MakaBridge {
         }
     >;
     subscribeChanges(handler: (event: PetPackChangedEvent) => void): () => void;
+  };
+
+  workBoard: {
+    list(query?: WorkBoardListQuery): Promise<WorkBoardIpcResult<WorkBoardPage>>;
+    create(item: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>>;
+    update(
+      id: string,
+      patch: unknown,
+      options?: WorkBoardMutationOptions,
+    ): Promise<WorkBoardIpcResult<WorkBoardItem>>;
+    archive(
+      id: string,
+      options?: WorkBoardMutationOptions,
+    ): Promise<WorkBoardIpcResult<WorkBoardItem>>;
+    unarchive(
+      id: string,
+      options?: WorkBoardMutationOptions,
+    ): Promise<WorkBoardIpcResult<WorkBoardItem>>;
+    remove(id: string, options?: WorkBoardMutationOptions): Promise<WorkBoardIpcResult<null>>;
+    subscribeChanges(handler: (event: WorkBoardChangedEvent) => void): () => void;
   };
 
   tasks: {

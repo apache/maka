@@ -54,6 +54,7 @@ import {
 } from "@maka/runtime-host/client";
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
+import { createWorkBoardStore } from "@maka/storage/work-board-store";
 import { createFileCredentialStore } from "@maka/storage/credential-store";
 import { createMcpConfigStore } from "@maka/storage/mcp-config-store";
 import { createSettingsStore } from "@maka/storage/settings-store";
@@ -119,6 +120,7 @@ import {
 import { registerNotificationsIpc } from "./notifications-ipc-main.js";
 import { registerMarkdownSaveIpc } from "./markdown-save-ipc-main.js";
 import { registerPetPackIpc } from "./pet-pack-import.js";
+import { registerWorkBoardIpc } from "./work-board-ipc-main.js";
 import {
   createPermissionOverlayMain,
   registerPermissionOverlayIpc,
@@ -155,6 +157,7 @@ import {
   startRuntimeHostDesktopManager,
   type RuntimeHostDesktopManager,
 } from "./runtime-host-desktop-manager.js";
+import { buildRuntimeHostQuitFailureDialog } from "./runtime-host-quit-copy.js";
 import { createRuntimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
 import {
@@ -306,6 +309,7 @@ const desktopLocale = createDesktopLocaleAuthority({
   preferredSystemLanguages: () => app.getPreferredSystemLanguages(),
 });
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
+const workBoardStore = createWorkBoardStore(workspaceRoot);
 const mcpManager = new McpClientManager({
   clientName: "maka-desktop",
   clientVersion: app.getVersion(),
@@ -651,7 +655,14 @@ const updateService = createAppUpdateService({
     mainWindowController.send("app:updateStatusChanged", status),
   prepareInstall: async (input) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
-    return runtimeHostManager.prepareForUpdate(input.allowInterruptActiveTasks);
+    const retirement = await runtimeHostManager.retireOwnedLocalHost(
+      input.allowInterruptActiveTasks ? "interrupt_active_work" : "refuse_active_work",
+    );
+    if (retirement.kind === "active_tasks") return retirement;
+    return {
+      kind: "prepared",
+      rollback: retirement.kind === "retired" ? retirement.resume : () => {},
+    };
   },
 });
 mcpManager.onChange(() => {
@@ -663,6 +674,12 @@ mcpManager.onChange(() => {
 
 registerPersistentClientIpc();
 registerPetPackIpc({ ipcMain, workspaceRoot, mainWindowController, settingsStore });
+const workBoardIpc = registerWorkBoardIpc({
+  ipcMain,
+  workspaceRoot,
+  mainWindowController,
+  store: workBoardStore,
+});
 const browserIpc = registerBrowserIpc({
   mainWindowController,
   isHostActive: (scope) => runtimeHostManager?.ownsScope(scope) === true,
@@ -1519,10 +1536,17 @@ function emitSessionsChanged(
 
 function wireLifecycle(): void {
   const quitCoordinator = createAppQuitCoordinator({
+    prepareToQuit: prepareRuntimeHostDesktopQuit,
     cleanup: closeRuntimeHostDesktop,
     focusOrCreateWindow: (signal) => {
       if (mainWindowController.hasOpenWindows()) mainWindowController.focus();
       else return mainWindowController.createWindow(signal);
+    },
+    onPreparationError: (error) => {
+      console.error("[runtime-host] quit retirement failed:", error);
+      void showRuntimeHostQuitFailure(error).catch((dialogError) =>
+        console.error("[runtime-host] quit failure dialog failed:", dialogError),
+      );
     },
     onCleanupError: (error) =>
       console.error("[runtime-host] shutdown failed:", error),
@@ -1551,6 +1575,20 @@ function wireLifecycle(): void {
   quitCoordinator.focusOrCreateWindow();
 }
 
+async function prepareRuntimeHostDesktopQuit(): Promise<void> {
+  const retirement = await runtimeHostManager?.retireOwnedLocalHost(
+    "interrupt_active_work",
+  );
+  if (retirement?.kind === "active_tasks") {
+    throw new Error("Runtime Host refused authorized quit retirement");
+  }
+}
+
+async function showRuntimeHostQuitFailure(error: unknown): Promise<void> {
+  const locale = await desktopLocale.resolve();
+  await dialog.showMessageBox(buildRuntimeHostQuitFailureDialog(error, locale));
+}
+
 async function closeRuntimeHostDesktop(): Promise<void> {
   clientSettingsWatcher.stop();
   updateService.dispose();
@@ -1560,6 +1598,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     Promise.resolve().then(() => runtimeHostManagement.close()),
     runtimeHostManager?.close(),
     runtimeHostOnboarding.close(),
+    Promise.resolve().then(() => workBoardIpc.close()),
     runtimeHostSshTerminal.close(),
     botRegistry.stopAll(),
     mcpManager.close(),

@@ -30,6 +30,7 @@ import {
   type ResolvedRuntimeHostProfile,
   type RuntimeHostReconnectBackoff,
   type RuntimeHostReconnectLifecycle,
+  type RuntimeHostRetirementMode,
   type RuntimeHostSshInteraction,
 } from '@maka/runtime-host/client';
 import type { HostRegistration } from '@maka/runtime-host/protocol';
@@ -70,9 +71,7 @@ export interface RuntimeHostDesktopManager {
     signal?: AbortSignal,
   ): Promise<void>;
   setDefaultProfile(profileId: string): void;
-  prepareForUpdate(
-    allowInterruptActiveTasks: boolean,
-  ): Promise<RuntimeHostUpdatePreparation>;
+  retireOwnedLocalHost(mode: RuntimeHostRetirementMode): Promise<DesktopLocalHostRetirement>;
   close(): Promise<void>;
 }
 
@@ -105,9 +104,33 @@ export type RuntimeHostDesktopTargetState =
       readonly error: Error;
     };
 
-export type RuntimeHostUpdatePreparation =
+export type DesktopLocalHostRetirement =
   | { readonly kind: 'active_tasks' }
-  | { readonly kind: 'prepared'; rollback(): void };
+  | { readonly kind: 'not_owned' }
+  | { readonly kind: 'retired'; resume(): void };
+
+interface DesktopLocalHostRetirementTask {
+  readonly mode: RuntimeHostRetirementMode;
+  readonly result: Promise<DesktopLocalHostRetirement>;
+}
+
+export interface DesktopLocalHostRetirementFacts {
+  readonly hostId: string;
+  readonly hostEpoch: string;
+  readonly lifecycleMode: 'ephemeral';
+  readonly rootPath: string;
+  readonly pid?: number;
+}
+
+export class DesktopLocalHostRetirementError extends Error {
+  constructor(
+    readonly facts: DesktopLocalHostRetirementFacts,
+    options: ErrorOptions,
+  ) {
+    super('Unable to retire the Desktop-owned local Runtime Host', options);
+    this.name = 'DesktopLocalHostRetirementError';
+  }
+}
 
 export type RuntimeHostRestartDecision = 'restart' | 'wait' | 'cancel';
 export type RuntimeHostWaitDecision = 'wait' | 'cancel';
@@ -206,6 +229,8 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   readonly #baseInput: DesktopRuntimeHostCandidateStartInput;
   readonly #pairingFinalizationShutdown = new AbortController();
   #defaultProfileId: string = LOCAL_RUNTIME_HOST_PROFILE.id;
+  #localHostRetirement: Extract<DesktopLocalHostRetirement, { kind: 'retired' }> | undefined;
+  #localHostRetirementTask: DesktopLocalHostRetirementTask | undefined;
   #closed = false;
   #closeTask: Promise<void> | undefined;
 
@@ -496,13 +521,43 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     this.onDefaultProfileChanged?.(profileId);
   }
 
-  async prepareForUpdate(
-    allowInterruptActiveTasks: boolean,
-  ): Promise<RuntimeHostUpdatePreparation> {
+  retireOwnedLocalHost(
+    mode: RuntimeHostRetirementMode,
+  ): Promise<DesktopLocalHostRetirement> {
+    if (this.#localHostRetirement) return Promise.resolve(this.#localHostRetirement);
+
+    const activeTask = this.#localHostRetirementTask;
+    if (activeTask) {
+      if (
+        activeTask.mode === 'refuse_active_work' &&
+        mode === 'interrupt_active_work'
+      ) {
+        return activeTask.result.then((result) =>
+          result.kind === 'active_tasks'
+            ? this.retireOwnedLocalHost(mode)
+            : result,
+        );
+      }
+      return activeTask.result;
+    }
+
+    const result = this.#retireOwnedLocalHost(mode).finally(() => {
+      if (this.#localHostRetirementTask?.result === result) {
+        this.#localHostRetirementTask = undefined;
+      }
+    });
+    this.#localHostRetirementTask = { mode, result };
+    return result;
+  }
+
+  async #retireOwnedLocalHost(
+    mode: RuntimeHostRetirementMode,
+  ): Promise<DesktopLocalHostRetirement> {
     const lifecycle = this.#requireLifecycle(
       this.#requireTarget(LOCAL_RUNTIME_HOST_PROFILE.id),
     );
     const quiescence = lifecycle.quiesce();
+    let hostPid = quiescence.current.hostPid;
     let launchBarrierPaused = false;
     const resume = () => {
       if (launchBarrierPaused) {
@@ -516,27 +571,58 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         quiescence.current.hostLifecycleMode === 'service' ||
         quiescence.current.hostLifecycleMode === 'remote'
       ) {
-        return { kind: 'prepared', rollback: resume };
+        resume();
+        return { kind: 'not_owned' };
       }
       this.#baseInput.candidateLaunchBarrier?.pause();
       launchBarrierPaused = this.#baseInput.candidateLaunchBarrier !== undefined;
       const diagnostics = await quiescence.current.client.queryHostDiagnostics();
+      hostPid = diagnostics.pid;
       // The adopted Host still owns the root here, so every other owned launch
       // can be settled without allowing it to become a late election winner.
       await this.#baseInput.candidateLaunchBarrier?.retireExcept(diagnostics.pid);
-      const result = await quiescence.current.client.prepareHostUpgrade(
-        allowInterruptActiveTasks,
-      );
+      const result = await quiescence.current.client.prepareHostRetirement(mode);
       if (result.kind === 'active_tasks') {
+        if (mode === 'interrupt_active_work') {
+          throw new Error('Runtime Host refused authorized retirement');
+        }
         resume();
         return result;
       }
       await this.waitForHostExit(result.pid);
-      return { kind: 'prepared', rollback: resume };
+      return this.#completeLocalHostRetirement(resume);
     } catch (error) {
       resume();
-      throw error;
+      throw new DesktopLocalHostRetirementError(
+        {
+          hostId: quiescence.current.client.hostId,
+          hostEpoch: quiescence.current.client.hostEpoch,
+          lifecycleMode: 'ephemeral',
+          rootPath: this.#baseInput.rootPath,
+          ...(hostPid === undefined ? {} : { pid: hostPid }),
+        },
+        { cause: error },
+      );
     }
+  }
+
+  #completeLocalHostRetirement(
+    resume: () => void,
+  ): Extract<DesktopLocalHostRetirement, { kind: 'retired' }> {
+    let active = true;
+    const retirement = {
+      kind: 'retired' as const,
+      resume: () => {
+        if (!active) return;
+        active = false;
+        if (this.#localHostRetirement !== retirement) return;
+        this.#localHostRetirement = undefined;
+        if (this.#closed) return;
+        resume();
+      },
+    };
+    this.#localHostRetirement = retirement;
+    return retirement;
   }
 
   close(): Promise<void> {
@@ -902,7 +988,7 @@ async function waitForProcessRetirement(
 async function waitForProcessExit(pid: number): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (isProcessAlive(pid)) {
-    if (Date.now() >= deadline) throw new Error('Runtime Host did not exit before update');
+    if (Date.now() >= deadline) throw new Error('Runtime Host did not exit before retirement');
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
 }

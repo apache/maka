@@ -151,7 +151,6 @@ const PREEXISTING_UNCONSUMED_ENTRYPOINTS = [
   './encrypted-file-managed-secret-store',
   './managed-secret-store',
   './model-call-ledger',
-  './work-board-store',
   './write-queue',
 ];
 

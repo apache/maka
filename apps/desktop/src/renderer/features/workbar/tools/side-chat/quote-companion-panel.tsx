@@ -31,6 +31,7 @@ import {
   type ChatModelChoice,
   type ComposerHandle,
 } from '@maka/ui';
+import type { ComposerProps } from '../../../../../../../../packages/ui/dist/composer.d.ts';
 import type { SessionSummary } from '@maka/core/session';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useComposerAttachments } from '../../../../use-composer-attachments';
@@ -66,10 +67,10 @@ export function QuoteCompanionPanel(props: {
   sourceSession: SessionSummary | undefined;
   /** Shared global choice list, only used to render the inherited model's label. */
   modelChoices: readonly ChatModelChoice[];
-  mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
-  mentionSkillsUnavailable?: ComponentProps<typeof Composer>['mentionSkillsUnavailable'];
-  mentionSkillsLoading?: ComponentProps<typeof Composer>['mentionSkillsLoading'];
-  onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
+  mentionSkills?: ComposerProps['mentionSkills'];
+  mentionSkillsUnavailable?: ComposerProps['mentionSkillsUnavailable'];
+  mentionSkillsLoading?: ComposerProps['mentionSkillsLoading'];
+  onSearchMentionFiles?: ComposerProps['onSearchMentionFiles'];
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
@@ -268,10 +269,10 @@ export function QuoteCompanionPanel(props: {
               pendingAttachments={pendingAttachments}
               onRemoveAttachment={removeAttachment}
               mentionSkills={props.mentionSkills}
-              mentionSkillsUnavailable={props.mentionSkillsUnavailable}
-              mentionSkillsLoading={props.mentionSkillsLoading}
               onSearchMentionFiles={props.onSearchMentionFiles}
               pendingQuotes={props.quotes.map((quote) => quote.value)}
+              mentionSkillsUnavailable={props.mentionSkillsUnavailable}
+              mentionSkillsLoading={props.mentionSkillsLoading}
               contextDrawerDefaultCollapsed
               showStaticModelUnavailableStatus={false}
               onRemoveQuote={(index) => {

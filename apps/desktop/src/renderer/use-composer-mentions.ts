@@ -19,7 +19,6 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
-import type { SkillEntry } from '@maka/ui';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';
 
@@ -56,7 +55,8 @@ function invocableSkillListsEqual(
  * identities across renders.
  */
 export function useComposerMentions(options: {
-  skills: readonly SkillEntry[];
+  /** Invalidates Runtime's invocable projection after installed Skills settle. */
+  skillCatalogRevision: number;
   sessionId?: string;
   projectPath?: string;
   newSessionModel?: { llmConnectionSlug: string; model: string };
@@ -72,7 +72,7 @@ export function useComposerMentions(options: {
   const {
     projectPath,
     sessionId,
-    skills,
+    skillCatalogRevision,
     newSessionModel,
     newSessionCollaborationMode,
     newSessionPermissionMode,
@@ -203,7 +203,7 @@ export function useComposerMentions(options: {
   }, [
     projectPath,
     sessionId,
-    skills,
+    skillCatalogRevision,
     newSessionModel?.llmConnectionSlug,
     newSessionModel?.model,
     newSessionCollaborationMode,

@@ -26,8 +26,10 @@ describe('app quit coordinator', () => {
     let resumeQuitCount = 0;
     let preventedCount = 0;
     const coordinator = createAppQuitCoordinator({
+      prepareToQuit: async () => {},
       cleanup: async () => {},
       focusOrCreateWindow: () => {},
+      onPreparationError: () => {},
       onCleanupError: () => {},
       onWindowCreationError: () => {},
       resumeQuit: () => {
@@ -48,7 +50,7 @@ describe('app quit coordinator', () => {
     assert.equal(resumeQuitCount, 0);
     assert.equal(preventedCount, 2);
 
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await flushQuitCoordinator();
 
     assert.equal(resumeQuitCount, 1);
   });
@@ -62,6 +64,7 @@ describe('app quit coordinator', () => {
       releaseCleanup = resolve;
     });
     const coordinator = createAppQuitCoordinator({
+      prepareToQuit: async () => {},
       cleanup: async () => {
         cleanupCount += 1;
         await cleanupPending;
@@ -69,6 +72,7 @@ describe('app quit coordinator', () => {
       focusOrCreateWindow: () => {
         focusOrCreateCount += 1;
       },
+      onPreparationError: () => {},
       onCleanupError: () => {},
       onWindowCreationError: () => {},
       resumeQuit: () => {
@@ -84,6 +88,7 @@ describe('app quit coordinator', () => {
 
     coordinator.handleBeforeQuit(event);
     coordinator.handleBeforeQuit(event);
+    await flushQuitCoordinator();
     assert.equal(cleanupCount, 1);
     assert.equal(preventedCount, 2);
     assert.equal(resumeQuitCount, 0);
@@ -91,7 +96,7 @@ describe('app quit coordinator', () => {
     releaseCleanup();
     await cleanupPending;
     await Promise.resolve();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await flushQuitCoordinator();
 
     assert.equal(resumeQuitCount, 1);
 
@@ -108,11 +113,13 @@ describe('app quit coordinator', () => {
     let focusOrCreateCount = 0;
     let windowCreationSignal: AbortSignal | undefined;
     const coordinator = createAppQuitCoordinator({
+      prepareToQuit: async () => {},
       cleanup: () => new Promise<void>(() => {}),
       focusOrCreateWindow: (signal) => {
         focusOrCreateCount += 1;
         windowCreationSignal = signal;
       },
+      onPreparationError: () => {},
       onCleanupError: () => {},
       onWindowCreationError: () => {},
       resumeQuit: () => {},
@@ -130,10 +137,12 @@ describe('app quit coordinator', () => {
     const failure = new Error('window load failed');
     const reportedErrors: unknown[] = [];
     const coordinator = createAppQuitCoordinator({
+      prepareToQuit: async () => {},
       cleanup: async () => {},
       focusOrCreateWindow: async () => {
         throw failure;
       },
+      onPreparationError: () => {},
       onCleanupError: () => {},
       onWindowCreationError: (error) => reportedErrors.push(error),
       resumeQuit: () => {},
@@ -146,18 +155,62 @@ describe('app quit coordinator', () => {
     assert.deepEqual(reportedErrors, [failure]);
   });
 
+  it('cancels quit without closing resources when Host retirement preparation fails', async () => {
+    const preparationError = new Error('retirement failed');
+    const reportedErrors: unknown[] = [];
+    let preparationCount = 0;
+    let cleanupCount = 0;
+    let focusOrCreateCount = 0;
+    let resumeQuitCount = 0;
+    const coordinator = createAppQuitCoordinator({
+      prepareToQuit: async () => {
+        preparationCount += 1;
+        if (preparationCount === 1) throw preparationError;
+      },
+      cleanup: async () => {
+        cleanupCount += 1;
+      },
+      focusOrCreateWindow: () => {
+        focusOrCreateCount += 1;
+      },
+      onPreparationError: (error) => reportedErrors.push(error),
+      onCleanupError: () => {},
+      onWindowCreationError: () => {},
+      resumeQuit: () => {
+        resumeQuitCount += 1;
+      },
+    });
+
+    coordinator.handleBeforeQuit({ preventDefault: () => {} });
+    await flushQuitCoordinator();
+
+    assert.deepEqual(reportedErrors, [preparationError]);
+    assert.equal(cleanupCount, 0);
+    assert.equal(resumeQuitCount, 0);
+    assert.equal(focusOrCreateCount, 1);
+
+    coordinator.handleBeforeQuit({ preventDefault: () => {} });
+    await flushQuitCoordinator();
+
+    assert.equal(preparationCount, 2);
+    assert.equal(cleanupCount, 1);
+    assert.equal(resumeQuitCount, 1);
+  });
+
   it('reports cleanup failure without leaking an unhandled rejection', async () => {
     const cleanupError = new Error('close failed');
     const reportedErrors: unknown[] = [];
     let focusOrCreateCount = 0;
     let resumeQuitCount = 0;
     const deps = {
+      prepareToQuit: async () => {},
       cleanup: async () => {
         throw cleanupError;
       },
       focusOrCreateWindow: () => {
         focusOrCreateCount += 1;
       },
+      onPreparationError: () => {},
       onCleanupError: (error: unknown) => {
         reportedErrors.push(error);
       },
@@ -169,8 +222,7 @@ describe('app quit coordinator', () => {
     const coordinator = createAppQuitCoordinator(deps);
 
     coordinator.handleBeforeQuit({ preventDefault: () => {} });
-    await Promise.resolve();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await flushQuitCoordinator();
     let secondQuitPrevented = false;
     coordinator.focusOrCreateWindow();
     coordinator.handleBeforeQuit({
@@ -185,3 +237,8 @@ describe('app quit coordinator', () => {
     assert.equal(secondQuitPrevented, false);
   });
 });
+
+async function flushQuitCoordinator(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}

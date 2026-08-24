@@ -29,7 +29,10 @@ import {
   PROJECT_DIRECTORY_ROOT_LABEL_MAX_BYTES,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
-import { connectExistingRuntimeHost } from '@maka/runtime-host/client';
+import {
+  connectExistingRuntimeHost,
+  prepareConnectedRuntimeHostRetirement,
+} from '@maka/runtime-host/client';
 import { RUNTIME_HOST_SERVICE_LOG_MAX_BYTES } from '@maka/runtime-host/operator';
 import {
   withLegacyFileUpdateLockLease,
@@ -1011,10 +1014,10 @@ async function prepareRuntimeHostRetirement(
         'The State Root is owned by a different Runtime Host process',
       );
     }
-    const prepared = await connected.connection.request('host.upgrade.prepare', {
-      expectedHostEpoch: hostEpoch,
-      allowInterruptActiveTasks,
-    });
+    const prepared = await prepareConnectedRuntimeHostRetirement(
+      connected.connection,
+      allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
+    );
     if (prepared.kind === 'active_tasks') return prepared;
     if (prepared.pid !== expectedPid) {
       throw new RuntimeHostServiceManagerError(

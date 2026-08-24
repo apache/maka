@@ -27,6 +27,11 @@ export {
   type DirectRequestOperationKey,
 } from './connection.js';
 export {
+  prepareConnectedRuntimeHostRetirement,
+  type RuntimeHostRetirementMode,
+  type RuntimeHostRetirementPreparation,
+} from './host-retirement.js';
+export {
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
   createClientRuntimeHostCredentialStore,
