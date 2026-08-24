@@ -40,9 +40,8 @@ function scopeForFilter(filter: 'inbox' | 'project', projectId: string | null): 
     : { kind: 'inbox' };
 }
 
-function WorkBoardRow(props: {
-  item: WorkBoardItem;
-  copy: WorkBoardPanelCopy;
+interface ActiveWorkBoardRowActions {
+  kind: 'active';
   projectId: string | null;
   renaming: boolean;
   renameValue: string;
@@ -54,32 +53,42 @@ function WorkBoardRow(props: {
   onReopen(): void;
   onMove(): void;
   onArchive(): void;
+}
+
+interface ArchivedWorkBoardRowActions {
+  kind: 'archived';
   onUnarchive(): void;
   onRemove(): void;
+}
+
+function WorkBoardRow(props: {
+  item: WorkBoardItem;
+  copy: WorkBoardPanelCopy;
+  actions: ActiveWorkBoardRowActions | ArchivedWorkBoardRowActions;
 }) {
-  const { item, copy } = props;
+  const { item, copy, actions } = props;
   return (
     <li className="maka-work-board-row" data-archived={item.archived || undefined}>
       <div className="maka-work-board-row-main">
-        {props.renaming ? (
+        {actions.kind === 'active' && actions.renaming ? (
           <TextInput
             className="maka-work-board-rename-input"
             size="sm"
             label={copy.rename}
             isLabelHidden
             hasAutoFocus
-            value={props.renameValue}
-            onChange={props.onRenameChange}
+            value={actions.renameValue}
+            onChange={actions.onRenameChange}
             onKeyDown={(event) => {
               event.stopPropagation();
               if (event.nativeEvent.isComposing || event.key === 'Process') return;
               if (event.key === 'Enter') {
                 event.preventDefault();
-                props.onRenameSave();
+                actions.onRenameSave();
               }
               if (event.key === 'Escape') {
                 event.preventDefault();
-                props.onRenameCancel();
+                actions.onRenameCancel();
               }
             }}
           />
@@ -89,36 +98,36 @@ function WorkBoardRow(props: {
         {item.archived && <span className="maka-work-board-archived-tag">{copy.archived}</span>}
       </div>
       <div className="maka-work-board-row-actions">
-        {item.archived ? (
+        {actions.kind === 'archived' ? (
           <>
-            <Button size="sm" variant="ghost" label={copy.unarchive} onClick={props.onUnarchive} />
-            <Button size="sm" variant="ghost" label={copy.delete} onClick={props.onRemove} />
+            <Button size="sm" variant="ghost" label={copy.unarchive} onClick={actions.onUnarchive} />
+            <Button size="sm" variant="ghost" label={copy.delete} onClick={actions.onRemove} />
           </>
         ) : (
           <>
             {item.state === 'done' ? (
-              <Button size="sm" variant="ghost" label={copy.reopen} onClick={props.onReopen} />
+              <Button size="sm" variant="ghost" label={copy.reopen} onClick={actions.onReopen} />
             ) : (
-              <Button size="sm" variant="ghost" label={copy.complete} onClick={props.onComplete} />
+              <Button size="sm" variant="ghost" label={copy.complete} onClick={actions.onComplete} />
             )}
-            {props.renaming ? (
+            {actions.renaming ? (
               <Button
                 size="sm"
                 variant="primary"
                 label={copy.renameSave}
-                onClick={props.onRenameSave}
+                onClick={actions.onRenameSave}
               />
             ) : (
-              <Button size="sm" variant="ghost" label={copy.rename} onClick={props.onRenameStart} />
+              <Button size="sm" variant="ghost" label={copy.rename} onClick={actions.onRenameStart} />
             )}
             <Button
               size="sm"
               variant="ghost"
               label={item.scope.kind === 'project' ? copy.moveToInbox : copy.moveToProject}
-              onClick={props.onMove}
-              isDisabled={props.projectId === null}
+              onClick={actions.onMove}
+              isDisabled={actions.projectId === null}
             />
-            <Button size="sm" variant="ghost" label={copy.archive} onClick={props.onArchive} />
+            <Button size="sm" variant="ghost" label={copy.archive} onClick={actions.onArchive} />
           </>
         )}
       </div>
@@ -306,36 +315,33 @@ export function WorkBoardPanel(props: {
                   key={item.id}
                   item={item}
                   copy={copy}
-                  projectId={props.projectId}
-                  renaming={renamingId === item.id}
-                  renameValue={renamingTitle}
-                  onRenameStart={() => startRename(item)}
-                  onRenameChange={setRenamingTitle}
-                  onRenameSave={() => void saveRename(item)}
-                  onRenameCancel={() => {
-                    setRenamingId(null);
-                    setRenamingRevision(null);
+                  actions={{
+                    kind: 'active',
+                    projectId: props.projectId,
+                    renaming: renamingId === item.id,
+                    renameValue: renamingTitle,
+                    onRenameStart: () => startRename(item),
+                    onRenameChange: setRenamingTitle,
+                    onRenameSave: () => void saveRename(item),
+                    onRenameCancel: () => {
+                      setRenamingId(null);
+                      setRenamingRevision(null);
+                    },
+                    onComplete: () =>
+                      void runAction(() =>
+                        board.update(item.id, { state: 'done' }, { expectedRevision: item.revision }),
+                      ),
+                    onReopen: () =>
+                      void runAction(() =>
+                        board.update(item.id, { state: 'todo' }, { expectedRevision: item.revision }),
+                      ),
+                    onMove: () =>
+                      void runAction(() =>
+                        board.update(item.id, { scope: moveScope(item) }, { expectedRevision: item.revision }),
+                      ),
+                    onArchive: () =>
+                      void runAction(() => board.archive(item.id, { expectedRevision: item.revision })),
                   }}
-                  onComplete={() =>
-                    void runAction(() => board.update(item.id, { state: 'done' }, { expectedRevision: item.revision }))
-                  }
-                  onReopen={() =>
-                    void runAction(() => board.update(item.id, { state: 'todo' }, { expectedRevision: item.revision }))
-                  }
-                  onMove={() =>
-                    void runAction(() =>
-                      board.update(item.id, { scope: moveScope(item) }, { expectedRevision: item.revision }),
-                    )
-                  }
-                  onArchive={() =>
-                    void runAction(() => board.archive(item.id, { expectedRevision: item.revision }))
-                  }
-                  onUnarchive={() =>
-                    void runAction(() => board.unarchive(item.id, { expectedRevision: item.revision }))
-                  }
-                  onRemove={() =>
-                    void runAction(() => board.remove(item.id, { expectedRevision: item.revision }))
-                  }
                 />
               ))}
               {archivedItems.map((item) => (
@@ -343,23 +349,15 @@ export function WorkBoardPanel(props: {
                   key={item.id}
                   item={item}
                   copy={copy}
-                  projectId={props.projectId}
-                  renaming={false}
-                  renameValue=""
-                  onRenameStart={() => undefined}
-                  onRenameChange={() => undefined}
-                  onRenameSave={() => undefined}
-                  onRenameCancel={() => undefined}
-                  onComplete={() => undefined}
-                  onReopen={() => undefined}
-                  onMove={() => undefined}
-                  onArchive={() => undefined}
-                  onUnarchive={() =>
-                    void runAction(() => board.unarchive(item.id, { expectedRevision: item.revision }))
-                  }
-                  onRemove={() =>
-                    void runAction(() => board.remove(item.id, { expectedRevision: item.revision }))
-                  }
+                  actions={{
+                    kind: 'archived',
+                    onUnarchive: () =>
+                      void runAction(() =>
+                        board.unarchive(item.id, { expectedRevision: item.revision }),
+                      ),
+                    onRemove: () =>
+                      void runAction(() => board.remove(item.id, { expectedRevision: item.revision })),
+                  }}
                 />
               ))}
                 </ul>
