@@ -651,11 +651,7 @@ impl RepositoryFixture {
         let replacement_head = fixture.git_output(["rev-parse", "HEAD"]);
         fixture.git(["update-ref", "HEAD", &claimed_head]);
 
-        fs::copy(
-            fixture.loose_object_path(&replacement_head),
-            fixture.loose_object_path(&claimed_head),
-        )
-        .unwrap();
+        fixture.replace_loose_object(&claimed_head, &replacement_head);
         (fixture, claimed_head)
     }
 
@@ -682,12 +678,14 @@ impl RepositoryFixture {
         let replacement_tree = fixture.git_output(["rev-parse", "HEAD^{tree}"]);
         fixture.git(["update-ref", "HEAD", &claimed_head]);
 
-        fs::copy(
-            fixture.loose_object_path(&replacement_tree),
-            fixture.loose_object_path(&claimed_tree),
-        )
-        .unwrap();
+        fixture.replace_loose_object(&claimed_tree, &replacement_tree);
         (fixture, claimed_head)
+    }
+
+    fn replace_loose_object(&self, target_oid: &str, replacement_oid: &str) {
+        let target = self.loose_object_path(target_oid);
+        fs::remove_file(&target).unwrap();
+        fs::copy(self.loose_object_path(replacement_oid), target).unwrap();
     }
 
     fn loose_object_path(&self, oid: &str) -> PathBuf {
