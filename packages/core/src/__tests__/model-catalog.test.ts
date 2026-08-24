@@ -341,6 +341,72 @@ test('every picker sees a model the user enabled but no catalog describes', () =
   assert.deepEqual(declared?.provenance.sources?.userChoice, ['saved_model']);
 });
 
+test('catalog provenance follows the projected model facts marker used in production', () => {
+  const [entry] = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: 'facts',
+      providerType: 'openai',
+      defaultModel: 'custom-model',
+      models: [
+        {
+          id: 'custom-model',
+          contextWindow: 200_000,
+          capabilities: { chat: true },
+          factOverriddenFields: ['contextWindow', 'capabilities'],
+        },
+      ],
+      modelSource: 'fetched',
+    },
+  });
+  assert.equal(entry?.capabilitySource, 'user_override');
+  assert.equal(entry?.contextWindow, 200_000);
+});
+
+test('fallback provider catalogs include projected facts-backed models', () => {
+  const entries = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: 'opencode-free-facts',
+      providerType: 'opencode-free',
+      defaultModel: 'custom-free-model',
+      models: [
+        {
+          id: 'custom-free-model',
+          contextWindow: 128_000,
+          factOverriddenFields: ['contextWindow', 'capabilities'],
+        },
+      ],
+      modelSource: 'fallback',
+    },
+  });
+  const entry = entries.find((candidate) => candidate.id === 'custom-free-model');
+  assert.equal(entry?.contextWindow, 128_000);
+  assert.equal(entry?.capabilitySource, 'user_override');
+});
+
+test('fallback provider catalogs apply facts to known fallback models', () => {
+  const entries = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: 'opencode-free-known-facts',
+      providerType: 'opencode-free',
+      defaultModel: 'nemotron-3-ultra-free',
+      models: [
+        {
+          id: 'nemotron-3-ultra-free',
+          contextWindow: 200_000,
+          inputLimit: 200_000,
+          capabilities: { chat: true },
+          factOverriddenFields: ['contextWindow', 'inputLimit', 'capabilities'],
+        },
+      ],
+      modelSource: 'fallback',
+    },
+  });
+  const entry = entries.find((candidate) => candidate.id === 'nemotron-3-ultra-free');
+  assert.equal(entry?.contextWindow, 200_000);
+  assert.equal(entry?.inputLimit, 200_000);
+  assert.equal(entry?.capabilitySource, 'user_override');
+});
+
 test('unknown persisted provider ids return an empty catalog', () => {
   assert.deepEqual(
     buildConnectionModelCatalogEntries({
@@ -434,6 +500,7 @@ test('DeepSeek catalogs the V4 vision model display metadata from a bare provide
     reasoning: true,
     functionCalling: true,
     vision: true,
+    webSearch: true,
   });
   assert.deepEqual(model?.modalities, { input: ['text', 'image'], output: ['text'] });
   assert.equal(model?.canUseAsChatDefault, true);
