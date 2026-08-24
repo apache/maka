@@ -1058,7 +1058,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
   });
 
   // Claiming the key alone would let any shape ride in under a control-fact
-  // name. Only what AiSdkFlow actually emits is a canonical fact: every field,
+  // name. Only what the Runtime mapper actually emits is a canonical fact: every field,
   // the system/user identity, and the tool-call reference.
   const wellFormedBoundaryRequest = () =>
     ev({
@@ -1641,7 +1641,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
  * safe while every action a reader can meet is claimed — several of them
  * (`permissionDecision`, `tokenUsage`, the terminal fact) do produce rows, and
  * `runtime-event-backfill.ts` already writes a content-free event that becomes a
- * visible `permission_decision`. The SessionEvent contract in ai-sdk-flow.test.ts
+ * visible `permission_decision`. The SessionEvent mapper contract
  * only covers events built by `mapSessionEventToRuntimeEvent`; tool-runtime,
  * terminal-run-commit and the backfill write RuntimeEvents directly. Keying this
  * table on the action surface itself covers those paths too.

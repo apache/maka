@@ -18,35 +18,11 @@
  */
 
 /**
- * AiSdkFlow — the default long-term AgentFlow implementation.
+ * Deterministic SessionEvent -> RuntimeEvent mapping.
  *
- * Architecture: docs/architecture/runtime-core-architecture-draft.md
- *
- * Design intent (preserved by this node):
- *   - The AI SDK remains Maka's first-class long-term flow engine. This
- *     flow is the formal seam around the existing stepping engine, NOT a
- *     replacement for it.
- *   - The current model/tool loop lives inside `AiSdkBackend.send()`. This
- *     flow does NOT reimplement streaming. It wraps an `AgentBackend` (the
- *     production instance is `AiSdkBackend`) and normalizes its
- *     renderer-facing `SessionEvent` stream into canonical `RuntimeEvent`s.
- *   - This keeps current SessionManager behavior stable while giving future
- *     work a single target: `RuntimeRunner -> AiSdkFlow` instead of
- *     `SessionManager -> AgentRun -> AiSdkBackend`.
- *
- * What this adapter owns:
- *   - `run(ctx, input)`: drive the wrapped backend and emit `RuntimeEvent`s.
- *   - `mapSessionEventToRuntimeEvent`: a documented, testable placeholder
- *     mapping from the existing `SessionEvent` union onto `RuntimeEvent`.
- *   - coalesce duplicate terminal backend facts (e.g. `abort` followed by
- *     trailing `complete(user_stop)`) so the AgentFlow contract stays at
- *     exactly one terminal RuntimeEvent.
- *   - control surface (`stop` / `respondToSandboxBoundary` / `dispose`): delegate
- *     to the wrapped backend so current control semantics are preserved.
- *
- * What this adapter deliberately does NOT do:
- *   - rewrite or fork `AiSdkBackend.send()`;
- *   - own model-history projection (Phase 7) or tool-event actions (Phase 5).
+ * RuntimeKernel owns backend execution and lifecycle. This module is only the
+ * pure vocabulary bridge from backend events to the canonical Runtime Event
+ * ledger.
  */
 
 import {
@@ -55,22 +31,18 @@ import {
   type CompleteEvent,
   type SessionEvent,
 } from '@maka/core/events';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import type { UserQuestionResponse } from '@maka/core/user-question';
-import {
-  isTerminalRuntimeEvent,
-  type RuntimeEvent,
-  type RuntimeEventStatus,
-} from '@maka/core/runtime-event';
+import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 
-import type {
-  AgentBackend,
-  BackendSessionEvent,
-  HostedInteractionBridge,
-} from '@maka/core/backend-types';
-import { type AgentFlow, type AgentFlowControl, type FlowInput } from './agent-flow.js';
-import type { InvocationContext } from './invocation-context.js';
+import type { BackendSessionEvent } from '@maka/core/backend-types';
 
+export interface RuntimeEventMapContext {
+  readonly sessionId: string;
+  readonly invocationId: string;
+  readonly runId: string;
+  readonly turnId: string;
+  readonly branch?: string;
+  readonly now?: () => number;
+}
 // ============================================================================
 // SessionEvent → RuntimeEvent mapping (placeholder, Phase 4)
 // ============================================================================
@@ -113,7 +85,7 @@ export function createSessionEventMapMemory(): SessionEventMapMemory {
  * Reuses the source `SessionEvent.id` as the canonical event id so the
  * adapter keeps 1:1 dedup linkage with the backend stream.
  */
-function resolveBase(event: SessionEvent, ctx: InvocationContext) {
+function resolveBase(event: SessionEvent, ctx: RuntimeEventMapContext) {
   const now = ctx.now ?? (() => Date.now());
   const base = {
     id: event.id,
@@ -154,7 +126,7 @@ function resolveBase(event: SessionEvent, ctx: InvocationContext) {
  */
 export function mapSessionEventToRuntimeEvent(
   event: SessionEvent,
-  ctx: InvocationContext,
+  ctx: RuntimeEventMapContext,
   memory: SessionEventMapMemory = createSessionEventMapMemory(),
 ): RuntimeEvent {
   if (event.type === 'queue_update') {
@@ -169,6 +141,10 @@ export function mapSessionEventToRuntimeEvent(
   }
   const narrowed: BackendSessionEvent = event;
   return mapBackendSessionEvent(narrowed, ctx, memory);
+}
+
+export function isLiveBackendSessionEvent(event: SessionEvent): event is BackendSessionEvent {
+  return event.type !== 'queue_update' && !isLegacyPermissionSessionEvent(event);
 }
 
 function isLegacyPermissionSessionEvent(event: SessionEvent): event is Extract<
@@ -191,7 +167,7 @@ function isLegacyPermissionSessionEvent(event: SessionEvent): event is Extract<
 
 function mapBackendSessionEvent(
   event: BackendSessionEvent,
-  ctx: InvocationContext,
+  ctx: RuntimeEventMapContext,
   memory: SessionEventMapMemory,
 ): RuntimeEvent {
   const base = resolveBase(event, ctx);
@@ -658,232 +634,4 @@ function completeRuntimeEvent(
     ...(status === 'failed' && memory.failureContent ? { content: memory.failureContent } : {}),
     actions: { endInvocation: true, stateDelta },
   };
-}
-
-// ============================================================================
-// AiSdkFlow — AgentFlow over a wrapped AgentBackend
-// ============================================================================
-
-export interface AiSdkFlowInput {
-  /** The wrapped stepping engine. Production: AiSdkBackend. Tests: any AgentBackend. */
-  backend: AgentBackend;
-  /** Backend-activation stop owner. Standalone flows create a local fallback when omitted. */
-  stopBackend?: AgentBackend['stop'];
-  /** Exact hosted Interaction Run forwarded only for this flow invocation. */
-  hostedInteraction?: HostedInteractionBridge;
-  /** Synchronous exact-Run ownership fence immediately before backend dispatch. */
-  beforeDispatch?: () => void;
-  /**
-   * Optional production projection hook. Called for every raw backend
-   * SessionEvent after it has been mapped to a RuntimeEvent and before the
-   * RuntimeEvent is yielded/coalesced.
-   */
-  onSessionEvent?: (sessionEvent: SessionEvent, runtimeEvent: RuntimeEvent) => Promise<void> | void;
-  /** Called if the wrapped backend stream throws. */
-  onError?: (error: unknown) => Promise<void> | void;
-  /** Called after backend streaming finishes, errors, or is abandoned. */
-  onFinally?: () => Promise<void> | void;
-  /**
-   * Keep consuming backend events after the first terminal RuntimeEvent.
-   * Events consumed during that drain are silent: they are not yielded and
-   * are not sent through onSessionEvent.
-   */
-  drainAfterTerminal?: boolean;
-}
-
-/**
- * Default long-term `AgentFlow` implementation.
- *
- * Wraps an existing `AgentBackend` (the production instance is
- * `AiSdkBackend`) and exposes the canonical `AgentFlow.run()` seam. The
- * adapter delegates all stepping to the backend's `send()` and only
- * translates `SessionEvent → RuntimeEvent`, so it cannot destabilize the
- * current `SessionManager` path: nothing changes until a caller opts into
- * `AiSdkFlow.run()`.
- *
- * Control surface delegates 1:1 to the wrapped backend, preserving the
- * existing `stop` / `respondToSandboxBoundary` / `dispose` semantics.
- */
-export class AiSdkFlow implements AgentFlow, AgentFlowControl {
-  readonly kind: string;
-  readonly sessionId: string;
-  private readonly backend: AgentBackend;
-  private readonly hostedInteraction: HostedInteractionBridge | undefined;
-  private readonly beforeDispatch: AiSdkFlowInput['beforeDispatch'];
-  private readonly onSessionEvent: AiSdkFlowInput['onSessionEvent'];
-  private readonly onError: AiSdkFlowInput['onError'];
-  private readonly onFinally: AiSdkFlowInput['onFinally'];
-  private readonly drainAfterTerminal: boolean;
-  private readonly stopBackend: AgentBackend['stop'];
-
-  constructor(input: AiSdkFlowInput) {
-    this.backend = input.backend;
-    this.stopBackend = input.stopBackend ?? createSingleFlightBackendStop(input.backend);
-    this.hostedInteraction = input.hostedInteraction;
-    this.beforeDispatch = input.beforeDispatch;
-    this.sessionId = input.backend.sessionId;
-    this.kind = input.backend.kind;
-    this.onSessionEvent = input.onSessionEvent;
-    this.onError = input.onError;
-    this.onFinally = input.onFinally;
-    this.drainAfterTerminal = input.drainAfterTerminal ?? false;
-  }
-
-  /** The wrapped backend (exposed for runners that need the raw control surface). */
-  get backendRef(): AgentBackend {
-    return this.backend;
-  }
-
-  async *run(ctx: InvocationContext, input: FlowInput): AsyncIterable<RuntimeEvent> {
-    if (ctx.sessionId !== this.sessionId) {
-      throw new Error(
-        `AiSdkFlow session mismatch: ctx.sessionId=${ctx.sessionId} but backend is bound to ${this.sessionId}`,
-      );
-    }
-
-    // Bridge the FlowInput.abortSignal seam onto the backend's stop() control.
-    // The legacy backend owns its own AbortController; this just routes an
-    // external signal to the existing steering method.
-    const abortSignal = input.abortSignal;
-    let onAbort: (() => void) | null = null;
-    if (abortSignal) {
-      if (abortSignal.aborted) {
-        await this.stop('user_stop').catch(() => {});
-      } else {
-        onAbort = () => {
-          void this.stop('user_stop').catch(() => {});
-        };
-        abortSignal.addEventListener('abort', onAbort, { once: true });
-      }
-    }
-
-    const memory = createSessionEventMapMemory();
-    let terminalEmitted = false;
-    let terminalAccepted = false;
-    let errorEmitted = false;
-    try {
-      this.beforeDispatch?.();
-      for await (const sessionEvent of this.backend.send({
-        invocationId: ctx.invocationId,
-        runId: ctx.runId,
-        turnId: ctx.turnId,
-        ...(input.orchestration !== undefined ? { orchestration: input.orchestration } : {}),
-        ...(input.toolMode !== undefined ? { toolMode: input.toolMode } : {}),
-        ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
-        // The persisted head anchor: mid-turn capacity compaction keeps this
-        // event verbatim and needs its exact ledger identity for coverage.
-        ...(ctx.request.initialRuntimeEvent !== undefined
-          ? { headAnchorRuntimeEvent: ctx.request.initialRuntimeEvent }
-          : {}),
-        text: input.text,
-        ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
-        ...(input.quotes !== undefined ? { quotes: input.quotes } : {}),
-        context: input.context,
-        ...(input.runtimeContext !== undefined ? { runtimeContext: input.runtimeContext } : {}),
-        ...(input.continuation !== undefined ? { continuation: input.continuation } : {}),
-        ...(input.pullSteering !== undefined ? { pullSteering: input.pullSteering } : {}),
-        ...(input.ackSteering !== undefined ? { ackSteering: input.ackSteering } : {}),
-        ...(input.nackSteering !== undefined ? { nackSteering: input.nackSteering } : {}),
-        ...(this.hostedInteraction ? { hostedInteraction: this.hostedInteraction } : {}),
-      })) {
-        if (terminalEmitted) continue;
-        // Ingress authority check: queue updates belong to the kernel and
-        // legacy permission events were replaced by sandbox-boundary events.
-        // Drop either retired vocabulary before mapping, observers, or
-        // persistence can treat it as a live runtime fact.
-        if (sessionEvent.type === 'queue_update' || isLegacyPermissionSessionEvent(sessionEvent)) {
-          continue;
-        }
-        const runtimeEvent = mapSessionEventToRuntimeEvent(sessionEvent, ctx, memory);
-        if (sessionEvent.type === 'error') errorEmitted = true;
-        if (isTerminalRuntimeEvent(runtimeEvent)) {
-          terminalEmitted = true;
-          await this.onSessionEvent?.(sessionEvent, runtimeEvent);
-          terminalAccepted = true;
-          yield runtimeEvent;
-          if (!this.drainAfterTerminal) break;
-          continue;
-        }
-        await this.onSessionEvent?.(sessionEvent, runtimeEvent);
-        yield runtimeEvent;
-      }
-      if (!terminalEmitted) {
-        for (const sessionEvent of missingTerminalSessionEvents(ctx, {
-          includeError: !errorEmitted,
-        })) {
-          const runtimeEvent = mapSessionEventToRuntimeEvent(sessionEvent, ctx, memory);
-          await this.onSessionEvent?.(sessionEvent, runtimeEvent);
-          if (isTerminalRuntimeEvent(runtimeEvent)) terminalEmitted = true;
-          yield runtimeEvent;
-        }
-      }
-    } catch (error) {
-      if (terminalAccepted) return;
-      await this.onError?.(error);
-      throw error;
-    } finally {
-      if (abortSignal && onAbort) {
-        abortSignal.removeEventListener('abort', onAbort);
-      }
-      await this.onFinally?.();
-    }
-  }
-
-  stop(reason: 'user_stop' | 'redirect'): Promise<void> {
-    return this.stopBackend(reason);
-  }
-
-  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
-    await this.backend.respondToSandboxBoundary(decision);
-  }
-
-  async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
-    await this.backend.respondToUserQuestion?.(response);
-  }
-
-  async dispose(): Promise<void> {
-    await this.backend.dispose();
-  }
-}
-
-export function createSingleFlightBackendStop(backend: AgentBackend): AgentBackend['stop'] {
-  let pending: Promise<void> | undefined;
-  return (reason, mode) => {
-    if (pending) return pending;
-    const attempt = Promise.resolve().then(() => backend.stop(reason, mode));
-    pending = attempt;
-    const clear = (): void => {
-      if (pending === attempt) pending = undefined;
-    };
-    void attempt.then(clear, clear);
-    return attempt;
-  };
-}
-
-function missingTerminalSessionEvents(
-  ctx: InvocationContext,
-  options: { includeError: boolean },
-): SessionEvent[] {
-  const ts = ctx.now();
-  const events: SessionEvent[] = [];
-  if (options.includeError) {
-    events.push({
-      type: 'error',
-      id: ctx.newId(),
-      turnId: ctx.turnId,
-      ts,
-      recoverable: false,
-      code: 'missing_terminal_event',
-      reason: 'missing_terminal_event',
-      message: 'flow exhausted without a terminal RuntimeEvent',
-    });
-  }
-  events.push({
-    type: 'complete',
-    id: ctx.newId(),
-    turnId: ctx.turnId,
-    ts,
-    stopReason: 'error',
-  });
-  return events;
 }

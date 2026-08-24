@@ -639,7 +639,7 @@ interface SdkStreamResult {
  * The finish reason to forward, preferring what the provider actually said.
  *
  * The SDK splits the reason in two: a closed unified enum, and the provider's
- * own spelling. Unified is the right thing to forward — `runtime-runner` and
+ * own spelling. Unified is the right thing to forward — `RuntimeKernel` and
  * the backend compare against `'tool-calls'`, which is a name only the SDK
  * uses. Except when unified is `other`, which is not a reason but the SDK
  * declining to name one; there it hides the only distinction that matters

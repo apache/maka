@@ -34,8 +34,11 @@ import {
   LATEST_CONTEXT_PROJECTION_TYPE,
   readLatestContextSnapshot,
 } from '../latest-context-snapshot.js';
-import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
-import type { InvocationContext } from '../invocation-context.js';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '../session-event-runtime-mapper.js';
+import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import {
   buildHistoryCompactCheckpoint,
   type HistoryCompactCheckpoint,
@@ -481,15 +484,11 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
   };
 
   const ledger: RuntimeEvent[] = [anchor];
-  const ledgerCtx: InvocationContext = {
+  const ledgerCtx: RuntimeEventMapContext = {
     sessionId: 'session-1',
     invocationId: 'run-1',
     runId: 'run-1',
     turnId: 'turn-1',
-    source: 'desktop',
-    startedAt: 1,
-    request: { sessionId: 'session-1', turnId: 'turn-1', text: ANCHOR_TEXT, source: 'desktop' },
-    newId: idGenerator(),
     now: monotonicClock(),
   };
   const ledgerMemory = createSessionEventMapMemory();

@@ -189,7 +189,6 @@ async function runCrashChild(): Promise<void> {
       let ts = 10;
       return () => ++ts;
     })(),
-    runtimeSource: 'test',
   });
   const session = await manager.createSession({
     cwd: workspaceRoot,
@@ -271,7 +270,6 @@ function createManager(workspaceRoot: string): {
       inspectContinuationSafety: async () => stableSafetyObservation(),
       newId: () => `recovery-id-${++id}`,
       now: Date.now,
-      runtimeSource: 'test',
     }),
   };
 }

@@ -27,7 +27,7 @@ import type { StoredMessage } from '@maka/core/session';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 
 import { ToolRuntime, formatDeferredNotLoadedText, type MakaTool } from '../tool-runtime.js';
-import { mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
+import { mapSessionEventToRuntimeEvent } from '../session-event-runtime-mapper.js';
 
 // The execute-boundary guard rejects a *gated* tool whose name is absent from
 // the current step's active snapshot before the real impl.
@@ -162,17 +162,6 @@ describe('tool-availability execute-boundary guard', () => {
       invocationId: 'inv-1',
       runId: 'run-1',
       turnId: 'turn-1',
-      source: 'test',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        invocationId: 'inv-1',
-        runId: 'run-1',
-        turnId: 'turn-1',
-        text: 'test',
-        source: 'test',
-      },
-      newId: () => 'runtime-event-1',
       now: () => 1,
     });
     assert.equal(runtimeEvent.content?.kind, 'function_call');

@@ -33,7 +33,7 @@ import { acquireOperationalStateDatabase } from '@maka/storage/operational-state
 import {
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
-} from '@maka/runtime/ai-sdk-flow';
+} from '@maka/runtime/session-event-runtime-mapper';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   TURN_MESSAGE_TEXT_MAX_BYTES,

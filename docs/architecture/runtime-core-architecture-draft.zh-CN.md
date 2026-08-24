@@ -156,18 +156,17 @@ Maka 并不是在进程内实现了 Kafka，也没有声称 RuntimeEventStore �
 
 这一原则直接解释了后文最重要的 terminal invariant：Run header 不能凭自己宣布完成，它必须得到 terminal RuntimeEvent 的支持。
 
-## 四个不要混在一起的身份
+## 三种生命周期身份，加一个关联字段
 
-理解主链之前，需要先分清四个经常被口语化混用的概念。
+理解主链之前，需要先分清三个经常被口语化混用的生命周期概念。
 
 | 概念 | 它回答的问题 | 当前实现中的身份 |
 |---|---|---|
 | Session | 这些对话和运行属于哪段长期交互？ | `sessionId` |
 | Turn | 用户界面中的这一轮问答是哪一轮？ | `turnId` |
 | Run | 这一次具体执行尝试是谁？状态是什么？ | `runId` / `AgentRun` |
-| Invocation | 一次 Flow 调用从开始到终止的标准边界是什么？ | `invocationId` / `RuntimeRunner` |
 
-在当前默认生产路径中，`AgentRun` 已经先创建了 `runId`，随后把同一个值交给 `RuntimeRunner` 作为 `invocationId`。因此这两个 ID 目前通常相同，但概念上仍然不同：Run 是可持久化的执行实体，Invocation 是 Runner 所规范的一次调用边界。保留这层区分，使未来的重试、调度或多次尝试不必重新定义整条事件协议。
+RuntimeEvent 仍保留 `invocationId` 作为兼容与事件关联字段。生产主链把它绑定到 Run 身份；它不再对应单独的 Invocation 生命周期对象或 Runner 层。
 
 这里最重要的判断是：**Turn 不是 Run，聊天消息也不是执行状态。** 一个用户可见的回合需要一个系统可追踪的执行封套；否则，系统只能知道“出现过一些消息”，却无法可靠回答“这次执行是否真正结束”。
 
@@ -180,9 +179,9 @@ flowchart LR
     A["Caller"] --> B["SessionManager"]
     B --> C["RuntimeKernel"]
     C --> D["AgentRun"]
-    D --> E["RuntimeRunner"]
-    E --> F["AiSdkFlow"]
-    F --> G["AgentBackend"]
+    C --> G["AgentBackend"]
+    G --> F["SessionEvent Runtime mapper"]
+    F --> D
     G --> H["ModelAdapter"]
     G --> I["ToolRuntime"]
     H --> J["Model Provider"]
@@ -207,9 +206,10 @@ flowchart LR
 - 创建或复用绑定到 Session 的 Backend；
 - 注册活跃 Run，并维护 `turnId → runId` 映射；
 - 把停止和权限响应路由到正在运行的 Backend；
-- 组装 `RuntimeRunner` 与 `AiSdkFlow`；
+- 驱动 Backend 事件流并映射 RuntimeEvent；
+- 统一处理 abort 路由、单终态、终态后静默排空和缺失终态失败；
 - 让 RuntimeEvent 落盘后，再把原有 `SessionEvent` 流交还调用者；
-- 在 Flow 收尾时确保 `AgentRun.finalize()` 被执行。
+- 在 Backend 流收尾时确保 `AgentRun.finalize()` 被执行。
 
 它是 orchestration boundary，而不是模型循环本身。Backend 不应该负责“这个 Session 目前有哪些活跃 Run”，产品入口也不应该负责“终止 RuntimeEvent 是否已经持久化”。这些跨层协调都收敛在 Kernel。
 
@@ -229,23 +229,21 @@ flowchart LR
 
 可以把 `AgentRun` 理解成一次执行的“耐久封套”：它不决定模型下一步调用哪个工具，但它保证这次执行是谁、发生了什么、最后以什么状态结束。
 
-### `RuntimeRunner`：统一 Invocation 语义
+### `RuntimeKernel`：一个执行所有者，一套终态协议
 
-`RuntimeRunner` 不调用 provider，也不直接执行工具。它规定任何 Flow 都必须遵守的调用协议：
+Runtime 不再在 `AgentRun` 和 `AgentBackend` 之间插入通用 Runner/Flow 壳。`RuntimeKernel` 直接拥有生产主链的协议：
 
-- preflight 失败时，不得启动 Flow，也不得伪造一次已开始的调用；
-- 初始用户 RuntimeEvent 必须排在所有 Flow 事件之前；
-- Flow 必须产生 terminal RuntimeEvent；
-- Flow 抛错、没有终态、权限被拒绝、被中止或出现不完整 finish reason，都要得到结构化失败结果；
-- 成功结果必须包含非空的最终模型文本。
+- `AgentRun.begin()` 在 Backend dispatch 前持久化初始用户 RuntimeEvent；
+- `AgentBackend.send()` 前重新校验精确的活跃 Run；
+- abort signal 路由到绑定具体 Backend generation 的 stop 函数；
+- Backend 事件先映射并由 `AgentRun` 耐久接收，再作为 `SessionEvent` 暴露；
+- 第一个被接受的 terminal fact 获胜，随后静默排空 Backend；
+- Backend 抛错或流结束时缺少终态，都会收敛成结构化失败；
+- durable continuation 消费一次性 start-admission proof，并且不伪造新的 user event。
 
-`RuntimeRunner` 返回的是 `InvocationResult`，其中包含完整事件序列、状态、最终输出或失败分类。这个结果把 Backend 的流式细节收敛成稳定的 invocation outcome。
+### `SessionEvent Runtime mapper`：旧事件流与 Runtime 事实之间的桥
 
-Runner 已提供可注入的 preflight gate，但当前 `RuntimeKernel` 组装生产主链时没有注入 gate；因此这是已经实现的 Runner 能力，而不是当前桌面入口上的独立准入阶段。
-
-### `AiSdkFlow`：旧事件流与 Runtime 事实之间的桥
-
-当前模型/工具循环仍然由 `AgentBackend.send()` 产生 renderer-facing `SessionEvent`。`AiSdkFlow` 包住 Backend，并逐个映射成 canonical `RuntimeEvent`：
+当前模型/工具循环仍然由 `AgentBackend.send()` 产生 renderer-facing `SessionEvent`。`session-event-runtime-mapper.ts` 把被接受的事件逐个映射成 canonical `RuntimeEvent`：
 
 - 模型文本和 thinking 变成 model content；
 - `tool_start` / `tool_result` 变成 function call / response；
@@ -253,9 +251,7 @@ Runner 已提供可注入的 preflight gate，但当前 `RuntimeKernel` 组装�
 - token usage 变成 runtime action；
 - error、abort 和 complete 变成明确的失败或终止事实。
 
-它还有一个关键责任：**一条 Invocation 只向上游接受一个 terminal RuntimeEvent。** 例如 Backend 在中止时可能连续发出 `abort` 和 `complete(user_stop)`，Flow 会接受第一个终态并静默排空迟到事件，避免双重终止。
-
-名字虽然叫 `AiSdkFlow`，它实际依赖的是 `AgentBackend` 接口。生产中可包装 `AiSdkBackend`，也可以包装其他遵守该接口的 Backend。它不重新实现模型循环，只规范事件语义。
+mapper 是确定性的，不拥有 streaming、stop、dispose 或 admission。生命周期决策全部属于 `RuntimeKernel`；mapper 只负责 Backend 事件入口的词汇转换。
 
 ### `AgentBackend`：模型与工具循环真正发生的地方
 
@@ -283,8 +279,7 @@ sequenceDiagram
     participant U as User
     participant K as RuntimeKernel
     participant R as AgentRun
-    participant RR as RuntimeRunner
-    participant F as AiSdkFlow
+    participant F as SessionEvent Runtime mapper
     participant B as AiSdkBackend
     participant M as Model Provider
     participant T as ToolRuntime
@@ -292,17 +287,17 @@ sequenceDiagram
     U->>K: sendMessage(turnId, text)
     K->>R: begin()
     R-->>K: backend + history + initial RuntimeEvent
-    K->>RR: run(InvocationRequest)
-    RR->>F: run(context, input)
-    F->>B: send(BackendSendInput)
+    K->>B: send(BackendSendInput)
     B->>M: streamText(messages, tools)
     M-->>B: thinking / text / tool call
     B->>T: execute(tool, args)
     T-->>B: tool result
     B->>M: next step with tool result
     M-->>B: final text + finish
-    B-->>F: SessionEvents
-    F-->>RR: RuntimeEvents + one terminal event
+    B-->>K: SessionEvents
+    K->>F: map accepted event
+    F-->>K: RuntimeEvent
+    K->>R: accept mapped fact
     R->>R: commit terminal fact and finalize projections
 ```
 
@@ -314,11 +309,11 @@ AI SDK 的 step 是这个循环的自然节拍。Maka 会按 step 持久化 assi
 
 当一次工具调用越过当前沙箱边界时，工具不会静默失败，Runtime 也不会由 UI 自行弹一个对话框把执行挂起。工具返回一个带 `sandbox_boundary_required` 与具体 `expansion` 的失败结果；模型据此调用 `request_sandbox_boundary` 发起一次**边界扩张请求**，运行停在一个有身份的位置上等待答复。
 
-等待期间，Session 投影为 `waiting_for_user`，但 Invocation 仍然保留自己的执行身份 —— 它没有结束，只是停住了。用户的决定通过 `RuntimeKernel.respondToSandboxBoundary()` 路由回当前 Backend；同一条路径上还有 `respondToUserQuestion()`，用于模型主动向用户提问的场景。两类请求在未答复期间都由 `RuntimeKernel` 登记为 active interaction，因此一个错过了实时事件的界面可以重新拉取待答项，而不会把运行晾在那里。
+等待期间，Session 投影为 `waiting_for_user`，但 Run 仍然保留自己的执行身份 —— 它没有结束，只是停住了。用户的决定通过 `RuntimeKernel.respondToSandboxBoundary()` 路由回当前 Backend；同一条路径上还有 `respondToUserQuestion()`，用于模型主动向用户提问的场景。两类请求在未答复期间都由 `RuntimeKernel` 登记为 active interaction，因此一个错过了实时事件的界面可以重新拉取待答项，而不会把运行晾在那里。
 
 这个设计的关键是：权限不是 UI 自己暂停了一下。请求和决定都作为带类型的事实进入 Runtime 事实模型 —— 它们没有 `content`，而是带 `actions.stateDelta` 的系统事件。因此重放、诊断和恢复都能解释运行为什么停住，以及控制权如何回来。决定那条事实的 `role` 是 `system`、`author` 是 `user`：它在模型历史里属于系统泳道，但产生它的是人，这一对正交字段把这件事表达出来，而不需要把用户决定伪装成一条聊天消息。
 
-`AiSdkFlow` 在映射入口就会拒绝 `permission_request` / `permission_answer_ack` / `permission_closure_ack` / `permission_decision_ack` 这组遗留事件并直接抛错：它们属于一套已被 sandbox boundary 取代的词汇，不能再成为活的运行时事实。
+`RuntimeKernel` 在映射和持久化前丢弃 `permission_request` / `permission_answer_ack` / `permission_closure_ack` / `permission_decision_ack` 这组遗留词汇：它们已被 sandbox boundary 事件取代，不能再成为活的运行时事实。
 
 ## 一份语义事实，两类辅助状态
 
@@ -351,7 +346,7 @@ Maka 当前保护的核心不变量是：
 
 > 一个终止的 Run 必须有且只有一个有效 terminal RuntimeEvent；终止的 Run header 必须能够由这个 terminal fact 支撑。
 
-因此，`AgentRun` 在提交 terminal Run header 前，先要求 terminal RuntimeEvent 成功落盘。没有终态的 Flow 会被合成为 `missing_terminal_event` 失败；重复终态会被 Flow 合并；状态不匹配、来自其他 Run 或标记为 partial 的 terminal event 都会被拒绝。
+因此，`AgentRun` 在提交 terminal Run header 前，先要求 terminal RuntimeEvent 成功落盘。没有终态的 Backend stream 会被合成为 `missing_terminal_event` 失败；重复终态由 Kernel 合并；状态不匹配、来自其他 Run 或标记为 partial 的 terminal event 都会被拒绝。
 
 如果 terminal RuntimeEvent 已经存在，但 Run header 因中断仍是 `running`，read model 可以把 terminal event 作为更强事实来解释运行结果，并在恢复时修复 header。反过来，如果 header 声称已经结束却没有可信 terminal fact，系统不会盲目信任 header，而会保守地修复为 `missing_terminal_event` 失败。
 
@@ -361,11 +356,11 @@ Maka 当前保护的核心不变量是：
 
 ### 用户停止
 
-`RuntimeKernel.stopSession()` 会先把所有活跃 `AgentRun` 标记为 stopped，再调用 Backend 的 `stop()`。`AiSdkBackend` 会中止 provider stream、结束正在等待的 sandbox boundary 或用户提问，并产生 abort/complete 事件。即使 provider 随后发送迟到的 complete 或 error，Flow 与 AgentRun 也不会允许它覆盖已经确定的 aborted 语义。停止来源，例如 renderer stop button，会进入 terminal fact 与 Run header，供诊断使用。
+`RuntimeKernel.stopSession()` 会先把所有活跃 `AgentRun` 标记为 stopped，再调用 Backend 的 `stop()`。`AiSdkBackend` 会中止 provider stream、结束正在等待的 sandbox boundary 或用户提问，并产生 abort/complete 事件。即使 provider 随后发送迟到的 complete 或 error，RuntimeKernel 与 AgentRun 也不会允许它覆盖已经确定的 aborted 语义。停止来源，例如 renderer stop button，会进入 terminal fact 与 Run header，供诊断使用。
 
 ### Provider 或 Runtime 错误
 
-错误首先被规范化为非终止 error content，随后由 failed terminal event 关闭 Invocation。`RuntimeRunner` 不允许后续的 completed event 掩盖之前已经观察到的错误。若 Backend 直接抛出异常或流没有终态，Runner/Flow 会产生结构化失败，而不是留下悬空运行。
+错误首先被规范化为非终止 error content，随后由 failed terminal event 关闭 Run。`RuntimeKernel` 不允许后续的 completed event 掩盖之前已经观察到的错误。若 Backend 直接抛出异常或流没有终态，Kernel 会产生结构化失败，而不是留下悬空运行。
 
 ### 应用崩溃和启动恢复
 
@@ -380,7 +375,7 @@ Maka 当前保护的核心不变量是：
 ### 得到的能力
 
 - 产品入口不依赖具体 provider 或工具循环实现；
-- 不同 Backend 可以共享 Invocation 与 terminal 语义；
+- 不同 Backend 通过 Kernel 共享 Run 与 terminal 语义；
 - UI 事件与模型可重放事实被明确区分；
 - 用户停止、权限和工具副作用进入可诊断的控制流；
 - 崩溃后可以依据 durable facts 收敛状态；
@@ -390,10 +385,9 @@ Maka 当前保护的核心不变量是：
 
 - 迁移期同时存在 `SessionEvent`、`StoredMessage`、`RuntimeEvent` 和 operational Run events，事件映射的维护成本较高；
 - `AiSdkBackend` 仍然很重，同时组织 history、context budget、tool availability、step loop、usage 与 telemetry；
-- `AiSdkFlow` 仍承担 legacy-to-canonical adapter 角色，而不是 Backend 原生产 canonical events；
+- `SessionEvent Runtime mapper` 仍承担 legacy-to-canonical adapter 角色，而不是 Backend 原生产 canonical events；
 - `SessionStore` 与 RuntimeEvent projection 需要在 active/in-flight 场景中协同；
-- 启动恢复是确定性终结与修复，不是从任意位置热续跑。续跑走另一条路：`safe_boundary_continuation` 从一个经过校验的安全边界接着跑，Run header 上是 `continuationSource`，入口是 `RuntimeRunner.runAdmittedRuntimeContinuation`；两者的区别见[第八章](./runtime-resume-architecture.zh-CN.md)。
-- Runner 的 preflight seam 已存在，但生产 Kernel 装配 `RuntimeRunner` 时不传 gate，因此还没有独立的 Runtime 准入闸门。
+- 启动恢复是确定性终结与修复，不是从任意位置热续跑。续跑走另一条路：`safe_boundary_continuation` 从一个经过校验的安全边界接着跑，Run header 上是 `continuationSource`，由 `RuntimeKernel` 完成准入和 dispatch；两者的区别见[第八章](./runtime-resume-architecture.zh-CN.md)。
 
 这些不是应该隐藏的实现细节，而是当前架构的真实边界。未来拆分 Backend 或加入 checkpoint 时，首要目标不是减少文件行数，而是保持 request shape、工具可见性、事件顺序和 terminal invariant 不变。
 
@@ -404,18 +398,16 @@ Maka 当前保护的核心不变量是：
 1. `packages/runtime/src/session-manager.ts`：公共入口与恢复入口。
 2. `packages/runtime/src/runtime-kernel.ts`：Run/Backend 的活跃控制与主链组装。
 3. `packages/runtime/src/agent-run.ts`：Durable lifecycle、历史构造和终态提交。
-4. `packages/runtime/src/runtime-runner.ts`：Invocation 协议与结果分类。
-5. `packages/runtime/src/ai-sdk-flow.ts`：`SessionEvent → RuntimeEvent` 映射与单终态保证。
-6. `packages/runtime/src/ai-sdk-backend.ts`：AI SDK 模型/工具 step loop。
-7. `packages/runtime/src/model-adapter.ts`：provider stream 适配。
-8. `packages/runtime/src/tool-runtime.ts`：沙箱边界、工具执行和副作用边界。
-9. `packages/core/src/runtime-event.ts`：canonical RuntimeEvent 契约。
-10. `packages/core/src/agent-run.ts` 与 `packages/storage/src/agent-run-store.ts`：Run 与 RuntimeEvent 的账本契约与 SQLite 实现。
+4. `packages/runtime/src/session-event-runtime-mapper.ts`：纯 `SessionEvent → RuntimeEvent` 映射。
+5. `packages/runtime/src/ai-sdk-backend.ts`：AI SDK 模型/工具 step loop。
+6. `packages/runtime/src/model-adapter.ts`：provider stream 适配。
+7. `packages/runtime/src/tool-runtime.ts`：沙箱边界、工具执行和副作用边界。
+8. `packages/core/src/runtime-event.ts`：canonical RuntimeEvent 契约。
+9. `packages/core/src/agent-run.ts` 与 `packages/storage/src/agent-run-store.ts`：Run 与 RuntimeEvent 的账本契约与 SQLite 实现。
 
 对应的关键测试集中在：
 
-- `packages/runtime/src/__tests__/runtime-runner.test.ts`
-- `packages/runtime/src/__tests__/ai-sdk-flow.test.ts`
+- `packages/runtime/src/__tests__/session-event-runtime-mapper.test.ts`
 - `packages/runtime/src/__tests__/session-manager.test.ts`
 - `packages/runtime/src/__tests__/session-manager-terminal-ledger.test.ts`
 - `packages/runtime/src/__tests__/runtime-ledger-repair.test.ts`
@@ -431,7 +423,7 @@ model/tool stepping engine
   → model history / UI / Run state / recovery projections
 ```
 
-`SessionManager` 稳住入口，`RuntimeKernel` 管理活跃执行，`AgentRun` 提交耐久事实，`RuntimeRunner` 规定 Invocation 语义，`AiSdkFlow` 把 Backend 事件翻译成 canonical facts，而 `AiSdkBackend`、`ModelAdapter` 与 `ToolRuntime` 真正推进模型和工具循环。它们都围绕 Runtime Event Log 协作，而不是各自保存一份局部真相。
+`SessionManager` 稳住入口，`RuntimeKernel` 管理活跃执行，`AgentRun` 提交耐久事实，`SessionEvent Runtime mapper` 把 Backend 事件翻译成 canonical facts，而 `AiSdkBackend`、`ModelAdapter` 与 `ToolRuntime` 真正推进模型和工具循环。它们都围绕 Runtime Event Log 协作，而不是各自保存一份局部真相。
 
 这套结构最终保护的是一件很朴素的事：无论一次 Agent 工作经历多少模型 step、工具副作用、等待用户答复和异常，Maka 都要先忠实记录发生过什么。只要这份有序事实仍在，系统就能重新构造当时的交互状态，生成新的视图，并让下一轮从可信历史继续。
 

@@ -30,8 +30,11 @@ import { type SessionHeader } from '@maka/core/session';
 import { scanToolLedger } from '@maka/core/tool-ledger-scanner';
 import { z } from 'zod';
 
-import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
-import type { InvocationContext } from '../invocation-context.js';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '../session-event-runtime-mapper.js';
+import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import type { RuntimeCommitSink } from '../runtime-commit-sink.js';
 import { LOOP_GATE_IDENTICAL_THRESHOLD, type MakaTool, type ToolRuntime } from '../tool-runtime.js';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
@@ -116,12 +119,8 @@ function projectLedger(h: LedgerHarness): RuntimeEvent[] {
     invocationId: INVOCATION_ID,
     runId: RUN_ID,
     turnId: TURN_ID,
-    source: 'test',
-    startedAt: 1,
-    request: { sessionId: SESSION_ID, turnId: TURN_ID, text: '', source: 'test' },
-    newId: () => 'unused',
     now: () => 1,
-  } satisfies InvocationContext;
+  } satisfies RuntimeEventMapContext;
   const generic = h.events
     .map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory))
     .filter((event) => {

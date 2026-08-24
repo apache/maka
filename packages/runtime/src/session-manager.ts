@@ -187,7 +187,6 @@ import {
   type AgentRunRecoveryDecision,
 } from './agent-run-recovery.js';
 import { buildInterruptedCodeModeOutcomeCommits } from './recovery-resolver.js';
-import type { InvocationResult, InvocationSource } from './invocation-context.js';
 import {
   isRuntimeHostedRootAuthority,
   RuntimeMessageAuthorityInvariantError,
@@ -842,8 +841,6 @@ interface SessionManagerBaseDeps {
   }) => Promise<ArtifactRecord>;
   /** Reject patch publication while the child still owns live Runtime Resources. */
   assertChildWorkspaceQuiescent?: (sessionId: string) => Promise<void>;
-  runtimeSource?: InvocationSource;
-  runtimeInvocationObserver?: (result: InvocationResult) => void | Promise<void>;
   runtimeKernel?: RuntimeKernelLike;
   /** Optional host-owned parent run authority for runtimes that execute the parent externally. */
   isParentRunActive?: (sessionId: string, runId: string, turnId: string) => boolean;
@@ -2050,7 +2047,7 @@ export class SessionManager {
    * the IPC bridge.
    *
    * Runtime v2 bridge: SessionManager remains the public facade; RuntimeKernel
-   * owns AgentRun/AiSdkFlow/RuntimeRunner orchestration and ledger recording.
+   * owns AgentRun orchestration, backend execution, and ledger recording.
    */
   async *sendMessage(
     sessionId: string,

@@ -27,16 +27,14 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import { z } from 'zod';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import {
-  AiSdkFlow,
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
-} from '../ai-sdk-flow.js';
-import type { InvocationContext } from '../invocation-context.js';
+} from '../session-event-runtime-mapper.js';
+import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import { applyRuntimeEventContextBudget } from '../context-budget.js';
 import { evaluateHistoryCompactCheckpointReplay } from '../history-compaction.js';
 import type {
@@ -365,19 +363,15 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
 
   // The fixture's durable run ledger: the consumer persists every non-partial
   // mapped RuntimeEvent exactly the way AgentRun.acceptMappedEvent does (same
-  // mapper, same InvocationContext incl. branch), and the durable-read seam
+  // mapper, same RuntimeEventMapContext incl. branch), and the durable-read seam
   // serves it back after pending consumer work has flushed.
   const ledger: RuntimeEvent[] = [anchor];
-  const ledgerCtx: InvocationContext = {
+  const ledgerCtx: RuntimeEventMapContext = {
     sessionId: 'session-1',
     invocationId: 'run-1',
     runId: 'run-1',
     turnId: 'turn-1',
     ...(options.branch !== undefined ? { branch: options.branch } : {}),
-    source: 'desktop',
-    startedAt: 1,
-    request: { sessionId: 'session-1', turnId: 'turn-1', text: ANCHOR_TEXT, source: 'desktop' },
-    newId: idGenerator(),
     now: monotonicClock(),
   };
   const ledgerMemory = createSessionEventMapMemory();
@@ -801,7 +795,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
     // The durable ledger the coverage was computed over carries the branch on
     // every current-turn event, because the fixture consumer maps with the
-    // same InvocationContext (incl. branch) as AiSdkFlow.
+    // same RuntimeEventMapContext (including branch) as RuntimeKernel.
     for (const event of fixture.ledger) {
       assert.equal(event.branch, 'lane-7');
     }
@@ -1424,55 +1418,6 @@ describe('mid-turn capacity compaction with a slow ledger consumer', () => {
   // behavior above hold identically — no over-window request slipping out,
   // and no completed-step content silently dropped from a replacement.
   defineMidTurnSuite('slow');
-});
-
-describe('mid-turn capacity compaction flow plumbing', () => {
-  test('AiSdkFlow forwards the persisted head anchor to backend.send', async () => {
-    const sendInputs: BackendSendInput[] = [];
-    const anchor = runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT);
-    const fakeBackend: AgentBackend = {
-      kind: 'ai-sdk',
-      sessionId: 'session-1',
-      // eslint-disable-next-line @typescript-eslint/require-await
-      async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-        sendInputs.push(input);
-        yield {
-          type: 'complete',
-          id: 'complete-1',
-          turnId: input.turnId,
-          ts: 2,
-          stopReason: 'end_turn',
-        };
-      },
-      stop: async () => {},
-      respondToSandboxBoundary: async () => {},
-      dispose: async () => {},
-    };
-    const flow = new AiSdkFlow({ backend: fakeBackend });
-    const ctx: InvocationContext = {
-      sessionId: 'session-1',
-      invocationId: 'run-1',
-      runId: 'run-1',
-      turnId: 'turn-1',
-      branch: 'lane-7',
-      source: 'desktop',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        text: 'hello',
-        source: 'desktop',
-        initialRuntimeEvent: anchor,
-      },
-      newId: idGenerator(),
-      now: monotonicClock(),
-    };
-    for await (const _event of flow.run(ctx, { text: 'hello', context: [] })) {
-      // drain
-    }
-    assert.equal(sendInputs.length, 1);
-    assert.equal(sendInputs[0]?.headAnchorRuntimeEvent, anchor);
-  });
 });
 
 describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {

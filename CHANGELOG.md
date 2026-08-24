@@ -30,6 +30,10 @@
 
 ### Changed
 
+- Collapsed the RuntimeRunner/Flow/Invocation shell into `RuntimeKernel`; backend dispatch,
+  terminal coalescing, stop/drain, and durable continuation admission now have one production
+  owner, immutable request snapshots remain enforced at AgentRun acceptance and backend dispatch,
+  and SessionEvent-to-RuntimeEvent conversion remains a pure mapper.
 - Unified context management under one Runtime-owned policy. `MAKA_CONTEXT_*` environment overrides no longer tune or disable compaction and Tool Result pruning; model-visible archive placeholders are read on demand through bounded `ArchiveRead` calls instead of eager hydration. Previously supported overrides are ignored on upgrade: if Tool Result pruning was set to `off`, pruning is re-enabled, and there is currently no supported replacement opt-out.
 
 ## 0.1.11 - 2026-08-18

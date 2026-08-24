@@ -33,9 +33,12 @@ import type { StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
+import {
+  createSessionEventMapMemory,
+  mapSessionEventToRuntimeEvent,
+} from '../session-event-runtime-mapper.js';
 import { projectRuntimeEventsToStoredMessages } from '../runtime-event-read-model.js';
-import type { InvocationContext } from '../invocation-context.js';
+import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import type { AssistantMessage, StoredMessage, ToolResultMessage } from '@maka/core/session';
 import { z } from 'zod';
 import {
@@ -3307,21 +3310,11 @@ describe('AiSdkBackend model history', () => {
     });
     const ledger: RuntimeEvent[] = [anchor];
     const mappingMemory = createSessionEventMapMemory();
-    const mappingContext: InvocationContext = {
+    const mappingContext: RuntimeEventMapContext = {
       sessionId: 'session-1',
       invocationId: 'invocation-1',
       runId: 'run-1',
       turnId: 'turn-1',
-      source: 'desktop',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        text: 'read chart.png',
-        source: 'desktop',
-        initialRuntimeEvent: anchor,
-      },
-      newId: idGenerator(),
       now: monotonicClock(),
     };
     const model = new MockLanguageModelV4({
@@ -3416,21 +3409,11 @@ describe('AiSdkBackend model history', () => {
     });
     const ledger: RuntimeEvent[] = [anchor];
     const mappingMemory = createSessionEventMapMemory();
-    const mappingContext: InvocationContext = {
+    const mappingContext: RuntimeEventMapContext = {
       sessionId: 'session-1',
       invocationId: 'invocation-1',
       runId: 'run-1',
       turnId: 'turn-1',
-      source: 'desktop',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        text: 'run both tools',
-        source: 'desktop',
-        initialRuntimeEvent: anchor,
-      },
-      newId: idGenerator(),
       now: monotonicClock(),
     };
     const executions: string[] = [];
@@ -10649,7 +10632,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-1',
       now: () => 42,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeEvents = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
     const runHeader: AgentRunHeader = {
@@ -10743,7 +10726,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-1',
       now: () => 42,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeEvents = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
     const runHeader: AgentRunHeader = {
@@ -10850,7 +10833,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeContext = firstEvents.map((event) =>
       mapSessionEventToRuntimeEvent(event, ctx, memory),
@@ -10913,7 +10896,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const priorEvents: SessionEvent[] = [
       {
@@ -11170,7 +11153,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const priorEvents: SessionEvent[] = [
       {
@@ -11287,7 +11270,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const priorEvents: SessionEvent[] = [
       {
@@ -11567,7 +11550,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
     const projection = projectRuntimeEventsToStoredMessages(runtimeContext, {
@@ -11666,7 +11649,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const priorEvents: SessionEvent[] = [
       {
@@ -11758,7 +11741,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const priorEvents: SessionEvent[] = [
       // Orphan: result with no prior tool_start (its call was sliced away).
@@ -11926,7 +11909,7 @@ describe('AiSdkBackend thinking persistence', () => {
       turnId: 'turn-prev',
       now: () => 7,
       newId: idGenerator(),
-    } as unknown as InvocationContext;
+    } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeContext = firstEvents.map((event) =>
       mapSessionEventToRuntimeEvent(event, ctx, memory),
@@ -12922,21 +12905,11 @@ describe('AiSdkBackend steering durability and identity', () => {
     });
     const ledger: RuntimeEvent[] = [anchor];
     const mappingMemory = createSessionEventMapMemory();
-    const mappingContext: InvocationContext = {
+    const mappingContext: RuntimeEventMapContext = {
       sessionId: 'session-1',
       invocationId: 'invocation-1',
       runId: 'run-1',
       turnId: 'turn-1',
-      source: 'desktop',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        text: 'call the tool',
-        source: 'desktop',
-        initialRuntimeEvent: anchor,
-      },
-      newId: idGenerator(),
       now: monotonicClock(),
     };
     let calls = 0;
@@ -13039,21 +13012,11 @@ describe('AiSdkBackend steering durability and identity', () => {
     });
     const ledger: RuntimeEvent[] = [anchor];
     const mappingMemory = createSessionEventMapMemory();
-    const mappingContext: InvocationContext = {
+    const mappingContext: RuntimeEventMapContext = {
       sessionId: 'session-1',
       invocationId: 'invocation-1',
       runId: 'run-1',
       turnId: 'turn-1',
-      source: 'desktop',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        text: 'think about it',
-        source: 'desktop',
-        initialRuntimeEvent: anchor,
-      },
-      newId: idGenerator(),
       now: monotonicClock(),
     };
     const model = new MockLanguageModelV4({
@@ -13322,21 +13285,11 @@ describe('AiSdkBackend steering durability and identity', () => {
       author: 'user',
       text: 'search',
     });
-    const mappingContext: InvocationContext = {
+    const mappingContext: RuntimeEventMapContext = {
       sessionId: 'session-1',
       invocationId: 'invocation-search',
       runId: 'run-search',
       turnId: 'turn-1',
-      source: 'desktop',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        text: 'search',
-        source: 'desktop',
-        initialRuntimeEvent: anchor,
-      },
-      newId: idGenerator(),
       now: monotonicClock(),
     };
     for (const event of events) {
@@ -13788,21 +13741,11 @@ function durableTurnHarness(
   };
   const ledger: RuntimeEvent[] = [anchor];
   const memory = createSessionEventMapMemory();
-  const ctx: InvocationContext = {
+  const ctx: RuntimeEventMapContext = {
     sessionId: 'session-1',
     invocationId,
     runId,
     turnId,
-    source: 'desktop',
-    startedAt: 1,
-    request: {
-      sessionId: 'session-1',
-      turnId,
-      text,
-      source: 'desktop',
-      initialRuntimeEvent: anchor,
-    },
-    newId: idGenerator(),
     now: monotonicClock(),
   };
   return {

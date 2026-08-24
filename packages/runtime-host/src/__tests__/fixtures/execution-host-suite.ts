@@ -321,7 +321,6 @@ export class ExecutionFixture {
         },
         newId: randomUUID,
         now: Date.now,
-        runtimeSource: 'test',
       });
       const plan = await manager.planAuthoritativeSafeBoundaryContinuation(this.sessionId, {
         sourceRunId: source.sourceRunId,
@@ -405,7 +404,6 @@ export class ExecutionFixture {
         }),
         newId: randomUUID,
         now: Date.now,
-        runtimeSource: 'test',
       });
       const plan = await manager.planAuthoritativeSafeBoundaryContinuation(this.sessionId, {
         sourceRunId: source.sourceRunId,
