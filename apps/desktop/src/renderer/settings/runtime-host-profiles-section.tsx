@@ -162,10 +162,20 @@ export function RuntimeHostProfilesSection(props: {
       setTestResult(result);
       setTestInvalidated(false);
       if (result.kind === "connected") toast.success(copy.testConnected);
-      else toast.error(copy.testConnection, copy.testFailed[result.stage]);
+      else {
+        toast.error(
+          copy.testConnection,
+          copy.testFailed[result.stage],
+          `Runtime Host test stage: ${result.stage}`,
+        );
+      }
     } catch {
       if (mountedRef.current) {
-        toast.error(copy.testConnection, copy.testFailed.connection);
+        toast.error(
+          copy.testConnection,
+          copy.testFailed.connection,
+          "Runtime Host test did not return a classified result",
+        );
       }
     } finally {
       if (mountedRef.current) setTesting(false);

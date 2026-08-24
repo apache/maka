@@ -647,7 +647,11 @@ export function createDesktopRuntimeHostProfileService(input: {
           await input.test(target, "terminal");
           return { kind: "connected" };
         } catch (error) {
-          return { kind: "failed", stage: classifyConnectionTestFailure(error) };
+          const stage = classifyConnectionTestFailure(error);
+          console.warn(
+            `[runtime-host] temporary connection test failed at stage=${stage}`,
+          );
+          return { kind: "failed", stage };
         }
       });
     },
