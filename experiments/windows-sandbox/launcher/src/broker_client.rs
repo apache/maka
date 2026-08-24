@@ -28,8 +28,15 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
     CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
-use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING, ReadFile, WriteFile};
-use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, OPEN_EXISTING, ReadFile, SYNCHRONIZE, WriteFile,
+};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 use crate::broker_authorization::BrokerAuthorizer;
 use crate::broker_framing::{MAX_BROKER_MESSAGE_BYTES, decode_frame, encode_frame};
@@ -44,7 +51,12 @@ pub fn run_local(manifest_path: &str) -> Result<u8, String> {
         .map_err(|error| format!("remove local broker manifest failed: {error}"))?;
     let mut request: BrokerLaunchRequest = serde_json::from_str(&source)
         .map_err(|error| format!("invalid local broker manifest: {error}"))?;
-    request.client_pid = unsafe { GetCurrentProcessId() };
+    // The packaged broker is a direct child of Runtime Host. Bind the
+    // manifest to that kernel-observed parent and keep a wait handle open for
+    // the whole launch. If Runtime Host dies, the broker terminates and drains
+    // the AppContainer Job instead of leaving the worker alive until timeout.
+    let owner_pid = parent_process_id()?;
+    request.client_pid = owner_pid;
     request.validate()?;
     // The packaged path is a same-process one-shot launch. Authorize and hand
     // off directly instead of routing through a synchronous named-pipe thread;
@@ -59,7 +71,42 @@ pub fn run_local(manifest_path: &str) -> Result<u8, String> {
                 error.message()
             )
         })?;
-    windows_launcher::launch_appcontainer(&request.launch)
+    let owner = unsafe {
+        OpenProcess(
+            SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            owner_pid,
+        )
+    };
+    if owner.is_null() {
+        return Err(last_error("OpenProcess(local broker owner)"));
+    }
+    let result = windows_launcher::launch_appcontainer_owned(&request.launch, owner);
+    unsafe { CloseHandle(owner) };
+    result
+}
+
+fn parent_process_id() -> Result<u32, String> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(last_error("CreateToolhelp32Snapshot(local broker owner)"));
+    }
+    let current = unsafe { GetCurrentProcessId() };
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut found = None;
+    let mut next = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while next {
+        if entry.th32ProcessID == current {
+            found = Some(entry.th32ParentProcessID);
+            break;
+        }
+        next = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
+    found
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| "local broker parent process was not found".to_owned())
 }
 
 pub fn run(pipe_name: &str, manifest_path: &str) -> Result<u8, String> {
@@ -91,6 +138,20 @@ pub fn run(pipe_name: &str, manifest_path: &str) -> Result<u8, String> {
         BrokerLaunchOutcome::Started { .. } => {
             Err("broker returned unsupported asynchronous outcome".to_owned())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parent_process_id;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
+    #[test]
+    fn resolves_a_real_parent_process_without_self_binding() {
+        let parent = parent_process_id().expect("test harness parent process");
+        let current = unsafe { GetCurrentProcessId() };
+        assert_ne!(parent, 0);
+        assert_ne!(parent, current);
     }
 }
 
