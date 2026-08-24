@@ -162,3 +162,78 @@ test('dispatches /side instead of steering it into a running turn', async ({
   await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(1);
   await page.getByRole('button', { name: '停止' }).click();
 });
+
+test('an open menu keeps its container and skills group across projection refreshes', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('seed session');
+  await composer.press('Enter');
+  await expect(page.getByText('Fake backend received: seed session')).toBeVisible();
+
+  await composer.click();
+  await composer.pressSequentially('/');
+  const menu = page.getByRole('listbox', { name: '命令和技能' });
+  await expect(menu.getByRole('group', { name: 'Skills' })).toBeVisible();
+
+  // Armed before the refresh: the flicker was the skills group (and with it
+  // the listbox geometry) being torn down and re-created when the projection
+  // cleared and repopulated, so any removal during the refresh is the
+  // regression (#2667).
+  await page.evaluate(() => {
+    const state = { removals: 0 };
+    (globalThis as unknown as { __slashMenuWatch?: unknown }).__slashMenuWatch = state;
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.removedNodes) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (
+            node.matches('[role="listbox"], [role="group"]') ||
+            node.querySelector('[role="listbox"], [role="group"]') !== null
+          ) {
+            state.removals += 1;
+          }
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+
+  // A thinking-level change publishes the session's 'updated' event and
+  // reloads the Skill projection without changing what the menu shows: the
+  // exact same-content refresh that used to alternate the popup (#2667).
+  const sessionId = await page.evaluate(async () => {
+    const sessions = await (
+      window as unknown as {
+        maka: { sessions: { list(): Promise<Array<{ id: string }>> } };
+      }
+    ).maka.sessions.list();
+    return sessions[0]?.id;
+  });
+  for (let round = 0; round < 3; round += 1) {
+    await page.evaluate(
+      (id) =>
+        (
+          window as unknown as {
+            maka: { sessions: { setThinkingLevel(id: string, level?: null): Promise<unknown> } };
+          }
+        ).maka.sessions.setThinkingLevel(id!, null),
+      sessionId,
+    );
+  }
+  // The refresh round trip is IPC-fast; the poll below gives it room while
+  // asserting the menu never lost its skills group.
+  await expect(menu.getByRole('group', { name: 'Skills' })).toBeVisible();
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            (globalThis as unknown as { __slashMenuWatch: { removals: number } }).__slashMenuWatch
+              .removals,
+        ),
+      { timeout: 3_000 },
+    )
+    .toBe(0);
+  await expect(menu.getByRole('group', { name: 'Skills' })).toBeVisible();
+});
