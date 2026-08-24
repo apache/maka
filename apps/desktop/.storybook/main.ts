@@ -35,6 +35,21 @@ const config: StorybookConfig = {
     '../../../packages/ui/stories/**/*.stories.@(ts|tsx)',
     '../stories/**/*.stories.@(ts|tsx)',
   ],
+  addons: [
+    {
+      name: '@storybook/addon-mcp',
+      options: {
+        // Issue #3527: agents get a queryable component-docs interface.
+        // Docs toolset only; dev/test toolsets are deliberate follow-ups
+        // (test additionally needs @storybook/addon-vitest).
+        toolsets: {
+          dev: false,
+          test: false,
+          docs: true,
+        },
+      },
+    },
+  ],
   framework: {
     name: '@storybook/react-vite',
     options: {},
