@@ -66,7 +66,7 @@ export type McpCopy = {
     required: string; invalidUrl: string; unbalancedQuote: string;
     transportLabel: string; transportAuto: string; transportStreamableHttp: string; transportLegacySse: string;
     protocolLabel: string; protocolLegacy: string; protocolAuto: string; protocolModern: string;
-    protocolHelp: string; sseProtocolHelp: string;
+    protocolHelp: string; sseProtocolHelp: string; expandAdvanced: string; collapseAdvanced: string; stdioProtocolHelp: string;
   };
 };
 
@@ -126,7 +126,8 @@ const MCP_COPY = {
       required: '此字段为必填项。', invalidUrl: '请输入有效的 HTTP 或 HTTPS URL。', unbalancedQuote: '引号未闭合。',
       transportLabel: '传输协议', transportAuto: '自动回退', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: '旧版 SSE',
       protocolLabel: '协议偏好', protocolLegacy: '传统', protocolAuto: '自动协商', protocolModern: '仅 2026-07-28',
-      protocolHelp: '旧配置默认使用传统协议；自动协商会根据 server 能力选择协议。', sseProtocolHelp: '旧版 SSE 仅支持传统协议。',
+      protocolHelp: '旧配置默认使用传统协议；自动协商会根据 server 能力选择协议。', sseProtocolHelp: '旧版 SSE 仅支持传统协议。', expandAdvanced: '显示高级设置', collapseAdvanced: '隐藏高级设置',
+      stdioProtocolHelp: '自动协商和“仅 2026-07-28”会先启动一个使用相同命令、参数、目录和环境的短期探测进程；探测结束后才启动实际连接。旧配置默认使用传统协议，只启动一个进程。',
     },
   },
   en: {
@@ -184,7 +185,8 @@ const MCP_COPY = {
       required: 'This field is required.', invalidUrl: 'Enter a valid HTTP or HTTPS URL.', unbalancedQuote: 'Unclosed quote.',
       transportLabel: 'Transport', transportAuto: 'Auto fallback', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: 'Legacy SSE',
       protocolLabel: 'Protocol preference', protocolLegacy: 'Legacy', protocolAuto: 'Auto-negotiate', protocolModern: '2026-07-28 only',
-      protocolHelp: 'Existing configurations default to legacy; auto-negotiation selects an era from the server response.', sseProtocolHelp: 'Legacy SSE supports only the legacy protocol era.',
+      protocolHelp: 'Existing configurations default to legacy; auto-negotiation selects an era from the server response.', sseProtocolHelp: 'Legacy SSE supports only the legacy protocol era.', expandAdvanced: 'Show advanced settings', collapseAdvanced: 'Hide advanced settings',
+      stdioProtocolHelp: 'Auto-negotiate and “2026-07-28 only” first start a short-lived probe with the same command, arguments, working directory, and environment. The session process starts only after the probe exits. Existing configurations default to Legacy and start one process.',
     },
   },
 } satisfies UiCatalog<McpCopy>;
