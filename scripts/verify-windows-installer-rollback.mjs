@@ -175,7 +175,10 @@ export async function verifyRestoredWindowsInstallation(
   { verifyApp = verifyPackagedWindowsApp, run } = {},
 ) {
   const options = {
-    artifactContract: 'legacy-baseline',
+    // The rollback verifier restores the candidate installer, not the pinned
+    // upgrade baseline. The candidate is built from the current tree and must
+    // therefore satisfy the current packaged-artifact contract.
+    artifactContract: 'current',
     expectedVersion,
     workingDirectory,
   };

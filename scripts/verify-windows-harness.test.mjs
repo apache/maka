@@ -287,7 +287,7 @@ it('uses the product SemVer contract throughout Windows release verification', (
   );
 });
 
-it('delegates restored-installation checks to the legacy packaged-app verifier', async () => {
+it('delegates restored-installation checks to the current packaged-app verifier', async () => {
   const calls = [];
   const run = async () => ({ stdout: '', stderr: '' });
   const verifyApp = async (appDirectory, options) => {
@@ -303,7 +303,7 @@ it('delegates restored-installation checks to the legacy packaged-app verifier',
     {
       appDirectory: 'C:\\fixture\\installed',
       options: {
-        artifactContract: 'legacy-baseline',
+        artifactContract: 'current',
         expectedVersion: '1.2.3',
         run,
         workingDirectory: 'C:\\fixture\\smoke',
