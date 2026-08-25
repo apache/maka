@@ -260,7 +260,7 @@ test('production startup migrates a real v27 database before recovery', async ()
         const version = migrated
           .prepare(`SELECT version FROM session_metadata_schema WHERE scope = 'session_metadata'`)
           .get() as { version: number };
-        assert.equal(version.version, 29);
+        assert.equal(version.version, 31);
         const tables = migrated
           .prepare(
             `SELECT name FROM sqlite_schema
