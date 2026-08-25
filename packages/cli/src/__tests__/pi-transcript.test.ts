@@ -549,6 +549,74 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('keeps an unanchored transient user row after existing durable history', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+      {
+        type: 'assistant',
+        id: 'old-assistant',
+        turnId: 'old-turn',
+        ts: 2,
+        text: 'answer',
+        modelId: 'model-1',
+      },
+    ]);
+    appendUserPrompt(state, 'send now', 'message-1', true);
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+        {
+          type: 'assistant',
+          id: 'old-assistant',
+          turnId: 'old-turn',
+          ts: 2,
+          text: 'answer',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveTransientMessages: true },
+    );
+
+    assert.deepEqual(
+      state.entries.map((entry) =>
+        entry.kind === 'user' || entry.kind === 'assistant' ? entry.messageId : entry.kind,
+      ),
+      ['old-user', 'old-assistant', 'message-1'],
+    );
+  });
+
+  test('keeps a leading transient row before an entirely new durable replacement', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'current prompt', 'message-current', true);
+    state.entries.push({ kind: 'assistant', messageId: 'old-assistant', text: 'old live output' });
+
+    replaceTranscriptWithStoredMessages(
+      state,
+      [
+        { type: 'user', id: 'next-user', turnId: 'next-turn', ts: 3, text: 'next prompt' },
+        {
+          type: 'assistant',
+          id: 'next-assistant',
+          turnId: 'next-turn',
+          ts: 4,
+          text: 'next answer',
+          modelId: 'model-1',
+        },
+      ],
+      { preserveTransientMessages: true },
+    );
+
+    assert.deepEqual(
+      state.entries.map((entry) =>
+        entry.kind === 'user' || entry.kind === 'assistant' ? entry.messageId : entry.kind,
+      ),
+      ['message-current', 'next-user', 'next-assistant'],
+    );
+  });
+
   test('reconciles a transient user row by messageId when durable history arrives', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'send now', 'message-1', true);

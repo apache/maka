@@ -109,6 +109,11 @@ export interface MakaMessageAdmission {
   disposition: 'steering' | 'followup' | 'turn_started' | 'outcome_unknown';
 }
 
+export interface MakaRetractedMessages {
+  text: string;
+  messageIds: readonly string[];
+}
+
 export class SkillInvocationBlockedError extends Error {
   constructor(readonly skillInvocation: SkillInvocationResult) {
     super('Explicit Skill invocation could not be resolved');
@@ -126,7 +131,7 @@ export interface MakaSessionDriver {
   submitMessage?(text: string, options: MakaSubmitMessageOptions): Promise<MakaMessageAdmission>;
   compactSession(): AsyncIterable<SessionEvent>;
   resumeLatest?(): AsyncIterable<SessionEvent>;
-  retractQueued?(): Promise<string>;
+  retractQueued?(): Promise<MakaRetractedMessages>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
   setModel(model: string, connectionSlug?: string): Promise<void>;

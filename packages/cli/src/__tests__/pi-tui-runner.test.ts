@@ -2241,6 +2241,43 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('Alt+Up removes the exact transient rows without a subscription retraction event', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('start the work');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    terminal.input('take this back');
+    terminal.input('\x1b\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('take this back'));
+
+    terminal.input('\x1b[1;3A');
+    await waitFor(() => driver.retractCalls === 1);
+    await waitFor(() => {
+      const screen = plainTerminalOutput(terminal.screenOutput());
+      return screen.includes('take this back') && !screen.includes('Queued: take this back');
+    });
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('\x03');
+    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('take this back'));
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
   test('Alt+Up in the enqueue tick retracts from the authority, not the lagging mirror', async () => {
     // Round-6 R2: the enqueue outcome arrives synchronously but the mirror
     // updates only when the queue_update event is consumed. An Alt+Up in
@@ -2413,6 +2450,41 @@ describe('Maka Pi TUI runner', () => {
     // macrotask turn runs strictly after them, releasing `busy` for /exit.
     await delay(0);
     terminal.input('\x03'); // clear the preserved draft
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('Enter during Host admission keeps the second prompt in the editor', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const admission = deferred<void>();
+    driver.submitGate = admission.promise;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('first prompt');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('first prompt'));
+
+    terminal.input('second prompt');
+    terminal.input('\r');
+    terminal.input('z');
+    await waitFor(() => editorInputText(terminal) === 'second promptz');
+
+    admission.resolve();
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('\x03');
     terminal.input('/exit');
     terminal.input('\r');
     await run;
@@ -6828,6 +6900,7 @@ class SteeringTurnDriver implements MakaSessionDriver {
   readonly queuedMessages: string[] = [];
   readonly turnOrchestrations: Array<MakaPreparePromptOptions['turnOrchestration']> = [];
   nextSubmitError: Error | undefined;
+  submitGate: Promise<void> | undefined;
   startedTurnMessages: StoredMessage[] = [];
   retractCalls = 0;
   rewindTargets: RewindTarget[] = [];
@@ -6896,6 +6969,8 @@ class SteeringTurnDriver implements MakaSessionDriver {
   }
 
   async submitMessage(text: string, options: MakaSubmitMessageOptions) {
+    await this.submitGate;
+    this.submitGate = undefined;
     if (this.nextSubmitError) {
       const error = this.nextSubmitError;
       this.nextSubmitError = undefined;
@@ -6934,27 +7009,16 @@ class SteeringTurnDriver implements MakaSessionDriver {
     };
   }
 
-  async retractQueued(): Promise<string> {
+  async retractQueued(): Promise<{ text: string; messageIds: readonly string[] }> {
     this.retractCalls += 1;
     const retracted = [...this.steering, ...this.followup];
     const joined = retracted.map((entry) => entry.text).join('\n\n');
     this.steering = [];
     this.followup = [];
     this.emitQueueUpdate();
-    for (const entry of retracted) {
-      this.eventSeq += 1;
-      this.pendingEvents.push({
-        type: 'message_admission',
-        id: `message-retracted-${this.eventSeq}`,
-        turnId: 'turn-1',
-        ts: this.eventSeq,
-        messageId: entry.messageId,
-        outcome: 'retracted',
-      });
-    }
     this.wakeTurn?.();
     this.wakeTurn = null;
-    return joined;
+    return { text: joined, messageIds: retracted.map((entry) => entry.messageId) };
   }
 
   // Simulates the runtime consuming the steering queue at a step boundary

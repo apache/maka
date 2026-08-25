@@ -28,7 +28,11 @@ import type {
   DirectRequestOperationKey,
   RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
-import { RuntimeHostOperationError, RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+  RuntimeHostSubscriptionError,
+} from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   type GoalProjection,
@@ -1111,7 +1115,10 @@ describe('Runtime Host Maka Session driver', () => {
       }),
       { messageId: 'message-1', disposition: 'followup' },
     );
-    assert.equal(await driver.retractQueued!(), 'Later');
+    assert.deepEqual(await driver.retractQueued!(), {
+      text: 'Later',
+      messageIds: ['message-1'],
+    });
     assert.deepEqual(
       connection.requests.filter(
         (request) =>
@@ -1198,6 +1205,34 @@ describe('Runtime Host Maka Session driver', () => {
         placement: 'current_turn',
       }),
       { messageId: 'message-unknown', disposition: 'outcome_unknown' },
+    );
+  });
+
+  test('keeps a dispatched interrupted admission available for transcript reconciliation', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    connection.messageSubmitOutcomes.push(
+      new RuntimeHostRequestInterruptedError(
+        'turn.message.submit',
+        'command',
+        'dispatched',
+        'connection_lost',
+      ),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    assert.deepEqual(
+      await driver.submitMessage!('Keep this visible', {
+        messageId: 'message-interrupted',
+        placement: 'current_turn',
+      }),
+      { messageId: 'message-interrupted', disposition: 'outcome_unknown' },
     );
   });
 

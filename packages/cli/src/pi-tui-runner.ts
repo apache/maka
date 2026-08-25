@@ -870,8 +870,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // connection where both calls are asynchronous.
     void (async () => {
       await settlePendingEnqueues();
-      const retracted = (await input.driver.retractQueued?.()) ?? '';
-      refillEditorFromQueues(retracted);
+      const retracted = (await input.driver.retractQueued?.()) ?? { text: '', messageIds: [] };
+      acceptRetraction(retracted);
       requestRender();
       await input.driver.stop();
     })().catch((error) => {
@@ -927,6 +927,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       (entry) => entry.kind === 'user' && entry.transient === true && entry.messageId === messageId,
     );
     if (index >= 0) state.entries.splice(index, 1);
+  };
+
+  const acceptRetraction = (retracted: { text: string; messageIds: readonly string[] }) => {
+    for (const messageId of retracted.messageIds) removeTransientUserMessage(messageId);
+    refillEditorFromQueues(retracted.text);
   };
 
   // Enter during a turn asks the Host to place the message at the current
@@ -1005,8 +1010,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const retractQueuedMessages = () => {
     void (async () => {
       await settlePendingEnqueues();
-      const retracted = (await input.driver.retractQueued?.()) ?? '';
-      refillEditorFromQueues(retracted);
+      const retracted = (await input.driver.retractQueued?.()) ?? { text: '', messageIds: [] };
+      acceptRetraction(retracted);
       requestRender();
     })().catch(reportError);
   };
@@ -1148,13 +1153,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       editor.disableSubmit = false;
       setTaskbarProgress(true);
       attention.promptTurnStarted();
+    } else {
+      // The editor clears before invoking onSubmit. While Host admission is
+      // unresolved, disable submission so a second Enter cannot erase a draft
+      // that the busy gate would then refuse.
+      editor.disableSubmit = true;
     }
     requestRender();
 
     let permissionAlerted = false;
     let optimisticUserEntry: (typeof state.entries)[number] | undefined;
     const finishTurnUi = () => {
-      if (!ownsTurnUi) return;
+      if (!ownsTurnUi) {
+        editor.disableSubmit = false;
+        return;
+      }
       turnRunning = false;
       turnStartedAt = undefined;
       stopTurnElapsedTicker();

@@ -355,22 +355,50 @@ export function replaceTranscriptWithStoredMessages(
         ) {
           return [];
         }
+        const priorEntries = state.entries.slice(0, index);
         const nextDurableId = state.entries
           .slice(index + 1)
           .map(transcriptEntryId)
           .find((messageId) => messageId !== undefined && durableEntryIds.has(messageId));
-        return [{ entry, nextDurableId }];
+        const previousDurableId = priorEntries
+          .map(transcriptEntryId)
+          .reverse()
+          .find((messageId) => messageId !== undefined && durableEntryIds.has(messageId));
+        const hadPrecedingDurable = priorEntries.some(
+          (candidate) =>
+            !(candidate.kind === 'user' && candidate.transient === true) &&
+            transcriptEntryId(candidate) !== undefined,
+        );
+        return [{ entry, nextDurableId, previousDurableId, hadPrecedingDurable }];
       })
     : [];
-  const unanchoredTransientEntries: MakaPiTranscriptEntry[] = [];
+  const transientEntriesByBoundary = new Map<number, MakaPiTranscriptEntry[]>();
   for (const transient of transientEntries) {
     const nextIndex = transient.nextDurableId
       ? durableEntries.findIndex((entry) => transcriptEntryId(entry) === transient.nextDurableId)
       : -1;
-    if (nextIndex < 0) unanchoredTransientEntries.push(transient.entry);
-    else durableEntries.splice(nextIndex, 0, transient.entry);
+    const previousIndex = transient.previousDurableId
+      ? durableEntries.findIndex(
+          (entry) => transcriptEntryId(entry) === transient.previousDurableId,
+        )
+      : -1;
+    const boundary =
+      nextIndex >= 0
+        ? nextIndex
+        : previousIndex >= 0
+          ? previousIndex + 1
+          : transient.hadPrecedingDurable
+            ? durableEntries.length
+            : 0;
+    const grouped = transientEntriesByBoundary.get(boundary);
+    if (grouped) grouped.push(transient.entry);
+    else transientEntriesByBoundary.set(boundary, [transient.entry]);
   }
-  state.entries = [...unanchoredTransientEntries, ...durableEntries];
+  state.entries = [];
+  for (let boundary = 0; boundary <= durableEntries.length; boundary += 1) {
+    state.entries.push(...(transientEntriesByBoundary.get(boundary) ?? []));
+    if (boundary < durableEntries.length) state.entries.push(durableEntries[boundary]!);
+  }
   clearPendingInteractions(state);
   state.expandAllTools = false;
   state.expandAllThinking = false;
