@@ -178,14 +178,7 @@ export type MakaPiTranscriptEntry =
       /** An internal shell-run poll retained for correlation but not displayed. */
       suppressed?: boolean;
     }
-  | {
-      kind: 'notice';
-      level: 'info' | 'error';
-      /** Already-safe display text. Runtime errors leave this empty unless the Host bounded it. */
-      text: string;
-      /** Stable Runtime reason retained until the locale-aware render boundary. */
-      runtimeError?: { reason?: string };
-    };
+  | { kind: 'notice'; level: 'info' | 'error'; text: string };
 
 export interface MakaPiTranscriptMetadata {
   title: string;
@@ -749,9 +742,7 @@ export function applyMakaSessionEventToTranscript(
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text:
-          event.boundedProviderMessage === true && event.message.length > 0 ? event.message : '',
-        runtimeError: event.reason ? { reason: event.reason.toLowerCase() } : {},
+        text: event.message,
       });
       break;
 
@@ -780,46 +771,6 @@ export function applyMakaSessionEventToTranscript(
         state.entries.push({ kind: 'notice', level: 'info', text: STEP_LIMIT_NOTICE_TEXT });
       }
       break;
-  }
-}
-
-function chatItemToTranscriptEntries(item: ChatItem): MakaPiTranscriptEntry[] {
-  switch (item.kind) {
-    case 'user':
-      return [
-        {
-          kind:
-            item.message.origin?.kind === 'legacy_automation'
-              ? 'legacy_automation'
-              : item.message.origin?.kind === 'goal'
-                ? 'goal_continuation'
-                : 'user',
-          text: item.message.displayText ?? item.message.text,
-        },
-      ];
-    case 'assistant': {
-      const entries: MakaPiTranscriptEntry[] = [];
-      // Stored thinking happened before the reply text, so it resumes above it.
-      const thinking = item.message.thinking?.text;
-      if (thinking?.trim()) {
-        // Replay resets the expansion defaults to collapsed, so replayed
-        // entries start collapsed too.
-        entries.push({
-          kind: 'thinking',
-          messageId: item.message.id,
-          text: thinking,
-          expanded: false,
-        });
-      }
-      entries.push({ kind: 'assistant', messageId: item.message.id, text: item.message.text });
-      return entries;
-    }
-    case 'tool':
-      return [toolActivityToTranscriptEntry(item.item)];
-    case 'system_note': {
-      const entry = systemNoteToTranscriptEntry(item.message);
-      return entry ? [entry] : [];
-    }
   }
 }
 
@@ -1170,9 +1121,7 @@ export function renderMakaPiTranscript(
     const fullyOffScreen =
       lines.length < viewportTop &&
       (entryHeight === 0 || lines.length + entryHeight <= viewportTop);
-    lines.push(
-      ...renderTranscriptEntryMemoized(entry, safeWidth, fullyOffScreen, metadata.uiLocale ?? 'en'),
-    );
+    lines.push(...renderTranscriptEntryMemoized(entry, safeWidth, fullyOffScreen));
     previousVisibleEntry = entry;
   }
   state.renderGeometry.entryFirstLine = entryFirstLine;
@@ -1266,7 +1215,6 @@ function renderTranscriptEntryMemoized(
   entry: MakaPiTranscriptEntry,
   width: number,
   offScreen: boolean,
-  locale: UiLocale,
 ): string[] {
   // Off-screen entries live in terminal scrollback, which is immutable: any
   // change to their rendered lines forces pi-tui's differential renderer into a
@@ -1279,19 +1227,15 @@ function renderTranscriptEntryMemoized(
     const cached = transcriptEntryRenderCache.get(entry);
     if (cached && cached.width === width) return cached.lines;
   }
-  const signature = transcriptEntrySignature(entry, width, locale);
+  const signature = transcriptEntrySignature(entry, width);
   const cached = transcriptEntryRenderCache.get(entry);
   if (cached && cached.signature === signature) return cached.lines;
-  const lines = renderTranscriptEntryBlock(entry, width, locale);
+  const lines = renderTranscriptEntryBlock(entry, width);
   transcriptEntryRenderCache.set(entry, { signature, lines, width });
   return lines;
 }
 
-function renderTranscriptEntryBlock(
-  entry: MakaPiTranscriptEntry,
-  width: number,
-  locale: UiLocale,
-): string[] {
+function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number): string[] {
   // Keep the conversation stream inside a one-cell gutter. The editor owns
   // the full terminal width, so this makes the two surfaces align without
   // changing any of the individual block renderers' internal prefixes.
@@ -1311,11 +1255,7 @@ function renderTranscriptEntryBlock(
       case 'tool':
         return renderToolBlock(entry, contentWidth, entry.expanded);
       case 'notice':
-        return renderNotice(
-          entry,
-          contentWidth,
-          entry.runtimeError ? transcriptErrorMessage(entry, locale) : entry.text,
-        );
+        return renderNotice(entry, contentWidth);
     }
   })();
 
@@ -1334,11 +1274,7 @@ function isBlankTranscriptLine(line: string): boolean {
   return line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim().length === 0;
 }
 
-function transcriptEntrySignature(
-  entry: MakaPiTranscriptEntry,
-  width: number,
-  locale: UiLocale,
-): string {
+function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): string {
   switch (entry.kind) {
     // User text is immutable, so length is a safe change key.
     case 'user':
@@ -1357,9 +1293,7 @@ function transcriptEntrySignature(
       // then serve stale reasoning from the cache. Key on the full text.
       return `thinking|${width}|${entry.expanded ? 1 : 0}|${entry.text}`;
     case 'notice':
-      return `notice|${width}|${entry.level}|${
-        entry.runtimeError ? transcriptErrorMessage(entry, locale) : entry.text
-      }`;
+      return `notice|${width}|${entry.level}|${entry.text.length}`;
     case 'tool':
       // A tool entry mutates in place as it runs: its derived presentation and
       // duration change, progress/output deltas append, and resultVersion
@@ -1824,49 +1758,9 @@ function renderAssistantBlock(text: string, width: number): string[] {
     .map((line) => fitLine(line, width));
 }
 
-function transcriptErrorMessage(entry: MakaPiNoticeEntry, locale: UiLocale): string {
-  const copy =
-    locale === 'zh'
-      ? {
-          context_overflow: '上下文窗口已超出限制',
-          timeout: '请求超时',
-          auth: '鉴权失败',
-          provider_billing: '模型服务计费受限',
-          provider_capacity: '模型服务暂时满载，请稍后重试或切换模型',
-          provider_permission: '模型服务拒绝访问',
-          provider_unavailable: '模型服务返回错误',
-          rate_limit: '触发模型速率限制',
-          usage_limit: '模型使用额度已用完',
-          network: '网络错误',
-          fallback: '任务运行失败，请稍后重试。',
-        }
-      : {
-          context_overflow: 'Context window exceeded',
-          timeout: 'Request timed out',
-          auth: 'Authentication failed',
-          provider_billing: 'Provider billing required',
-          provider_capacity:
-            'The model service is temporarily at capacity. Wait and retry, or switch models.',
-          provider_permission: 'Provider access denied',
-          provider_unavailable: 'Provider returned an error',
-          rate_limit: 'Rate limit exceeded',
-          usage_limit: 'Usage limit reached',
-          network: 'Network error',
-          fallback: 'The task run failed. Try again later.',
-        };
-  const reason = entry.runtimeError?.reason;
-  // `in` reaches Object.prototype: a provider-influenced reason like
-  // 'constructor' would interpolate a function into the notice (#2521).
-  if (reason && Object.hasOwn(copy, reason) && reason !== 'fallback') {
-    return copy[reason as Exclude<keyof typeof copy, 'fallback'>];
-  }
-  if (entry.text.length > 0) return entry.text;
-  return copy.fallback;
-}
-
-function renderNotice(entry: MakaPiNoticeEntry, width: number, text: string): string[] {
+function renderNotice(entry: MakaPiNoticeEntry, width: number): string[] {
   const label = entry.level === 'error' ? ansi.red('Error') : ansi.dim('Note');
-  return renderIndented(`${label}: ${text}`, width, 0).map((line) => fitLine(line, width));
+  return renderIndented(`${label}: ${entry.text}`, width, 0).map((line) => fitLine(line, width));
 }
 
 // Shown on a fresh, empty session. Greets with the branded maka wordmark and a
