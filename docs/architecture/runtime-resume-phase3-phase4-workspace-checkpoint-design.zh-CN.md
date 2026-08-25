@@ -549,6 +549,10 @@ projection reader/rebuild 与升级合同继续保留；它们是历史事实 au
 不能恢复旧 Git CLI、receipt、quarantine、write owner 或 `managed_worktree_v1` profile，也不能让 Gitoxide
 foundation 在尚无 Desktop/CLI/T1 consumer 时冒充产品能力。
 
+当前先行的 persistence/runtime authority 只定义 managed T1 reservation、terminal settlement 与
+accepted successor 的原子事实边界，不执行 Git mutation，也不恢复旧 worktree owner。完整合同见
+[Managed Mutation Lifecycle Authority v1](./runtime-managed-workspace-mutation-lifecycle-authority-v1.zh-CN.md)。
+
 ## 5. 依赖顺序
 
 ```text
