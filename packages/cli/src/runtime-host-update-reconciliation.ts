@@ -18,6 +18,7 @@
  */
 
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { isDeepStrictEqual } from 'node:util';
 import {
   encodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
@@ -98,28 +99,23 @@ export async function runManagedRuntimeHostUpdatePolicyCli(
     const record = requestedPolicy
       ? await deps.withDeploymentLock(options.clientDataRoot, async () => {
           if (requestedPolicy.kind === 'manual') {
-            await deps.writePolicy(options.clientDataRoot, null);
+            const status = await readManagedServiceStatus(options, deps);
+            const managedDeploymentRoot = status.service.config?.managedDeploymentRoot;
+            if (managedDeploymentRoot) {
+              await deps.writePolicy(managedDeploymentRoot, null);
+            }
             return null;
           }
-          if (!options.expectedTarget) {
+          const expectedTarget = options.expectedTarget;
+          if (!expectedTarget) {
             throw new RuntimeHostUpdatePolicyError(
               'invalid_update_policy',
               'An automatic Runtime Host update policy requires the expected managed service target',
             );
           }
-          const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-          const status = await deps.manage(
-            {
-              action: 'status',
-              clientDataRoot: options.clientDataRoot,
-              defaultRootPath: options.defaultRootPath,
-              nodePath: process.execPath,
-              cliPath: process.argv[1] ?? '',
-              expectedTarget: options.expectedTarget,
-            },
-            deps.createBackend(serviceId),
-          );
-          if (!status.service.installed || !status.service.config?.managedDeploymentRoot) {
+          const status = await readManagedServiceStatus(options, deps, expectedTarget);
+          const managedDeploymentRoot = status.service.config?.managedDeploymentRoot;
+          if (!status.service.installed || !managedDeploymentRoot) {
             throw new RuntimeHostServiceManagerError(
               'not_installed',
               'An automatic update policy requires a Maka-managed Runtime Host service',
@@ -129,14 +125,14 @@ export async function runManagedRuntimeHostUpdatePolicyCli(
             schemaVersion: 1,
             policy: requestedPolicy,
             target: {
-              ...options.expectedTarget,
+              ...expectedTarget,
               rootPath: status.service.config.rootPath,
             },
           };
-          await deps.writePolicy(options.clientDataRoot, next);
+          await deps.writePolicy(managedDeploymentRoot, next);
           return next;
         })
-      : await deps.readPolicy(options.clientDataRoot);
+      : await readCurrentUpdatePolicy(options, deps);
     writeFrame(updatePolicyResult(record), options, deps);
     return 0;
   } catch (error) {
@@ -151,8 +147,16 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
 ): Promise<number> {
   const deps = reconciliationDeps(overrides);
   try {
-    const record = await deps.readPolicy(options.clientDataRoot);
-    if (!record) {
+    const status = await readManagedServiceStatus(options, deps);
+    const managedDeploymentRoot = status.service.config?.managedDeploymentRoot;
+    const policy =
+      status.service.installed && managedDeploymentRoot
+        ? {
+            root: managedDeploymentRoot,
+            record: await deps.readPolicy(managedDeploymentRoot),
+          }
+        : undefined;
+    if (!policy?.record) {
       writeFrame(
         {
           schemaVersion: 1,
@@ -166,6 +170,7 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
       );
       return 0;
     }
+    const { root: policyRoot, record } = policy;
     const selection = await deps.resolveSelection({
       clientDataRoot: options.clientDataRoot,
       defaultRootPath: options.defaultRootPath,
@@ -212,11 +217,11 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
         revalidateSelection: async () => {
           let current: RuntimeHostManagedUpdatePolicyRecord | null;
           try {
-            current = await deps.readPolicy(options.clientDataRoot);
+            current = await deps.readPolicy(policyRoot);
           } catch (error) {
             return boundedError(error, 'Unable to revalidate the managed update policy');
           }
-          if (!sameUpdatePolicyRecord(current, record)) {
+          if (!isDeepStrictEqual(current, record)) {
             return {
               code: 'update_policy_changed',
               message:
@@ -240,6 +245,39 @@ export async function runManagedRuntimeHostUpdateReconcileCli(
     writeFrame(reconcileError(error), options, deps);
     return 1;
   }
+}
+
+async function readCurrentUpdatePolicy(
+  options: RuntimeHostUpdatePolicyCliOptions,
+  deps: RuntimeHostUpdateReconciliationDeps,
+): Promise<RuntimeHostManagedUpdatePolicyRecord | null> {
+  const status = await readManagedServiceStatus(options, deps);
+  const managedDeploymentRoot = status.service.config?.managedDeploymentRoot;
+  return status.service.installed && managedDeploymentRoot
+    ? await deps.readPolicy(managedDeploymentRoot)
+    : null;
+}
+
+function readManagedServiceStatus(
+  options: Pick<
+    RuntimeHostUpdatePolicyCliOptions | RuntimeHostUpdateReconcileCliOptions,
+    'clientDataRoot' | 'defaultRootPath'
+  >,
+  deps: RuntimeHostUpdateReconciliationDeps,
+  expectedTarget?: RuntimeHostManagedServiceTarget,
+) {
+  const serviceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
+  return deps.manage(
+    {
+      action: 'status',
+      clientDataRoot: options.clientDataRoot,
+      defaultRootPath: options.defaultRootPath,
+      nodePath: process.execPath,
+      cliPath: process.argv[1] ?? '',
+      ...(expectedTarget ? { expectedTarget } : {}),
+    },
+    deps.createBackend(serviceId),
+  );
 }
 
 function reconciliationDeps(
@@ -282,27 +320,6 @@ function policySelector(
   return policy.kind === 'fixed'
     ? { kind: 'exact', version: policy.version }
     : { kind: 'channel', channel: policy.channel };
-}
-
-function sameUpdatePolicyRecord(
-  left: RuntimeHostManagedUpdatePolicyRecord | null,
-  right: RuntimeHostManagedUpdatePolicyRecord | null,
-): boolean {
-  if (!left || !right) return left === right;
-  if (
-    left.schemaVersion !== right.schemaVersion ||
-    left.target.serviceId !== right.target.serviceId ||
-    left.target.rootPath !== right.target.rootPath ||
-    left.target.rootId !== right.target.rootId ||
-    left.policy.kind !== right.policy.kind
-  ) {
-    return false;
-  }
-  return left.policy.kind === 'fixed' && right.policy.kind === 'fixed'
-    ? left.policy.version === right.policy.version
-    : left.policy.kind === 'channel' &&
-        right.policy.kind === 'channel' &&
-        left.policy.channel === right.policy.channel;
 }
 
 function reconcileFrame(

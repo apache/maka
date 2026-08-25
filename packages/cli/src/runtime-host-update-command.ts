@@ -117,12 +117,12 @@ interface RuntimeHostResolvedUpdateCliDeps {
   readonly revalidateSelection: () => Promise<RuntimeHostUpdateSelectionRejection | undefined>;
   readonly withPackage: typeof withRuntimeHostRegistryUpdatePackage;
   readonly update: typeof runManagedRuntimeHostUpdateCli;
-  readonly writeOutput: (value: string) => unknown;
-  readonly writeError: (value: string) => unknown;
 }
 
 interface RuntimeHostSelectedUpdateCliDeps extends RuntimeHostResolvedUpdateCliDeps {
   readonly resolveSelection: typeof resolveManagedRuntimeHostUpdateSelection;
+  readonly writeOutput: (value: string) => unknown;
+  readonly writeError: (value: string) => unknown;
 }
 
 export type RuntimeHostUpdateFrame = Extract<
@@ -557,23 +557,19 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
 export async function runManagedRuntimeHostResolvedUpdateCli(
   options: RuntimeHostSelectedUpdateCliOptions,
   selection: RuntimeHostUpdateSelection,
-  overrides: Partial<RuntimeHostResolvedUpdateCliDeps> = {},
-  frameSink?: RuntimeHostUpdateFrameSink,
+  overrides: Partial<RuntimeHostResolvedUpdateCliDeps>,
+  frameSink: RuntimeHostUpdateFrameSink,
 ): Promise<number> {
   const deps: RuntimeHostResolvedUpdateCliDeps = {
     revalidateSelection: async () => undefined,
     withPackage: withRuntimeHostRegistryUpdatePackage,
     update: runManagedRuntimeHostUpdateCli,
-    writeOutput: (value) => process.stdout.write(value),
-    writeError: (value) => process.stderr.write(value),
     ...overrides,
   };
-  const emit =
-    frameSink ?? ((frame: RuntimeHostUpdateFrame) => presentUpdateFrame(frame, options, deps));
 
   try {
     if (selection.outcome.kind === 'manual_action') {
-      emit({
+      frameSink({
         schemaVersion: 1,
         kind: 'error',
         action: 'update',
@@ -604,7 +600,7 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
           },
         },
         { revalidateSelection: deps.revalidateSelection },
-        emit,
+        frameSink,
       );
     };
     return selection.outcome.kind === 'current'
@@ -618,7 +614,7 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
         ? error.code
         : 'update_resolution_failed';
     const message = error instanceof Error ? error.message : String(error);
-    emit({
+    frameSink({
       schemaVersion: 1,
       kind: 'error',
       action: 'update',
@@ -638,7 +634,7 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
 function presentUpdateFrame(
   frame: RuntimeHostUpdateFrame,
   options: Pick<RuntimeHostUpdateCliOptions, 'json' | 'framed'>,
-  deps: Pick<RuntimeHostResolvedUpdateCliDeps, 'writeOutput' | 'writeError'>,
+  deps: Pick<RuntimeHostSelectedUpdateCliDeps, 'writeOutput' | 'writeError'>,
 ): void {
   if (options.framed) {
     deps.writeOutput(encodeRuntimeHostServiceManagementFrame(frame));

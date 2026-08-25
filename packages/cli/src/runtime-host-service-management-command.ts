@@ -42,7 +42,6 @@ import {
   type RuntimeHostManagedServiceTarget,
   type RuntimeHostServiceBackend,
 } from './runtime-host-service-manager.js';
-import { writeRuntimeHostManagedUpdatePolicy } from './runtime-host-update-policy-store.js';
 import { createLaunchAgentRuntimeHostService } from './runtime-host-launch-agent-service.js';
 import { createSystemdUserRuntimeHostService } from './runtime-host-systemd-service.js';
 
@@ -57,7 +56,6 @@ export interface RuntimeHostServiceManagementCliDeps {
   readonly manage: typeof manageRuntimeHostService;
   readonly withDeploymentLock: typeof withRuntimeHostManagedServiceDeploymentLock;
   readonly withLifecycleLock: typeof withRuntimeHostManagedServiceLifecycleLock;
-  readonly clearUpdatePolicy: (clientDataRoot: string) => Promise<void>;
   readonly createBackend: (serviceId: string) => RuntimeHostServiceBackend;
   readonly writeOutput: (value: string) => unknown;
   readonly writeError: (value: string) => unknown;
@@ -71,8 +69,6 @@ export async function runManagedRuntimeHostServiceCli(
     manage: manageRuntimeHostService,
     withDeploymentLock: withRuntimeHostManagedServiceDeploymentLock,
     withLifecycleLock: withRuntimeHostManagedServiceLifecycleLock,
-    clearUpdatePolicy: (clientDataRoot) =>
-      writeRuntimeHostManagedUpdatePolicy(clientDataRoot, null),
     createBackend: createPlatformRuntimeHostServiceBackend,
     writeOutput: (value) => process.stdout.write(value),
     writeError: (value) => process.stderr.write(value),
@@ -91,12 +87,7 @@ export async function runManagedRuntimeHostServiceCli(
         ? await manage()
         : options.action === 'retire'
           ? await deps.withLifecycleLock(options.clientDataRoot, manage)
-          : options.action === 'uninstall'
-            ? await deps.withDeploymentLock(options.clientDataRoot, async () => {
-                await deps.clearUpdatePolicy(options.clientDataRoot);
-                return await deps.withLifecycleLock(options.clientDataRoot, manage);
-              })
-            : await mutate();
+          : await mutate();
     const blocked = result.action === 'retire' && result.retirement.kind === 'active_tasks';
     if (options.framed) {
       deps.writeOutput(encodeRuntimeHostServiceManagementFrame(successFrame(result)));

@@ -63,6 +63,10 @@ import {
   type RuntimeHostServiceBackend,
 } from '../runtime-host-service-manager.js';
 import {
+  readRuntimeHostManagedUpdatePolicy,
+  writeRuntimeHostManagedUpdatePolicy,
+} from '../runtime-host-update-policy-store.js';
+import {
   createSystemdUserRuntimeHostService,
   renderSystemdUnit,
   resolveSystemdUserRuntimeHostServicePath,
@@ -394,6 +398,25 @@ describe('managed Runtime Host service', () => {
       rootPath: root.canonicalPath,
       rootId: root.rootId,
     } as const;
+    const updatePolicy = {
+      schemaVersion: 1 as const,
+      policy: { kind: 'channel' as const, channel: 'latest' as const },
+      target: expectedTarget,
+    };
+    await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, updatePolicy);
+    await assert.rejects(
+      manageRuntimeHostService(
+        {
+          ...common,
+          action: 'uninstall',
+          expectedTarget: { ...expectedTarget, rootId: 'f'.repeat(64) },
+        },
+        backend(),
+      ),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'target_mismatch',
+    );
+    assert.deepEqual(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), updatePolicy);
     await assert.rejects(
       cleanupRuntimeHostManagedDeployment(
         { clientDataRoot, cliPath: canonicalCliPath, expectedTarget },
@@ -412,6 +435,7 @@ describe('managed Runtime Host service', () => {
       },
       backend(),
     );
+    assert.equal(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), null);
     await cleanupRuntimeHostManagedDeployment(
       { clientDataRoot, cliPath: canonicalCliPath, expectedTarget },
       backend(),

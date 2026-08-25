@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -27,7 +27,6 @@ import {
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
-import { runManagedRuntimeHostServiceCli } from '../runtime-host-service-management-command.js';
 import {
   runManagedRuntimeHostUpdatePolicyCli,
   runManagedRuntimeHostUpdateReconcileCli,
@@ -35,6 +34,7 @@ import {
 import {
   readRuntimeHostManagedUpdatePolicy,
   resolveRuntimeHostManagedUpdatePolicyPath,
+  RuntimeHostUpdatePolicyError,
   writeRuntimeHostManagedUpdatePolicy,
 } from '../runtime-host-update-policy-store.js';
 
@@ -92,6 +92,7 @@ describe('managed Runtime Host update reconciliation', () => {
   it('persists an automatic policy against the canonical managed target and removes manual state', async (t) => {
     const clientDataRoot = await mkdtemp(join(tmpdir(), 'maka-update-policy-'));
     t.after(() => rm(clientDataRoot, { recursive: true, force: true }));
+    const deploymentRoot = join(clientDataRoot, 'managed');
     const common = {
       json: true,
       framed: false,
@@ -99,6 +100,7 @@ describe('managed Runtime Host update reconciliation', () => {
       defaultRootPath: '/workspace',
     };
     let output = '';
+    const manage = async () => managedStatus(deploymentRoot);
     assert.equal(
       await runManagedRuntimeHostUpdatePolicyCli(
         {
@@ -109,28 +111,7 @@ describe('managed Runtime Host update reconciliation', () => {
         {
           withDeploymentLock: async (_root, operation) => operation(),
           createBackend: () => unusedBackend(),
-          manage: async () => ({
-            schemaVersion: 1,
-            action: 'status',
-            service: {
-              manager: 'systemd_user',
-              installed: true,
-              enabled: true,
-              active: true,
-              state: 'running',
-              pid: 42,
-              lastExitCode: null,
-              installedVersion: '1.0.0',
-              config: {
-                schemaVersion: 1,
-                managedDeploymentRoot: '/managed',
-                rootPath: '/srv/maka',
-                projectDirectoryRoots: [],
-                websocket: { host: '127.0.0.1', port: 7443, path: '/runtime-host' },
-                launch: { nodePath: '/node', cliPath: '/managed/cli.js' },
-              },
-            },
-          }),
+          manage,
           writeOutput: (value) => {
             output += value;
           },
@@ -138,7 +119,7 @@ describe('managed Runtime Host update reconciliation', () => {
       ),
       0,
     );
-    assert.deepEqual(await readRuntimeHostManagedUpdatePolicy(clientDataRoot), {
+    assert.deepEqual(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), {
       schemaVersion: 1,
       policy: { kind: 'fixed', version: '2.0.0' },
       target: { ...TARGET, rootPath: '/srv/maka' },
@@ -150,17 +131,21 @@ describe('managed Runtime Host update reconciliation', () => {
         { ...common, policy: { kind: 'manual' } },
         {
           withDeploymentLock: async (_root, operation) => operation(),
+          manage,
+          createBackend: () => unusedBackend(),
           writeOutput: () => undefined,
         },
       ),
       0,
     );
-    assert.equal(await readRuntimeHostManagedUpdatePolicy(clientDataRoot), null);
+    assert.equal(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), null);
     let manualOutput = '';
     assert.equal(
       await runManagedRuntimeHostUpdateReconcileCli(
         { ...common, json: false, framed: true },
         {
+          manage,
+          createBackend: () => unusedBackend(),
           resolveSelection: async () => assert.fail('manual policy must not resolve a target'),
           writeOutput: (value) => {
             manualOutput += value;
@@ -178,10 +163,47 @@ describe('managed Runtime Host update reconciliation', () => {
     );
   });
 
+  it('distinguishes an uncertain policy commit and makes an absent-policy retry durable', async (t) => {
+    const deploymentRoot = await mkdtemp(join(tmpdir(), 'maka-update-policy-commit-'));
+    t.after(() => rm(deploymentRoot, { recursive: true, force: true }));
+    const record = {
+      schemaVersion: 1 as const,
+      policy: { kind: 'fixed' as const, version: '2.0.0' },
+      target: TARGET,
+    };
+    const failSync = async () => {
+      throw new Error('directory sync failed');
+    };
+
+    await assert.rejects(
+      writeRuntimeHostManagedUpdatePolicy(deploymentRoot, record, { syncDirectory: failSync }),
+      (error: unknown) =>
+        error instanceof RuntimeHostUpdatePolicyError &&
+        error.code === 'update_policy_commit_outcome_unknown',
+    );
+    assert.deepEqual(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), record);
+
+    await assert.rejects(
+      writeRuntimeHostManagedUpdatePolicy(deploymentRoot, null, { syncDirectory: failSync }),
+      (error: unknown) =>
+        error instanceof RuntimeHostUpdatePolicyError &&
+        error.code === 'update_policy_commit_outcome_unknown',
+    );
+    assert.equal(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), null);
+    let syncs = 0;
+    await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, null, {
+      syncDirectory: async () => {
+        syncs += 1;
+      },
+    });
+    assert.equal(syncs, 1);
+  });
+
   it('resolves one policy snapshot and delegates an admitted exact target to the update transaction', async (t) => {
     const clientDataRoot = await mkdtemp(join(tmpdir(), 'maka-update-reconcile-'));
     t.after(() => rm(clientDataRoot, { recursive: true, force: true }));
-    await writeRuntimeHostManagedUpdatePolicy(clientDataRoot, {
+    const deploymentRoot = join(clientDataRoot, 'managed');
+    await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, {
       schemaVersion: 1,
       policy: { kind: 'fixed', version: '2.0.0' },
       target: TARGET,
@@ -196,6 +218,8 @@ describe('managed Runtime Host update reconciliation', () => {
         defaultRootPath: '/workspace',
       },
       {
+        manage: async () => managedStatus(deploymentRoot),
+        createBackend: () => unusedBackend(),
         resolveSelection: async (options) => {
           assert.deepEqual(options.selector, { kind: 'exact', version: '2.0.0' });
           assert.deepEqual(options.expectedTarget, TARGET);
@@ -251,7 +275,8 @@ describe('managed Runtime Host update reconciliation', () => {
   it('revokes a stale reconcile when automatic policy changes to manual', async (t) => {
     const clientDataRoot = await mkdtemp(join(tmpdir(), 'maka-update-policy-race-'));
     t.after(() => rm(clientDataRoot, { recursive: true, force: true }));
-    await writeRuntimeHostManagedUpdatePolicy(clientDataRoot, {
+    const deploymentRoot = join(clientDataRoot, 'managed');
+    await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, {
       schemaVersion: 1,
       policy: { kind: 'channel', channel: 'latest' },
       target: TARGET,
@@ -261,8 +286,10 @@ describe('managed Runtime Host update reconciliation', () => {
       await runManagedRuntimeHostUpdateReconcileCli(
         { json: true, framed: false, clientDataRoot, defaultRootPath: '/workspace' },
         {
+          manage: async () => managedStatus(deploymentRoot),
+          createBackend: () => unusedBackend(),
           resolveSelection: async (options) => {
-            await writeRuntimeHostManagedUpdatePolicy(clientDataRoot, null);
+            await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, null);
             return {
               selector: options.selector,
               candidate: { version: '2.0.0', integrity: INTEGRITY, compatibility: 1 },
@@ -290,18 +317,22 @@ describe('managed Runtime Host update reconciliation', () => {
       1,
     );
     assert.equal(JSON.parse(output).error.code, 'update_policy_changed');
-    assert.equal(await readRuntimeHostManagedUpdatePolicy(clientDataRoot), null);
+    assert.equal(await readRuntimeHostManagedUpdatePolicy(deploymentRoot), null);
   });
 
   it('fails closed on corrupt policy and returns manual-action candidates without mutation', async (t) => {
     const clientDataRoot = await mkdtemp(join(tmpdir(), 'maka-update-reconcile-'));
     t.after(() => rm(clientDataRoot, { recursive: true, force: true }));
-    await writeFile(resolveRuntimeHostManagedUpdatePolicyPath(clientDataRoot), '{"bad":true}\n');
+    const deploymentRoot = join(clientDataRoot, 'managed');
+    await mkdir(deploymentRoot, { recursive: true });
+    await writeFile(resolveRuntimeHostManagedUpdatePolicyPath(deploymentRoot), '{"bad":true}\n');
     let errorOutput = '';
     assert.equal(
       await runManagedRuntimeHostUpdateReconcileCli(
         { json: true, framed: false, clientDataRoot, defaultRootPath: '/workspace' },
         {
+          manage: async () => managedStatus(deploymentRoot),
+          createBackend: () => unusedBackend(),
           writeOutput: (value) => {
             errorOutput += value;
           },
@@ -311,7 +342,7 @@ describe('managed Runtime Host update reconciliation', () => {
     );
     assert.equal(JSON.parse(errorOutput).error.code, 'invalid_update_policy');
 
-    await writeRuntimeHostManagedUpdatePolicy(clientDataRoot, {
+    await writeRuntimeHostManagedUpdatePolicy(deploymentRoot, {
       schemaVersion: 1,
       policy: { kind: 'channel', channel: 'latest' },
       target: TARGET,
@@ -321,6 +352,8 @@ describe('managed Runtime Host update reconciliation', () => {
       await runManagedRuntimeHostUpdateReconcileCli(
         { json: true, framed: false, clientDataRoot, defaultRootPath: '/workspace' },
         {
+          manage: async () => managedStatus(deploymentRoot),
+          createBackend: () => unusedBackend(),
           resolveSelection: async (options) => ({
             selector: options.selector,
             candidate: { version: '2.0.0', integrity: INTEGRITY },
@@ -338,42 +371,32 @@ describe('managed Runtime Host update reconciliation', () => {
     );
     assert.equal(JSON.parse(output).reconciliation.kind, 'manual_action');
   });
-
-  it('keeps automatic policy revoked when uninstall later fails', async (t) => {
-    const clientDataRoot = await mkdtemp(join(tmpdir(), 'maka-update-uninstall-'));
-    t.after(() => rm(clientDataRoot, { recursive: true, force: true }));
-    await writeRuntimeHostManagedUpdatePolicy(clientDataRoot, {
-      schemaVersion: 1,
-      policy: { kind: 'channel', channel: 'next' },
-      target: TARGET,
-    });
-    const immediate = async <T>(_root: string, operation: () => Promise<T>) => operation();
-    assert.equal(
-      await runManagedRuntimeHostServiceCli(
-        {
-          action: 'uninstall',
-          json: false,
-          clientDataRoot,
-          defaultRootPath: '/workspace',
-          nodePath: '/node',
-          cliPath: '/cli.js',
-        },
-        {
-          withDeploymentLock: immediate,
-          withLifecycleLock: immediate,
-          createBackend: () => unusedBackend(),
-          manage: async () => {
-            assert.equal(await readRuntimeHostManagedUpdatePolicy(clientDataRoot), null);
-            throw new Error('uninstall failed after policy revocation');
-          },
-          writeError: () => undefined,
-        },
-      ),
-      1,
-    );
-    assert.equal(await readRuntimeHostManagedUpdatePolicy(clientDataRoot), null);
-  });
 });
+
+function managedStatus(managedDeploymentRoot: string) {
+  return {
+    schemaVersion: 1 as const,
+    action: 'status' as const,
+    service: {
+      manager: 'systemd_user' as const,
+      installed: true,
+      enabled: true,
+      active: true,
+      state: 'running' as const,
+      pid: 42,
+      lastExitCode: null,
+      installedVersion: '1.0.0',
+      config: {
+        schemaVersion: 1 as const,
+        managedDeploymentRoot,
+        rootPath: '/srv/maka',
+        projectDirectoryRoots: [],
+        websocket: { host: '127.0.0.1' as const, port: 7443, path: '/runtime-host' },
+        launch: { nodePath: '/node', cliPath: join(managedDeploymentRoot, 'cli.js') },
+      },
+    },
+  };
+}
 
 function unusedBackend() {
   return {

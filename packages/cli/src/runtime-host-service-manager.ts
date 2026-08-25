@@ -49,6 +49,7 @@ import {
   removeRuntimeHostManagedDeployment,
   resolveRuntimeHostManagedDeploymentForCli,
 } from './runtime-host-managed-deployment.js';
+import { writeRuntimeHostManagedUpdatePolicy } from './runtime-host-update-policy-store.js';
 
 const SERVICE_CONFIG_FILE = 'runtime-host-service.json';
 const SERVICE_LIFECYCLE_LOCK_FILE = 'runtime-host-setup';
@@ -402,6 +403,9 @@ async function manageRuntimeHostServiceLocked(
     const managedDeploymentRoot =
       before?.managedDeploymentRoot ??
       resolveRuntimeHostManagedDeploymentForCli(serviceId, input.cliPath);
+    if (managedDeploymentRoot) {
+      await writeRuntimeHostManagedUpdatePolicy(managedDeploymentRoot, null);
+    }
     await backend.uninstall();
     await removeRuntimeHostServiceFile(configPath, 'service config');
     if (managedDeploymentRoot && !input.retainManagedDeployment) {
