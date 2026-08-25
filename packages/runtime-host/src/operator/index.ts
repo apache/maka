@@ -79,3 +79,11 @@ export {
   type LocalHostDeploymentTransitionResult,
   type RuntimeHostInstallationOwner,
 } from './local-deployment-owner.js';
+export {
+  transferLocalHostProcessOwner,
+  type LocalHostProcessOwnerTransferAdapter,
+  type LocalHostProcessOwnerTransferPhase,
+  type LocalHostProcessOwnerTransferRequest,
+  type LocalHostProcessOwnerTransferResult,
+  type LocalHostTransferActiveWorkPolicy,
+} from './local-process-owner-transfer.js';
