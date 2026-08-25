@@ -1657,7 +1657,11 @@ export class ToolRuntime {
         const { result, outcome } = settledExecution.value;
         output.flush();
         const { content, durationMs } = outcome;
-        const toolResultStatus = outcome.isError ? 'error' : 'success';
+        // Keep the full provider-facing terminal classification. `isError` is
+        // sufficient for the durable response envelope, but it intentionally
+        // collapses `aborted` into an error bit and therefore cannot drive live
+        // tool status, telemetry, or subagent lifecycle projection.
+        const toolResultStatus = deriveToolResultStatus(content, result);
         let durableOutcome: { id: string; operationId: string; ts: number } | undefined;
         if (settledExecution.kind === 'managed') {
           if (!durableAttempt) {
