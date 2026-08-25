@@ -29,8 +29,9 @@ import type { ProviderRetryScheduledEvent } from './events.js';
  * computation in one clock domain; the granted length comes from the
  * skew-free `remainingMs` duration when the emitter provided one (older
  * emitters fall back to the full `delayMs`). Floors at zero: an expired
- * countdown reads `0s` on every surface until the `started` event replaces
- * it.
+ * countdown is `0ms` here; callers that render a humanized countdown floor
+ * the *displayed* seconds at `1s` via `providerRetryDisplaySeconds` so both
+ * surfaces agree until the `started` event replaces the banner.
  */
 export function providerRetryRemainingMs(
   retry: Pick<ProviderRetryScheduledEvent, 'delayMs' | 'remainingMs'>,
@@ -38,4 +39,16 @@ export function providerRetryRemainingMs(
 ): number {
   const grantedMs = retry.remainingMs ?? retry.delayMs;
   return Math.max(0, grantedMs - Math.max(0, elapsedSinceReceiptMs));
+}
+
+/**
+ * Humanized countdown value shared by every surface (#3393 P3). Floors at
+ * `1s` so an expired scheduled wait still reads `1s` on both the TUI strip
+ * and the desktop banner until the `started` event replaces it.
+ */
+export function providerRetryDisplaySeconds(
+  retry: Pick<ProviderRetryScheduledEvent, 'delayMs' | 'remainingMs'>,
+  elapsedSinceReceiptMs: number,
+): number {
+  return Math.max(1, Math.ceil(providerRetryRemainingMs(retry, elapsedSinceReceiptMs) / 1_000));
 }

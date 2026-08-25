@@ -1114,7 +1114,7 @@ export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry })
     const tick = window.setInterval(() => setNowMs(Date.now()), ELAPSED_TICK_MS);
     return () => window.clearInterval(tick);
   }, [retry.phase, retry.id, receivedAtMs]);
-  const remainingMs =
+  const displaySeconds =
     retry.phase !== 'scheduled'
       ? 0
       : // nowMs undefined (SSR / first paint) reads as zero elapsed.
@@ -1122,7 +1122,7 @@ export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry })
   const titleText =
     retry.phase === 'scheduled'
       ? copy.providerRetryScheduled(
-          Math.ceil(remainingMs / 1_000),
+          displaySeconds,
           retry.attempt,
           retry.maxAttempts,
         )

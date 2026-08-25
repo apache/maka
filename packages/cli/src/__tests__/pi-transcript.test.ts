@@ -4192,9 +4192,9 @@ describe('transcript entry render memoization', () => {
     t.mock.timers.setTime(start + 63_000);
     assert.match(strip(), /Retrying in 4h 27m \(2\/10\)/);
 
-    // An elapsed wait floors at 0s; the countdown never goes negative.
+    // An elapsed wait floors at 1s until `started` replaces the banner.
     t.mock.timers.setTime(start + 17_000_000);
-    assert.match(strip(), /Retrying in 0s \(2\/10\)/);
+    assert.match(strip(), /Retrying in 1s \(2\/10\)/);
   });
 
   test('provider retry strip counts down from the host-authoritative remainingMs', (t) => {

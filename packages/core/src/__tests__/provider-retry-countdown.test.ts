@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { providerRetryRemainingMs } from '../provider-retry-countdown.js';
+import {
+  providerRetryDisplaySeconds,
+  providerRetryRemainingMs,
+} from '../provider-retry-countdown.js';
 
 test('providerRetryRemainingMs counts down from the granted length to a zero floor', () => {
   // Host-authoritative remainingMs wins over the full delay (reconnect path).
@@ -33,4 +36,9 @@ test('providerRetryRemainingMs counts down from the granted length to a zero flo
   assert.equal(providerRetryRemainingMs({ delayMs: 10_000 }, 60_000), 0);
   // Clock jitter between emission and receipt never inflates the wait.
   assert.equal(providerRetryRemainingMs({ delayMs: 10_000 }, -500), 10_000);
+});
+
+test('providerRetryDisplaySeconds floors the humanized countdown at 1s', () => {
+  assert.equal(providerRetryDisplaySeconds({ delayMs: 10_000 }, 60_000), 1);
+  assert.equal(providerRetryDisplaySeconds({ delayMs: 300_000 }, 0), 300);
 });

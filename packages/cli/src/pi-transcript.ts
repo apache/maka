@@ -34,7 +34,7 @@ import {
   type SystemNoteMessage,
 } from '@maka/core/session';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
-import { providerRetryRemainingMs } from '@maka/core/provider-retry-countdown';
+import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
@@ -1681,7 +1681,8 @@ export function renderMakaPiActivityStrip(
  * five-digit second count.
  */
 function formatRetryCountdown(retry: ProviderRetryScheduledEvent, receivedAtMs: number): string {
-  return formatElapsedDuration(providerRetryRemainingMs(retry, Date.now() - receivedAtMs));
+  const seconds = providerRetryDisplaySeconds(retry, Date.now() - receivedAtMs);
+  return formatElapsedDuration(seconds * 1_000);
 }
 
 function formatElapsedDuration(elapsedMs: number): string {
